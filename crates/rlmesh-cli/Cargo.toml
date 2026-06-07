@@ -33,7 +33,6 @@ eframe = { workspace = true, features = [
     "x11",
 ] }
 image = { workspace = true, features = ["png"] }
-rlmesh-proto = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

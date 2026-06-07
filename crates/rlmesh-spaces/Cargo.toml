@@ -19,7 +19,6 @@ stability = "supported"
 
 [dependencies]
 half = { workspace = true }
-rand = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

@@ -15,7 +15,6 @@ dev = [
   "maturin-import-hook>=0.2",
   "rich>=13.9.4,<15.0.0",
   "ruff==0.14.9",
-  "typos==1.40.0",
   "pytest==8.4.2",
   "griffe>=1.15,<2",
   "rlmesh-system",

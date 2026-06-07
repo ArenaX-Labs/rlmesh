@@ -23,8 +23,6 @@ rlmesh-spaces = { workspace = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["net"] }

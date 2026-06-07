@@ -1,0 +1,56 @@
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+  "x86_64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+no-default-features = true
+features = ["abi3-py311"]
+
+[advisories]
+yanked = "deny"
+unmaintained = "workspace"
+unused-ignored-advisory = "deny"
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "allow"
+unused-license-exception = "deny"
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "MIT-0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "0BSD",
+  "BSL-1.0",
+  "Zlib",
+  "bzip2-1.0.6",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",
+  "Unicode-3.0",
+]
+exceptions = [
+  # egui embeds default font assets when the default_fonts feature is enabled.
+  { crate = "epaint_default_fonts@0.34.3", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+  # pyo3-stub-gen pulls Unicode name data through rustpython-parser for stub checks.
+  { crate = "unicode_names2@1.3.0", allow = ["Unicode-DFS-2016"] },
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "simplest-path"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -43,3 +43,11 @@ language = "system"
 entry = "mise run lint:proto"
 pass_filenames = false
 files = "\\.proto$"
+
+# Spelling
+[[repos.hooks]]
+id = "typos"
+name = "typos"
+language = "system"
+entry = "mise run lint:spelling"
+pass_filenames = false

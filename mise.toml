@@ -10,6 +10,10 @@ uv = "0.11.19"
 zig = "0.16.0"
 "cargo:maturin" = "1.13.3"
 "cargo:cargo-zigbuild" = "0.22.3"
+"cargo:cargo-deny" = "0.19.8"
+"cargo:cargo-audit" = "0.22.2"
+"cargo:typos-cli" = "1.40.0"
+"cargo:cargo-machete" = "0.9.2"
 
 # Protobuf
 protoc = "35"
@@ -135,6 +139,8 @@ depends = [
   "lint:rust",
   "lint:python",
   "lint:proto",
+  "lint:spelling",
+  "lint:deps",
 ]
 
 [tasks."lint:rust"]
@@ -148,6 +154,34 @@ run = "uv run ruff check"
 [tasks."lint:proto"]
 description = "Lint Protobuf definitions"
 run = "buf lint"
+
+[tasks."lint:spelling"]
+description = "Check spelling in source files"
+run = "typos"
+
+[tasks."lint:deps"]
+description = "Check Rust dependency advisories, licenses, bans, and sources"
+run = [
+  "mise run lint:deps:audit",
+  "mise run lint:deps:deny",
+  "mise run lint:deps:unused",
+]
+
+[tasks."lint:deps:audit"]
+description = "Check Rust dependency advisories"
+run = "cargo audit"
+
+[tasks."lint:deps:deny"]
+description = "Check Rust dependency licenses, bans, and sources"
+run = "cargo deny check licenses bans sources"
+
+[tasks."lint:deps:duplicates"]
+description = "Report duplicate Rust dependency versions without failing"
+run = "cargo tree -d --workspace"
+
+[tasks."lint:deps:unused"]
+description = "Check for unused Rust dependencies"
+run = "cargo machete --with-metadata"
 
 # ──────────────────────────────────────────────
 # Typecheck (non-mutating)

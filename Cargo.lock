@@ -2955,8 +2955,6 @@ name = "rlmesh"
 version = "0.1.0-beta.1"
 dependencies = [
  "async-trait",
- "prost",
- "prost-types",
  "rlmesh-grpc",
  "rlmesh-proto",
  "rlmesh-runtime",
@@ -2975,7 +2973,6 @@ dependencies = [
  "eframe",
  "egui",
  "image",
- "rlmesh-proto",
  "tokio",
 ]
 
@@ -3064,7 +3061,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -3073,7 +3069,6 @@ name = "rlmesh-spaces"
 version = "0.1.0-beta.1"
 dependencies = [
  "half",
- "rand 0.10.1",
  "thiserror 2.0.18",
 ]
 

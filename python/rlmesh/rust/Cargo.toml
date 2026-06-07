@@ -16,6 +16,9 @@ publish = false
 audience = "python-binding"
 stability = "supported"
 
+[package.metadata.cargo-machete]
+ignored = ["pyo3-build-config"]
+
 [lib]
 name = "_rlmesh"
 crate-type = ["cdylib", "rlib"]
