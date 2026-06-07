@@ -60,9 +60,18 @@ build-backend = "maturin"
 
 [tool.maturin]
 module-name = "rlmesh._rlmesh"
+python-source = "src"
 no-default-features = true
 features = [{ feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
-exclude = ["src/**/__pycache__/**", "src/**/*.pyc", "src/**/*.so"]
+exclude = [
+  ".pytest_cache/**",
+  "dist/**",
+  "rust/**",
+  "src/**/__pycache__/**",
+  "src/**/*.pyc",
+  "src/**/*.so",
+  "tests/**",
+]
 
 [tool.uv]
 cache-keys = [

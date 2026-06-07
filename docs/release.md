@@ -48,10 +48,19 @@ cargo publish -p rlmesh-sandbox
 
 ## Python Wheels
 
+RLMesh currently publishes Python wheels only. Do not build or upload a Python
+source distribution; native builds are covered by the explicit wheel matrix
+below.
+
 Local smoke builds may produce plain `linux_*` platform tags. Those wheels are
 useful for installed-artifact validation but cannot be uploaded to PyPI. Release
 validation intentionally rejects plain `linux_*` tags; expected Linux release
 wheels use uploadable tags such as `manylinux` or `musllinux`.
+
+The wheel checker validates both ABI/platform tags and payload contents. Wheels
+must contain only runtime package files, type information, the native extension,
+metadata, licenses, notices, and SBOMs; tests, Rust source, caches, and build
+outputs are rejected.
 
 Build release wheels:
 

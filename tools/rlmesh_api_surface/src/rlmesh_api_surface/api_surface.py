@@ -9,13 +9,14 @@ import re
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import griffe
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = PACKAGE_ROOT.parents[3]
 NATIVE_MODULE = "rlmesh._rlmesh"
-METADATA_PATH = Path(__file__).with_name("api_metadata.json")
+METADATA_PATH = PACKAGE_ROOT / "api_metadata.json"
 DOCSTRING_PARSER = "google"
 
 STABLE = "Stable"
@@ -203,13 +204,16 @@ class _Collector:
         )
 
     def _load_module(self, module_name: str) -> griffe.Module:
-        return griffe.load(
-            module_name,
-            search_paths=[self.src_root],
-            allow_inspection=False,
-            docstring_parser=DOCSTRING_PARSER,
-            modules_collection=self.modules,
-            resolve_aliases=True,
+        return cast(
+            griffe.Module,
+            griffe.load(
+                module_name,
+                search_paths=[self.src_root],
+                allow_inspection=False,
+                docstring_parser=DOCSTRING_PARSER,
+                modules_collection=self.modules,
+                resolve_aliases=True,
+            ),
         )
 
 
@@ -221,7 +225,7 @@ def _module_exports(module: griffe.Module) -> list[str]:
     all_attribute = module.members.get("__all__")
     if all_attribute is None:
         return []
-    return list(ast.literal_eval(str(all_attribute.value)))
+    return list(ast.literal_eval(str(cast(Any, all_attribute).value)))
 
 
 def _resolved_object(obj: Any) -> Any:

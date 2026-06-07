@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.api_surface import collect_python_api_surface
+from rlmesh_api_surface import collect_python_api_surface
 
 
 def test_public_api_snapshot() -> None:

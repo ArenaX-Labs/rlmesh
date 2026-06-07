@@ -210,7 +210,7 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
 
     Examples:
         >>> import rlmesh.numpy as rlm
-        >>> env = rlm.SandboxEnv("CartPole-v1", packages=["gymnasium==1.2.3"])
+        >>> env = rlm.SandboxEnv("CartPole-v1", packages=["gymnasium==1.3.0"])
         >>> observation, info = env.reset(seed=42)
         >>> env.close()
     """

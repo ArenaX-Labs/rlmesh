@@ -16,6 +16,23 @@ EXPECTED_TAGS = {
     ("cp311", "abi3"),
 }
 LOCAL_ONLY_PLATFORM_PREFIXES = ("linux_",)
+REQUIRED_WHEEL_FILES = (
+    "rlmesh/py.typed",
+    "rlmesh/_rlmesh.pyi",
+)
+FORBIDDEN_WHEEL_PREFIXES = (
+    ".pytest_cache/",
+    "dist/",
+    "rust/",
+    "tests/",
+)
+FORBIDDEN_WHEEL_SEGMENTS = (
+    "__pycache__",
+    "rust",
+    "tests",
+)
+NATIVE_EXTENSION_PREFIX = "rlmesh/_rlmesh."
+NATIVE_EXTENSION_SUFFIXES = (".pyd", ".so")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -76,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
                 f"{EXPECTED_REQUIRES_PYTHON}, got {requires_python or '<missing>'}"
             )
 
+        errors.extend(
+            f"{wheel.name}: {error}" for error in wheel_payload_errors(wheel)
+        )
+
         platforms[platform_tag].add(tag)
 
     if not args.allow_partial:
@@ -118,6 +139,42 @@ def wheel_requires_python(wheel: Path) -> str | None:
             return None
         metadata = archive.read(metadata_name).decode("utf-8")
     return Parser().parsestr(metadata).get("Requires-Python")
+
+
+def wheel_payload_errors(wheel: Path) -> list[str]:
+    with zipfile.ZipFile(wheel) as archive:
+        names = archive.namelist()
+
+    errors: list[str] = []
+    name_set = set(names)
+    for required in REQUIRED_WHEEL_FILES:
+        if required not in name_set:
+            errors.append(f"missing required wheel file {required}")
+
+    native_extensions = [
+        name
+        for name in names
+        if name.startswith(NATIVE_EXTENSION_PREFIX)
+        and name.endswith(NATIVE_EXTENSION_SUFFIXES)
+    ]
+    if len(native_extensions) != 1:
+        joined = ", ".join(native_extensions) if native_extensions else "<none>"
+        errors.append(f"expected exactly one native extension, found {joined}")
+
+    for name in names:
+        if name.endswith(".pyc"):
+            errors.append(f"forbidden bytecode file {name}")
+        if any(name.startswith(prefix) for prefix in FORBIDDEN_WHEEL_PREFIXES):
+            errors.append(f"forbidden wheel payload path {name}")
+            continue
+        segments = tuple(segment for segment in name.split("/") if segment)
+        forbidden = sorted(set(segments) & set(FORBIDDEN_WHEEL_SEGMENTS))
+        if forbidden:
+            errors.append(
+                f"forbidden wheel payload path {name} "
+                f"(contains {', '.join(forbidden)})"
+            )
+    return errors
 
 
 def is_local_only_platform(platform_tag: str) -> bool:

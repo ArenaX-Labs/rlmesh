@@ -9,14 +9,11 @@ dependencies = ["rlmesh"]
 
 [dependency-groups]
 dev = [
-  "gymnasium==1.2.3",
-  "numpy",
   "basedpyright==1.36.1",
-  "maturin-import-hook>=0.2",
-  "rich>=13.9.4,<15.0.0",
   "ruff==0.14.9",
   "pytest==8.4.2",
-  "griffe>=1.15,<2",
+  "rlmesh[gymnasium,numpy,torch]",
+  "rlmesh-api-surface",
   "rlmesh-system",
   "rlmesh-system-fixtures",
 ]
@@ -25,8 +22,8 @@ dev = [
 include = [
   "python/rlmesh/src/rlmesh",
   "python/rlmesh/tests/type_contract/fixtures",
+  "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]
-stubPath = "python/rlmesh/typings"
 typeCheckingMode = "basic"
 strict = ["python/rlmesh/src/rlmesh"]
 defineConstant = { DEBUG = true }
@@ -45,7 +42,12 @@ pythonPlatform = "All"
 executionEnvironments = [{ root = "." }]
 
 [tool.pytest.ini_options]
-pythonpath = [".", "tools/rlmesh_system/src", "tools/rlmesh_system_fixtures/src"]
+pythonpath = [
+  ".",
+  "tools/rlmesh_api_surface/src",
+  "tools/rlmesh_system/src",
+  "tools/rlmesh_system_fixtures/src",
+]
 
 [tool.ruff]
 force-exclude = true
@@ -82,12 +84,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "examples/python/**" = ["D"]
 "python/rlmesh/tests/**" = ["B017", "D"]
-"python/rlmesh/typings/**" = ["D", "N801"]
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]
+"tools/rlmesh_api_surface/**" = ["D"]
 "tools/rlmesh_system/**" = ["B017", "D"]
 "tools/rlmesh_system_fixtures/**" = ["B017", "D"]
-"tools/api_surface/**" = ["D"]
 "python/rlmesh/examples/**" = ["F405", "D"]
 "python/rlmesh/src/rlmesh/_cli/**" = ["D"]
 "python/rlmesh/src/rlmesh/__main__.py" = ["D"]
@@ -100,10 +101,31 @@ convention = "google"
 [tool.ruff.format]
 docstring-code-format = true
 
+[tool.uv]
+constraint-dependencies = [
+  "gymnasium==1.3.0",
+  "numpy==2.2.6 ; python_version < '3.11'",
+  "numpy==2.4.6 ; python_version >= '3.11'",
+  "torch==2.12.0+cpu ; sys_platform != 'darwin'",
+  "torch==2.12.0 ; sys_platform == 'darwin'",
+]
+
 [tool.uv.sources]
 rlmesh = { workspace = true }
+rlmesh-api-surface = { workspace = true }
+torch = [{ index = "pytorch-cpu" }]
 rlmesh-system = { workspace = true }
 rlmesh-system-fixtures = { workspace = true }
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.workspace]
-members = ["python/*", "tools/rlmesh_system", "tools/rlmesh_system_fixtures"]
+members = [
+  "python/*",
+  "tools/rlmesh_api_surface",
+  "tools/rlmesh_system",
+  "tools/rlmesh_system_fixtures",
+]

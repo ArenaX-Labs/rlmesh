@@ -1,6 +1,6 @@
 """Public API extraction helpers."""
 
-from tools.api_surface.api_surface import (
+from rlmesh_api_surface.api_surface import (
     ApiExport,
     ApiMember,
     ApiModule,
