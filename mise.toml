@@ -276,22 +276,6 @@ run = "uv run rlmesh-system run --profile heavy"
 description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"
 
-[tasks."test:python:validation:list"]
-description = "Backward-compatible alias for test:system:list"
-run = "uv run rlmesh-system list"
-
-[tasks."test:python:validation"]
-description = "Backward-compatible alias for test:system"
-run = "uv run rlmesh-system run"
-
-[tasks."test:python:validation:heavy"]
-description = "Backward-compatible alias for test:system:heavy"
-run = "uv run rlmesh-system run --profile heavy"
-
-[tasks."test:python:validation:clean"]
-description = "Backward-compatible alias for test:system:clean"
-run = "uv run rlmesh-system clean"
-
 # ──────────────────────────────────────────────
 # Build
 # ──────────────────────────────────────────────
