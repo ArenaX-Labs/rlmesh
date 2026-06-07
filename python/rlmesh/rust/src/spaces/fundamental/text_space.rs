@@ -36,11 +36,13 @@ pub fn parse_text<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
         Ok(value) => value.extract::<i64>().unwrap_or(1),
         Err(_) => 1,
     };
-    let charset = text_charset(space)?;
+    let charset = rlmesh_text_charset(text_charset(space)?);
 
-    TextBuilder::new(max_length)
-        .min_length(min_length)
-        .charset(charset)
+    let mut builder = TextBuilder::new(max_length).min_length(min_length);
+    if let Some(charset) = charset {
+        builder = builder.charset(charset);
+    }
+    builder
         .build()
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
@@ -90,4 +92,19 @@ fn iterable_text_charset(value: &Bound<'_, PyAny>, sort: bool) -> PyResult<Optio
         characters.sort();
     }
     Ok(Some(characters.join("")))
+}
+
+fn rlmesh_text_charset(charset: String) -> Option<String> {
+    // Gymnasium's default Text charset is alphanumeric-only; RLMesh treats it as generic text.
+    if charset.is_empty() || is_gymnasium_default_text_charset(&charset) {
+        None
+    } else {
+        Some(charset)
+    }
+}
+
+fn is_gymnasium_default_text_charset(charset: &str) -> bool {
+    const DEFAULT: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    charset.chars().count() == DEFAULT.chars().count()
+        && DEFAULT.chars().all(|character| charset.contains(character))
 }

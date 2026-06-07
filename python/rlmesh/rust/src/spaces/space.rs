@@ -145,6 +145,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_space_treats_default_gym_text_charset_as_unrestricted() {
+        Python::attach(|py| {
+            let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();
+            let text = spaces.getattr("Text").unwrap().call1((32,)).unwrap();
+
+            assert!(
+                !text
+                    .call_method1("contains", ("pick up the object!",))
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+
+            let parsed = parse_space(&text).unwrap();
+            let Some(space_spec::Spec::Text(spec)) = parsed.spec else {
+                panic!("expected Text space");
+            };
+
+            assert_eq!(spec.max_length, 32);
+            assert_eq!(spec.charset, "");
+        });
+    }
+
+    #[test]
     fn parse_space_preserves_gym_text_charset() {
         Python::attach(|py| {
             let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();

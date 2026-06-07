@@ -22,6 +22,7 @@ from ._rlmesh import (
 from .specs import SpaceSpec
 
 EMPTY_SPACE_MAPPING: Mapping[str, object] = MappingProxyType({})
+_GYMNASIUM_DEFAULT_TEXT_CHARSET = frozenset(string.ascii_letters + string.digits)
 
 
 class Space:
@@ -349,7 +350,7 @@ def from_gymnasium_space(space: object) -> Space:
         return Text(
             int(gym_space.max_length),
             min_length=int(getattr(gym_space, "min_length", 1)),
-            charset=_gymnasium_text_charset(gym_space),
+            charset=_rlmesh_text_charset_from_gymnasium(gym_space),
         )
     if isinstance(space, gym_spaces.Dict):
         return Dict(
@@ -454,6 +455,16 @@ def _gymnasium_text_charset(space: Any) -> str:
     if isinstance(charset, str):
         return charset
     return "".join(sorted(str(character) for character in charset))
+
+
+def _rlmesh_text_charset_from_gymnasium(space: Any) -> str | None:
+    charset = _gymnasium_text_charset(space)
+    if not charset:
+        return None
+    # Gymnasium's default Text charset is alphanumeric-only; RLMesh treats it as generic text.
+    if frozenset(charset) == _GYMNASIUM_DEFAULT_TEXT_CHARSET:
+        return None
+    return charset
 
 
 def _box_from_gymnasium(space: Any) -> Box:

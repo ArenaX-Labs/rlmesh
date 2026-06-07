@@ -16,6 +16,19 @@ def test_unrestricted_text_converts_to_gymnasium_printable_charset() -> None:
     assert restored.contains("pick up the object!")
 
 
+def test_default_gymnasium_text_imports_as_unrestricted_rlmesh_text() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    source = gymnasium.spaces.Text(max_length=32)
+
+    space = spaces.from_gymnasium_space(source)
+
+    assert isinstance(space, spaces.Text)
+    assert space.charset == ""
+    assert space.contains("pick up the object!")
+
+
 def test_gymnasium_box_roundtrip_preserves_stable_shape_dtype_and_bounds() -> None:
     gymnasium = pytest.importorskip("gymnasium")
     from rlmesh import spaces
