@@ -1,0 +1,32 @@
+[profile]
+description = "Torch action and tensor artifact checks in a clean wheel install."
+environments = ["torch-py311"]
+
+[environments.torch-py311]
+tier = "torch"
+python = "3.11"
+dependencies = ["numpy", "torch"]
+dependency_args = ["--torch-backend", "cpu"]
+scenarios = ["image-grid-torch-action", "tensor-torch-view", "tensor-torch-export-copy"]
+warmups = 1
+samples = 3
+timeout_seconds = 420
+
+[scenarios.image-grid-torch-action]
+kind = "trace"
+description = "Torch scalar action accepted across the remote env boundary."
+client = "torch"
+model = "image_grid.torch_action"
+seed = 13
+steps = 2
+env = { fixture = "image-grid", kwargs = { width = 4, height = 3, channels = 3 } }
+
+[scenarios.tensor-torch-view]
+kind = "artifact"
+description = "Installed wheel Torch zero-copy tensor view checks."
+artifact = "tensor-torch-view"
+
+[scenarios.tensor-torch-export-copy]
+kind = "artifact"
+description = "Installed wheel Torch tensor roundtrip copy signal."
+artifact = "tensor-torch-export-copy"

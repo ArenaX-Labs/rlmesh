@@ -1,0 +1,128 @@
+name: Bug report
+description: Report a reproducible problem in RLMesh.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem in RLMesh.
+
+        Please do not report vulnerabilities, credential exposure, sandbox escape concerns, or dependency-chain compromises here. Email security reports to research@competesai.com.
+  - type: checkboxes
+    id: existing-issues
+    attributes:
+      label: Existing issues
+      description: Please search open and closed issues before filing a new report.
+      options:
+        - label: I have searched existing issues.
+          required: true
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      description: Select the area that best matches the problem.
+      multiple: true
+      options:
+        - Installation or packaging
+        - Python API
+        - Rust API
+        - CLI
+        - Gym/Gymnasium compatibility
+        - Spaces, values, or tensor conversion
+        - NumPy or Torch interop
+        - Remote environment/model transport
+        - Sandbox or Docker
+        - Validation or tests
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Regression?
+      description: Did this behavior work in an earlier version or environment?
+      options:
+        - Yes, this worked before
+        - No, this never worked
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior.
+      placeholder: Tell us what failed, including any unexpected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: What did you expect?
+      description: Describe the behavior you expected instead.
+      placeholder: Tell us what should have happened.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the smallest code sample, command, or workflow that reproduces the issue.
+      placeholder: |
+        1. Install/use RLMesh with ...
+        2. Run ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Fill in anything relevant to the issue. Leave unrelated lines blank.
+      value: |
+        - RLMesh Python package version:
+        - RLMesh Rust crate version, if relevant:
+        - Installation source: PyPI / source checkout / local wheel / crates.io / git
+        - Python version:
+        - Rust version, if relevant:
+        - OS and architecture:
+        - Gym/Gymnasium version, if relevant:
+        - NumPy version, if relevant:
+        - Torch version, if relevant:
+        - MuJoCo/Isaac/other simulator version, if relevant:
+        - Docker version, if relevant:
+        - Transport mode, if relevant: in-process / TCP / other
+    validations:
+      required: true
+  - type: textarea
+    id: checks-tried
+    attributes:
+      label: Checks or validation tried
+      description: Share any local checks, tests, or validation commands you ran.
+      placeholder: |
+        Examples:
+        - mise run check
+        - mise run test
+        - mise run test:system
+        - Installed-wheel validation
+        - A smaller command or script
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste relevant logs, stack traces, or command output.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add links, screenshots, related issues, or anything else that helps explain the problem.
+    validations:
+      required: false

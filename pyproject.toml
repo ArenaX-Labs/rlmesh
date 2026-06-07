@@ -1,0 +1,110 @@
+[project]
+name = "rlmesh-workspace"
+version = "0.1.0b1"
+description = "RLMesh OSS workspace"
+requires-python = ">=3.10"
+authors = [{ name = "ArenaX Labs", email = "research@competesai.com" }]
+maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
+dependencies = ["rlmesh"]
+
+[dependency-groups]
+dev = [
+  "gymnasium==1.2.3",
+  "numpy",
+  "basedpyright==1.36.1",
+  "maturin-import-hook>=0.2",
+  "rich>=13.9.4,<15.0.0",
+  "ruff==0.14.9",
+  "typos==1.40.0",
+  "pytest==8.4.2",
+  "griffe>=1.15,<2",
+  "rlmesh-system",
+  "rlmesh-system-fixtures",
+]
+
+[tool.basedpyright]
+include = [
+  "python/rlmesh/src/rlmesh",
+  "python/rlmesh/tests/type_contract/fixtures",
+]
+stubPath = "python/rlmesh/typings"
+typeCheckingMode = "basic"
+strict = ["python/rlmesh/src/rlmesh"]
+defineConstant = { DEBUG = true }
+extraPaths = ["python/rlmesh/src"]
+venvPath = "."
+venv = ".venv"
+failOnWarnings = false
+
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+reportExplicitAny = false
+reportImplicitOverride = "none"
+
+pythonVersion = "3.11"
+pythonPlatform = "All"
+executionEnvironments = [{ root = "." }]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "tools/rlmesh_system/src", "tools/rlmesh_system_fixtures/src"]
+
+[tool.ruff]
+force-exclude = true
+include = [
+  "python/**/*.py",
+  "python/**/*.pyi",
+  "python/**/pyproject.toml",
+  "examples/**/*.py",
+  "tests/**/*.py",
+  "tools/**/*.py",
+]
+extend-exclude = ["python/rlmesh/src/rlmesh/_rlmesh.pyi"]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+  "E", # pycodestyle errors
+  "W", # pycodestyle warnings
+  "F", # pyflakes
+  "I", # isort
+  "N", # pep8-naming
+  "D", # pydocstyle
+  "UP", # pyupgrade
+  "B", # flake8-bugbear
+  "RUF", # ruff-specific
+]
+ignore = [
+  "RUF059", # unused unpack vars (gym API always returns 5-tuples)
+  "E501", # line too long (formatter handles this)
+  "D105", # skip magic method docstrings
+  "D107", # document constructors on the class docstring
+]
+
+[tool.ruff.lint.per-file-ignores]
+"examples/python/**" = ["D"]
+"python/rlmesh/tests/**" = ["B017", "D"]
+"python/rlmesh/typings/**" = ["D", "N801"]
+"python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
+"tests/system/**" = ["B017", "D"]
+"tools/rlmesh_system/**" = ["B017", "D"]
+"tools/rlmesh_system_fixtures/**" = ["B017", "D"]
+"tools/api_surface/**" = ["D"]
+"python/rlmesh/examples/**" = ["F405", "D"]
+"python/rlmesh/src/rlmesh/_cli/**" = ["D"]
+"python/rlmesh/src/rlmesh/__main__.py" = ["D"]
+"python/rlmesh/src/rlmesh/_sandbox_bootstrap.py" = ["D"]
+"python/rlmesh/src/rlmesh/_values.py" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true
+
+[tool.uv.sources]
+rlmesh = { workspace = true }
+rlmesh-system = { workspace = true }
+rlmesh-system-fixtures = { workspace = true }
+
+[tool.uv.workspace]
+members = ["python/*", "tools/rlmesh_system", "tools/rlmesh_system_fixtures"]

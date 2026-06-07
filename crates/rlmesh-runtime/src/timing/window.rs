@@ -1,0 +1,276 @@
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use rlmesh_proto::core::v1::{OperationTelemetry, operation_metric};
+
+use crate::hooks::{
+    RuntimeRouteContext, TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
+};
+
+use super::StepTimingSample;
+use super::stats::{average_ms, percentile_ms};
+
+#[derive(Debug, Clone)]
+pub(crate) struct TelemetryWindowAccumulator {
+    pub(super) started_at: Instant,
+    summary_started_at: Instant,
+    step_count: u64,
+    total_step_count: u64,
+    request_bytes: u64,
+    total_request_bytes: u64,
+    response_bytes: u64,
+    total_response_bytes: u64,
+    timing_samples: BTreeMap<TimingKey, Vec<Duration>>,
+    total_timing_samples: BTreeMap<TimingKey, Vec<Duration>>,
+    model_wait_samples: Vec<Duration>,
+    total_model_wait_samples: Vec<Duration>,
+    env_step_samples: Vec<Duration>,
+    total_env_step_samples: Vec<Duration>,
+    round_trip_samples: Vec<Duration>,
+    total_round_trip_samples: Vec<Duration>,
+    reconnects: u64,
+    total_reconnects: u64,
+    drops: u64,
+    total_drops: u64,
+}
+
+impl Default for TelemetryWindowAccumulator {
+    fn default() -> Self {
+        Self {
+            started_at: Instant::now(),
+            summary_started_at: Instant::now(),
+            step_count: 0,
+            total_step_count: 0,
+            request_bytes: 0,
+            total_request_bytes: 0,
+            response_bytes: 0,
+            total_response_bytes: 0,
+            timing_samples: BTreeMap::new(),
+            total_timing_samples: BTreeMap::new(),
+            model_wait_samples: Vec::new(),
+            total_model_wait_samples: Vec::new(),
+            env_step_samples: Vec::new(),
+            total_env_step_samples: Vec::new(),
+            round_trip_samples: Vec::new(),
+            total_round_trip_samples: Vec::new(),
+            reconnects: 0,
+            total_reconnects: 0,
+            drops: 0,
+            total_drops: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct TimingKey {
+    operation: String,
+    component_id: String,
+    name: String,
+}
+
+impl TelemetryWindowAccumulator {
+    pub(crate) fn record_step(&mut self, sample: StepTimingSample<'_>) {
+        self.step_count += 1;
+        self.total_step_count += 1;
+        self.request_bytes += sample.request_bytes as u64;
+        self.total_request_bytes += sample.request_bytes as u64;
+        self.response_bytes += sample.response_bytes as u64;
+        self.total_response_bytes += sample.response_bytes as u64;
+        self.model_wait_samples.push(sample.model_wait);
+        self.total_model_wait_samples.push(sample.model_wait);
+        self.env_step_samples.push(sample.env_step);
+        self.total_env_step_samples.push(sample.env_step);
+        self.round_trip_samples
+            .push(sample.model_wait + sample.env_step);
+        self.total_round_trip_samples
+            .push(sample.model_wait + sample.env_step);
+        self.record_timing(
+            "model.predict",
+            sample.model_component_id,
+            "rpc.total",
+            sample.model_wait,
+        );
+        self.record_timing(
+            "env.step",
+            sample.env_component_id,
+            "rpc.total",
+            sample.env_step,
+        );
+    }
+
+    pub(crate) fn record_timing(
+        &mut self,
+        operation: impl Into<String>,
+        component_id: impl Into<String>,
+        name: impl Into<String>,
+        duration: Duration,
+    ) {
+        let key = TimingKey {
+            operation: operation.into(),
+            component_id: component_id.into(),
+            name: name.into(),
+        };
+        self.timing_samples
+            .entry(key.clone())
+            .or_default()
+            .push(duration);
+        self.total_timing_samples
+            .entry(key)
+            .or_default()
+            .push(duration);
+    }
+
+    pub(crate) fn record_operation_telemetry(
+        &mut self,
+        fallback_component_id: &str,
+        telemetry: Option<&OperationTelemetry>,
+    ) {
+        let Some(telemetry) = telemetry else {
+            return;
+        };
+        let operation = if telemetry.operation.is_empty() {
+            "unknown"
+        } else {
+            telemetry.operation.as_str()
+        };
+        let component_id = if telemetry.component_id.is_empty() {
+            fallback_component_id
+        } else {
+            telemetry.component_id.as_str()
+        };
+        for metric in &telemetry.metrics {
+            let Some(operation_metric::Value::DurationNs(duration_ns)) = metric.value else {
+                continue;
+            };
+            let name = if metric.name.is_empty() {
+                "unspecified"
+            } else {
+                metric.name.as_str()
+            };
+            self.record_timing(
+                operation,
+                component_id,
+                name,
+                Duration::from_nanos(duration_ns),
+            );
+        }
+    }
+
+    pub(crate) fn maybe_emit(
+        &mut self,
+        session_id: &str,
+        route: RuntimeRouteContext,
+        minimum_window: Duration,
+    ) -> Option<TelemetryWindowEvent> {
+        if self.started_at.elapsed() < minimum_window {
+            return None;
+        }
+        self.flush(session_id, route)
+    }
+
+    pub(crate) fn flush(
+        &mut self,
+        session_id: &str,
+        route: RuntimeRouteContext,
+    ) -> Option<TelemetryWindowEvent> {
+        let elapsed = self.started_at.elapsed();
+        if elapsed.is_zero() || self.step_count == 0 {
+            self.reset();
+            return None;
+        }
+
+        let event = TelemetryWindowEvent {
+            session_id: session_id.to_string(),
+            route,
+            window_seconds: elapsed.as_secs().max(1) as u32,
+            sample_count: self.step_count,
+            steps_per_second: Some(self.step_count as f64 / elapsed.as_secs_f64()),
+            request_bytes_per_second: Some(self.request_bytes as f64 / elapsed.as_secs_f64()),
+            response_bytes_per_second: Some(self.response_bytes as f64 / elapsed.as_secs_f64()),
+            timings: timing_summaries(&self.timing_samples),
+            env_latency_ms_avg: average_ms(&self.env_step_samples),
+            env_latency_ms_p50: percentile_ms(&self.env_step_samples, 0.50),
+            env_latency_ms_p95: percentile_ms(&self.env_step_samples, 0.95),
+            env_latency_ms_p99: percentile_ms(&self.env_step_samples, 0.99),
+            model_latency_ms_avg: average_ms(&self.model_wait_samples),
+            model_latency_ms_p50: percentile_ms(&self.model_wait_samples, 0.50),
+            model_latency_ms_p95: percentile_ms(&self.model_wait_samples, 0.95),
+            model_latency_ms_p99: percentile_ms(&self.model_wait_samples, 0.99),
+            round_trip_ms_avg: average_ms(&self.round_trip_samples),
+            round_trip_ms_p50: percentile_ms(&self.round_trip_samples, 0.50),
+            round_trip_ms_p95: percentile_ms(&self.round_trip_samples, 0.95),
+            round_trip_ms_p99: percentile_ms(&self.round_trip_samples, 0.99),
+            reconnects: self.reconnects,
+            drops: self.drops,
+        };
+        self.reset();
+        Some(event)
+    }
+
+    pub(crate) fn summary(
+        &self,
+        session_id: &str,
+        route: RuntimeRouteContext,
+    ) -> Option<TelemetrySummaryEvent> {
+        let elapsed = self.summary_started_at.elapsed();
+        if elapsed.is_zero() || self.total_step_count == 0 {
+            return None;
+        }
+
+        Some(TelemetrySummaryEvent {
+            session_id: session_id.to_string(),
+            route,
+            total_seconds: elapsed.as_secs().max(1) as u32,
+            sample_count: self.total_step_count,
+            steps_per_second: Some(self.total_step_count as f64 / elapsed.as_secs_f64()),
+            request_bytes_per_second: Some(self.total_request_bytes as f64 / elapsed.as_secs_f64()),
+            response_bytes_per_second: Some(
+                self.total_response_bytes as f64 / elapsed.as_secs_f64(),
+            ),
+            timings: timing_summaries(&self.total_timing_samples),
+            env_latency_ms_avg: average_ms(&self.total_env_step_samples),
+            env_latency_ms_p50: percentile_ms(&self.total_env_step_samples, 0.50),
+            env_latency_ms_p95: percentile_ms(&self.total_env_step_samples, 0.95),
+            env_latency_ms_p99: percentile_ms(&self.total_env_step_samples, 0.99),
+            model_latency_ms_avg: average_ms(&self.total_model_wait_samples),
+            model_latency_ms_p50: percentile_ms(&self.total_model_wait_samples, 0.50),
+            model_latency_ms_p95: percentile_ms(&self.total_model_wait_samples, 0.95),
+            model_latency_ms_p99: percentile_ms(&self.total_model_wait_samples, 0.99),
+            round_trip_ms_avg: average_ms(&self.total_round_trip_samples),
+            round_trip_ms_p50: percentile_ms(&self.total_round_trip_samples, 0.50),
+            round_trip_ms_p95: percentile_ms(&self.total_round_trip_samples, 0.95),
+            round_trip_ms_p99: percentile_ms(&self.total_round_trip_samples, 0.99),
+            reconnects: self.total_reconnects,
+            drops: self.total_drops,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.started_at = Instant::now();
+        self.step_count = 0;
+        self.request_bytes = 0;
+        self.response_bytes = 0;
+        self.timing_samples.clear();
+        self.model_wait_samples.clear();
+        self.env_step_samples.clear();
+        self.round_trip_samples.clear();
+        self.reconnects = 0;
+        self.drops = 0;
+    }
+}
+
+fn timing_summaries(samples: &BTreeMap<TimingKey, Vec<Duration>>) -> Vec<TimingSummary> {
+    samples
+        .iter()
+        .map(|(key, values)| TimingSummary {
+            operation: key.operation.clone(),
+            component_id: key.component_id.clone(),
+            name: key.name.clone(),
+            sample_count: values.len() as u64,
+            avg_ms: average_ms(values),
+            p50_ms: percentile_ms(values, 0.50),
+            p95_ms: percentile_ms(values, 0.95),
+            p99_ms: percentile_ms(values, 0.99),
+        })
+        .collect()
+}

@@ -1,0 +1,32 @@
+[package]
+name = "rlmesh-sandbox"
+description = "Docker-backed environment packaging and execution for RLMesh evaluation workflows"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[package.metadata.rlmesh]
+audience = "supported-public-capability"
+stability = "unstable-rust-api"
+
+[dependencies]
+anyhow = { workspace = true }
+rlmesh-grpc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+[lints]
+workspace = true

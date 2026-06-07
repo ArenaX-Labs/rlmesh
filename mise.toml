@@ -1,0 +1,414 @@
+# ──────────────────────────────────────────────
+# Tools
+# ──────────────────────────────────────────────
+[tools]
+rust = { version = "1.96", components = "rustfmt,clippy" }
+
+# Python
+python = "3.11"
+uv = "0.11.19"
+zig = "0.16.0"
+"cargo:maturin" = "1.13.3"
+"cargo:cargo-zigbuild" = "0.22.3"
+
+# Protobuf
+protoc = "35"
+buf = "1.70.0"
+
+# Hooks
+prek = "0.4.4"
+
+[settings]
+python.uv_venv_auto = "create|source"
+
+[env]
+UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
+
+# ──────────────────────────────────────────────
+# Setup
+# ──────────────────────────────────────────────
+[tasks."setup"]
+description = "Install tools, Python dev dependencies, and git hooks"
+depends = [
+  "setup:tools",
+  "setup:python",
+  "setup:hooks",
+]
+
+[tasks."setup:tools"]
+description = "Install mise-managed tools"
+run = "mise install"
+
+[tasks."setup:python"]
+description = "Sync Python dev environment"
+run = "uv sync --group dev"
+
+[tasks."setup:python:release"]
+description = "Install additional Python interpreters used for release wheel builds"
+run = "mise install python@3.10"
+
+[tasks."setup:hooks"]
+description = "Install git hooks"
+run = "prek install"
+
+[tasks."setup:rust:targets"]
+description = "Install Rust targets used for release wheel builds"
+run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-msvc"
+
+# ──────────────────────────────────────────────
+# Format (mutating)
+# ──────────────────────────────────────────────
+[tasks."fmt"]
+description = "Format all source files"
+depends = [
+  "fmt:rust",
+  "fmt:python",
+  "fmt:proto",
+]
+
+[tasks."fmt:rust"]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks."fmt:python"]
+description = "Format Python code"
+run = "uv run ruff format"
+
+[tasks."fmt:proto"]
+description = "Format Protobuf definitions"
+run = "buf format -w"
+
+# ──────────────────────────────────────────────
+# Format checks (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."fmt:check"]
+description = "Check formatting without modifying files"
+depends = [
+  "fmt:check:rust",
+  "fmt:check:python",
+  "fmt:check:proto",
+]
+
+[tasks."fmt:check:rust"]
+description = "Check Rust formatting"
+run = "cargo fmt --all --check"
+
+[tasks."fmt:check:python"]
+description = "Check Python formatting"
+run = "uv run ruff format --check"
+
+[tasks."fmt:check:proto"]
+description = "Check Protobuf formatting"
+run = "buf format -d --exit-code"
+
+# ──────────────────────────────────────────────
+# Fix (mutating)
+# ──────────────────────────────────────────────
+[tasks."fix"]
+description = "Apply safe auto-fixes and formatting"
+depends = [
+  "fix:rust",
+  "fix:python",
+  "fmt:proto",
+]
+
+[tasks."fix:rust"]
+description = "Apply safe Rust fixes and formatting"
+run = [
+  "cargo fmt --all",
+  "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged --allow-no-vcs -- -D warnings",
+]
+
+[tasks."fix:python"]
+description = "Apply safe Python lint fixes and formatting"
+run = [
+  "uv run ruff check --fix",
+  "uv run ruff format",
+]
+
+# ──────────────────────────────────────────────
+# Lint (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."lint"]
+description = "Lint source files without modifying them"
+depends = [
+  "lint:rust",
+  "lint:python",
+  "lint:proto",
+]
+
+[tasks."lint:rust"]
+description = "Lint Rust code"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+
+[tasks."lint:python"]
+description = "Lint Python code"
+run = "uv run ruff check"
+
+[tasks."lint:proto"]
+description = "Lint Protobuf definitions"
+run = "buf lint"
+
+# ──────────────────────────────────────────────
+# Typecheck (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."typecheck"]
+description = "Typecheck all supported language bindings"
+depends = ["typecheck:python"]
+
+[tasks."typecheck:python"]
+description = "Typecheck Python code"
+run = "uv run basedpyright"
+
+# ──────────────────────────────────────────────
+# Docs (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."docs:rust:check"]
+description = "Build Rust library docs with warnings denied"
+env = { RUSTDOCFLAGS = "-D warnings" }
+run = "cargo doc --workspace --no-deps --lib"
+
+# ──────────────────────────────────────────────
+# Native Python stubs
+# ──────────────────────────────────────────────
+[tasks."stubs:generate"]
+description = "Generate native Python stubs"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen"
+
+[tasks."stubs:check"]
+description = "Check generated native Python stubs without modifying files"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen -- --check"
+
+# ──────────────────────────────────────────────
+# Check (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."check"]
+description = "Run non-mutating verification checks"
+depends = [
+  "fmt:check",
+  "lint",
+  "typecheck",
+  "docs:rust:check",
+  "stubs:check",
+]
+
+# ──────────────────────────────────────────────
+# Test
+# ──────────────────────────────────────────────
+[tasks."test"]
+description = "Run Rust tests plus Python unit and integration tests"
+depends = [
+  "test:rust",
+  "test:python",
+]
+
+[tasks."test:rust"]
+description = "Run Rust workspace tests"
+run = "cargo test --workspace --all-targets"
+
+[tasks."test:python"]
+description = "Run Python unit and integration tests"
+run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration -q"
+
+[tasks."test:python:unit"]
+description = "Run Python unit tests"
+run = "uv run pytest python/rlmesh/tests/unit -q"
+
+[tasks."test:python:integration"]
+description = "Run Python integration tests"
+run = "uv run pytest python/rlmesh/tests/integration -q"
+
+[tasks."test:python:api-contract"]
+description = "Run Python public API contract tests"
+run = "uv run pytest python/rlmesh/tests/api_contract -q"
+
+[tasks."test:system:harness"]
+description = "Run system test runner and fixture tests"
+run = "uv run pytest tools/rlmesh_system/tests tools/rlmesh_system_fixtures/tests -q"
+
+[tasks."test:system:list"]
+description = "List installed-artifact system profiles and scenarios"
+run = "uv run rlmesh-system list"
+
+[tasks."test:system"]
+description = "Run basic installed-artifact system scenarios against python/rlmesh/dist"
+run = "uv run rlmesh-system run"
+
+[tasks."test:system:heavy"]
+description = "Run heavy installed-artifact system scenarios against python/rlmesh/dist"
+run = "uv run rlmesh-system run --profile heavy"
+
+[tasks."test:system:clean"]
+description = "Remove installed-artifact system venvs, logs, and reports"
+run = "uv run rlmesh-system clean"
+
+[tasks."test:python:validation:list"]
+description = "Backward-compatible alias for test:system:list"
+run = "uv run rlmesh-system list"
+
+[tasks."test:python:validation"]
+description = "Backward-compatible alias for test:system"
+run = "uv run rlmesh-system run"
+
+[tasks."test:python:validation:heavy"]
+description = "Backward-compatible alias for test:system:heavy"
+run = "uv run rlmesh-system run --profile heavy"
+
+[tasks."test:python:validation:clean"]
+description = "Backward-compatible alias for test:system:clean"
+run = "uv run rlmesh-system clean"
+
+# ──────────────────────────────────────────────
+# Build
+# ──────────────────────────────────────────────
+[tasks."build"]
+description = "Build local Rust workspace and current-platform Python wheels"
+run = [
+  "mise run build:rust",
+  "mise run build:python",
+]
+
+[tasks."build:rust"]
+description = "Build Rust workspace"
+run = "cargo build --workspace"
+
+[tasks."build:python"]
+description = "Build current-platform Python wheels"
+run = [
+  "mise run stubs:generate",
+  "mise run build:python:local",
+]
+
+[tasks."build:python:local"]
+description = "Build current-platform Python wheels"
+dir = "python/rlmesh"
+run = [
+  "mise run setup:python:release",
+  "mise exec python@3.10 -- maturin build --release -i python3.10 -o dist/",
+  "maturin build --release -i python3.11 -o dist/",
+  "python ../../scripts/check_python_wheels.py dist --allow-local-platform-tags",
+]
+
+[tasks."build:python:local-py310"]
+description = "Build current-platform Python 3.10 CPython wheel"
+dir = "python/rlmesh"
+run = [
+  "mise run setup:python:release",
+  "mise exec python@3.10 -- maturin build --release -i python3.10 -o dist/",
+]
+
+[tasks."build:python:local-py311"]
+description = "Build current-platform Python 3.11+ abi3 wheel"
+dir = "python/rlmesh"
+run = "maturin build --release -i python3.11 -o dist/"
+
+# ──────────────────────────────────────────────
+# Release wheels
+# ──────────────────────────────────────────────
+# Produces 14 wheels total:
+#   Python:  cp310-cp310 and cp311-abi3 for each platform
+#   macOS:   arm64, x86_64
+#   Linux:   glibc (x86_64, aarch64), musl (x86_64, aarch64)
+#   Windows: x86_64
+
+[tasks."release:python:wheels"]
+description = "Build all release Python wheels"
+run = [
+  "mise run setup:python:release",
+  "mise run setup:rust:targets",
+  "mise run stubs:generate",
+  "mise run release:python:macos",
+  "mise run release:python:linux",
+  "mise run release:python:windows",
+  "python scripts/check_python_wheels.py python/rlmesh/dist",
+]
+
+[tasks."release:rust:package"]
+description = "Verify Rust crate packages without publishing"
+run = "cargo package --workspace --allow-dirty"
+
+[tasks."release:check"]
+description = "Run the local beta release gate without publishing"
+run = [
+  "mise run check",
+  "mise run test",
+  "mise run test:python:api-contract",
+  "mise run test:system:harness",
+  "mise run release:rust:package",
+  "mise run build:python",
+  "mise run test:system",
+  "mise run test:system:heavy",
+]
+
+[tasks."release:python:macos"]
+description = "Build macOS wheels (arm64 + x86_64)"
+depends = [
+  "release:python:macos-arm",
+  "release:python:macos-x86",
+]
+
+[tasks."release:python:macos-arm"]
+description = "Build macOS arm64 wheels"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --target aarch64-apple-darwin -i python3.10 -o dist/",
+  "maturin build --release --target aarch64-apple-darwin -i python3.11 -o dist/",
+]
+
+[tasks."release:python:macos-x86"]
+description = "Build macOS x86_64 wheels"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --target x86_64-apple-darwin -i python3.10 -o dist/",
+  "maturin build --release --target x86_64-apple-darwin -i python3.11 -o dist/",
+]
+
+[tasks."release:python:linux"]
+description = "Build all Linux wheels (glibc + musl)"
+depends = [
+  "release:python:linux-x86",
+  "release:python:linux-arm",
+  "release:python:linux-musl-x86",
+  "release:python:linux-musl-arm",
+]
+
+[tasks."release:python:linux-x86"]
+description = "Build Linux glibc x86_64 wheels"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.10 -o dist/",
+  "maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.11 -o dist/",
+]
+
+[tasks."release:python:linux-arm"]
+description = "Build Linux glibc aarch64 wheels"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.10 -o dist/",
+  "maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.11 -o dist/",
+]
+
+[tasks."release:python:linux-musl-x86"]
+description = "Build Linux musl x86_64 wheels (Alpine)"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.10 -o dist/",
+  "maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.11 -o dist/",
+]
+
+[tasks."release:python:linux-musl-arm"]
+description = "Build Linux musl aarch64 wheels (Alpine)"
+dir = "python/rlmesh"
+run = [
+  "mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.10 -o dist/",
+  "maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.11 -o dist/",
+]
+
+[tasks."release:python:windows"]
+description = "Build Windows x86_64 wheels"
+dir = "python/rlmesh"
+env = { PATH = "/opt/homebrew/opt/llvm/bin:{{env.PATH}}" }
+run = [
+  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.10 -o dist/",
+  "maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.11 -o dist/",
+]

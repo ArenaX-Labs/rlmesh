@@ -1,0 +1,207 @@
+{
+  "module_order": [
+    "rlmesh",
+    "rlmesh.server",
+    "rlmesh.model",
+    "rlmesh.client",
+    "rlmesh.numpy",
+    "rlmesh.torch",
+    "rlmesh.sandbox",
+    "rlmesh.spaces",
+    "rlmesh.types",
+    "rlmesh.specs"
+  ],
+  "modules": {
+    "rlmesh": {
+      "title": "rlmesh",
+      "description": "Root imports for the dependency-free Python SDK.",
+      "stability": "Stable",
+      "status": "Stable core imports."
+    },
+    "rlmesh.server": {
+      "title": "rlmesh.server",
+      "description": "Environment serving wrappers.",
+      "stability": "Stable",
+      "status": "Stable."
+    },
+    "rlmesh.model": {
+      "title": "rlmesh.model",
+      "description": "Shared model wrapper base classes and callback types.",
+      "stability": "Stable",
+      "status": "Stable."
+    },
+    "rlmesh.client": {
+      "title": "rlmesh.client",
+      "description": "Shared remote environment client base classes and endpoint helpers.",
+      "stability": "Stable",
+      "status": "Stable base behavior; prefer backend-specific public clients for user code."
+    },
+    "rlmesh.numpy": {
+      "title": "rlmesh.numpy",
+      "description": "NumPy-backed clients, models, sandbox sessions, and tensor helpers.",
+      "stability": "Stable",
+      "status": "Stable and recommended for alpha Python examples."
+    },
+    "rlmesh.torch": {
+      "title": "rlmesh.torch",
+      "description": "Torch-backed clients, models, sandbox sessions, and tensor helpers.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.sandbox": {
+      "title": "rlmesh.sandbox",
+      "description": "Experimental Docker-backed sandbox session base classes.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.spaces": {
+      "title": "rlmesh.spaces",
+      "description": "Named RLMesh-native space wrappers and Gymnasium adapters.",
+      "stability": "Stable",
+      "status": "Stable core spaces; extra wrappers are experimental."
+    },
+    "rlmesh.types": {
+      "title": "rlmesh.types",
+      "description": "Structural protocols and shared value aliases.",
+      "stability": "Stable",
+      "status": "Stable."
+    },
+    "rlmesh.specs": {
+      "title": "rlmesh.specs",
+      "description": "Native environment and space spec classes.",
+      "stability": "Stable",
+      "status": "Stable selected native spec classes."
+    }
+  },
+  "exports": {
+    "rlmesh.EnvServer": {
+      "description": "Serves a Python environment through the RLMesh runtime protocol."
+    },
+    "rlmesh.RemoteEnv": {
+      "description": "Dependency-free single-environment remote client."
+    },
+    "rlmesh.RemoteVectorEnv": {
+      "description": "Dependency-free vector-environment remote client."
+    },
+    "rlmesh.Model": {
+      "description": "Dependency-free model wrapper."
+    },
+    "rlmesh.ServeOptions": {
+      "description": "Server lifecycle options."
+    },
+    "rlmesh.Tensor": {
+      "description": "Native tensor value used by RLMesh value encoding."
+    },
+    "rlmesh.__version__": {
+      "description": "Installed RLMesh package version."
+    },
+    "rlmesh.spaces": {
+      "description": "Space wrappers and Gymnasium conversion helpers."
+    },
+    "rlmesh.types": {
+      "description": "Structural protocols and value aliases."
+    },
+    "rlmesh.server.EnvLike": {
+      "description": "Accepted environment shape for EnvServer."
+    },
+    "rlmesh.model.LifecycleCallback": {
+      "description": "No-argument callback used for model lifecycle events."
+    },
+    "rlmesh.model.PredictFn": {
+      "description": "Callable that maps one observation to one action."
+    },
+    "rlmesh.client.Transport": {
+      "description": "Endpoint transport selector: TCP or Unix sockets."
+    },
+    "rlmesh.numpy.NumpyValue": {
+      "description": "Primitive, NumPy array, or nested RLMesh-compatible value."
+    },
+    "rlmesh.numpy.SandboxEnv": {
+      "stability": "Experimental",
+      "description": "NumPy-backed owned sandbox session for one environment."
+    },
+    "rlmesh.numpy.SandboxVectorEnv": {
+      "stability": "Experimental",
+      "description": "NumPy-backed owned sandbox session for vector environments."
+    },
+    "rlmesh.torch.Model": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.RemoteEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.RemoteVectorEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.SandboxEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.SandboxInfo": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.SandboxVectorEnv": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.TorchValue": {
+      "stability": "Experimental",
+      "description": "Primitive, Torch tensor, or nested RLMesh-compatible value."
+    },
+    "rlmesh.torch.as_tensor": {
+      "stability": "Experimental"
+    },
+    "rlmesh.torch.from_tensor": {
+      "stability": "Experimental"
+    },
+    "rlmesh.spaces.MultiBinary": {
+      "stability": "Experimental"
+    },
+    "rlmesh.spaces.MultiDiscrete": {
+      "stability": "Experimental"
+    },
+    "rlmesh.spaces.Text": {
+      "stability": "Experimental"
+    },
+    "rlmesh.spaces.Tuple": {
+      "stability": "Experimental"
+    },
+    "rlmesh.spaces.SpaceSpec": {
+      "description": "Native space specification used by RLMesh spaces."
+    },
+    "rlmesh.spaces.from_gymnasium_space": {
+      "description": "Convert a Gymnasium space into an RLMesh space wrapper."
+    },
+    "rlmesh.spaces.space_from_spec": {
+      "description": "Create the named RLMesh space wrapper for a native SpaceSpec."
+    },
+    "rlmesh.spaces.to_gymnasium_space": {
+      "description": "Convert an RLMesh space or spec into a Gymnasium space."
+    },
+    "rlmesh.types.InfoDict": {
+      "description": "Environment info dictionary returned by reset and step calls."
+    },
+    "rlmesh.types.Metadata": {
+      "description": "Read-only metadata mapping exposed by remote environment clients."
+    },
+    "rlmesh.types.PrimitiveValue": {
+      "description": "Primitive value type supported by RLMesh value encoding."
+    },
+    "rlmesh.types.Value": {
+      "description": "Recursive value type supported by RLMesh value encoding."
+    },
+    "rlmesh.specs.EnvContract": {
+      "description": "Native environment contract returned by remote handshakes."
+    },
+    "rlmesh.specs.SpaceSpec": {
+      "description": "Native space specification."
+    }
+  },
+  "native": {
+    "classes": ["ServeOptions", "Tensor", "EnvContract", "SpaceSpec"],
+    "descriptions": {
+      "ServeOptions": "Server lifecycle options controlling remote shutdown and timeout behavior.",
+      "Tensor": "Native tensor value carrying a buffer, shape, dtype, and derived layout metadata.",
+      "EnvContract": "Environment metadata returned during a remote client handshake.",
+      "SpaceSpec": "Native space specification used by RLMesh spaces and protocol contracts."
+    }
+  }
+}

@@ -1,0 +1,30 @@
+[package]
+name = "rlmesh-proto"
+description = "Protobuf definitions and gRPC stubs for RLMesh model-environment protocols"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[package.metadata.rlmesh]
+audience = "supporting-public-component"
+stability = "supported"
+
+[dependencies]
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+
+[lints]
+workspace = true

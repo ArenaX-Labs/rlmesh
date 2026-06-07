@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package rlmesh.model.v1;
+
+import "rlmesh/core/v1/telemetry.proto";
+import "rlmesh/env/v1/contract.proto";
+import "rlmesh/spaces/v1/value.proto";
+
+// Runtime-owned model execution context.
+//
+// A route is a configured model-side context within a runtime session. Predict
+// requests on a route may carry one or more slots when the observation/action
+// payload is vectorized.
+message PredictContext {
+  string session_id = 1;
+  string route_id = 2;
+  string request_id = 3;
+  repeated PredictSlot slots = 4;
+}
+
+// Identity for one row in a predict observation/action batch.
+message PredictSlot {
+  int32 env_index = 1;
+  string episode_id = 2;
+  int64 step = 3;
+  bool reset = 4;
+}
+
+message ConfigureRouteRequest {
+  // Runtime route being configured. route_id is required.
+  PredictContext context = 1;
+
+  // RLMesh contract for all later Predict calls on this route.
+  rlmesh.env.v1.EnvContract env_contract = 2;
+
+  reserved 5;
+  reserved "capabilities";
+}
+
+message ConfigureRouteResponse {}
+
+// Observation sent from the runtime to the model.
+message PredictRequest {
+  // Runtime route identity. Responses must mirror this context.
+  PredictContext context = 1;
+
+  // Observation data encoded per route observation space.
+  rlmesh.spaces.v1.SpaceValue observation = 2;
+}
+
+message PredictResponse {
+  // Route identity copied from the request this action answers.
+  PredictContext context = 1;
+
+  // Action data encoded per route action space.
+  rlmesh.spaces.v1.SpaceValue action = 2;
+}
+
+message CloseRouteRequest {
+  PredictContext context = 1;
+  string reason = 2;
+}
+
+message CloseRouteResponse {}
+
+// Request graceful shutdown of the model participant after the runtime reaches
+// a normal terminal condition. Fault paths may still rely on pod/runtime
+// timeouts.
+message CloseRequest {
+  string reason = 1;
+}
+
+message CloseResponse {}
+
+enum ModelErrorCode {
+  MODEL_ERROR_CODE_UNSPECIFIED = 0;
+  MODEL_ERROR_CODE_INVALID_REQUEST = 1;
+  MODEL_ERROR_CODE_NOT_CONFIGURED = 2;
+  MODEL_ERROR_CODE_BUSY = 3;
+  MODEL_ERROR_CODE_INTERNAL = 10;
+  MODEL_ERROR_CODE_CANCELLED = 11;
+  MODEL_ERROR_CODE_CLOSED = 12;
+}
+
+message ModelError {
+  ModelErrorCode code = 1;
+  string message = 2;
+  bool is_recoverable = 3;
+  string debug_info = 4;
+}
+
+message JoinRequest {
+  oneof kind {
+    ConfigureRouteRequest configure_route = 1;
+    PredictRequest predict = 2;
+    CloseRouteRequest close_route = 3;
+    CloseRequest close = 4;
+  }
+
+  string request_id = 20;
+}
+
+message JoinResponse {
+  oneof kind {
+    ConfigureRouteResponse configure_route = 1;
+    PredictResponse predict = 2;
+    CloseRouteResponse close_route = 3;
+    CloseResponse close = 4;
+    ModelError error = 10;
+  }
+
+  rlmesh.core.v1.OperationTelemetry telemetry = 20;
+  string request_id = 21;
+}

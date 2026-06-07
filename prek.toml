@@ -1,0 +1,45 @@
+[[repos]]
+repo = "local"
+
+# Rust
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "mise run fmt:check:rust"
+pass_filenames = false
+types = ["rust"]
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "mise run lint:rust"
+pass_filenames = false
+types = ["rust"]
+
+# Python
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+language = "system"
+entry = "mise run fmt:check:python"
+pass_filenames = false
+types = ["python"]
+
+[[repos.hooks]]
+id = "ruff-lint"
+name = "ruff check"
+language = "system"
+entry = "mise run lint:python"
+pass_filenames = false
+types = ["python"]
+
+# Protobuf
+[[repos.hooks]]
+id = "buf-lint"
+name = "buf lint"
+language = "system"
+entry = "mise run lint:proto"
+pass_filenames = false
+files = "\\.proto$"

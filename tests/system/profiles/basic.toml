@@ -1,0 +1,56 @@
+[profile]
+description = "Fast installed-wheel process-boundary checks and artifact signal."
+environments = ["basic-py310", "basic-py311"]
+
+[environments.basic-py310]
+tier = "basic"
+python = "3.10"
+dependencies = ["numpy==1.26.*"]
+scenarios = ["counter-entrypoint", "tensor-numpy-view", "tensor-export-copy"]
+warmups = 1
+samples = 5
+timeout_seconds = 240
+
+[environments.basic-py311]
+tier = "basic"
+python = "3.11"
+dependencies = ["numpy"]
+scenarios = [
+  "counter-entrypoint",
+  "image-grid-numpy-action",
+  "tensor-numpy-view",
+  "tensor-export-copy",
+]
+warmups = 1
+samples = 5
+timeout_seconds = 300
+
+[scenarios.counter-entrypoint]
+kind = "trace"
+description = "Custom env entrypoint served from an installed fixture package."
+client = "native"
+model = "discrete.zero"
+seed = 7
+steps = 3
+trace = "counter-entrypoint.json"
+env = { fixture = "counter", kwargs = { limit = 3 } }
+
+[scenarios.image-grid-numpy-action]
+kind = "trace"
+description = "Image observation transfer with a NumPy scalar action."
+client = "numpy"
+model = "image_grid.numpy_action"
+seed = 11
+steps = 2
+trace = "image-grid-numpy-action.json"
+env = { fixture = "image-grid", kwargs = { width = 4, height = 3, channels = 3 } }
+
+[scenarios.tensor-numpy-view]
+kind = "artifact"
+description = "Installed wheel NumPy zero-copy tensor view checks."
+artifact = "tensor-numpy-view"
+
+[scenarios.tensor-export-copy]
+kind = "artifact"
+description = "Installed wheel tensor memoryview export copy signal."
+artifact = "tensor-export-copy"

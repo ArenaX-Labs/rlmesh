@@ -1,0 +1,30 @@
+[profile]
+description = "Real Gymnasium environments served through installed RLMesh wheels."
+environments = ["gymnasium-py311"]
+
+[environments.gymnasium-py311]
+tier = "gymnasium"
+python = "3.11"
+dependencies = ["numpy", "gymnasium"]
+scenarios = ["cartpole-trace", "pendulum-trace"]
+warmups = 1
+samples = 5
+timeout_seconds = 300
+
+[scenarios.cartpole-trace]
+kind = "trace"
+description = "CartPole via Gymnasium ID and deterministic discrete policy."
+client = "numpy"
+model = "discrete.zero"
+seed = 42
+steps = 5
+env = { gym = "CartPole-v1", packages = ["gymnasium"] }
+
+[scenarios.pendulum-trace]
+kind = "trace"
+description = "Continuous action Gymnasium environment with NumPy action."
+client = "numpy"
+model = "gymnasium.pendulum_zero_numpy"
+seed = 42
+steps = 5
+env = { gym = "Pendulum-v1", packages = ["gymnasium"] }

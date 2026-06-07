@@ -1,0 +1,69 @@
+[project]
+name = "rlmesh"
+version = "0.1.0b1"
+description = "Runtime and SDK for model-environment evaluation workflows"
+authors = [{ name = "ArenaX Labs, Inc.", email = "research@competesai.com" }]
+maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
+readme = "README.md"
+keywords = [
+    "machine-learning",
+    "evaluation",
+    "model-evaluation",
+    "benchmarking",
+    "environments",
+    "runtime",
+]
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://rlmesh.dev"
+Repository = "https://github.com/ArenaX-Labs/rlmesh"
+Documentation = "https://docs.rlmesh.dev"
+Issues = "https://github.com/ArenaX-Labs/rlmesh/issues"
+
+[project.optional-dependencies]
+gymnasium = ["gymnasium"]
+numpy = ["numpy"]
+torch = ["numpy", "torch"]
+
+[project.scripts]
+rlmesh = "rlmesh.__main__:main"
+
+[build-system]
+requires = ["maturin>=1.13,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "rlmesh._rlmesh"
+no-default-features = true
+features = [{ feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
+exclude = ["src/**/__pycache__/**", "src/**/*.pyc", "src/**/*.so"]
+
+[tool.uv]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "rust/Cargo.toml" },
+  { file = "rust/**/*.rs" },
+  { file = "../../crates/**/Cargo.toml" },
+  { file = "../../crates/**/*.rs" },
+]

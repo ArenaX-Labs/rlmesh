@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package rlmesh.spaces.v1;
+
+import "rlmesh/common/v1/payload.proto";
+
+// Canonical transport wrapper for RLMesh space values.
+message SpaceValue {
+  rlmesh.common.v1.MessageBytes bytes = 1;
+}

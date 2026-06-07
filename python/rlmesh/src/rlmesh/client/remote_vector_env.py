@@ -1,0 +1,250 @@
+"""Shared vector-environment remote client base."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from types import TracebackType
+from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar, cast
+
+from .._values import ValueAdapter
+from ..specs import EnvContract, SpaceSpec
+from ..types import Metadata, Value
+from .endpoint import Transport, normalize_connect_address
+from .viewer import EMPTY_METADATA, RenderPacket, ViewerMixin, ViewerProcess
+
+if TYPE_CHECKING:
+    from rlmesh._rlmesh import PyVectorEnvClient, ResetInfo, StepInfo
+
+    from ..spaces import Space
+
+ValueT = TypeVar("ValueT")
+ActionT = TypeVar("ActionT")
+
+
+class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
+    """Base class for backend-specific vector-environment remote clients.
+
+    Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
+    value adapter. User code should normally instantiate those concrete
+    backends instead of this base class.
+
+    Args:
+        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
+        host: TCP host helper used when ``address`` is omitted.
+        port: TCP port helper used when ``address`` is omitted.
+        path: Unix socket path helper used when ``address`` is omitted.
+        transport: Explicit transport selector.
+    """
+
+    _adapter: ClassVar[ValueAdapter]
+    _address: str
+    _single_observation_space_loaded: bool
+    _single_action_space_loaded: bool
+    _viewer_warning_emitted: bool
+
+    def __init__(
+        self,
+        address: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        path: str | None = None,
+        transport: Transport | None = None,
+    ) -> None:
+        try:
+            from rlmesh._rlmesh import PyVectorEnvClient
+        except ImportError as e:  # pragma: no cover - import guard
+            raise ImportError("Failed to import _rlmesh native module.") from e
+
+        self._adapter.ensure_available()
+        normalized_address = normalize_connect_address(
+            address,
+            host=host,
+            port=port,
+            path=path,
+            transport=transport,
+        )
+        self._client: PyVectorEnvClient = PyVectorEnvClient(normalized_address)
+        self._address = self._client.address()
+        self._env_contract: EnvContract = self._client.handshake()
+        self._single_observation_space: Space | None = None
+        self._single_action_space: Space | None = None
+        self._single_observation_space_loaded = False
+        self._single_action_space_loaded = False
+        self._viewer: ViewerProcess | None = None
+        self._viewer_warning_emitted = False
+
+    @property
+    def env_contract(self) -> EnvContract:
+        """Environment contract returned by the endpoint handshake."""
+        return self._env_contract
+
+    @property
+    def spec(self) -> EnvContract:
+        """Alias for `env_contract`."""
+        return self._env_contract
+
+    @property
+    def render_mode(self) -> str | None:
+        """Configured render mode reported by the endpoint."""
+        return self._env_contract.render_mode
+
+    @property
+    def num_envs(self) -> int:
+        """Number of environment instances served by the endpoint."""
+        return self._client.num_envs()
+
+    @property
+    def single_observation_space(self) -> Space | None:
+        """Observation space for one environment in the vector."""
+        if not self._single_observation_space_loaded:
+            self._single_observation_space = self._load_space("observation")
+            self._single_observation_space_loaded = True
+        return self._single_observation_space
+
+    @property
+    def single_action_space(self) -> Space | None:
+        """Action space for one environment in the vector."""
+        if not self._single_action_space_loaded:
+            self._single_action_space = self._load_space("action")
+            self._single_action_space_loaded = True
+        return self._single_action_space
+
+    @property
+    def observation_space(self) -> Space | None:
+        """Alias for `single_observation_space`."""
+        return self.single_observation_space
+
+    @property
+    def action_space(self) -> Space | None:
+        """Alias for `single_action_space`."""
+        return self.single_action_space
+
+    @property
+    def metadata(self) -> Metadata:
+        """Endpoint metadata reported by the environment contract."""
+        metadata = self._env_contract.metadata
+        if metadata is None:
+            return EMPTY_METADATA
+        return cast(Mapping[str, object], metadata)
+
+    def _render_client(self) -> PyVectorEnvClient:
+        return self._client
+
+    @property
+    def observation_space_spec(self) -> SpaceSpec | None:
+        """Native observation space spec reported by the endpoint."""
+        return self._env_contract.observation_space
+
+    @property
+    def action_space_spec(self) -> SpaceSpec | None:
+        """Native action space spec reported by the endpoint."""
+        return self._env_contract.action_space
+
+    def reset(
+        self,
+        *,
+        seed: int | list[int] | None = None,
+        options: dict[str, object] | None = None,
+    ) -> tuple[ValueT, ResetInfo]:
+        """Reset all remote environments and decode the observations.
+
+        Args:
+            seed: Optional seed or per-environment seed list.
+            options: Optional reset options forwarded to the vector environment.
+
+        Returns:
+            Batched decoded observations and reset info dictionary.
+        """
+        if isinstance(seed, list):
+            seeds = seed
+        elif seed is None:
+            seeds = None
+        else:
+            seeds = [seed]
+        obs, info = self._client.reset(seeds=seeds, options=options)
+        self._refresh_viewer()
+        return cast(ValueT, self._adapter.decode(obs)), info
+
+    def step(self, actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]:
+        """Step all remote environments with a batch of actions.
+
+        Args:
+            actions: Batched actions accepted by the vector endpoint.
+
+        Returns:
+            Batched observations, rewards, terminations, truncations, and info.
+        """
+        obs, rewards, terminated, truncated, info = self._client.step(actions)
+        self._refresh_viewer(pace=True)
+        return (
+            cast(ValueT, self._adapter.decode(obs)),
+            cast(ValueT, self._adapter.decode(rewards)),
+            cast(ValueT, self._adapter.decode(terminated)),
+            cast(ValueT, self._adapter.decode(truncated)),
+            info,
+        )
+
+    def render(self, *, env_index: int = 0) -> ValueT | None:
+        """Render a frame from one environment in the vector.
+
+        Args:
+            env_index: Environment index to render.
+
+        Returns:
+            A decoded render frame, or ``None`` when the environment has no frame.
+        """
+        if self._viewer is not None and self._viewer.env_index == env_index:
+            frame, packet = cast(
+                tuple[Value | None, RenderPacket],
+                self._client.render_bundle(env_index=env_index),
+            )
+            self._push_viewer_packet(packet)
+            return cast(ValueT | None, self._adapter.decode(frame))
+        return cast(
+            ValueT | None,
+            self._adapter.decode(self._client.render(env_index=env_index)),
+        )
+
+    def close(self) -> None:
+        """Detach this client from the remote endpoint."""
+        self._shutdown_viewer()
+        self._client.close()
+
+    def shutdown(self, reason: str = "owner shutdown") -> bool:
+        """Request owner-level shutdown of the remote vector environment endpoint."""
+        self._shutdown_viewer()
+        return bool(self._client.shutdown(reason))
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(address={self._address!r}, "
+            f"env_id={self._env_contract.id!r}, num_envs={self.num_envs!r})"
+        )
+
+    def __enter__(self) -> RemoteVectorEnvBase[ValueT, ActionT]:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        _ = exc_type, exc_val, exc_tb
+        self.close()
+
+    def _load_space(self, kind: Literal["observation", "action"]) -> Space | None:
+        from ..spaces import space_from_spec
+
+        spec = (
+            self._env_contract.observation_space
+            if kind == "observation"
+            else self._env_contract.action_space
+        )
+        if spec is None:
+            return None
+        return space_from_spec(spec)
+
+
+__all__ = ["ActionT", "RemoteVectorEnvBase", "ValueT"]

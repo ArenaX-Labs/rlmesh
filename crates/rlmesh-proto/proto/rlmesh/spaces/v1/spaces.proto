@@ -1,0 +1,104 @@
+syntax = "proto3";
+
+package rlmesh.spaces.v1;
+
+import "rlmesh/spaces/v1/types.proto";
+
+// ================================== //
+// ======= Fundamental Spaces ======= //
+// ================================== //
+message BoxSpec {
+  oneof bounds {
+    bool unbounded = 1;
+    UniformBounds uniform = 2;
+    AxiswiseBounds axiswise = 3;
+    ElementwiseBounds elementwise = 4;
+  }
+}
+
+message UniformBounds {
+  double low = 1;
+  double high = 2;
+}
+
+message AxiswiseBounds {
+  repeated double low = 1; // len == rank
+  repeated double high = 2;
+}
+
+message ElementwiseBounds {
+  repeated double low = 1; // len == numel(shape)
+  repeated double high = 2;
+}
+
+message DiscreteSpec {
+  int64 n = 1;
+  int64 start = 2;
+}
+
+message MultiBinarySpec {
+  oneof n {
+    int64 size = 1; // 1D
+    VectorInt dims = 2; // ND
+  }
+}
+
+message MultiDiscreteSpec {
+  oneof nvec {
+    VectorInt flat = 1; // rank-1
+    MatrixInt shaped = 2; // rank-2
+  }
+}
+
+message TextSpec {
+  int64 min_length = 1;
+  int64 max_length = 2;
+  string charset = 3;
+}
+
+// ================================== //
+// ======== Composite Spaces ======== //
+// ================================== //
+message DictSpec {
+  repeated string keys = 1;
+  repeated SpaceSpec spaces = 2;
+}
+
+message TupleSpec {
+  repeated SpaceSpec spaces = 1;
+}
+
+// ================================== //
+
+enum SpaceType {
+  SPACE_TYPE_UNSPECIFIED = 0;
+
+  // === Fundamental Spaces === //
+  SPACE_TYPE_BOX = 1;
+  SPACE_TYPE_DISCRETE = 2;
+  SPACE_TYPE_MULTI_BINARY = 3;
+  SPACE_TYPE_MULTI_DISCRETE = 4;
+  SPACE_TYPE_TEXT = 5;
+
+  // === Composite Spaces === //
+  SPACE_TYPE_DICT = 10;
+  SPACE_TYPE_TUPLE = 11;
+}
+
+message SpaceSpec {
+  repeated int64 shape = 1;
+  DType dtype = 2;
+
+  oneof spec {
+    // === Fundamental Spaces === //
+    BoxSpec box = 10;
+    DiscreteSpec discrete = 11;
+    MultiBinarySpec multi_binary = 12;
+    MultiDiscreteSpec multi_discrete = 13;
+    TextSpec text = 14;
+
+    // === Composite Spaces === //
+    DictSpec dict = 20;
+    TupleSpec tuple = 21;
+  }
+}

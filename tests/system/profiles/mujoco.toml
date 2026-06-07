@@ -1,0 +1,24 @@
+[profile]
+description = "Real MuJoCo-backed Gymnasium environment through RLMesh."
+environments = ["mujoco-py311"]
+
+[environments.mujoco-py311]
+tier = "mujoco"
+python = "3.11"
+dependencies = ["numpy", "gymnasium[mujoco]", "mujoco==3.3.5"]
+scenarios = ["halfcheetah-trace"]
+warmups = 1
+samples = 5
+timeout_seconds = 600
+
+[environments.mujoco-py311.env]
+MUJOCO_GL = "egl"
+
+[scenarios.halfcheetah-trace]
+kind = "trace"
+description = "HalfCheetah with deterministic zero action policy."
+client = "numpy"
+model = "mujoco.halfcheetah_zero_numpy"
+seed = 123
+steps = 10
+env = { gym = "HalfCheetah-v5", packages = ["gymnasium"] }

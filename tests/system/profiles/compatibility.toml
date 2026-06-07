@@ -1,0 +1,3 @@
+[profile]
+description = "Reserved for explicit local-wheel cross-version compatibility scenarios."
+environments = []

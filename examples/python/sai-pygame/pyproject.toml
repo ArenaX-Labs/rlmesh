@@ -1,0 +1,11 @@
+[project]
+name = "rlmesh-example-sai-pygame"
+version = "0.0.0"
+requires-python = ">=3.11"
+dependencies = ["sai-pygame", "rlmesh", "numpy"]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv.sources]
+rlmesh = { path = "../../../python/rlmesh", editable = true }

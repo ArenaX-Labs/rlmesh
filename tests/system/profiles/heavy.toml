@@ -1,0 +1,3 @@
+[profile]
+description = "Opt-in real dependency profiles for Gymnasium, Torch, and MuJoCo."
+environments = ["gymnasium-py311", "torch-py311", "mujoco-py311"]

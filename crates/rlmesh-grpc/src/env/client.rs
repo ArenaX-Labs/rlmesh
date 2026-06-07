@@ -1,0 +1,461 @@
+//! Environment client transport implementation using Tonic.
+
+use std::collections::HashMap;
+
+#[cfg(unix)]
+use hyper_util::rt::TokioIo;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+#[cfg(unix)]
+use tower::service_fn;
+
+use rlmesh_proto::ABI_VERSION;
+use rlmesh_proto::core::v1::OperationTelemetry;
+use rlmesh_proto::env::v1::{
+    CloseResponse, EnvContract, HandshakeRequest, JoinRequest, JoinResponse, RenderRequest,
+    RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, ShutdownResponse, StepRequest,
+    StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
+};
+
+use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
+use crate::helpers::address::parse_env_connect_target;
+use crate::states::ClientState;
+
+use super::protocol::{join_request_kind_name, proto_error_to_env_error};
+use super::stream::spawn_response_pump;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnvHandshake {
+    pub env_contract: EnvContract,
+    pub num_envs: usize,
+    pub server_abi_version: String,
+}
+
+/// Environment client that connects to an EnvService server.
+pub struct EnvClient {
+    /// Inner tonic client for unary RPCs (Handshake, Check).
+    client: EnvServiceClient<tonic::transport::Channel>,
+    /// Connected address in normalized display form.
+    address: String,
+    /// Client state.
+    state: ClientState,
+    /// Sender half of the Join bidi stream request channel.
+    request_tx: Option<mpsc::Sender<JoinRequest>>,
+    /// Receiver half of the Join bidi stream response channel.
+    response_rx: Option<mpsc::Receiver<JoinResponse>>,
+    /// Counter for generating unique request IDs.
+    request_counter: u64,
+    /// Telemetry attached to the last Join response.
+    last_telemetry: Option<OperationTelemetry>,
+}
+
+impl EnvClient {
+    /// Connect to an EnvService server.
+    ///
+    /// `addr` may be `"host:port"`, `"tcp://host:port"`, `"http://host:port"`,
+    /// or `"unix:///path/to/socket"` on Unix.
+    pub async fn connect(addr: &str) -> Result<Self, GrpcError> {
+        let target = parse_env_connect_target(addr)?;
+
+        #[cfg(unix)]
+        let channel = if let Some(socket_path) = target.unix_path().cloned() {
+            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+
+            endpoint
+                .connect_with_connector(service_fn(move |_: tonic::transport::Uri| {
+                    let socket_path = socket_path.clone();
+                    async move { UnixStream::connect(socket_path).await.map(TokioIo::new) }
+                }))
+                .await
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+        } else {
+            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            endpoint
+                .connect()
+                .await
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+        };
+
+        #[cfg(not(unix))]
+        let channel = {
+            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            endpoint
+                .connect()
+                .await
+                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+        };
+
+        Ok(Self {
+            client: EnvServiceClient::new(channel),
+            address: target.display_address().to_string(),
+            state: ClientState::Connected,
+            request_tx: None,
+            response_rx: None,
+            request_counter: 0,
+            last_telemetry: None,
+        })
+    }
+
+    /// Connected address in normalized display form.
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// Current client state.
+    pub fn state(&self) -> ClientState {
+        self.state
+    }
+
+    /// Take telemetry attached to the most recent Join response, if any.
+    pub fn take_last_telemetry(&mut self) -> Option<OperationTelemetry> {
+        self.last_telemetry.take()
+    }
+
+    /// Perform the handshake RPC and set up the Join bidi stream.
+    pub async fn handshake(&mut self) -> Result<EnvHandshake, GrpcError> {
+        let span = tracing::info_span!("rlmesh.grpc.client.handshake", address = %self.address);
+        let _enter = span.enter();
+        if self.state != ClientState::Connected {
+            return Err(ClientError::NotConnected.into());
+        }
+
+        let req = HandshakeRequest {
+            abi_version: ABI_VERSION.to_string(),
+            client_name: "rlmesh-rust-grpc".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: HashMap::new(),
+        };
+
+        let res = self
+            .client
+            .handshake(req)
+            .await
+            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+            .into_inner();
+
+        if !res.compatible {
+            return Err(ProtocolError::HandshakeFailed(res.error_message).into());
+        }
+
+        let env_contract = res.env_contract.ok_or_else(|| {
+            GrpcError::from(ProtocolError::HandshakeFailed(
+                "no env_contract in response".to_string(),
+            ))
+        })?;
+        let num_envs = usize::try_from(env_contract.num_envs)
+            .unwrap_or(usize::MAX)
+            .max(1);
+        let handshake = EnvHandshake {
+            env_contract,
+            num_envs,
+            server_abi_version: res.server_abi_version,
+        };
+        self.state = ClientState::Ready;
+
+        self.setup_join_stream().await?;
+
+        Ok(handshake)
+    }
+
+    /// Reset the environment.
+    pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
+        let span = tracing::info_span!("rlmesh.grpc.client.reset", address = %self.address);
+        let _enter = span.enter();
+        self.ensure_ready()?;
+
+        let env_req = JoinRequest {
+            kind: Some(join_request::Kind::Reset(req)),
+            request_id: self.next_request_id(),
+        };
+
+        let res = self.send_on_stream(env_req).await?;
+        self.last_telemetry = res.telemetry.clone();
+
+        match res.kind {
+            Some(join_response::Kind::Reset(ok)) => Ok(ok),
+            Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "ResetResponse".to_string(),
+                actual: format!("{:?}", res.kind),
+            }
+            .into()),
+        }
+    }
+
+    /// Take a step in the environment.
+    pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
+        let span = tracing::info_span!("rlmesh.grpc.client.step", address = %self.address);
+        let _enter = span.enter();
+        self.ensure_ready()?;
+
+        let env_req = JoinRequest {
+            kind: Some(join_request::Kind::Step(req)),
+            request_id: self.next_request_id(),
+        };
+
+        let res = self.send_on_stream(env_req).await?;
+        self.last_telemetry = res.telemetry.clone();
+
+        match res.kind {
+            Some(join_response::Kind::Step(ok)) => Ok(ok),
+            Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "StepResponse".to_string(),
+                actual: format!("{:?}", res.kind),
+            }
+            .into()),
+        }
+    }
+
+    /// Render the environment.
+    pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
+        let span = tracing::info_span!("rlmesh.grpc.client.render", address = %self.address);
+        let _enter = span.enter();
+        self.ensure_ready()?;
+
+        let env_req = JoinRequest {
+            kind: Some(join_request::Kind::Render(req)),
+            request_id: self.next_request_id(),
+        };
+
+        let res = self.send_on_stream(env_req).await?;
+        self.last_telemetry = res.telemetry.clone();
+
+        match res.kind {
+            Some(join_response::Kind::Render(ok)) => Ok(ok),
+            Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "RenderResponse".to_string(),
+                actual: format!("{:?}", res.kind),
+            }
+            .into()),
+        }
+    }
+
+    /// Close this client session on the remote environment server.
+    pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
+        self.ensure_ready()?;
+
+        let env_req = JoinRequest {
+            kind: Some(join_request::Kind::Close(
+                rlmesh_proto::env::v1::CloseRequest {
+                    reason: "client close".to_string(),
+                },
+            )),
+            request_id: self.next_request_id(),
+        };
+
+        let res = self.send_on_stream(env_req).await?;
+        self.last_telemetry = res.telemetry.clone();
+        self.close_local();
+
+        match res.kind {
+            Some(join_response::Kind::Close(ok)) => Ok(ok),
+            Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "CloseResponse".to_string(),
+                actual: format!("{:?}", res.kind),
+            }
+            .into()),
+        }
+    }
+
+    /// Request owner-level shutdown of the remote environment endpoint.
+    pub async fn shutdown(
+        &mut self,
+        reason: impl Into<String>,
+    ) -> Result<ShutdownResponse, GrpcError> {
+        if self.state == ClientState::Closed {
+            return Err(ClientError::NotConnected.into());
+        }
+
+        let response = self
+            .client
+            .shutdown(ShutdownRequest {
+                reason: reason.into(),
+            })
+            .await
+            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
+            .into_inner();
+
+        if response.accepted {
+            self.close_local();
+        }
+
+        Ok(response)
+    }
+
+    // ---- Private helpers ----
+
+    fn close_local(&mut self) {
+        self.request_tx.take();
+        self.response_rx.take();
+        self.state = ClientState::Closed;
+    }
+
+    async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
+        let (tx, rx) = mpsc::channel::<JoinRequest>(32);
+        let request_stream = ReceiverStream::new(rx);
+
+        let response = self
+            .client
+            .join(request_stream)
+            .await
+            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+
+        self.request_tx = Some(tx);
+        self.response_rx = Some(spawn_response_pump(response.into_inner()));
+        Ok(())
+    }
+
+    async fn send_on_stream(&mut self, req: JoinRequest) -> Result<JoinResponse, GrpcError> {
+        let request_id = req.request_id.clone();
+        let request_kind = join_request_kind_name(&req);
+        let span = tracing::info_span!(
+            "rlmesh.grpc.client.join_roundtrip",
+            address = %self.address,
+            request_id = %request_id,
+            request_kind
+        );
+        let _enter = span.enter();
+        let tx = self.request_tx.as_ref().ok_or(ClientError::NotHandshaked)?;
+
+        tx.send(req).await.map_err(|_| {
+            tracing::error!(
+                request_id = %request_id,
+                request_kind,
+                "failed to send request because the env join stream is closed"
+            );
+            TransportError::ConnectionClosed
+        })?;
+
+        let rx = self
+            .response_rx
+            .as_mut()
+            .ok_or(ClientError::NotHandshaked)?;
+
+        loop {
+            let response = rx.recv().await.ok_or_else(|| {
+                tracing::error!(
+                    request_id = %request_id,
+                    request_kind,
+                    "env join stream closed while waiting for response"
+                );
+                GrpcError::from(TransportError::ConnectionClosed)
+            })?;
+            if response.request_id == request_id {
+                return Ok(response);
+            }
+            tracing::warn!(
+                request_id = %request_id,
+                stale_request_id = %response.request_id,
+                request_kind,
+                response_kind = ?response.kind,
+                "discarding stale env response from abandoned request"
+            );
+        }
+    }
+
+    fn ensure_ready(&self) -> Result<(), GrpcError> {
+        match self.state {
+            ClientState::Ready => Ok(()),
+            ClientState::Disconnected => Err(ClientError::NotConnected.into()),
+            ClientState::Connected => Err(ClientError::NotHandshaked.into()),
+            ClientState::Closed => Err(ClientError::NotConnected.into()),
+        }
+    }
+
+    fn next_request_id(&mut self) -> String {
+        self.request_counter += 1;
+        format!("grpc-req-{}", self.request_counter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rlmesh_proto::env::v1::{CloseRequest, CloseResponse, StepResponse};
+    use tonic::transport::Endpoint;
+
+    #[tokio::test]
+    async fn send_on_stream_discards_stale_responses_until_request_id_matches() {
+        let (request_tx, mut request_rx) = mpsc::channel(4);
+        let (response_tx, response_rx) = mpsc::channel(4);
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            address: "http://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: Some(request_tx),
+            response_rx: Some(response_rx),
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        response_tx
+            .send(JoinResponse {
+                request_id: "abandoned".to_string(),
+                kind: Some(join_response::Kind::Step(StepResponse::default())),
+                telemetry: None,
+            })
+            .await
+            .unwrap();
+        response_tx
+            .send(JoinResponse {
+                request_id: "target".to_string(),
+                kind: Some(join_response::Kind::Close(CloseResponse::default())),
+                telemetry: None,
+            })
+            .await
+            .unwrap();
+
+        let response = client
+            .send_on_stream(JoinRequest {
+                request_id: "target".to_string(),
+                kind: Some(join_request::Kind::Close(CloseRequest::default())),
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
+        assert_eq!(request_rx.recv().await.unwrap().request_id, "target");
+    }
+
+    #[tokio::test]
+    async fn close_sends_remote_close_then_closes_locally() {
+        let (request_tx, mut request_rx) = mpsc::channel(1);
+        let (response_tx, response_rx) = mpsc::channel(1);
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            address: "tcp://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: Some(request_tx),
+            response_rx: Some(response_rx),
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        response_tx
+            .send(JoinResponse {
+                request_id: "grpc-req-1".to_string(),
+                kind: Some(join_response::Kind::Close(CloseResponse::default())),
+                telemetry: None,
+            })
+            .await
+            .unwrap();
+
+        let response = client.close().await.unwrap();
+
+        assert!(response.final_episodes.is_empty());
+        assert_eq!(client.state(), ClientState::Closed);
+        let request = request_rx.recv().await.unwrap();
+        assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
+        assert_eq!(request.request_id, "grpc-req-1");
+    }
+}

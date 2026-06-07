@@ -1,0 +1,6 @@
+# Inherits tools from root mise.toml.
+# Deps managed by pyproject.toml + uv.
+# Requires sai-mujoco (MuJoCo environments from SAI).
+
+[settings]
+python.uv_venv_auto = "create|source"

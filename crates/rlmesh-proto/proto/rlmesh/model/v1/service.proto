@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package rlmesh.model.v1;
+
+import "rlmesh/model/v1/interaction.proto";
+
+// Served model participant. The runner/runtime owns orchestration and dials
+// this service when a route batch needs inference.
+service ModelService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Join(stream JoinRequest) returns (stream JoinResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}
+
+message HandshakeRequest {
+  string abi_version = 1;
+  string client_name = 2;
+  string client_version = 3;
+  map<string, string> capabilities = 4;
+}
+
+message HandshakeResponse {
+  bool compatible = 1;
+  string server_abi_version = 2;
+  string min_supported_abi = 3;
+  string error_message = 4;
+  map<string, string> capabilities = 5;
+}
+
+message ShutdownRequest {
+  string reason = 1;
+}
+
+message ShutdownResponse {
+  bool accepted = 1;
+  string message = 2;
+}

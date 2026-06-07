@@ -1,0 +1,40 @@
+[package]
+name = "rlmesh-cli"
+description = "Command-line entrypoint for RLMesh evaluation workflows"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+default-run = "rlmesh"
+
+[package.metadata.rlmesh]
+audience = "supported-public-capability"
+stability = "supported-cli"
+
+[[bin]]
+name = "rlmesh"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+egui = { workspace = true }
+eframe = { workspace = true, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+image = { workspace = true, features = ["png"] }
+rlmesh-proto = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

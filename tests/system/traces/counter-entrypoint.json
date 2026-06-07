@@ -1,0 +1,49 @@
+{
+  "client": "native",
+  "reset": {
+    "info": {
+      "options": null,
+      "seed": 7
+    },
+    "observation": 0
+  },
+  "scenario": "counter-entrypoint",
+  "schema_version": 1,
+  "seed": 7,
+  "steps": [
+    {
+      "action": 0,
+      "index": 0,
+      "info": {
+        "action": 0
+      },
+      "observation": 1,
+      "reward": 1.0,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "action": 0,
+      "index": 1,
+      "info": {
+        "action": 0
+      },
+      "observation": 2,
+      "reward": 2.0,
+      "terminated": false,
+      "truncated": false
+    },
+    {
+      "action": 0,
+      "index": 2,
+      "info": {
+        "action": 0,
+        "completed_episodes": 1
+      },
+      "observation": 3,
+      "reward": 3.0,
+      "terminated": true,
+      "truncated": false
+    }
+  ]
+}

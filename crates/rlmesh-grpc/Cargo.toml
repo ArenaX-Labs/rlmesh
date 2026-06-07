@@ -1,0 +1,45 @@
+[package]
+name = "rlmesh-grpc"
+description = "gRPC clients, servers, and wire helpers for RLMesh model-environment protocols"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[package.metadata.rlmesh]
+audience = "public-repo-implementation"
+stability = "unstable"
+
+[dependencies]
+rlmesh-spaces = { workspace = true }
+rlmesh-proto = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+half = { workspace = true }
+hyper-util = { workspace = true, features = ["tokio"] }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tonic = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+
+[lints]
+workspace = true

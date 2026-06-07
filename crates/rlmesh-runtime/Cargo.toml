@@ -1,0 +1,42 @@
+[package]
+name = "rlmesh-runtime"
+description = "Runtime driver for RLMesh model-environment evaluation sessions"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[package.metadata.rlmesh]
+audience = "public-repo-implementation"
+stability = "unstable"
+
+[features]
+default = []
+
+[dependencies]
+rlmesh-proto = { workspace = true }
+
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+tokio-util = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+
+tracing = { workspace = true }
+
+serde = { workspace = true }
+
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

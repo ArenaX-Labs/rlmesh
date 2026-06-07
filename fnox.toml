@@ -1,0 +1,6 @@
+[providers]
+keychain = { type = "keychain", service = "fnox-tokens" }
+
+[secrets]
+CARGO_REGISTRY_TOKEN = { provider = "keychain", value = "CARGO_REGISTRY_TOKEN" }
+PYPI_TOKEN = { provider = "keychain", value = "PYPI_TOKEN" }

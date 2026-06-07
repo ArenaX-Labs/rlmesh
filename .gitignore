@@ -1,0 +1,36 @@
+# Env Vars
+.env
+.env.*
+mise.local.toml
+
+# OS
+.DS_Store
+*.dSYM/
+
+# IDE
+.idea/
+.vscode/
+.zed/
+.vim/
+
+# Bindings
+*.so
+
+# Python
+.venv*/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg
+*.egg-info/
+*.py[cdo]
+*.pdb
+
+# Rust
+target/
+
+# AI Folders (ignored by default)
+.agents/
+.codex/
+.claude/

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package rlmesh.spaces.v1;
+
+enum DType {
+  D_TYPE_UNSPECIFIED = 0;
+  D_TYPE_BOOL = 1;
+  D_TYPE_UINT8 = 2;
+  D_TYPE_INT32 = 3;
+  D_TYPE_INT64 = 4;
+  D_TYPE_FLOAT16 = 5;
+  D_TYPE_FLOAT32 = 6;
+  D_TYPE_FLOAT64 = 7;
+}
+
+message VectorInt {
+  repeated int64 data = 1;
+}
+
+message MatrixInt {
+  repeated VectorInt data = 1;
+}

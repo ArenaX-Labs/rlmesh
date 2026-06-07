@@ -1,0 +1,36 @@
+[package]
+name = "rlmesh"
+description = "Rust SDK for model-environment evaluation workflows"
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
+readme = "../../README.md"
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
+
+[package.metadata.rlmesh]
+audience = "direct-public-api"
+stability = "supported"
+
+[dependencies]
+async-trait = { workspace = true }
+rlmesh-spaces = { workspace = true }
+rlmesh-grpc = { workspace = true }
+rlmesh-proto = { workspace = true }
+rlmesh-runtime = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
+tokio-stream = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+
+[lints]
+workspace = true

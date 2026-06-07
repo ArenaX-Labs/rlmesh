@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package rlmesh.env.v1;
+
+import "google/protobuf/struct.proto";
+import "rlmesh/core/v1/telemetry.proto";
+import "rlmesh/spaces/v1/value.proto";
+
+message EpisodeMetadata {
+  string episode_id = 1;
+  int64 seed = 2;
+  int32 env_index = 3;
+  int64 step_count = 4;
+  double cumulative_reward = 5;
+  bool terminated = 6;
+  bool truncated = 7;
+  int64 start_timestamp_ns = 8;
+  int64 end_timestamp_ns = 9;
+  int64 duration_ms = 10;
+  google.protobuf.Struct final_info = 11;
+}
+
+message ResetRequest {
+  repeated int64 seeds = 1;
+  google.protobuf.Struct options = 2;
+  int64 timeout_ms = 3;
+}
+
+message StepRequest {
+  rlmesh.spaces.v1.SpaceValue action = 1;
+  int64 timeout_ms = 2;
+}
+
+message RenderRequest {
+  bytes mask = 1;
+  int64 timeout_ms = 2;
+}
+
+message CloseRequest {
+  string reason = 1;
+}
+
+message JoinRequest {
+  oneof kind {
+    ResetRequest reset = 1;
+    StepRequest step = 2;
+    RenderRequest render = 3;
+    CloseRequest close = 4;
+  }
+
+  string request_id = 10;
+}
+
+message ResetResponse {
+  rlmesh.spaces.v1.SpaceValue observation = 1;
+  google.protobuf.Struct infos = 2;
+  repeated string episode_ids = 3;
+}
+
+message StepResponse {
+  rlmesh.spaces.v1.SpaceValue observation = 1;
+  repeated double rewards = 2;
+  bytes terminated_mask = 3;
+  bytes truncated_mask = 4;
+  google.protobuf.Struct infos = 5;
+  repeated EpisodeMetadata completed_episodes = 6;
+  repeated string episode_ids = 7;
+}
+
+message RenderResponse {
+  optional bytes png_frame = 1;
+}
+
+message CloseResponse {
+  repeated EpisodeMetadata final_episodes = 1;
+}
+
+enum EnvErrorCode {
+  ENV_ERROR_CODE_UNSPECIFIED = 0;
+  ENV_ERROR_CODE_TIMEOUT = 1;
+  ENV_ERROR_CODE_INVALID_ACTION = 2;
+  ENV_ERROR_CODE_NOT_READY = 3;
+  ENV_ERROR_CODE_BUSY = 4;
+  ENV_ERROR_CODE_INTERNAL = 10;
+  ENV_ERROR_CODE_CRASHED = 11;
+  ENV_ERROR_CODE_CANCELLED = 12;
+  ENV_ERROR_CODE_CLOSED = 13;
+}
+
+message EnvError {
+  EnvErrorCode code = 1;
+  string message = 2;
+  bool is_recoverable = 3;
+  string debug_info = 4;
+  repeated EpisodeMetadata interrupted_episodes = 5;
+}
+
+message JoinResponse {
+  oneof kind {
+    ResetResponse reset = 1;
+    StepResponse step = 2;
+    RenderResponse render = 3;
+    CloseResponse close = 4;
+    EnvError error = 10;
+  }
+
+  rlmesh.core.v1.OperationTelemetry telemetry = 20;
+  string request_id = 21;
+}
