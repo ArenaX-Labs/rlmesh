@@ -1,0 +1,24 @@
+{
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/.turbo",
+    "**/.venv",
+    "**/.agents",
+    "**/.claude",
+    "**/.codex",
+    "**/__pycache__",
+  ],
+  "lsp": {
+    "cargo-tom": {
+      "initialization_options": {
+        "hide_docs_info_message": true,
+      },
+    },
+  },
+}
