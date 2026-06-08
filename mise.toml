@@ -371,6 +371,10 @@ run = [
   "cargo package --workspace --allow-dirty --no-verify",
 ]
 
+[tasks."release:artifacts:licenses"]
+description = "Validate release artifact license files before publishing"
+run = "python scripts/check_release_artifact_licenses.py"
+
 [tasks."release:check"]
 description = "Run the local beta release gate without publishing"
 run = [

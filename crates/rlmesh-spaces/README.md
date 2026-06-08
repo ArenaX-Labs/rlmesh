@@ -23,3 +23,9 @@ the stable release.
 - Documentation: https://docs.rlmesh.dev
 - API docs: https://docs.rs/rlmesh-spaces
 - Higher-level SDK: https://crates.io/crates/rlmesh
+
+## License
+
+Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See
+[LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-APACHE) and
+[LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-MIT).

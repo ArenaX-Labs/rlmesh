@@ -69,4 +69,9 @@ Runnable examples and exact commands live in the repository under `examples/pyth
 
 ## License
 
-Licensed under either MIT or Apache-2.0.
+Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See
+[LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-APACHE) and
+[LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-MIT).
+
+Python wheels also include third-party notices in
+[THIRD_PARTY_NOTICES.md](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/THIRD_PARTY_NOTICES.md).

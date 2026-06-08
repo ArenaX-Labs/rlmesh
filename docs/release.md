@@ -54,6 +54,13 @@ Verify packaging without uploading:
 mise run release:rust:package
 ```
 
+After Rust packages and Python wheels have both been built, confirm the publish artifacts contain
+the required license payloads:
+
+```bash
+mise run release:artifacts:licenses
+```
+
 Before the first crates.io publish, workspace crates that depend on other RLMesh crates cannot be
 verified by `cargo package` as a full workspace because Cargo rewrites path dependencies to registry
 dependencies during publish verification. The release task fully verifies independent crates and
@@ -110,6 +117,13 @@ Inspect the wheel matrix:
 
 ```bash
 python scripts/check_python_wheels.py python/rlmesh/dist
+```
+
+Confirm the generated wheels and crate archives include the expected license files before
+publishing:
+
+```bash
+mise run release:artifacts:licenses
 ```
 
 Upload only after inspecting `python/rlmesh/dist`:
