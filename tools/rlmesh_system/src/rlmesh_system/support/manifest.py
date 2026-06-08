@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -108,15 +109,25 @@ def parse_environments(data: dict[str, object]) -> dict[str, EnvironmentSpec]:
     environments = {}
     for name, value in as_mapping(data.get("environments", {})).items():
         raw = as_mapping(value, context=f"environment {name!r}")
+        env = string_mapping(raw.get("env", {}), context=f"environment {name!r} env")
+        platform_env = as_mapping(
+            raw.get("platform_env", {}),
+            context=f"environment {name!r} platform_env",
+        )
+        for platform_key in platform_env_keys():
+            if platform_key in platform_env:
+                env.update(
+                    string_mapping(
+                        platform_env[platform_key],
+                        context=f"environment {name!r} platform_env.{platform_key}",
+                    )
+                )
         environments[str(name)] = EnvironmentSpec(
             name=str(name),
             python=str(raw["python"]),
             dependencies=tuple(str(item) for item in raw.get("dependencies", ())),
             dependency_args=tuple(str(item) for item in raw.get("dependency_args", ())),
-            env={
-                str(key): str(value)
-                for key, value in as_mapping(raw.get("env", {})).items()
-            },
+            env=env,
             tier=str(raw.get("tier", "basic")),
             scenarios=tuple(str(item) for item in raw.get("scenarios", ())),
             warmups=int(raw.get("warmups", 1)),
@@ -156,6 +167,23 @@ def parse_scenarios(data: dict[str, object]) -> dict[str, ScenarioSpec]:
             metadata=metadata,
         )
     return scenarios
+
+
+def string_mapping(value: object, *, context: str) -> dict[str, str]:
+    return {
+        str(key): str(value)
+        for key, value in as_mapping(value, context=context).items()
+    }
+
+
+def platform_env_keys() -> tuple[str, ...]:
+    if sys.platform.startswith("linux"):
+        return ("linux", sys.platform) if sys.platform != "linux" else ("linux",)
+    if sys.platform == "darwin":
+        return ("darwin",)
+    if sys.platform.startswith("win"):
+        return ("windows", sys.platform)
+    return (sys.platform,)
 
 
 def validate_spec(spec: SystemSpec) -> None:

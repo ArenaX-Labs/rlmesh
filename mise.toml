@@ -23,6 +23,7 @@ buf = "1.70.0"
 
 # Hooks
 prek = "0.4.4"
+fnox = "1.25.1"
 
 [settings]
 python.uv_venv_auto = "create|source"
@@ -320,29 +321,49 @@ description = "Remove previously built Python wheels before a release wheel buil
 run = "rm -f python/rlmesh/dist/rlmesh-*.whl"
 
 [tasks."release:python:wheels:macos"]
-description = "Build release macOS wheels on a macOS host"
+description = "On macOS, prepare and build the full macOS/Linux/Windows wheel matrix"
 run = [
   "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
-  "mise run release:python:clean",
-  "mise run setup:python:release",
-  "mise run setup:rust:targets",
-  "mise run stubs:generate",
-  "mise run release:python:macos",
-  "python scripts/check_python_wheels.py python/rlmesh/dist",
+  "mise run release:python:prepare",
+  "ulimit -n 4096 || true; status=0; for task in release:python:build:macos-all release:python:build:linux-all release:python:build:windows-all; do mise run \"$task\" || status=1; done; mise run release:python:check:all || status=1; exit $status",
 ]
 
 [tasks."release:python:wheels:linux"]
-description = "Build release Linux and Windows wheels on a Linux host"
+description = "On Linux, prepare and build the Linux/Windows cross-build wheel matrix"
 run = [
   "test \"$(uname -s)\" = Linux || { echo 'Linux and Windows release wheels should be built from a Linux host' >&2; exit 1; }",
+  "mise run release:python:prepare",
+  "ulimit -n 4096 || true; status=0; for task in release:python:build:linux-all release:python:build:windows-all; do mise run \"$task\" || status=1; done; mise run release:python:check:linux-windows || status=1; exit $status",
+]
+
+[tasks."release:python:prepare"]
+description = "Clean dist, install release Python/Rust targets, and generate stubs"
+run = [
   "mise run release:python:clean",
   "mise run setup:python:release",
   "mise run setup:rust:targets",
   "mise run stubs:generate",
-  "mise run release:python:linux",
-  "mise run release:python:windows",
-  "python scripts/check_python_wheels.py python/rlmesh/dist",
 ]
+
+[tasks."release:python:build:macos-all"]
+description = "Build macOS arm64 then x86_64 wheels on a Darwin host"
+run = "ulimit -n 4096 || true; status=0; for task in release:python:macos-arm release:python:macos-x86; do mise run \"$task\" || status=1; done; exit $status"
+
+[tasks."release:python:build:linux-all"]
+description = "Build Zig-backed Linux glibc/musl x86_64 and aarch64 wheels"
+run = "ulimit -n 4096 || true; status=0; for task in release:python:linux-x86 release:python:linux-arm release:python:linux-musl-x86 release:python:linux-musl-arm; do mise run \"$task\" || status=1; done; exit $status"
+
+[tasks."release:python:build:windows-all"]
+description = "Build Zig-backed Windows x86_64 wheels"
+run = "mise run release:python:windows"
+
+[tasks."release:python:check:all"]
+description = "Strictly validate the complete macOS/Linux/Windows release wheel matrix"
+run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set all"
+
+[tasks."release:python:check:linux-windows"]
+description = "Strictly validate the Linux/Windows release wheel matrix"
+run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set linux-windows"
 
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
@@ -368,15 +389,14 @@ run = [
 
 [tasks."release:python:macos"]
 description = "Build macOS wheels (arm64 + x86_64)"
-depends = ["release:python:macos-arm", "release:python:macos-x86"]
+run = "mise run release:python:build:macos-all"
 
 [tasks."release:python:macos-arm"]
 description = "Build macOS arm64 wheels"
 dir = "python/rlmesh"
 run = [
   "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
-  "mise exec python@3.10 -- maturin build --release --target aarch64-apple-darwin -i python3.10 -o dist/",
-  "maturin build --release --target aarch64-apple-darwin -i python3.11 -o dist/",
+  "ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --target aarch64-apple-darwin -i python3.10 -o dist/ || status=1; maturin build --release --target aarch64-apple-darwin -i python3.11 -o dist/ || status=1; exit $status",
 ]
 
 [tasks."release:python:macos-x86"]
@@ -384,56 +404,37 @@ description = "Build macOS x86_64 wheels"
 dir = "python/rlmesh"
 run = [
   "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
-  "mise exec python@3.10 -- maturin build --release --target x86_64-apple-darwin -i python3.10 -o dist/",
-  "maturin build --release --target x86_64-apple-darwin -i python3.11 -o dist/",
+  "ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --target x86_64-apple-darwin -i python3.10 -o dist/ || status=1; maturin build --release --target x86_64-apple-darwin -i python3.11 -o dist/ || status=1; exit $status",
 ]
 
 [tasks."release:python:linux"]
 description = "Build all Linux wheels (glibc + musl)"
-depends = [
-  "release:python:linux-x86",
-  "release:python:linux-arm",
-  "release:python:linux-musl-x86",
-  "release:python:linux-musl-arm",
-]
+run = "mise run release:python:build:linux-all"
 
 [tasks."release:python:linux-x86"]
-description = "Build Linux glibc x86_64 wheels"
+description = "Build Zig-backed Linux glibc x86_64 wheels"
 dir = "python/rlmesh"
-run = [
-  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.10 -o dist/",
-  "maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.11 -o dist/",
-]
+run = "repo_root=$(git rev-parse --show-toplevel); mkdir -p \"$repo_root/target/zig-cache\"; export ZIG_GLOBAL_CACHE_DIR=\"$repo_root/target/zig-cache\"; ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.10 -o dist/ || status=1; maturin build --release --zig --target x86_64-unknown-linux-gnu -i python3.11 -o dist/ || status=1; exit $status"
 
 [tasks."release:python:linux-arm"]
-description = "Build Linux glibc aarch64 wheels"
+description = "Build Zig-backed Linux glibc aarch64 wheels"
 dir = "python/rlmesh"
-run = [
-  "mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.10 -o dist/",
-  "maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.11 -o dist/",
-]
+run = "repo_root=$(git rev-parse --show-toplevel); mkdir -p \"$repo_root/target/zig-cache\"; export ZIG_GLOBAL_CACHE_DIR=\"$repo_root/target/zig-cache\"; ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.10 -o dist/ || status=1; maturin build --release --zig --target aarch64-unknown-linux-gnu -i python3.11 -o dist/ || status=1; exit $status"
 
+# Zig/maturin may print compiler-family warnings for *-linux-musl-gcc; they are
+# informational when the command exits successfully and emits the wheel.
 [tasks."release:python:linux-musl-x86"]
-description = "Build Linux musl x86_64 wheels (Alpine)"
+description = "Build Zig-backed Linux musl x86_64 wheels; musl-gcc warnings are non-fatal"
 dir = "python/rlmesh"
-run = [
-  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.10 -o dist/",
-  "maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.11 -o dist/",
-]
+run = "repo_root=$(git rev-parse --show-toplevel); mkdir -p \"$repo_root/target/zig-cache\"; export ZIG_GLOBAL_CACHE_DIR=\"$repo_root/target/zig-cache\"; ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.10 -o dist/ || status=1; maturin build --release --zig --target x86_64-unknown-linux-musl -i python3.11 -o dist/ || status=1; exit $status"
 
 [tasks."release:python:linux-musl-arm"]
-description = "Build Linux musl aarch64 wheels (Alpine)"
+description = "Build Zig-backed Linux musl aarch64 wheels; musl-gcc warnings are non-fatal"
 dir = "python/rlmesh"
-run = [
-  "mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.10 -o dist/",
-  "maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.11 -o dist/",
-]
+run = "repo_root=$(git rev-parse --show-toplevel); mkdir -p \"$repo_root/target/zig-cache\"; export ZIG_GLOBAL_CACHE_DIR=\"$repo_root/target/zig-cache\"; ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.10 -o dist/ || status=1; maturin build --release --zig --target aarch64-unknown-linux-musl -i python3.11 -o dist/ || status=1; exit $status"
 
 [tasks."release:python:windows"]
-description = "Build Windows x86_64 wheels"
+description = "Build Zig-backed Windows x86_64 wheels"
 dir = "python/rlmesh"
 env = { PATH = "/opt/homebrew/opt/llvm/bin:{{env.PATH}}" }
-run = [
-  "mise exec python@3.10 -- maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.10 -o dist/",
-  "maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.11 -o dist/",
-]
+run = "repo_root=$(git rev-parse --show-toplevel); mkdir -p \"$repo_root/target/zig-cache\"; export ZIG_GLOBAL_CACHE_DIR=\"$repo_root/target/zig-cache\"; ulimit -n 4096 || true; status=0; mise exec python@3.10 -- maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.10 -o dist/ || status=1; maturin build --release --zig --target x86_64-pc-windows-msvc -i python3.11 -o dist/ || status=1; exit $status"

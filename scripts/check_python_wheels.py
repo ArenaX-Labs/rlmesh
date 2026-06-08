@@ -15,6 +15,28 @@ EXPECTED_TAGS = {
     ("cp310", "cp310"),
     ("cp311", "abi3"),
 }
+PLATFORM_SETS = {
+    "all": (
+        "macosx_10_12_x86_64",
+        "macosx_11_0_arm64",
+        "manylinux_2_17_aarch64.manylinux2014_aarch64",
+        "manylinux_2_17_x86_64.manylinux2014_x86_64",
+        "musllinux_1_2_aarch64",
+        "musllinux_1_2_x86_64",
+        "win_amd64",
+    ),
+    "linux-windows": (
+        "manylinux_2_17_aarch64.manylinux2014_aarch64",
+        "manylinux_2_17_x86_64.manylinux2014_x86_64",
+        "musllinux_1_2_aarch64",
+        "musllinux_1_2_x86_64",
+        "win_amd64",
+    ),
+    "macos": (
+        "macosx_10_12_x86_64",
+        "macosx_11_0_arm64",
+    ),
+}
 LOCAL_ONLY_PLATFORM_PREFIXES = ("linux_",)
 REQUIRED_WHEEL_FILES = (
     "rlmesh/py.typed",
@@ -36,6 +58,7 @@ NATIVE_EXTENSION_SUFFIXES = (".pyd", ".so")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run wheel validation from command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel_dir", type=Path)
     parser.add_argument(
@@ -50,6 +73,13 @@ def main(argv: list[str] | None = None) -> int:
             "allow local-only platform tags such as linux_x86_64; release "
             "validation should leave this disabled"
         ),
+    )
+    parser.add_argument(
+        "--platform-set",
+        action="append",
+        choices=sorted(PLATFORM_SETS),
+        default=[],
+        help="require all platform tags for a named release platform set",
     )
     args = parser.parse_args(argv)
 
@@ -106,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
                 missing_text = ", ".join(format_tag(tag) for tag in sorted(missing))
                 errors.append(f"{platform_tag}: missing {missing_text}")
 
+    required_platforms = set()
+    for platform_set in args.platform_set:
+        required_platforms.update(PLATFORM_SETS[platform_set])
+    for platform_tag in sorted(required_platforms - set(platforms)):
+        errors.append(f"{platform_tag}: missing platform")
+
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
@@ -118,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def wheel_tags(wheel: Path) -> tuple[str, str, str]:
+    """Return the Python, ABI, and platform tags from a wheel filename."""
     stem = wheel.name.removesuffix(".whl")
     parts = stem.split("-")
     if len(parts) < 5:
@@ -126,6 +163,7 @@ def wheel_tags(wheel: Path) -> tuple[str, str, str]:
 
 
 def wheel_requires_python(wheel: Path) -> str | None:
+    """Return the wheel metadata Requires-Python value."""
     with zipfile.ZipFile(wheel) as archive:
         metadata_name = next(
             (
@@ -142,6 +180,7 @@ def wheel_requires_python(wheel: Path) -> str | None:
 
 
 def wheel_payload_errors(wheel: Path) -> list[str]:
+    """Return payload validation errors for a wheel archive."""
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
 
@@ -178,6 +217,7 @@ def wheel_payload_errors(wheel: Path) -> list[str]:
 
 
 def is_local_only_platform(platform_tag: str) -> bool:
+    """Return true when a wheel platform tag is only valid for local installs."""
     return any(
         tag.startswith(LOCAL_ONLY_PLATFORM_PREFIXES)
         for tag in platform_tag.split(".")
@@ -185,6 +225,7 @@ def is_local_only_platform(platform_tag: str) -> bool:
 
 
 def format_tag(tag: tuple[str, str]) -> str:
+    """Format a Python and ABI tag pair for diagnostics."""
     return f"{tag[0]}-{tag[1]}"
 
 

@@ -97,11 +97,14 @@ mise run release:python:wheels
 ```
 
 Wheel builds are host-specific. Run `mise run release:python:wheels:macos` on macOS with Xcode
-Command Line Tools installed to produce macOS wheels. Run `mise run release:python:wheels:linux` on
-Linux to produce Linux and Windows wheels. The generic `release:python:wheels` task dispatches to
+Command Line Tools installed to produce macOS wheels and to attempt the Zig-backed Linux and Windows
+cross-builds. Run `mise run release:python:wheels:linux` on Linux to produce Linux and Windows
+wheels when a macOS host is not available. The generic `release:python:wheels` task dispatches to
 the current host's supported wheel set; it does not cross-link macOS frameworks from Linux. Release
 wheel tasks remove stale `rlmesh-*.whl` files first so local smoke wheels with plain `linux_*` tags
-cannot be uploaded accidentally.
+cannot be uploaded accidentally, and release validation requires the expected platform set for the
+selected host. The macOS cross-build path raises the process file-descriptor limit for Zig/Cargo
+linking and uses `target/zig-cache` for Zig's global cache.
 
 Inspect the wheel matrix:
 

@@ -11,8 +11,11 @@ warmups = 1
 samples = 5
 timeout_seconds = 600
 
-[environments.mujoco-py311.env]
+[environments.mujoco-py311.platform_env.linux]
 MUJOCO_GL = "egl"
+
+[environments.mujoco-py311.platform_env.darwin]
+MUJOCO_GL = "cgl"
 
 [scenarios.halfcheetah-trace]
 kind = "trace"

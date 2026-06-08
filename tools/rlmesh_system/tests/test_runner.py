@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from rlmesh_system import runner
+from rlmesh_system.support import manifest
 from rlmesh_system.support.command import CommandError, run_command
 from rlmesh_system.support.manifest import (
     EnvironmentSpec,
@@ -66,6 +67,50 @@ def test_filter_scenarios_by_kind_and_name() -> None:
     )
 
     assert [scenario.name for scenario in selected] == ["image-grid-numpy-action"]
+
+
+def test_platform_env_overrides_base_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "mujoco.toml").write_text(
+        """
+[profile]
+environments = ["mujoco-py311"]
+
+[environments.mujoco-py311]
+python = "3.11"
+scenarios = ["counter"]
+
+[environments.mujoco-py311.env]
+RLMESH_ENV = "base"
+MUJOCO_GL = "base"
+
+[environments.mujoco-py311.platform_env.linux]
+MUJOCO_GL = "egl"
+
+[environments.mujoco-py311.platform_env.darwin]
+MUJOCO_GL = "cgl"
+
+[scenarios.counter]
+kind = "trace"
+env = { fixture = "counter" }
+model = "discrete.zero"
+"""
+    )
+
+    monkeypatch.setattr(manifest.sys, "platform", "darwin")
+    assert load_specs(profiles).environments["mujoco-py311"].env == {
+        "RLMESH_ENV": "base",
+        "MUJOCO_GL": "cgl",
+    }
+
+    monkeypatch.setattr(manifest.sys, "platform", "linux")
+    assert load_specs(profiles).environments["mujoco-py311"].env == {
+        "RLMESH_ENV": "base",
+        "MUJOCO_GL": "egl",
+    }
 
 
 def test_env_server_command_supports_fixture_and_gym() -> None:
