@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Release Process
 
 This beta is published manually from a local machine.
@@ -10,7 +14,7 @@ mise run release:check
 ```
 
 Review the compatibility policy before changing stable APIs, protocol fields, or package versions:
-[`compatibility.md`](compatibility.md).
+{doc}`compatibility`.
 
 Confirm the version spellings:
 

@@ -17,6 +17,7 @@ dev = [
   "rlmesh-system",
   "rlmesh-system-fixtures",
 ]
+docs = ["furo", "myst-parser", "sphinx", "sphinx-autobuild", "sphinx-copybutton"]
 
 [tool.basedpyright]
 include = [
@@ -84,7 +85,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"examples/python/**" = ["D"]
+"examples/python/**" = ["D", "F841"]
 "python/rlmesh/tests/**" = ["B017", "D"]
 "python/rlmesh/tests/type_contract/fixtures/**" = ["D"]
 "tests/system/**" = ["B017", "D"]

@@ -173,6 +173,16 @@ run = "uv run basedpyright"
 # ──────────────────────────────────────────────
 # Docs (non-mutating)
 # ──────────────────────────────────────────────
+[tasks."docs:build"]
+description = "Build the Sphinx docs site with warnings denied"
+env = { UV_CACHE_DIR = "target/uv-cache" }
+run = "uv run --only-group docs sphinx-build -E -a -b dirhtml -W --keep-going docs site"
+
+[tasks."docs:serve"]
+description = "Serve the Sphinx docs site locally"
+env = { UV_CACHE_DIR = "target/uv-cache" }
+run = "uv run --only-group docs sphinx-autobuild -b dirhtml docs site"
+
 [tasks."docs:rust:check"]
 description = "Build Rust library docs with warnings denied"
 env = { RUSTDOCFLAGS = "-D warnings" }

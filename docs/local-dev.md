@@ -1,7 +1,10 @@
+---
+orphan: true
+---
+
 # Local Development
 
-This page covers the lightweight maintainer workflow for the RLMesh repository. The public user
-documentation lives at https://docs.rlmesh.dev.
+This page covers the lightweight maintainer workflow for the RLMesh repository.
 
 ## Requirements
 
@@ -82,6 +85,27 @@ mise run build:python
 Local wheel builds may use plain `linux_*` tags for smoke testing. Release wheels must use
 uploadable platform tags such as `manylinux`, `musllinux`, `macosx`, or `win`.
 
+## Site
+
+Build the site:
+
+```bash
+mise run docs:build
+```
+
+Serve it locally while editing:
+
+```bash
+mise run docs:serve
+```
+
+The output is written to `site/`.
+
+- Install command: `uv sync --only-group docs --frozen`
+- Build command:
+  `uv run --frozen --only-group docs sphinx-build -b dirhtml -W --keep-going docs site`
+- Output directory: `site`
+
 ## Release Gate
 
 Before publishing a beta release from a local machine, run:
@@ -90,5 +114,4 @@ Before publishing a beta release from a local machine, run:
 mise run release:check
 ```
 
-Publishing stays manual for this beta. See [`release.md`](release.md) for the maintainer release
-process.
+Publishing stays manual for this beta. See {doc}`release` for the maintainer release process.

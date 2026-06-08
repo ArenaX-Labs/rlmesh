@@ -1,0 +1,64 @@
+# NumPy and Torch Adapters
+
+Adapters control how values are decoded at the Python boundary.
+
+## Plain Python
+
+Top-level `rlmesh.RemoteEnv`, `rlmesh.RemoteVectorEnv`, and `rlmesh.Model` preserve RLMesh-native
+values and Python primitives without requiring NumPy or Torch.
+
+```python
+import rlmesh
+
+env = rlmesh.RemoteEnv("127.0.0.1:5555")
+```
+
+## NumPy
+
+NumPy is the recommended first choice for examples and notebooks. Tensor leaves decode to NumPy
+arrays, while Python primitives and nested containers are preserved.
+
+```python
+from rlmesh.numpy import RemoteEnv
+
+env = RemoteEnv("127.0.0.1:5555")
+```
+
+Install it with:
+
+```bash
+pip install --pre "rlmesh[numpy]"
+```
+
+The space wrappers returned by `env.observation_space` and `env.action_space` also use the NumPy
+adapter, so `sample()` returns NumPy-compatible values where tensor leaves are involved.
+
+## Torch
+
+The Torch adapter is experimental in this beta. Tensor leaves decode to Torch tensors.
+
+```python
+from rlmesh.torch import RemoteEnv
+
+env = RemoteEnv("127.0.0.1:5555")
+```
+
+Install it with:
+
+```bash
+pip install --pre "rlmesh[torch]"
+```
+
+Torch decoding happens at the client boundary. The server can remain a normal Gymnasium environment
+and does not need to import Torch unless the environment itself needs it.
+
+## Models
+
+Adapters also apply to model workers:
+
+```python
+from rlmesh.numpy import Model
+
+model = Model(lambda obs: 0)
+model.run("127.0.0.1:5555", max_episodes=1)
+```
