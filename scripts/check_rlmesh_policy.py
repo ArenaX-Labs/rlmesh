@@ -20,6 +20,10 @@ VERSION_RE = re.compile(
     re.IGNORECASE,
 )
 STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str = "(?P<value>[^"]+)";')
+STR_SLICE_CONST_RE = re.compile(
+    r"pub const (?P<name>[A-Z0-9_]+): &\[&str\]\s*=\s*&\[(?P<values>[^\]]*)\];",
+    re.DOTALL,
+)
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
 
@@ -230,6 +234,17 @@ def _validate_protocol_and_workflow(
         errors.append(
             "[workflow].supported_editions must include [workflow].current_edition"
         )
+    else:
+        supported_constant = _rust_str_slice_const(
+            source_text, "SUPPORTED_WORKFLOW_EDITIONS", constants
+        )
+        if supported_constant is None:
+            errors.append(f"{source}: missing SUPPORTED_WORKFLOW_EDITIONS string slice")
+        elif supported_constant != supported:
+            errors.append(
+                "SUPPORTED_WORKFLOW_EDITIONS is "
+                f"{supported_constant!r}, manifest declares {supported!r}"
+            )
 
     for token in _forbidden_unpublished_protocol_tokens():
         if token in source_text:
@@ -260,6 +275,27 @@ def _validate_protocol_and_workflow(
         errors.append("buf.yaml must include a breaking-change policy")
 
     return errors
+
+
+def _rust_str_slice_const(
+    source_text: str, name: str, constants: dict[str, str]
+) -> list[str] | None:
+    for match in STR_SLICE_CONST_RE.finditer(source_text):
+        if match.group("name") != name:
+            continue
+        values: list[str] = []
+        for raw_item in match.group("values").split(","):
+            item = raw_item.strip()
+            if not item:
+                continue
+            if item in constants:
+                values.append(constants[item])
+            elif item.startswith('"') and item.endswith('"'):
+                values.append(item[1:-1])
+            else:
+                return None
+        return values
+    return None
 
 
 def _validate_api_surface(

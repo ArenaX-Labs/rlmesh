@@ -584,8 +584,8 @@ mod tests {
         ResetResponse, StepRequest, StepResponse,
     };
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        capabilities,
+        CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026, MIN_SUPPORTED_PROTOCOL_GENERATION,
+        PROTOCOL_GENERATION, capabilities, supported_workflow_editions,
     };
     use rlmesh_spaces::v1::{EnvContract as SpaceEnvContract, SpaceSpec};
     use tonic::Request;
@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
         assert_eq!(
             response.supported_workflow_editions,
-            vec![CURRENT_WORKFLOW_EDITION.to_string()]
+            supported_workflow_editions()
         );
         assert!(response.env_contract.is_some());
         assert!(
@@ -714,6 +714,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_accepts_legacy_workflow_edition_alias() {
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(HandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                client_name: "client".to_string(),
+                client_version: "0.1.0-beta.1".to_string(),
+                capabilities: Default::default(),
+                workflow_edition: LEGACY_WORKFLOW_EDITION_2026.to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(response.compatible);
+        assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+        assert_eq!(
+            response.supported_workflow_editions,
+            supported_workflow_editions()
+        );
+        assert!(response.env_contract.is_some());
+    }
+
+    #[tokio::test]
     async fn handshake_rejects_unsupported_workflow_edition() {
         let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
 
@@ -724,7 +751,7 @@ mod tests {
                 client_name: "client".to_string(),
                 client_version: "0.1.0-beta.1".to_string(),
                 capabilities: Default::default(),
-                workflow_edition: "2027".to_string(),
+                workflow_edition: "2026.11".to_string(),
             }),
         )
         .await

@@ -12,10 +12,14 @@ pub const PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 
 /// Current workflow semantics edition.
-pub const CURRENT_WORKFLOW_EDITION: &str = "2026";
+pub const CURRENT_WORKFLOW_EDITION: &str = "2026.06";
+
+/// Legacy workflow edition accepted as an alias for the current beta semantics.
+pub const LEGACY_WORKFLOW_EDITION_2026: &str = "2026";
 
 /// Workflow editions understood by this crate.
-pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] = &[CURRENT_WORKFLOW_EDITION];
+pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] =
+    &[CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026];
 
 /// Stable capability names exchanged during handshake.
 pub mod capabilities {
@@ -100,8 +104,8 @@ pub mod model {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        SUPPORTED_WORKFLOW_EDITIONS, capabilities, capability_map,
+        CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026, MIN_SUPPORTED_PROTOCOL_GENERATION,
+        PROTOCOL_GENERATION, SUPPORTED_WORKFLOW_EDITIONS, capabilities, capability_map,
         is_protocol_generation_compatible, is_workflow_edition_supported,
         missing_required_capabilities, supported_workflow_editions,
     };
@@ -135,16 +139,27 @@ mod tests {
     #[test]
     fn current_workflow_edition_is_supported() {
         assert!(is_workflow_edition_supported(CURRENT_WORKFLOW_EDITION));
-        assert_eq!(SUPPORTED_WORKFLOW_EDITIONS, &[CURRENT_WORKFLOW_EDITION]);
+        assert_eq!(
+            SUPPORTED_WORKFLOW_EDITIONS,
+            &[CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026]
+        );
         assert_eq!(
             supported_workflow_editions(),
-            vec![CURRENT_WORKFLOW_EDITION.to_string()]
+            vec![
+                CURRENT_WORKFLOW_EDITION.to_string(),
+                LEGACY_WORKFLOW_EDITION_2026.to_string()
+            ]
         );
     }
 
     #[test]
+    fn legacy_workflow_edition_alias_is_supported() {
+        assert!(is_workflow_edition_supported(LEGACY_WORKFLOW_EDITION_2026));
+    }
+
+    #[test]
     fn unknown_workflow_edition_is_not_supported() {
-        assert!(!is_workflow_edition_supported("2027"));
+        assert!(!is_workflow_edition_supported("2026.11"));
         assert!(!is_workflow_edition_supported(""));
     }
 

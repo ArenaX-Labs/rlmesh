@@ -437,3 +437,82 @@ impl<H> ServedModelServer<H> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct NoopModelHandler;
+
+    #[async_trait]
+    impl ModelHandler for NoopModelHandler {
+        async fn predict(
+            &mut self,
+            _observation: super::super::types::ModelObservation,
+        ) -> Result<spaces::BinaryPayload> {
+            Ok(spaces::BinaryPayload { data: Vec::new() })
+        }
+    }
+
+    fn test_server() -> ServedModelServer<NoopModelHandler> {
+        ServedModelServer {
+            handler: Arc::new(Mutex::new(NoopModelHandler)),
+            active_episodes: Arc::new(Mutex::new(HashMap::new())),
+            route_configs: Arc::new(Mutex::new(HashMap::new())),
+            token: String::new(),
+            activity_tx: None,
+            shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger::new(),
+            serve_options: ServeOptions::default(),
+        }
+    }
+
+    fn handshake_request(workflow_edition: &str) -> HandshakeRequest {
+        HandshakeRequest {
+            protocol_generation: PROTOCOL_GENERATION.to_string(),
+            client_name: "client".to_string(),
+            client_version: "0.1.0-beta.1".to_string(),
+            capabilities: Default::default(),
+            workflow_edition: workflow_edition.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_accepts_current_and_legacy_workflow_editions() {
+        let server = test_server();
+
+        for edition in [
+            CURRENT_WORKFLOW_EDITION,
+            rlmesh_proto::LEGACY_WORKFLOW_EDITION_2026,
+        ] {
+            let response =
+                ModelServiceTrait::handshake(&server, Request::new(handshake_request(edition)))
+                    .await
+                    .unwrap()
+                    .into_inner();
+
+            assert!(response.compatible);
+            assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+            assert_eq!(
+                response.supported_workflow_editions,
+                supported_workflow_editions()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unsupported_workflow_edition() {
+        let server = test_server();
+
+        let response =
+            ModelServiceTrait::handshake(&server, Request::new(handshake_request("2026.11")))
+                .await
+                .unwrap()
+                .into_inner();
+
+        assert!(!response.compatible);
+        assert!(response.error_message.contains("workflow edition"));
+    }
+}

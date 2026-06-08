@@ -3,8 +3,9 @@
 RLMesh promises stable workflows, not frozen internals.
 
 If a workflow is documented as Stable, newer RLMesh releases should keep that workflow working for
-every workflow edition and protocol generation they still support. Package versions are not the
-boundary of that promise.
+every protocol generation and workflow edition they still support. Package versions are not the
+boundary of that promise. During beta, stability labels describe intent and compatibility targets;
+they do not imply that every future migration path already exists.
 
 A package family is only a release coordination label. During `0.x`, the package family is
 `0.minor`, such as `0.1`. After `1.0`, the package family is the major version. It tells users which
@@ -34,17 +35,23 @@ and test helpers are not stable.
 
 ## Workflow Editions
 
-RLMesh uses workflow editions for coordinated semantic shifts.
+RLMesh reserves workflow editions for coordinated semantic shifts.
 
-The first edition is `2026`. An edition describes workflow behavior, not package versions. A future
-edition can change defaults or semantics while keeping old stable workflows available for their
-support window.
+Editions use `YYYY.MM` identifiers, such as `2026.06` or `2026.11`. They are only updated when
+workflow semantics change, not for every package release. An edition describes workflow behavior,
+not package versions.
+
+The current edition is `2026.06`. RLMesh also accepts legacy `2026` as an alias for the same beta
+semantics so existing clients can keep handshaking with newer servers. No alternate workflow edition
+behavior is implemented today.
 
 Peers exchange the requested workflow edition during the handshake. If an endpoint does not support
 the requested edition, it should fail directly instead of guessing.
 
-Dropping support for a stable workflow edition is a compatibility event. It requires release notes,
-a migration path, and an explicit support decision rather than an incidental package-version bump.
+A future edition can change defaults or semantics while keeping old stable workflows available for
+their support window. Dropping support for a stable workflow edition is a compatibility event. It
+requires release notes, a migration path, and an explicit support decision rather than an incidental
+package-version bump.
 
 ## Protocol Generations
 
@@ -56,6 +63,10 @@ generation.
 
 Optional behavior should be negotiated with named capabilities. Unsupported new features should fail
 directly with a message like `requires capability X`.
+
+Capabilities and protocol generations are the active compatibility mechanisms today. Workflow
+editions become meaningful when RLMesh needs a coordinated semantic shift that is too broad for a
+single capability flag.
 
 Dropping support for a stable protocol generation is also a compatibility event. The normal path is
 to add a new protocol generation while continuing to accept the old one for its support window.
@@ -79,3 +90,6 @@ python scripts/check_rlmesh_policy.py
 `mise run check` includes `mise run policy:check`. Pull requests also run protobuf breaking-change
 checks with `mise run protocol:breaking` against the checked-in protocol baseline at
 `crates/rlmesh-proto/baselines/rlmesh.protocol.v1`.
+
+The policy check verifies that the manifest, protocol constants, and public baseline agree. It does
+not prove that multiple workflow editions have separate runtime implementations.
