@@ -2,7 +2,7 @@
 # Tools
 # ──────────────────────────────────────────────
 [tools]
-rust = { version = "1.96", components = "rustfmt,clippy" }
+rust = { version = "1.96.0", components = "rustfmt,clippy" }
 
 # Python
 python = "3.11"
