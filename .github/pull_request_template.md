@@ -16,6 +16,7 @@ Briefly describe what changed and why.
 - [ ] Public Python API
 - [ ] Public Rust API
 - [ ] Packaging or installation
+- [ ] Stable API, workflow edition, or protocol policy
 - [ ] Gym/Gymnasium compatibility
 - [ ] NumPy or Torch interop
 - [ ] Remote environment/model transport
@@ -27,11 +28,10 @@ Briefly describe what changed and why.
 
 - [ ] `mise run check`
 - [ ] `mise run test`
+- [ ] `mise run release:check`
 - [ ] Targeted tests:
-- [ ] System or release validation:
 - [ ] Not run; reason:
 
 ## Review Notes
 
-Link related issues and call out migration, compatibility, packaging, release,
-or follow-up work.
+Link related issues and call out migration, compatibility, packaging, release, or follow-up work.

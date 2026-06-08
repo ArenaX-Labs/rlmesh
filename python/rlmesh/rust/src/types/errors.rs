@@ -17,7 +17,7 @@ create_exception!(
     _rlmesh,
     ProtocolException,
     RLMeshException,
-    "Protocol-level errors (ABI mismatch, invalid messages)"
+    "Protocol-level errors (generation mismatch, invalid messages)"
 );
 
 create_exception!(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Protocol, SupportsFloat, TypeAlias, TypeVar
+from typing import Any, Protocol, SupportsFloat, TypeAlias, TypeVar
 
 from ._rlmesh import Tensor as _Tensor
 
@@ -31,11 +31,11 @@ class SpaceLike(Protocol[SpaceT]):
         """Return one valid sample from the space."""
         ...
 
-    def contains(self, value: object) -> bool:
+    def contains(self, value: Any, /) -> bool:
         """Return whether ``value`` belongs to the space."""
         ...
 
-    def seed(self, seed: int | None = None) -> int | None:
+    def seed(self, seed: int | None = None) -> int | list[int] | dict[str, int] | None:
         """Seed the space sampler."""
         ...
 

@@ -130,15 +130,19 @@ impl PyEnvContract {
     }
 
     #[getter]
-    #[gen_stub(override_return_type(type_repr = "SpaceSpec | None", imports = ()))]
+    #[gen_stub(override_return_type(type_repr = "SpaceSpec", imports = ()))]
     fn observation_space<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        option_space_spec_to_py(py, self.inner.observation_space.as_ref())
+        required_space_spec_to_py(
+            py,
+            self.inner.observation_space.as_ref(),
+            "observation_space",
+        )
     }
 
     #[getter]
-    #[gen_stub(override_return_type(type_repr = "SpaceSpec | None", imports = ()))]
+    #[gen_stub(override_return_type(type_repr = "SpaceSpec", imports = ()))]
     fn action_space<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        option_space_spec_to_py(py, self.inner.action_space.as_ref())
+        required_space_spec_to_py(py, self.inner.action_space.as_ref(), "action_space")
     }
 
     #[gen_stub(override_return_type(type_repr = "dict[str, object]", imports = ()))]
@@ -154,19 +158,25 @@ impl PyEnvContract {
                 None => py.None(),
             },
         )?;
+        let observation_space = self.inner.observation_space.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "remote environment contract missing observation_space",
+            )
+        })?;
         result.set_item(
             "observation_space",
-            match self.inner.observation_space.as_ref() {
-                Some(space) => space_spec_to_pydict(py, space)?.into_any().unbind(),
-                None => py.None(),
-            },
+            space_spec_to_pydict(py, observation_space)?
+                .into_any()
+                .unbind(),
         )?;
+        let action_space = self.inner.action_space.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "remote environment contract missing action_space",
+            )
+        })?;
         result.set_item(
             "action_space",
-            match self.inner.action_space.as_ref() {
-                Some(space) => space_spec_to_pydict(py, space)?.into_any().unbind(),
-                None => py.None(),
-            },
+            space_spec_to_pydict(py, action_space)?.into_any().unbind(),
         )?;
         Ok(result)
     }
@@ -486,17 +496,23 @@ fn parse_dtype(value: Option<&str>, default: DType) -> PyResult<DType> {
     }
 }
 
-fn option_space_spec_to_py<'py>(py: Python<'py>, spec: Option<&SpaceSpec>) -> PyResult<Py<PyAny>> {
-    match spec {
-        Some(spec) => Py::new(
-            py,
-            PySpaceSpec {
-                inner: spec.clone(),
-            },
-        )
-        .map(|value| value.into_any()),
-        None => Ok(py.None()),
-    }
+fn required_space_spec_to_py<'py>(
+    py: Python<'py>,
+    spec: Option<&SpaceSpec>,
+    field: &'static str,
+) -> PyResult<Py<PyAny>> {
+    let spec = spec.ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "remote environment contract missing {field}"
+        ))
+    })?;
+    Py::new(
+        py,
+        PySpaceSpec {
+            inner: spec.clone(),
+        },
+    )
+    .map(|value| value.into_any())
 }
 
 #[cfg(test)]
@@ -514,9 +530,11 @@ mod tests {
             let module = pyo3::types::PyModule::new(py, "_rlmesh_test").unwrap();
             register_classes(&module).unwrap();
 
+            let observation_space = TextBuilder::new(16).build().unwrap();
             let action_space = DiscreteBuilder::new(3).build().unwrap();
             let env_contract = EnvContract {
                 id: "SpecViewEnv-v1".to_string(),
+                observation_space: Some(observation_space),
                 action_space: Some(action_space),
                 num_envs: 1,
                 ..Default::default()
@@ -538,6 +556,26 @@ mod tests {
                     .unwrap(),
                 "SpecViewEnv-v1"
             );
+            assert!(mapping.get_item("observation_space").unwrap().is_some());
+            assert!(mapping.get_item("action_space").unwrap().is_some());
+        });
+    }
+
+    #[test]
+    fn env_contract_view_rejects_missing_required_spaces() {
+        Python::attach(|py| {
+            let module = pyo3::types::PyModule::new(py, "_rlmesh_test").unwrap();
+            register_classes(&module).unwrap();
+
+            let env_contract = EnvContract {
+                id: "InvalidSpecViewEnv-v1".to_string(),
+                num_envs: 1,
+                ..Default::default()
+            };
+
+            let value = env_contract_to_py(py, &env_contract).unwrap();
+            let err = value.bind(py).call_method0("to_dict").unwrap_err();
+            assert!(err.to_string().contains("missing observation_space"));
         });
     }
 

@@ -12,6 +12,10 @@ use rlmesh_proto::model::v1::{
     ShutdownRequest, ShutdownResponse, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
+use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities,
+    capability_map, is_workflow_edition_supported, supported_workflow_editions,
+};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -165,22 +169,36 @@ where
     ) -> std::result::Result<Response<HandshakeResponse>, Status> {
         self.authenticate(&request)?;
         let request = request.into_inner();
-        let compatible =
-            rlmesh_proto::is_abi_compatible(&request.abi_version, rlmesh_proto::ABI_VERSION);
+        let protocol_compatible = rlmesh_proto::is_protocol_generation_compatible(
+            &request.protocol_generation,
+            PROTOCOL_GENERATION,
+        );
+        let edition_compatible = is_workflow_edition_supported(&request.workflow_edition);
+        let compatible = protocol_compatible && edition_compatible;
         Ok(Response::new(HandshakeResponse {
             compatible,
-            server_abi_version: rlmesh_proto::ABI_VERSION.to_string(),
-            min_supported_abi: rlmesh_proto::ABI_VERSION.to_string(),
+            server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+            min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
+            } else if !protocol_compatible {
+                format!(
+                    "protocol generation {} not compatible with server {}",
+                    request.protocol_generation, PROTOCOL_GENERATION
+                )
             } else {
                 format!(
-                    "ABI version {} not compatible with server {}",
-                    request.abi_version,
-                    rlmesh_proto::ABI_VERSION
+                    "workflow edition {} not supported by server; supported editions: {}",
+                    request.workflow_edition,
+                    supported_workflow_editions().join(", ")
                 )
             },
-            capabilities: HashMap::new(),
+            capabilities: capability_map(&[
+                capabilities::MODEL_SERVICE_V1,
+                capabilities::SPACES_CORE_V1,
+            ]),
+            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+            supported_workflow_editions: supported_workflow_editions(),
         }))
     }
 

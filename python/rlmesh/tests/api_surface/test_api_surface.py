@@ -45,6 +45,7 @@ def test_spaces_namespace_contains_space_family() -> None:
         "MultiBinary",
         "MultiDiscrete",
         "Space",
+        "SpaceAdapter",
         "SpaceSpec",
         "Text",
         "Tuple",
@@ -83,6 +84,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "SandboxVectorEnv",
         "asarray",
         "from_array",
+        "space_from_spec",
     ]
     assert "NumpyAdapter" not in rlmesh_numpy.__all__
     assert not hasattr(rlmesh_numpy, "NumpyAdapter")
@@ -97,6 +99,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "TorchValue",
         "as_tensor",
         "from_tensor",
+        "space_from_spec",
     ]
     assert "TorchAdapter" not in rlmesh_torch.__all__
     assert not hasattr(rlmesh_torch, "TorchAdapter")

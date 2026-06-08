@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any, cast
+
+import pytest
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    NumpyArray = np.ndarray[Any, Any]
+
 
 def test_space_spec_debug_shape_is_private() -> None:
     from rlmesh import spaces
@@ -18,7 +27,8 @@ def test_space_spec_debug_shape_is_private() -> None:
     assert not hasattr(space, "details")
     assert not hasattr(space, "to_dict")
 
-    assert spec._details()["n"] == 3
+    details = cast(dict[str, object], spec._details())
+    assert details["n"] == 3
     assert spec._to_dict()["kind"] == "discrete"
     assert repr(space) == "Discrete(kind='discrete', shape=[], dtype='int64')"
 
@@ -66,6 +76,38 @@ def test_space_family_uses_typed_wrapper_properties() -> None:
     assert isinstance(roundtripped.spaces["obs"], spaces.Box)
     assert roundtripped.spaces["obs"].shape == [2]
     assert roundtripped == source
+
+
+def test_native_tensor_like_samples_use_canonical_tensor_values() -> None:
+    from rlmesh import Tensor, spaces
+
+    space = spaces.Box(-1.0, 1.0, shape=[2], dtype="float32")
+
+    sample = space.sample()
+
+    assert isinstance(sample, Tensor)
+    assert sample.shape == [2]
+    assert sample.dtype == "float32"
+    assert space.contains(sample)
+
+
+def test_numpy_space_from_spec_samples_and_contains_numpy_values() -> None:
+    np = pytest.importorskip("numpy")
+    from rlmesh import numpy as rlmesh_numpy
+    from rlmesh import spaces
+
+    space = rlmesh_numpy.space_from_spec(
+        spaces.Box(-1.0, 1.0, shape=[2], dtype="float32").spec
+    )
+
+    sample = space.sample()
+
+    assert isinstance(sample, np.ndarray)
+    sample_array = cast("NumpyArray", sample)
+    assert sample_array.shape == (2,)
+    assert sample_array.dtype == np.dtype("float32")
+    assert space.contains(sample_array)
+    assert space.contains(np.asarray([0.25, -0.25], dtype=np.float32))
 
 
 def test_text_default_is_unrestricted_and_explicit_charset_is_restrictive() -> None:

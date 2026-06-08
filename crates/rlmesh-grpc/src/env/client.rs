@@ -1,7 +1,5 @@
 //! Environment client transport implementation using Tonic.
 
-use std::collections::HashMap;
-
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
@@ -11,13 +9,13 @@ use tokio_stream::wrappers::ReceiverStream;
 #[cfg(unix)]
 use tower::service_fn;
 
-use rlmesh_proto::ABI_VERSION;
 use rlmesh_proto::core::v1::OperationTelemetry;
 use rlmesh_proto::env::v1::{
     CloseResponse, EnvContract, HandshakeRequest, JoinRequest, JoinResponse, RenderRequest,
     RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, ShutdownResponse, StepRequest,
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
+use rlmesh_proto::{CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, capability_map};
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
@@ -30,7 +28,9 @@ use super::stream::spawn_response_pump;
 pub struct EnvHandshake {
     pub env_contract: EnvContract,
     pub num_envs: usize,
-    pub server_abi_version: String,
+    pub server_protocol_generation: String,
+    pub workflow_edition: String,
+    pub supported_workflow_editions: Vec<String>,
 }
 
 /// Environment client that connects to an EnvService server.
@@ -125,10 +125,14 @@ impl EnvClient {
         }
 
         let req = HandshakeRequest {
-            abi_version: ABI_VERSION.to_string(),
+            protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "rlmesh-rust-grpc".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: HashMap::new(),
+            capabilities: capability_map(&[
+                capabilities::ENV_SERVICE_V1,
+                capabilities::SPACES_CORE_V1,
+            ]),
+            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
         };
 
         let res = self
@@ -147,13 +151,16 @@ impl EnvClient {
                 "no env_contract in response".to_string(),
             ))
         })?;
+        validate_env_contract(&env_contract)?;
         let num_envs = usize::try_from(env_contract.num_envs)
             .unwrap_or(usize::MAX)
             .max(1);
         let handshake = EnvHandshake {
             env_contract,
             num_envs,
-            server_abi_version: res.server_abi_version,
+            server_protocol_generation: res.server_protocol_generation,
+            workflow_edition: res.workflow_edition,
+            supported_workflow_editions: res.supported_workflow_editions,
         };
         self.state = ClientState::Ready;
 
@@ -376,11 +383,52 @@ impl EnvClient {
     }
 }
 
+fn validate_env_contract(env_contract: &EnvContract) -> Result<(), GrpcError> {
+    if env_contract.observation_space.is_none() {
+        return Err(ProtocolError::HandshakeFailed(
+            "env_contract missing observation_space".to_string(),
+        )
+        .into());
+    }
+    if env_contract.action_space.is_none() {
+        return Err(ProtocolError::HandshakeFailed(
+            "env_contract missing action_space".to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rlmesh_proto::env::v1::{CloseRequest, CloseResponse, StepResponse};
+    use rlmesh_proto::spaces::v1::SpaceSpec;
     use tonic::transport::Endpoint;
+
+    #[test]
+    fn validate_env_contract_requires_spaces() {
+        let valid = EnvContract {
+            observation_space: Some(SpaceSpec::default()),
+            action_space: Some(SpaceSpec::default()),
+            ..Default::default()
+        };
+        assert!(validate_env_contract(&valid).is_ok());
+
+        let missing_observation = EnvContract {
+            action_space: Some(SpaceSpec::default()),
+            ..Default::default()
+        };
+        let err = validate_env_contract(&missing_observation).unwrap_err();
+        assert!(err.to_string().contains("missing observation_space"));
+
+        let missing_action = EnvContract {
+            observation_space: Some(SpaceSpec::default()),
+            ..Default::default()
+        };
+        let err = validate_env_contract(&missing_action).unwrap_err();
+        assert!(err.to_string().contains("missing action_space"));
+    }
 
     #[tokio::test]
     async fn send_on_stream_discards_stale_responses_until_request_id_matches() {

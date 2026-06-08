@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 from .client import Transport, normalize_bind_address
+from .specs import EnvContract
 from .types import EnvLike as BaseEnvLike
 from .types import VectorEnvLike
 
@@ -82,9 +83,20 @@ class EnvServer:
             options=options,
         )
 
+    @property
     def address(self) -> str:
         """Get the bound server address."""
         return self._server.address()
+
+    @property
+    def env_contract(self) -> EnvContract:
+        """Environment contract served by this endpoint."""
+        return self._server.env_contract
+
+    @property
+    def spec(self) -> EnvContract:
+        """Alias for `env_contract`."""
+        return self._server.spec
 
     def serve(self) -> None:
         """Start serving the environment (blocking)."""
@@ -94,12 +106,23 @@ class EnvServer:
         """Start serving the environment on a background thread."""
         self._server.start()
 
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait for a background server to stop.
+
+        Args:
+            timeout: Optional timeout in seconds. ``None`` waits indefinitely.
+
+        Returns:
+            ``True`` if the server has stopped, or ``False`` if the timeout elapsed.
+        """
+        return self._server.wait(timeout)
+
     def shutdown(self) -> None:
         """Stop the server if it is running."""
         self._server.shutdown()
 
     def __repr__(self) -> str:
-        return f"EnvServer(address={self.address()!r})"
+        return f"EnvServer(address={self.address!r})"
 
     def __enter__(self) -> EnvServer:
         return self

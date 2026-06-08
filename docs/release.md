@@ -9,10 +9,27 @@ git status --short
 mise run release:check
 ```
 
+Review the compatibility policy before changing stable APIs, protocol fields, or package versions:
+[`compatibility.md`](compatibility.md).
+
 Confirm the version spellings:
 
 - Rust crates: `0.1.0-beta.1`
 - Python package: `0.1.0b1`
+
+Confirm the release policy manifest:
+
+```bash
+python scripts/check_rlmesh_policy.py
+```
+
+Confirm protobuf compatibility against the checked-in public protocol baseline:
+
+```bash
+mise run protocol:breaking
+```
+
+This is also included in `mise run check` and therefore in `mise run release:check`.
 
 Confirm package and project access:
 
@@ -20,47 +37,58 @@ Confirm package and project access:
 - The crates.io names in the workspace are available to the publishing account.
 - `rlmesh.dev` and `docs.rlmesh.dev` resolve to the intended launch pages.
 
-If using `fnox`, configure the local keychain values referenced by
-`fnox.toml` before publishing:
+If using `fnox`, configure the local keychain values referenced by `fnox.toml` before publishing:
 
 - `CARGO_REGISTRY_TOKEN`
 - `PYPI_TOKEN`
 
 ## Rust Crates
 
+Core feature releases should move the public Rust crates together. Patch releases may be
+artifact-specific when the fix is isolated, but republish any top-level crate that needs to depend
+on a fixed lower-level crate.
+
 Verify packaging without uploading:
 
 ```bash
-cargo package --workspace --allow-dirty
+mise run release:rust:package
 ```
+
+Before the first crates.io publish, workspace crates that depend on other RLMesh crates cannot be
+verified by `cargo package` as a full workspace because Cargo rewrites path dependencies to registry
+dependencies during publish verification. The release task fully verifies independent crates and
+then assembles all workspace tarballs with `--no-verify`; `mise run check` and `mise run test`
+remain the local compilation and behavior gates.
 
 Publish crates in dependency order:
 
 ```bash
 cargo publish -p rlmesh-proto
 cargo publish -p rlmesh-spaces
-cargo publish -p rlmesh-grpc
-cargo publish -p rlmesh-runtime
-cargo publish -p rlmesh
 cargo publish -p rlmesh-cli
+cargo publish -p rlmesh-runtime
+cargo publish -p rlmesh-grpc
 cargo publish -p rlmesh-sandbox
+cargo publish -p rlmesh
 ```
 
 ## Python Wheels
 
-RLMesh currently publishes Python wheels only. Do not build or upload a Python
-source distribution; native builds are covered by the explicit wheel matrix
-below.
+Python is a core RLMesh artifact. Python-only fixes may produce a Python patch release without
+forcing no-op publishes for unrelated bindings, but the package family in `rlmesh.toml` must stay
+unchanged. Protocol generation or workflow edition changes need an explicit compatibility review.
 
-Local smoke builds may produce plain `linux_*` platform tags. Those wheels are
-useful for installed-artifact validation but cannot be uploaded to PyPI. Release
-validation intentionally rejects plain `linux_*` tags; expected Linux release
-wheels use uploadable tags such as `manylinux` or `musllinux`.
+RLMesh currently publishes Python wheels only. Do not build or upload a Python source distribution;
+native builds are covered by the explicit wheel matrix below.
 
-The wheel checker validates both ABI/platform tags and payload contents. Wheels
-must contain only runtime package files, type information, the native extension,
-metadata, licenses, notices, and SBOMs; tests, Rust source, caches, and build
-outputs are rejected.
+Local smoke builds may produce plain `linux_*` platform tags. Those wheels are useful for
+installed-artifact validation but cannot be uploaded to PyPI. Release validation intentionally
+rejects plain `linux_*` tags; expected Linux release wheels use uploadable tags such as `manylinux`
+or `musllinux`.
+
+The wheel checker validates both ABI/platform tags and payload contents. Wheels must contain only
+runtime package files, type information, the native extension, metadata, licenses, notices, and
+SBOMs; tests, Rust source, caches, and build outputs are rejected.
 
 Build release wheels:
 

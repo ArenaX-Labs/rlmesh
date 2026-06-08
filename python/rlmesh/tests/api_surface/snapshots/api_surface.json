@@ -16,8 +16,12 @@
         "kind": "class",
         "members": {
           "address": {
-            "kind": "function",
-            "signature": "address() -> str"
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
           },
           "serve": {
             "kind": "function",
@@ -27,9 +31,17 @@
             "kind": "function",
             "signature": "shutdown() -> None"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
           "start": {
             "kind": "function",
             "signature": "start() -> None"
+          },
+          "wait": {
+            "kind": "function",
+            "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
         "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None)",
@@ -63,11 +75,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -87,11 +103,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -130,11 +146,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -158,11 +178,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -186,11 +206,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "spec": {
             "kind": "property",
@@ -295,11 +315,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -319,11 +343,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -362,11 +386,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -390,11 +418,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -418,11 +446,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "spec": {
             "kind": "property",
@@ -454,11 +482,7 @@
     }
   },
   "rlmesh.model": {
-    "exports": [
-      "LifecycleCallback",
-      "ModelBase",
-      "PredictFn"
-    ],
+    "exports": ["LifecycleCallback", "ModelBase", "PredictFn"],
     "objects": {
       "LifecycleCallback": {
         "kind": "type alias",
@@ -505,7 +529,8 @@
       "SandboxInfo",
       "SandboxVectorEnv",
       "asarray",
-      "from_array"
+      "from_array",
+      "space_from_spec"
     ],
     "objects": {
       "Model": {
@@ -541,11 +566,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -565,11 +594,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -608,11 +637,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -636,11 +669,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -664,11 +697,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "spec": {
             "kind": "property",
@@ -687,11 +720,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -711,11 +744,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -781,11 +814,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -809,11 +842,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -837,11 +870,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "source": {
             "kind": "property",
@@ -868,6 +901,11 @@
         "kind": "function",
         "signature": "from_array(array: object) -> Tensor | PrimitiveValue",
         "stability": "Stable"
+      },
+      "space_from_spec": {
+        "kind": "function",
+        "signature": "space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]",
+        "stability": "Stable"
       }
     }
   },
@@ -886,11 +924,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[object]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -910,11 +948,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[object]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -948,11 +986,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[object]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -976,11 +1014,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[object]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -1000,11 +1038,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[object]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[object]"
           },
           "spec": {
             "kind": "property",
@@ -1022,11 +1060,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -1046,11 +1084,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -1135,11 +1173,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -1163,11 +1201,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -1191,11 +1229,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "source": {
             "kind": "property",
@@ -1216,10 +1254,7 @@
     }
   },
   "rlmesh.server": {
-    "exports": [
-      "EnvLike",
-      "EnvServer"
-    ],
+    "exports": ["EnvLike", "EnvServer"],
     "objects": {
       "EnvLike": {
         "kind": "type alias",
@@ -1230,8 +1265,12 @@
         "kind": "class",
         "members": {
           "address": {
-            "kind": "function",
-            "signature": "address() -> str"
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
           },
           "serve": {
             "kind": "function",
@@ -1241,9 +1280,17 @@
             "kind": "function",
             "signature": "shutdown() -> None"
           },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
           "start": {
             "kind": "function",
             "signature": "start() -> None"
+          },
+          "wait": {
+            "kind": "function",
+            "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
         "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None)",
@@ -1259,6 +1306,7 @@
       "MultiBinary",
       "MultiDiscrete",
       "Space",
+      "SpaceAdapter",
       "SpaceSpec",
       "Text",
       "Tuple",
@@ -1296,7 +1344,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1335,7 +1383,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1347,7 +1395,7 @@
           },
           "spaces": {
             "kind": "attribute",
-            "signature": "spaces: Mapping[str, Space]"
+            "signature": "spaces: Mapping[str, Space[Value]]"
           },
           "spec": {
             "kind": "property",
@@ -1358,7 +1406,7 @@
             "signature": "to_gymnasium_space() -> object"
           }
         },
-        "signature": "Dict(spaces: Mapping[str, Space | SpaceSpec] | SpaceSpec)",
+        "signature": "Dict(spaces: Mapping[str, Space[Any] | SpaceSpec] | SpaceSpec)",
         "stability": "Stable"
       },
       "Discrete": {
@@ -1382,7 +1430,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1429,7 +1477,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1476,7 +1524,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1515,7 +1563,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1535,6 +1583,21 @@
           }
         },
         "signature": "Space(spec: SpaceSpec)",
+        "stability": "Stable"
+      },
+      "SpaceAdapter": {
+        "kind": "class",
+        "members": {
+          "input": {
+            "kind": "function",
+            "signature": "input(value: object, spec: SpaceSpec) -> object"
+          },
+          "sample": {
+            "kind": "function",
+            "signature": "sample(value: object, spec: SpaceSpec) -> OutputT"
+          }
+        },
+        "signature": "SpaceAdapter(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
         "stability": "Stable"
       },
       "SpaceSpec": {
@@ -1592,7 +1655,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1631,7 +1694,7 @@
           },
           "sample": {
             "kind": "function",
-            "signature": "sample() -> object"
+            "signature": "sample() -> OutputT"
           },
           "seed": {
             "kind": "function",
@@ -1643,7 +1706,7 @@
           },
           "spaces": {
             "kind": "attribute",
-            "signature": "spaces: tuple[Space, ...]"
+            "signature": "spaces: tuple[Space[Value], ...]"
           },
           "spec": {
             "kind": "property",
@@ -1654,38 +1717,35 @@
             "signature": "to_gymnasium_space() -> object"
           }
         },
-        "signature": "Tuple(spaces: Iterable[Space | SpaceSpec] | SpaceSpec)",
+        "signature": "Tuple(spaces: Iterable[Space[Any] | SpaceSpec] | SpaceSpec)",
         "stability": "Experimental"
       },
       "from_gymnasium_space": {
         "kind": "function",
-        "signature": "from_gymnasium_space(space: object) -> Space",
+        "signature": "from_gymnasium_space(space: object) -> Space[Value]",
         "stability": "Stable"
       },
       "space_from_spec": {
         "kind": "function",
-        "signature": "space_from_spec(spec: SpaceSpec) -> Space",
+        "signature": "space_from_spec(spec: SpaceSpec, *, adapter: SpaceAdapter[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
         "stability": "Stable"
       },
       "to_gymnasium_space": {
         "kind": "function",
-        "signature": "to_gymnasium_space(space: Space | SpaceSpec) -> object",
+        "signature": "to_gymnasium_space(space: Space[Any] | SpaceSpec) -> object",
         "stability": "Stable"
       }
     }
   },
   "rlmesh.specs": {
-    "exports": [
-      "EnvContract",
-      "SpaceSpec"
-    ],
+    "exports": ["EnvContract", "SpaceSpec"],
     "objects": {
       "EnvContract": {
         "kind": "class",
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: SpaceSpec | None"
+            "signature": "property action_space: SpaceSpec"
           },
           "env": {
             "kind": "property",
@@ -1705,7 +1765,7 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: SpaceSpec | None"
+            "signature": "property observation_space: SpaceSpec"
           },
           "render_mode": {
             "kind": "property",
@@ -1760,7 +1820,8 @@
       "SandboxVectorEnv",
       "TorchValue",
       "as_tensor",
-      "from_tensor"
+      "from_tensor",
+      "space_from_spec"
     ],
     "objects": {
       "Model": {
@@ -1791,11 +1852,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -1815,11 +1880,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -1858,11 +1923,15 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -1886,11 +1955,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -1914,11 +1983,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "spec": {
             "kind": "property",
@@ -1937,11 +2006,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -1961,11 +2030,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -2031,11 +2100,11 @@
         "members": {
           "action_space": {
             "kind": "property",
-            "signature": "property action_space: Space | None"
+            "signature": "property action_space: Space[ActionT]"
           },
           "action_space_spec": {
             "kind": "property",
-            "signature": "property action_space_spec: SpaceSpec | None"
+            "signature": "property action_space_spec: SpaceSpec"
           },
           "close": {
             "kind": "function",
@@ -2059,11 +2128,11 @@
           },
           "observation_space": {
             "kind": "property",
-            "signature": "property observation_space: Space | None"
+            "signature": "property observation_space: Space[ValueT]"
           },
           "observation_space_spec": {
             "kind": "property",
-            "signature": "property observation_space_spec: SpaceSpec | None"
+            "signature": "property observation_space_spec: SpaceSpec"
           },
           "open_viewer": {
             "kind": "function",
@@ -2087,11 +2156,11 @@
           },
           "single_action_space": {
             "kind": "property",
-            "signature": "property single_action_space: Space | None"
+            "signature": "property single_action_space: Space[ActionT]"
           },
           "single_observation_space": {
             "kind": "property",
-            "signature": "property single_observation_space: Space | None"
+            "signature": "property single_observation_space: Space[ValueT]"
           },
           "source": {
             "kind": "property",
@@ -2122,6 +2191,11 @@
       "from_tensor": {
         "kind": "function",
         "signature": "from_tensor(tensor: object) -> Tensor | bool | int | float",
+        "stability": "Experimental"
+      },
+      "space_from_spec": {
+        "kind": "function",
+        "signature": "space_from_spec(spec: SpaceSpec) -> Space[TorchValue]",
         "stability": "Experimental"
       }
     }
@@ -2183,7 +2257,7 @@
         "members": {
           "contains": {
             "kind": "function",
-            "signature": "contains(value: object) -> bool"
+            "signature": "contains(value: Any, /) -> bool"
           },
           "sample": {
             "kind": "function",
@@ -2191,7 +2265,7 @@
           },
           "seed": {
             "kind": "function",
-            "signature": "seed(seed: int | None = None) -> int | None"
+            "signature": "seed(seed: int | None = None) -> int | list[int] | dict[str, int] | None"
           }
         },
         "stability": "Stable"

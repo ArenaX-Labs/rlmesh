@@ -1,18 +1,20 @@
 # RLMesh
 
-RLMesh is evaluation infrastructure for RL and VLA systems. The Python package
-provides APIs for connecting models to environments and running
-model-environment evaluation workflows.
+RLMesh is a Python SDK for model-environment evaluation workflows. It can serve Gymnasium-style
+environments, connect clients over local or remote transports, and adapt values for plain Python,
+NumPy, and Torch users.
 
-> Early beta: APIs and package structure may change before a stable release.
+> Beta: APIs and package structure may change before the stable release.
 
 ## Installation
+
+Install the published beta from PyPI:
 
 ```bash
 pip install --pre rlmesh
 ```
 
-Optional adapters:
+Install optional adapters as needed:
 
 ```bash
 pip install --pre "rlmesh[numpy]"
@@ -22,26 +24,47 @@ pip install --pre "rlmesh[torch]"
 
 ## Quickstart
 
-Terminal 1:
+Install RLMesh with Gymnasium support:
 
 ```bash
-python examples/python/quickstart/serve.py
+pip install --pre "rlmesh[gymnasium]"
 ```
 
-Terminal 2:
+In one process, serve any Gymnasium-compatible environment:
 
-```bash
-python examples/python/quickstart/eval.py
+```python
+import gymnasium as gym
+import rlmesh
+
+env = gym.make("CartPole-v1")
+rlmesh.EnvServer(env, "127.0.0.1:5555").serve()
 ```
 
-The same eval script can connect to any example `EnvServer` listening on
-`127.0.0.1:5555`, including the SAI MuJoCo and SAI Pygame example servers when
-they are launched from their own example environments.
+In another process, connect to it as a remote environment:
+
+```python
+from rlmesh.numpy import RemoteEnv
+
+env = RemoteEnv("127.0.0.1:5555")
+observation, info = env.reset(seed=0)
+
+terminated = truncated = False
+while not (terminated or truncated):
+    action = env.action_space.sample()
+    observation, reward, terminated, truncated, info = env.step(action)
+
+env.close()
+```
+
+Runnable examples and exact commands live in the repository under `examples/python`.
 
 ## Links
 
 - Homepage: https://rlmesh.dev
+- Documentation: https://docs.rlmesh.dev
 - Repository: https://github.com/ArenaX-Labs/rlmesh
+- Examples: https://github.com/ArenaX-Labs/rlmesh/tree/main/examples/python
+- Issues: https://github.com/ArenaX-Labs/rlmesh/issues
 - Default contact: research@competesai.com
 
 ## License

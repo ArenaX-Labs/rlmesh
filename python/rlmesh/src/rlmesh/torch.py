@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import importlib
-from typing import TYPE_CHECKING, ClassVar, TypeAlias, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._rlmesh import Tensor
 from ._values import UNHANDLED, ValueAdapter, decode_tree, encode_tree
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from .spaces import Space, SpaceAdapter
+from .spaces import space_from_spec as _space_from_spec
+from .spaces._sample import space_adapter_from_value_adapter
+from .specs import SpaceSpec
 from .types import PrimitiveValue, Value
 
 if TYPE_CHECKING:
@@ -140,6 +144,15 @@ class _TorchAdapter:
 
 
 _torch_adapter: ValueAdapter = _TorchAdapter()
+_torch_space_adapter: SpaceAdapter[TorchValue] = cast(
+    SpaceAdapter[TorchValue],
+    space_adapter_from_value_adapter(_torch_adapter),
+)
+
+
+def space_from_spec(spec: SpaceSpec) -> Space[TorchValue]:
+    """Create a Torch-adapted space wrapper for a native space spec."""
+    return _space_from_spec(spec, adapter=_torch_space_adapter)
 
 
 @final
@@ -158,6 +171,7 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue]):
     """
 
     _adapter: ClassVar[ValueAdapter] = _torch_adapter
+    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
 
 
 @final
@@ -173,6 +187,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
     """
 
     _adapter: ClassVar[ValueAdapter] = _torch_adapter
+    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
 
 
 @final
@@ -239,4 +254,5 @@ __all__ = [
     "TorchValue",
     "as_tensor",
     "from_tensor",
+    "space_from_spec",
 ]

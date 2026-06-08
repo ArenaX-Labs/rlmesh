@@ -34,6 +34,7 @@ impl RemoteEnv {
             .map_err(|error| {
                 Error::Internal(format!("invalid spaces spec from remote env: {error}"))
             })?;
+        validate_env_contract(&env_contract)?;
         Ok(Self {
             inner,
             env_contract,
@@ -53,15 +54,22 @@ impl RemoteEnv {
         self.num_envs
     }
 
-    pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResult> {
-        let observation_space = self
-            .env_contract()
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        self.env_contract
             .observation_space
             .as_ref()
-            .ok_or_else(|| {
-                Error::Internal("env_contract is missing observation_space".to_string())
-            })?
-            .clone();
+            .expect("remote env contract was validated during connect")
+    }
+
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        self.env_contract
+            .action_space
+            .as_ref()
+            .expect("remote env contract was validated during connect")
+    }
+
+    pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResult> {
+        let observation_space = self.observation_space().clone();
 
         let response = self
             .inner
@@ -89,19 +97,8 @@ impl RemoteEnv {
     }
 
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResult> {
-        let env_contract = self.env_contract();
-        let action_space = env_contract
-            .action_space
-            .as_ref()
-            .ok_or_else(|| Error::Internal("env_contract is missing action_space".to_string()))?
-            .clone();
-        let observation_space = env_contract
-            .observation_space
-            .as_ref()
-            .ok_or_else(|| {
-                Error::Internal("env_contract is missing observation_space".to_string())
-            })?
-            .clone();
+        let action_space = self.action_space().clone();
+        let observation_space = self.observation_space().clone();
 
         validate_action_count(&req.actions, self.num_envs)
             .map_err(|error| Error::Environment(error.into()))?;
@@ -183,5 +180,52 @@ impl RemoteEnv {
             .await
             .map_err(Error::from)?;
         Ok(response.accepted)
+    }
+}
+
+fn validate_env_contract(env_contract: &spaces::EnvContract) -> Result<()> {
+    if env_contract.observation_space.is_none() {
+        return Err(Error::Internal(
+            "remote env contract missing observation_space".to_string(),
+        ));
+    }
+    if env_contract.action_space.is_none() {
+        return Err(Error::Internal(
+            "remote env contract missing action_space".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_env_contract_requires_spaces() {
+        let observation_space = spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![1])
+            .build()
+            .unwrap();
+        let action_space = spaces::spaces::DiscreteBuilder::new(2).build().unwrap();
+        let valid = spaces::EnvContract {
+            observation_space: Some(observation_space.clone()),
+            action_space: Some(action_space.clone()),
+            ..Default::default()
+        };
+        assert!(validate_env_contract(&valid).is_ok());
+
+        let missing_observation = spaces::EnvContract {
+            action_space: Some(action_space),
+            ..Default::default()
+        };
+        let err = validate_env_contract(&missing_observation).unwrap_err();
+        assert!(err.to_string().contains("missing observation_space"));
+
+        let missing_action = spaces::EnvContract {
+            observation_space: Some(observation_space),
+            ..Default::default()
+        };
+        let err = validate_env_contract(&missing_action).unwrap_err();
+        assert!(err.to_string().contains("missing action_space"));
     }
 }

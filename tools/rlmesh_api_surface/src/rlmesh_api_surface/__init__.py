@@ -5,9 +5,12 @@ from rlmesh_api_surface.api_surface import (
     ApiMember,
     ApiModule,
     ApiSurface,
+    api_surface_contract_json,
     collect_python_api_surface,
+    docs_api_surface_json,
+    docs_api_surface_payload,
     main,
-    snapshot_json,
+    write_docs_api_surface,
 )
 
 __all__ = [
@@ -15,7 +18,10 @@ __all__ = [
     "ApiMember",
     "ApiModule",
     "ApiSurface",
+    "api_surface_contract_json",
     "collect_python_api_surface",
+    "docs_api_surface_json",
+    "docs_api_surface_payload",
     "main",
-    "snapshot_json",
+    "write_docs_api_surface",
 ]

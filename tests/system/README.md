@@ -1,8 +1,7 @@
 # RLMesh System Tests
 
-System tests validate installed RLMesh Python wheels in clean `uv`
-environments. The runner lives in `tools/rlmesh_system`; this directory holds
-scenario profiles and deterministic trace baselines.
+System tests validate installed RLMesh Python wheels in clean `uv` environments. The runner lives in
+`tools/rlmesh_system`; this directory holds scenario profiles and deterministic trace baselines.
 
 ## Layout
 
@@ -59,6 +58,5 @@ model = "gymnasium.pendulum_zero_numpy"
 env = { gym = "Pendulum-v1", packages = ["gymnasium"] }
 ```
 
-IsaacSim and longer soak hooks are intentionally not part of this profile set
-yet; add them later as explicit profiles when the simulator launch contract is
-ready.
+IsaacSim and longer soak hooks are intentionally not part of this profile set yet; add them later as
+explicit profiles when the simulator launch contract is ready.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 
 from .._values import ValueAdapter
 from ..specs import EnvContract, SpaceSpec
@@ -15,7 +15,7 @@ from .viewer import EMPTY_METADATA, RenderPacket, ViewerMixin, ViewerProcess
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyEnvClient, ResetInfo, StepInfo
 
-    from ..spaces import Space
+    from ..spaces import Space, SpaceAdapter
 
 ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
@@ -37,9 +37,8 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
     """
 
     _adapter: ClassVar[ValueAdapter]
+    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = None
     _address: str
-    _observation_space_loaded: bool
-    _action_space_loaded: bool
     _viewer_warning_emitted: bool
 
     def __init__(
@@ -67,12 +66,15 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         self._client: PyEnvClient = PyEnvClient(normalized_address)
         self._address = self._client.address()
         self._env_contract: EnvContract = self._client.handshake()
-        self._observation_space: Space | None = None
-        self._action_space: Space | None = None
-        self._observation_space_loaded = False
-        self._action_space_loaded = False
+        self._observation_space: Space[ValueT] | None = None
+        self._action_space: Space[ActionT] | None = None
         self._viewer: ViewerProcess | None = None
         self._viewer_warning_emitted = False
+
+    @property
+    def address(self) -> str:
+        """Endpoint address this client is connected to."""
+        return self._address
 
     @property
     def env_contract(self) -> EnvContract:
@@ -90,19 +92,17 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         return self._env_contract.render_mode
 
     @property
-    def observation_space(self) -> Space | None:
+    def observation_space(self) -> Space[ValueT]:
         """Observation space loaded from the remote environment contract."""
-        if not self._observation_space_loaded:
-            self._observation_space = self._load_space("observation")
-            self._observation_space_loaded = True
+        if self._observation_space is None:
+            self._observation_space = self._load_observation_space()
         return self._observation_space
 
     @property
-    def action_space(self) -> Space | None:
+    def action_space(self) -> Space[ActionT]:
         """Action space loaded from the remote environment contract."""
-        if not self._action_space_loaded:
-            self._action_space = self._load_space("action")
-            self._action_space_loaded = True
+        if self._action_space is None:
+            self._action_space = self._load_action_space()
         return self._action_space
 
     @property
@@ -117,14 +117,14 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         return self._client
 
     @property
-    def observation_space_spec(self) -> SpaceSpec | None:
+    def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the endpoint."""
-        return self._env_contract.observation_space
+        return self._space_spec("observation")
 
     @property
-    def action_space_spec(self) -> SpaceSpec | None:
+    def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the endpoint."""
-        return self._env_contract.action_space
+        return self._space_spec("action")
 
     def reset(
         self,
@@ -201,7 +201,7 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
 
     def __repr__(self) -> str:
         return (
-            f"{type(self).__name__}(address={self._address!r}, "
+            f"{type(self).__name__}(address={self.address!r}, "
             f"env_id={self._env_contract.id!r})"
         )
 
@@ -217,17 +217,30 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         _ = exc_type, exc_val, exc_tb
         self.close()
 
-    def _load_space(self, kind: Literal["observation", "action"]) -> Space | None:
-        from ..spaces import space_from_spec
-
-        spec = (
+    def _space_spec(self, kind: Literal["observation", "action"]) -> SpaceSpec:
+        return (
             self._env_contract.observation_space
             if kind == "observation"
             else self._env_contract.action_space
         )
-        if spec is None:
-            return None
-        return space_from_spec(spec)
+
+    def _load_observation_space(self) -> Space[ValueT]:
+        from ..spaces import space_from_spec
+
+        spec = self._space_spec("observation")
+        adapter = self._space_adapter
+        if adapter is None:
+            return cast(Space[ValueT], space_from_spec(spec))
+        return cast(Space[ValueT], space_from_spec(spec, adapter=adapter))
+
+    def _load_action_space(self) -> Space[ActionT]:
+        from ..spaces import space_from_spec
+
+        spec = self._space_spec("action")
+        adapter = self._space_adapter
+        if adapter is None:
+            return cast(Space[ActionT], space_from_spec(spec))
+        return cast(Space[ActionT], space_from_spec(spec, adapter=adapter))
 
 
 __all__ = ["ActionT", "RemoteEnvBase", "ValueT"]

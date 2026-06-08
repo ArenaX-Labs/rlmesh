@@ -1,5 +1,5 @@
 use rlmesh_proto::{
-    ABI_VERSION,
+    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, capability_map,
     core::v1::OperationTelemetry,
     model::v1::{
         CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
@@ -7,7 +7,6 @@ use rlmesh_proto::{
         join_request, join_response, model_service_client::ModelServiceClient,
     },
 };
-use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -68,10 +67,14 @@ impl ModelClient {
         }
 
         let request = self.authorized_request(HandshakeRequest {
-            abi_version: ABI_VERSION.to_string(),
+            protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "rlmesh-rust-model-grpc".to_string(),
             client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: HashMap::new(),
+            capabilities: capability_map(&[
+                capabilities::MODEL_SERVICE_V1,
+                capabilities::SPACES_CORE_V1,
+            ]),
+            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
         })?;
 
         let response = self

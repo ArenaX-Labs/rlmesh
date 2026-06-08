@@ -1,0 +1,25 @@
+# rlmesh-runtime
+
+Runtime driver for RLMesh model-environment evaluation sessions.
+
+Most users should depend on the higher-level `rlmesh` crate. Use this crate only when you need to
+work directly with the runtime layer that coordinates evaluation sessions.
+
+## Installation
+
+```toml
+[dependencies]
+rlmesh-runtime = "0.1.0-beta.1"
+```
+
+## Status
+
+This is a public repository implementation crate. It is published for integration work, but the
+direct Rust API is unstable during beta.
+
+## Links
+
+- Project: https://github.com/ArenaX-Labs/rlmesh
+- Documentation: https://docs.rlmesh.dev
+- API docs: https://docs.rs/rlmesh-runtime
+- Higher-level SDK: https://crates.io/crates/rlmesh

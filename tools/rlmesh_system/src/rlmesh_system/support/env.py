@@ -81,6 +81,7 @@ def prepare_installed_wheel_environment(
         run_command(
             [
                 "uv",
+                "--no-config",
                 "pip",
                 "install",
                 "--python",
@@ -99,6 +100,7 @@ def prepare_installed_wheel_environment(
     run_command(
         [
             "uv",
+            "--no-config",
             "pip",
             "install",
             "--python",
@@ -122,6 +124,7 @@ def prepare_installed_wheel_environment(
     run_command(
         [
             "uv",
+            "--no-config",
             "pip",
             "install",
             "--python",

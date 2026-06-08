@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import assert_type
+from typing import assert_type, cast
 
 import rlmesh
 from rlmesh import types
@@ -13,6 +13,11 @@ tensor = rlmesh.Tensor(b"\x00\x01", [2], "uint8")
 assert_type(tensor, rlmesh.Tensor)
 tensor_view = memoryview(tensor)
 assert_type(tensor_view, memoryview)
+
+remote = cast(rlmesh.RemoteEnv, object())
+assert_type(remote.address, str)
+assert_type(remote.action_space.sample(), types.Value)
+assert_type(remote.action_space.contains(tensor), bool)
 
 
 class IntSpace:

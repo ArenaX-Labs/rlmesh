@@ -153,7 +153,7 @@ def serve_from_args(args: ServeArgs) -> int:
             print(f"✓ Environment entrypoint: {args.entrypoint}")
         else:
             print(f"✓ Environment: {args.env}")
-        print(f"✓ Server address: {server.address()}")
+        print(f"✓ Server address: {server.address}")
         print(f"✓ Transport: {args.transport}")
         if args.entrypoint is None:
             print(f"✓ Num envs: {args.num_envs}")

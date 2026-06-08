@@ -1,0 +1,33 @@
+# rlmesh
+
+Rust SDK for RLMesh model-environment evaluation workflows.
+
+Use this crate when you want to serve environments, connect to remote environments, or build
+directly against RLMesh's Rust API. Most Python users should install the `rlmesh` Python package
+instead.
+
+## Installation
+
+```toml
+[dependencies]
+rlmesh = "0.1.0-beta.1"
+```
+
+## What It Provides
+
+- `Env`, `SingleEnv`, and `SingleEnvAdapter` traits for environment bindings.
+- `EnvServer` and `RemoteEnv` for serving and connecting to environments.
+- `ModelWorker` APIs for model-side workflows.
+- Re-exported space, value, lifecycle, and error types used by the SDK.
+
+## Status
+
+This crate is part of the `0.1.0-beta.1` release line. The public Rust API is supported for beta
+users, but may still change before a stable release.
+
+## Links
+
+- Project: https://github.com/ArenaX-Labs/rlmesh
+- Documentation: https://docs.rlmesh.dev
+- API docs: https://docs.rs/rlmesh
+- Python package: https://pypi.org/project/rlmesh/

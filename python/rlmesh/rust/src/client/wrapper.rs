@@ -22,8 +22,8 @@ pub struct PyEnvClient {
     client: Arc<Mutex<RemoteEnv>>,
     runtime: tokio::runtime::Runtime,
     address: String,
-    observation_space: Option<SpaceSpec>,
-    action_space: Option<SpaceSpec>,
+    observation_space: SpaceSpec,
+    action_space: SpaceSpec,
     handshake_complete: bool,
     profiler: Arc<ProfileCollector>,
 }
@@ -49,8 +49,12 @@ impl PyEnvClient {
             .block_on(async { RemoteEnv::connect_to(connect_address).await })
             .map_err(to_py_err)?;
         let normalized_address = client.address().to_string();
-        let observation_space = client.env_contract().observation_space.clone();
-        let action_space = client.env_contract().action_space.clone();
+        let observation_space = require_contract_space(
+            client.env_contract().observation_space.clone(),
+            "observation_space",
+        )?;
+        let action_space =
+            require_contract_space(client.env_contract().action_space.clone(), "action_space")?;
         let _ = connect_guard.finish(0);
 
         Ok(Self {
@@ -84,10 +88,7 @@ impl PyEnvClient {
                 "handshake() must be called before observation_space()",
             ));
         }
-        match self.observation_space.as_ref() {
-            Some(space) => Ok(make_space(py, space)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
+        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
     }
 
     fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -96,10 +97,7 @@ impl PyEnvClient {
                 "handshake() must be called before action_space()",
             ));
         }
-        match self.action_space.as_ref() {
-            Some(space) => Ok(make_space(py, space)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
+        Ok(make_space(py, &self.action_space)?.into_any().unbind())
     }
 
     #[pyo3(signature = (seeds=None, options=None))]
@@ -152,14 +150,9 @@ impl PyEnvClient {
         let _ = rpc_guard.finish(obs_bytes_len + info_bytes_len);
 
         let decode_guard = self.profiler.start("client.reset.decode_obs");
-        let obs = match (observation.as_ref(), self.observation_space.as_ref()) {
-            (Some(value), Some(space)) => space_value_to_py_neutral(py, value, space)?,
-            (None, _) => py.None().bind(py).clone(),
-            _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "handshake() must provide observation space metadata before reset()",
-                ));
-            }
+        let obs = match observation.as_ref() {
+            Some(value) => space_value_to_py_neutral(py, value, &self.observation_space)?,
+            None => py.None().bind(py).clone(),
         };
 
         let info = match result.info.as_ref() {
@@ -184,13 +177,12 @@ impl PyEnvClient {
 
         let encode_guard = self.profiler.start("client.step.encode_action");
         let actions_ref = actions.bind(py);
-        let space = action_space.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must provide action space metadata before step()",
-            )
-        })?;
-        let action =
-            py_any_to_space_value_with_backend(py, actions_ref, space, ValueBackend::Native)?;
+        let action = py_any_to_space_value_with_backend(
+            py,
+            actions_ref,
+            &action_space,
+            ValueBackend::Native,
+        )?;
         let action_bytes_len = observation_size(Some(&action));
         let _ = encode_guard.finish(action_bytes_len);
 
@@ -219,14 +211,9 @@ impl PyEnvClient {
         let _ = rpc_guard.finish(action_bytes_len + obs_bytes_len + info_bytes_len);
 
         let decode_guard = self.profiler.start("client.step.decode_obs");
-        let obs = match (observation.as_ref(), self.observation_space.as_ref()) {
-            (Some(value), Some(space)) => space_value_to_py_neutral(py, value, space)?,
-            (None, _) => py.None().bind(py).clone(),
-            _ => {
-                return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "handshake() must provide observation space metadata before step()",
-                ));
-            }
+        let obs = match observation.as_ref() {
+            Some(value) => space_value_to_py_neutral(py, value, &self.observation_space)?,
+            None => py.None().bind(py).clone(),
         };
 
         let info = match result.info.as_ref() {
@@ -370,14 +357,22 @@ impl Drop for PyEnvClient {
     }
 }
 
+fn require_contract_space(space: Option<SpaceSpec>, field: &'static str) -> PyResult<SpaceSpec> {
+    space.ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "remote environment contract missing {field}"
+        ))
+    })
+}
+
 #[gen_stub_pyclass]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyVectorEnvClient {
     client: Arc<Mutex<RemoteEnv>>,
     runtime: tokio::runtime::Runtime,
     address: String,
-    observation_space: Option<SpaceSpec>,
-    action_space: Option<SpaceSpec>,
+    observation_space: SpaceSpec,
+    action_space: SpaceSpec,
     handshake_complete: bool,
     profiler: Arc<ProfileCollector>,
     num_envs: usize,
@@ -399,8 +394,12 @@ impl PyVectorEnvClient {
             .block_on(async { RemoteEnv::connect_to(connect_address).await })
             .map_err(to_py_err)?;
         let normalized_address = client.address().to_string();
-        let observation_space = client.env_contract().observation_space.clone();
-        let action_space = client.env_contract().action_space.clone();
+        let observation_space = require_contract_space(
+            client.env_contract().observation_space.clone(),
+            "observation_space",
+        )?;
+        let action_space =
+            require_contract_space(client.env_contract().action_space.clone(), "action_space")?;
         let num_envs = client.num_envs();
 
         Ok(Self {
@@ -430,10 +429,7 @@ impl PyVectorEnvClient {
                 "handshake() must be called before observation_space()",
             ));
         }
-        match self.observation_space.as_ref() {
-            Some(space) => Ok(make_space(py, space)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
+        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
     }
 
     fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -442,10 +438,7 @@ impl PyVectorEnvClient {
                 "handshake() must be called before action_space()",
             ));
         }
-        match self.action_space.as_ref() {
-            Some(space) => Ok(make_space(py, space)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
+        Ok(make_space(py, &self.action_space)?.into_any().unbind())
     }
 
     fn num_envs(&self) -> usize {
@@ -488,13 +481,8 @@ impl PyVectorEnvClient {
             })
             .map_err(to_py_err)?;
 
-        let obs_space = self.observation_space.clone();
-        let space = obs_space.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must provide observation space metadata before reset()",
-            )
-        })?;
-        let obs = batched_space_values_to_py_neutral(py, &result.observations, space)?;
+        let obs =
+            batched_space_values_to_py_neutral(py, &result.observations, &self.observation_space)?;
         let info = match result.info.as_ref() {
             Some(info) => meta_map_to_pydict(py, info)?,
             None => pyo3::types::PyDict::new(py),
@@ -511,15 +499,10 @@ impl PyVectorEnvClient {
         let obs_space = self.observation_space.clone();
         let num_envs = self.num_envs;
         let actions_ref = actions.bind(py);
-        let space = action_space.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must provide action space metadata before step()",
-            )
-        })?;
         let batched_actions = py_any_to_batched_space_values_with_backend(
             py,
             actions_ref,
-            space,
+            &action_space,
             num_envs,
             ValueBackend::Native,
         )?;
@@ -539,12 +522,7 @@ impl PyVectorEnvClient {
             })
             .map_err(to_py_err)?;
 
-        let space = obs_space.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must provide observation space metadata before step()",
-            )
-        })?;
-        let obs = batched_space_values_to_py_neutral(py, &result.observations, space)?;
+        let obs = batched_space_values_to_py_neutral(py, &result.observations, &obs_space)?;
         let rewards = vector_f64_to_py(py, &result.rewards)?;
         let terminated = vector_bool_to_py(py, &result.terminated)?;
         let truncated = vector_bool_to_py(py, &result.truncated)?;
@@ -654,8 +632,8 @@ class PyEnvClient:
     def __init__(self, address: str) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
-    def observation_space(self) -> Space | None: ...
-    def action_space(self) -> Space | None: ...
+    def observation_space(self) -> Space: ...
+    def action_space(self) -> Space: ...
     def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None) -> tuple[Value, ResetInfo]: ...
     def step(self, actions: Value) -> tuple[Value, float, bool, bool, StepInfo]: ...
     def render(self, env_index: int = 0) -> Value | None: ...
@@ -674,8 +652,8 @@ class PyVectorEnvClient:
     def __init__(self, address: str) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
-    def observation_space(self) -> Space | None: ...
-    def action_space(self) -> Space | None: ...
+    def observation_space(self) -> Space: ...
+    def action_space(self) -> Space: ...
     def num_envs(self) -> int: ...
     def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None) -> tuple[Value, ResetInfo]: ...
     def step(self, actions: object) -> tuple[Value, Value, Value, Value, StepInfo]: ...

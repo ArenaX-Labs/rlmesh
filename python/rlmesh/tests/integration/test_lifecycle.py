@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TypeVar
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    import numpy as np
+    from rlmesh import EnvServer, ServeOptions
+    from rlmesh.server import EnvLike as ServedEnv
+
+    NumpyArray = np.ndarray[Any, Any]
 
 
 class TinyEnv:
@@ -30,6 +38,12 @@ class TinyEnv:
         self.close_calls += 1
 
 
+class TinySpecEnv(TinyEnv):
+    def __init__(self) -> None:
+        super().__init__()
+        self.spec = SimpleNamespace(id="TinySpecEnv-v0")
+
+
 class TinyVectorEnv:
     def __init__(self) -> None:
         from rlmesh import spaces
@@ -52,6 +66,12 @@ class TinyVectorEnv:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class TinySpecVectorEnv(TinyVectorEnv):
+    def __init__(self) -> None:
+        super().__init__()
+        self.spec = SimpleNamespace(id="TinySpecVectorEnv-v0")
 
 
 class TinyBoxVectorEnv:
@@ -164,11 +184,16 @@ def connect_with_retry(factory: Callable[[str], RemoteT], address: str) -> Remot
     raise AssertionError(f"failed to connect to {address}") from last_error
 
 
-def env_server(env: object, options: object | None = None):
+def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
     import rlmesh
 
     try:
-        return rlmesh.EnvServer(env, host="127.0.0.1", port=0, options=options)
+        return rlmesh.EnvServer(
+            cast("ServedEnv", env),
+            host="127.0.0.1",
+            port=0,
+            options=options,
+        )
     except ConnectionError as exc:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
@@ -182,13 +207,13 @@ def test_remote_close_detaches_without_stopping_endpoint() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         assert remote.shutdown("default remote shutdown is disabled") is False
         remote.close()
 
         assert env.close_calls == 0
 
-        second = connect_with_retry(rlmesh.RemoteEnv, server.address())
+        second = connect_with_retry(rlmesh.RemoteEnv, server.address)
         try:
             observation, info = second.reset(seed=123)
             assert observation == 0
@@ -210,7 +235,7 @@ def test_remote_shutdown_requires_explicit_allow() -> None:
         rlmesh.ServeOptions(allow_remote_shutdown=True),
     )
     server.start()
-    remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+    remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
     try:
         assert remote.shutdown("test shutdown") is True
     finally:
@@ -238,6 +263,105 @@ def test_env_server_shutdown_before_start_closes_env_once() -> None:
     assert env.close_calls == 1
 
 
+def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
+    from rlmesh.specs import EnvContract
+
+    env = TinySpecEnv()
+    server = env_server(env)
+
+    try:
+        assert isinstance(server.env_contract, EnvContract)
+        assert isinstance(server.spec, EnvContract)
+        assert server.env_contract.id == "TinySpecEnv-v0"
+        assert server.spec.id == "TinySpecEnv-v0"
+
+        server.start()
+        server.shutdown()
+
+        assert server.env_contract.id == "TinySpecEnv-v0"
+        assert server.spec.id == "TinySpecEnv-v0"
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
+def test_env_server_vector_contract_reports_num_envs() -> None:
+    env = TinySpecVectorEnv()
+    server = env_server(env)
+    try:
+        assert server.spec.id == "TinySpecVectorEnv-v0"
+        assert server.env_contract.num_envs == 2
+        assert server.spec.num_envs == 2
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
+def test_env_server_wait_timeout_returns_false_while_running() -> None:
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        assert server.wait(0.01) is False
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
+def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
+    import rlmesh
+
+    env = TinyEnv()
+    server = env_server(env, rlmesh.ServeOptions(allow_remote_shutdown=True))
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        assert remote.shutdown("test shutdown") is True
+        assert server.wait(timeout=3.0) is True
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
+def test_env_server_wait_after_shutdown_returns_true() -> None:
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    server.shutdown()
+
+    assert server.wait(0) is True
+    assert env.close_calls == 1
+
+
+def test_env_server_wait_before_start_raises() -> None:
+    env = TinyEnv()
+    server = env_server(env)
+    try:
+        with pytest.raises(RuntimeError, match="before start"):
+            server.wait(0)
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
+@pytest.mark.parametrize("timeout", [-1.0, float("nan"), float("inf")])
+def test_env_server_wait_rejects_invalid_timeout(timeout: float) -> None:
+    env = TinyEnv()
+    server = env_server(env)
+    try:
+        with pytest.raises(ValueError, match="timeout"):
+            server.wait(timeout)
+    finally:
+        server.shutdown()
+
+    assert env.close_calls == 1
+
+
 def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     import rlmesh
 
@@ -245,13 +369,13 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
         assert remote.shutdown("default remote shutdown is disabled") is False
         remote.close()
 
         assert env.close_calls == 0
 
-        second = connect_with_retry(rlmesh.RemoteVectorEnv, server.address())
+        second = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
         try:
             _observations, info = second.reset(seed=[1, 2])
             assert info["seed"] == [1, 2]
@@ -272,7 +396,7 @@ def test_remote_vector_shutdown_requires_explicit_allow() -> None:
         rlmesh.ServeOptions(allow_remote_shutdown=True),
     )
     server.start()
-    remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address())
+    remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
     try:
         assert remote.shutdown("test vector shutdown") is True
     finally:
@@ -289,16 +413,20 @@ def test_numpy_remote_vector_step_accepts_ndarray_action_batch() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh_numpy.RemoteVectorEnv, server.address())
+        remote = connect_with_retry(rlmesh_numpy.RemoteVectorEnv, server.address)
         try:
             observations, info = remote.reset(seed=[1, 2])
-            assert observations.shape == (2, 4)
+            assert isinstance(observations, np.ndarray)
+            observation_array = cast("NumpyArray", observations)
+            assert observation_array.shape == (2, 4)
             assert info["seed"] == [1, 2]
 
             actions = np.zeros(2, dtype=np.int64)
             observations, rewards, terminated, truncated, info = remote.step(actions)
 
-            assert observations.shape == (2, 4)
+            assert isinstance(observations, np.ndarray)
+            observation_array = cast("NumpyArray", observations)
+            assert observation_array.shape == (2, 4)
             np.testing.assert_array_equal(rewards, np.asarray([1.0, 2.0]))
             np.testing.assert_array_equal(terminated, np.asarray([False, True]))
             np.testing.assert_array_equal(truncated, np.asarray([False, False]))
@@ -317,11 +445,13 @@ def test_legacy_gym_single_reset_and_step_shapes_are_normalized() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         try:
             observation, info = remote.reset(seed=123)
             assert observation == 0
-            assert len(info["episode_ids"]) == 1
+            episode_ids = info["episode_ids"]
+            assert isinstance(episode_ids, list)
+            assert len(episode_ids) == 1
 
             observation, reward, terminated, truncated, info = remote.step(0)
             assert observation == 1
@@ -342,7 +472,7 @@ def test_legacy_gym_single_done_without_time_limit_is_terminated() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         try:
             _observation, _info = remote.reset()
             _observation, _reward, terminated, truncated, _info = remote.step(0)
@@ -363,14 +493,19 @@ def test_legacy_gym_vector_reset_and_step_shapes_are_normalized() -> None:
     server = env_server(env)
     server.start()
     try:
-        remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
         try:
             observations, info = remote.reset(seed=[1, 2])
             assert observations == [0, 0]
-            assert len(info["episode_ids"]) == 2
+            episode_ids = info["episode_ids"]
+            assert isinstance(episode_ids, list)
+            assert len(episode_ids) == 2
 
             observations, rewards, terminated, truncated, info = remote.step([0, 1])
             assert observations == [1, 1]
+            assert isinstance(rewards, rlmesh.Tensor)
+            assert isinstance(terminated, rlmesh.Tensor)
+            assert isinstance(truncated, rlmesh.Tensor)
             np.testing.assert_array_equal(
                 rlmesh_numpy.asarray(rewards),
                 np.asarray([1.0, 1.0], dtype=np.float64),
@@ -399,7 +534,7 @@ def test_model_run_close_env_requests_shutdown(monkeypatch: pytest.MonkeyPatch) 
         rlmesh.ServeOptions(allow_remote_shutdown=True),
     )
     server.start()
-    remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+    remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
     shutdown_reasons: list[str] = []
     original_shutdown = remote.shutdown
 
@@ -436,7 +571,7 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
         calls.append("close")
 
     try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address())
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         model = rlmesh.Model(
             lambda _observation: 0,
             on_reset=on_reset,

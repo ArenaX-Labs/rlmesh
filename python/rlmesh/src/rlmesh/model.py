@@ -31,8 +31,8 @@ class ModelBase(Generic[ObsT, ActT]):
         on_close: Optional callback invoked when the model worker closes.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> model = rlm.Model(lambda observation: 0)
+        >>> from rlmesh.numpy import Model
+        >>> model = Model(lambda observation: 0)
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 

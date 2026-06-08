@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package rlmesh.core.v1;
+
+// Reusable operation metric emitted by runtime participants.
+message OperationMetric {
+  string name = 1;
+  map<string, string> labels = 2;
+
+  oneof value {
+    uint64 duration_ns = 3;
+    uint64 byte_count = 4;
+    double number = 5;
+  }
+}
+
+// Lightweight operation telemetry. Endpoints report only local durations they
+// can measure; the runtime adds RPC timing and derives transport estimates.
+message OperationTelemetry {
+  string operation = 1;
+  string component_id = 2;
+  repeated OperationMetric metrics = 3;
+}

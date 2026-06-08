@@ -60,6 +60,13 @@ pub enum PyServerEnv {
 }
 
 impl PyServerEnv {
+    pub fn env_contract(&self) -> &EnvContract {
+        match self {
+            PyServerEnv::Single(env) => &env.0.env_contract,
+            PyServerEnv::Vector(env) => &env.0.env_contract,
+        }
+    }
+
     pub async fn close(&mut self) -> Result<(), EnvRuntimeError> {
         match self {
             PyServerEnv::Single(env) => env.close(CloseRequest::default()).await.map(|_| ()),

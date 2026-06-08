@@ -68,22 +68,22 @@ class RemoteEnvHandle(Protocol):
         ...
 
     @property
-    def observation_space(self) -> Space | None:
+    def observation_space(self) -> Space[object]:
         """Observation space reported by the endpoint."""
         ...
 
     @property
-    def action_space(self) -> Space | None:
+    def action_space(self) -> Space[object]:
         """Action space reported by the endpoint."""
         ...
 
     @property
-    def observation_space_spec(self) -> SpaceSpec | None:
+    def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the endpoint."""
         ...
 
     @property
-    def action_space_spec(self) -> SpaceSpec | None:
+    def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the endpoint."""
         ...
 
@@ -143,32 +143,32 @@ class RemoteVectorEnvHandle(Protocol):
         ...
 
     @property
-    def observation_space(self) -> Space | None:
+    def observation_space(self) -> Space[object]:
         """Alias for ``single_observation_space``."""
         ...
 
     @property
-    def action_space(self) -> Space | None:
+    def action_space(self) -> Space[object]:
         """Alias for ``single_action_space``."""
         ...
 
     @property
-    def single_observation_space(self) -> Space | None:
+    def single_observation_space(self) -> Space[object]:
         """Observation space for one environment in the vector."""
         ...
 
     @property
-    def single_action_space(self) -> Space | None:
+    def single_action_space(self) -> Space[object]:
         """Action space for one environment in the vector."""
         ...
 
     @property
-    def observation_space_spec(self) -> SpaceSpec | None:
+    def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the endpoint."""
         ...
 
     @property
-    def action_space_spec(self) -> SpaceSpec | None:
+    def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the endpoint."""
         ...
 
@@ -434,22 +434,22 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         return self._remote_env.metadata
 
     @property
-    def observation_space(self) -> Space | None:
+    def observation_space(self) -> Space[ValueT]:
         """Observation space reported by the sandboxed endpoint."""
-        return self._remote_env.observation_space
+        return cast(Space[ValueT], self._remote_env.observation_space)
 
     @property
-    def action_space(self) -> Space | None:
+    def action_space(self) -> Space[ActionT]:
         """Action space reported by the sandboxed endpoint."""
-        return self._remote_env.action_space
+        return cast(Space[ActionT], self._remote_env.action_space)
 
     @property
-    def observation_space_spec(self) -> SpaceSpec | None:
+    def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the sandboxed endpoint."""
         return self._remote_env.observation_space_spec
 
     @property
-    def action_space_spec(self) -> SpaceSpec | None:
+    def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the sandboxed endpoint."""
         return self._remote_env.action_space_spec
 
@@ -574,32 +574,32 @@ class SandboxVectorEnvBase(
         return self._remote_env.num_envs
 
     @property
-    def observation_space(self) -> Space | None:
+    def observation_space(self) -> Space[ValueT]:
         """Alias for ``single_observation_space``."""
-        return self._remote_env.observation_space
+        return self.single_observation_space
 
     @property
-    def action_space(self) -> Space | None:
+    def action_space(self) -> Space[ActionT]:
         """Alias for ``single_action_space``."""
-        return self._remote_env.action_space
+        return self.single_action_space
 
     @property
-    def single_observation_space(self) -> Space | None:
+    def single_observation_space(self) -> Space[ValueT]:
         """Observation space for one sandboxed environment."""
-        return self._remote_env.single_observation_space
+        return cast(Space[ValueT], self._remote_env.single_observation_space)
 
     @property
-    def single_action_space(self) -> Space | None:
+    def single_action_space(self) -> Space[ActionT]:
         """Action space for one sandboxed environment."""
-        return self._remote_env.single_action_space
+        return cast(Space[ActionT], self._remote_env.single_action_space)
 
     @property
-    def observation_space_spec(self) -> SpaceSpec | None:
+    def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the sandboxed endpoint."""
         return self._remote_env.observation_space_spec
 
     @property
-    def action_space_spec(self) -> SpaceSpec | None:
+    def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the sandboxed endpoint."""
         return self._remote_env.action_space_spec
 

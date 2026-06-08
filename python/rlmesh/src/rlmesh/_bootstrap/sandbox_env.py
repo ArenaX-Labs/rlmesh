@@ -36,7 +36,7 @@ def main(
         env = cast(ServedEnv, load_env_from_spec(spec))
         port = int(os.environ.get("RLMESH_ENV_PORT", "50051"))
         server = EnvServer(env, host="0.0.0.0", port=port)
-        print(f"RLMesh sandbox serving {server.address()}", flush=True)
+        print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()
         return 0
     except Exception as exc:  # pragma: no cover - exercised through container runs

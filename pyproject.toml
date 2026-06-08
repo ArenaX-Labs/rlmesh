@@ -1,7 +1,7 @@
 [project]
 name = "rlmesh-workspace"
 version = "0.1.0b1"
-description = "RLMesh OSS workspace"
+description = "Development workspace for RLMesh"
 requires-python = ">=3.10"
 authors = [{ name = "ArenaX Labs", email = "research@competesai.com" }]
 maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
@@ -20,7 +20,9 @@ dev = [
 
 [tool.basedpyright]
 include = [
+  "examples/python",
   "python/rlmesh/src/rlmesh",
+  "python/rlmesh/tests/unit",
   "python/rlmesh/tests/type_contract/fixtures",
   "tools/rlmesh_api_surface/src/rlmesh_api_surface",
 ]

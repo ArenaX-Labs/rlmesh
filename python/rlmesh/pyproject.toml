@@ -1,41 +1,41 @@
 [project]
 name = "rlmesh"
 version = "0.1.0b1"
-description = "Runtime and SDK for model-environment evaluation workflows"
+description = "Python SDK for model-environment evaluation workflows"
 authors = [{ name = "ArenaX Labs, Inc.", email = "research@competesai.com" }]
 maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]
 readme = "README.md"
 keywords = [
-    "machine-learning",
-    "evaluation",
-    "model-evaluation",
-    "benchmarking",
-    "environments",
-    "runtime",
+  "machine-learning",
+  "evaluation",
+  "model-evaluation",
+  "benchmarking",
+  "environments",
+  "runtime",
 ]
 license = "MIT OR Apache-2.0"
 license-files = [
-    "LICENSE-MIT",
-    "LICENSE-APACHE",
-    "THIRD_PARTY_NOTICES.md",
-    "third_party_licenses/**/*",
+  "LICENSE-MIT",
+  "LICENSE-APACHE",
+  "THIRD_PARTY_NOTICES.md",
+  "third_party_licenses/**/*",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
-    "License :: OSI Approved :: Apache Software License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
-    "Programming Language :: Rust",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-    "Typing :: Typed",
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
 ]
 requires-python = ">=3.10"
 dependencies = []

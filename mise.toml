@@ -8,6 +8,8 @@ rust = { version = "1.96", components = "rustfmt,clippy" }
 python = "3.11"
 uv = "0.11.19"
 zig = "0.16.0"
+node = "26"
+oxfmt = "0.53.0"
 "cargo:maturin" = "1.13.3"
 "cargo:cargo-zigbuild" = "0.22.3"
 "cargo:cargo-deny" = "0.19.8"
@@ -33,11 +35,7 @@ UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
 # ──────────────────────────────────────────────
 [tasks."setup"]
 description = "Install tools, Python dev dependencies, and git hooks"
-depends = [
-  "setup:tools",
-  "setup:python",
-  "setup:hooks",
-]
+depends = ["setup:tools", "setup:python", "setup:hooks"]
 
 [tasks."setup:tools"]
 description = "Install mise-managed tools"
@@ -64,11 +62,7 @@ run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown
 # ──────────────────────────────────────────────
 [tasks."fmt"]
 description = "Format all source files"
-depends = [
-  "fmt:rust",
-  "fmt:python",
-  "fmt:proto",
-]
+depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:oxfmt"]
 
 [tasks."fmt:rust"]
 description = "Format Rust code"
@@ -82,16 +76,16 @@ run = "uv run ruff format"
 description = "Format Protobuf definitions"
 run = "buf format -w"
 
+[tasks."fmt:oxfmt"]
+description = "Format Markdown, TOML, YAML, and JSON files with oxfmt"
+run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --write"
+
 # ──────────────────────────────────────────────
 # Format checks (non-mutating)
 # ──────────────────────────────────────────────
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
-depends = [
-  "fmt:check:rust",
-  "fmt:check:python",
-  "fmt:check:proto",
-]
+depends = ["fmt:check:rust", "fmt:check:python", "fmt:check:proto", "fmt:check:oxfmt"]
 
 [tasks."fmt:check:rust"]
 description = "Check Rust formatting"
@@ -105,43 +99,31 @@ run = "uv run ruff format --check"
 description = "Check Protobuf formatting"
 run = "buf format -d --exit-code"
 
+[tasks."fmt:check:oxfmt"]
+description = "Check Markdown, TOML, YAML, and JSON formatting with oxfmt"
+run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '*.yml' '*.yaml' '*.json' '*.jsonc' | xargs -0 oxfmt --check"
+
 # ──────────────────────────────────────────────
 # Fix (mutating)
 # ──────────────────────────────────────────────
 [tasks."fix"]
-description = "Apply safe auto-fixes and formatting"
-depends = [
-  "fix:rust",
-  "fix:python",
-  "fmt:proto",
-]
+description = "Apply safe auto-fixes and format all source files"
+depends = ["fix:rust", "fix:python", "fmt"]
 
 [tasks."fix:rust"]
-description = "Apply safe Rust fixes and formatting"
-run = [
-  "cargo fmt --all",
-  "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged --allow-no-vcs -- -D warnings",
-]
+description = "Apply safe Rust fixes"
+run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged --allow-no-vcs -- -D warnings"
 
 [tasks."fix:python"]
-description = "Apply safe Python lint fixes and formatting"
-run = [
-  "uv run ruff check --fix",
-  "uv run ruff format",
-]
+description = "Apply safe Python lint fixes"
+run = "uv run ruff check --fix"
 
 # ──────────────────────────────────────────────
 # Lint (non-mutating)
 # ──────────────────────────────────────────────
 [tasks."lint"]
 description = "Lint source files without modifying them"
-depends = [
-  "lint:rust",
-  "lint:python",
-  "lint:proto",
-  "lint:spelling",
-  "lint:deps",
-]
+depends = ["lint:rust", "lint:python", "lint:proto", "lint:spelling", "lint:deps"]
 
 [tasks."lint:rust"]
 description = "Lint Rust code"
@@ -161,11 +143,7 @@ run = "typos"
 
 [tasks."lint:deps"]
 description = "Check Rust dependency advisories, licenses, bans, and sources"
-run = [
-  "mise run lint:deps:audit",
-  "mise run lint:deps:deny",
-  "mise run lint:deps:unused",
-]
+run = ["mise run lint:deps:audit", "mise run lint:deps:deny", "mise run lint:deps:unused"]
 
 [tasks."lint:deps:audit"]
 description = "Check Rust dependency advisories"
@@ -214,6 +192,17 @@ description = "Check generated native Python stubs without modifying files"
 run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen -- --check"
 
 # ──────────────────────────────────────────────
+# Compatibility policy (non-mutating)
+# ──────────────────────────────────────────────
+[tasks."policy:check"]
+description = "Check rlmesh.toml, artifact versions, and compatibility constants"
+run = "python scripts/check_rlmesh_policy.py"
+
+[tasks."protocol:breaking"]
+description = "Check protobuf compatibility against the public protocol baseline"
+run = "buf breaking crates/rlmesh-proto/proto --against \"${RLMESH_PROTO_BREAKING_AGAINST:-crates/rlmesh-proto/baselines/rlmesh.protocol.v1}\""
+
+# ──────────────────────────────────────────────
 # Check (non-mutating)
 # ──────────────────────────────────────────────
 [tasks."check"]
@@ -224,6 +213,8 @@ depends = [
   "typecheck",
   "docs:rust:check",
   "stubs:check",
+  "policy:check",
+  "protocol:breaking",
 ]
 
 # ──────────────────────────────────────────────
@@ -231,10 +222,7 @@ depends = [
 # ──────────────────────────────────────────────
 [tasks."test"]
 description = "Run Rust tests plus Python unit and integration tests"
-depends = [
-  "test:rust",
-  "test:python",
-]
+depends = ["test:rust", "test:python"]
 
 [tasks."test:rust"]
 description = "Run Rust workspace tests"
@@ -252,9 +240,9 @@ run = "uv run pytest python/rlmesh/tests/unit -q"
 description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
 
-[tasks."test:python:api-contract"]
-description = "Run Python public API contract tests"
-run = "uv run pytest python/rlmesh/tests/api_contract -q"
+[tasks."test:python:api-surface"]
+description = "Run Python API surface tests"
+run = "uv run pytest python/rlmesh/tests/api_surface -q"
 
 [tasks."test:system:harness"]
 description = "Run system test runner and fixture tests"
@@ -281,10 +269,7 @@ run = "uv run rlmesh-system clean"
 # ──────────────────────────────────────────────
 [tasks."build"]
 description = "Build local Rust workspace and current-platform Python wheels"
-run = [
-  "mise run build:rust",
-  "mise run build:python",
-]
+run = ["mise run build:rust", "mise run build:python"]
 
 [tasks."build:rust"]
 description = "Build Rust workspace"
@@ -292,10 +277,7 @@ run = "cargo build --workspace"
 
 [tasks."build:python"]
 description = "Build current-platform Python wheels"
-run = [
-  "mise run stubs:generate",
-  "mise run build:python:local",
-]
+run = ["mise run stubs:generate", "mise run build:python:local"]
 
 [tasks."build:python:local"]
 description = "Build current-platform Python wheels"
@@ -343,14 +325,19 @@ run = [
 
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
-run = "cargo package --workspace --allow-dirty"
+run = [
+  "cargo package -p rlmesh-proto --allow-dirty",
+  "cargo package -p rlmesh-spaces --allow-dirty",
+  "cargo package -p rlmesh-cli --allow-dirty",
+  "cargo package --workspace --allow-dirty --no-verify",
+]
 
 [tasks."release:check"]
 description = "Run the local beta release gate without publishing"
 run = [
   "mise run check",
   "mise run test",
-  "mise run test:python:api-contract",
+  "mise run test:python:api-surface",
   "mise run test:system:harness",
   "mise run release:rust:package",
   "mise run build:python",
@@ -360,10 +347,7 @@ run = [
 
 [tasks."release:python:macos"]
 description = "Build macOS wheels (arm64 + x86_64)"
-depends = [
-  "release:python:macos-arm",
-  "release:python:macos-x86",
-]
+depends = ["release:python:macos-arm", "release:python:macos-x86"]
 
 [tasks."release:python:macos-arm"]
 description = "Build macOS arm64 wheels"

@@ -1,6 +1,20 @@
 # Inherits tools from root mise.toml.
 # Deps managed by pyproject.toml + uv.
 # Requires sai-pygame (Pygame environments from SAI).
+# This example intentionally gets its own .venv so optional SAI dependencies do
+# not leak into the root RLMesh development environment.
 
 [settings]
 python.uv_venv_auto = "create|source"
+
+[tasks."sync"]
+description = "Install this example's Python dependencies"
+run = "uv sync"
+
+[tasks."serve"]
+description = "Serve the SAI Pygame environment through RLMesh"
+run = "uv run python serve.py"
+
+[tasks."eval"]
+description = "Run the shared sampled-action client against the running server"
+run = "uv run python ../quickstart/eval.py"

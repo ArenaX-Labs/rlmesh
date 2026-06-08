@@ -1,0 +1,99 @@
+[project]
+name = "rlmesh"
+
+[release]
+status = "beta"
+package_family = "0.1"
+
+[workflow]
+current_edition = "2026"
+supported_editions = ["2026"]
+
+[protocol]
+current_generation = "rlmesh.protocol.v1"
+minimum_generation = "rlmesh.protocol.v1"
+public_baseline = "crates/rlmesh-proto/baselines/rlmesh.protocol.v1"
+service_generations = { env = "rlmesh.env.v1", model = "rlmesh.model.v1", spaces = "rlmesh.spaces.v1" }
+
+[api_surface]
+stability_policy = "stable-labels"
+
+[api_surface.python]
+schema_version = 2
+kind = "rlmesh.python-api-surface"
+manifest_kind = "rlmesh.python-api-surface-manifest"
+package_artifact = "pypi:rlmesh"
+metadata = "tools/rlmesh_api_surface/src/rlmesh_api_surface/api_metadata.json"
+contract_snapshot = "python/rlmesh/tests/api_surface/snapshots/api_surface.json"
+
+[[artifact]]
+id = "pypi:rlmesh"
+ecosystem = "pypi"
+name = "rlmesh"
+manifest = "python/rlmesh/pyproject.toml"
+version = "0.1.0b1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh"
+ecosystem = "cargo"
+name = "rlmesh"
+manifest = "crates/rlmesh/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-cli"
+ecosystem = "cargo"
+name = "rlmesh-cli"
+manifest = "crates/rlmesh-cli/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-grpc"
+ecosystem = "cargo"
+name = "rlmesh-grpc"
+manifest = "crates/rlmesh-grpc/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-proto"
+ecosystem = "cargo"
+name = "rlmesh-proto"
+manifest = "crates/rlmesh-proto/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-runtime"
+ecosystem = "cargo"
+name = "rlmesh-runtime"
+manifest = "crates/rlmesh-runtime/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-sandbox"
+ecosystem = "cargo"
+name = "rlmesh-sandbox"
+manifest = "crates/rlmesh-sandbox/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-spaces"
+ecosystem = "cargo"
+name = "rlmesh-spaces"
+manifest = "crates/rlmesh-spaces/Cargo.toml"
+version = "0.1.0-beta.1"
+role = "core"
+publish = true

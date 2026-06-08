@@ -95,9 +95,9 @@ pub enum ProtocolError {
     #[error("handshake failed: {0}")]
     HandshakeFailed(String),
 
-    /// ABI version mismatch
-    #[error("abi version mismatch: server={server}, client={client}")]
-    AbiMismatch { server: String, client: String },
+    /// Protocol generation mismatch
+    #[error("protocol generation mismatch: server={server}, client={client}")]
+    ProtocolGenerationMismatch { server: String, client: String },
 
     /// Unexpected message
     #[error("unexpected message: expected {expected}, got {actual}")]

@@ -55,7 +55,8 @@ body:
     id: context
     attributes:
       label: Context
-      description: Share related projects, use cases, constraints, alternatives, or compatibility concerns.
+      description:
+        Share related projects, use cases, constraints, alternatives, or compatibility concerns.
     validations:
       required: false
   - type: dropdown

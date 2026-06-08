@@ -24,8 +24,12 @@ use rlmesh_proto::env::v1::{
     HandshakeResponse, JoinRequest, JoinResponse, ShutdownRequest, ShutdownResponse,
     env_service_server::EnvService, join_request, join_response,
 };
+use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities,
+    capability_map, is_workflow_edition_supported, supported_workflow_editions,
+};
 
-use super::{ABI_VERSION, env_error_to_proto, is_abi_compatible};
+use super::{env_error_to_proto, is_protocol_generation_compatible};
 
 /// A transport server that implements the `EnvService` tonic trait.
 pub struct GrpcEnvServer<E: Environment> {
@@ -110,13 +114,17 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let _enter = span.enter();
 
         tracing::info!(
-            "Handshake from {} v{} (ABI {})",
+            "Handshake from {} v{} (protocol {}, edition {})",
             req.client_name,
             req.client_version,
-            req.abi_version
+            req.protocol_generation,
+            req.workflow_edition
         );
 
-        let compatible = is_abi_compatible(&req.abi_version, ABI_VERSION);
+        let protocol_compatible =
+            is_protocol_generation_compatible(&req.protocol_generation, PROTOCOL_GENERATION);
+        let edition_compatible = is_workflow_edition_supported(&req.workflow_edition);
+        let compatible = protocol_compatible && edition_compatible;
 
         let env_contract = if compatible {
             let env = self.env.lock().await;
@@ -129,18 +137,29 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
         let res = HandshakeResponse {
             compatible,
-            server_abi_version: ABI_VERSION.to_string(),
-            min_supported_abi: ABI_VERSION.to_string(),
+            server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+            min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
+            } else if !protocol_compatible {
+                format!(
+                    "protocol generation {} not compatible with server {}",
+                    req.protocol_generation, PROTOCOL_GENERATION
+                )
             } else {
                 format!(
-                    "ABI version {} not compatible with server {}",
-                    req.abi_version, ABI_VERSION
+                    "workflow edition {} not supported by server; supported editions: {}",
+                    req.workflow_edition,
+                    supported_workflow_editions().join(", ")
                 )
             },
-            capabilities: HashMap::new(),
+            capabilities: capability_map(&[
+                capabilities::ENV_SERVICE_V1,
+                capabilities::SPACES_CORE_V1,
+            ]),
             env_contract,
+            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+            supported_workflow_editions: supported_workflow_editions(),
         };
 
         Ok(Response::new(res))
@@ -554,4 +573,166 @@ pub async fn serve<E: Environment + 'static>(
         .add_service(EnvServiceServer::new(server))
         .serve(addr.into())
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+    use rlmesh_proto::env::v1::env_service_server::EnvService;
+    use rlmesh_proto::env::v1::{
+        CloseResponse, HandshakeRequest, RenderRequest, RenderResponse, ResetRequest,
+        ResetResponse, StepRequest, StepResponse,
+    };
+    use rlmesh_proto::{
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        capabilities,
+    };
+    use rlmesh_spaces::v1::{EnvContract as SpaceEnvContract, SpaceSpec};
+    use tonic::Request;
+
+    use super::{Environment, GrpcEnvServer};
+    use crate::error::EnvError;
+
+    struct HandshakeOnlyEnv {
+        contract: SpaceEnvContract,
+    }
+
+    impl Default for HandshakeOnlyEnv {
+        fn default() -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "handshake-only".to_string(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 1,
+                },
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for HandshakeOnlyEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+
+        fn num_envs(&self) -> usize {
+            1
+        }
+
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            unreachable!("handshake test does not call reset")
+        }
+
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            unreachable!("handshake test does not call step")
+        }
+
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            unreachable!("handshake test does not call render")
+        }
+
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            unreachable!("handshake test does not call close")
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_reports_protocol_edition_and_capabilities() {
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(HandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                client_name: "client".to_string(),
+                client_version: "0.1.0-beta.1".to_string(),
+                capabilities: Default::default(),
+                workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(response.compatible);
+        assert_eq!(response.server_protocol_generation, PROTOCOL_GENERATION);
+        assert_eq!(
+            response.min_supported_protocol_generation,
+            MIN_SUPPORTED_PROTOCOL_GENERATION
+        );
+        assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+        assert_eq!(
+            response.supported_workflow_editions,
+            vec![CURRENT_WORKFLOW_EDITION.to_string()]
+        );
+        assert!(response.env_contract.is_some());
+        assert!(
+            response
+                .capabilities
+                .contains_key(capabilities::ENV_SERVICE_V1)
+        );
+        assert!(
+            response
+                .capabilities
+                .contains_key(capabilities::SPACES_CORE_V1)
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unsupported_protocol_generation() {
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(HandshakeRequest {
+                protocol_generation: "rlmesh.protocol.v2".to_string(),
+                client_name: "client".to_string(),
+                client_version: "0.1.0-beta.1".to_string(),
+                capabilities: Default::default(),
+                workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(!response.compatible);
+        assert!(response.error_message.contains("protocol generation"));
+        assert!(response.env_contract.is_none());
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_unsupported_workflow_edition() {
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(HandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                client_name: "client".to_string(),
+                client_version: "0.1.0-beta.1".to_string(),
+                capabilities: Default::default(),
+                workflow_edition: "2027".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(!response.compatible);
+        assert!(response.error_message.contains("workflow edition"));
+        assert!(response.env_contract.is_none());
+    }
 }

@@ -6,22 +6,51 @@ import argparse
 import ast
 import json
 import re
+import subprocess
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 import griffe
+import tomllib
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = PACKAGE_ROOT.parents[3]
 NATIVE_MODULE = "rlmesh._rlmesh"
 METADATA_PATH = PACKAGE_ROOT / "api_metadata.json"
+RLMESH_MANIFEST_PATH = REPO_ROOT / "rlmesh.toml"
 DOCSTRING_PARSER = "google"
+DOCS_API_SURFACE_SCHEMA_VERSION = 2
+DOCS_API_SURFACE_KIND = "rlmesh.python-api-surface"
+DOCS_API_SURFACE_MANIFEST_KIND = "rlmesh.python-api-surface-manifest"
+SOURCE_REPO = "ArenaX-Labs/rlmesh"
 
 STABLE = "Stable"
 INTERNAL = "Internal"
 _IGNORED_MEMBER_NAMES = {"__enter__", "__exit__", "__repr__", "__del__"}
+
+
+@dataclass(frozen=True)
+class SourceLocation:
+    repo: str
+    path: str
+    commit: str | None = None
+    line: int | None = None
+    end_line: int | None = None
+
+    def to_docs_api_surface(self) -> dict[str, object]:
+        snapshot: dict[str, object] = {
+            "repo": self.repo,
+            "path": self.path,
+        }
+        if self.commit:
+            snapshot["commit"] = self.commit
+        if self.line is not None:
+            snapshot["line"] = self.line
+        if self.end_line is not None and self.end_line != self.line:
+            snapshot["endLine"] = self.end_line
+        return snapshot
 
 
 @dataclass(frozen=True)
@@ -30,12 +59,25 @@ class ApiMember:
     kind: str
     signature: str
     documentation: str = ""
+    defined_at: SourceLocation | None = None
 
-    def to_snapshot(self) -> dict[str, str]:
+    def to_contract(self) -> dict[str, str]:
         return {
             "kind": self.kind,
             "signature": self.signature,
         }
+
+    def to_docs_api_surface(self) -> dict[str, object]:
+        snapshot: dict[str, object] = {
+            "name": self.name,
+            "kind": self.kind,
+            "signature": self.signature,
+        }
+        if self.documentation:
+            snapshot["documentation"] = self.documentation
+        if self.defined_at is not None:
+            snapshot["definedAt"] = self.defined_at.to_docs_api_surface()
+        return snapshot
 
 
 @dataclass(frozen=True)
@@ -45,10 +87,12 @@ class ApiExport:
     stability: str
     signature: str = ""
     documentation: str = ""
-    source_path: str = ""
+    qualified_name: str = ""
+    defined_at: SourceLocation | None = None
+    exported_at: SourceLocation | None = None
     members: list[ApiMember] = field(default_factory=list)
 
-    def to_snapshot(self) -> dict[str, object]:
+    def to_contract(self) -> dict[str, object]:
         snapshot: dict[str, object] = {
             "kind": self.kind,
             "stability": self.stability,
@@ -57,8 +101,26 @@ class ApiExport:
             snapshot["signature"] = self.signature
         if self.members:
             snapshot["members"] = {
-                member.name: member.to_snapshot() for member in self.members
+                member.name: member.to_contract() for member in self.members
             }
+        return snapshot
+
+    def to_docs_api_surface(self) -> dict[str, object]:
+        snapshot: dict[str, object] = {
+            "name": self.name,
+            "kind": self.kind,
+            "stability": self.stability,
+            "documentation": self.documentation,
+            "members": [member.to_docs_api_surface() for member in self.members],
+        }
+        if self.signature:
+            snapshot["signature"] = self.signature
+        if self.qualified_name:
+            snapshot["qualifiedName"] = self.qualified_name
+        if self.defined_at is not None:
+            snapshot["definedAt"] = self.defined_at.to_docs_api_surface()
+        if self.exported_at is not None:
+            snapshot["exportedAt"] = self.exported_at.to_docs_api_surface()
         return snapshot
 
 
@@ -72,20 +134,31 @@ class ApiModule:
     documentation: str
     exports: list[ApiExport]
 
-    def to_snapshot(self) -> dict[str, object]:
+    def to_contract(self) -> dict[str, object]:
         return {
             "exports": [export.name for export in self.exports],
-            "objects": {export.name: export.to_snapshot() for export in self.exports},
+            "objects": {export.name: export.to_contract() for export in self.exports},
+        }
+
+    def to_docs_api_surface(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "title": self.title,
+            "description": self.description,
+            "stability": self.stability,
+            "status": self.status,
+            "documentation": self.documentation,
+            "exports": [export.to_docs_api_surface() for export in self.exports],
         }
 
 
 @dataclass(frozen=True)
 class ApiSurface:
     modules: list[ApiModule]
-    native_classes: list[ApiExport]
+    native_exports: list[ApiExport]
 
-    def to_snapshot(self) -> dict[str, object]:
-        return {module.name: module.to_snapshot() for module in self.modules}
+    def to_contract(self) -> dict[str, object]:
+        return {module.name: module.to_contract() for module in self.modules}
 
     def missing_stable_documentation(self) -> list[str]:
         missing: list[str] = []
@@ -111,8 +184,93 @@ def collect_python_api_surface(
     return collector.collect()
 
 
-def snapshot_json(surface: ApiSurface) -> str:
-    return json.dumps(surface.to_snapshot(), indent=2, sort_keys=True) + "\n"
+def api_surface_contract_json(surface: ApiSurface) -> str:
+    return json.dumps(surface.to_contract(), indent=2, sort_keys=True) + "\n"
+
+
+def docs_api_surface_json(
+    surface: ApiSurface,
+    *,
+    package_version: str,
+    metadata: dict[str, Any],
+    manifest: dict[str, Any],
+) -> str:
+    return _json_dumps(
+        docs_api_surface_payload(
+            surface,
+            package_version=package_version,
+            metadata=metadata,
+            manifest=manifest,
+        )
+    )
+
+
+def docs_api_surface_payload(
+    surface: ApiSurface,
+    *,
+    package_version: str,
+    metadata: dict[str, Any],
+    manifest: dict[str, Any],
+) -> dict[str, object]:
+    release = _release_policy(manifest)
+    return {
+        "schemaVersion": DOCS_API_SURFACE_SCHEMA_VERSION,
+        "kind": DOCS_API_SURFACE_KIND,
+        "language": "python",
+        "release": release,
+        "package": {
+            "name": metadata.get("package", {}).get("name", "rlmesh"),
+            "version": package_version,
+        },
+        "surface": {
+            "modules": [module.to_docs_api_surface() for module in surface.modules],
+            "nativeExports": [
+                export.to_docs_api_surface() for export in surface.native_exports
+            ],
+        },
+        "features": metadata.get("features", {}),
+    }
+
+
+def write_docs_api_surface(
+    *,
+    output_dir: Path,
+    repo_root: Path,
+    manifest_path: Path,
+    metadata_path: Path | None,
+    package_version: str | None,
+    check: bool,
+) -> int:
+    manifest = _load_manifest(manifest_path)
+    python_policy = _python_api_surface_policy(manifest)
+    resolved_metadata_path = metadata_path or repo_root / python_policy["metadata"]
+    metadata = _load_metadata(resolved_metadata_path)
+    version = package_version or _package_version_for_artifact(
+        repo_root, manifest, python_policy["package_artifact"]
+    )
+    surface = collect_python_api_surface(
+        repo_root=repo_root, metadata_path=resolved_metadata_path
+    )
+    snapshot_text = docs_api_surface_json(
+        surface,
+        package_version=version,
+        metadata=metadata,
+        manifest=manifest,
+    )
+    docs_manifest_text = _docs_manifest_json(output_dir, latest=version)
+    snapshot_path = output_dir / f"{version}.json"
+    docs_manifest_path = output_dir / "manifest.json"
+
+    if check:
+        failed = False
+        failed |= _check_text(snapshot_path, snapshot_text)
+        failed |= _check_text(docs_manifest_path, docs_manifest_text)
+        return 1 if failed else 0
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(snapshot_text, encoding="utf-8")
+    docs_manifest_path.write_text(docs_manifest_text, encoding="utf-8")
+    return 0
 
 
 class _Collector:
@@ -121,12 +279,14 @@ class _Collector:
         self.package_root = repo_root / "python" / "rlmesh"
         self.src_root = self.package_root / "src"
         self.metadata = metadata
+        self.source_repo = str(metadata.get("source", {}).get("repo", SOURCE_REPO))
+        self.source_commit = _git_commit(repo_root)
         self.modules = griffe.ModulesCollection()
 
     def collect(self) -> ApiSurface:
         modules = [self._collect_module(name) for name in self.metadata["module_order"]]
-        native_classes = self._collect_native_classes()
-        return ApiSurface(modules=modules, native_classes=native_classes)
+        native_exports = self._collect_native_exports()
+        return ApiSurface(modules=modules, native_exports=native_exports)
 
     def _collect_module(self, module_name: str) -> ApiModule:
         module = self._load_module(module_name)
@@ -145,7 +305,7 @@ class _Collector:
             exports=exports,
         )
 
-    def _collect_native_classes(self) -> list[ApiExport]:
+    def _collect_native_exports(self) -> list[ApiExport]:
         module = self._load_module(NATIVE_MODULE)
         descriptions = self.metadata["native"]["descriptions"]
         classes: list[ApiExport] = []
@@ -166,7 +326,8 @@ class _Collector:
     def _collect_export(
         self, module_name: str, module: griffe.Module, export_name: str
     ) -> ApiExport:
-        obj = _resolved_object(module.members[export_name])
+        exported_obj = module.members[export_name]
+        obj = _resolved_object(exported_obj)
         fq_name = f"{module_name}.{export_name}"
         export_metadata = self.metadata.get("exports", {}).get(fq_name, {})
         module_metadata = self.metadata["modules"][module_name]
@@ -178,6 +339,7 @@ class _Collector:
             obj=obj,
             fallback_description=description,
             stability=stability,
+            exported_at=self._source_location(exported_obj),
         )
 
     def _export_from_object(
@@ -188,6 +350,7 @@ class _Collector:
         obj: Any,
         fallback_description: str,
         stability: str,
+        exported_at: SourceLocation | None = None,
     ) -> ApiExport:
         kind = _kind_for(obj)
         documentation = _documentation_for(obj, fallback_description)
@@ -199,8 +362,14 @@ class _Collector:
             stability=stability,
             signature=_signature_for(export_name, obj, kind),
             documentation=documentation,
-            source_path=str(getattr(obj, "path", "")),
-            members=_class_members(obj) if kind == "class" else [],
+            qualified_name=f"{module_name}.{export_name}",
+            defined_at=self._source_location(obj),
+            exported_at=_distinct_source_location(
+                exported_at, self._source_location(obj)
+            ),
+            members=_class_members(obj, self._source_location)
+            if kind == "class"
+            else [],
         )
 
     def _load_module(self, module_name: str) -> griffe.Module:
@@ -216,9 +385,170 @@ class _Collector:
             ),
         )
 
+    def _source_location(self, obj: Any) -> SourceLocation | None:
+        return _source_location(
+            obj,
+            repo_root=self.repo_root,
+            repo=self.source_repo,
+            commit=self.source_commit,
+        )
+
 
 def _load_metadata(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_manifest(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def _python_api_surface_policy(manifest: dict[str, Any]) -> dict[str, Any]:
+    api_surface = manifest.get("api_surface", {})
+    if not isinstance(api_surface, dict):
+        raise ValueError("missing [api_surface] table in rlmesh manifest")
+    python = api_surface.get("python", {})
+    if not isinstance(python, dict):
+        raise ValueError("missing [api_surface.python] table in rlmesh manifest")
+    return python
+
+
+def _release_policy(manifest: dict[str, Any]) -> dict[str, object]:
+    release = manifest.get("release", {})
+    api_surface = manifest.get("api_surface", {})
+    if not isinstance(release, dict):
+        release = {}
+    if not isinstance(api_surface, dict):
+        api_surface = {}
+    return {
+        "status": release.get("status", "beta"),
+        "packageFamily": release.get("package_family", "0.1"),
+        "stablePolicy": api_surface.get("stability_policy", "stable-labels"),
+    }
+
+
+def _package_version_for_artifact(
+    repo_root: Path, manifest: dict[str, Any], artifact_id: str
+) -> str:
+    artifacts = manifest.get("artifact", [])
+    if not isinstance(artifacts, list):
+        raise ValueError("missing [[artifact]] entries in rlmesh manifest")
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or artifact.get("id") != artifact_id:
+            continue
+        manifest_path = artifact.get("manifest")
+        if not isinstance(manifest_path, str):
+            raise ValueError(f"{artifact_id}: missing manifest path")
+        return _read_project_version(repo_root / manifest_path)
+    raise ValueError(f"missing artifact {artifact_id!r} in rlmesh manifest")
+
+
+def _git_commit(repo_root: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def _source_location(
+    obj: Any, *, repo_root: Path, repo: str, commit: str | None
+) -> SourceLocation | None:
+    filepath = getattr(obj, "filepath", None)
+    if filepath is None:
+        return None
+
+    try:
+        qualified_name = Path(filepath).resolve().relative_to(repo_root.resolve())
+    except ValueError:
+        return None
+
+    return SourceLocation(
+        repo=repo,
+        commit=commit,
+        path=qualified_name.as_posix(),
+        line=_optional_int(getattr(obj, "lineno", None)),
+        end_line=_optional_int(getattr(obj, "endlineno", None)),
+    )
+
+
+def _distinct_source_location(
+    location: SourceLocation | None, defined_at: SourceLocation | None
+) -> SourceLocation | None:
+    if location is None or defined_at is None:
+        return location
+    if location.to_docs_api_surface() == defined_at.to_docs_api_surface():
+        return None
+    return location
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _read_project_version(path: Path) -> str:
+    in_project = False
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            in_project = line == "[project]"
+            continue
+        if in_project and line.startswith("version"):
+            _, value = line.split("=", 1)
+            version = ast.literal_eval(value.strip())
+            if isinstance(version, str) and version:
+                return version
+    raise ValueError(f"missing [project].version in {path}")
+
+
+def _docs_manifest_json(output_dir: Path, *, latest: str) -> str:
+    versions: list[str] = []
+    manifest_path = output_dir / "manifest.json"
+    if manifest_path.exists():
+        raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw_versions = raw_manifest.get("versions", [])
+        if isinstance(raw_versions, list):
+            versions.extend(str(version) for version in raw_versions)
+    if latest not in versions:
+        versions.append(latest)
+    manifest = {
+        "schemaVersion": DOCS_API_SURFACE_SCHEMA_VERSION,
+        "kind": DOCS_API_SURFACE_MANIFEST_KIND,
+        "language": "python",
+        "latest": latest,
+        "versions": versions,
+    }
+    return _json_dumps(manifest)
+
+
+def _check_text(path: Path, expected: str) -> bool:
+    actual = path.read_text(encoding="utf-8") if path.exists() else ""
+    if actual == expected:
+        return False
+    print(f"stale docs API snapshot file: {path}")
+    return True
+
+
+def _json_dumps(value: object) -> str:
+    return json.dumps(value, indent=2, sort_keys=False) + "\n"
 
 
 def _module_exports(module: griffe.Module) -> list[str]:
@@ -312,7 +642,7 @@ def _attribute_signature(export_name: str, obj: Any) -> str:
     return _normalize_signature(f"{export_name}: {annotation}")
 
 
-def _class_members(obj: Any) -> list[ApiMember]:
+def _class_members(obj: Any, source_location: Any | None = None) -> list[ApiMember]:
     if not hasattr(obj, "members"):
         return []
 
@@ -334,6 +664,7 @@ def _class_members(obj: Any) -> list[ApiMember]:
                     kind=kind,
                     signature=signature,
                     documentation=_documentation_for(member),
+                    defined_at=source_location(member) if source_location else None,
                 )
             )
             seen.add(name)
@@ -469,18 +800,73 @@ def _normalize_signature(signature: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--snapshot", action="store_true", help="print snapshot JSON")
     parser.add_argument(
-        "--write-snapshot", type=Path, help="write snapshot JSON to a file"
+        "--print-api-surface",
+        action="store_true",
+        help="print API surface contract JSON",
+    )
+    parser.add_argument(
+        "--write-api-surface",
+        type=Path,
+        help="write API surface contract JSON to a file",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    docs_parser = subparsers.add_parser(
+        "docs-api-surface",
+        help="write the versioned docs API surface and manifest",
+    )
+    docs_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="directory containing versioned docs API snapshots",
+    )
+    docs_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=REPO_ROOT,
+        help="RLMesh repository root to extract from",
+    )
+    docs_parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=RLMESH_MANIFEST_PATH,
+        help="RLMesh project policy manifest",
+    )
+    docs_parser.add_argument(
+        "--metadata-path",
+        type=Path,
+        help="API metadata JSON path; defaults to [api_surface.python].metadata",
+    )
+    docs_parser.add_argument(
+        "--version",
+        help="package version override; defaults to python/rlmesh/pyproject.toml",
+    )
+    docs_parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate generated files without writing them",
     )
     args = parser.parse_args()
 
+    if args.command == "docs-api-surface":
+        return write_docs_api_surface(
+            output_dir=args.output_dir,
+            repo_root=args.repo_root,
+            manifest_path=args.manifest,
+            metadata_path=args.metadata_path,
+            package_version=args.version,
+            check=args.check,
+        )
+
     surface = collect_python_api_surface()
-    if args.snapshot:
-        print(snapshot_json(surface), end="")
+    if args.print_api_surface:
+        print(api_surface_contract_json(surface), end="")
         return 0
-    if args.write_snapshot is not None:
-        args.write_snapshot.write_text(snapshot_json(surface), encoding="utf-8")
+    if args.write_api_surface is not None:
+        args.write_api_surface.write_text(
+            api_surface_contract_json(surface), encoding="utf-8"
+        )
         return 0
 
     missing = surface.missing_stable_documentation()

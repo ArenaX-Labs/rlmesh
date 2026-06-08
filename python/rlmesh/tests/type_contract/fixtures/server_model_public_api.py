@@ -4,6 +4,7 @@ from typing import assert_type
 
 import rlmesh
 from rlmesh import spaces
+from rlmesh.specs import EnvContract
 from rlmesh.types import InfoDict, Value
 
 
@@ -32,7 +33,11 @@ server = rlmesh.EnvServer(
     port=0,
     options=rlmesh.ServeOptions(allow_remote_shutdown=True),
 )
-assert_type(server.address(), str)
+assert_type(server.address, str)
+assert_type(server.env_contract, EnvContract)
+assert_type(server.spec, EnvContract)
+assert_type(server.wait(0), bool)
+assert_type(server.wait(timeout=0), bool)
 
 
 def predict(observation: Value) -> Value:

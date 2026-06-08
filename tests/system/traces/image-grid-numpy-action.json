@@ -9,19 +9,13 @@
       "pixels": {
         "dtype": "uint8",
         "sha256": "5d7e2d9b1dcbc85e7c890036a2cf2f9fe7b66554f2df08cec6aa9c0a25c99c21",
-        "shape": [
-          3,
-          4,
-          3
-        ],
+        "shape": [3, 4, 3],
         "type": "ndarray"
       },
       "state": {
         "dtype": "float32",
         "sha256": "d97296dff8fc38f75b6feeaaf30940d74f886f7f8f66a72f2a8cf82b256604fd",
-        "shape": [
-          4
-        ],
+        "shape": [4],
         "type": "ndarray"
       }
     }
@@ -34,9 +28,7 @@
       "action": {
         "dtype": "int64",
         "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
-        "shape": [
-          1
-        ],
+        "shape": [1],
         "type": "ndarray"
       },
       "index": 0,
@@ -47,19 +39,13 @@
         "pixels": {
           "dtype": "uint8",
           "sha256": "8b41c7e76c8dc13ab3022aaba22986beccf11dbc6c2164085bf42fc32b1d929c",
-          "shape": [
-            3,
-            4,
-            3
-          ],
+          "shape": [3, 4, 3],
           "type": "ndarray"
         },
         "state": {
           "dtype": "float32",
           "sha256": "2f33447655c28c393452d5993e0c8f8609aae36f68b0c2b2962bb7fc7784faad",
-          "shape": [
-            4
-          ],
+          "shape": [4],
           "type": "ndarray"
         }
       },
@@ -71,9 +57,7 @@
       "action": {
         "dtype": "int64",
         "sha256": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
-        "shape": [
-          1
-        ],
+        "shape": [1],
         "type": "ndarray"
       },
       "index": 1,
@@ -85,19 +69,13 @@
         "pixels": {
           "dtype": "uint8",
           "sha256": "9a3639026ad4df29d5b39c82bc6f49c44ed994cfef92b5beaee43858013a52aa",
-          "shape": [
-            3,
-            4,
-            3
-          ],
+          "shape": [3, 4, 3],
           "type": "ndarray"
         },
         "state": {
           "dtype": "float32",
           "sha256": "d2b949f77b655db34375c95b88700848d00564979d0b0332e476cf8918093a75",
-          "shape": [
-            4
-          ],
+          "shape": [4],
           "type": "ndarray"
         }
       },

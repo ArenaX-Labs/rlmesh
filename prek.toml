@@ -44,6 +44,15 @@ entry = "mise run lint:proto"
 pass_filenames = false
 files = "\\.proto$"
 
+# Docs and config
+[[repos.hooks]]
+id = "oxfmt"
+name = "oxfmt"
+language = "system"
+entry = "mise run fmt:check:oxfmt"
+pass_filenames = false
+files = "\\.(md|toml|ya?ml|jsonc?)$"
+
 # Spelling
 [[repos.hooks]]
 id = "typos"

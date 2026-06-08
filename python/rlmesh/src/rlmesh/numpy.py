@@ -10,6 +10,10 @@ from ._values import UNHANDLED, ValueAdapter, decode_tree, encode_tree
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from .spaces import Space, SpaceAdapter
+from .spaces import space_from_spec as _space_from_spec
+from .spaces._sample import space_adapter_from_value_adapter
+from .specs import SpaceSpec
 from .types import PrimitiveValue, Value
 
 if TYPE_CHECKING:
@@ -112,6 +116,15 @@ class _NumpyAdapter:
 
 
 _numpy_adapter: ValueAdapter = _NumpyAdapter()
+_numpy_space_adapter: SpaceAdapter[NumpyValue] = cast(
+    SpaceAdapter[NumpyValue],
+    space_adapter_from_value_adapter(_numpy_adapter),
+)
+
+
+def space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]:
+    """Create a NumPy-adapted space wrapper for a native space spec."""
+    return _space_from_spec(spec, adapter=_numpy_space_adapter)
 
 
 @final
@@ -131,14 +144,15 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
         transport: Explicit transport selector.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> env = rlm.RemoteEnv("127.0.0.1:5555")
+        >>> from rlmesh.numpy import RemoteEnv
+        >>> env = RemoteEnv("127.0.0.1:5555")
         >>> observation, info = env.reset(seed=42)
         >>> observation, reward, terminated, truncated, info = env.step(0)
         >>> env.close()
     """
 
     _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
 
 
 @final
@@ -157,8 +171,8 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
         transport: Explicit transport selector.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> envs = rlm.RemoteVectorEnv("127.0.0.1:5555")
+        >>> from rlmesh.numpy import RemoteVectorEnv
+        >>> envs = RemoteVectorEnv("127.0.0.1:5555")
         >>> observations, infos = envs.reset(seed=42)
         >>> actions = [envs.single_action_space.sample() for _ in range(envs.num_envs)]
         >>> observations, rewards, terminations, truncations, infos = envs.step(actions)
@@ -166,6 +180,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     """
 
     _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
 
 
 @final
@@ -182,8 +197,8 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         on_close: Optional callback invoked when the model worker closes.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> model = rlm.Model(lambda observation: 0)
+        >>> from rlmesh.numpy import Model
+        >>> model = Model(lambda observation: 0)
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 
@@ -209,8 +224,8 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> env = rlm.SandboxEnv("CartPole-v1", packages=["gymnasium==1.3.0"])
+        >>> from rlmesh.numpy import SandboxEnv
+        >>> env = SandboxEnv("CartPole-v1", packages=["gymnasium==1.3.0"])
         >>> observation, info = env.reset(seed=42)
         >>> env.close()
     """
@@ -239,8 +254,8 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
         **env_make_kwargs: Keyword arguments forwarded to environment creation.
 
     Examples:
-        >>> import rlmesh.numpy as rlm
-        >>> envs = rlm.SandboxVectorEnv("CartPole-v1", num_envs=2)
+        >>> from rlmesh.numpy import SandboxVectorEnv
+        >>> envs = SandboxVectorEnv("CartPole-v1", num_envs=2)
         >>> observations, infos = envs.reset(seed=42)
         >>> envs.close()
     """
@@ -258,4 +273,5 @@ __all__ = [
     "SandboxVectorEnv",
     "asarray",
     "from_array",
+    "space_from_spec",
 ]

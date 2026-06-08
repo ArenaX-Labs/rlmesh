@@ -4,16 +4,17 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
-use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
-use pyo3_stub_gen::inventory::submit;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::env::WireEnvAdapter;
 use rlmesh::{BindAddress, ServeOptions};
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
     ShutdownTrigger, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
 };
+use rlmesh_spaces::v1::EnvContract;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -24,6 +25,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 
 use super::py_environment::{PyServerEnv, build_server_env};
 use crate::lifecycle::PyServeOptions;
+use crate::spaces::env_contract_to_py;
 use crate::types::errors::to_py_err;
 
 enum BoundListener {
@@ -58,13 +60,14 @@ enum ServerState {
 pub struct PyEnvServer {
     state: StdMutex<ServerState>,
     address: String,
+    env_contract: EnvContract,
     shutdown: ShutdownTrigger,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyEnvServer {
     /// Create a new RLMesh environment server.
-    ///
     /// # Arguments
     /// * `env` - Python gymnasium.Env or gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
@@ -79,6 +82,7 @@ impl PyEnvServer {
         let shutdown = ShutdownTrigger::new();
 
         let py_env = build_server_env(env)?;
+        let env_contract = py_env.env_contract().clone();
 
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -164,6 +168,7 @@ impl PyEnvServer {
 
         Ok(Self {
             address,
+            env_contract,
             state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
                 env: py_env,
                 runtime,
@@ -179,8 +184,21 @@ impl PyEnvServer {
         self.address.clone()
     }
 
+    /// Get the environment contract served by this endpoint.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "EnvContract", imports = ()))]
+    fn env_contract<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        env_contract_to_py(py, &self.env_contract)
+    }
+
+    /// Alias for env_contract.
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "EnvContract", imports = ()))]
+    fn spec<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        env_contract_to_py(py, &self.env_contract)
+    }
+
     /// Start serving (blocking).
-    ///
     /// Releases the GIL while running so other Python threads can execute.
     fn serve(&self, py: Python<'_>) -> PyResult<()> {
         let resources = take_resources(&self.state, "serve", ServerState::RunningForeground)?;
@@ -232,6 +250,13 @@ impl PyEnvServer {
         }
 
         Ok(())
+    }
+
+    /// Wait for a background server to stop.
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        let timeout = parse_wait_timeout(timeout)?;
+        py.detach(|| wait_background_server(&self.state, timeout))
     }
 
     /// Shutdown the server.
@@ -303,19 +328,6 @@ fn spawn_signal_shutdown(shutdown: ShutdownTrigger) {
     });
 }
 
-submit! {
-    gen_methods_from_python! {
-        r#"
-class PyEnvServer:
-    def __init__(self, env: object, address: str | None = None, *, options: ServeOptions | None = None) -> None: ...
-    def address(self) -> str: ...
-    def serve(self) -> None: ...
-    def start(self) -> None: ...
-    def shutdown(self) -> None: ...
-"#
-    }
-}
-
 impl Drop for PyEnvServer {
     fn drop(&mut self) {
         self.shutdown.trigger("drop");
@@ -335,6 +347,66 @@ impl Drop for PyEnvServer {
 
 fn py_runtime_err(message: impl Into<String>) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(message.into())
+}
+
+fn py_value_err(message: impl Into<String>) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(message.into())
+}
+
+fn parse_wait_timeout(timeout: Option<f64>) -> PyResult<Option<Duration>> {
+    timeout
+        .map(|value| {
+            Duration::try_from_secs_f64(value)
+                .map_err(|_| py_value_err("timeout must be a non-negative finite float or None"))
+        })
+        .transpose()
+}
+
+fn wait_background_server(
+    state: &StdMutex<ServerState>,
+    timeout: Option<Duration>,
+) -> PyResult<bool> {
+    let start = Instant::now();
+
+    loop {
+        let handle = {
+            let mut guard = state.lock().unwrap();
+            match &*guard {
+                ServerState::RunningBackground(handle) if handle.is_finished() => {
+                    match std::mem::replace(&mut *guard, ServerState::Stopped) {
+                        ServerState::RunningBackground(handle) => Some(handle),
+                        _ => unreachable!("server state changed while locked"),
+                    }
+                }
+                ServerState::RunningBackground(_) | ServerState::StartingBackground => None,
+                ServerState::Stopped => return Ok(true),
+                ServerState::Ready(_) => {
+                    return Err(py_runtime_err("wait() called before start()"));
+                }
+                ServerState::RunningForeground => {
+                    return Err(py_runtime_err(
+                        "wait() called while serve() is already running in the foreground",
+                    ));
+                }
+            }
+        };
+
+        if let Some(handle) = handle {
+            join_background_server(handle)?;
+            return Ok(true);
+        }
+
+        if let Some(timeout) = timeout {
+            let elapsed = start.elapsed();
+            if elapsed >= timeout {
+                return Ok(false);
+            }
+
+            std::thread::sleep((timeout - elapsed).min(Duration::from_millis(10)));
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }
 
 fn take_resources(

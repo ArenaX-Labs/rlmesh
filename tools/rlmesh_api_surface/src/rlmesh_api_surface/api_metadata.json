@@ -1,4 +1,85 @@
 {
+  "package": {
+    "name": "rlmesh"
+  },
+  "features": {
+    "gymnasiumSpaces": {
+      "title": "Gymnasium space compatibility",
+      "description": "Public Gymnasium space conversions exposed by rlmesh.spaces.",
+      "rows": [
+        {
+          "name": "Box",
+          "wrapper": "Box",
+          "support": "Full",
+          "stability": "Stable",
+          "notes": "Shape, dtype, low, and high bounds are preserved."
+        },
+        {
+          "name": "Discrete",
+          "wrapper": "Discrete",
+          "support": "Full",
+          "stability": "Stable",
+          "notes": "Count and start offset are preserved."
+        },
+        {
+          "name": "Dict",
+          "wrapper": "Dict",
+          "support": "Full",
+          "stability": "Stable",
+          "notes": "Nested supported spaces are preserved by key."
+        },
+        {
+          "name": "MultiBinary",
+          "wrapper": "MultiBinary",
+          "support": "Full",
+          "stability": "Experimental",
+          "notes": "Shape metadata is preserved."
+        },
+        {
+          "name": "MultiDiscrete",
+          "wrapper": "MultiDiscrete",
+          "support": "Full",
+          "stability": "Experimental",
+          "notes": "Per-dimension counts and optional starts are preserved."
+        },
+        {
+          "name": "Text",
+          "wrapper": "Text",
+          "support": "Full",
+          "stability": "Experimental",
+          "notes": "Length bounds are preserved; Gymnasium charset constraints are normalized to RLMesh text."
+        },
+        {
+          "name": "Tuple",
+          "wrapper": "Tuple",
+          "support": "Full",
+          "stability": "Experimental",
+          "notes": "Nested supported spaces are preserved by position."
+        },
+        {
+          "name": "Sequence",
+          "wrapper": "",
+          "support": "Not supported",
+          "stability": "Not supported",
+          "notes": "No public Python wrapper is exposed yet."
+        },
+        {
+          "name": "Graph",
+          "wrapper": "",
+          "support": "Not supported",
+          "stability": "Not supported",
+          "notes": "No public Python wrapper is exposed yet."
+        },
+        {
+          "name": "OneOf",
+          "wrapper": "",
+          "support": "Not supported",
+          "stability": "Not supported",
+          "notes": "No public Python wrapper is exposed yet."
+        }
+      ]
+    }
+  },
   "module_order": [
     "rlmesh",
     "rlmesh.server",

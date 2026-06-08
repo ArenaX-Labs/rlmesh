@@ -1,0 +1,17 @@
+{
+  "printWidth": 100,
+  "ignorePatterns": [
+    ".venv/**",
+    ".venv*/**",
+    ".zed/**",
+    "node_modules/**",
+    "target/**",
+    "**/dist/**",
+    "**/.output/**",
+    "**/.astro/**",
+    "**/.tanstack/**",
+    "**/*.gen.ts",
+    "**/*.proto"
+  ],
+  "proseWrap": "always"
+}

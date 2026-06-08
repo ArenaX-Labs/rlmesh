@@ -22,15 +22,19 @@ jobs:
       UV_CACHE_DIR: /tmp/.uv-cache
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install mise
         uses: jdx/mise-action@v4
         with:
           install: true
           cache: true
-          install_args: rust python uv buf protoc cargo:cargo-audit cargo:cargo-deny cargo:typos-cli cargo:cargo-machete
+          install_args:
+            rust python uv buf protoc cargo:cargo-audit cargo:cargo-deny cargo:typos-cli
+            cargo:cargo-machete
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
