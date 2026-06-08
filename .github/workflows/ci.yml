@@ -41,6 +41,9 @@ jobs:
             hashFiles('mise.lock') }}
           cache: true
 
+      - name: Install Rust components
+        run: rustup component add --toolchain 1.96.0 rustfmt clippy
+
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
         with:

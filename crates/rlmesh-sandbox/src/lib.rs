@@ -568,7 +568,7 @@ mod tests {
         let tempdir = tempfile::tempdir().unwrap();
         let wheel = tempdir
             .path()
-            .join("rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl");
+            .join("rlmesh-0.1.0b2-cp311-abi3-manylinux_2_17_x86_64.whl");
         fs::write(&wheel, b"first").unwrap();
         let first = resolved_wheel_package(&wheel).unwrap();
         fs::write(&wheel, b"second").unwrap();
@@ -576,7 +576,7 @@ mod tests {
 
         assert_eq!(
             first.install_ref(),
-            "/opt/rlmesh/packages/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl"
+            "/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_2_17_x86_64.whl"
         );
         assert_ne!(first, second);
     }
@@ -584,8 +584,8 @@ mod tests {
     #[test]
     fn preserves_direct_wheel_urls_as_pip_specs() {
         for spec in [
-            "https://example.com/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl",
-            "rlmesh @ https://example.com/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl",
+            "https://example.com/rlmesh-0.1.0b2-cp311-abi3-manylinux_2_17_x86_64.whl",
+            "rlmesh @ https://example.com/rlmesh-0.1.0b2-cp311-abi3-manylinux_2_17_x86_64.whl",
         ] {
             let resolved = resolve_rlmesh_package(spec.to_string(), DEFAULT_BASE_IMAGE).unwrap();
             assert_eq!(
@@ -607,14 +607,14 @@ mod tests {
         };
         fs::write(
             tempdir.path().join(format!(
-                "rlmesh-0.1.0b1-cp311-abi3-musllinux_1_2_{arch}.whl"
+                "rlmesh-0.1.0b2-cp311-abi3-musllinux_1_2_{arch}.whl"
             )),
             b"",
         )
         .unwrap();
         fs::write(
             tempdir.path().join(format!(
-                "rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_{arch}.whl"
+                "rlmesh-0.1.0b2-cp311-abi3-manylinux_2_17_{arch}.whl"
             )),
             b"",
         )

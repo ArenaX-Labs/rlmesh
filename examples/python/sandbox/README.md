@@ -42,4 +42,4 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 
 Sandbox runs need Docker access. The generated image installs RLMesh inside the container. To test
 an unreleased local wheel from this checkout, pass `rlmesh_package="local"`. To test an exact
-artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0b1`.
+artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0b2`.

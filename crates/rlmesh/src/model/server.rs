@@ -473,7 +473,7 @@ mod tests {
         HandshakeRequest {
             protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "client".to_string(),
-            client_version: "0.1.0-beta.1".to_string(),
+            client_version: "0.1.0-beta.2".to_string(),
             capabilities: Default::default(),
             workflow_edition: workflow_edition.to_string(),
         }

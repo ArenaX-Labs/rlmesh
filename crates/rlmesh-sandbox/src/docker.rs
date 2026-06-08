@@ -585,7 +585,7 @@ mod tests {
 
     fn pip_rlmesh_package() -> ResolvedRlmeshPackage {
         ResolvedRlmeshPackage::Pip {
-            spec: "rlmesh==0.1.0b1".to_string(),
+            spec: "rlmesh==0.1.0b2".to_string(),
         }
     }
 
@@ -610,7 +610,7 @@ mod tests {
         let dockerfile = render_dockerfile(&spec).unwrap();
 
         assert!(dockerfile.contains("FROM python:3.12-slim"));
-        assert!(dockerfile.contains("rlmesh==0.1.0b1"));
+        assert!(dockerfile.contains("rlmesh==0.1.0b2"));
         assert!(dockerfile.contains("gymnasium"));
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
@@ -716,8 +716,8 @@ mod tests {
             }),
             base_image: "python:3.12-slim".to_string(),
             rlmesh_package: ResolvedRlmeshPackage::Wheel {
-                source_path: "/tmp/rlmesh-0.1.0b1-cp311-abi3-manylinux_x86_64.whl".into(),
-                install_path: "/opt/rlmesh/packages/rlmesh-0.1.0b1-cp311-abi3-manylinux_x86_64.whl"
+                source_path: "/tmp/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl".into(),
+                install_path: "/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl"
                     .to_string(),
                 sha256: "abc".to_string(),
             },
@@ -734,7 +734,7 @@ mod tests {
         assert!(dockerfile.contains("COPY packages /opt/rlmesh/packages"));
         assert!(
             dockerfile
-                .contains("/opt/rlmesh/packages/rlmesh-0.1.0b1-cp311-abi3-manylinux_x86_64.whl")
+                .contains("/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl")
         );
     }
 

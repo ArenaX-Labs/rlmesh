@@ -10,7 +10,7 @@ the `rlmesh` Python package.
 
 ```toml
 [dependencies]
-rlmesh-sandbox = "0.1.0-beta.1"
+rlmesh-sandbox = "0.1.0-beta.2"
 ```
 
 ## Status

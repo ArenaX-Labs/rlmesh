@@ -657,7 +657,7 @@ mod tests {
             Request::new(HandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 client_name: "client".to_string(),
-                client_version: "0.1.0-beta.1".to_string(),
+                client_version: "0.1.0-beta.2".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
             }),
@@ -699,7 +699,7 @@ mod tests {
             Request::new(HandshakeRequest {
                 protocol_generation: "rlmesh.protocol.v2".to_string(),
                 client_name: "client".to_string(),
-                client_version: "0.1.0-beta.1".to_string(),
+                client_version: "0.1.0-beta.2".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
             }),
@@ -722,7 +722,7 @@ mod tests {
             Request::new(HandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 client_name: "client".to_string(),
-                client_version: "0.1.0-beta.1".to_string(),
+                client_version: "0.1.0-beta.2".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: LEGACY_WORKFLOW_EDITION_2026.to_string(),
             }),
@@ -749,7 +749,7 @@ mod tests {
             Request::new(HandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 client_name: "client".to_string(),
-                client_version: "0.1.0-beta.1".to_string(),
+                client_version: "0.1.0-beta.2".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: "2026.11".to_string(),
             }),
@@ -772,7 +772,7 @@ mod tests {
             Request::new(HandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 client_name: "client".to_string(),
-                client_version: "0.1.0-beta.1".to_string(),
+                client_version: "0.1.0-beta.2".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: "next".to_string(),
             }),

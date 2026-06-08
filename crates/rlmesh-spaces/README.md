@@ -9,7 +9,7 @@ on the full SDK. It is also re-exported by the higher-level `rlmesh` crate.
 
 ```toml
 [dependencies]
-rlmesh-spaces = "0.1.0-beta.1"
+rlmesh-spaces = "0.1.0-beta.2"
 ```
 
 ## Status

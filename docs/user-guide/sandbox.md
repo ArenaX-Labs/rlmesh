@@ -70,7 +70,7 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 
 Use `rlmesh_package="local"` from the RLMesh checkout to install a compatible wheel from
 `python/rlmesh/dist` into the sandbox image. You can also pass an exact wheel path or a pip package
-specifier such as `rlmesh==0.1.0b1` when testing compatibility against another RLMesh build. For
+specifier such as `rlmesh==0.1.0b2` when testing compatibility against another RLMesh build. For
 process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ## Safety

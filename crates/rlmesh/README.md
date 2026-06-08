@@ -10,7 +10,7 @@ instead.
 
 ```toml
 [dependencies]
-rlmesh = "0.1.0-beta.1"
+rlmesh = "0.1.0-beta.2"
 ```
 
 ## What It Provides
@@ -22,7 +22,7 @@ rlmesh = "0.1.0-beta.1"
 
 ## Status
 
-This crate is part of the `0.1.0-beta.1` release line. The public Rust API is supported for beta
+This crate is part of the `0.1.0-beta.2` release line. The public Rust API is supported for beta
 users, but may still change before a stable release.
 
 ## Links
