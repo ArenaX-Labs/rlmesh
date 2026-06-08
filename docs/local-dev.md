@@ -13,7 +13,13 @@ active.
 
 ## Setup
 
-Install mise-managed tools, sync the Python development environment, and install git hooks:
+Install mise-managed tools:
+
+```bash
+mise install
+```
+
+Then sync the Python development environment and install git hooks:
 
 ```bash
 mise run setup
@@ -22,7 +28,6 @@ mise run setup
 Useful setup subtasks:
 
 ```bash
-mise run setup:tools
 mise run setup:python
 mise run setup:hooks
 ```

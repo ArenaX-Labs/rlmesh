@@ -12,6 +12,10 @@ url = "https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Linux-x86_6
 checksum = "sha256:9cec23658df093d50f3318580e17f1e309d45b817927f22e9de30f78f3d4d45b"
 url = "https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Darwin-arm64.tar.gz"
 
+[tools.buf."platforms.windows-x64"]
+checksum = "sha256:96422e4313efe2741946f31f57ab4000c440b48d14936992ab98e94c16322f6f"
+url = "https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Windows-x86_64.zip"
+
 [[tools."cargo:cargo-audit"]]
 version = "0.22.2"
 backend = "cargo:cargo-audit"
@@ -52,17 +56,27 @@ url = "https://github.com/jdx/fnox/releases/download/v1.25.1/fnox-aarch64-apple-
 url_api = "https://api.github.com/repos/jdx/fnox/releases/assets/422647956"
 provenance = "github-attestations"
 
+[tools.fnox."platforms.windows-x64"]
+checksum = "sha256:e2874ecb0bb39816d1e5af60a920875bba5831182a46dad629a206bfcc4cb5bb"
+url = "https://github.com/jdx/fnox/releases/download/v1.25.1/fnox-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/jdx/fnox/releases/assets/422647962"
+provenance = "github-attestations"
+
 [[tools.node]]
-version = "26.3.0"
+version = "24.16.0"
 backend = "core:node"
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:a6e65cc653e40c1653b77742f9185dbce3ff1f99fa2746d211bddb53530ef206"
-url = "https://nodejs.org/dist/v26.3.0/node-v26.3.0-linux-x64.tar.gz"
+checksum = "sha256:2faf6a387e9b62b888e21c54f01249fb27537ffecf1842f29f4c919d0a59a0ff"
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-linux-x64.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
-checksum = "sha256:77ef7f7a15aa757c2ca19d63cf41c8d9eb3b18590ebc6883871310787d8c6b6c"
-url = "https://nodejs.org/dist/v26.3.0/node-v26.3.0-darwin-arm64.tar.gz"
+checksum = "sha256:39189dab4eeb15706c424af0ac08a3044c9e48f7db12a7d77f6b7aafc7dd5df6"
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-darwin-arm64.tar.gz"
+
+[tools.node."platforms.windows-x64"]
+checksum = "sha256:edaca9bd58ec8e92037dac4e877d52f6b8f430b81c18b57e264b4e2fb111cd56"
+url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"
 
 [[tools.oxfmt]]
 version = "0.53.0"
@@ -82,6 +96,11 @@ checksum = "sha256:d3d74f96bbb9fe88d14bdb3119501f8f39602b885e19f57c6567791599afd
 url = "https://github.com/j178/prek/releases/download/v0.4.4/prek-aarch64-apple-darwin.tar.gz"
 provenance = "github-attestations"
 
+[tools.prek."platforms.windows-x64"]
+checksum = "sha256:c6b503e858a7ba17df47618d1c5b0331132b70bcc2a35704e5f422d21c433abe"
+url = "https://github.com/j178/prek/releases/download/v0.4.4/prek-x86_64-pc-windows-msvc.zip"
+provenance = "github-attestations"
+
 [[tools.protoc]]
 version = "35.0"
 backend = "aqua:protocolbuffers/protobuf/protoc"
@@ -93,6 +112,10 @@ url = "https://github.com/protocolbuffers/protobuf/releases/download/v35.0/proto
 [tools.protoc."platforms.macos-arm64"]
 checksum = "sha256:45444963204757fd3e2fbe304bc1fdadfb488d8556ff099c4cc06575eab88976"
 url = "https://github.com/protocolbuffers/protobuf/releases/download/v35.0/protoc-35.0-osx-aarch_64.zip"
+
+[tools.protoc."platforms.windows-x64"]
+checksum = "sha256:d1cede9e308cc3eb072392af1c02ccae4bdd3d2f374ec2970dbd8cdfdaa91363"
+url = "https://github.com/protocolbuffers/protobuf/releases/download/v35.0/protoc-35.0-win64.zip"
 
 [[tools.python]]
 version = "3.11.15"
@@ -106,6 +129,11 @@ provenance = "github-attestations"
 [tools.python."platforms.macos-arm64"]
 checksum = "sha256:f1461690377000ee2161af52db780b7c1a200549fff7c8064e47e1ee1832265b"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.11.15+20260602-aarch64-apple-darwin-install_only_stripped.tar.gz"
+provenance = "github-attestations"
+
+[tools.python."platforms.windows-x64"]
+checksum = "sha256:f606681b2327210e2e7edf8c33f5260ea05d50f0c5b546f7c9fd535b21ec627a"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.11.15+20260602-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [[tools.rust]]
@@ -126,6 +154,11 @@ checksum = "sha256:d8f59c38e8c4168ee468d423cd63184be12fa6995a4283d41ee1a14d003c9
 url = "https://github.com/astral-sh/uv/releases/download/0.11.19/uv-aarch64-apple-darwin.tar.gz"
 provenance = "github-attestations"
 
+[tools.uv."platforms.windows-x64"]
+checksum = "sha256:1665fc8e37b5d70a134820d6d7891747471a2ac8bc940ee7af0b69fd03b28d61"
+url = "https://github.com/astral-sh/uv/releases/download/0.11.19/uv-x86_64-pc-windows-msvc.zip"
+provenance = "github-attestations"
+
 [[tools.zig]]
 version = "0.16.0"
 backend = "core:zig"
@@ -137,3 +170,7 @@ url = "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz"
 [tools.zig."platforms.macos-arm64"]
 checksum = "sha256:b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489"
 url = "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz"
+
+[tools.zig."platforms.windows-x64"]
+checksum = "sha256:68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
+url = "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"

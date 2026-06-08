@@ -27,10 +27,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Scope mise to repository config
+        run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
+
       - name: Install mise
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@v4.1.0
         with:
+          version: 2026.5.15
           install: true
+          install_args: --locked
           cache: true
 
       - name: Cache Rust artifacts
@@ -48,19 +53,19 @@ jobs:
             uv-${{ runner.os }}-
 
       - name: Sync Python environment
-        run: uv sync --group dev
+        run: mise run --skip-tools setup:python
 
       - name: Static checks
-        run: mise run check
+        run: mise run --skip-tools check
 
       - name: Unit and integration tests
-        run: mise run test
+        run: mise run --skip-tools test
 
       - name: Python API surface tests
-        run: mise run test:python:api-surface
+        run: mise run --skip-tools test:python:api-surface
 
       - name: System harness tests
-        run: mise run test:system:harness
+        run: mise run --skip-tools test:system:harness
 
       - name: Minimize uv cache
         if: always()
@@ -76,10 +81,15 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
+      - name: Scope mise to repository config
+        run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
+
       - name: Install mise
-        uses: jdx/mise-action@v4
+        uses: jdx/mise-action@v4.1.0
         with:
+          version: 2026.5.15
           install: true
+          install_args: --locked
           cache: true
 
       - name: Cache Rust artifacts
@@ -89,4 +99,4 @@ jobs:
             . -> target
 
       - name: Rust package verification
-        run: mise run release:rust:package
+        run: mise run --skip-tools release:rust:package

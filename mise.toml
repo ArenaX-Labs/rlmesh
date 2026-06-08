@@ -2,31 +2,32 @@
 # Tools
 # ──────────────────────────────────────────────
 [tools]
-rust = { version = "1.96.0", components = "rustfmt,clippy" }
+rust = { version = "1.96", components = "rustfmt,clippy" }
 
 # Python
 python = "3.11"
-uv = "0.11.19"
-zig = "0.16.0"
-node = "26"
-oxfmt = "0.53.0"
-"cargo:maturin" = "1.13.3"
-"cargo:cargo-zigbuild" = "0.22.3"
-"cargo:cargo-deny" = "0.19.8"
-"cargo:cargo-audit" = "0.22.2"
-"cargo:typos-cli" = "1.40.0"
-"cargo:cargo-machete" = "0.9.2"
+uv = "0.11"
+zig = "0.16"
+node = "24"
+oxfmt = "0.53"
+"cargo:maturin" = "1.13"
+"cargo:cargo-zigbuild" = "0.22"
+"cargo:cargo-deny" = "0.19"
+"cargo:cargo-audit" = "0.22"
+"cargo:typos-cli" = "1.40"
+"cargo:cargo-machete" = "0.9"
 
 # Protobuf
 protoc = "35"
-buf = "1.70.0"
+buf = "1.70"
 
 # Hooks
-prek = "0.4.4"
-fnox = "1.25.1"
+prek = "0.4"
+fnox = "1.25"
 
 [settings]
 python.uv_venv_auto = "create|source"
+task.run_auto_install = false
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
@@ -36,11 +37,7 @@ UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
 # ──────────────────────────────────────────────
 [tasks."setup"]
 description = "Install tools, Python dev dependencies, and git hooks"
-depends = ["setup:tools", "setup:python", "setup:hooks"]
-
-[tasks."setup:tools"]
-description = "Install mise-managed tools"
-run = "mise install"
+depends = ["setup:python", "setup:hooks"]
 
 [tasks."setup:python"]
 description = "Sync Python dev environment"
