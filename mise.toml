@@ -312,12 +312,33 @@ run = "maturin build --release -i python3.11 -o dist/"
 #   Windows: x86_64
 
 [tasks."release:python:wheels"]
-description = "Build all release Python wheels"
+description = "Build release Python wheels supported by the current host"
+run = "case \"$(uname -s)\" in Darwin) mise run release:python:wheels:macos ;; Linux) mise run release:python:wheels:linux ;; *) echo 'unsupported release wheel host; use macOS for macOS wheels or Linux for Linux/Windows wheels' >&2; exit 1 ;; esac"
+
+[tasks."release:python:clean"]
+description = "Remove previously built Python wheels before a release wheel build"
+run = "rm -f python/rlmesh/dist/rlmesh-*.whl"
+
+[tasks."release:python:wheels:macos"]
+description = "Build release macOS wheels on a macOS host"
 run = [
+  "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
+  "mise run release:python:clean",
   "mise run setup:python:release",
   "mise run setup:rust:targets",
   "mise run stubs:generate",
   "mise run release:python:macos",
+  "python scripts/check_python_wheels.py python/rlmesh/dist",
+]
+
+[tasks."release:python:wheels:linux"]
+description = "Build release Linux and Windows wheels on a Linux host"
+run = [
+  "test \"$(uname -s)\" = Linux || { echo 'Linux and Windows release wheels should be built from a Linux host' >&2; exit 1; }",
+  "mise run release:python:clean",
+  "mise run setup:python:release",
+  "mise run setup:rust:targets",
+  "mise run stubs:generate",
   "mise run release:python:linux",
   "mise run release:python:windows",
   "python scripts/check_python_wheels.py python/rlmesh/dist",
@@ -353,6 +374,7 @@ depends = ["release:python:macos-arm", "release:python:macos-x86"]
 description = "Build macOS arm64 wheels"
 dir = "python/rlmesh"
 run = [
+  "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
   "mise exec python@3.10 -- maturin build --release --target aarch64-apple-darwin -i python3.10 -o dist/",
   "maturin build --release --target aarch64-apple-darwin -i python3.11 -o dist/",
 ]
@@ -361,6 +383,7 @@ run = [
 description = "Build macOS x86_64 wheels"
 dir = "python/rlmesh"
 run = [
+  "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
   "mise exec python@3.10 -- maturin build --release --target x86_64-apple-darwin -i python3.10 -o dist/",
   "maturin build --release --target x86_64-apple-darwin -i python3.11 -o dist/",
 ]
