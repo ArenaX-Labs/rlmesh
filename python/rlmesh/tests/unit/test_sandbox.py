@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import ClassVar
+import json
+from typing import ClassVar, cast
 
 import pytest
 
@@ -71,6 +72,75 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
         SandboxUnderTest("CartPole-v1")
 
     assert stopped == ["container-1"]
+
+
+def test_sandbox_package_spec_alias_sets_rlmesh_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    captured: dict[str, object] = {}
+    stopped: list[str] = []
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def close(self) -> None:
+            pass
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_stop_env",
+        lambda *, container_id: stopped.append(container_id),
+    )
+
+    with SandboxUnderTest(
+        "CartPole-v1",
+        package_spec="local",
+        render_mode="rgb_array",
+    ):
+        pass
+
+    assert captured["rlmesh_package"] == "local"
+    assert json.loads(cast(str, captured["kwargs_json"])) == {
+        "render_mode": "rgb_array",
+    }
+    assert stopped == ["container-1"]
+
+
+def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_start_env",
+        lambda *_args, **_kwargs: pytest.fail("sandbox should not start"),
+    )
+
+    with pytest.raises(TypeError, match=r"both rlmesh_package=.*package_spec"):
+        SandboxUnderTest(
+            "CartPole-v1",
+            rlmesh_package="local",
+            package_spec="wheel.whl",
+        )
 
 
 def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:

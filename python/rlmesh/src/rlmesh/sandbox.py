@@ -265,6 +265,10 @@ class SandboxSessionBase(Generic[RemoteT]):
         repo_root: str | PathLike[str] | None = None,
         **gym_make_kwargs: object,
     ) -> None:
+        resolved_rlmesh_package = _resolve_rlmesh_package(
+            rlmesh_package,
+            gym_make_kwargs,
+        )
         _reject_removed_option("task", task)
         _reject_removed_option("config", config)
         _reject_removed_option("capabilities", capabilities)
@@ -277,7 +281,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         self.sandbox = _start_sandbox(
             source,
             base_image=base_image,
-            rlmesh_package=_normalize_rlmesh_package(rlmesh_package),
+            rlmesh_package=resolved_rlmesh_package,
             packages=packages,
             imports=imports,
             trust_remote_code=trust_remote_code,
@@ -702,6 +706,21 @@ def _normalize_rlmesh_package(value: str | PathLike[str] | None) -> str | None:
     if value is None:
         return None
     return fspath(value)
+
+
+def _resolve_rlmesh_package(
+    rlmesh_package: str | PathLike[str] | None,
+    gym_make_kwargs: dict[str, object],
+) -> str | None:
+    package_spec = gym_make_kwargs.pop("package_spec", None)
+    if package_spec is not None:
+        if rlmesh_package is not None:
+            raise TypeError(
+                "SandboxEnv got both rlmesh_package=... and package_spec=...; "
+                "use rlmesh_package=..."
+            )
+        rlmesh_package = cast(str | PathLike[str], package_spec)
+    return _normalize_rlmesh_package(rlmesh_package)
 
 
 def _reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:
