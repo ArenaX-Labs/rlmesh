@@ -14,7 +14,7 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::{
     CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities,
-    capability_map, is_workflow_edition_supported, supported_workflow_editions,
+    capability_map, is_workflow_edition_compatible, supported_workflow_editions,
 };
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -173,7 +173,7 @@ where
             &request.protocol_generation,
             PROTOCOL_GENERATION,
         );
-        let edition_compatible = is_workflow_edition_supported(&request.workflow_edition);
+        let edition_compatible = is_workflow_edition_compatible(&request.workflow_edition);
         let compatible = protocol_compatible && edition_compatible;
         Ok(Response::new(HandshakeResponse {
             compatible,
@@ -188,7 +188,7 @@ where
                 )
             } else {
                 format!(
-                    "workflow edition {} not supported by server; supported editions: {}",
+                    "workflow edition {} is not compatible; advertised editions: {}",
                     request.workflow_edition,
                     supported_workflow_editions().join(", ")
                 )
@@ -503,11 +503,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_rejects_unsupported_workflow_edition() {
+    async fn handshake_accepts_future_workflow_edition() {
         let server = test_server();
 
         let response =
             ModelServiceTrait::handshake(&server, Request::new(handshake_request("2026.11")))
+                .await
+                .unwrap()
+                .into_inner();
+
+        assert!(response.compatible);
+        assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_malformed_workflow_edition() {
+        let server = test_server();
+
+        let response =
+            ModelServiceTrait::handshake(&server, Request::new(handshake_request("next")))
                 .await
                 .unwrap()
                 .into_inner();

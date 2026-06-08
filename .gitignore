@@ -23,6 +23,7 @@ mise.local.toml
 .ruff_cache/
 build/
 dist/
+site/
 *.egg
 *.egg-info/
 *.py[cdo]

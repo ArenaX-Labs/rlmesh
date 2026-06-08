@@ -68,6 +68,41 @@ class TinyVectorEnv:
         self.close_calls += 1
 
 
+class TinyOneVectorEnv:
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.num_envs = 1
+        self.single_observation_space = spaces.Discrete(2)
+        self.single_action_space = spaces.Discrete(2)
+        self.close_calls = 0
+        self.last_actions_shape: tuple[int, ...] | None = None
+
+    def reset(
+        self,
+        *,
+        seed: int | list[int] | None = None,
+        options: dict[str, object] | None = None,
+    ):
+        return [0], {"seed": seed, "options": options}
+
+    def step(self, actions: object):
+        import numpy as np
+
+        action_array = np.asarray(actions)
+        self.last_actions_shape = action_array.shape
+        return (
+            [1],
+            np.asarray([1.0], dtype=np.float64),
+            np.asarray([False], dtype=np.bool_),
+            np.asarray([False], dtype=np.bool_),
+            {},
+        )
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 class TinySpecVectorEnv(TinyVectorEnv):
     def __init__(self) -> None:
         super().__init__()
@@ -178,10 +213,28 @@ def connect_with_retry(factory: Callable[[str], RemoteT], address: str) -> Remot
     while time.monotonic() < deadline:
         try:
             return factory(address)
-        except BaseException as exc:
+        except Exception as exc:
             last_error = exc
             time.sleep(0.05)
     raise AssertionError(f"failed to connect to {address}") from last_error
+
+
+def assert_connect_rejected_with_value_error(address: str, pattern: str) -> None:
+    import rlmesh
+
+    deadline = time.monotonic() + 3.0
+    last_error: BaseException | None = None
+    while time.monotonic() < deadline:
+        try:
+            with pytest.raises(ValueError, match=pattern):
+                rlmesh.RemoteEnv(address)
+            return
+        except Exception as exc:
+            last_error = exc
+            time.sleep(0.05)
+    raise AssertionError(
+        f"failed to observe RemoteEnv rejection for {address}"
+    ) from last_error
 
 
 def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
@@ -224,6 +277,39 @@ def test_remote_close_detaches_without_stopping_endpoint() -> None:
         server.shutdown()
 
     assert env.close_calls == 1
+
+
+def test_remote_space_properties_load_from_contract() -> None:
+    import rlmesh
+    from rlmesh import spaces
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            assert isinstance(remote.observation_space, spaces.Discrete)
+            assert remote.observation_space.n == 2
+            assert isinstance(remote.action_space, spaces.Discrete)
+            assert remote.action_space.n == 2
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
+
+
+def test_remote_env_rejects_multi_env_endpoint() -> None:
+    env = TinyVectorEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        assert_connect_rejected_with_value_error(
+            server.address,
+            "serves 2 environments",
+        )
+    finally:
+        server.shutdown()
 
 
 def test_remote_shutdown_requires_explicit_allow() -> None:
@@ -362,6 +448,33 @@ def test_env_server_wait_rejects_invalid_timeout(timeout: float) -> None:
     assert env.close_calls == 1
 
 
+def test_remote_env_accepts_one_env_vector_endpoint() -> None:
+    import rlmesh
+
+    _ = pytest.importorskip("numpy")
+
+    env = TinyOneVectorEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            observation, info = remote.reset(seed=123)
+            assert observation == 0
+            assert info["seed"] == 123
+
+            observation, reward, terminated, truncated, _info = remote.step(0)
+            assert observation == 1
+            assert reward == 1.0
+            assert terminated is False
+            assert truncated is False
+            assert env.last_actions_shape == (1,)
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
+
+
 def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     import rlmesh
 
@@ -385,6 +498,54 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
         server.shutdown()
 
     assert env.close_calls == 1
+
+
+def test_remote_vector_env_keeps_one_env_action_batch_shape() -> None:
+    import numpy as np
+    from rlmesh import numpy as rlmesh_numpy
+
+    env = TinyOneVectorEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh_numpy.RemoteVectorEnv, server.address)
+        try:
+            observations, info = remote.reset(seed=123)
+            assert observations == [0]
+            assert info["seed"] == 123
+
+            observations, rewards, terminated, truncated, _info = remote.step([0])
+            assert observations == [1]
+            np.testing.assert_array_equal(rewards, np.asarray([1.0]))
+            np.testing.assert_array_equal(terminated, np.asarray([False]))
+            np.testing.assert_array_equal(truncated, np.asarray([False]))
+            assert env.last_actions_shape == (1,)
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
+
+
+def test_remote_vector_space_properties_load_from_contract() -> None:
+    import rlmesh
+    from rlmesh import spaces
+
+    env = TinyVectorEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteVectorEnv, server.address)
+        try:
+            assert isinstance(remote.single_observation_space, spaces.Discrete)
+            assert remote.single_observation_space.n == 2
+            assert remote.observation_space is remote.single_observation_space
+            assert isinstance(remote.single_action_space, spaces.Discrete)
+            assert remote.single_action_space.n == 2
+            assert remote.action_space is remote.single_action_space
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
 
 
 def test_remote_vector_shutdown_requires_explicit_allow() -> None:

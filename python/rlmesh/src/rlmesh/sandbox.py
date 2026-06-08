@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from os import PathLike
+from os import PathLike, fspath
 from typing import (
-    TYPE_CHECKING,
     ClassVar,
     Generic,
     Protocol,
@@ -19,21 +18,20 @@ from typing import (
 
 from ._rlmesh import sandbox_start_env as _sandbox_start_env
 from ._rlmesh import sandbox_stop_env as _sandbox_stop_env
+from .spaces import Space
 from .specs import EnvContract, SpaceSpec
 from .types import Metadata
 
 ResetInfo: TypeAlias = dict[str, object]
 StepInfo: TypeAlias = dict[str, object]
 
-if TYPE_CHECKING:
-    from .spaces import Space
-
 ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
 RemoteT = TypeVar("RemoteT")
+SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
 
 
-def _missing_remote_env_cls(_address: str) -> object:
+def _missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
     raise NotImplementedError("sandbox remote env class must be configured")
 
 
@@ -230,7 +228,8 @@ class SandboxSessionBase(Generic[RemoteT]):
         source: Gymnasium id, explicit ``gym://`` source, or pinned environment
             source such as an EnvHub/Hugging Face reference.
         base_image: Optional Docker base image override.
-        package_spec: Optional RLMesh package or wheel installed in the sandbox.
+        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
+            in the sandbox.
         packages: Extra environment packages installed in the sandbox.
         imports: Import names checked during sandbox startup.
         trust_remote_code: Allow remote environment code to execute.
@@ -240,7 +239,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls: ClassVar[Callable[[str], object]] = _missing_remote_env_cls
+    _remote_env_cls: ClassVar[Callable[..., object]] = _missing_remote_env_cls
     _source: str
     _closed: bool
     sandbox: SandboxInfo
@@ -251,7 +250,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         source: str,
         *,
         base_image: str | None = None,
-        package_spec: str | None = None,
+        rlmesh_package: str | PathLike[str] | None = None,
         packages: Sequence[str] | None = None,
         imports: Sequence[str] | None = None,
         trust_remote_code: bool = False,
@@ -278,7 +277,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         self.sandbox = _start_sandbox(
             source,
             base_image=base_image,
-            package_spec=package_spec,
+            rlmesh_package=_normalize_rlmesh_package(rlmesh_package),
             packages=packages,
             imports=imports,
             trust_remote_code=trust_remote_code,
@@ -289,12 +288,28 @@ class SandboxSessionBase(Generic[RemoteT]):
         )
         try:
             self._remote_env = self._create_remote_env(self.sandbox.address)
-        except Exception:
-            self._shutdown()
+        except BaseException:
+            try:
+                self._shutdown()
+            except BaseException:
+                pass
             raise
 
     def _create_remote_env(self, address: str) -> RemoteT:
-        return cast(RemoteT, type(self)._remote_env_cls(address))
+        remote_env_cls = type(self)._remote_env_cls
+        sandbox_factory = getattr(remote_env_cls, "_connect_for_sandbox", None)
+        if callable(sandbox_factory):
+            return cast(
+                RemoteT,
+                sandbox_factory(
+                    address,
+                    connect_timeout_seconds=SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
+                ),
+            )
+        return cast(
+            RemoteT,
+            remote_env_cls(address),
+        )
 
     @property
     def source(self) -> str:
@@ -365,7 +380,8 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         source: Gymnasium id, explicit ``gym://`` source, or pinned environment
             source such as an EnvHub/Hugging Face reference.
         base_image: Optional Docker base image override.
-        package_spec: Optional RLMesh package or wheel installed in the sandbox.
+        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
+            in the sandbox.
         packages: Extra environment packages installed in the sandbox.
         imports: Import names checked during sandbox startup.
         trust_remote_code: Allow remote environment code to execute.
@@ -380,7 +396,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         source: str,
         *,
         base_image: str | None = None,
-        package_spec: str | None = None,
+        rlmesh_package: str | PathLike[str] | None = None,
         packages: Sequence[str] | None = None,
         imports: Sequence[str] | None = None,
         trust_remote_code: bool = False,
@@ -397,7 +413,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         super().__init__(
             source,
             base_image=base_image,
-            package_spec=package_spec,
+            rlmesh_package=rlmesh_package,
             packages=packages,
             imports=imports,
             trust_remote_code=trust_remote_code,
@@ -499,7 +515,8 @@ class SandboxVectorEnvBase(
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested in the sandbox.
         base_image: Optional Docker base image override.
-        package_spec: Optional RLMesh package or wheel installed in the sandbox.
+        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
+            in the sandbox.
         packages: Extra environment packages installed in the sandbox.
         imports: Import names checked during sandbox startup.
         trust_remote_code: Allow remote environment code to execute.
@@ -516,7 +533,7 @@ class SandboxVectorEnvBase(
         *,
         vectorization_mode: str = "sync",
         base_image: str | None = None,
-        package_spec: str | None = None,
+        rlmesh_package: str | PathLike[str] | None = None,
         packages: Sequence[str] | None = None,
         imports: Sequence[str] | None = None,
         trust_remote_code: bool = False,
@@ -532,7 +549,7 @@ class SandboxVectorEnvBase(
         super().__init__(
             source,
             base_image=base_image,
-            package_spec=package_spec,
+            rlmesh_package=rlmesh_package,
             packages=packages,
             imports=imports,
             trust_remote_code=trust_remote_code,
@@ -640,7 +657,7 @@ def _start_sandbox(
     source: str,
     *,
     base_image: str | None,
-    package_spec: str | None,
+    rlmesh_package: str | None,
     packages: Sequence[str] | None,
     imports: Sequence[str] | None,
     trust_remote_code: bool,
@@ -655,7 +672,7 @@ def _start_sandbox(
         _sandbox_start_env(
             source,
             base_image=base_image,
-            package_spec=package_spec,
+            rlmesh_package=rlmesh_package,
             packages=list(packages or []),
             imports=list(imports or []),
             kwargs_json=kwargs_json,
@@ -677,8 +694,14 @@ def _reject_removed_option(name: str, value: object) -> None:
     if value is not None:
         raise TypeError(
             f"SandboxEnv no longer supports {name}=...; use base_image=, "
-            "package_spec=, packages=, imports=, and environment make kwargs"
+            "rlmesh_package=, packages=, imports=, and environment make kwargs"
         )
+
+
+def _normalize_rlmesh_package(value: str | PathLike[str] | None) -> str | None:
+    if value is None:
+        return None
+    return fspath(value)
 
 
 def _reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:

@@ -13,6 +13,7 @@
     "**/.claude",
     "**/.codex",
     "**/__pycache__",
+    "**/.cache/*",
   ],
   "lsp": {
     "cargo-tom": {

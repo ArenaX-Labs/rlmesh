@@ -11,7 +11,8 @@
     "**/.astro/**",
     "**/.tanstack/**",
     "**/*.gen.ts",
-    "**/*.proto"
+    "**/*.proto",
+    "site/*"
   ],
   "proseWrap": "always"
 }

@@ -3,8 +3,10 @@ mod hf;
 mod source;
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -17,7 +19,7 @@ pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone)]
 pub struct SandboxOptions {
     pub base_image: Option<String>,
-    pub package_spec: Option<String>,
+    pub rlmesh_package: Option<String>,
     pub packages: Vec<String>,
     pub imports: Vec<String>,
     pub kwargs: BTreeMap<String, serde_json::Value>,
@@ -31,7 +33,7 @@ impl Default for SandboxOptions {
     fn default() -> Self {
         Self {
             base_image: None,
-            package_spec: None,
+            rlmesh_package: None,
             packages: Vec::new(),
             imports: Vec::new(),
             kwargs: BTreeMap::new(),
@@ -76,12 +78,18 @@ impl SandboxOptions {
             .unwrap_or_else(|| DEFAULT_BASE_IMAGE.to_string())
     }
 
-    pub fn resolved_package_spec(&self) -> String {
-        self.package_spec
+    fn resolved_rlmesh_package(&self, base_image: &str) -> Result<ResolvedRlmeshPackage> {
+        let selected = self
+            .rlmesh_package
             .clone()
-            .or_else(|| std::env::var("RLMESH_SANDBOX_PACKAGE_SPEC").ok())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(default_package_spec)
+            .or_else(|| {
+                std::env::var("RLMESH_SANDBOX_RLMESH_PACKAGE")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
+            .unwrap_or_else(default_rlmesh_package);
+
+        resolve_rlmesh_package(validate_nonempty("rlmesh_package", selected)?, base_image)
     }
 }
 
@@ -99,7 +107,7 @@ pub(crate) struct EffectiveSandboxSpec {
     pub requested_source: EnvironmentSourceRef,
     pub resolved_source: source::ResolvedEnvironmentSourceRef,
     pub base_image: String,
-    pub package_spec: String,
+    pub rlmesh_package: ResolvedRlmeshPackage,
     pub packages: Vec<String>,
     pub imports: Vec<String>,
     pub kwargs: BTreeMap<String, serde_json::Value>,
@@ -111,7 +119,7 @@ pub(crate) struct EffectiveSandboxSpec {
 impl EffectiveSandboxSpec {
     fn resolve(source: EnvironmentSourceRef, options: SandboxOptions) -> Result<Self> {
         let base_image = validate_nonempty("base_image", options.resolved_base_image())?;
-        let package_spec = validate_nonempty("package_spec", options.resolved_package_spec())?;
+        let rlmesh_package = options.resolved_rlmesh_package(&base_image)?;
         let packages = validate_specs("packages", options.packages)?;
         let imports = validate_specs("imports", options.imports)?;
         validate_source_trust(
@@ -127,7 +135,7 @@ impl EffectiveSandboxSpec {
             schema_version: BOOTSTRAP_SCHEMA_VERSION,
             source: &resolved_source,
             base_image: &base_image,
-            package_spec: &package_spec,
+            rlmesh_package: &rlmesh_package,
             packages: &packages,
             imports: &imports,
             kwargs: &kwargs,
@@ -140,7 +148,7 @@ impl EffectiveSandboxSpec {
             requested_source: source,
             resolved_source,
             base_image,
-            package_spec,
+            rlmesh_package,
             packages,
             imports,
             kwargs,
@@ -168,12 +176,41 @@ struct BuildHashInput<'a> {
     schema_version: u32,
     source: &'a source::ResolvedEnvironmentSourceRef,
     base_image: &'a str,
-    package_spec: &'a str,
+    rlmesh_package: &'a ResolvedRlmeshPackage,
     packages: &'a [String],
     imports: &'a [String],
     kwargs: &'a BTreeMap<String, serde_json::Value>,
     num_envs: usize,
     vectorization_mode: VectorizationMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ResolvedRlmeshPackage {
+    Pip {
+        spec: String,
+    },
+    Wheel {
+        source_path: PathBuf,
+        install_path: String,
+        sha256: String,
+    },
+}
+
+impl ResolvedRlmeshPackage {
+    pub(crate) fn install_ref(&self) -> &str {
+        match self {
+            Self::Pip { spec } => spec,
+            Self::Wheel { install_path, .. } => install_path,
+        }
+    }
+
+    pub(crate) fn source_path(&self) -> Option<&Path> {
+        match self {
+            Self::Pip { .. } => None,
+            Self::Wheel { source_path, .. } => Some(source_path),
+        }
+    }
 }
 
 fn validate_source_trust(
@@ -220,6 +257,7 @@ fn resolve_source(source: &EnvironmentSourceRef) -> Result<source::ResolvedEnvir
                     requested_revision: source.revision.clone(),
                     resolved_revision,
                     suite: source.suite.clone(),
+                    task: source.task.clone(),
                 },
             ))
         }
@@ -244,11 +282,175 @@ pub fn stop_container(container_id: &str) -> Result<()> {
     docker::DockerBackend.stop_container(container_id)
 }
 
-pub fn default_package_spec() -> String {
+pub fn default_rlmesh_package() -> String {
     format!(
         "{DEFAULT_PACKAGE_NAME}=={}",
         python_package_version(env!("CARGO_PKG_VERSION"))
     )
+}
+
+fn resolve_rlmesh_package(value: String, base_image: &str) -> Result<ResolvedRlmeshPackage> {
+    if value == "local" {
+        let wheel = resolve_local_rlmesh_wheel(base_image)?;
+        return resolved_wheel_package(&wheel);
+    }
+
+    let path = Path::new(&value);
+    if !is_direct_url_package_spec(&value)
+        && path.extension().and_then(|value| value.to_str()) == Some("whl")
+    {
+        return resolved_wheel_package(path);
+    }
+
+    Ok(ResolvedRlmeshPackage::Pip { spec: value })
+}
+
+fn is_direct_url_package_spec(value: &str) -> bool {
+    value.contains("://")
+}
+
+fn resolved_wheel_package(path: &Path) -> Result<ResolvedRlmeshPackage> {
+    let source_path = fs::canonicalize(path)
+        .with_context(|| format!("failed to resolve RLMesh wheel path {}", path.display()))?;
+    anyhow::ensure!(
+        source_path.is_file(),
+        "RLMesh wheel path must point to a file: {}",
+        source_path.display()
+    );
+    anyhow::ensure!(
+        source_path.extension().and_then(|value| value.to_str()) == Some("whl"),
+        "RLMesh wheel path must end in .whl: {}",
+        source_path.display()
+    );
+
+    let filename = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow::anyhow!("RLMesh wheel path must have a UTF-8 filename"))?
+        .to_string();
+    let sha256 = file_sha256(&source_path)?;
+
+    Ok(ResolvedRlmeshPackage::Wheel {
+        source_path,
+        install_path: format!("/opt/rlmesh/packages/{filename}"),
+        sha256,
+    })
+}
+
+fn resolve_local_rlmesh_wheel(base_image: &str) -> Result<PathBuf> {
+    let cwd = std::env::current_dir().context("failed to inspect current directory")?;
+    let repo_root = find_repo_root(&cwd).ok_or_else(|| {
+        anyhow::anyhow!(
+            "rlmesh_package='local' must be run from inside an RLMesh checkout or use an explicit wheel path"
+        )
+    })?;
+    let dist_dir = repo_root.join("python/rlmesh/dist");
+    select_local_rlmesh_wheel(&dist_dir, base_image)
+}
+
+fn find_repo_root(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find_map(|ancestor| {
+        if ancestor.join("Cargo.toml").is_file()
+            && ancestor.join("python/rlmesh/pyproject.toml").is_file()
+        {
+            Some(ancestor.to_path_buf())
+        } else {
+            None
+        }
+    })
+}
+
+fn select_local_rlmesh_wheel(dist_dir: &Path, base_image: &str) -> Result<PathBuf> {
+    let entries = fs::read_dir(dist_dir).with_context(|| {
+        format!(
+            "failed to read RLMesh wheel directory {}",
+            dist_dir.display()
+        )
+    })?;
+    let mut candidates = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("whl"))
+        .filter_map(|path| {
+            let filename = path.file_name()?.to_str()?.to_string();
+            wheel_rank(&filename, base_image).map(|rank| (rank, filename, path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, path)| path)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "rlmesh_package='local' could not find a compatible Linux RLMesh wheel in {}; build one with `mise run release:python:wheels` or pass an explicit wheel path",
+                dist_dir.display()
+            )
+        })
+}
+
+fn wheel_rank(filename: &str, base_image: &str) -> Option<(usize, usize)> {
+    let (python_tag, abi_tag, platform_tag) = wheel_tags(filename)?;
+    let python_rank = python_wheel_rank(python_tag, abi_tag, base_image)?;
+    let platform_rank = platform_wheel_rank(platform_tag, base_image)?;
+    Some((platform_rank, python_rank))
+}
+
+fn wheel_tags(filename: &str) -> Option<(&str, &str, &str)> {
+    let stem = filename.strip_suffix(".whl")?;
+    let parts = stem.split('-').collect::<Vec<_>>();
+    if parts.len() < 5 || parts.first() != Some(&DEFAULT_PACKAGE_NAME) {
+        return None;
+    }
+    Some((
+        parts[parts.len() - 3],
+        parts[parts.len() - 2],
+        parts[parts.len() - 1],
+    ))
+}
+
+fn python_wheel_rank(python_tag: &str, abi_tag: &str, base_image: &str) -> Option<usize> {
+    if base_image.contains("3.10") {
+        return (python_tag == "cp310" && abi_tag == "cp310").then_some(0);
+    }
+    (python_tag == "cp311" && abi_tag == "abi3").then_some(0)
+}
+
+fn platform_wheel_rank(platform_tag: &str, base_image: &str) -> Option<usize> {
+    if !platform_matches_host_arch(platform_tag) {
+        return None;
+    }
+    if base_image.contains("alpine") || base_image.contains("musl") {
+        return platform_tag.starts_with("musllinux").then_some(0);
+    }
+    if platform_tag.starts_with("manylinux") {
+        return Some(0);
+    }
+    if platform_tag.starts_with("linux_") {
+        return Some(1);
+    }
+    None
+}
+
+fn platform_matches_host_arch(platform_tag: &str) -> bool {
+    match std::env::consts::ARCH {
+        "aarch64" => platform_tag.contains("aarch64"),
+        "x86_64" => platform_tag.contains("x86_64"),
+        _ => false,
+    }
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read RLMesh wheel {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn python_package_version(version: &str) -> String {
@@ -359,5 +561,99 @@ mod tests {
         .unwrap();
 
         assert_ne!(base.build_hash, changed.build_hash);
+    }
+
+    #[test]
+    fn resolves_explicit_wheel_package_and_hashes_contents() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let wheel = tempdir
+            .path()
+            .join("rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl");
+        fs::write(&wheel, b"first").unwrap();
+        let first = resolved_wheel_package(&wheel).unwrap();
+        fs::write(&wheel, b"second").unwrap();
+        let second = resolved_wheel_package(&wheel).unwrap();
+
+        assert_eq!(
+            first.install_ref(),
+            "/opt/rlmesh/packages/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl"
+        );
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn preserves_direct_wheel_urls_as_pip_specs() {
+        for spec in [
+            "https://example.com/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl",
+            "rlmesh @ https://example.com/rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_x86_64.whl",
+        ] {
+            let resolved = resolve_rlmesh_package(spec.to_string(), DEFAULT_BASE_IMAGE).unwrap();
+            assert_eq!(
+                resolved,
+                ResolvedRlmeshPackage::Pip {
+                    spec: spec.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn selects_local_manylinux_wheel_for_default_base_image() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "aarch64",
+            "x86_64" => "x86_64",
+            _ => return,
+        };
+        fs::write(
+            tempdir.path().join(format!(
+                "rlmesh-0.1.0b1-cp311-abi3-musllinux_1_2_{arch}.whl"
+            )),
+            b"",
+        )
+        .unwrap();
+        fs::write(
+            tempdir.path().join(format!(
+                "rlmesh-0.1.0b1-cp311-abi3-manylinux_2_17_{arch}.whl"
+            )),
+            b"",
+        )
+        .unwrap();
+
+        let wheel = select_local_rlmesh_wheel(tempdir.path(), DEFAULT_BASE_IMAGE).unwrap();
+        assert!(
+            wheel
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("manylinux")
+        );
+    }
+
+    #[test]
+    fn hf_task_changes_resolved_display_slug_and_build_hash() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let options = SandboxOptions {
+            trust_remote_code: true,
+            ..SandboxOptions::default()
+        };
+        let first = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse(&format!("hf://org/repo@{revision}:suite/0")).unwrap(),
+            options.clone(),
+        )
+        .unwrap();
+        let second = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse(&format!("hf://org/repo@{revision}:suite/1")).unwrap(),
+            options,
+        )
+        .unwrap();
+
+        assert_eq!(
+            first.resolved_display(),
+            format!("hf://org/repo@{revision}:suite/0")
+        );
+        assert_eq!(first.slug(), "org-repo-suite-0");
+        assert_ne!(first.build_hash, second.build_hash);
     }
 }

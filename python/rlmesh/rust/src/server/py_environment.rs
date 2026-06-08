@@ -5,7 +5,7 @@ use image::ColorType;
 use image::ImageEncoder;
 use image::codecs::png::PngEncoder;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyTuple};
 use rlmesh::{
     CloseResult as EnvCloseResult, Env as RLMeshEnv, ResetRequest as EnvResetRequest,
     ResetResult as EnvResetResult, StepRequest as EnvStepRequest, StepResult as EnvStepResult,
@@ -342,30 +342,6 @@ fn legacy_vector_truncated(info: &Bound<'_, PyAny>, num_envs: usize) -> PyResult
         }
     }
     Ok(vec![false; num_envs])
-}
-
-fn wrap_single_vector_action<'py>(
-    py: Python<'py>,
-    action: Bound<'py, PyAny>,
-    action_space: &SpaceSpec,
-) -> PyResult<Bound<'py, PyAny>> {
-    if matches!(
-        action_space.spec.as_ref(),
-        Some(rlmesh_spaces::v1::spaces::space_spec::Spec::Box(_))
-            | Some(rlmesh_spaces::v1::spaces::space_spec::Spec::Discrete(_))
-            | Some(rlmesh_spaces::v1::spaces::space_spec::Spec::MultiBinary(_))
-            | Some(rlmesh_spaces::v1::spaces::space_spec::Spec::MultiDiscrete(
-                _
-            ))
-    ) && let Ok(numpy) = py.import("numpy")
-    {
-        if action.hasattr("shape")? {
-            return numpy.getattr("expand_dims")?.call1((action, 0));
-        }
-        return numpy.getattr("array")?.call1((vec![action.unbind()],));
-    }
-
-    Ok(PyList::new(py, [action.unbind()])?.into_any())
 }
 
 fn encode_render_png(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u8>>> {
@@ -747,7 +723,6 @@ impl PyEnvironment {
         let observation_space = self.observation_space.clone();
         let actions = req.actions;
         let num_envs = self.num_envs;
-        let uses_vector_api = self.uses_vector_api;
         let profiler = Arc::clone(&self.profiler);
 
         let result = tokio::task::spawn_blocking(move || {
@@ -761,11 +736,6 @@ impl PyEnvironment {
                     &action_space,
                     ValueBackend::Auto,
                 )?;
-                let action = if uses_vector_api && num_envs == 1 {
-                    wrap_single_vector_action(py, action, &action_space)?
-                } else {
-                    action
-                };
                 let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
                 let _ = decode_guard.finish(action_bytes);
 

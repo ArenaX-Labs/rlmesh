@@ -216,7 +216,8 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
         source: Gymnasium id, explicit ``gym://`` source, or pinned environment
             source such as an EnvHub/Hugging Face reference.
         base_image: Optional Docker base image override.
-        package_spec: Optional RLMesh package or wheel installed in the sandbox.
+        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
+            in the sandbox.
         packages: Extra environment packages installed in the sandbox.
         imports: Import names checked during sandbox startup.
         trust_remote_code: Allow remote environment code to execute.
@@ -246,7 +247,8 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested inside the sandbox.
         base_image: Optional Docker base image override.
-        package_spec: Optional RLMesh package or wheel installed in the sandbox.
+        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
+            in the sandbox.
         packages: Extra environment packages installed in the sandbox.
         imports: Import names checked during sandbox startup.
         trust_remote_code: Allow remote environment code to execute.

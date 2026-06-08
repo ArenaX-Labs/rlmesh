@@ -7,6 +7,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 
 from .._values import ValueAdapter
+from ..spaces import Space, SpaceAdapter, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata, Value
 from .endpoint import Transport, normalize_connect_address
@@ -14,8 +15,6 @@ from .viewer import EMPTY_METADATA, RenderPacket, ViewerMixin, ViewerProcess
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyEnvClient, ResetInfo, StepInfo
-
-    from ..spaces import Space, SpaceAdapter
 
 ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
@@ -50,6 +49,39 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         path: str | None = None,
         transport: Transport | None = None,
     ) -> None:
+        self._initialize(
+            address,
+            host=host,
+            port=port,
+            path=path,
+            transport=transport,
+            connect_timeout_seconds=None,
+        )
+
+    @classmethod
+    def _connect_for_sandbox(
+        cls,
+        address: str,
+        *,
+        connect_timeout_seconds: float,
+    ) -> object:
+        instance = cls.__new__(cls)
+        instance._initialize(
+            address,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+        return instance
+
+    def _initialize(
+        self,
+        address: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        path: str | None = None,
+        transport: Transport | None = None,
+        connect_timeout_seconds: float | None,
+    ) -> None:
         try:
             from rlmesh._rlmesh import PyEnvClient
         except ImportError as e:  # pragma: no cover - import guard
@@ -63,9 +95,21 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
             path=path,
             transport=transport,
         )
-        self._client: PyEnvClient = PyEnvClient(normalized_address)
+        self._client: PyEnvClient = PyEnvClient(
+            normalized_address,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
         self._address = self._client.address()
         self._env_contract: EnvContract = self._client.handshake()
+        if self._env_contract.num_envs > 1:
+            num_envs = self._env_contract.num_envs
+            try:
+                self._client.close()
+            finally:
+                raise ValueError(
+                    f"Endpoint {self._address!r} serves {num_envs} environments. "
+                    "Use RemoteVectorEnv instead."
+                )
         self._observation_space: Space[ValueT] | None = None
         self._action_space: Space[ActionT] | None = None
         self._viewer: ViewerProcess | None = None
@@ -225,8 +269,6 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         )
 
     def _load_observation_space(self) -> Space[ValueT]:
-        from ..spaces import space_from_spec
-
         spec = self._space_spec("observation")
         adapter = self._space_adapter
         if adapter is None:
@@ -234,8 +276,6 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         return cast(Space[ValueT], space_from_spec(spec, adapter=adapter))
 
     def _load_action_space(self) -> Space[ActionT]:
-        from ..spaces import space_from_spec
-
         spec = self._space_spec("action")
         adapter = self._space_adapter
         if adapter is None:

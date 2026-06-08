@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from rlmesh._bootstrap.entrypoint import resolve_entrypoint
 
@@ -197,7 +197,8 @@ def load_hf_env(spec: Mapping[str, object]) -> object:
         vectorization_mode=vectorization_mode,
     )
     suite = _optional_str(spec.get("suite"), "bootstrap spec.suite")
-    return normalize_hf_env(envs, suite=suite)
+    task = _optional_str(spec.get("task"), "bootstrap spec.task")
+    return normalize_hf_env(envs, suite=suite, task=task)
 
 
 def import_packages(package_names: Sequence[str]) -> None:
@@ -282,7 +283,7 @@ def _callable_keyword_parameters(
     return accepts_kwargs, keyword_names
 
 
-def normalize_hf_env(envs: object, *, suite: str | None) -> object:
+def normalize_hf_env(envs: object, *, suite: str | None, task: str | None) -> object:
     """Select the served environment from an HF make_env result."""
     if looks_like_env(envs):
         return envs
@@ -291,13 +292,29 @@ def normalize_hf_env(envs: object, *, suite: str | None) -> object:
     if env_mapping is None:
         raise TypeError("env.py make_env(...) returned an unsupported value")
 
-    _, suite_value = select_mapping_item(env_mapping, suite, "suite")
+    suite_key, suite_value = select_mapping_item(env_mapping, suite, "suite")
     if looks_like_env(suite_value):
+        if task is not None:
+            raise ValueError(
+                f"task {task!r} was specified, but suite {suite_key!r} "
+                "resolved directly to an env"
+            )
         return suite_value
 
+    task_mapping = _optional_any_mapping(
+        suite_value, f"task mapping for suite {suite_key!r}"
+    )
+    if task_mapping is not None:
+        task_key, task_value = select_task_item(task_mapping, task, suite_key)
+        if looks_like_env(task_value):
+            return task_value
+        raise TypeError(
+            f"selected task {task_key!r} in suite {suite_key!r} "
+            "did not resolve to an env"
+        )
+
     raise TypeError(
-        "selected suite did not resolve to an env; minimal HF sandbox support "
-        "does not include nested task selection"
+        f"selected suite {suite_key!r} did not resolve to an env or task mapping"
     )
 
 
@@ -307,11 +324,52 @@ def select_mapping_item(
     """Select an explicit or sole item from a mapping."""
     if key is not None:
         if key not in mapping:
-            raise KeyError(f"{label} {key!r} was not found")
+            raise KeyError(
+                f"{label} {key!r} was not found; "
+                f"available {label}s: {_format_mapping_keys(mapping)}"
+            )
         return key, mapping[key]
 
+    if not mapping:
+        raise ValueError(f"no {label}s found")
     if len(mapping) != 1:
-        raise ValueError(f"multiple {label}s found; specify one in the source URI")
+        raise ValueError(
+            f"multiple {label}s found; specify one in the source URI: "
+            f"{_format_mapping_keys(mapping)}"
+        )
+    selected_key = next(iter(mapping))
+    return selected_key, mapping[selected_key]
+
+
+def select_task_item(
+    mapping: Mapping[object, object], key: str | None, suite: str
+) -> tuple[object, object]:
+    """Select an explicit or sole task from a nested EnvHub mapping."""
+    if key is not None:
+        matches = [
+            (task_key, value)
+            for task_key, value in mapping.items()
+            if str(task_key) == key
+        ]
+        if not matches:
+            raise KeyError(
+                f"task {key!r} was not found in suite {suite!r}; "
+                f"available tasks: {_format_mapping_keys(mapping)}"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"multiple tasks in suite {suite!r} match {key!r}; "
+                f"available tasks: {_format_mapping_keys(mapping)}"
+            )
+        return matches[0]
+
+    if not mapping:
+        raise ValueError(f"no tasks found in suite {suite!r}")
+    if len(mapping) != 1:
+        raise ValueError(
+            f"multiple tasks found in suite {suite!r}; specify one in the source URI: "
+            f"{_format_mapping_keys(mapping)}"
+        )
     selected_key = next(iter(mapping))
     return selected_key, mapping[selected_key]
 
@@ -354,6 +412,19 @@ def _optional_mapping(value: object, label: str) -> Mapping[str, object] | None:
     if value is None:
         return None
     return expect_mapping(value, label)
+
+
+def _optional_any_mapping(value: object, label: str) -> Mapping[object, object] | None:
+    _ = label
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    return cast(Mapping[object, object], value)
+
+
+def _format_mapping_keys(mapping: Mapping[Any, object]) -> str:
+    return ", ".join(sorted(str(key) for key in mapping.keys())) or "<none>"
 
 
 def _expect_str(value: object, label: str) -> str:

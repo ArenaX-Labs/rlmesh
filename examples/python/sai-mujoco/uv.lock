@@ -594,16 +594,17 @@ wheels = [
 
 [[package]]
 name = "rlmesh"
-version = "0.1.0a1"
+version = "0.1.0b1"
 source = { editable = "../../../python/rlmesh" }
 
 [package.metadata]
 requires-dist = [
-    { name = "jax", marker = "extra == 'jax'" },
+    { name = "gymnasium", marker = "extra == 'gymnasium'" },
     { name = "numpy", marker = "extra == 'numpy'" },
-    { name = "torch", marker = "extra == 'torch'" },
+    { name = "numpy", marker = "extra == 'torch'" },
+    { name = "torch", marker = "extra == 'torch'", index = "https://download.pytorch.org/whl/cpu" },
 ]
-provides-extras = ["numpy", "torch", "jax"]
+provides-extras = ["gymnasium", "numpy", "torch"]
 
 [[package]]
 name = "rlmesh-example-sai-mujoco"

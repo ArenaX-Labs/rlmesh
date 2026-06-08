@@ -15,10 +15,14 @@ use rlmesh_proto::env::v1::{
     RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, ShutdownResponse, StepRequest,
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
-use rlmesh_proto::{CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, capability_map};
+use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, capability_map,
+    is_protocol_generation_compatible,
+};
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
+use crate::helpers::handshake::fallback_workflow_edition;
 use crate::states::ClientState;
 
 use super::protocol::{join_request_kind_name, proto_error_to_env_error};
@@ -124,23 +128,17 @@ impl EnvClient {
             return Err(ClientError::NotConnected.into());
         }
 
-        let req = HandshakeRequest {
-            protocol_generation: PROTOCOL_GENERATION.to_string(),
-            client_name: "rlmesh-rust-grpc".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: capability_map(&[
-                capabilities::ENV_SERVICE_V1,
-                capabilities::SPACES_CORE_V1,
-            ]),
-            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
-        };
+        let mut res = self.handshake_once(CURRENT_WORKFLOW_EDITION).await?;
 
-        let res = self
-            .client
-            .handshake(req)
-            .await
-            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
-            .into_inner();
+        if !res.compatible
+            && is_protocol_generation_compatible(
+                PROTOCOL_GENERATION,
+                &res.server_protocol_generation,
+            )
+            && let Some(edition) = fallback_workflow_edition(&res.supported_workflow_editions)
+        {
+            res = self.handshake_once(edition).await?;
+        }
 
         if !res.compatible {
             return Err(ProtocolError::HandshakeFailed(res.error_message).into());
@@ -167,6 +165,29 @@ impl EnvClient {
         self.setup_join_stream().await?;
 
         Ok(handshake)
+    }
+
+    async fn handshake_once(
+        &mut self,
+        workflow_edition: &str,
+    ) -> Result<rlmesh_proto::env::v1::HandshakeResponse, GrpcError> {
+        let req = HandshakeRequest {
+            protocol_generation: PROTOCOL_GENERATION.to_string(),
+            client_name: "rlmesh-rust-grpc".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            capabilities: capability_map(&[
+                capabilities::ENV_SERVICE_V1,
+                capabilities::SPACES_CORE_V1,
+            ]),
+            workflow_edition: workflow_edition.to_string(),
+        };
+
+        Ok(self
+            .client
+            .handshake(req)
+            .await
+            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+            .into_inner())
     }
 
     /// Reset the environment.

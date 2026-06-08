@@ -51,6 +51,10 @@ impl EnvironmentSourceRef {
                     value.push('-');
                     value.push_str(suite);
                 }
+                if let Some(task) = &source.task {
+                    value.push('-');
+                    value.push_str(task);
+                }
                 sanitize_slug(&value)
             }
         }
@@ -77,6 +81,9 @@ impl fmt::Display for EnvironmentSourceRef {
                 if let Some(suite) = &source.suite {
                     write!(f, ":{suite}")?;
                 }
+                if let Some(task) = &source.task {
+                    write!(f, "/{task}")?;
+                }
                 Ok(())
             }
         }
@@ -93,6 +100,7 @@ pub struct HfSourceRef {
     pub repo: String,
     pub revision: Option<String>,
     pub suite: Option<String>,
+    pub task: Option<String>,
 }
 
 impl HfSourceRef {
@@ -102,13 +110,12 @@ impl HfSourceRef {
             bail!("hugging face source must include org/repo");
         }
 
-        let (repo_and_revision, suite) = match value.rsplit_once(':') {
-            Some((left, right))
-                if !left.is_empty() && !right.is_empty() && !right.contains('/') =>
-            {
-                (left, Some(validate_ref_part("suite", right)?))
+        let (repo_and_revision, suite, task) = match value.rsplit_once(':') {
+            Some((left, right)) if !left.is_empty() && !right.is_empty() => {
+                let (suite, task) = parse_selector(right)?;
+                (left, Some(suite), task)
             }
-            _ => (value, None),
+            _ => (value, None, None),
         };
 
         let (repo, revision) = match repo_and_revision.rsplit_once('@') {
@@ -125,6 +132,7 @@ impl HfSourceRef {
             repo: repo.to_string(),
             revision,
             suite,
+            task,
         })
     }
 }
@@ -146,6 +154,10 @@ impl ResolvedEnvironmentSourceRef {
                     value.push('-');
                     value.push_str(suite);
                 }
+                if let Some(task) = &source.task {
+                    value.push('-');
+                    value.push_str(task);
+                }
                 sanitize_slug(&value)
             }
         }
@@ -161,6 +173,9 @@ impl fmt::Display for ResolvedEnvironmentSourceRef {
                 if let Some(suite) = &source.suite {
                     write!(f, ":{suite}")?;
                 }
+                if let Some(task) = &source.task {
+                    write!(f, "/{task}")?;
+                }
                 Ok(())
             }
         }
@@ -173,6 +188,7 @@ pub(crate) struct ResolvedHfSourceRef {
     pub requested_revision: Option<String>,
     pub resolved_revision: String,
     pub suite: Option<String>,
+    pub task: Option<String>,
 }
 
 pub fn sanitize_slug(value: &str) -> String {
@@ -208,17 +224,29 @@ pub fn sanitize_slug(value: &str) -> String {
 fn validate_hf_repo(repo: &str) -> Result<()> {
     let mut parts = repo.split('/');
     let Some(owner) = parts.next() else {
-        bail!("hugging face sources must look like hf://org/repo[@revision][:suite]");
+        bail!("hugging face sources must look like hf://org/repo[@revision][:suite[/task]]");
     };
     let Some(name) = parts.next() else {
-        bail!("hugging face sources must look like hf://org/repo[@revision][:suite]");
+        bail!("hugging face sources must look like hf://org/repo[@revision][:suite[/task]]");
     };
     if parts.next().is_some() || owner.is_empty() || name.is_empty() {
-        bail!("hugging face sources must look like hf://org/repo[@revision][:suite]");
+        bail!("hugging face sources must look like hf://org/repo[@revision][:suite[/task]]");
     }
     validate_hf_repo_part("owner", owner)?;
     validate_hf_repo_part("repo", name)?;
     Ok(())
+}
+
+fn parse_selector(value: &str) -> Result<(String, Option<String>)> {
+    let (suite, task) = match value.split_once('/') {
+        Some((suite, task)) if !suite.is_empty() && !task.is_empty() && !task.contains('/') => (
+            validate_ref_part("suite", suite)?,
+            Some(validate_ref_part("task", task)?),
+        ),
+        Some(_) => bail!("hugging face selector must look like :suite or :suite/task"),
+        None => (validate_ref_part("suite", value)?, None),
+    };
+    Ok((suite, task))
 }
 
 fn validate_hf_repo_part(label: &str, value: &str) -> Result<()> {
@@ -274,12 +302,40 @@ mod tests {
         assert_eq!(source.repo, "org/repo");
         assert_eq!(source.revision.as_deref(), Some("main"));
         assert_eq!(source.suite.as_deref(), Some("suite_1"));
+        assert_eq!(source.task, None);
+    }
+
+    #[test]
+    fn parses_hf_sources_with_suite_and_task() {
+        let source = HfSourceRef::parse("org/repo@main:suite_1/0").unwrap();
+        assert_eq!(source.repo, "org/repo");
+        assert_eq!(source.revision.as_deref(), Some("main"));
+        assert_eq!(source.suite.as_deref(), Some("suite_1"));
+        assert_eq!(source.task.as_deref(), Some("0"));
     }
 
     #[test]
     fn parses_hf_source_refs() {
         let source = EnvironmentSourceRef::parse("hf://org/repo").unwrap();
         assert_eq!(source.to_string(), "hf://org/repo");
+
+        let source = EnvironmentSourceRef::parse("hf://org/repo@main:suite_1/0").unwrap();
+        assert_eq!(source.to_string(), "hf://org/repo@main:suite_1/0");
+    }
+
+    #[test]
+    fn hf_slug_includes_suite_and_task() {
+        let source = EnvironmentSourceRef::parse("hf://org/repo@main:suite_1/0").unwrap();
+        assert_eq!(source.slug(), "org-repo-suite-1-0");
+    }
+
+    #[test]
+    fn rejects_malformed_hf_selectors() {
+        let err = EnvironmentSourceRef::parse("hf://org/repo@main:suite/").unwrap_err();
+        assert!(err.to_string().contains(":suite/task"));
+
+        let err = EnvironmentSourceRef::parse("hf://org/repo@main:suite/task/extra").unwrap_err();
+        assert!(err.to_string().contains(":suite/task"));
     }
 
     #[test]

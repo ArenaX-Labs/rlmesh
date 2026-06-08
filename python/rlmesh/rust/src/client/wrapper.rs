@@ -7,6 +7,7 @@ use rlmesh::{ConnectAddress, RemoteEnv};
 use rlmesh_spaces::v1::spaces::SpaceSpec;
 use rlmesh_spaces::v1::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, make_space,
@@ -32,7 +33,8 @@ pub struct PyEnvClient {
 #[pymethods]
 impl PyEnvClient {
     #[new]
-    fn new(address: &str) -> PyResult<Self> {
+    #[pyo3(signature = (address, *, connect_timeout_seconds=None))]
+    fn new(address: &str, connect_timeout_seconds: Option<f64>) -> PyResult<Self> {
         init_tracing("env_client");
         let profiler = ProfileCollector::new("env_client");
 
@@ -45,9 +47,7 @@ impl PyEnvClient {
         })?;
 
         let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
-        let client = runtime
-            .block_on(async { RemoteEnv::connect_to(connect_address).await })
-            .map_err(to_py_err)?;
+        let client = connect_remote_env(&runtime, connect_address, connect_timeout_seconds)?;
         let normalized_address = client.address().to_string();
         let observation_space = require_contract_space(
             client.env_contract().observation_space.clone(),
@@ -357,6 +357,39 @@ impl Drop for PyEnvClient {
     }
 }
 
+fn connect_remote_env(
+    runtime: &tokio::runtime::Runtime,
+    address: ConnectAddress,
+    connect_timeout_seconds: Option<f64>,
+) -> PyResult<RemoteEnv> {
+    let timeout = optional_connect_timeout(connect_timeout_seconds)?;
+    let connect = RemoteEnv::connect_to(address);
+    match timeout {
+        Some(timeout) => runtime
+            .block_on(async { tokio::time::timeout(timeout, connect).await })
+            .map_err(|_| {
+                pyo3::exceptions::PyTimeoutError::new_err(format!(
+                    "remote environment connect timed out after {:.3}s",
+                    timeout.as_secs_f64()
+                ))
+            })?
+            .map_err(to_py_err),
+        None => runtime.block_on(connect).map_err(to_py_err),
+    }
+}
+
+fn optional_connect_timeout(value: Option<f64>) -> PyResult<Option<Duration>> {
+    value
+        .map(|value| {
+            Duration::try_from_secs_f64(value).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "connect_timeout_seconds must be a non-negative finite float or None",
+                )
+            })
+        })
+        .transpose()
+}
+
 fn require_contract_space(space: Option<SpaceSpec>, field: &'static str) -> PyResult<SpaceSpec> {
     space.ok_or_else(|| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -382,7 +415,8 @@ pub struct PyVectorEnvClient {
 #[pymethods]
 impl PyVectorEnvClient {
     #[new]
-    fn new(address: &str) -> PyResult<Self> {
+    #[pyo3(signature = (address, *, connect_timeout_seconds=None))]
+    fn new(address: &str, connect_timeout_seconds: Option<f64>) -> PyResult<Self> {
         init_tracing("vector_env_client");
         let profiler = ProfileCollector::new("vector_env_client");
         let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -390,9 +424,7 @@ impl PyVectorEnvClient {
         })?;
 
         let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
-        let client = runtime
-            .block_on(async { RemoteEnv::connect_to(connect_address).await })
-            .map_err(to_py_err)?;
+        let client = connect_remote_env(&runtime, connect_address, connect_timeout_seconds)?;
         let normalized_address = client.address().to_string();
         let observation_space = require_contract_space(
             client.env_contract().observation_space.clone(),
@@ -629,7 +661,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
@@ -649,7 +681,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...

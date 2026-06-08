@@ -1,4 +1,5 @@
 pub mod address;
+pub(crate) mod handshake;
 
 pub use address::{
     BindTarget, EnvConnectTarget, normalize_endpoint, normalize_tcp_session_address,

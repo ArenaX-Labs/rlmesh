@@ -262,15 +262,109 @@ def test_legacy_sandbox_bootstrap_shim_dispatches_gym(
     assert env == ("CartPole-v1", {})
 
 
+def test_normalize_hf_env_returns_direct_env() -> None:
+    from rlmesh._bootstrap.env import normalize_hf_env
+
+    selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
+
+    assert normalize_hf_env(selected, suite=None, task=None) is selected
+
+
 def test_normalize_hf_env_selects_suite() -> None:
     from rlmesh._bootstrap.env import normalize_hf_env
 
     selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
     assert (
-        normalize_hf_env({"suite-a": object(), "suite-b": selected}, suite="suite-b")
+        normalize_hf_env(
+            {"suite-a": object(), "suite-b": selected},
+            suite="suite-b",
+            task=None,
+        )
         is selected
     )
+
+
+def test_normalize_hf_env_auto_selects_only_nested_task() -> None:
+    from rlmesh._bootstrap.env import normalize_hf_env
+
+    selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
+
+    assert (
+        normalize_hf_env({"cartpole_suite": {0: selected}}, suite=None, task=None)
+        is selected
+    )
+
+
+def test_normalize_hf_env_selects_nested_task_by_string_key() -> None:
+    from rlmesh._bootstrap.env import normalize_hf_env
+
+    selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
+
+    assert (
+        normalize_hf_env(
+            {"cartpole_suite": {0: selected, 1: object()}},
+            suite="cartpole_suite",
+            task="0",
+        )
+        is selected
+    )
+
+
+def test_normalize_hf_env_lists_ambiguous_suites() -> None:
+    from rlmesh._bootstrap.env import normalize_hf_env
+
+    with pytest.raises(ValueError, match="suite-a, suite-b"):
+        normalize_hf_env(
+            {"suite-a": object(), "suite-b": object()},
+            suite=None,
+            task=None,
+        )
+
+
+def test_normalize_hf_env_lists_ambiguous_tasks() -> None:
+    from rlmesh._bootstrap.env import normalize_hf_env
+
+    with pytest.raises(ValueError, match="0, 1"):
+        normalize_hf_env(
+            {"cartpole_suite": {0: object(), 1: object()}},
+            suite="cartpole_suite",
+            task=None,
+        )
+
+
+def test_load_hf_env_passes_task_from_bootstrap_spec(tmp_path) -> None:
+    from rlmesh._bootstrap.env import load_hf_env
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "env.py").write_text(
+        """
+class TinyEnv:
+    def reset(self, seed=None, options=None):
+        return 0, {}
+
+    def step(self, action):
+        return 0, 0.0, True, False, {}
+
+
+def make_env(**kwargs):
+    return {"cartpole_suite": {0: object(), 1: TinyEnv()}}
+""",
+        encoding="utf-8",
+    )
+
+    env = load_hf_env(
+        {
+            "kind": "hf",
+            "source_subdir": str(source),
+            "suite": "cartpole_suite",
+            "task": "1",
+        }
+    )
+
+    assert hasattr(env, "reset")
+    assert hasattr(env, "step")
 
 
 def test_load_predict_resolves_nested_callable(monkeypatch: pytest.MonkeyPatch) -> None:

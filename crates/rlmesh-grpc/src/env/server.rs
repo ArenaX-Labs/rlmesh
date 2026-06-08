@@ -26,7 +26,7 @@ use rlmesh_proto::env::v1::{
 };
 use rlmesh_proto::{
     CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities,
-    capability_map, is_workflow_edition_supported, supported_workflow_editions,
+    capability_map, is_workflow_edition_compatible, supported_workflow_editions,
 };
 
 use super::{env_error_to_proto, is_protocol_generation_compatible};
@@ -123,7 +123,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
         let protocol_compatible =
             is_protocol_generation_compatible(&req.protocol_generation, PROTOCOL_GENERATION);
-        let edition_compatible = is_workflow_edition_supported(&req.workflow_edition);
+        let edition_compatible = is_workflow_edition_compatible(&req.workflow_edition);
         let compatible = protocol_compatible && edition_compatible;
 
         let env_contract = if compatible {
@@ -148,7 +148,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 )
             } else {
                 format!(
-                    "workflow edition {} not supported by server; supported editions: {}",
+                    "workflow edition {} is not compatible; advertised editions: {}",
                     req.workflow_edition,
                     supported_workflow_editions().join(", ")
                 )
@@ -741,7 +741,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_rejects_unsupported_workflow_edition() {
+    async fn handshake_accepts_future_workflow_edition() {
         let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
 
         let response = EnvService::handshake(
@@ -752,6 +752,29 @@ mod tests {
                 client_version: "0.1.0-beta.1".to_string(),
                 capabilities: Default::default(),
                 workflow_edition: "2026.11".to_string(),
+            }),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        assert!(response.compatible);
+        assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+        assert!(response.env_contract.is_some());
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_malformed_workflow_edition() {
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+
+        let response = EnvService::handshake(
+            &server,
+            Request::new(HandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                client_name: "client".to_string(),
+                client_version: "0.1.0-beta.1".to_string(),
+                capabilities: Default::default(),
+                workflow_edition: "next".to_string(),
             }),
         )
         .await

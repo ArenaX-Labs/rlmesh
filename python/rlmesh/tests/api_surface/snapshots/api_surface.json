@@ -783,7 +783,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, *, base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
+        "signature": "SandboxEnv(source: str, *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -889,7 +889,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
         "stability": "Experimental"
       },
       "asarray": {
@@ -1123,7 +1123,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnvBase(source: str, *, base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object)",
+        "signature": "SandboxEnvBase(source: str, *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object)",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -1165,7 +1165,7 @@
             "signature": "property source: str"
           }
         },
-        "signature": "SandboxSessionBase(source: str, *, base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, num_envs: int = 1, vectorization_mode: str | None = None, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object)",
+        "signature": "SandboxSessionBase(source: str, *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, num_envs: int = 1, vectorization_mode: str | None = None, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object)",
         "stability": "Experimental"
       },
       "SandboxVectorEnvBase": {
@@ -1248,7 +1248,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnvBase(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object)",
+        "signature": "SandboxVectorEnvBase(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object)",
         "stability": "Experimental"
       }
     }
@@ -2069,7 +2069,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, *, base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
+        "signature": "SandboxEnv(source: str, *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -2175,7 +2175,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, package_spec: str | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
         "stability": "Experimental"
       },
       "TorchValue": {

@@ -1,16 +1,15 @@
 # Python Examples
 
-These examples are meant to be runnable from the repository and easy to copy into a separate
-project. Start a server in one terminal, then run a client in a second terminal. All examples use
-`127.0.0.1:5555`.
+These examples are small and copyable. Most server/client examples default to `127.0.0.1:5555`.
+Sandbox examples start their own Docker-backed environment process.
 
 ## Quickstart
 
-Use this first when learning or copying the RLMesh server/client shape. It uses a tiny in-file
-environment and the NumPy client adapter.
+Use this first when learning the RLMesh server/client shape. It serves Gymnasium `CartPole-v1` and
+uses the NumPy client adapter.
 
 ```bash
-uv run python examples/python/quickstart/serve.py
+uv run python examples/python/quickstart/serve_gymnasium.py
 ```
 
 In another terminal:
@@ -22,8 +21,25 @@ uv run python examples/python/quickstart/eval.py
 If copying these files outside the repository, install the published package:
 
 ```bash
-pip install --pre "rlmesh[numpy]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
+
+For a custom object without Gymnasium, see `quickstart/serve.py`.
+
+## Sandbox Examples
+
+Use these when the environment should start in an owned Docker-backed process instead of a separate
+server terminal.
+
+```bash
+uv run python examples/python/sandbox/gym_sandbox.py
+```
+
+Available sandbox examples:
+
+- [`sandbox/gym_sandbox.py`](sandbox/gym_sandbox.py): starts Gymnasium `CartPole-v1` in a sandbox.
+- [`sandbox/hf_sandbox.py`](sandbox/hf_sandbox.py): starts
+  `hf://lerobot/cartpole-env:cartpole_suite/0`.
 
 ## Optional Environment Examples
 

@@ -10,7 +10,7 @@ use rlmesh_sandbox::{EnvironmentSourceRef, SandboxOptions, VectorizationMode};
 #[gen_stub_pyfunction(
     module = "rlmesh._rlmesh",
     python = r#"
-def sandbox_start_env(source: str, *, base_image: str | None = None, package_spec: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False) -> SandboxRunInfo: ...
+def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False) -> SandboxRunInfo: ...
 "#
 )]
 #[pyfunction]
@@ -19,7 +19,7 @@ def sandbox_start_env(source: str, *, base_image: str | None = None, package_spe
         source,
         *,
         base_image = None,
-        package_spec = None,
+        rlmesh_package = None,
         packages = None,
         imports = None,
         kwargs_json = None,
@@ -33,7 +33,7 @@ pub fn sandbox_start_env(
     py: Python<'_>,
     source: &str,
     base_image: Option<&str>,
-    package_spec: Option<&str>,
+    rlmesh_package: Option<&str>,
     packages: Option<Vec<String>>,
     imports: Option<Vec<String>>,
     kwargs_json: Option<&str>,
@@ -44,7 +44,7 @@ pub fn sandbox_start_env(
 ) -> PyResult<Py<PyAny>> {
     let source = source.to_string();
     let base_image = base_image.map(str::to_owned);
-    let package_spec = package_spec.map(str::to_owned);
+    let rlmesh_package = rlmesh_package.map(str::to_owned);
     let packages = packages.unwrap_or_default();
     let imports = imports.unwrap_or_default();
     let kwargs_json = kwargs_json.map(str::to_owned);
@@ -57,7 +57,7 @@ pub fn sandbox_start_env(
             source_ref,
             SandboxOptions {
                 base_image,
-                package_spec,
+                rlmesh_package,
                 packages,
                 imports,
                 kwargs: parse_kwargs_json(kwargs_json.as_deref()).map_err(|err| err.to_string())?,
