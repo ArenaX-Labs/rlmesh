@@ -32,9 +32,6 @@ jobs:
         with:
           install: true
           cache: true
-          install_args:
-            rust python uv buf protoc cargo:cargo-audit cargo:cargo-deny cargo:typos-cli
-            cargo:cargo-machete
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
@@ -59,8 +56,8 @@ jobs:
       - name: Unit and integration tests
         run: mise run test
 
-      - name: Python API contract tests
-        run: mise run test:python:api-contract
+      - name: Python API surface tests
+        run: mise run test:python:api-surface
 
       - name: System harness tests
         run: mise run test:system:harness
@@ -84,7 +81,6 @@ jobs:
         with:
           install: true
           cache: true
-          install_args: rust python protoc
 
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
