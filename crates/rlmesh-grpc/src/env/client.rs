@@ -121,9 +121,12 @@ impl EnvClient {
     }
 
     /// Perform the handshake RPC and set up the Join bidi stream.
+    #[tracing::instrument(
+        name = "rlmesh.grpc.client.handshake",
+        skip_all,
+        fields(address = %self.address)
+    )]
     pub async fn handshake(&mut self) -> Result<EnvHandshake, GrpcError> {
-        let span = tracing::info_span!("rlmesh.grpc.client.handshake", address = %self.address);
-        let _enter = span.enter();
         if self.state != ClientState::Connected {
             return Err(ClientError::NotConnected.into());
         }
@@ -191,9 +194,12 @@ impl EnvClient {
     }
 
     /// Reset the environment.
+    #[tracing::instrument(
+        name = "rlmesh.grpc.client.reset",
+        skip_all,
+        fields(address = %self.address)
+    )]
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
-        let span = tracing::info_span!("rlmesh.grpc.client.reset", address = %self.address);
-        let _enter = span.enter();
         self.ensure_ready()?;
 
         let env_req = JoinRequest {
@@ -216,9 +222,12 @@ impl EnvClient {
     }
 
     /// Take a step in the environment.
+    #[tracing::instrument(
+        name = "rlmesh.grpc.client.step",
+        skip_all,
+        fields(address = %self.address)
+    )]
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
-        let span = tracing::info_span!("rlmesh.grpc.client.step", address = %self.address);
-        let _enter = span.enter();
         self.ensure_ready()?;
 
         let env_req = JoinRequest {
@@ -241,9 +250,12 @@ impl EnvClient {
     }
 
     /// Render the environment.
+    #[tracing::instrument(
+        name = "rlmesh.grpc.client.render",
+        skip_all,
+        fields(address = %self.address)
+    )]
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
-        let span = tracing::info_span!("rlmesh.grpc.client.render", address = %self.address);
-        let _enter = span.enter();
         self.ensure_ready()?;
 
         let env_req = JoinRequest {
@@ -341,16 +353,18 @@ impl EnvClient {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "rlmesh.grpc.client.join_roundtrip",
+        skip_all,
+        fields(
+            address = %self.address,
+            request_id = %req.request_id,
+            request_kind = join_request_kind_name(&req)
+        )
+    )]
     async fn send_on_stream(&mut self, req: JoinRequest) -> Result<JoinResponse, GrpcError> {
         let request_id = req.request_id.clone();
         let request_kind = join_request_kind_name(&req);
-        let span = tracing::info_span!(
-            "rlmesh.grpc.client.join_roundtrip",
-            address = %self.address,
-            request_id = %request_id,
-            request_kind
-        );
-        let _enter = span.enter();
         let tx = self.request_tx.as_ref().ok_or(ClientError::NotHandshaked)?;
 
         tx.send(req).await.map_err(|_| {

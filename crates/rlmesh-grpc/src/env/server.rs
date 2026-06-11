@@ -101,17 +101,19 @@ pub fn env_service_from_shared<E: Environment + 'static>(
 
 #[tonic::async_trait]
 impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
+    #[tracing::instrument(
+        name = "rlmesh.grpc.server.handshake",
+        skip_all,
+        fields(
+            client_name = %request.get_ref().client_name,
+            client_version = %request.get_ref().client_version
+        )
+    )]
     async fn handshake(
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeResponse>, Status> {
         let req = request.into_inner();
-        let span = tracing::info_span!(
-            "rlmesh.grpc.server.handshake",
-            client_name = %req.client_name,
-            client_version = %req.client_version
-        );
-        let _enter = span.enter();
 
         tracing::info!(
             "Handshake from {} v{} (protocol {}, edition {})",
@@ -243,21 +245,22 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
     }
 }
 
+#[tracing::instrument(
+    name = "rlmesh.grpc.server.handle_request",
+    skip_all,
+    fields(
+        request_id = %req.request_id,
+        request_kind = join_request_kind_name(req.kind.as_ref())
+    )
+)]
 async fn handle_env_request<E: Environment>(
     req: JoinRequest,
     env: Arc<Mutex<E>>,
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
 ) -> JoinResponse {
     let request_id = req.request_id.clone();
-    let request_kind = join_request_kind_name(req.kind.as_ref());
     let operation = join_request_operation(req.kind.as_ref());
     let endpoint_started = Instant::now();
-    let span = tracing::info_span!(
-        "rlmesh.grpc.server.handle_request",
-        request_id = %request_id,
-        request_kind
-    );
-    let _enter = span.enter();
 
     let kind = match req.kind {
         Some(join_request::Kind::Reset(reset_req)) => {
@@ -296,7 +299,7 @@ async fn handle_env_request<E: Environment>(
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
-                    tracing::info!(
+                    tracing::debug!(
                         obs_bytes,
                         info_bytes,
                         episode_count = ok.episode_ids.len(),
@@ -374,7 +377,7 @@ async fn handle_env_request<E: Environment>(
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
-                    tracing::info!(
+                    tracing::trace!(
                         obs_bytes,
                         info_bytes,
                         completed_episodes = ok.completed_episodes.len(),
@@ -408,7 +411,7 @@ async fn handle_env_request<E: Environment>(
             match result {
                 Ok(ok) => {
                     let frame_bytes = ok.png_frame.as_ref().map(Vec::len).unwrap_or(0);
-                    tracing::info!(frame_bytes, "env render completed");
+                    tracing::debug!(frame_bytes, "env render completed");
                     Some(join_response::Kind::Render(ok))
                 }
                 Err(e) => {

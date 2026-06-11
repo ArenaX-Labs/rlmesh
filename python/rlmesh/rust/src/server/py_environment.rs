@@ -398,14 +398,13 @@ fn chw_to_hwc(bytes: Vec<u8>, channels: usize, height: usize, width: usize) -> V
 }
 
 impl PyEnvironment {
+    #[tracing::instrument(name = "rlmesh.server.reset", skip_all, fields(num_envs = self.num_envs))]
     async fn reset_single(
         &mut self,
         req: SingleResetRequest,
     ) -> Result<SingleResetResult, EnvError> {
         self.ensure_single_env("reset")?;
 
-        let span = tracing::info_span!("rlmesh.server.reset", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.reset.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let observation_space = self.observation_space.clone();
@@ -470,11 +469,10 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.step", skip_all, fields(num_envs = self.num_envs))]
     async fn step_single(&mut self, req: SingleStepRequest) -> Result<SingleStepResult, EnvError> {
         self.ensure_single_env("step")?;
 
-        let span = tracing::info_span!("rlmesh.server.step", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.step.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let observation_space = self.observation_space.clone();
@@ -542,6 +540,7 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.render", skip_all, fields(num_envs = self.num_envs))]
     async fn render_single(
         &mut self,
         req: SingleRenderRequest,
@@ -557,8 +556,6 @@ impl PyEnvironment {
             ));
         }
 
-        let span = tracing::info_span!("rlmesh.server.render", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.render.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
@@ -600,14 +597,13 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.close", skip_all, fields(num_envs = self.num_envs))]
     async fn close_single(
         &mut self,
         _req: SingleCloseRequest,
     ) -> Result<SingleCloseResult, EnvError> {
         self.ensure_single_env("close")?;
 
-        let span = tracing::info_span!("rlmesh.server.close", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.close.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
@@ -637,12 +633,11 @@ impl PyEnvironment {
         Ok(SingleCloseResult)
     }
 
+    #[tracing::instrument(name = "rlmesh.server.reset", skip_all, fields(num_envs = self.num_envs))]
     async fn reset_vector(
         &mut self,
         req: EnvResetRequest,
     ) -> Result<EnvResetResult, EnvRuntimeError> {
-        let span = tracing::info_span!("rlmesh.server.reset", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.reset.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let observation_space = self.observation_space.clone();
@@ -706,6 +701,7 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.step", skip_all, fields(num_envs = self.num_envs))]
     async fn step_vector(&mut self, req: EnvStepRequest) -> Result<EnvStepResult, EnvRuntimeError> {
         if req.actions.len() != self.num_envs {
             return Err(EnvRuntimeError::InvalidValue(format!(
@@ -715,8 +711,6 @@ impl PyEnvironment {
             )));
         }
 
-        let span = tracing::info_span!("rlmesh.server.step", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.step.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let action_space = self.action_space.clone();
@@ -792,12 +786,11 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.render", skip_all, fields(num_envs = self.num_envs))]
     async fn render_vector(
         &mut self,
         _req: RenderRequest,
     ) -> Result<RenderResult, EnvRuntimeError> {
-        let span = tracing::info_span!("rlmesh.server.render", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.render.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
@@ -833,12 +826,11 @@ impl PyEnvironment {
         })
     }
 
+    #[tracing::instrument(name = "rlmesh.server.close", skip_all, fields(num_envs = self.num_envs))]
     async fn close_vector(
         &mut self,
         _req: CloseRequest,
     ) -> Result<EnvCloseResult, EnvRuntimeError> {
-        let span = tracing::info_span!("rlmesh.server.close", num_envs = self.num_envs);
-        let _enter = span.enter();
         let total_guard = self.profiler.start("server.close.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
