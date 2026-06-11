@@ -1,7 +1,8 @@
 use crate::errors::{SpaceError, err_space};
+use crate::v1::box_spec;
+use crate::v1::dtype::{DType, dtype_size};
 use crate::v1::spaces::{SpaceSpec, SpaceValue, space_spec};
-use crate::v1::{DType, box_spec};
-use half::f16;
+use half::{bf16, f16};
 
 /// A continuous tensor value for Box spaces.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,20 +34,6 @@ impl BoxValue {
     /// Check if the data size matches the expected size.
     pub fn is_valid_size(&self) -> bool {
         self.data.len() == self.expected_byte_size()
-    }
-}
-
-/// Get the byte size of a dtype.
-pub fn dtype_size(dtype: DType) -> usize {
-    match dtype {
-        DType::Unspecified => 0,
-        DType::Bool => 1,
-        DType::Uint8 => 1,
-        DType::Int32 => 4,
-        DType::Int64 => 8,
-        DType::Float16 => 2,
-        DType::Float32 => 4,
-        DType::Float64 => 8,
     }
 }
 
@@ -169,6 +156,73 @@ pub(crate) fn contains_box(
             for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
                 validate_box_scalar(
                     f16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64(),
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        DType::Bfloat16 => {
+            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
+                validate_box_scalar(
+                    bf16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64(),
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        DType::Int8 => {
+            for (index, byte) in box_val.data.iter().enumerate() {
+                validate_box_scalar(
+                    *byte as i8 as f64,
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        DType::Int16 => {
+            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
+                validate_box_scalar(
+                    i16::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        DType::Uint16 => {
+            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
+                validate_box_scalar(
+                    u16::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        DType::Uint32 => {
+            for (index, chunk) in box_val.data.chunks_exact(4).enumerate() {
+                validate_box_scalar(
+                    u32::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
+                    low_bounds[index],
+                    high_bounds[index],
+                    path,
+                    index,
+                )?;
+            }
+        }
+        // i64/u64 values beyond 2^53 lose precision in the f64 comparison.
+        DType::Uint64 => {
+            for (index, chunk) in box_val.data.chunks_exact(8).enumerate() {
+                validate_box_scalar(
+                    u64::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
                     low_bounds[index],
                     high_bounds[index],
                     path,

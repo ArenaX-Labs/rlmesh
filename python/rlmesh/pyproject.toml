@@ -47,9 +47,21 @@ Documentation = "https://docs.rlmesh.dev"
 Issues = "https://github.com/ArenaX-Labs/rlmesh/issues"
 
 [project.optional-dependencies]
-gymnasium = ["gymnasium"]
-numpy = ["numpy"]
-torch = ["numpy", "torch"]
+gymnasium = ["gymnasium>=0.26.1"]
+gym = ["gym>=0.22.0"]
+
+# NumPy support for Python 3.10 was introduced in 1.21, but only has built wheels
+# starting from 1.21.2. However, 1.22+ seems to be when Python 3.10 support was
+# truly stable, which also coincides with the DLPack backend release, making it a
+# solid floor version to pick.
+numpy = ["numpy>=1.22"]
+torch = ["torch>=1.11"]
+
+# JAX support for Python 3.10+ begins with jaxlib 0.1.75 (jax 0.2.26), however,
+# the earliest version of jaxlib that is published on PyPI is 0.4.18. Therefore,
+# we are using 0.4.18 as a minimum supported floor. Versions lower should work,
+# but are not officially supported.
+jax = ["jax", "jaxlib>=0.1.75"]
 
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"

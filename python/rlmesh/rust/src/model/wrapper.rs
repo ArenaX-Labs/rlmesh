@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use half::f16;
+use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 use pyo3_stub_gen::inventory::submit;
@@ -352,11 +352,17 @@ fn encode_i64_values(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
         match dtype {
             DType::Bool => bytes.push(u8::from(*value != 0)),
             DType::Uint8 => bytes.push(*value as u8),
+            DType::Int8 => bytes.extend((*value as i8).to_le_bytes()),
+            DType::Int16 => bytes.extend((*value as i16).to_le_bytes()),
             DType::Int32 => bytes.extend((*value as i32).to_le_bytes()),
             DType::Int64 => bytes.extend(value.to_le_bytes()),
+            DType::Uint16 => bytes.extend((*value as u16).to_le_bytes()),
+            DType::Uint32 => bytes.extend((*value as u32).to_le_bytes()),
+            DType::Uint64 => bytes.extend((*value as u64).to_le_bytes()),
             DType::Float32 | DType::Unspecified => bytes.extend((*value as f32).to_le_bytes()),
             DType::Float64 => bytes.extend((*value as f64).to_le_bytes()),
             DType::Float16 => bytes.extend(f16::from_f32(*value as f32).to_le_bytes()),
+            DType::Bfloat16 => bytes.extend(bf16::from_f64(*value as f64).to_le_bytes()),
         }
     }
     Ok(bytes)

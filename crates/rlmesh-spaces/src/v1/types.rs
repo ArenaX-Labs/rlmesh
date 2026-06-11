@@ -1,40 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(i32)]
-pub enum DType {
-    #[default]
-    Unspecified = 0,
-    Bool = 1,
-    Uint8 = 2,
-    Int32 = 3,
-    Int64 = 4,
-    Float16 = 5,
-    Float32 = 6,
-    Float64 = 7,
-}
-
-impl TryFrom<i32> for DType {
-    type Error = &'static str;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Unspecified),
-            1 => Ok(Self::Bool),
-            2 => Ok(Self::Uint8),
-            3 => Ok(Self::Int32),
-            4 => Ok(Self::Int64),
-            5 => Ok(Self::Float16),
-            6 => Ok(Self::Float32),
-            7 => Ok(Self::Float64),
-            _ => Err("invalid dtype"),
-        }
-    }
-}
-
-impl From<DType> for i32 {
-    fn from(value: DType) -> Self {
-        value as i32
-    }
-}
+use crate::v1::dtype::DType;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct VectorInt {

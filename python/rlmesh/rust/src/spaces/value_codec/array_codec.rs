@@ -1,7 +1,7 @@
 use super::ValueBackend;
 use crate::spaces::tensor::{extract_tensor, make_tensor};
 use crate::spaces::utils::dtype_name;
-use half::f16;
+use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rlmesh_spaces::v1::{
@@ -83,13 +83,19 @@ pub(crate) fn encode_i64_sequence_bytes(values: &[i64], dtype: DType) -> PyResul
         match dtype {
             DType::Bool => bytes.push(u8::from(*value != 0)),
             DType::Uint8 => bytes.push(*value as u8),
+            DType::Int8 => bytes.extend((*value as i8).to_le_bytes()),
+            DType::Int16 => bytes.extend((*value as i16).to_le_bytes()),
             DType::Int32 => bytes.extend((*value as i32).to_le_bytes()),
             DType::Int64 => bytes.extend(value.to_le_bytes()),
+            DType::Uint16 => bytes.extend((*value as u16).to_le_bytes()),
+            DType::Uint32 => bytes.extend((*value as u32).to_le_bytes()),
+            DType::Uint64 => bytes.extend((*value as u64).to_le_bytes()),
             DType::Float32 | DType::Unspecified => {
                 bytes.extend((*value as f32).to_le_bytes());
             }
             DType::Float64 => bytes.extend((*value as f64).to_le_bytes()),
             DType::Float16 => bytes.extend(f16::from_f32(*value as f32).to_le_bytes()),
+            DType::Bfloat16 => bytes.extend(bf16::from_f64(*value as f64).to_le_bytes()),
         }
     }
     Ok(bytes)
@@ -233,13 +239,19 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
             out.push(if flag { 1 } else { 0 });
         }
         DType::Uint8 => out.push(value.extract::<u8>()?),
+        DType::Int8 => out.extend(value.extract::<i8>()?.to_le_bytes()),
+        DType::Int16 => out.extend(value.extract::<i16>()?.to_le_bytes()),
         DType::Int32 => out.extend((value.extract::<i64>()? as i32).to_le_bytes()),
         DType::Int64 => out.extend(value.extract::<i64>()?.to_le_bytes()),
+        DType::Uint16 => out.extend(value.extract::<u16>()?.to_le_bytes()),
+        DType::Uint32 => out.extend(value.extract::<u32>()?.to_le_bytes()),
+        DType::Uint64 => out.extend(value.extract::<u64>()?.to_le_bytes()),
         DType::Float32 | DType::Unspecified => {
             out.extend((value.extract::<f64>()? as f32).to_le_bytes());
         }
         DType::Float64 => out.extend(value.extract::<f64>()?.to_le_bytes()),
         DType::Float16 => out.extend(f16::from_f32(value.extract::<f64>()? as f32).to_le_bytes()),
+        DType::Bfloat16 => out.extend(bf16::from_f64(value.extract::<f64>()?).to_le_bytes()),
     }
     Ok(())
 }
@@ -276,6 +288,26 @@ fn decode_scalars(bytes: &[u8], dtype: DType) -> PyResult<Vec<ScalarValue>> {
         DType::Float16 => decode_chunks(bytes, 2, |chunk| {
             ScalarValue::Float(f16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64())
         }),
+        DType::Bfloat16 => decode_chunks(bytes, 2, |chunk| {
+            ScalarValue::Float(bf16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64())
+        }),
+        DType::Int8 => Ok(bytes
+            .iter()
+            .map(|value| ScalarValue::Int(*value as i8 as i64))
+            .collect()),
+        DType::Int16 => decode_chunks(bytes, 2, |chunk| {
+            ScalarValue::Int(i16::from_le_bytes(chunk.try_into().expect("chunk")) as i64)
+        }),
+        DType::Uint16 => decode_chunks(bytes, 2, |chunk| {
+            ScalarValue::Int(u16::from_le_bytes(chunk.try_into().expect("chunk")) as i64)
+        }),
+        DType::Uint32 => decode_chunks(bytes, 4, |chunk| {
+            ScalarValue::Int(u32::from_le_bytes(chunk.try_into().expect("chunk")) as i64)
+        }),
+        // u64 values above i64::MAX wrap; ScalarValue has no unsigned variant.
+        DType::Uint64 => decode_chunks(bytes, 8, |chunk| {
+            ScalarValue::Int(u64::from_le_bytes(chunk.try_into().expect("chunk")) as i64)
+        }),
     }
 }
 
@@ -303,10 +335,10 @@ where
 
 fn dtype_size(dtype: DType) -> PyResult<usize> {
     match dtype {
-        DType::Bool | DType::Uint8 => Ok(1),
-        DType::Float16 => Ok(2),
-        DType::Int32 | DType::Float32 | DType::Unspecified => Ok(4),
-        DType::Int64 | DType::Float64 => Ok(8),
+        DType::Bool | DType::Uint8 | DType::Int8 => Ok(1),
+        DType::Float16 | DType::Bfloat16 | DType::Int16 | DType::Uint16 => Ok(2),
+        DType::Int32 | DType::Uint32 | DType::Float32 | DType::Unspecified => Ok(4),
+        DType::Int64 | DType::Uint64 | DType::Float64 => Ok(8),
     }
 }
 

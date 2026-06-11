@@ -109,9 +109,14 @@ fn sample_box_scalar<'py>(
         DType::Bool => Ok(pyo3::types::PyBool::new(py, value.round() != 0.0)
             .to_owned()
             .into_any()),
-        DType::Uint8 | DType::Int32 | DType::Int64 => {
-            Ok((value.round() as i64).into_pyobject(py)?.into_any())
-        }
+        DType::Uint8
+        | DType::Int8
+        | DType::Int16
+        | DType::Int32
+        | DType::Int64
+        | DType::Uint16
+        | DType::Uint32
+        | DType::Uint64 => Ok((value.round() as i64).into_pyobject(py)?.into_any()),
         _ => Ok(value.into_pyobject(py)?.into_any()),
     }
 }

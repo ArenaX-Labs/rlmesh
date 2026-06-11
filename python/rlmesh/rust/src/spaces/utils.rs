@@ -25,6 +25,12 @@ pub fn extract_dtype<'py>(obj: &Bound<'py, PyAny>) -> PyResult<DType> {
         "float16" => DType::Float16,
         "float32" => DType::Float32,
         "float64" => DType::Float64,
+        "int8" => DType::Int8,
+        "int16" => DType::Int16,
+        "uint16" => DType::Uint16,
+        "uint32" => DType::Uint32,
+        "uint64" => DType::Uint64,
+        "bfloat16" => DType::Bfloat16,
         _ => DType::Unspecified,
     })
 }
@@ -50,6 +56,12 @@ where
         DType::Float16 => "float16",
         DType::Float32 => "float32",
         DType::Float64 => "float64",
+        DType::Int8 => "int8",
+        DType::Int16 => "int16",
+        DType::Uint16 => "uint16",
+        DType::Uint32 => "uint32",
+        DType::Uint64 => "uint64",
+        DType::Bfloat16 => "bfloat16",
         DType::Unspecified => "float32",
     }
 }

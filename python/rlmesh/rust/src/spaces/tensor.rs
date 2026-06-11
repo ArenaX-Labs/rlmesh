@@ -231,10 +231,10 @@ fn c_contiguous_strides(shape: &[usize], item_size: usize) -> PyResult<Vec<usize
 
 fn dtype_size(dtype: &str) -> PyResult<usize> {
     match dtype {
-        "bool" | "uint8" => Ok(1),
-        "float16" => Ok(2),
-        "int32" | "float32" => Ok(4),
-        "int64" | "float64" => Ok(8),
+        "bool" | "uint8" | "int8" => Ok(1),
+        "float16" | "bfloat16" | "int16" | "uint16" => Ok(2),
+        "int32" | "uint32" | "float32" => Ok(4),
+        "int64" | "uint64" | "float64" => Ok(8),
         other => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unsupported tensor dtype {other:?}"
         ))),

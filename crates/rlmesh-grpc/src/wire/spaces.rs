@@ -313,6 +313,12 @@ fn proto_dtype_from_native(dtype: native::DType) -> proto::DType {
         native::DType::Float16 => proto::DType::Float16,
         native::DType::Float32 => proto::DType::Float32,
         native::DType::Float64 => proto::DType::Float64,
+        native::DType::Int8 => proto::DType::Int8,
+        native::DType::Int16 => proto::DType::Int16,
+        native::DType::Uint16 => proto::DType::Uint16,
+        native::DType::Uint32 => proto::DType::Uint32,
+        native::DType::Uint64 => proto::DType::Uint64,
+        native::DType::Bfloat16 => proto::DType::Bfloat16,
     }
 }
 
@@ -328,5 +334,49 @@ fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
         proto::DType::Float16 => native::DType::Float16,
         proto::DType::Float32 => native::DType::Float32,
         proto::DType::Float64 => native::DType::Float64,
+        proto::DType::Int8 => native::DType::Int8,
+        proto::DType::Int16 => native::DType::Int16,
+        proto::DType::Uint16 => native::DType::Uint16,
+        proto::DType::Uint32 => native::DType::Uint32,
+        proto::DType::Uint64 => native::DType::Uint64,
+        proto::DType::Bfloat16 => native::DType::Bfloat16,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dtype_proto_roundtrip() {
+        let all = [
+            native::DType::Unspecified,
+            native::DType::Bool,
+            native::DType::Uint8,
+            native::DType::Int32,
+            native::DType::Int64,
+            native::DType::Float16,
+            native::DType::Float32,
+            native::DType::Float64,
+            native::DType::Int8,
+            native::DType::Int16,
+            native::DType::Uint16,
+            native::DType::Uint32,
+            native::DType::Uint64,
+            native::DType::Bfloat16,
+        ];
+        for dtype in all {
+            let wire = proto_dtype_from_native(dtype) as i32;
+            assert_eq!(
+                native_dtype_from_proto(wire).expect("known dtype"),
+                dtype,
+                "roundtrip mismatch for {dtype:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dtype_from_proto_rejects_unknown_value() {
+        assert!(native_dtype_from_proto(999).is_err());
+    }
 }
