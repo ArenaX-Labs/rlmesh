@@ -173,7 +173,8 @@ fn read_wire_frame(reader: &mut impl Read) -> Result<Option<ViewerEvent>, String
     }
 
     let kind = header[0];
-    let len = u32::from_le_bytes(header[1..5].try_into().unwrap()) as usize;
+    let len =
+        u32::from_le_bytes(header[1..5].try_into().expect("header[1..5] is 4 bytes")) as usize;
 
     if kind == 0 {
         return Ok(Some(ViewerEvent::Clear));

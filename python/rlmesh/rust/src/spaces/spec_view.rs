@@ -228,13 +228,13 @@ impl PySpace {
 
     fn seed(&self, seed: Option<u64>) -> Option<u64> {
         let seed = seed.unwrap_or_else(rand::random);
-        *self.rng.lock().unwrap() = StdRng::seed_from_u64(seed);
+        *self.rng.lock().expect("rng mutex poisoned") = StdRng::seed_from_u64(seed);
         Some(seed)
     }
 
     #[gen_stub(override_return_type(type_repr = "object", imports = ()))]
     fn sample<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mut rng = self.rng.lock().unwrap();
+        let mut rng = self.rng.lock().expect("rng mutex poisoned");
         sample_space_value(py, &self.spec, &mut rng)
     }
 

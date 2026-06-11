@@ -79,4 +79,13 @@ clap = "4.6"
 egui = "0.34"
 eframe = { version = "0.34", default-features = false }
 
-[workspace.lints]
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+print_stdout = "warn"
+print_stderr = "warn"

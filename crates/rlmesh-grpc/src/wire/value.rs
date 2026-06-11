@@ -868,16 +868,20 @@ fn decode_scalars(bytes: &[u8], dtype: native::DType) -> Result<Vec<ScalarValue>
         native::DType::Int32 => bytes
             .chunks_exact(4)
             .map(|chunk| {
-                Ok(ScalarValue::Int(
-                    i32::from_le_bytes(chunk.try_into().unwrap()) as i64,
-                ))
+                Ok(ScalarValue::Int(i32::from_le_bytes(
+                    chunk
+                        .try_into()
+                        .expect("chunks_exact yields fixed-size chunks"),
+                ) as i64))
             })
             .collect(),
         native::DType::Int64 => bytes
             .chunks_exact(8)
             .map(|chunk| {
                 Ok(ScalarValue::Int(i64::from_le_bytes(
-                    chunk.try_into().unwrap(),
+                    chunk
+                        .try_into()
+                        .expect("chunks_exact yields fixed-size chunks"),
                 )))
             })
             .collect(),
@@ -885,23 +889,32 @@ fn decode_scalars(bytes: &[u8], dtype: native::DType) -> Result<Vec<ScalarValue>
             .chunks_exact(2)
             .map(|chunk| {
                 Ok(ScalarValue::Float(
-                    f16::from_le_bytes(chunk.try_into().unwrap()).to_f64(),
+                    f16::from_le_bytes(
+                        chunk
+                            .try_into()
+                            .expect("chunks_exact yields fixed-size chunks"),
+                    )
+                    .to_f64(),
                 ))
             })
             .collect(),
         native::DType::Float32 => bytes
             .chunks_exact(4)
             .map(|chunk| {
-                Ok(ScalarValue::Float(
-                    f32::from_le_bytes(chunk.try_into().unwrap()) as f64,
-                ))
+                Ok(ScalarValue::Float(f32::from_le_bytes(
+                    chunk
+                        .try_into()
+                        .expect("chunks_exact yields fixed-size chunks"),
+                ) as f64))
             })
             .collect(),
         native::DType::Float64 => bytes
             .chunks_exact(8)
             .map(|chunk| {
                 Ok(ScalarValue::Float(f64::from_le_bytes(
-                    chunk.try_into().unwrap(),
+                    chunk
+                        .try_into()
+                        .expect("chunks_exact yields fixed-size chunks"),
                 )))
             })
             .collect(),

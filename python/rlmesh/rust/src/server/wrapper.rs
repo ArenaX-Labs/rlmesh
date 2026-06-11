@@ -207,7 +207,7 @@ impl PyEnvServer {
 
         let result = py.detach(move || run_server(resources, address, shutdown));
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().expect("server state mutex poisoned");
         *state = ServerState::Stopped;
         drop(state);
 
@@ -231,7 +231,7 @@ impl PyEnvServer {
             })?;
 
         let action = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("server state mutex poisoned");
             match std::mem::replace(&mut *state, ServerState::Stopped) {
                 ServerState::StartingBackground => {
                     *state = ServerState::RunningBackground(handle);
@@ -270,7 +270,7 @@ impl PyEnvServer {
         }
 
         let action = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("server state mutex poisoned");
             match std::mem::replace(&mut *state, ServerState::Stopped) {
                 ServerState::Ready(resources) => ShutdownAction::Cleanup(resources),
                 ServerState::RunningBackground(handle) => ShutdownAction::Join(handle),
@@ -370,7 +370,7 @@ fn wait_background_server(
 
     loop {
         let handle = {
-            let mut guard = state.lock().unwrap();
+            let mut guard = state.lock().expect("server state mutex poisoned");
             match &*guard {
                 ServerState::RunningBackground(handle) if handle.is_finished() => {
                     match std::mem::replace(&mut *guard, ServerState::Stopped) {
@@ -414,7 +414,7 @@ fn take_resources(
     action: &str,
     next_state: ServerState,
 ) -> PyResult<ServerResources> {
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock().expect("server state mutex poisoned");
     let previous = std::mem::replace(&mut *guard, next_state);
 
     match previous {

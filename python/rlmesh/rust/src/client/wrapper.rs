@@ -76,7 +76,12 @@ impl PyEnvClient {
         let span = tracing::info_span!("rlmesh.client.handshake", address = %self.address);
         let _enter = span.enter();
         let total_guard = self.profiler.start("client.handshake");
-        let env_contract = self.client.lock().unwrap().env_contract().clone();
+        let env_contract = self
+            .client
+            .lock()
+            .expect("env client mutex poisoned")
+            .env_contract()
+            .clone();
         let _ = total_guard.finish(0);
 
         Python::attach(|py| env_contract_to_py(py, &env_contract))
@@ -132,7 +137,7 @@ impl PyEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .reset(rlmesh::ResetRequest {
                             seeds: seeds.unwrap_or_default(),
@@ -191,7 +196,7 @@ impl PyEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .step(rlmesh::StepRequest {
                             actions: vec![action],
@@ -319,7 +324,7 @@ impl PyEnvClient {
 
         py.detach(|| {
             runtime.block_on(async move {
-                let mut guard = client.lock().unwrap();
+                let mut guard = client.lock().expect("env client mutex poisoned");
                 guard.close().await
             })
         })
@@ -340,7 +345,7 @@ impl PyEnvClient {
         let accepted = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard.shutdown(reason).await
                 })
             })
@@ -451,7 +456,12 @@ impl PyVectorEnvClient {
     }
 
     fn handshake(&mut self) -> PyResult<Py<PyAny>> {
-        let env_contract = self.client.lock().unwrap().env_contract().clone();
+        let env_contract = self
+            .client
+            .lock()
+            .expect("env client mutex poisoned")
+            .env_contract()
+            .clone();
         Python::attach(|py| env_contract_to_py(py, &env_contract))
     }
 
@@ -501,7 +511,7 @@ impl PyVectorEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .reset(rlmesh::ResetRequest {
                             seeds: seeds.unwrap_or_default(),
@@ -543,7 +553,7 @@ impl PyVectorEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .step(rlmesh::StepRequest {
                             actions: batched_actions,
@@ -624,7 +634,7 @@ impl PyVectorEnvClient {
         let runtime = &self.runtime;
         py.detach(|| {
             runtime.block_on(async move {
-                let mut guard = client.lock().unwrap();
+                let mut guard = client.lock().expect("env client mutex poisoned");
                 guard.close().await
             })
         })
@@ -641,7 +651,7 @@ impl PyVectorEnvClient {
         let accepted = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard.shutdown(reason).await
                 })
             })
@@ -712,7 +722,7 @@ impl PyVectorEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .render(NativeRenderRequest {
                             env_index: Some(env_index),
@@ -748,7 +758,7 @@ impl PyEnvClient {
         let result = py
             .detach(|| {
                 runtime.block_on(async move {
-                    let mut guard = client.lock().unwrap();
+                    let mut guard = client.lock().expect("env client mutex poisoned");
                     guard
                         .render(NativeRenderRequest {
                             env_index: Some(env_index),

@@ -1,3 +1,8 @@
+// The Python buffer protocol (`__getbuffer__`/`__releasebuffer__`) is a raw FFI
+// contract over `Py_buffer`, so this module needs `unsafe`. It is the only place
+// in the crate that does; the workspace otherwise denies `unsafe_code`.
+#![allow(unsafe_code)]
+
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMemoryView};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
