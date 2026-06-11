@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#MISE description="Build the linux-gnu cp310+cp311-abi3 wheel pair used by container images; skips when wheels exist"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--force" help="Rebuild even if matching wheels already exist in dist/"
+#USAGE flag "--arch <arch>" help="Override target arch: x86_64 or aarch64 (default: host arch)"
+set -euo pipefail
+
+arch="${usage_arch:-}"
+if [ -z "$arch" ]; then
+  case "$(uname -m)" in
+    x86_64 | amd64) arch=x86_64 ;;
+    arm64 | aarch64) arch=aarch64 ;;
+    *) echo "error: unsupported host arch $(uname -m); pass --arch" >&2; exit 1 ;;
+  esac
+fi
+case "$arch" in
+  x86_64 | aarch64) ;;
+  *) echo "error: --arch must be x86_64 or aarch64, got '$arch'" >&2; exit 1 ;;
+esac
+alias=linux-x86
+[ "$arch" = aarch64 ] && alias=linux-arm
+
+# Skip check runs before any cargo work so no-op invocations stay cheap.
+# Assumes the pyproject version string appears verbatim in wheel filenames.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
+dist=python/rlmesh/dist
+if [ "${usage_force:-false}" != true ] \
+  && compgen -G "$dist/rlmesh-${version}-cp310-cp310-manylinux*${arch}*.whl" >/dev/null \
+  && compgen -G "$dist/rlmesh-${version}-cp311-abi3-manylinux*${arch}*.whl" >/dev/null; then
+  echo "skip: docker wheels for rlmesh ${version} (${arch}) already in ${dist}/; use --force to rebuild"
+  exit 0
+fi
+
+mise run setup:python:release
+rustup target add "${arch}-unknown-linux-gnu"
+mise run stubs:generate
+mise run build:python:wheel "$alias"
+# --allow-partial: only this arch's pair is required here; --allow-local-platform-tags:
+# dist may also hold local-tag wheels from build:python:local.
+python scripts/check_python_wheels.py "$dist" --allow-partial --allow-local-platform-tags

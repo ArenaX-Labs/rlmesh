@@ -85,6 +85,13 @@ mise run build:python
 Local wheel builds may use plain `linux_*` tags for smoke testing. Release wheels must use
 uploadable platform tags such as `manylinux`, `musllinux`, `macosx`, or `win`.
 
+Build the linux-glibc wheel pair consumed by container images (skips when the wheels for the current
+version and architecture already exist):
+
+```bash
+mise run build:python:docker
+```
+
 ## Site
 
 Build the site:

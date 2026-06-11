@@ -24,34 +24,34 @@ name = "stub_gen"
 path = "src/bin/stub_gen.rs"
 doc = false
 
-[dependencies]
-rlmesh-cli = { workspace = true }
-rlmesh = { workspace = true }
-rlmesh-grpc = { workspace = true }
-rlmesh-spaces = { workspace = true }
-rlmesh-sandbox = { workspace = true }
+[features]
+default = []
+abi3-py311 = ["pyo3/abi3-py311"]
 
+[dependencies]
+rlmesh = { workspace = true }
+rlmesh-cli = { workspace = true }
+rlmesh-grpc = { workspace = true }
+rlmesh-sandbox = { workspace = true }
+rlmesh-spaces = { workspace = true }
+
+async-trait = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tonic = { workspace = true }
-async-trait = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-serde_json = { workspace = true }
 
-rand = { workspace = true }
 half = { workspace = true }
+image = { workspace = true, features = ["png"] }
 pyo3 = { workspace = true, features = [
   "auto-initialize",
   "extension-module",
   "generate-import-lib",
 ] }
 pyo3-stub-gen = { workspace = true }
-image = { workspace = true, features = ["png"] }
-
-[features]
-default = []
-abi3-py311 = ["pyo3/abi3-py311"]
+rand = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = { workspace = true, features = ["resolve-config"] }

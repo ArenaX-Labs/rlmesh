@@ -32,6 +32,10 @@ site/
 # Rust
 target/
 
+# mise file tasks (re-include paths shadowed by build/ above)
+!.mise/tasks/
+!.mise/tasks/**
+
 # AI Folders (ignored by default)
 .agents/
 .codex/

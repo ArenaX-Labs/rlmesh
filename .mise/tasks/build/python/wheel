@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#MISE description="Build rlmesh wheels (cp310 + cp311-abi3) for one target alias"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--skip-existing" help="Skip when both wheels for this target+version already exist in dist/"
+#USAGE arg "<target>" help="Target alias" {
+#USAGE   choices "local" "macos-arm" "macos-x86" "linux-x86" "linux-arm" "linux-musl-x86" "linux-musl-arm" "windows"
+#USAGE }
+
+# Zig/maturin may print compiler-family warnings for *-linux-musl-gcc; they are
+# informational when the command exits successfully and emits the wheel.
+set -euo pipefail
+
+target="${usage_target:?usage: build:python:wheel <target>}"
+repo_root="$PWD"
+dist="$repo_root/python/rlmesh/dist"
+
+# alias -> rust triple, zig cross-compilation, expected wheel platform-tag glob
+triple="" zig=0 require_darwin=0 plat_glob=""
+case "$target" in
+  local) ;;
+  macos-arm)      triple=aarch64-apple-darwin   require_darwin=1 plat_glob="macosx_*_arm64" ;;
+  macos-x86)      triple=x86_64-apple-darwin    require_darwin=1 plat_glob="macosx_*_x86_64" ;;
+  linux-x86)      triple=x86_64-unknown-linux-gnu   zig=1 plat_glob="manylinux*x86_64*" ;;
+  linux-arm)      triple=aarch64-unknown-linux-gnu  zig=1 plat_glob="manylinux*aarch64*" ;;
+  linux-musl-x86) triple=x86_64-unknown-linux-musl  zig=1 plat_glob="musllinux*x86_64*" ;;
+  linux-musl-arm) triple=aarch64-unknown-linux-musl zig=1 plat_glob="musllinux*aarch64*" ;;
+  windows)        triple=x86_64-pc-windows-msvc     zig=1 plat_glob="win_amd64" ;;
+  *) echo "error: unknown target alias '$target'" >&2; exit 1 ;;
+esac
+
+if [ "$require_darwin" = 1 ] && [ "$(uname -s)" != Darwin ]; then
+  echo "error: $target wheels require a macOS host with Xcode Command Line Tools (xcrun)" >&2
+  exit 1
+fi
+
+# Assumes the pyproject version string appears verbatim in wheel filenames
+# (true for PEP 440-normalized versions such as 0.1.0b2).
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
+
+if [ "${usage_skip_existing:-false}" = true ] && [ -n "$plat_glob" ] \
+  && compgen -G "$dist/rlmesh-${version}-cp310-cp310-${plat_glob}.whl" >/dev/null \
+  && compgen -G "$dist/rlmesh-${version}-cp311-abi3-${plat_glob}.whl" >/dev/null; then
+  echo "skip: rlmesh ${version} ${target} wheels already in dist/"
+  exit 0
+fi
+
+ulimit -n 4096 || true
+
+maturin_args=(build --release -o dist/)
+if [ -n "$triple" ]; then
+  maturin_args+=(--target "$triple")
+fi
+if [ "$zig" = 1 ]; then
+  maturin_args+=(--zig)
+  export ZIG_GLOBAL_CACHE_DIR="$repo_root/target/zig-cache"
+  mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
+fi
+# Windows cross-builds from macOS need Homebrew LLVM's lld-link on PATH.
+if [ "$target" = windows ] && [ -d /opt/homebrew/opt/llvm/bin ]; then
+  export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+fi
+
+cd python/rlmesh
+status=0
+mise exec python@3.10 -- maturin "${maturin_args[@]}" -i python3.10 || status=1
+maturin "${maturin_args[@]}" -i python3.11 || status=1
+exit $status
