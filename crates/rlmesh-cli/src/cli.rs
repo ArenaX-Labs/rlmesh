@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(
     name = "rlmesh",
-    about = "RLMesh - Distributed ML/RL Evaluation Infrastructure",
+    about = "RLMesh - Gymnasium-compatible infrastructure for model-environment evaluation",
     version,
     arg_required_else_help = true
 )]

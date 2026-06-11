@@ -91,14 +91,16 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
         assert!(stdout.contains("version"));
-        for command in [
-            "auth", "init", "doctor", "probe", "build", "catalog", "eval",
-        ] {
-            assert!(!stdout.contains(command), "{command}");
-        }
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
+        let subcommands: Vec<&str> = command.get_subcommands().map(|c| c.get_name()).collect();
+        for command_name in [
+            "auth", "init", "doctor", "probe", "build", "catalog", "eval",
+        ] {
+            assert!(!subcommands.contains(&command_name), "{command_name}");
+        }
+
         let help = command.render_help().to_string();
         assert!(!help.contains("viewer"));
     }
