@@ -149,11 +149,16 @@ pub trait RuntimeModel: Send {
     }
 }
 
+/// Default reason attributed to a cancellation when the caller does not supply
+/// one via [`RuntimeDriver::run_with_cancellation_reason`].
+const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
+
 pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
     env: E,
     model: M,
     hooks: Arc<dyn RuntimeHooks>,
+    cancellation_reason: String,
 }
 
 impl<E, M> RuntimeDriver<E, M>
@@ -167,6 +172,7 @@ where
             env,
             model,
             hooks,
+            cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
         }
     }
 
@@ -198,9 +204,26 @@ where
     }
 
     pub async fn run_with_cancellation(
-        mut self,
+        self,
         cancellation: CancellationToken,
     ) -> Result<RuntimeReport, RuntimeError> {
+        self.run_with_cancellation_reason(cancellation, DEFAULT_CANCELLATION_REASON)
+            .await
+    }
+
+    /// Runs the session, attributing any cancellation of `cancellation` to
+    /// `reason`.
+    ///
+    /// The reason is carried into [`RuntimeError::RouteCancelled`], the
+    /// `session_failed` hook event, and the `CloseRoute` reason, so callers
+    /// (e.g. an owner that cancels for Ctrl+C, a deadline, or a sibling-route
+    /// failure) can supply an accurate cause instead of a hardcoded one.
+    pub async fn run_with_cancellation_reason(
+        mut self,
+        cancellation: CancellationToken,
+        reason: impl Into<String>,
+    ) -> Result<RuntimeReport, RuntimeError> {
+        self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
         let mut state = RouteState::new(&self.spec);
         let result = self.run_loop(&mut state, &cancellation).await;
@@ -572,11 +595,7 @@ where
     }
 
     fn cancelled_error(&self, state: &RouteState, step: i64) -> RuntimeError {
-        RuntimeError::route_cancelled(
-            state.route_id(),
-            step,
-            "cancelled after sibling route failure",
-        )
+        RuntimeError::route_cancelled(state.route_id(), step, self.cancellation_reason.as_str())
     }
 
     async fn invoke_session_started(&self, state: &RouteState, env_id: &str) {

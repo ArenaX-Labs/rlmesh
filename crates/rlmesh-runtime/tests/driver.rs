@@ -156,6 +156,58 @@ async fn driver_threads_deterministic_reset_seeds() {
 }
 
 #[tokio::test]
+async fn cancellation_reason_is_threaded_from_caller() {
+    use tokio_util::sync::CancellationToken;
+
+    let env = TestEnv::default();
+    let model = TestModel::default();
+    let cancellation = CancellationToken::new();
+    // Pre-cancel so the first cancellation check trips during the session.
+    cancellation.cancel();
+
+    let error = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run_with_cancellation_reason(cancellation, "operator requested shutdown")
+    .await
+    .unwrap_err();
+
+    let RuntimeError::RouteCancelled { reason, .. } = error else {
+        panic!("expected RouteCancelled, got {error:?}");
+    };
+    assert_eq!(reason, "operator requested shutdown");
+}
+
+#[tokio::test]
+async fn default_cancellation_reason_does_not_claim_sibling_failure() {
+    use tokio_util::sync::CancellationToken;
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let error = RuntimeDriver::new(
+        one_episode_spec(),
+        TestEnv::default(),
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run_with_cancellation(cancellation)
+    .await
+    .unwrap_err();
+
+    let RuntimeError::RouteCancelled { reason, .. } = error else {
+        panic!("expected RouteCancelled, got {error:?}");
+    };
+    assert!(
+        !reason.contains("sibling"),
+        "default reason should not fabricate a sibling-route failure: {reason}"
+    );
+}
+
+#[tokio::test]
 async fn observation_emitted_always_carries_transformed_payload() {
     // Two-step episode so there is at least one non-terminal step observation
     // that is transformed and sent to the model (previously the raw,
