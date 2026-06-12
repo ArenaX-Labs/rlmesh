@@ -153,6 +153,31 @@ pub struct TimingSummary {
     pub p99_ms: Option<f64>,
 }
 
+/// Kind of a non-duration metric reported via [`MetricSummary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricKind {
+    /// `OperationMetric::ByteCount` — a byte gauge/counter sample.
+    ByteCount,
+    /// `OperationMetric::Number` — a generic numeric gauge sample.
+    Number,
+}
+
+/// Aggregated non-duration operation metric (byte counts and generic numbers
+/// carried by `OperationTelemetry`). Duration metrics are reported via
+/// [`TimingSummary`]; these were previously dropped at the accumulator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricSummary {
+    pub operation: String,
+    pub component_id: String,
+    pub name: String,
+    pub kind: MetricKind,
+    pub sample_count: u64,
+    pub avg: Option<f64>,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetryWindowEvent {
     pub session_id: String,
@@ -163,6 +188,7 @@ pub struct TelemetryWindowEvent {
     pub request_bytes_per_second: Option<f64>,
     pub response_bytes_per_second: Option<f64>,
     pub timings: Vec<TimingSummary>,
+    pub metrics: Vec<MetricSummary>,
     pub env_latency_ms_avg: Option<f64>,
     pub env_latency_ms_p50: Option<f64>,
     pub env_latency_ms_p95: Option<f64>,
@@ -189,6 +215,7 @@ pub struct TelemetrySummaryEvent {
     pub request_bytes_per_second: Option<f64>,
     pub response_bytes_per_second: Option<f64>,
     pub timings: Vec<TimingSummary>,
+    pub metrics: Vec<MetricSummary>,
     pub env_latency_ms_avg: Option<f64>,
     pub env_latency_ms_p50: Option<f64>,
     pub env_latency_ms_p95: Option<f64>,

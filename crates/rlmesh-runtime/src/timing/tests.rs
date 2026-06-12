@@ -130,6 +130,62 @@ fn session_lifetime_samples_stay_bounded() {
 }
 
 #[test]
+fn records_byte_count_and_number_metrics() {
+    use crate::hooks::MetricKind;
+
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.started_at = Instant::now() - Duration::from_secs(2);
+    accumulator.record_operation_telemetry(
+        "env-a",
+        Some(&OperationTelemetry {
+            operation: "env.step".to_string(),
+            component_id: String::new(),
+            metrics: vec![
+                OperationMetric {
+                    name: "payload.bytes".to_string(),
+                    labels: Default::default(),
+                    value: Some(operation_metric::Value::ByteCount(2048)),
+                },
+                OperationMetric {
+                    name: "batch.size".to_string(),
+                    labels: Default::default(),
+                    value: Some(operation_metric::Value::Number(8.0)),
+                },
+            ],
+        }),
+    );
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(10),
+        env_step: Duration::from_millis(20),
+        request_bytes: 3,
+        response_bytes: 4,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+
+    let event = accumulator
+        .flush("session-a", RuntimeRouteContext::default())
+        .unwrap();
+
+    let bytes = event
+        .metrics
+        .iter()
+        .find(|metric| metric.name == "payload.bytes")
+        .expect("byte_count metric recorded");
+    assert_eq!(bytes.kind, MetricKind::ByteCount);
+    assert_eq!(bytes.sample_count, 1);
+    assert_eq!(bytes.avg, Some(2048.0));
+
+    let number = event
+        .metrics
+        .iter()
+        .find(|metric| metric.name == "batch.size")
+        .expect("number metric recorded");
+    assert_eq!(number.kind, MetricKind::Number);
+    assert_eq!(number.avg, Some(8.0));
+}
+
+#[test]
 fn telemetry_summary_keeps_samples_after_window_flush() {
     let mut accumulator = TelemetryWindowAccumulator::default();
     accumulator.started_at = Instant::now() - Duration::from_secs(2);

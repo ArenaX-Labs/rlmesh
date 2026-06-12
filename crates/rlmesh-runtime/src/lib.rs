@@ -20,10 +20,10 @@ pub use driver::{
 };
 pub use hooks::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
-    RuntimeHookChain, RuntimeHooks, RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
-    TimingSummary,
+    LogEvent, LogLevel, MetricKind, MetricSummary, ModelConnectedEvent, NoopRuntimeHooks,
+    ObservationEmittedEvent, RuntimeHookChain, RuntimeHooks, RuntimeRouteContext,
+    SessionEndedEvent, SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
+    TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 

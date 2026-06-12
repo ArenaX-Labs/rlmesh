@@ -4,12 +4,13 @@ use std::time::{Duration, Instant};
 use rlmesh_proto::core::v1::{OperationTelemetry, operation_metric};
 
 use crate::hooks::{
-    RuntimeRouteContext, TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
+    MetricKind, MetricSummary, RuntimeRouteContext, TelemetrySummaryEvent, TelemetryWindowEvent,
+    TimingSummary,
 };
 
 use super::StepTimingSample;
-use super::reservoir::DurationReservoir;
-use super::stats::{average_ms, percentile_ms};
+use super::reservoir::{DurationReservoir, ValueReservoir};
+use super::stats::{average_f64, average_ms, percentile_f64_samples, percentile_ms};
 
 #[derive(Debug, Clone)]
 pub(crate) struct TelemetryWindowAccumulator {
@@ -26,6 +27,11 @@ pub(crate) struct TelemetryWindowAccumulator {
     // session, so they are bounded reservoirs rather than raw Vecs to keep
     // memory constant while preserving representative summary statistics.
     total_timing_samples: BTreeMap<TimingKey, DurationReservoir>,
+    // Non-duration metrics (byte counts / generic numbers) from
+    // OperationTelemetry. Window samples are cleared each flush; total samples
+    // persist for the session summary under the same reservoir bound.
+    metric_samples: BTreeMap<MetricKey, ValueReservoir>,
+    total_metric_samples: BTreeMap<MetricKey, ValueReservoir>,
     model_wait_samples: Vec<Duration>,
     total_model_wait_samples: DurationReservoir,
     env_step_samples: Vec<Duration>,
@@ -51,6 +57,8 @@ impl Default for TelemetryWindowAccumulator {
             total_response_bytes: 0,
             timing_samples: BTreeMap::new(),
             total_timing_samples: BTreeMap::new(),
+            metric_samples: BTreeMap::new(),
+            total_metric_samples: BTreeMap::new(),
             model_wait_samples: Vec::new(),
             total_model_wait_samples: DurationReservoir::default(),
             env_step_samples: Vec::new(),
@@ -70,6 +78,30 @@ struct TimingKey {
     operation: String,
     component_id: String,
     name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MetricKey {
+    operation: String,
+    component_id: String,
+    name: String,
+    kind: MetricKindKey,
+}
+
+/// Ordered, hashable mirror of [`MetricKind`] for use as a map key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MetricKindKey {
+    ByteCount,
+    Number,
+}
+
+impl From<MetricKindKey> for MetricKind {
+    fn from(kind: MetricKindKey) -> Self {
+        match kind {
+            MetricKindKey::ByteCount => MetricKind::ByteCount,
+            MetricKindKey::Number => MetricKind::Number,
+        }
+    }
 }
 
 impl TelemetryWindowAccumulator {
@@ -144,21 +176,65 @@ impl TelemetryWindowAccumulator {
             telemetry.component_id.as_str()
         };
         for metric in &telemetry.metrics {
-            let Some(operation_metric::Value::DurationNs(duration_ns)) = metric.value else {
-                continue;
-            };
             let name = if metric.name.is_empty() {
                 "unspecified"
             } else {
                 metric.name.as_str()
             };
-            self.record_timing(
-                operation,
-                component_id,
-                name,
-                Duration::from_nanos(duration_ns),
-            );
+            match metric.value {
+                Some(operation_metric::Value::DurationNs(duration_ns)) => {
+                    self.record_timing(
+                        operation,
+                        component_id,
+                        name,
+                        Duration::from_nanos(duration_ns),
+                    );
+                }
+                Some(operation_metric::Value::ByteCount(bytes)) => {
+                    self.record_metric(
+                        operation,
+                        component_id,
+                        name,
+                        MetricKindKey::ByteCount,
+                        bytes as f64,
+                    );
+                }
+                Some(operation_metric::Value::Number(number)) => {
+                    self.record_metric(
+                        operation,
+                        component_id,
+                        name,
+                        MetricKindKey::Number,
+                        number,
+                    );
+                }
+                None => {}
+            }
         }
+    }
+
+    fn record_metric(
+        &mut self,
+        operation: &str,
+        component_id: &str,
+        name: &str,
+        kind: MetricKindKey,
+        value: f64,
+    ) {
+        let key = MetricKey {
+            operation: operation.to_string(),
+            component_id: component_id.to_string(),
+            name: name.to_string(),
+            kind,
+        };
+        self.metric_samples
+            .entry(key.clone())
+            .or_default()
+            .push(value);
+        self.total_metric_samples
+            .entry(key)
+            .or_default()
+            .push(value);
     }
 
     pub(crate) fn maybe_emit(
@@ -193,6 +269,7 @@ impl TelemetryWindowAccumulator {
             request_bytes_per_second: Some(self.request_bytes as f64 / elapsed.as_secs_f64()),
             response_bytes_per_second: Some(self.response_bytes as f64 / elapsed.as_secs_f64()),
             timings: timing_summaries(&self.timing_samples),
+            metrics: metric_summaries(&self.metric_samples),
             env_latency_ms_avg: average_ms(&self.env_step_samples),
             env_latency_ms_p50: percentile_ms(&self.env_step_samples, 0.50),
             env_latency_ms_p95: percentile_ms(&self.env_step_samples, 0.95),
@@ -233,6 +310,7 @@ impl TelemetryWindowAccumulator {
                 self.total_response_bytes as f64 / elapsed.as_secs_f64(),
             ),
             timings: reservoir_timing_summaries(&self.total_timing_samples),
+            metrics: metric_summaries(&self.total_metric_samples),
             env_latency_ms_avg: average_ms(self.total_env_step_samples.samples()),
             env_latency_ms_p50: percentile_ms(self.total_env_step_samples.samples(), 0.50),
             env_latency_ms_p95: percentile_ms(self.total_env_step_samples.samples(), 0.95),
@@ -273,6 +351,7 @@ impl TelemetryWindowAccumulator {
         self.request_bytes = 0;
         self.response_bytes = 0;
         self.timing_samples.clear();
+        self.metric_samples.clear();
         self.model_wait_samples.clear();
         self.env_step_samples.clear();
         self.round_trip_samples.clear();
@@ -293,6 +372,28 @@ fn timing_summaries(samples: &BTreeMap<TimingKey, Vec<Duration>>) -> Vec<TimingS
             p50_ms: percentile_ms(values, 0.50),
             p95_ms: percentile_ms(values, 0.95),
             p99_ms: percentile_ms(values, 0.99),
+        })
+        .collect()
+}
+
+fn metric_summaries(samples: &BTreeMap<MetricKey, ValueReservoir>) -> Vec<MetricSummary> {
+    samples
+        .iter()
+        .map(|(key, reservoir)| {
+            let values = reservoir.samples();
+            MetricSummary {
+                operation: key.operation.clone(),
+                component_id: key.component_id.clone(),
+                name: key.name.clone(),
+                kind: key.kind.into(),
+                // Report the true number of observed samples, not the bounded
+                // reservoir size.
+                sample_count: reservoir.seen(),
+                avg: average_f64(values),
+                p50: percentile_f64_samples(values, 0.50),
+                p95: percentile_f64_samples(values, 0.95),
+                p99: percentile_f64_samples(values, 0.99),
+            }
         })
         .collect()
 }

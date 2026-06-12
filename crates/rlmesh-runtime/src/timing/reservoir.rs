@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Default reservoir capacity for session-lifetime duration samples.
+/// Default reservoir capacity for session-lifetime samples.
 ///
 /// Sessions can run unbounded (`max_episodes: None`), so the cumulative
 /// (`total_*`) sample series must not grow without limit. A reservoir keeps a
@@ -8,7 +8,7 @@ use std::time::Duration;
 /// percentiles stay accurate while memory stays constant.
 pub(super) const DEFAULT_RESERVOIR_CAPACITY: usize = 8192;
 
-/// Fixed-capacity reservoir of `Duration` samples (Vitter's Algorithm R).
+/// Fixed-capacity reservoir of samples (Vitter's Algorithm R).
 ///
 /// Up to `capacity` samples are retained verbatim; beyond that, each new sample
 /// replaces a uniformly-random existing slot with probability `capacity / seen`,
@@ -20,14 +20,21 @@ pub(super) const DEFAULT_RESERVOIR_CAPACITY: usize = 8192;
 /// needs no `rand` dependency; the bias-free guarantee only requires the
 /// replacement decisions be uniform, not cryptographically secure.
 #[derive(Debug, Clone)]
-pub(super) struct DurationReservoir {
-    samples: Vec<Duration>,
+pub(super) struct Reservoir<T> {
+    samples: Vec<T>,
     capacity: usize,
     seen: u64,
     rng_state: u64,
 }
 
-impl DurationReservoir {
+/// Reservoir specialized to `Duration` latency samples.
+pub(super) type DurationReservoir = Reservoir<Duration>;
+
+/// Reservoir specialized to floating-point metric samples (byte counts /
+/// generic numbers exposed via OperationTelemetry).
+pub(super) type ValueReservoir = Reservoir<f64>;
+
+impl<T: Copy> Reservoir<T> {
     pub(super) fn new(capacity: usize) -> Self {
         debug_assert!(capacity > 0, "reservoir capacity must be non-zero");
         Self {
@@ -40,7 +47,7 @@ impl DurationReservoir {
         }
     }
 
-    pub(super) fn push(&mut self, sample: Duration) {
+    pub(super) fn push(&mut self, sample: T) {
         self.seen += 1;
         if self.samples.len() < self.capacity {
             self.samples.push(sample);
@@ -53,7 +60,7 @@ impl DurationReservoir {
         }
     }
 
-    pub(super) fn samples(&self) -> &[Duration] {
+    pub(super) fn samples(&self) -> &[T] {
         &self.samples
     }
 
@@ -74,7 +81,7 @@ impl DurationReservoir {
     }
 }
 
-impl Default for DurationReservoir {
+impl<T: Copy> Default for Reservoir<T> {
     fn default() -> Self {
         Self::new(DEFAULT_RESERVOIR_CAPACITY)
     }
@@ -98,6 +105,16 @@ mod tests {
         let mut reservoir = DurationReservoir::new(4);
         for ms in 0..10_000u64 {
             reservoir.push(Duration::from_millis(ms));
+        }
+        assert_eq!(reservoir.samples().len(), 4);
+        assert_eq!(reservoir.seen(), 10_000);
+    }
+
+    #[test]
+    fn value_reservoir_bounds_memory() {
+        let mut reservoir = ValueReservoir::new(4);
+        for value in 0..10_000u64 {
+            reservoir.push(value as f64);
         }
         assert_eq!(reservoir.samples().len(), 4);
         assert_eq!(reservoir.seen(), 10_000);
