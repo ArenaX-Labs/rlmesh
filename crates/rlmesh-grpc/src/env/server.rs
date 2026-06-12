@@ -31,6 +31,72 @@ use rlmesh_proto::{
 
 use super::{env_error_to_proto, is_protocol_generation_compatible};
 
+/// Run an environment operation under a deadline without ever dropping the
+/// in-flight future.
+///
+/// The wrapped environment is typically a non-thread-safe (e.g. Python) object
+/// accessed under a single mutex. A naive `tokio::time::timeout` would, on
+/// expiry, *drop* the operation future and release the env mutex — but for a
+/// `spawn_blocking`-backed Python step that does not cancel the underlying work,
+/// so the next request could re-lock the env and run concurrently against an
+/// object still mutating from the orphaned op (state corruption; segfault for
+/// C-backed envs).
+///
+/// Instead, on deadline expiry we keep polling the same operation future to
+/// completion before returning. Because the caller holds the env mutex across
+/// this entire call, the next request cannot begin until the orphaned op has
+/// actually finished, guaranteeing no overlapping access. The client still sees
+/// a `Timeout` error, but the env is left in a consistent state and the real
+/// operation result/error is no longer silently discarded — it is logged.
+async fn run_env_op_with_deadline<F, T>(
+    op: F,
+    timeout_ms: i64,
+    operation: &str,
+) -> Result<T, EnvError>
+where
+    F: std::future::Future<Output = Result<T, EnvError>>,
+{
+    if timeout_ms <= 0 {
+        return op.await;
+    }
+
+    let timeout_duration = Duration::from_millis(timeout_ms as u64);
+    tokio::pin!(op);
+
+    match tokio::time::timeout(timeout_duration, op.as_mut()).await {
+        Ok(result) => result,
+        Err(_) => {
+            // Deadline elapsed. The underlying env op cannot be cancelled, so we
+            // must drive it to completion before releasing the env mutex; only
+            // then is it safe for the next request to access the env.
+            tracing::warn!(
+                operation,
+                timeout_ms,
+                "{operation} exceeded {timeout_ms}ms deadline; draining the in-flight \
+                 operation to completion before serving the next request to avoid concurrent \
+                 access to the environment"
+            );
+            match op.await {
+                Ok(_) => tracing::warn!(
+                    operation,
+                    "{operation} completed after its deadline; result discarded (client already \
+                     received a timeout error)"
+                ),
+                Err(error) => tracing::warn!(
+                    operation,
+                    error = %error,
+                    "{operation} failed after its deadline; error discarded (client already \
+                     received a timeout error)"
+                ),
+            }
+            Err(EnvError::new(
+                crate::error::EnvErrorCode::Timeout,
+                format!("{operation} timed out after {timeout_ms}ms"),
+            ))
+        }
+    }
+}
+
 /// A transport server that implements the `EnvService` tonic trait.
 pub struct GrpcEnvServer<E: Environment> {
     env: Arc<Mutex<E>>,
@@ -287,18 +353,8 @@ async fn handle_env_request<E: Environment>(
             };
 
             let timeout_ms = reset_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.reset(reset_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("reset timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.reset(reset_req).await
-            };
+            let result =
+                run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await;
 
             match result {
                 Ok(mut ok) => {
@@ -331,18 +387,7 @@ async fn handle_env_request<E: Environment>(
             let num_envs = env.num_envs();
 
             let timeout_ms = step_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.step(step_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("step timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.step(step_req).await
-            };
+            let result = run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
 
             match result {
                 Ok(mut ok) => {
@@ -408,18 +453,8 @@ async fn handle_env_request<E: Environment>(
             let mut env = env.lock().await;
 
             let timeout_ms = render_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.render(render_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("render timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.render(render_req).await
-            };
+            let result =
+                run_env_op_with_deadline(env.render(render_req), timeout_ms, "env.render").await;
 
             match result {
                 Ok(ok) => {
@@ -675,6 +710,148 @@ mod tests {
                 .map(|edition| edition.to_string())
                 .collect(),
         }
+    }
+
+    /// An env whose `step` sleeps and asserts it is never entered concurrently.
+    struct SlowConcurrencyEnv {
+        contract: SpaceEnvContract,
+        step_delay: std::time::Duration,
+        in_op: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        overlap_detected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        completed_steps: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SlowConcurrencyEnv {
+        fn new(step_delay: std::time::Duration) -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "slow".to_string(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 1,
+                },
+                step_delay,
+                in_op: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                overlap_detected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                completed_steps: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for SlowConcurrencyEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            1
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            use std::sync::atomic::Ordering;
+            // Model a non-cancellable env op (like Python's spawn_blocking): the
+            // actual mutation runs on a detached task that keeps executing even
+            // if this future is dropped, and we await its handle. Dropping the
+            // future therefore does NOT stop the work — exactly the property
+            // that makes the timeout-drop bug observable.
+            let in_op = self.in_op.clone();
+            let overlap = self.overlap_detected.clone();
+            let completed = self.completed_steps.clone();
+            let delay = self.step_delay;
+            let handle = tokio::spawn(async move {
+                if in_op.swap(true, Ordering::SeqCst) {
+                    overlap.store(true, Ordering::SeqCst);
+                }
+                tokio::time::sleep(delay).await;
+                in_op.store(false, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            });
+            let _ = handle.await;
+            Ok(StepResponse::default())
+        }
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_out_step_drains_before_next_request_runs() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{JoinRequest, join_request, join_response};
+
+        let env = SlowConcurrencyEnv::new(std::time::Duration::from_millis(200));
+        let overlap = env.overlap_detected.clone();
+        let completed = env.completed_steps.clone();
+        let env = Arc::new(Mutex::new(env));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let step_req = |timeout_ms: i64, id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest {
+                timeout_ms,
+                ..Default::default()
+            })),
+            request_id: id.to_string(),
+        };
+
+        // First step times out at 50ms, but the env op needs 200ms. The second
+        // step is dispatched concurrently shortly after the first one's deadline
+        // would fire, modelling the stream loop immediately serving the next
+        // request. Without the drain fix the first handler would return early,
+        // release the env mutex, and let the second step run concurrently
+        // against the env while the orphaned op is still in flight.
+        let first = {
+            let env = env.clone();
+            let tracker = tracker.clone();
+            tokio::spawn(async move {
+                super::handle_env_request(step_req(50, "first"), env, tracker).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        let second = {
+            let env = env.clone();
+            let tracker = tracker.clone();
+            tokio::spawn(async move {
+                super::handle_env_request(step_req(0, "second"), env, tracker).await
+            })
+        };
+
+        let first_res = first.await.unwrap();
+        let second_res = second.await.unwrap();
+
+        // The first call returned a Timeout error to the client...
+        assert!(matches!(
+            first_res.kind,
+            Some(join_response::Kind::Error(ref e))
+                if e.code == rlmesh_proto::env::v1::EnvErrorCode::Timeout as i32
+        ));
+        // ...but the orphaned op was drained, and the second ran without overlap.
+        assert!(matches!(
+            second_res.kind,
+            Some(join_response::Kind::Step(_))
+        ));
+        assert!(
+            !overlap.load(Ordering::SeqCst),
+            "two env.step calls overlapped against the same environment"
+        );
+        // Both steps actually executed to completion in the env.
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
