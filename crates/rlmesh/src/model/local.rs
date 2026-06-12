@@ -53,14 +53,14 @@ where
         close_env_on_end: false,
         limits: Default::default(),
     };
-    let env = LocalRuntimeEnv { inner: env };
+    let env = EnvClientRuntimeEnv::new(env);
     let active_episodes = Arc::new(Mutex::new(HashMap::new()));
-    let model = LocalRuntimeModel {
+    let model = ModelHandlerRuntimeModel::new(
         handler,
         env_contract,
         num_envs,
-        active_episodes: Arc::clone(&active_episodes),
-    };
+        Arc::clone(&active_episodes),
+    );
 
     let result = RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run()
@@ -76,12 +76,37 @@ where
     result
 }
 
-struct LocalRuntimeEnv {
+/// Adapts a connected [`rlmesh_grpc::EnvClient`] to the [`RuntimeEnv`] trait
+/// expected by [`rlmesh_runtime::RuntimeDriver`].
+///
+/// Use this to drive a remote environment from your own `RuntimeDriver`
+/// embedding without re-implementing the per-call telemetry choreography: the
+/// adapter takes the client's last-operation telemetry after each `reset`/`step`
+/// and attaches it to the runtime result for you, and it maps transport errors
+/// onto recoverable/non-recoverable [`rlmesh_runtime::RuntimeError`]s.
+pub struct EnvClientRuntimeEnv {
     inner: rlmesh_grpc::EnvClient,
 }
 
+impl EnvClientRuntimeEnv {
+    /// Wrap a connected (and handshaked) env client.
+    pub fn new(client: rlmesh_grpc::EnvClient) -> Self {
+        Self { inner: client }
+    }
+
+    /// Borrow the underlying client.
+    pub fn client(&self) -> &rlmesh_grpc::EnvClient {
+        &self.inner
+    }
+
+    /// Consume the adapter and return the underlying client.
+    pub fn into_inner(self) -> rlmesh_grpc::EnvClient {
+        self.inner
+    }
+}
+
 #[async_trait]
-impl RuntimeEnv for LocalRuntimeEnv {
+impl RuntimeEnv for EnvClientRuntimeEnv {
     async fn reset(
         &mut self,
         request: rlmesh_proto::env::v1::ResetRequest,
@@ -130,15 +155,45 @@ impl RuntimeEnv for LocalRuntimeEnv {
     }
 }
 
-struct LocalRuntimeModel<'a, H> {
+/// Adapts a [`ModelHandler`] to the [`RuntimeModel`] trait expected by
+/// [`rlmesh_runtime::RuntimeDriver`].
+///
+/// Use this to drive your handler from your own `RuntimeDriver` embedding. The
+/// adapter decodes the runtime's predict request into a [`ModelObservation`],
+/// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
+/// each `predict`, and re-encodes the action — the same choreography the
+/// in-process `run_local` path performs.
+///
+/// It borrows the handler mutably so the caller retains ownership (e.g. to run
+/// the close hook afterward). `active_episodes` is shared lifecycle state; pass
+/// a fresh `Arc<Mutex<_>>` and drain it with the model lifecycle helpers when
+/// the session ends.
+pub struct ModelHandlerRuntimeModel<'a, H> {
     handler: &'a mut H,
     env_contract: spaces::EnvContract,
     num_envs: usize,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
 }
 
+impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
+    /// Build an adapter for `handler` against the given env contract.
+    pub fn new(
+        handler: &'a mut H,
+        env_contract: spaces::EnvContract,
+        num_envs: usize,
+        active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
+    ) -> Self {
+        Self {
+            handler,
+            env_contract,
+            num_envs,
+            active_episodes,
+        }
+    }
+}
+
 #[async_trait]
-impl<H> RuntimeModel for LocalRuntimeModel<'_, H>
+impl<H> RuntimeModel for ModelHandlerRuntimeModel<'_, H>
 where
     H: ModelHandler + 'static,
 {

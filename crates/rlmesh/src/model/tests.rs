@@ -513,6 +513,44 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
 }
 
 #[tokio::test]
+async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
+    use rlmesh_runtime::RuntimeEnv;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let env_address = format!("tcp://{}", listener.local_addr().unwrap());
+    let env_server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(rlmesh_grpc::env::env_service(
+                crate::env::WireEnvAdapter::new(crate::SingleEnvAdapter::new(SmokeEnv::new())),
+            ))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap()
+    });
+
+    let mut client = rlmesh_grpc::EnvClient::connect(&env_address).await.unwrap();
+    client.handshake().await.unwrap();
+
+    // The public adapter lets external RuntimeDriver embedders drive a remote
+    // env without re-implementing the take_last_telemetry choreography.
+    let mut adapter = crate::EnvClientRuntimeEnv::new(client);
+    let reset = adapter
+        .reset(rlmesh_proto::env::v1::ResetRequest {
+            seeds: vec![7],
+            options: None,
+            timeout_ms: 0,
+        })
+        .await
+        .expect("adapter reset must succeed");
+    assert!(
+        reset.telemetry.is_some(),
+        "adapter must encapsulate and surface per-call telemetry"
+    );
+
+    env_server.abort();
+}
+
+#[tokio::test]
 async fn model_bind_resolves_port_zero_before_serving() {
     let predicts = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
