@@ -12,7 +12,7 @@ pub use env::{
     CloseRequest, CloseResult, Env, EnvServer, EpisodeMetadata, RemoteEnv, RenderRequest,
     RenderResult, ResetRequest, ResetResult, StepRequest, StepResult,
 };
-pub use error::{EnvironmentError, Error, ErrorCode, Result};
+pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use lifecycle::ServeOptions;
 pub use model::{
     ModelEpisodeEnd, ModelHandler, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,

@@ -29,8 +29,9 @@ use tonic::{Request, Response, Status, Streaming};
 use super::handler::ModelHandler;
 use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::wire::{
-    ModelAction, model_action_to_endpoint_response, model_error, model_join_request_operation,
-    model_observation_from_endpoint_request, model_operation_telemetry,
+    ModelAction, model_action_to_endpoint_response, model_error, model_error_from_error,
+    model_join_request_operation, model_observation_from_endpoint_request,
+    model_operation_telemetry,
 };
 use crate::{BindAddress, Error, Result, ServeOptions, spaces};
 
@@ -415,8 +416,7 @@ async fn handle_predict<H: ModelHandler + 'static>(
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     async {
-        let mut observation =
-            model_observation_from_endpoint_request(request).map_err(|err| err.to_string())?;
+        let mut observation = model_observation_from_endpoint_request(request)?;
         let route = observation.route.clone();
         let route_key = model_route_config_key(&route);
         let config = route_configs
@@ -424,23 +424,20 @@ async fn handle_predict<H: ModelHandler + 'static>(
             .await
             .get(&route_key)
             .cloned()
-            .ok_or_else(|| "model route was not configured".to_string())?;
+            .ok_or_else(|| Error::model("model route was not configured"))?;
         observation.env_contract = config.env_contract;
         observation.num_envs = config.num_envs;
         if observation.route.slots.len() > config.num_envs {
-            return Err("predict route has more slots than configured route".to_string());
+            return Err(Error::model(
+                "predict route has more slots than configured route",
+            ));
         }
 
         let mut handler = handler.lock().await;
         let mut active_episodes = active_episodes.lock().await;
-        update_lifecycle(&mut *handler, &mut active_episodes, &observation)
-            .await
-            .map_err(|err| err.to_string())?;
-        let action = handler
-            .predict(observation)
-            .await
-            .map_err(|err| err.to_string())?;
-        Ok::<_, String>(join_response::Kind::Predict(
+        update_lifecycle(&mut *handler, &mut active_episodes, &observation).await?;
+        let action = handler.predict(observation).await?;
+        Ok::<_, Error>(join_response::Kind::Predict(
             model_action_to_endpoint_response(ModelAction {
                 action: Some(action),
                 route,
@@ -449,7 +446,7 @@ async fn handle_predict<H: ModelHandler + 'static>(
         ))
     }
     .await
-    .unwrap_or_else(model_error)
+    .unwrap_or_else(|error| model_error_from_error(&error))
     .into()
 }
 

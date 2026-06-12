@@ -40,6 +40,7 @@ pub fn to_py_err(err: Error) -> PyErr {
             PyTimeoutError::new_err(format!("operation timed out after {:?}", duration))
         }
         Error::Environment(e) => env_error_to_py(e),
+        Error::Model(e) => PyRuntimeError::new_err(format!("model error: {}", e.message)),
         Error::Server(message) => PyRuntimeError::new_err(format!("server error: {message}")),
         Error::Internal(message) => PyRuntimeError::new_err(message),
     }
