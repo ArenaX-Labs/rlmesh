@@ -189,6 +189,14 @@ fn read_wire_frame(reader: &mut impl Read) -> Result<Option<ViewerEvent>, String
         u32::from_le_bytes(header[1..5].try_into().expect("header[1..5] is 4 bytes")) as usize;
 
     if kind == 0 {
+        // Clear carries no payload, but the header still declares a length field.
+        // Consume any declared payload bytes so a producer that writes a nonzero
+        // len cannot desynchronize the stream into spurious "unsupported event"
+        // errors on the following header.
+        if len != 0 {
+            io::copy(&mut reader.by_ref().take(len as u64), &mut io::sink())
+                .map_err(|err| format!("failed to skip viewer clear payload: {err}"))?;
+        }
         return Ok(Some(ViewerEvent::Clear));
     }
     if kind != 1 {
@@ -261,6 +269,31 @@ mod tests {
         let mut raw = Vec::new();
         image.write_to(&mut Cursor::new(&mut raw), format).unwrap();
         raw
+    }
+
+    // Finding #117: a Clear header (kind==0) with a nonzero declared length must
+    // consume the payload so the following header is not misread.
+    #[test]
+    fn read_wire_frame_consumes_clear_payload() {
+        // Clear header with len=4 + 4 payload bytes, then a Clear header with len=0.
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&[0, 4, 0, 0, 0]); // kind=0, len=4
+        stream.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // payload
+        stream.extend_from_slice(&[0, 0, 0, 0, 0]); // kind=0, len=0
+        let mut reader = Cursor::new(stream);
+
+        // First frame: Clear, payload skipped.
+        assert!(matches!(
+            read_wire_frame(&mut reader).unwrap(),
+            Some(ViewerEvent::Clear)
+        ));
+        // Second frame must parse cleanly as Clear (stream stayed in sync).
+        assert!(matches!(
+            read_wire_frame(&mut reader).unwrap(),
+            Some(ViewerEvent::Clear)
+        ));
+        // Then clean EOF.
+        assert!(read_wire_frame(&mut reader).unwrap().is_none());
     }
 
     // Finding #88: a decode error must emit Error and NOT an immediate Exit, so
