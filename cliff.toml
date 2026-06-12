@@ -51,8 +51,8 @@ commit_parsers = [
   { message = "^(chore|ci|test|build|style)", skip = true },
 ]
 
-# When development moves to GitHub pull requests, enable this to decorate
-# entries with PR numbers and links (requires GITHUB_TOKEN for private repos):
-# [remote.github]
-# owner = "ArenaX-Labs"
-# repo = "rlmesh"
+# Decorates entries with pull request numbers and links. Unauthenticated
+# GitHub API calls are rate-limited; set GITHUB_TOKEN if generation fails.
+[remote.github]
+owner = "ArenaX-Labs"
+repo = "rlmesh"
