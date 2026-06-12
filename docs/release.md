@@ -27,6 +27,13 @@ Confirm the release policy manifest:
 python scripts/check_rlmesh_policy.py
 ```
 
+Regenerate the changelog with the unreleased entries placed under the release tag, then review and
+commit it (entries come from conventional commit messages; see `cliff.toml`):
+
+```bash
+mise run changelog:release v0.1.0-beta.3
+```
+
 Confirm protobuf compatibility against the checked-in public protocol baseline:
 
 ```bash

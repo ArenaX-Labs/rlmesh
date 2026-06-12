@@ -1,14 +1,33 @@
 # Changelog
 
-All notable RLMesh changes are tracked here.
+All notable RLMesh changes are tracked here. Entries are generated from conventional commit messages
+with `mise run changelog:build`.
 
 ## Unreleased
 
-- **Breaking (beta):** workflow editions are now negotiated. Clients offer
-  `supported_workflow_editions` in the handshake and servers return the highest mutual edition in
-  `selected_workflow_edition`; the scalar `workflow_edition` fields are reserved, the `2026` legacy
-  alias is removed, and servers no longer accept unknown future editions. Editions are documented in
-  `docs/editions/` and tracked in `rlmesh.toml`; `2026.06` stays provisional until v0.1.0 seals it.
+### Added
+
+- **Breaking:** proto: Negotiate workflow editions in handshake
+- **Breaking:** handshake: Negotiate workflow editions across servers and clients
+
+### Fixed
+
+- grpc: Keep tracing spans across awaits and demote per-step logs
+- cli: Align CLI tagline with README positioning
+
+### Documentation
+
+- editions: Add workflow edition model and 2026.06 spec
+
+## 0.1.0-beta.2 - 2026-06-08
+
+### Added
+
+- docs: Created simple python docs
+
+### Fixed
+
+- sandbox: Fix nested and vector sandboxes
 
 ## 0.1.0-beta1
 
