@@ -194,6 +194,9 @@ class Renderer:
     def measurement_summary(self, measurements: list[dict[str, Any]]) -> None:
         if not measurements:
             return
+        structured = any(
+            measurement_metadata(measurement) for measurement in measurements
+        )
         if self.console is None or Table is None or box is None:
             print("\nMeasurements:")
             for measurement in measurements:
@@ -203,30 +206,63 @@ class Renderer:
                     if isinstance(throughput, int | float)
                     else ""
                 )
-                print(
-                    f"  {measurement['environment']} {measurement['name']} "
-                    f"median={measurement['median_ms']:.4f}ms "
-                    f"p95={measurement['p95_ms']:.4f}ms{suffix}"
-                )
+                if structured:
+                    metadata = measurement_metadata(measurement)
+                    print(
+                        f"  {measurement['environment']} "
+                        f"{metadata.get('framework', '')} "
+                        f"{metadata.get('mode', '')} "
+                        f"{metadata.get('size', '')} "
+                        f"{metadata.get('operation', measurement['name'])} "
+                        f"median={measurement['median_ms']:.4f}ms "
+                        f"p95={measurement['p95_ms']:.4f}ms{suffix}"
+                    )
+                else:
+                    print(
+                        f"  {measurement['environment']} {measurement['name']} "
+                        f"median={measurement['median_ms']:.4f}ms "
+                        f"p95={measurement['p95_ms']:.4f}ms{suffix}"
+                    )
             return
 
         table = Table(title="Validation Measurements", box=box.SIMPLE)
         table.add_column("Environment")
-        table.add_column("Measurement")
+        if structured:
+            table.add_column("Framework")
+            table.add_column("Mode")
+            table.add_column("Size", justify="right")
+            table.add_column("Operation")
+        else:
+            table.add_column("Measurement")
         table.add_column("Median", justify="right")
         table.add_column("P95", justify="right")
         table.add_column("Throughput", justify="right")
         for measurement in measurements:
             throughput = measurement.get("throughput_mib_s")
-            table.add_row(
+            common = [
                 str(measurement["environment"]),
-                str(measurement["name"]),
                 f"{measurement['median_ms']:.4f}ms",
                 f"{measurement['p95_ms']:.4f}ms",
                 f"{throughput:.2f} MiB/s"
                 if isinstance(throughput, int | float)
                 else "",
-            )
+            ]
+            if structured:
+                metadata = measurement_metadata(measurement)
+                table.add_row(
+                    common[0],
+                    str(metadata.get("framework", "")),
+                    str(metadata.get("mode", "")),
+                    str(metadata.get("size", "")),
+                    str(metadata.get("operation", measurement["name"])),
+                    *common[1:],
+                )
+            else:
+                table.add_row(
+                    common[0],
+                    str(measurement["name"]),
+                    *common[1:],
+                )
         self.console.print(table)
 
     def regression_summary(self, results: list[RegressionResult]) -> None:
@@ -261,6 +297,11 @@ class Renderer:
                 result.reason,
             )
         self.console.print(table)
+
+
+def measurement_metadata(measurement: dict[str, Any]) -> dict[str, Any]:
+    metadata = measurement.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
 
 
 def print_profiles_plain(
