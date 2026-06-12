@@ -17,19 +17,13 @@ use crate::{ConnectAddress, Error, Result, spaces};
 ///
 /// Connect with [`RemoteEnv::connect`] (or [`RemoteEnv::connect_with_token`]
 /// for an authenticated endpoint), then drive the env by hand with
-/// [`reset`](RemoteEnv::reset) / [`step`](RemoteEnv::step) — the same
+/// [`reset`](RemoteEnv::reset) / [`step`](RemoteEnv::step), the same
 /// vectorized request family an [`Env`](crate::Env) implementor serves. Use
 /// this when your code is the client; to hand control to a policy instead, see
 /// [`ModelWorker`](crate::ModelWorker).
-///
-/// The observation/action specs are shared behind an `Arc`, so each
-/// reset/step clones a cheap handle rather than deep-copying the spec.
 pub struct RemoteEnv {
     inner: rlmesh_grpc::EnvClient,
     env_contract: spaces::EnvContract,
-    // Cheap-to-clone handles to the obs/action specs. Cloning the `Arc` for each
-    // reset/step (to release the borrow of `self` before the `&mut self.inner`
-    // RPC) is a refcount bump rather than a prost deep clone of the spec.
     observation_space: std::sync::Arc<spaces::SpaceSpec>,
     action_space: std::sync::Arc<spaces::SpaceSpec>,
     num_envs: usize,
@@ -236,17 +230,10 @@ impl RemoteEnv {
         render_result_from_proto(response).map_err(protocol_error_to_error)
     }
 
-    /// Close this client's session and return its final episode metadata.
+    /// Close this client session and return final episode metadata.
     ///
-    /// # Session vs. server lifetime
-    ///
-    /// This detaches the **client session** only; it does **not** shut down the
-    /// served environment. By design the environment is reusable across
-    /// sessions, so a new [`RemoteEnv::connect`] to the same endpoint after
-    /// `close` starts a fresh session against the same (still-running) env. To
-    /// stop the server itself, use [`RemoteEnv::shutdown`] (when the server was
-    /// started with remote shutdown allowed) or the server's own idle-timeout /
-    /// drain policy. This is intentional, not a leak (review finding #81).
+    /// This does not shut down the server. Use [`RemoteEnv::shutdown`] when
+    /// remote shutdown is enabled.
     pub async fn close(&mut self) -> Result<CloseResult> {
         let response = self.inner.close().await.map_err(Error::from)?;
         Ok(CloseResult {

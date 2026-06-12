@@ -188,10 +188,6 @@ def serve_from_args(args: ServeArgs) -> int:
         print("Waiting for client connection...")
         print("Press Ctrl+C to stop", flush=True)
 
-        # Machine-readable readiness signal. The PyEnvServer binds its listener
-        # at construction, so server.address is the resolved bind address and the
-        # socket is already accepting; writing it here means a supervisor reading
-        # --ready-fd unblocks exactly when the server is ready (review #57).
         if args.ready_fd is not None:
             write_ready_fd(args.ready_fd, server.address)
 

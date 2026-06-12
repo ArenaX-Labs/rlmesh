@@ -76,7 +76,7 @@ rlmesh.EnvServer(env, path="/tmp/rlmesh-env.sock")
 
 RLMesh exposes two machine-readable readiness signals so supervisors, container probes, and
 orchestrators can wait for a server to come up **without** grepping log output. These are the
-supported readiness contract — prefer them over parsing the human-friendly startup prints, which are
+supported readiness contract. Prefer them over parsing the human-friendly startup prints, which are
 not a stable interface.
 
 ### gRPC health service
@@ -107,11 +107,11 @@ until that lands, use the ready file descriptor below for the Python CLI path.
 ### Ready file descriptor (CLI)
 
 The env-serve CLI (`python -m rlmesh._cli.serve_env`) accepts `--ready-fd <int>`. RLMesh writes a
-single line — the resolved bind address, e.g. `tcp://127.0.0.1:54321` — to that file descriptor and
-closes it once the server is bound and accepting. A supervisor passes a writable descriptor and
-blocks reading it until the line arrives; the close gives the reader a deterministic end-of-file.
-This avoids the bind-drop-rebind and poll-the-port races of log-grepping, and works even when the
-bind port is `0` (OS-assigned), since the line carries the resolved address.
+single line containing the resolved bind address, for example `tcp://127.0.0.1:54321`, to that file
+descriptor and closes it once the server is bound and accepting. A supervisor passes a writable
+descriptor and blocks reading it until the line arrives; the close gives the reader a deterministic
+end-of-file. This avoids the bind-drop-rebind and poll-the-port races of log-grepping, and works
+even when the bind port is `0` (OS-assigned), since the line carries the resolved address.
 
 ```sh
 # Open fd 3 onto a file, point --ready-fd at it, then read the address back.

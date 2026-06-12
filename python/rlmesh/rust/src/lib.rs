@@ -31,12 +31,7 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
-// The render viewer (and its egui/eframe/glow/wayland/x11 stack via rlmesh-cli)
-// is only linked into the extension when the `viewer` feature is enabled, so
-// default release wheels stay lean and headless (review finding #113). Builds
-// that ship the viewer expose `run_cli`, which `python -m rlmesh viewer`
-// drives; lean wheels simply omit it (the Python entrypoint degrades to an
-// ImportError-guarded fallback).
+// Viewer support is feature-gated so default wheels do not link egui/eframe.
 #[cfg(feature = "viewer")]
 #[cfg_attr(
     feature = "stub-gen",
@@ -63,23 +58,14 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
 #[pymodule]
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Expose the crate version so the Python package's metadata fallback can
-    // report a real version even when importlib.metadata can't see the
-    // distribution (PyInstaller/vendored copies).
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
-    // Register custom exception types
     types::errors::register_exceptions(m)?;
     spaces::register_classes(m)?;
     m.add_class::<lifecycle::PyServeOptions>()?;
 
-    // Add server classes
     m.add_class::<server::PyEnvServer>()?;
-
-    // Add model classes
     m.add_class::<model::PyModel>()?;
-
-    // Add client classes
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     #[cfg(feature = "viewer")]

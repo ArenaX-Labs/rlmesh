@@ -34,7 +34,7 @@ agree on where the environment listens:
 `RLMESH_ENV_ADDRESS` is the preferred knob; it accepts the same forms as the `EnvServer` `address`
 argument, so a non-default host or a Unix socket can be selected without code changes.
 `RLMESH_ENV_PORT` is kept for backward compatibility. Constructing `EnvServer` directly in your own
-process ignores these variables — pass `address`/`host`/`port` explicitly.
+process ignores these variables. Pass `address`/`host`/`port` explicitly.
 
 ## API
 

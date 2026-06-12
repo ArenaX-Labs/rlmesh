@@ -37,7 +37,6 @@ fn request_ids_do_not_collide_across_sibling_routes() {
     spec_a.route_id = "route-a".to_string();
     let mut spec_b = test_session_spec();
     spec_b.route_id = "route-b".to_string();
-    // Same session, different routes — the collision scenario from the finding.
     assert_eq!(spec_a.session_id, spec_b.session_id);
 
     let mut state_a = RouteState::new(&spec_a);

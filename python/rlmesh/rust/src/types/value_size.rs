@@ -1,8 +1,4 @@
-//! Shared byte-size accounting for `SpaceValue`s.
-//!
-//! Used by both the client wrapper and the server env adapter for profiling
-//! payload sizes; kept in one place so it tracks `SpaceValue` changes once
-//! rather than in lockstep copies (review finding #38).
+//! Payload byte-size accounting for profiling.
 
 use rlmesh_spaces::SpaceValue;
 

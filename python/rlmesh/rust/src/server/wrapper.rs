@@ -40,20 +40,7 @@ enum BoundListener {
 
 type ServeResult = Result<(), String>;
 
-/// Fallback bound applied to the graceful-drain and environment-close phases of
-/// an embedded server's shutdown when the user did not configure an explicit
-/// `drain_timeout`/`close_timeout`.
-///
-/// Unlike the standalone CLI server (which blocks until Ctrl+C), an embedded
-/// `EnvServer` runs inside a live Python interpreter that must be able to exit.
-/// `EnvServer.shutdown()` joins the background serve thread, and that thread only
-/// returns once tonic's graceful drain finishes. With an unbounded drain a single
-/// client connection or `Join` stream that is still open when shutdown fires keeps
-/// the drain — and therefore `handle.join()`, and therefore interpreter exit —
-/// blocked forever (the process hangs in `futex_wait` with SIGINT undeliverable).
-/// Capping the drain guarantees the serve thread always terminates so the join
-/// completes promptly; lingering connections are abandoned, which is the correct
-/// behavior for teardown.
+/// Default shutdown cap for embedded Python servers.
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 struct ServerResources {
@@ -223,9 +210,6 @@ impl PyEnvServer {
         let address = self.address.clone();
         let shutdown = self.shutdown.clone();
 
-        // Only the blocking foreground path owns the process's signal disposition;
-        // installing a SIGINT/SIGTERM handler from a background start() would let an
-        // unrelated Ctrl+C silently tear down the server (see review finding #33).
         let result = py.detach(move || run_server(resources, address, shutdown, true));
 
         let mut state = self.state.lock().expect("server state mutex poisoned");
@@ -267,9 +251,6 @@ impl PyEnvServer {
         };
 
         if let Some(handle) = action {
-            // Release the GIL while joining: the server thread's shutdown path runs
-            // env.close() under Python::attach and would deadlock against a held GIL
-            // (see review finding #34).
             py.detach(|| join_background_server(handle))?;
         }
 

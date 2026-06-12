@@ -30,8 +30,8 @@ pip install --pre "rlmesh[numpy]"
 - `from_array(array)` always copies. It deliberately uses the buffer protocol rather than DLPack:
   read-only arrays cannot be exported over legacy DLPack, and decoded RLMesh views are read-only.
 - `bfloat16` tensors have no buffer-protocol format, so `asarray` copies through raw bytes and needs
-  the optional [ml_dtypes](https://github.com/jax-ml/ml_dtypes) package — install
-  `rlmesh[bfloat16]`. Without it, `asarray` raises an `ImportError` naming that extra.
+  the optional [ml_dtypes](https://github.com/jax-ml/ml_dtypes) package. Install `rlmesh[bfloat16]`.
+  Without it, `asarray` raises an `ImportError` naming that extra.
 
 ## Value Helpers
 

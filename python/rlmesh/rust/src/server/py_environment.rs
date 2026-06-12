@@ -134,13 +134,9 @@ impl PyEnvironment {
             let observation_space = crate::spaces::parse_space(&obs_space_py)?;
             let action_space = crate::spaces::parse_space(&action_space_py)?;
 
-            // Build spaces spec
             let env_id = if env_ref.hasattr("spec")? {
                 let spec = env_ref.getattr("spec")?;
                 if !spec.is_none() && spec.hasattr("id")? {
-                    // spec.id is a non-str (None, custom spec object, ...): fall
-                    // back to the documented sentinel rather than an empty-string
-                    // contract id (review finding #104).
                     spec.getattr("id")?
                         .extract::<String>()
                         .unwrap_or_else(|_| String::from("UnknownEnv-v1"))
@@ -251,19 +247,10 @@ fn normalize_reset_result<'py>(
         && tuple.len() == 2
     {
         let info = tuple.get_item(1)?;
-        if info.is_none() || info.cast::<PyDict>().is_ok() {
-            // Ambiguity: a 2-tuple whose second element is a dict/None looks like
-            // gymnasium's (obs, info), but a legacy obs-only reset() of a
-            // Tuple(A, B) observation space returns exactly that shape as the
-            // observation. When the declared observation space is itself a
-            // 2-element Tuple we cannot tell them apart from the wire, so we
-            // honour the contract and treat the whole 2-tuple as the observation
-            // rather than silently stripping the second element as info
-            // (review finding #37). Non-tuple / differently-sized observation
-            // spaces stay unambiguous, so the (obs, info) split is kept there.
-            if !is_two_element_tuple_space(observation_space) {
-                return Ok((tuple.get_item(0)?, info));
-            }
+        if (info.is_none() || info.cast::<PyDict>().is_ok())
+            && !is_two_element_tuple_space(observation_space)
+        {
+            return Ok((tuple.get_item(0)?, info));
         }
     }
 
@@ -1052,9 +1039,6 @@ mod tests {
 
     #[test]
     fn legacy_obs_only_two_tuple_is_not_split_for_tuple_space() {
-        // Review finding #37: a legacy obs-only reset() of a Tuple(A, B) space
-        // returns (a, b); the second element (a dict here) must not be stripped
-        // as info. The whole 2-tuple is the observation.
         Python::attach(|py| {
             let second = PyDict::new(py);
             second.set_item("pos", 1).unwrap();

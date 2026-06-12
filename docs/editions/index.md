@@ -1,8 +1,8 @@
 # Workflow Editions
 
 A workflow edition is a named, immutable behavioral contract for RLMesh workflow semantics. The
-edition string (`YYYY.MM`) identifies one spec document in this section; that document — not the
-implementation — is the contract. Exactly one edition governs a session, chosen during handshake.
+edition string (`YYYY.MM`) identifies one spec document in this section; that document is the
+contract, not the implementation. Exactly one edition governs a session, chosen during handshake.
 
 Editions answer a different question than the protocol generation. The protocol generation
 (`rlmesh.protocol.v1`) names the wire shape: which services, messages, and fields exist. The edition
@@ -18,7 +18,7 @@ lexicographic order chronological order. The selection is returned in
 `HandshakeResponse.selected_workflow_edition` and governs the rest of the session.
 
 - An empty intersection means `compatible = false`. The response lists the server's supported
-  editions for diagnostics, but there is no second round trip — the client's offer was already
+  editions for diagnostics, but there is no second round trip because the client's offer was already
   complete.
 - Servers accept only editions they explicitly support. A server never accepts an unknown edition on
   the assumption that it is probably compatible; forward compatibility lives in the client's offer
@@ -30,8 +30,8 @@ Most development never touches the edition:
 
 - A change to the meaning of an existing, conforming interaction mints a new edition. This is rare,
   and breaking semantic changes batch into at most one new edition per release.
-- A new and ignorable or detectable addition — a new RPC, a new field, an opt-in behavior — is a
-  capability or a plain feature. No edition.
+- A new addition that is ignorable or detectable, such as a new RPC, a new field, or an opt-in
+  behavior, is a capability or a plain feature. No edition.
 - An implementation that deviates from the governing spec document has a bug. Fixing it needs no
   edition.
 
@@ -43,8 +43,8 @@ release that ships an edition **seals** it permanently: the spec document become
 (enforced by checksum), and any later semantic change mints a new edition.
 
 `2026.06` is provisional during the 0.1 beta series and seals when v0.1.0 ships. After sealing it
-remains valid indefinitely — a new edition is minted only by a deliberate semantic redesign, never
-on a schedule.
+remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on
+a schedule.
 
 ## Support window
 

@@ -14,13 +14,9 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    # Typing-only import so this pure-protocol module stays importable without
-    # the compiled extension (e.g. for unit tests against the typing surface).
     from ._rlmesh import Tensor as _Tensor
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
-# ``_Tensor`` is a string forward reference so this module imports without the
-# compiled extension; ``Union`` (unlike ``|``) accepts string members at runtime.
 Value: TypeAlias = Union[
     PrimitiveValue,
     "_Tensor",

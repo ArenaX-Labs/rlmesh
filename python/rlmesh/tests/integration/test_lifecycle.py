@@ -425,11 +425,7 @@ def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
 
 @pytest.mark.parametrize("spec_id", [None, 123, object()])
 def test_env_contract_id_falls_back_for_non_string_spec_id(spec_id: object) -> None:
-    """Review finding #104: a non-str spec.id must use the documented sentinel.
-
-    Previously extract::<String>().unwrap_or_default() published an empty-string
-    contract id; the documented fallback is "UnknownEnv-v1".
-    """
+    """Non-string spec.id falls back to "UnknownEnv-v1"."""
     env = TinyEnv()
     env.spec = SimpleNamespace(id=spec_id)  # type: ignore[attr-defined]
     server = env_server(env)
@@ -487,11 +483,7 @@ def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
 def test_remote_render_preserves_source_channel_count(
     channels: int, expected_shape: tuple[int, ...]
 ) -> None:
-    """Review finding #35: remote render() must match Gymnasium's rgb_array shape.
-
-    The client used to widen every frame to RGBA8 (H, W, 4); RGB sources should
-    stay (H, W, 3) and grayscale (H, W).
-    """
+    """remote render() preserves the source frame shape."""
     import numpy as np
     import rlmesh
 
@@ -514,11 +506,7 @@ def test_remote_render_preserves_source_channel_count(
 
 
 def test_client_preserves_env_provided_info_keys() -> None:
-    """Root cause of finding #43: rlmesh must not clobber env info keys.
-
-    An env emitting its own episode_ids/completed_episodes keeps them; rlmesh
-    only fills those keys when the env did not provide them.
-    """
+    """Client telemetry does not overwrite env-provided info keys."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = InfoKeyEnv()
@@ -558,11 +546,7 @@ def test_client_injects_episode_ids_when_env_omits_them() -> None:
 
 
 def test_client_step_respects_per_call_timeout() -> None:
-    """Review finding #5: a hung RPC must be bounded by a per-call timeout.
-
-    The native client now accepts timeout_seconds; a step against a slow server
-    raises TimeoutError instead of blocking forever.
-    """
+    """Per-call timeout bounds a blocked step."""
     from rlmesh._rlmesh import PyEnvClient
 
     env = SlowStepEnv(step_delay=3.0)
@@ -613,13 +597,7 @@ def test_client_rejects_invalid_timeout() -> None:
 
 
 def test_background_server_survives_unrelated_sigint() -> None:
-    """Review finding #33: start() must not install a process-wide SIGINT handler.
-
-    A Ctrl+C aimed at an unrelated computation in a notebook/REPL used to trip the
-    tokio signal task and silently tear down a backgrounded server. After the fix
-    only the blocking serve() path owns signal disposition, so a SIGINT delivered
-    while the server runs in the background must leave it serving.
-    """
+    """Background start() leaves process signal handlers alone."""
     import os
     import signal as signal_module
 
@@ -994,16 +972,7 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
 
 
 def test_server_client_lifecycle_process_exits_promptly() -> None:
-    """The interpreter must exit promptly after a full server/client lifecycle.
-
-    Regression for the native-runtime shutdown hang: a background EnvServer with
-    the default (unbounded) drain would never finish graceful shutdown while a
-    client connection was still open, so EnvServer.shutdown() joined its serve
-    thread forever and the process hung in futex_wait at interpreter exit. The
-    serve thread's drain (and the close hook) are now bounded, so shutdown()
-    returns and the process exits. A hard subprocess timeout fails loudly if the
-    hang ever returns instead of stalling the whole suite.
-    """
+    """Server shutdown returns with an open client connection."""
     import subprocess
     import sys
     import textwrap
@@ -1036,11 +1005,6 @@ def test_server_client_lifecycle_process_exits_promptly() -> None:
         remote.reset(seed=1)
         remote.step(remote.action_space.sample())
 
-        # Drive the native model worker against the same endpoint, then shut the
-        # server down while the client connection is still open -- exactly the
-        # lifecycle that used to wedge graceful drain. The model run may be
-        # rejected by the single-Join-session contract; either way shutdown()
-        # must return and the interpreter must exit.
         try:
             rlmesh.Model(lambda _o: 0).run(
                 remote, max_episodes=1, close_env=True

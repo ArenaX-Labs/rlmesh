@@ -84,8 +84,8 @@ Pass options to `EnvServer(..., options=options)` or model-serving APIs that acc
 Native tensor value used at the dependency-free RLMesh value boundary.
 ```
 
-`Tensor` is a validated transport container — immutable element bytes plus shape, dtype, and stride
-metadata — with DLPack and buffer-protocol edges. It is not an ndarray: compute, slicing, and
+`Tensor` is a validated transport container: immutable element bytes plus shape, dtype, and stride
+metadata, with DLPack and buffer-protocol edges. It is not an ndarray. Compute, slicing, and
 broadcasting belong to the frameworks. The NumPy, Torch, and JAX backends convert tensor leaves to
 backend arrays or tensors.
 

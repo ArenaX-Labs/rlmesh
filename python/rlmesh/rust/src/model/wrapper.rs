@@ -441,7 +441,6 @@ mod tests {
 
     #[test]
     fn text_action_encodes_to_env_decodable_bytes() {
-        // Review finding #36: a Text action used to hit the catch-all TypeError.
         let space = TextBuilder::new(32).build().unwrap();
         let value = SpaceValue::Text("press button".to_string());
 

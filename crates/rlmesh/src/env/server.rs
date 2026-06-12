@@ -56,16 +56,11 @@ impl<E: Env + 'static> EnvServer<E> {
             grpc_options,
             activity_tx,
         );
-        // Always-on standard gRPC health service (`grpc.health.v1`). The
-        // listener is already bound (bind-first), so the overall server health
-        // is marked SERVING immediately (review finding #57).
         let (_health_reporter, health_service) =
             rlmesh_grpc::health::serving_health_service().await;
         let router = tonic::transport::Server::builder()
             .add_service(health_service)
             .add_service(service);
-        // Upcast to a trait object so the bound handle does not leak the env
-        // generic; only the close hook needs the environment afterward.
         let env: Arc<Mutex<dyn Environment + Send + Sync>> = env;
 
         Ok(BoundEnvServer {
@@ -127,13 +122,7 @@ impl BoundEnvServer {
         &self.local_addr
     }
 
-    /// Serve until the server shuts down (idle timeout, remote shutdown, or
-    /// drain), then run the environment close hook.
-    ///
-    /// The served environment outlives individual client sessions: a client
-    /// calling `close` detaches its session but leaves the env running for the
-    /// next client to connect (review finding #81). The environment's own close
-    /// hook runs only here, once the *server* stops — not on each client close.
+    /// Serve until shutdown, then run the environment close hook.
     pub async fn serve(self) -> Result<()> {
         let serve_result = self
             .listener

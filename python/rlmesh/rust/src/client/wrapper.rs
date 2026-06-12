@@ -22,17 +22,10 @@ use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::errors::to_py_err;
 use crate::types::value_size::observation_size;
 
-/// Interval at which blocked RPCs re-acquire the GIL to poll for pending Python
-/// signals (e.g. KeyboardInterrupt). Short enough to feel responsive to Ctrl+C,
-/// long enough that the overhead is negligible against an RPC round trip.
+/// Interval for polling Python signals during blocked RPCs.
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// One process-wide multi-threaded runtime shared by every client, instead of
-/// a full `Runtime` per client (review finding #72). A shared multi-thread
-/// runtime keeps each gRPC connection's background I/O (HTTP/2 keepalive,
-/// connection close) serviced even while a client is idle between calls — a
-/// per-client current-thread runtime would only pump the connection inside
-/// `block_on`, stalling the server's graceful drain on an idle client.
+/// Process-wide Tokio runtime shared by Python env clients.
 fn shared_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -43,12 +36,7 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Shared client core backing both single and vector env facades.
-///
-/// Owns the `RemoteEnv` directly (no Arc<Mutex>): every pymethod takes
-/// `&mut self`, so exclusive access is guaranteed by the borrow checker and
-/// `block_on` accepts non-'static futures — there is nothing to share and no
-/// lock to hold across `.await`.
+/// Shared core for single and vector env facades.
 struct ClientCore {
     client: RemoteEnv,
     runtime: &'static tokio::runtime::Runtime,
@@ -80,10 +68,6 @@ impl ClientCore {
         let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
         let default_timeout = optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
 
-        // Release the GIL for the network connect: a black-holed address can
-        // park the OS TCP connect for minutes, and holding the GIL there would
-        // freeze every other Python thread and make Ctrl+C undeliverable
-        // (review finding #32).
         let client = Python::attach(|py| {
             py.detach(|| connect_remote_env(runtime, connect_address, connect_timeout_seconds))
         })?;
@@ -110,8 +94,7 @@ impl ClientCore {
         })
     }
 
-    /// Payload byte size, but only when profiling is active — the recursive
-    /// value-tree walk is wasted work otherwise (review finding #112).
+    /// Payload size when profiling is active.
     fn measure(&self, value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
         if self.profiler.is_enabled() {
             observation_size(value)
@@ -145,9 +128,7 @@ impl ClientCore {
             .unwrap_or(0)
     }
 
-    /// Drive a single RPC future to completion with the GIL released, enforcing
-    /// an optional hard client-side deadline and polling for pending Python
-    /// signals so a hung call stays interruptible via Ctrl+C (review finding #5).
+    /// Run one RPC with the GIL released and an optional timeout.
     fn run_rpc<F, T>(&mut self, py: Python<'_>, timeout: Option<Duration>, make: F) -> PyResult<T>
     where
         F: for<'a> FnOnce(
@@ -368,7 +349,6 @@ impl PyEnvClient {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        // Don't clobber an env-provided "episode_ids" key (finding #43).
         if !info.contains("episode_ids")? {
             info.set_item("episode_ids", result.episode_ids.to_vec())?;
         }
@@ -412,7 +392,6 @@ impl PyEnvClient {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        // Don't clobber an env-provided "completed_episodes" key (finding #43).
         if (terminated || truncated) && !info.contains("completed_episodes")? {
             info.set_item("completed_episodes", 1)?;
         }
@@ -570,7 +549,6 @@ impl PyVectorEnvClient {
             &self.core.observation_space,
         )?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        // Don't clobber an env-provided "episode_ids" key (finding #43).
         if !info.contains("episode_ids")? {
             info.set_item("episode_ids", result.episode_ids)?;
         }
@@ -607,8 +585,6 @@ impl PyVectorEnvClient {
         let terminated = vector_bool_to_py(py, &result.terminated)?;
         let truncated = vector_bool_to_py(py, &result.truncated)?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        // Don't clobber env-provided "episode_ids"/"completed_episodes" keys
-        // (finding #43).
         if !info.contains("episode_ids")? {
             info.set_item("episode_ids", result.episode_ids)?;
         }
@@ -849,17 +825,11 @@ fn decode_render_bytes(frame: &NativeRenderFrame) -> Result<DecodedRenderFrame, 
     let image = image::load_from_memory_with_format(&frame.png_frame, ImageFormat::Png)
         .map_err(|err| err.to_string())?;
 
-    // Preserve the source channel count so a remote render() matches the
-    // Gymnasium rgb_array contract: RGB -> (H, W, 3), grayscale -> (H, W), and
-    // only genuinely 4-channel sources stay (H, W, 4). The server encodes the
-    // PNG with the original ColorType, so the decoded color type is authoritative.
     let (width, height) = (image.width() as usize, image.height() as usize);
     let (channels, raw) = match image {
         DynamicImage::ImageLuma8(buf) => (1usize, buf.into_raw()),
         DynamicImage::ImageRgb8(buf) => (3, buf.into_raw()),
         DynamicImage::ImageRgba8(buf) => (4, buf.into_raw()),
-        // Grayscale-with-alpha and any 16-bit/float PNG (not produced by the
-        // server encoder) fall back to RGBA8 rather than failing.
         other => (4, other.to_rgba8().into_raw()),
     };
 

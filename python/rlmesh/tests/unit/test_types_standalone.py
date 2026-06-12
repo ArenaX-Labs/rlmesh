@@ -9,12 +9,7 @@ def _types_module_path() -> Path:
 
 
 def test_types_module_imports_without_compiled_extension() -> None:
-    """rlmesh.types must be importable from pure Python (no platform wheel).
-
-    The module is loaded directly from its file so the package ``__init__``
-    (which eagerly imports the compiled ``_rlmesh`` extension) is bypassed,
-    proving the typing surface no longer requires the wheel at import time.
-    """
+    """rlmesh.types imports without the compiled extension."""
     spec = importlib.util.spec_from_file_location(
         "rlmesh_types_standalone_under_test", _types_module_path()
     )

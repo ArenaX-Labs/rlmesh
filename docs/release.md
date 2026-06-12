@@ -96,7 +96,7 @@ Python is a core RLMesh artifact. Python-only fixes may produce a Python patch r
 forcing no-op publishes for unrelated bindings, but the package family in `rlmesh.toml` must stay
 unchanged. Protocol generation or workflow edition changes need an explicit compatibility review;
 see {doc}`editions/index` for when a change mints a new edition. A stable (non-beta) release must
-not ship a provisional edition — seal it in `rlmesh.toml` first.
+seal any provisional edition in `rlmesh.toml` before it ships.
 
 RLMesh currently publishes Python wheels only. Do not build or upload a Python source distribution;
 native builds are covered by the explicit wheel matrix below.

@@ -118,16 +118,12 @@ impl ProfileCollector {
         }
     }
 
-    /// Returns true when profiling is active; lets hot paths skip building the
-    /// payload-size accounting that only the profiler consumes (review finding
-    /// #112).
+    /// Whether profiling is active.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     pub fn start(self: &Arc<Self>, phase: &'static str) -> PhaseGuard {
-        // When profiling is off, skip the two Instant clock reads per guard and
-        // the Arc accounting work — record() is a no-op anyway (finding #112).
         if !self.enabled {
             return PhaseGuard {
                 collector: Arc::clone(self),
