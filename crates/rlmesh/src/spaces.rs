@@ -36,7 +36,7 @@ pub use rlmesh_spaces::tensor::{
     dtype_from_dlpack,
 };
 pub use rlmesh_spaces::types::{
-    AxiswiseBounds, BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract,
-    MultiBinaryDims, MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec,
-    SpaceType, TextSpec, TupleSpec, UniformBounds,
+    BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract, MultiBinaryDims,
+    MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec, SpaceType,
+    TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
 };

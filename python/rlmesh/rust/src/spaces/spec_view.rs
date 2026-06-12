@@ -310,11 +310,35 @@ fn box_space_spec(
     shape: Vec<i64>,
     dtype: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
-    space_spec_to_pyobject(
-        py,
+    let dtype = parse_dtype(dtype, DType::Float32)?;
+    // A fully open range is unbounded regardless of dtype.
+    let builder = if low == f64::NEG_INFINITY && high == f64::INFINITY {
+        BoxSpaceBuilder::unbounded(shape)
+    } else if is_integral_dtype(dtype) && low.is_finite() && high.is_finite() {
+        // Integer/boolean dtypes with finite bounds carry exact dtype-typed
+        // bounds; the f64 args are truncated into the integer domain.
+        BoxSpaceBuilder::int_scalar(low as i64, high as i64, shape)
+    } else {
+        // Float dtypes, and half-open integer ranges, keep the double-based
+        // uniform form (an infinite side reads as unbounded at containment).
         BoxSpaceBuilder::scalar(low, high, shape)
-            .dtype(parse_dtype(dtype, DType::Float32)?)
-            .build(),
+    };
+    space_spec_to_pyobject(py, builder.dtype(dtype).build())
+}
+
+/// Integer/boolean dtypes whose Box bounds are stored as dtype-typed bytes.
+fn is_integral_dtype(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Bool
+            | DType::Uint8
+            | DType::Int8
+            | DType::Int16
+            | DType::Uint16
+            | DType::Int32
+            | DType::Uint32
+            | DType::Int64
+            | DType::Uint64
     )
 }
 

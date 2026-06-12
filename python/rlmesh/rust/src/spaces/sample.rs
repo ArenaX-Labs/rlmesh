@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyTuple};
 use rand::RngExt;
 use rand::rngs::StdRng;
+use rlmesh_spaces::scalar::decode_scalars;
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 use rlmesh_spaces::{
     BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec, Scalar, encode_scalars,
@@ -54,7 +55,7 @@ fn sample_box<'py>(
         .map(|dim| *dim as usize)
         .collect::<Vec<_>>();
     let numel = shape.iter().product::<usize>();
-    let (low, high) = box_bounds(spec, numel.max(1));
+    let (low, high) = box_bounds(spec, numel.max(1), space.dtype);
     let scalars = low
         .iter()
         .zip(high.iter())
@@ -87,20 +88,49 @@ fn normalize_dtype(dtype: DType) -> DType {
     }
 }
 
-fn box_bounds(spec: &BoxSpec, numel: usize) -> (Vec<f64>, Vec<f64>) {
+fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>) {
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
-        Some(BoxBounds::Axiswise(bounds)) => (
-            repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
-            repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
-        ),
         Some(BoxBounds::Elementwise(bounds)) => (
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
+        // Typed byte bounds are decoded with the space dtype into f64 for
+        // sampling. The sampler only needs an approximate range, so the f64
+        // view is acceptable here even for int64/uint64.
+        Some(BoxBounds::TypedUniform(bounds)) => {
+            let low = decode_typed_one(&bounds.low, dtype).unwrap_or(f64::NEG_INFINITY);
+            let high = decode_typed_one(&bounds.high, dtype).unwrap_or(f64::INFINITY);
+            (vec![low; numel], vec![high; numel])
+        }
+        Some(BoxBounds::TypedElementwise(bounds)) => (
+            decode_typed_many(&bounds.low, dtype, numel, f64::NEG_INFINITY),
+            decode_typed_many(&bounds.high, dtype, numel, f64::INFINITY),
+        ),
         Some(BoxBounds::Unbounded(_)) | None => {
             (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
         }
+    }
+}
+
+fn decode_typed_one(bytes: &[u8], dtype: DType) -> Option<f64> {
+    decode_scalars(bytes, dtype)
+        .ok()
+        .and_then(|scalars| scalars.first().copied().map(scalar_to_f64))
+}
+
+fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> Vec<f64> {
+    match decode_scalars(bytes, dtype) {
+        Ok(scalars) if scalars.len() == numel => scalars.into_iter().map(scalar_to_f64).collect(),
+        _ => vec![default; numel],
+    }
+}
+
+fn scalar_to_f64(scalar: Scalar) -> f64 {
+    match scalar {
+        Scalar::Bool(value) => f64::from(u8::from(value)),
+        Scalar::Int(value) => value as f64,
+        Scalar::Float(value) => value,
     }
 }
 

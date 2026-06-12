@@ -1,7 +1,8 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList};
+use rlmesh_spaces::scalar::{Scalar, decode_scalars};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{BoxBounds, BoxSpec, MultiBinaryDims, MultiDiscreteNvec};
+use rlmesh_spaces::{BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec};
 
 use super::spec_view::PySpaceSpec;
 use crate::spaces::utils::dtype_name;
@@ -61,7 +62,7 @@ fn space_spec_details_impl<'py>(
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("space spec is missing"))?
     {
-        SpaceKind::Box(spec) => add_box_details(&details, spec)?,
+        SpaceKind::Box(spec) => add_box_details(&details, spec, space.dtype)?,
         SpaceKind::Discrete(spec) => {
             details.set_item("n", spec.n)?;
             details.set_item("start", spec.start)?;
@@ -126,7 +127,7 @@ fn nested_space<'py>(
     }
 }
 
-fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec) -> PyResult<()> {
+fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec, dtype: DType) -> PyResult<()> {
     match &spec.bounds {
         Some(BoxBounds::Unbounded(_)) => {
             details.set_item("bounds_kind", "unbounded")?;
@@ -136,19 +137,58 @@ fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec) -> PyResult<()> 
             details.set_item("low", bounds.low)?;
             details.set_item("high", bounds.high)?;
         }
-        Some(BoxBounds::Axiswise(bounds)) => {
-            details.set_item("bounds_kind", "axiswise")?;
-            details.set_item("low", bounds.low.clone())?;
-            details.set_item("high", bounds.high.clone())?;
-        }
         Some(BoxBounds::Elementwise(bounds)) => {
             details.set_item("bounds_kind", "elementwise")?;
             details.set_item("low", bounds.low.clone())?;
             details.set_item("high", bounds.high.clone())?;
+        }
+        // Dtype-typed byte bounds are decoded into native Python numbers in the
+        // space's dtype, so the integer values stay exact (no f64 round-trip).
+        Some(BoxBounds::TypedUniform(bounds)) => {
+            details.set_item("bounds_kind", "typed_uniform")?;
+            let py = details.py();
+            details.set_item("low", typed_bounds_to_py(py, &bounds.low, dtype)?)?;
+            details.set_item("high", typed_bounds_to_py(py, &bounds.high, dtype)?)?;
+        }
+        Some(BoxBounds::TypedElementwise(bounds)) => {
+            details.set_item("bounds_kind", "typed_elementwise")?;
+            let py = details.py();
+            details.set_item("low", typed_bounds_to_py(py, &bounds.low, dtype)?)?;
+            details.set_item("high", typed_bounds_to_py(py, &bounds.high, dtype)?)?;
         }
         None => {
             details.set_item("bounds_kind", details.py().None())?;
         }
     }
     Ok(())
+}
+
+/// Decode dtype-typed bound bytes into a Python list of native numbers,
+/// preserving exact integer values (int64/uint64 do not round-trip through
+/// f64). `Uint64` values above `i64::MAX` are returned as Python ints.
+fn typed_bounds_to_py<'py>(
+    py: Python<'py>,
+    bytes: &[u8],
+    dtype: DType,
+) -> PyResult<Bound<'py, PyList>> {
+    let scalars = decode_scalars(bytes, dtype)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    let items = scalars
+        .into_iter()
+        .map(|scalar| scalar_to_py(py, scalar, dtype))
+        .collect::<PyResult<Vec<_>>>()?;
+    PyList::new(py, items)
+}
+
+fn scalar_to_py<'py>(py: Python<'py>, scalar: Scalar, dtype: DType) -> PyResult<Bound<'py, PyAny>> {
+    Ok(match scalar {
+        Scalar::Bool(value) => value.into_pyobject(py)?.to_owned().into_any(),
+        // `Uint64` decodes into a wrapped i64; reinterpret as u64 so values
+        // above i64::MAX surface as the correct positive Python int.
+        Scalar::Int(value) if dtype == DType::Uint64 => {
+            (value as u64).into_pyobject(py)?.into_any()
+        }
+        Scalar::Int(value) => value.into_pyobject(py)?.into_any(),
+        Scalar::Float(value) => value.into_pyobject(py)?.into_any(),
+    })
 }

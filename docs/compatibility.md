@@ -60,8 +60,11 @@ metadata between them and the wire.
 - **Zero-copy asymmetry:** exporting (`memoryview`, `__dlpack__`, framework views) is zero-copy;
   importing (`Tensor(...)`, `Tensor.from_dlpack`) currently always copies. Zero-copy import is
   planned.
-- **Integer precision:** Box bounds checks compare through `float64`, so `int64`/`uint64` values
-  beyond 2^53 lose precision there. The legacy scalar-list wire encoding stores integers in a signed
+- **Integer precision:** Box bounds carry dtype-typed bytes for integer/boolean dtypes (a single
+  scalar for uniform bounds, one per element otherwise, little-endian in the space's dtype), and
+  containment compares in the dtype's native domain — so `int64`/`uint64` bounds and values are
+  exact to the full range (including `i64::MIN`, `i64::MAX`, and `u64::MAX`). Float dtypes keep the
+  `double`-based bounds. The legacy scalar-list wire encoding still stores integers in a signed
   64-bit slot, so `uint64` values above 2^63 wrap on that path (the raw byte encoding used by modern
   clients is exact).
 - **Mutation:** decoded views are read-only by contract. NumPy enforces this; Torch does not (see

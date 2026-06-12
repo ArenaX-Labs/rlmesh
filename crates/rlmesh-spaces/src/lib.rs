@@ -20,7 +20,7 @@ pub use tensor::{
     dtype_from_dlpack,
 };
 pub use types::{
-    AxiswiseBounds, BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract,
-    MultiBinaryDims, MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec,
-    SpaceType, TextSpec, TupleSpec, UniformBounds,
+    BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract, MultiBinaryDims,
+    MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec, SpaceType,
+    TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
 };

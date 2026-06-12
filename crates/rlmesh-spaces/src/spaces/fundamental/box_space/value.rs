@@ -1,8 +1,13 @@
 use crate::BoxBounds;
 use crate::dtype::DType;
 use crate::errors::{SpaceError, err_space};
+use crate::scalar::{Scalar, decode_scalars};
 use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
-use half::{bf16, f16};
+
+/// A per-element low/high bound. `None` means "unbounded on this side" so
+/// integer bounds never have to invent a sentinel that collides with a real
+/// value (`i64::MIN`/`u64::MAX` are legitimate bounds).
+type Bound = (Option<Scalar>, Option<Scalar>);
 
 pub(crate) fn contains_box(
     space: &SpaceSpec,
@@ -36,79 +41,48 @@ pub(crate) fn contains_box(
         );
     }
 
-    let (low, high) = box_bounds(space, tensor.numel(), path)?;
-    let data = tensor.to_contiguous_bytes();
-
-    // i64/u64 values beyond 2^53 lose precision in the f64 comparison.
-    match tensor.dtype() {
-        DType::Bool => check_bounds::<1>(&data, &low, &high, path, |bytes| {
-            if bytes[0] == 0 { 0.0 } else { 1.0 }
-        }),
-        DType::Uint8 => check_bounds::<1>(&data, &low, &high, path, |bytes| bytes[0] as f64),
-        DType::Int8 => check_bounds::<1>(&data, &low, &high, path, |bytes| bytes[0] as i8 as f64),
-        DType::Int16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
-            i16::from_le_bytes(bytes) as f64
-        }),
-        DType::Uint16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
-            u16::from_le_bytes(bytes) as f64
-        }),
-        DType::Int32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
-            i32::from_le_bytes(bytes) as f64
-        }),
-        DType::Uint32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
-            u32::from_le_bytes(bytes) as f64
-        }),
-        DType::Int64 => check_bounds::<8>(&data, &low, &high, path, |bytes| {
-            i64::from_le_bytes(bytes) as f64
-        }),
-        DType::Uint64 => check_bounds::<8>(&data, &low, &high, path, |bytes| {
-            u64::from_le_bytes(bytes) as f64
-        }),
-        DType::Float16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
-            f16::from_le_bytes(bytes).to_f64()
-        }),
-        DType::Bfloat16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
-            bf16::from_le_bytes(bytes).to_f64()
-        }),
-        DType::Float32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
-            f32::from_le_bytes(bytes) as f64
-        }),
-        DType::Float64 => check_bounds::<8>(&data, &low, &high, path, f64::from_le_bytes),
+    let dtype = tensor.dtype();
+    if dtype == DType::Unspecified {
         // Tensor constructors reject Unspecified, so this cannot occur.
-        DType::Unspecified => err_space!(path, "Box value dtype is unspecified"),
+        return err_space!(path, "Box value dtype is unspecified");
     }
-}
 
-fn check_bounds<const N: usize>(
-    data: &[u8],
-    low: &[f64],
-    high: &[f64],
-    path: &str,
-    decode: impl Fn([u8; N]) -> f64,
-) -> Result<(), SpaceError> {
-    for (index, chunk) in data.chunks_exact(N).enumerate() {
-        let bytes: [u8; N] = chunk.try_into().expect("chunks_exact yields N-byte chunks");
-        validate_box_scalar(decode(bytes), low[index], high[index], path, index)?;
+    let numel = tensor.numel();
+    let bounds = box_bounds(space, numel, dtype, path)?;
+
+    let data = tensor.to_contiguous_bytes();
+    let values = decode_scalars(&data, dtype).map_err(|err| SpaceError::Invalid {
+        path: path.to_string(),
+        msg: format!("cannot decode Box value: {err}"),
+    })?;
+
+    for (index, value) in values.iter().enumerate() {
+        let (low, high) = &bounds[index];
+        validate_box_scalar(*value, low.as_ref(), high.as_ref(), dtype, path, index)?;
     }
     Ok(())
 }
 
+/// Resolve per-element bounds for every dtype, comparing in the dtype's native
+/// domain. Float bounds carried as `double` (`Uniform`/`Elementwise`) are
+/// decoded as `Scalar::Float`; dtype-typed byte bounds are decoded with the
+/// space's dtype so integer ranges stay exact.
 fn box_bounds(
     space: &SpaceSpec,
     numel: usize,
+    dtype: DType,
     path: &str,
-) -> Result<(Vec<f64>, Vec<f64>), SpaceError> {
+) -> Result<Vec<Bound>, SpaceError> {
     let spec = match &space.spec {
         Some(SpaceKind::Box(spec)) => spec,
         _ => return err_space!(path, "space is not Box"),
     };
 
     Ok(match &spec.bounds {
-        Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
-        Some(BoxBounds::Axiswise(bounds)) => (
-            repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
-            repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
-        ),
+        Some(BoxBounds::Uniform(bounds)) => {
+            let bound = (finite_float(bounds.low), finite_float(bounds.high));
+            vec![bound; numel]
+        }
         // Elementwise bounds carry one value per element; the validator
         // guarantees low.len() == high.len() == numel, so a length mismatch
         // here means an unvalidated/corrupt spec reached containment. Error
@@ -125,48 +99,90 @@ fn box_bounds(
                     )
                 );
             }
-            (bounds.low.clone(), bounds.high.clone())
+            bounds
+                .low
+                .iter()
+                .zip(bounds.high.iter())
+                .map(|(lo, hi)| (finite_float(*lo), finite_float(*hi)))
+                .collect()
         }
-        Some(BoxBounds::Unbounded(_)) | None => {
-            (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
+        Some(BoxBounds::TypedUniform(bounds)) => {
+            let low = decode_typed_bounds(&bounds.low, 1, dtype, path)?;
+            let high = decode_typed_bounds(&bounds.high, 1, dtype, path)?;
+            vec![(Some(low[0]), Some(high[0])); numel]
         }
+        Some(BoxBounds::TypedElementwise(bounds)) => {
+            let low = decode_typed_bounds(&bounds.low, numel, dtype, path)?;
+            let high = decode_typed_bounds(&bounds.high, numel, dtype, path)?;
+            low.into_iter()
+                .zip(high)
+                .map(|(lo, hi)| (Some(lo), Some(hi)))
+                .collect()
+        }
+        Some(BoxBounds::Unbounded(_)) | None => vec![(None, None); numel],
     })
 }
 
-/// Expand per-axis bounds to one value per element. Only [`BoxBounds::Axiswise`]
-/// relies on this; the wire-format decision for that arm is still pending, so it
-/// keeps the historical repeat/truncate/default behavior rather than erroring.
-fn repeat_or_truncate(values: &[f64], len: usize, default: f64) -> Vec<f64> {
-    match values.len() {
-        0 => vec![default; len],
-        1 => vec![values[0]; len],
-        current if current >= len => values[..len].to_vec(),
-        current => values
-            .iter()
-            .copied()
-            .cycle()
-            .take(len.max(current))
-            .take(len)
-            .collect(),
-    }
+/// An infinite `double` bound means "unbounded on this side"; a finite one is
+/// a real `Scalar::Float` comparison value.
+fn finite_float(value: f64) -> Option<Scalar> {
+    value.is_finite().then_some(Scalar::Float(value))
 }
 
-fn validate_box_scalar(
-    value: f64,
-    low: f64,
-    high: f64,
+fn decode_typed_bounds(
+    bytes: &[u8],
+    count: usize,
+    dtype: DType,
     path: &str,
-    index: usize,
-) -> Result<(), SpaceError> {
-    if value.is_nan() && (low.is_finite() || high.is_finite()) {
-        return err_space!(path, format!("Box value at element {index} is NaN"));
-    }
-    if value < low || value > high {
+) -> Result<Vec<Scalar>, SpaceError> {
+    let scalars = decode_scalars(bytes, dtype).map_err(|err| SpaceError::Invalid {
+        path: path.to_string(),
+        msg: format!("cannot decode typed Box bounds: {err}"),
+    })?;
+    if scalars.len() != count {
         return err_space!(
             path,
             format!(
-                "Box value at element {index} out of bounds: got {value}, expected [{low}, {high}]"
+                "Box typed bounds length mismatch: expected {count} elements, got {}",
+                scalars.len()
             )
+        );
+    }
+    Ok(scalars)
+}
+
+fn validate_box_scalar(
+    value: Scalar,
+    low: Option<&Scalar>,
+    high: Option<&Scalar>,
+    dtype: DType,
+    path: &str,
+    index: usize,
+) -> Result<(), SpaceError> {
+    if let Scalar::Float(v) = value
+        && v.is_nan()
+    {
+        // A NaN value is out of bounds unless both sides are unbounded.
+        if low.is_some() || high.is_some() {
+            return err_space!(path, format!("Box value at element {index} is NaN"));
+        }
+        return Ok(());
+    }
+
+    if let Some(low) = low
+        && super::space::scalar_gt(*low, value, dtype)
+    {
+        return err_space!(
+            path,
+            format!("Box value at element {index} out of bounds: below low bound")
+        );
+    }
+    if let Some(high) = high
+        && super::space::scalar_gt(value, *high, dtype)
+    {
+        return err_space!(
+            path,
+            format!("Box value at element {index} out of bounds: above high bound")
         );
     }
     Ok(())
@@ -178,6 +194,7 @@ mod tests {
     use crate::spaces::contains;
     use crate::spaces::fundamental::BoxSpaceBuilder;
     use crate::tensor::{Storage, Tensor};
+    use half::bf16;
 
     fn box_space(low: f64, high: f64, shape: Vec<i64>, dtype: DType) -> SpaceSpec {
         BoxSpaceBuilder::scalar(low, high, shape)
@@ -325,5 +342,155 @@ mod tests {
 
         let space = box_space(0.0, 1.0, vec![2], DType::Float32);
         assert!(contains(&space, &SpaceValue::Box(view)).is_ok());
+    }
+
+    fn i64_box(low: i64, high: i64, shape: Vec<i64>, dtype: DType) -> SpaceSpec {
+        BoxSpaceBuilder::int_scalar(low, high, shape)
+            .dtype(dtype)
+            .build()
+            .expect("valid space")
+    }
+
+    #[test]
+    fn test_box_contains_int64_extreme_bounds_are_exact() {
+        // Bounds at the very top of the i64 range: 2^63 - 2 .. 2^63 - 1.
+        // An f64 round-trip would round both to 2^63 and accept 2^63 - 1 even
+        // when it is the only in-bounds value, or reject it entirely. The
+        // native-domain comparison keeps the one-ULP distinction exact.
+        let space = i64_box(i64::MAX - 1, i64::MAX, vec![3], DType::Int64);
+
+        let inside: Vec<u8> = [i64::MAX - 1, i64::MAX, i64::MAX - 1]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(inside, vec![3], DType::Int64).expect("tensor")),
+            )
+            .is_ok()
+        );
+
+        // i64::MAX - 2 is just below the low bound and must be rejected even
+        // though it is f64-indistinguishable from the bound.
+        let below: Vec<u8> = [i64::MAX - 2, i64::MAX, i64::MAX]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(below, vec![3], DType::Int64).expect("tensor")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_box_contains_int64_min_bound() {
+        let space = i64_box(i64::MIN, i64::MIN + 1, vec![2], DType::Int64);
+
+        let inside: Vec<u8> = [i64::MIN, i64::MIN + 1]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(inside, vec![2], DType::Int64).expect("tensor")),
+            )
+            .is_ok()
+        );
+
+        // i64::MIN + 2 is above the high bound.
+        let above: Vec<u8> = [i64::MIN, i64::MIN + 2]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(above, vec![2], DType::Int64).expect("tensor")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_box_contains_uint64_max_bound() {
+        // u64::MAX as a bound, compared in the unsigned domain. The largest
+        // value (u64::MAX) is in bounds; u64::MAX as i64 is -1, so an i64
+        // comparison would wrongly reject it.
+        let space = BoxSpaceBuilder::uint_scalar(0, u64::MAX, vec![1])
+            .build()
+            .expect("valid space");
+
+        let top: Vec<u8> = u64::MAX.to_le_bytes().to_vec();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(top, vec![1], DType::Uint64).expect("tensor")),
+            )
+            .is_ok()
+        );
+
+        // A mid-range value is also in bounds.
+        let mid: Vec<u8> = (1u64 << 63).to_le_bytes().to_vec();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(mid, vec![1], DType::Uint64).expect("tensor")),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_box_contains_typed_elementwise_bounds() {
+        let space = BoxSpaceBuilder::int_tensor(vec![0, 100], vec![10, i64::MAX], vec![2])
+            .dtype(DType::Int64)
+            .build()
+            .expect("valid space");
+
+        let inside: Vec<u8> = [5i64, i64::MAX]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(inside, vec![2], DType::Int64).expect("tensor")),
+            )
+            .is_ok()
+        );
+
+        // Second element below its low bound (100).
+        let below: Vec<u8> = [5i64, 99].iter().flat_map(|v| v.to_le_bytes()).collect();
+        assert!(
+            contains(
+                &space,
+                &SpaceValue::Box(Tensor::from_vec(below, vec![2], DType::Int64).expect("tensor")),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_typed_bounds_byte_length_mismatch() {
+        use crate::{BoxSpec, TypedUniformBounds};
+
+        // A Uint64 typed-uniform bound whose `low` is only 4 bytes (half a
+        // scalar) must be rejected by validation.
+        let space = SpaceSpec {
+            shape: vec![1],
+            dtype: DType::Uint64,
+            spec: Some(SpaceKind::Box(BoxSpec {
+                bounds: Some(BoxBounds::TypedUniform(TypedUniformBounds {
+                    low: vec![0u8; 4],
+                    high: vec![0u8; 8],
+                })),
+            })),
+        };
+        assert!(crate::spaces::validate_space(&space).is_err());
     }
 }

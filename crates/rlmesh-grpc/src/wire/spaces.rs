@@ -141,14 +141,20 @@ fn box_bounds_to_proto(bounds: &native::BoxBounds) -> proto::box_spec::Bounds {
                 high: bounds.high,
             })
         }
-        native::BoxBounds::Axiswise(bounds) => {
-            proto::box_spec::Bounds::Axiswise(proto::AxiswiseBounds {
+        native::BoxBounds::Elementwise(bounds) => {
+            proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
             })
         }
-        native::BoxBounds::Elementwise(bounds) => {
-            proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
+        native::BoxBounds::TypedUniform(bounds) => {
+            proto::box_spec::Bounds::TypedUniform(proto::TypedUniformBounds {
+                low: bounds.low.clone(),
+                high: bounds.high.clone(),
+            })
+        }
+        native::BoxBounds::TypedElementwise(bounds) => {
+            proto::box_spec::Bounds::TypedElementwise(proto::TypedElementwiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
             })
@@ -167,14 +173,20 @@ fn box_bounds_from_proto(
                 high: bounds.high,
             })
         }
-        proto::box_spec::Bounds::Axiswise(bounds) => {
-            native::BoxBounds::Axiswise(native::AxiswiseBounds {
+        proto::box_spec::Bounds::Elementwise(bounds) => {
+            native::BoxBounds::Elementwise(native::ElementwiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
         }
-        proto::box_spec::Bounds::Elementwise(bounds) => {
-            native::BoxBounds::Elementwise(native::ElementwiseBounds {
+        proto::box_spec::Bounds::TypedUniform(bounds) => {
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: bounds.low,
+                high: bounds.high,
+            })
+        }
+        proto::box_spec::Bounds::TypedElementwise(bounds) => {
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
@@ -365,5 +377,92 @@ mod tests {
     #[test]
     fn test_dtype_from_proto_rejects_unknown_value() {
         assert!(native_dtype_from_proto(999).is_err());
+    }
+
+    fn box_spec(
+        dtype: native::DType,
+        bounds: native::BoxBounds,
+        shape: Vec<i64>,
+    ) -> native::SpaceSpec {
+        native::SpaceSpec {
+            shape,
+            dtype,
+            spec: Some(native::SpaceKind::Box(native::BoxSpec {
+                bounds: Some(bounds),
+            })),
+        }
+    }
+
+    fn roundtrip(spec: &native::SpaceSpec) -> native::SpaceSpec {
+        space_spec_from_proto(space_spec_to_proto(spec)).expect("decodes")
+    }
+
+    #[test]
+    fn test_box_bounds_proto_roundtrip_all_variants() {
+        let cases = [
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Unbounded(true),
+                vec![3],
+            ),
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Uniform(native::UniformBounds {
+                    low: -1.0,
+                    high: 1.0,
+                }),
+                vec![3],
+            ),
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Elementwise(native::ElementwiseBounds {
+                    low: vec![0.0, 1.0],
+                    high: vec![2.0, 3.0],
+                }),
+                vec![2],
+            ),
+            box_spec(
+                native::DType::Int64,
+                native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                    low: i64::MIN.to_le_bytes().to_vec(),
+                    high: i64::MAX.to_le_bytes().to_vec(),
+                }),
+                vec![4],
+            ),
+            box_spec(
+                native::DType::Uint64,
+                native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                    low: [0u64, 1].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                    high: [u64::MAX, 9].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                }),
+                vec![2],
+            ),
+        ];
+        for spec in cases {
+            assert_eq!(roundtrip(&spec), spec, "roundtrip mismatch for {spec:?}");
+        }
+    }
+
+    #[test]
+    fn test_typed_bounds_bytes_survive_the_wire() {
+        // The raw bytes of an i64::MAX bound must be preserved exactly; an f64
+        // path would have rounded them.
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: (i64::MAX - 1).to_le_bytes().to_vec(),
+                high: i64::MAX.to_le_bytes().to_vec(),
+            }),
+            vec![1],
+        );
+        let decoded = roundtrip(&spec);
+        let native::SpaceKind::Box(b) = decoded.spec.unwrap() else {
+            panic!("expected Box");
+        };
+        let native::BoxBounds::TypedUniform(t) = b.bounds.unwrap() else {
+            panic!("expected typed-uniform bounds");
+        };
+        assert_eq!(t.high, i64::MAX.to_le_bytes());
+        assert_eq!(t.low, (i64::MAX - 1).to_le_bytes());
     }
 }
