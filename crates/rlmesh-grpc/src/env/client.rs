@@ -115,6 +115,20 @@ impl EnvClient {
         })
     }
 
+    /// Connect to an EnvService server, retrying until the server accepts the
+    /// connection (or the deadline/cancellation in `options` fires).
+    ///
+    /// This replaces hand-rolled poll-connect loops used to race a
+    /// just-launched server. It retries only the transport connect; perform the
+    /// handshake explicitly on the returned client.
+    pub async fn connect_with_retry(
+        addr: &str,
+        token: &str,
+        options: &crate::connect::ConnectOptions,
+    ) -> Result<Self, GrpcError> {
+        crate::connect::retry_connect(options, || Self::connect_with_token(addr, token)).await
+    }
+
     /// Connected address in normalized display form.
     pub fn address(&self) -> &str {
         &self.address
@@ -761,15 +775,12 @@ mod tests {
         let address = format!("tcp://{addr}");
 
         // A client without the token is rejected at handshake.
-        let mut anon = loop {
-            match EnvClient::connect(&address).await {
-                Ok(client) => break client,
-                Err(_) if !server.is_finished() => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                Err(error) => panic!("test server did not start: {error}"),
-            }
-        };
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut anon = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
         let err = anon.handshake().await.unwrap_err();
         assert!(
             err.to_string().contains("invalid env token"),
@@ -804,15 +815,12 @@ mod tests {
         });
 
         let address = format!("tcp://{addr}");
-        let mut client = loop {
-            match EnvClient::connect(&address).await {
-                Ok(client) => break client,
-                Err(_) if !server.is_finished() => {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-                Err(error) => panic!("test server did not start: {error}"),
-            }
-        };
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
 
         let error = client.handshake().await.unwrap_err();
         assert!(error.to_string().contains("join unavailable"));

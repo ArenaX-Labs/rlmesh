@@ -476,19 +476,13 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
     });
 
     let address = format!("tcp://127.0.0.1:{port}");
-    let mut client = loop {
-        match rlmesh_grpc::ModelClient::connect(&address, "route-token").await {
-            Ok(mut client) => {
-                client.handshake().await.unwrap();
-                break client;
-            }
-            Err(err) if !server.is_finished() => {
-                let _ = err;
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            Err(err) => panic!("model server did not start: {err}"),
-        }
-    };
+    let connect_options = rlmesh_grpc::ConnectOptions::with_deadline(Duration::from_secs(5))
+        .backoff(Duration::from_millis(10));
+    let mut client =
+        rlmesh_grpc::ModelClient::connect_with_retry(&address, "route-token", &connect_options)
+            .await
+            .expect("model server did not start");
+    client.handshake().await.unwrap();
 
     client.close("client session complete").await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;

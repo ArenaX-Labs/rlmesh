@@ -1,3 +1,4 @@
+pub mod connect;
 pub mod env;
 pub mod error;
 pub mod helpers;
@@ -15,6 +16,7 @@ pub mod wire;
 /// large observations/actions are not capped at an undiagnosable 4 MiB.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
+pub use connect::{ConnectOptions, retry_connect};
 pub use env::{EnvClient, EnvHandshake};
 pub use lifecycle::ServeOptions;
 pub use model::ModelClient;

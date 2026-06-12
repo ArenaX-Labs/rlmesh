@@ -56,6 +56,20 @@ impl ModelClient {
         })
     }
 
+    /// Connect to a ModelService server, retrying until the server accepts the
+    /// connection (or the deadline/cancellation in `options` fires).
+    ///
+    /// This replaces hand-rolled poll-connect loops used to race a
+    /// just-launched server. It retries only the transport connect; perform the
+    /// handshake explicitly on the returned client.
+    pub async fn connect_with_retry(
+        address: &str,
+        token: &str,
+        options: &crate::connect::ConnectOptions,
+    ) -> Result<Self, GrpcError> {
+        crate::connect::retry_connect(options, || Self::connect(address, token)).await
+    }
+
     pub fn address(&self) -> &str {
         &self.address
     }
