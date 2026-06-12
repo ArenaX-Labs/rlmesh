@@ -34,7 +34,7 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
     let base_shape = shape_to_usize(&space.shape)?;
     let base_numel = element_count(&base_shape);
     let dtype = resolve_dtype(space.dtype);
-    let item_size = dtype_size(dtype)?;
+    let item_size = dtype_size(dtype);
     let item_count = bytes.len() / item_size;
 
     if item_count == base_numel {
@@ -78,7 +78,7 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
 }
 
 pub(crate) fn encode_i64_sequence_bytes(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(values.len() * dtype_size(dtype)?);
+    let mut bytes = Vec::with_capacity(values.len() * dtype_size(dtype));
     for value in values {
         match dtype {
             DType::Bool => bytes.push(u8::from(*value != 0)),
@@ -135,7 +135,7 @@ fn encode_without_numpy(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult
     let mut flattened = Vec::new();
     flatten_scalars(value, &mut flattened)?;
     let dtype = resolve_dtype(space.dtype);
-    let mut bytes = Vec::with_capacity(flattened.len() * dtype_size(dtype)?);
+    let mut bytes = Vec::with_capacity(flattened.len() * dtype_size(dtype));
     for item in flattened {
         pack_scalar_bytes(item.bind(value.py()), dtype, &mut bytes)?;
     }
@@ -333,12 +333,11 @@ where
     DType::try_from(dtype.into()).unwrap_or(DType::Float32)
 }
 
-fn dtype_size(dtype: DType) -> PyResult<usize> {
+fn dtype_size(dtype: DType) -> usize {
+    // Unspecified follows the extension-wide float32 fallback.
     match dtype {
-        DType::Bool | DType::Uint8 | DType::Int8 => Ok(1),
-        DType::Float16 | DType::Bfloat16 | DType::Int16 | DType::Uint16 => Ok(2),
-        DType::Int32 | DType::Uint32 | DType::Float32 | DType::Unspecified => Ok(4),
-        DType::Int64 | DType::Uint64 | DType::Float64 => Ok(8),
+        DType::Unspecified => 4,
+        other => rlmesh_spaces::v1::dtype_size(other),
     }
 }
 

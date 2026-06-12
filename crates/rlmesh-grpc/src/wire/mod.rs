@@ -1,4 +1,3 @@
-pub mod env;
 pub mod model;
 pub mod spaces;
 pub mod value;

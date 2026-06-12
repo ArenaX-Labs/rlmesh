@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 use pyo3_stub_gen::inventory::submit;
@@ -10,15 +9,15 @@ use rlmesh::{
 };
 use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
 use rlmesh_spaces::v1::{
-    DType, SpaceValue,
+    SpaceValue,
     spaces::{SpaceSpec, space_spec},
 };
 use std::sync::Arc;
 
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_neutral, py_any_to_space_value_with_backend,
-    space_value_to_py_neutral,
+    ValueBackend, batched_space_values_to_py_neutral, encode_i64_sequence_bytes,
+    py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
 use crate::types::errors::to_py_err;
@@ -340,34 +339,12 @@ fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<V
             Ok(values.iter().map(|value| u8::from(*value)).collect())
         }
         (Some(space_spec::Spec::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
-            encode_i64_values(values, space.dtype)
+            encode_i64_sequence_bytes(values, space.dtype)
         }
         _ => Err(pyo3::exceptions::PyTypeError::new_err(
             "model worker only supports array-like action spaces",
         )),
     }
-}
-
-fn encode_i64_values(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    for value in values {
-        match dtype {
-            DType::Bool => bytes.push(u8::from(*value != 0)),
-            DType::Uint8 => bytes.push(*value as u8),
-            DType::Int8 => bytes.extend((*value as i8).to_le_bytes()),
-            DType::Int16 => bytes.extend((*value as i16).to_le_bytes()),
-            DType::Int32 => bytes.extend((*value as i32).to_le_bytes()),
-            DType::Int64 => bytes.extend(value.to_le_bytes()),
-            DType::Uint16 => bytes.extend((*value as u16).to_le_bytes()),
-            DType::Uint32 => bytes.extend((*value as u32).to_le_bytes()),
-            DType::Uint64 => bytes.extend((*value as u64).to_le_bytes()),
-            DType::Float32 | DType::Unspecified => bytes.extend((*value as f32).to_le_bytes()),
-            DType::Float64 => bytes.extend((*value as f64).to_le_bytes()),
-            DType::Float16 => bytes.extend(f16::from_f32(*value as f32).to_le_bytes()),
-            DType::Bfloat16 => bytes.extend(bf16::from_f64(*value as f64).to_le_bytes()),
-        }
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]
