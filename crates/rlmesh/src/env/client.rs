@@ -17,6 +17,11 @@ use crate::{ConnectAddress, Error, Result, spaces};
 pub struct RemoteEnv {
     inner: rlmesh_grpc::EnvClient,
     env_contract: spaces::EnvContract,
+    // Cheap-to-clone handles to the obs/action specs. Cloning the `Arc` for each
+    // reset/step (to release the borrow of `self` before the `&mut self.inner`
+    // RPC) is a refcount bump rather than a prost deep clone of the spec.
+    observation_space: std::sync::Arc<spaces::SpaceSpec>,
+    action_space: std::sync::Arc<spaces::SpaceSpec>,
     num_envs: usize,
 }
 
@@ -35,9 +40,23 @@ impl RemoteEnv {
                 Error::Internal(format!("invalid spaces spec from remote env: {error}"))
             })?;
         validate_env_contract(&env_contract)?;
+        let observation_space = std::sync::Arc::new(
+            env_contract
+                .observation_space
+                .clone()
+                .expect("remote env contract was validated during connect"),
+        );
+        let action_space = std::sync::Arc::new(
+            env_contract
+                .action_space
+                .clone()
+                .expect("remote env contract was validated during connect"),
+        );
         Ok(Self {
             inner,
             env_contract,
+            observation_space,
+            action_space,
             num_envs: handshake.num_envs,
         })
     }
@@ -54,22 +73,8 @@ impl RemoteEnv {
         self.num_envs
     }
 
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        self.env_contract
-            .observation_space
-            .as_ref()
-            .expect("remote env contract was validated during connect")
-    }
-
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        self.env_contract
-            .action_space
-            .as_ref()
-            .expect("remote env contract was validated during connect")
-    }
-
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResult> {
-        let observation_space = self.observation_space().clone();
+        let observation_space = std::sync::Arc::clone(&self.observation_space);
 
         let response = self
             .inner
@@ -97,8 +102,8 @@ impl RemoteEnv {
     }
 
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResult> {
-        let action_space = self.action_space().clone();
-        let observation_space = self.observation_space().clone();
+        let action_space = std::sync::Arc::clone(&self.action_space);
+        let observation_space = std::sync::Arc::clone(&self.observation_space);
 
         validate_action_count(&req.actions, self.num_envs)
             .map_err(|error| Error::Environment(error.into()))?;

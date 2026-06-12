@@ -694,6 +694,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_env_reset_and_step_decode_with_shared_specs() {
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+
+        // Multiple reset/step calls reuse the Arc-shared specs (no per-call deep
+        // clone) and still decode the expected number of observations.
+        for _ in 0..3 {
+            let reset = client.reset(ResetRequest::default()).await.unwrap();
+            assert_eq!(reset.observations.len(), client.num_envs());
+            let step = client
+                .step(StepRequest {
+                    actions: vec![
+                        spaces::SpaceValue::Discrete(0),
+                        spaces::SpaceValue::Discrete(1),
+                    ],
+                    timeout_ms: 0,
+                })
+                .await
+                .unwrap();
+            assert_eq!(step.observations.len(), client.num_envs());
+        }
+
+        assert!(client.shutdown("done").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn env_bind_resolves_port_zero_before_serving() {
         let bound = EnvServer::new(DummyEnv::new())
             .bind_with_options(
