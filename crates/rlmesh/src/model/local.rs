@@ -87,11 +87,13 @@ impl RuntimeEnv for LocalRuntimeEnv {
         request: rlmesh_proto::env::v1::ResetRequest,
     ) -> std::result::Result<RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
         let response = self.inner.reset(request).await.map_err(|err| {
-            rlmesh_runtime::RuntimeError::EnvRpc {
-                operation: "env.reset",
-                step: 0,
-                message: err.to_string(),
-            }
+            let recoverable = err.is_recoverable();
+            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+                "env.reset",
+                0,
+                recoverable,
+                err,
+            )
         })?;
         Ok(RuntimeEnvReset {
             response,
@@ -103,15 +105,15 @@ impl RuntimeEnv for LocalRuntimeEnv {
         &mut self,
         request: rlmesh_proto::env::v1::StepRequest,
     ) -> std::result::Result<RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
-        let response =
-            self.inner
-                .step(request)
-                .await
-                .map_err(|err| rlmesh_runtime::RuntimeError::EnvRpc {
-                    operation: "env.step",
-                    step: 0,
-                    message: err.to_string(),
-                })?;
+        let response = self.inner.step(request).await.map_err(|err| {
+            let recoverable = err.is_recoverable();
+            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+                "env.step",
+                0,
+                recoverable,
+                err,
+            )
+        })?;
         Ok(RuntimeEnvStep {
             response,
             telemetry: self.inner.take_last_telemetry(),
@@ -144,28 +146,20 @@ where
         &mut self,
         request: PredictRequest,
     ) -> std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError> {
-        let mut observation = model_observation_from_endpoint_request(request).map_err(|err| {
-            rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            }
-        })?;
+        let mut observation = model_observation_from_endpoint_request(request)
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         let route = observation.route.clone();
         observation.env_contract = Some(self.env_contract.clone());
         observation.num_envs = self.num_envs;
         let mut active_episodes = self.active_episodes.lock().await;
         update_lifecycle(self.handler, &mut active_episodes, &observation)
             .await
-            .map_err(|err| rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            })?;
-        let action = self.handler.predict(observation).await.map_err(|err| {
-            rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            }
-        })?;
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let action = self
+            .handler
+            .predict(observation)
+            .await
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         Ok(RuntimeModelPrediction {
             response: model_action_to_endpoint_response(ModelAction {
                 action: Some(action),

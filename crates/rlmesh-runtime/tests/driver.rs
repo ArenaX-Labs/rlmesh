@@ -155,6 +155,44 @@ async fn driver_threads_deterministic_reset_seeds() {
     assert_ne!(first_seeds[0], first_seeds[1]);
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("simulated transport failure")]
+struct FakeTransportError;
+
+#[test]
+fn env_rpc_preserves_recoverability_and_source() {
+    let recoverable =
+        RuntimeError::env_rpc_with_recoverability("env.step", 7, true, FakeTransportError);
+    assert!(recoverable.is_recoverable());
+
+    let fatal = RuntimeError::env_rpc("env.reset", 0, FakeTransportError);
+    assert!(!fatal.is_recoverable());
+
+    // The structured source is preserved and downcastable, not flattened to a
+    // string.
+    use std::error::Error;
+    let source = recoverable.source().expect("EnvRpc carries a source");
+    assert!(source.downcast_ref::<FakeTransportError>().is_some());
+}
+
+#[test]
+fn model_rpc_preserves_source() {
+    let error = RuntimeError::model_rpc("local-model", FakeTransportError);
+    assert!(!error.is_recoverable());
+
+    let recoverable =
+        RuntimeError::model_rpc_with_recoverability("endpoint-a", true, FakeTransportError);
+    assert!(recoverable.is_recoverable());
+
+    use std::error::Error;
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<FakeTransportError>())
+            .is_some()
+    );
+}
+
 #[tokio::test]
 async fn cancellation_reason_is_threaded_from_caller() {
     use tokio_util::sync::CancellationToken;
