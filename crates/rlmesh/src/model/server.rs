@@ -237,7 +237,7 @@ where
                 let request = match request_result {
                     Ok(request) => request,
                     Err(error) => {
-                        let _ = error;
+                        log_join_stream_error(&error);
                         break;
                     }
                 };
@@ -257,6 +257,9 @@ where
                 }
                 let send_result = tx.send(Ok(response)).await;
                 if send_result.is_err() {
+                    tracing::warn!(
+                        "model join response receiver closed before response could be delivered"
+                    );
                     break;
                 }
                 if close_after {
@@ -461,6 +464,15 @@ fn model_route_config_key(route: &super::types::ModelRouteContext) -> String {
     format!("{}:{}", route.session_id, route.route_id)
 }
 
+/// Log an inbound Join-stream error meaningfully instead of swallowing it.
+///
+/// Mirrors the env server's handling so a client that aborts or sends a
+/// malformed Join stream leaves a diagnostic trace rather than disappearing
+/// silently.
+fn log_join_stream_error(error: &Status) {
+    tracing::debug!("model join stream closed: {}", error);
+}
+
 impl<H> ServedModelServer<H> {
     fn authenticate<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
         let token = request
@@ -477,10 +489,59 @@ impl<H> ServedModelServer<H> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
     use async_trait::async_trait;
     use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct CaptureLayer {
+        messages: Arc<StdMutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor<'a>(&'a mut Vec<String>);
+
+    impl Visit for MessageVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut messages = self.messages.lock().unwrap();
+            let mut visitor = MessageVisitor(&mut messages);
+            event.record(&mut visitor);
+        }
+    }
+
+    #[test]
+    fn inbound_join_stream_error_is_logged_not_swallowed() {
+        let layer = CaptureLayer::default();
+        let messages = Arc::clone(&layer.messages);
+        let subscriber = Registry::default().with(layer);
+
+        with_default(subscriber, || {
+            log_join_stream_error(&Status::aborted("client went away"));
+        });
+
+        let messages = messages.lock().unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("model join stream closed")
+                    && message.contains("client went away")),
+            "expected a diagnostic log for the inbound stream error, got {messages:?}"
+        );
+    }
 
     #[derive(Default)]
     struct NoopModelHandler;
