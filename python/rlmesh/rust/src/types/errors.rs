@@ -31,7 +31,6 @@ create_exception!(
 ///
 /// Note: We can't implement `From<Error> for PyErr` due to orphan rules,
 /// so we use this helper function instead.
-#[allow(dead_code)] // Will be used by client wrapper
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
         Error::Address(message) => PyValueError::new_err(format!("invalid address: {message}")),
