@@ -679,6 +679,12 @@ mod tests {
         };
         assert!(connect_error.contains("invalid env token"));
 
+        // A token-bearing facade client connects and handshakes successfully.
+        let env = RemoteEnv::connect_with_token(&address, "s3cret")
+            .await
+            .expect("facade connect_with_token must reach a token-protected env");
+        drop(env);
+
         // A token-bearing client handshakes successfully.
         let mut authed = rlmesh_grpc::EnvClient::connect_with_token(&address, "s3cret")
             .await

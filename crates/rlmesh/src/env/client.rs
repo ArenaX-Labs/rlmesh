@@ -30,8 +30,18 @@ impl RemoteEnv {
         Self::connect_to(ConnectAddress::parse(address)?).await
     }
 
+    /// Connect to an env server that requires a bearer token (see
+    /// `ServeOptions::token`). An empty token behaves like [`RemoteEnv::connect`].
+    pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
+        Self::connect_to_with_token(ConnectAddress::parse(address)?, token).await
+    }
+
     pub async fn connect_to(address: ConnectAddress) -> Result<Self> {
-        let mut inner = rlmesh_grpc::EnvClient::connect(&address.to_string())
+        Self::connect_to_with_token(address, "").await
+    }
+
+    async fn connect_to_with_token(address: ConnectAddress, token: &str) -> Result<Self> {
+        let mut inner = rlmesh_grpc::EnvClient::connect_with_token(&address.to_string(), token)
             .await
             .map_err(Error::from)?;
         let handshake = inner.handshake().await.map_err(Error::from)?;

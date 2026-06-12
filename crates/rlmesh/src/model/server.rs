@@ -169,6 +169,8 @@ where
         shutdown,
         serve_options,
     })
+    .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
 }
 
 #[tonic::async_trait]
