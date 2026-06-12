@@ -3119,7 +3119,6 @@ version = "0.1.0-beta.2"
 dependencies = [
  "async-trait",
  "prost",
- "prost-types",
  "rlmesh-proto",
  "serde",
  "serde_json",

@@ -23,7 +23,6 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tokio-util = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 
 tracing = { workspace = true }
 
