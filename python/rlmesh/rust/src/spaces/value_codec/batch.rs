@@ -206,10 +206,11 @@ fn batched_values_to_py<'py>(
         | Some(SpaceKind::MultiDiscrete(_)) => {
             let items = PyList::new(py, items)?;
             if backend.prefers_numpy(py)? {
+                // Propagate any np.array failure (e.g. inhomogeneous per-sample
+                // shapes from a malformed batch) instead of silently flipping
+                // the return type to a list of arrays.
                 let numpy = py.import("numpy")?;
-                if let Ok(array) = numpy.getattr("array")?.call1((items.clone(),)) {
-                    return Ok(array);
-                }
+                return numpy.getattr("array")?.call1((items,));
             }
             Ok(items.into_any())
         }
@@ -230,4 +231,39 @@ fn batched_items<'py>(
         )));
     }
     Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::batched_space_values_to_py_with_backend;
+    use crate::spaces::ValueBackend;
+    use pyo3::Python;
+    use rlmesh_spaces::spaces::BoxSpaceBuilder;
+    use rlmesh_spaces::{DType, SpaceValue, Tensor};
+
+    #[test]
+    fn batched_box_decode_propagates_inhomogeneous_shape_error() {
+        Python::attach(|py| {
+            if py.import("numpy").is_err() {
+                return;
+            }
+            let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![2])
+                .dtype(DType::Float32)
+                .build()
+                .unwrap();
+
+            // A malformed batch: one sample carries a differently-shaped Box
+            // payload, so stacking with np.array raises on numpy >= 1.24.
+            let values = vec![
+                SpaceValue::Box(Tensor::from_slice(&[0u8; 8], &[2], DType::Float32).unwrap()),
+                SpaceValue::Box(Tensor::from_slice(&[0u8; 12], &[3], DType::Float32).unwrap()),
+            ];
+
+            // Auto backend prefers numpy; the error must surface rather than
+            // silently degrading to a list of arrays.
+            let result =
+                batched_space_values_to_py_with_backend(py, &values, &space, ValueBackend::Auto);
+            assert!(result.is_err(), "expected np.array stacking to error");
+        });
+    }
 }
