@@ -991,3 +991,83 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
         server.shutdown()
 
     assert calls == ["reset", "episode_end", "close"]
+
+
+def test_server_client_lifecycle_process_exits_promptly() -> None:
+    """The interpreter must exit promptly after a full server/client lifecycle.
+
+    Regression for the native-runtime shutdown hang: a background EnvServer with
+    the default (unbounded) drain would never finish graceful shutdown while a
+    client connection was still open, so EnvServer.shutdown() joined its serve
+    thread forever and the process hung in futex_wait at interpreter exit. The
+    serve thread's drain (and the close hook) are now bounded, so shutdown()
+    returns and the process exits. A hard subprocess timeout fails loudly if the
+    hang ever returns instead of stalling the whole suite.
+    """
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import rlmesh
+        from rlmesh import EnvServer
+
+        class TinyEnv:
+            def __init__(self):
+                from rlmesh import spaces
+                self.observation_space = spaces.Discrete(2)
+                self.action_space = spaces.Discrete(2)
+            def reset(self, *, seed=None, options=None):
+                return 0, {}
+            def step(self, action):
+                return 1, 1.0, True, False, {}
+            def close(self):
+                pass
+
+        server = EnvServer(
+            TinyEnv(),
+            host="127.0.0.1",
+            port=0,
+            options=rlmesh.ServeOptions(allow_remote_shutdown=True),
+        )
+        server.start()
+        remote = rlmesh.RemoteEnv(server.address)
+        remote.reset(seed=1)
+        remote.step(remote.action_space.sample())
+
+        # Drive the native model worker against the same endpoint, then shut the
+        # server down while the client connection is still open -- exactly the
+        # lifecycle that used to wedge graceful drain. The model run may be
+        # rejected by the single-Join-session contract; either way shutdown()
+        # must return and the interpreter must exit.
+        try:
+            rlmesh.Model(lambda _o: 0).run(
+                remote, max_episodes=1, close_env=True
+            )
+        except Exception:
+            pass
+        finally:
+            server.shutdown()
+
+        print("CLEAN-EXIT")
+        """
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            "server/client lifecycle process hung and did not exit within 30s"
+        ) from exc
+
+    if "Operation not permitted" in result.stderr:
+        pytest.skip("local tcp bind is not permitted in this environment")
+    assert result.returncode == 0, result.stderr
+    assert "CLEAN-EXIT" in result.stdout

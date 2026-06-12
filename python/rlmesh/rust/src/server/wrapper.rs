@@ -40,6 +40,22 @@ enum BoundListener {
 
 type ServeResult = Result<(), String>;
 
+/// Fallback bound applied to the graceful-drain and environment-close phases of
+/// an embedded server's shutdown when the user did not configure an explicit
+/// `drain_timeout`/`close_timeout`.
+///
+/// Unlike the standalone CLI server (which blocks until Ctrl+C), an embedded
+/// `EnvServer` runs inside a live Python interpreter that must be able to exit.
+/// `EnvServer.shutdown()` joins the background serve thread, and that thread only
+/// returns once tonic's graceful drain finishes. With an unbounded drain a single
+/// client connection or `Join` stream that is still open when shutdown fires keeps
+/// the drain — and therefore `handle.join()`, and therefore interpreter exit —
+/// blocked forever (the process hangs in `futex_wait` with SIGINT undeliverable).
+/// Capping the drain guarantees the serve thread always terminates so the join
+/// completes promptly; lingering connections are abandoned, which is the correct
+/// behavior for teardown.
+const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 struct ServerResources {
     env: PyServerEnv,
     runtime: tokio::runtime::Runtime,
@@ -494,8 +510,11 @@ where
     WireEnvAdapter<E>: Environment + 'static,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
-    let drain_timeout = options.drain_timeout;
-    let close_timeout = options.close_timeout;
+    // Bound both teardown phases so the background serve thread always terminates
+    // and EnvServer.shutdown()'s join (and interpreter exit) can never hang on a
+    // lingering client connection or a blocking close hook.
+    let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
+    let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(Mutex::new(env));
     let grpc_options = rlmesh_grpc::ServeOptions::from(options);
     let service = env_service_from_shared(
@@ -576,8 +595,9 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         }
     }
 
+    let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     runtime.block_on(async move {
-        await_close_with_timeout(env.close(), options.close_timeout)
+        await_close_with_timeout(env.close(), close_timeout)
             .await
             .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?
             .map_err(|err| err.to_string())
