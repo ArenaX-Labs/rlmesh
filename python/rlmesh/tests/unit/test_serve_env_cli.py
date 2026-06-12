@@ -182,6 +182,81 @@ def _server_factory(captured: dict[str, object]) -> type[object]:
     return FakeServer
 
 
+def test_write_ready_fd_writes_address_line_and_closes() -> None:
+    import os
+
+    from rlmesh._cli import serve_env
+
+    read_fd, write_fd = os.pipe()
+    try:
+        serve_env.write_ready_fd(write_fd, "tcp://127.0.0.1:54321")
+        # write_ready_fd takes ownership of and closes write_fd.
+        with os.fdopen(read_fd, "r") as reader:
+            read_fd = -1  # fdopen owns it now
+            contents = reader.read()
+        assert contents == "tcp://127.0.0.1:54321\n"
+    finally:
+        if read_fd != -1:
+            os.close(read_fd)
+        # write_fd is closed by write_ready_fd; nothing to clean up.
+
+
+def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    import rlmesh
+    from rlmesh._cli import serve_env
+
+    fake_env = object()
+
+    def load_environment(
+        env_id: str,
+        package_names: list[str],
+        num_envs: int,
+        vectorization_mode: str | None = None,
+        kwargs: dict[str, Any] | None = None,
+    ) -> object:
+        return fake_env
+
+    class FakeServer:
+        def __init__(self, env: object, *args: object, **kwargs: object) -> None:
+            pass
+
+        @property
+        def address(self) -> str:
+            return "tcp://127.0.0.1:50051"
+
+        def serve(self) -> None:
+            return None
+
+    monkeypatch.setattr(serve_env, "load_environment", load_environment)
+    monkeypatch.setattr(rlmesh, "EnvServer", FakeServer)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        code = serve_env.serve_from_args(
+            serve_env.ServeArgs(
+                env="CartPole-v1",
+                entrypoint=None,
+                transport="tcp",
+                address=None,
+                num_envs=1,
+                vectorization_mode=None,
+                package=[],
+                verbose=False,
+                ready_fd=write_fd,
+            )
+        )
+        assert code == 0
+        with os.fdopen(read_fd, "r") as reader:
+            read_fd = -1
+            contents = reader.read()
+        assert contents == "tcp://127.0.0.1:50051\n"
+    finally:
+        if read_fd != -1:
+            os.close(read_fd)
+
+
 def test_default_unix_socket_path_uses_xdg_runtime_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:

@@ -31,6 +31,7 @@ __all__ = [
     "main",
     "serve_args_from_namespace",
     "serve_from_args",
+    "write_ready_fd",
 ]
 
 
@@ -45,6 +46,27 @@ class ServeArgs:
     package: list[str]
     verbose: bool
     kwargs: dict[str, Any] | None = None
+    ready_fd: int | None = None
+
+
+def write_ready_fd(fd: int, address: str) -> None:
+    """Write the bound server address to ``fd`` and close it.
+
+    This is the machine-readable readiness signal: supervisors pass a writable
+    file descriptor via ``--ready-fd`` and block reading it until a single line
+    (the resolved bind address, e.g. ``tcp://127.0.0.1:54321``) arrives and the
+    descriptor is closed. The write happens only after the listener is bound, so
+    a successful read means the server is accepting connections. Closing the
+    descriptor signals end-of-file so the reader unblocks deterministically.
+
+    Errors are surfaced to the caller (a bad descriptor is a supervisor
+    misconfiguration worth failing loudly on) rather than swallowed.
+    """
+    payload = f"{address}\n".encode()
+    written = 0
+    while written < len(payload):
+        written += os.write(fd, payload[written:])
+    os.close(fd)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -86,6 +108,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--kwargs-json",
         type=_json_object,
         help="JSON object passed as keyword arguments to the environment loader",
+    )
+    _ = parser.add_argument(
+        "--ready-fd",
+        type=int,
+        help=(
+            "File descriptor to write the bound address to (one line) and close "
+            "once the server is accepting connections. Lets supervisors wait for "
+            "readiness without grepping stdout."
+        ),
     )
     _ = parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
@@ -155,7 +186,14 @@ def serve_from_args(args: ServeArgs) -> int:
             print(f"✓ Num envs: {args.num_envs}")
         print()
         print("Waiting for client connection...")
-        print("Press Ctrl+C to stop")
+        print("Press Ctrl+C to stop", flush=True)
+
+        # Machine-readable readiness signal. The PyEnvServer binds its listener
+        # at construction, so server.address is the resolved bind address and the
+        # socket is already accepting; writing it here means a supervisor reading
+        # --ready-fd unblocks exactly when the server is ready (review #57).
+        if args.ready_fd is not None:
+            write_ready_fd(args.ready_fd, server.address)
 
         server.serve()
         print("\nClient disconnected")
@@ -216,6 +254,7 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
         package=_namespace_str_list(args, "package"),
         verbose=_namespace_bool(args, "verbose"),
         kwargs=_namespace_dict_or_none(args, "kwargs_json"),
+        ready_fd=_namespace_int_or_none(args, "ready_fd"),
     )
 
 
@@ -238,6 +277,13 @@ def _namespace_int(args: argparse.Namespace, name: str) -> int:
     if not isinstance(value, int):
         raise TypeError(f"expected argparse field {name!r} to be an int")
     return value
+
+
+def _namespace_int_or_none(args: argparse.Namespace, name: str) -> int | None:
+    value: object = vars(args).get(name)
+    if value is None or isinstance(value, int):
+        return value
+    raise TypeError(f"expected argparse field {name!r} to be an int | None")
 
 
 def _namespace_bool(args: argparse.Namespace, name: str) -> bool:
