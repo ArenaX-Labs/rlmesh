@@ -1,19 +1,18 @@
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, capability_map,
+    PROTOCOL_GENERATION, capabilities, capability_map,
     core::v1::OperationTelemetry,
-    is_protocol_generation_compatible,
     model::v1::{
         CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
         JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, ShutdownResponse,
         join_request, join_response, model_service_client::ModelServiceClient,
     },
+    supported_workflow_editions,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{Error as GrpcError, ProtocolError, TransportError};
-use crate::helpers::handshake::fallback_workflow_edition;
 use crate::helpers::normalize_tcp_session_address;
 use crate::states::ClientState;
 
@@ -68,31 +67,6 @@ impl ModelClient {
             return Err(crate::error::ClientError::NotConnected.into());
         }
 
-        let mut response = self.handshake_once(CURRENT_WORKFLOW_EDITION).await?;
-
-        if !response.compatible
-            && is_protocol_generation_compatible(
-                PROTOCOL_GENERATION,
-                &response.server_protocol_generation,
-            )
-            && let Some(edition) = fallback_workflow_edition(&response.supported_workflow_editions)
-        {
-            response = self.handshake_once(edition).await?;
-        }
-
-        if !response.compatible {
-            return Err(ProtocolError::HandshakeFailed(response.error_message).into());
-        }
-
-        self.setup_join_stream().await?;
-        self.state = ClientState::Ready;
-        Ok(())
-    }
-
-    async fn handshake_once(
-        &mut self,
-        workflow_edition: &str,
-    ) -> Result<rlmesh_proto::model::v1::HandshakeResponse, GrpcError> {
         let request = self.authorized_request(HandshakeRequest {
             protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "rlmesh-rust-model-grpc".to_string(),
@@ -101,15 +75,23 @@ impl ModelClient {
                 capabilities::MODEL_SERVICE_V1,
                 capabilities::SPACES_CORE_V1,
             ]),
-            workflow_edition: workflow_edition.to_string(),
+            supported_workflow_editions: supported_workflow_editions(),
         })?;
 
-        Ok(self
+        let response = self
             .client
             .handshake(request)
             .await
             .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
-            .into_inner())
+            .into_inner();
+
+        if !response.compatible {
+            return Err(ProtocolError::HandshakeFailed(response.error_message).into());
+        }
+
+        self.setup_join_stream().await?;
+        self.state = ClientState::Ready;
+        Ok(())
     }
 
     pub async fn configure_route(

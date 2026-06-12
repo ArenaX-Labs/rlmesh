@@ -13,8 +13,8 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities,
-    capability_map, is_workflow_edition_compatible, supported_workflow_editions,
+    MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
+    negotiate_workflow_edition, supported_workflow_editions,
 };
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -173,8 +173,8 @@ where
             &request.protocol_generation,
             PROTOCOL_GENERATION,
         );
-        let edition_compatible = is_workflow_edition_compatible(&request.workflow_edition);
-        let compatible = protocol_compatible && edition_compatible;
+        let selected_edition = negotiate_workflow_edition(&request.supported_workflow_editions);
+        let compatible = protocol_compatible && selected_edition.is_some();
         Ok(Response::new(HandshakeResponse {
             compatible,
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
@@ -188,8 +188,8 @@ where
                 )
             } else {
                 format!(
-                    "workflow edition {} is not compatible; advertised editions: {}",
-                    request.workflow_edition,
+                    "no mutually supported workflow edition; client offered [{}], server supports [{}]",
+                    request.supported_workflow_editions.join(", "),
                     supported_workflow_editions().join(", ")
                 )
             },
@@ -197,7 +197,11 @@ where
                 capabilities::MODEL_SERVICE_V1,
                 capabilities::SPACES_CORE_V1,
             ]),
-            workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+            selected_workflow_edition: if compatible {
+                selected_edition.unwrap_or_default().to_string()
+            } else {
+                String::new()
+            },
             supported_workflow_editions: supported_workflow_editions(),
         }))
     }
@@ -441,6 +445,7 @@ impl<H> ServedModelServer<H> {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
+    use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
 
     use super::*;
 
@@ -469,32 +474,35 @@ mod tests {
         }
     }
 
-    fn handshake_request(workflow_edition: &str) -> HandshakeRequest {
+    fn handshake_request(offered_editions: &[&str]) -> HandshakeRequest {
         HandshakeRequest {
             protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "client".to_string(),
             client_version: "0.1.0-beta.2".to_string(),
             capabilities: Default::default(),
-            workflow_edition: workflow_edition.to_string(),
+            supported_workflow_editions: offered_editions
+                .iter()
+                .map(|edition| edition.to_string())
+                .collect(),
         }
     }
 
     #[tokio::test]
-    async fn handshake_accepts_current_and_legacy_workflow_editions() {
+    async fn handshake_selects_highest_mutual_edition() {
         let server = test_server();
 
-        for edition in [
-            CURRENT_WORKFLOW_EDITION,
-            rlmesh_proto::LEGACY_WORKFLOW_EDITION_2026,
+        for offer in [
+            &[CURRENT_WORKFLOW_EDITION][..],
+            &["2025.01", CURRENT_WORKFLOW_EDITION, "2031.12"][..],
         ] {
             let response =
-                ModelServiceTrait::handshake(&server, Request::new(handshake_request(edition)))
+                ModelServiceTrait::handshake(&server, Request::new(handshake_request(offer)))
                     .await
                     .unwrap()
                     .into_inner();
 
-            assert!(response.compatible);
-            assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
+            assert!(response.compatible, "offer {offer:?} must be accepted");
+            assert_eq!(response.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
             assert_eq!(
                 response.supported_workflow_editions,
                 supported_workflow_editions()
@@ -503,30 +511,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_accepts_future_workflow_edition() {
+    async fn handshake_rejects_offer_without_mutual_edition() {
         let server = test_server();
 
-        let response =
-            ModelServiceTrait::handshake(&server, Request::new(handshake_request("2026.11")))
-                .await
-                .unwrap()
-                .into_inner();
+        for offer in [&[][..], &["2026"][..], &["2026.11", "next"][..]] {
+            let response =
+                ModelServiceTrait::handshake(&server, Request::new(handshake_request(offer)))
+                    .await
+                    .unwrap()
+                    .into_inner();
 
-        assert!(response.compatible);
-        assert_eq!(response.workflow_edition, CURRENT_WORKFLOW_EDITION);
-    }
-
-    #[tokio::test]
-    async fn handshake_rejects_malformed_workflow_edition() {
-        let server = test_server();
-
-        let response =
-            ModelServiceTrait::handshake(&server, Request::new(handshake_request("next")))
-                .await
-                .unwrap()
-                .into_inner();
-
-        assert!(!response.compatible);
-        assert!(response.error_message.contains("workflow edition"));
+            assert!(!response.compatible, "offer {offer:?} must be rejected");
+            assert!(response.error_message.contains("workflow edition"));
+            assert!(response.selected_workflow_edition.is_empty());
+        }
     }
 }
