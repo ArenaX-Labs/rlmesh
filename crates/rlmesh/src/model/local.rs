@@ -48,6 +48,7 @@ where
         env_id,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
+        base_seed: None,
         max_episodes,
         close_env_on_end: false,
         limits: Default::default(),

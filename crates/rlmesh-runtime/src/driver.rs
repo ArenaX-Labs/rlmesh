@@ -174,6 +174,25 @@ where
         Self::new(spec, env, model, Arc::new(NoopRuntimeHooks))
     }
 
+    fn reset_seeds(&self, reset_generation: u64) -> Vec<i64> {
+        self.spec
+            .base_seed
+            .map(|base_seed| {
+                (0..self.spec.num_envs)
+                    .map(|env_index| {
+                        deterministic_reset_seed(
+                            base_seed,
+                            &self.spec.session_id,
+                            &self.spec.route_id,
+                            reset_generation,
+                            env_index,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {
         self.run_with_cancellation(CancellationToken::new()).await
     }
@@ -200,8 +219,10 @@ where
         self.invoke_session_started(state, &self.spec.env_id).await;
 
         let reset_started = Instant::now();
+        let mut reset_generation = 0_u64;
         let reset_timeout = self.spec.limits.env_reset_timeout;
         let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms();
+        let reset_seeds = self.reset_seeds(reset_generation);
         let reset_ok = await_runtime_operation(
             cancellation,
             reset_timeout,
@@ -214,7 +235,7 @@ where
             ),
             self.cancelled_error(state, 0),
             self.env.reset(ResetRequest {
-                seeds: vec![],
+                seeds: reset_seeds,
                 options: None,
                 timeout_ms: reset_timeout_ms,
             }),
@@ -440,9 +461,11 @@ where
             let need_reset = !step_ok.response.completed_episodes.is_empty();
             let (next_obs, phase, is_reset_msg) = if need_reset {
                 let reset_started = Instant::now();
+                reset_generation += 1;
                 let step = state.snapshot().step;
                 let reset_timeout = self.spec.limits.env_reset_timeout;
                 let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms();
+                let reset_seeds = self.reset_seeds(reset_generation);
                 let reset_ok = await_runtime_operation(
                     cancellation,
                     reset_timeout,
@@ -455,7 +478,7 @@ where
                     ),
                     self.cancelled_error(state, step),
                     self.env.reset(ResetRequest {
-                        seeds: vec![],
+                        seeds: reset_seeds,
                         options: None,
                         timeout_ms: reset_timeout_ms,
                     }),
@@ -749,6 +772,37 @@ where
             observation,
         }
     }
+}
+
+fn deterministic_reset_seed(
+    base_seed: i64,
+    session_id: &str,
+    route_id: &str,
+    reset_generation: u64,
+    env_index: usize,
+) -> i64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn update(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    let mut hash = FNV_OFFSET;
+    hash = update(hash, &base_seed.to_le_bytes());
+    hash = update(hash, &[0xff]);
+    hash = update(hash, session_id.as_bytes());
+    hash = update(hash, &[0xfe]);
+    hash = update(hash, route_id.as_bytes());
+    hash = update(hash, &[0xfd]);
+    hash = update(hash, &reset_generation.to_le_bytes());
+    hash = update(hash, &[0xfc]);
+    hash = update(hash, &(env_index as u64).to_le_bytes());
+    (hash & i64::MAX as u64) as i64
 }
 
 async fn await_runtime_operation<T, F>(

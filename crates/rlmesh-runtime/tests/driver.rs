@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -106,10 +107,59 @@ async fn fatal_transform_hook_failure_closes_route() {
     assert!(model.closed.load(Ordering::SeqCst));
 }
 
+#[tokio::test]
+async fn driver_threads_deterministic_reset_seeds() {
+    let mut spec = one_episode_spec();
+    spec.base_seed = Some(1234);
+    spec.max_episodes = Some(2);
+
+    let first_env = TestEnv::default();
+    let first_model = TestModel::default();
+    RuntimeDriver::new(
+        spec.clone(),
+        first_env.clone(),
+        first_model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let second_env = TestEnv::default();
+    let second_model = TestModel::default();
+    RuntimeDriver::new(
+        spec,
+        second_env.clone(),
+        second_model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let first_seeds = first_env
+        .reset_seeds
+        .lock()
+        .expect("reset seed recorder lock poisoned")
+        .clone();
+    let second_seeds = second_env
+        .reset_seeds
+        .lock()
+        .expect("reset seed recorder lock poisoned")
+        .clone();
+
+    assert_eq!(first_seeds, second_seeds);
+    assert_eq!(first_seeds.len(), 2);
+    assert_eq!(first_seeds[0].len(), 1);
+    assert_eq!(first_seeds[1].len(), 1);
+    assert_ne!(first_seeds[0], first_seeds[1]);
+}
+
 #[derive(Clone)]
 struct TestEnv {
     closed: Arc<AtomicBool>,
     step_count: Arc<AtomicUsize>,
+    reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
     terminal_after: usize,
 }
 
@@ -118,6 +168,7 @@ impl Default for TestEnv {
         Self {
             closed: Arc::new(AtomicBool::new(false)),
             step_count: Arc::new(AtomicUsize::new(0)),
+            reset_seeds: Arc::new(Mutex::new(Vec::new())),
             terminal_after: 1,
         }
     }
@@ -125,7 +176,11 @@ impl Default for TestEnv {
 
 #[async_trait]
 impl RuntimeEnv for TestEnv {
-    async fn reset(&mut self, _request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        self.reset_seeds
+            .lock()
+            .expect("reset seed recorder lock poisoned")
+            .push(request.seeds);
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
             response: ResetResponse {
@@ -261,6 +316,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
             ..Default::default()
         },
         num_envs: 1,
+        base_seed: None,
         max_episodes: Some(1),
         close_env_on_end: true,
         limits: Default::default(),

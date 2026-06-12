@@ -13,6 +13,7 @@ pub struct RuntimeSessionSpec {
     pub env_id: String,
     pub env_contract: EnvContract,
     pub num_envs: usize,
+    pub base_seed: Option<i64>,
     pub max_episodes: Option<u64>,
     pub close_env_on_end: bool,
     pub limits: RuntimeLimits,
@@ -251,6 +252,7 @@ mod tests {
                 ..Default::default()
             },
             num_envs: 1,
+            base_seed: None,
             max_episodes: Some(1),
             close_env_on_end: true,
             limits: RuntimeLimits::default(),

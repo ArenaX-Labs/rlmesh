@@ -40,6 +40,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         env_id: "test-env".to_string(),
         env_contract: Default::default(),
         num_envs: 1,
+        base_seed: None,
         max_episodes: Some(1),
         close_env_on_end: true,
         limits: RuntimeLimits::default(),
