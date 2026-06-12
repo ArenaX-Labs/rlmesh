@@ -40,7 +40,7 @@ reportMissingTypeStubs = false
 reportExplicitAny = false
 reportImplicitOverride = "none"
 
-pythonVersion = "3.11"
+pythonVersion = "3.10"
 pythonPlatform = "All"
 executionEnvironments = [{ root = "." }]
 
