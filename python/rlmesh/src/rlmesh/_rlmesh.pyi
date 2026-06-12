@@ -238,6 +238,19 @@ class Tensor:
         r"""
         A deep copy backed by fresh storage.
         """
+    def __dlpack__(self, *, stream: object | None = None, max_version: typing.Optional[tuple[builtins.int, builtins.int]] = None, dl_device: typing.Optional[tuple[builtins.int, builtins.int]] = None, copy: typing.Optional[builtins.bool] = None) -> object:
+        r"""
+        Export the tensor as a DLPack capsule.
+        
+        With `max_version` of `(1, 0)` or newer the capsule is a DLPack 1.0
+        `DLManagedTensorVersioned` flagged read-only; otherwise it is a
+        legacy `DLManagedTensor`. `copy=True` exports a fresh writable
+        buffer. Only `stream=None` and CPU `dl_device` are accepted.
+        """
+    def __dlpack_device__(self) -> tuple[builtins.int, builtins.int]:
+        r"""
+        DLPack device of the tensor data: `(kDLCPU, 0)`.
+        """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
 

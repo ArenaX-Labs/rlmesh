@@ -171,6 +171,63 @@ impl PyTensor {
         Ok(PyMemoryView::from(&owner)?.into_any())
     }
 
+    /// Export the tensor as a DLPack capsule.
+    ///
+    /// With `max_version` of `(1, 0)` or newer the capsule is a DLPack 1.0
+    /// `DLManagedTensorVersioned` flagged read-only; otherwise it is a
+    /// legacy `DLManagedTensor`. `copy=True` exports a fresh writable
+    /// buffer. Only `stream=None` and CPU `dl_device` are accepted.
+    #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
+    #[gen_stub(override_return_type(type_repr = "object", imports = ()))]
+    fn __dlpack__<'py>(
+        &self,
+        py: Python<'py>,
+        #[gen_stub(override_type(type_repr = "object | None", imports = ()))] stream: Option<
+            Bound<'py, PyAny>,
+        >,
+        max_version: Option<(i64, i64)>,
+        dl_device: Option<(i32, i32)>,
+        copy: Option<bool>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if stream.is_some() {
+            return Err(pyo3::exceptions::PyBufferError::new_err(
+                "stream must be None for CPU tensors",
+            ));
+        }
+        if let Some(device) = dl_device
+            && device != (i32::from(self.inner.device()), 0)
+        {
+            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
+                "cannot export to device {device:?}; only CPU (1, 0) is supported",
+            )));
+        }
+
+        let copied;
+        let (tensor, is_copy) = if copy == Some(true) {
+            copied = Tensor::from_slice(
+                &self.inner.to_contiguous_bytes(),
+                self.inner.shape(),
+                self.inner.dtype(),
+            )
+            .map_err(|err| pyo3::exceptions::PyBufferError::new_err(err.to_string()))?;
+            (&copied, true)
+        } else {
+            (&self.inner, false)
+        };
+
+        match max_version {
+            // A fresh copy is exclusively owned by the consumer, so it is
+            // exported writable; shared exports are flagged read-only.
+            Some((major, _)) if major >= 1 => super::dlpack::export_versioned(py, tensor, !is_copy),
+            _ => super::dlpack::export_legacy(py, tensor),
+        }
+    }
+
+    /// DLPack device of the tensor data: `(kDLCPU, 0)`.
+    fn __dlpack_device__(&self) -> (i32, i32) {
+        (i32::from(self.inner.device()), 0)
+    }
+
     fn tobytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner.to_contiguous_bytes())
     }

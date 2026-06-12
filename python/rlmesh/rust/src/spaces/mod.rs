@@ -1,4 +1,5 @@
 mod composite;
+mod dlpack;
 mod fundamental;
 mod sample;
 mod space;
