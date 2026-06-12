@@ -571,4 +571,63 @@ mod tests {
 
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn served_env_unix_socket_recovers_from_stale_socket_file() {
+        let dir = std::env::temp_dir().join(format!("rlmesh-env-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("env.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Leave a stale socket file behind, as a previous unclean run would.
+        // Without stale-socket cleanup, bind(2) returns AddrInUse forever.
+        let stale = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        drop(stale);
+        assert!(socket_path.exists(), "stale socket file must exist");
+
+        let addr = BindAddress::Unix {
+            path: socket_path.clone(),
+        };
+        let server = tokio::spawn({
+            let addr = addr.clone();
+            async move {
+                EnvServer::new(DummyEnv::new())
+                    .serve_with_options(
+                        addr,
+                        ServeOptions {
+                            allow_remote_shutdown: true,
+                            ..ServeOptions::default()
+                        },
+                    )
+                    .await
+            }
+        });
+
+        let address = format!("unix://{}", socket_path.display());
+        let mut client = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(client) => break client,
+                Err(err) if !server.is_finished() => {
+                    let _ = err;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("environment server did not start over stale socket: {err}"),
+            }
+        };
+
+        assert!(client.shutdown("test shutdown").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        // The socket file is unlinked after shutdown so a re-serve would succeed.
+        assert!(
+            !socket_path.exists(),
+            "socket file must be unlinked after shutdown"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

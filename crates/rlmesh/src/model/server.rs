@@ -83,9 +83,10 @@ where
 
             #[cfg(unix)]
             {
+                crate::address::remove_stale_socket(&path)?;
                 let listener =
                     UnixListener::bind(&path).map_err(|err| Error::Server(err.to_string()))?;
-                await_server_shutdown(
+                let result = await_server_shutdown(
                     tonic::transport::Server::builder()
                         .add_service(service)
                         .serve_with_incoming_shutdown(
@@ -96,7 +97,11 @@ where
                     options.drain_timeout,
                 )
                 .await
-                .map_err(|err| Error::Server(err.to_string()))
+                .map_err(|err| Error::Server(err.to_string()));
+                // Unlink the socket file on shutdown so a subsequent serve on
+                // the same path does not fail with AddrInUse.
+                let _ = std::fs::remove_file(&path);
+                result
             }
         }
     };
