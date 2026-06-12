@@ -8,6 +8,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// Classifies an [`EnvironmentError`] reported by an environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ErrorCode {
     /// No specific code was provided.
     Unspecified,
@@ -69,6 +70,7 @@ impl std::error::Error for ModelError {}
 /// [`Error::Model`] (a user [`crate::ModelHandler`] declined a request). Use
 /// [`Error::is_recoverable`] to decide whether to retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Error {
     /// An address or bind target could not be parsed.
     Address(String),
@@ -171,6 +173,8 @@ fn map_env_error_code(code: EnvErrorCode) -> ErrorCode {
         EnvErrorCode::Crashed => ErrorCode::Crashed,
         EnvErrorCode::Cancelled => ErrorCode::Cancelled,
         EnvErrorCode::Closed => ErrorCode::Closed,
+        // EnvErrorCode is #[non_exhaustive]; map unknown codes conservatively.
+        _ => ErrorCode::Internal,
     }
 }
 
@@ -216,6 +220,8 @@ impl From<rlmesh_grpc::error::Error> for Error {
                 rlmesh_grpc::error::TransportError::Status { code, message } => {
                     Self::Connection(format!("{code:?}: {message}"))
                 }
+                // TransportError is #[non_exhaustive].
+                other => Self::Connection(other.to_string()),
             },
             rlmesh_grpc::error::Error::Protocol(error) => Self::Internal(error.to_string()),
             rlmesh_grpc::error::Error::Environment(error) => {
@@ -229,6 +235,8 @@ impl From<rlmesh_grpc::error::Error> for Error {
             rlmesh_grpc::error::Error::Cancelled(message) => Self::Internal(message),
             rlmesh_grpc::error::Error::Server(error) => Self::Server(error.to_string()),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
+            // rlmesh_grpc::error::Error is #[non_exhaustive].
+            other => Self::Internal(other.to_string()),
         }
     }
 }

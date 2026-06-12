@@ -159,6 +159,8 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             EnvError::new(EnvErrorCode::InvalidAction, message)
         }
         spaces::EnvRuntimeError::Runtime(message) => EnvError::new(EnvErrorCode::Internal, message),
+        // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
+        other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
 }
 

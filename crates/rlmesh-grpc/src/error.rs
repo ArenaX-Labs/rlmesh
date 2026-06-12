@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Top-level error type for rlmesh-grpc operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Transport-level error (connection, I/O, etc.)
     #[error("transport error: {0}")]
@@ -95,6 +96,7 @@ pub fn status_to_grpc_error(status: tonic::Status) -> Error {
 
 /// Transport-level errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TransportError {
     /// I/O error
     #[error("io error: {0}")]
@@ -136,6 +138,7 @@ pub enum TransportError {
 
 /// Protocol-level errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     /// Failed to encode message
     #[error("encode error: {0}")]
@@ -183,6 +186,7 @@ impl std::fmt::Display for EnvError {
 
 /// Environment error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EnvErrorCode {
     /// Unspecified error
     Unspecified,
@@ -318,6 +322,7 @@ impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
 
 /// Server-specific errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ServerError {
     /// Server already running
     #[error("server already running")]
@@ -338,6 +343,7 @@ pub enum ServerError {
 
 /// Client-specific errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ClientError {
     /// Not connected
     #[error("not connected")]

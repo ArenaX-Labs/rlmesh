@@ -42,6 +42,8 @@ pub fn to_py_err(err: Error) -> PyErr {
         Error::Model(e) => PyRuntimeError::new_err(format!("model error: {}", e.message)),
         Error::Server(message) => PyRuntimeError::new_err(format!("server error: {message}")),
         Error::Internal(message) => PyRuntimeError::new_err(message),
+        // rlmesh::Error is #[non_exhaustive].
+        other => PyRuntimeError::new_err(other.to_string()),
     }
 }
 
@@ -59,6 +61,8 @@ fn env_error_to_py(err: EnvironmentError) -> PyErr {
         ErrorCode::Cancelled => PyRuntimeError::new_err(msg),
         ErrorCode::Closed => EnvironmentException::new_err(msg),
         ErrorCode::Unspecified => EnvironmentException::new_err(msg),
+        // rlmesh::ErrorCode is #[non_exhaustive].
+        _ => EnvironmentException::new_err(msg),
     }
 }
 /// Format error code for display.
@@ -73,6 +77,8 @@ fn format_error_code(code: ErrorCode) -> &'static str {
         ErrorCode::Crashed => "CRASHED",
         ErrorCode::Cancelled => "CANCELLED",
         ErrorCode::Closed => "CLOSED",
+        // rlmesh::ErrorCode is #[non_exhaustive].
+        _ => "UNKNOWN",
     }
 }
 
