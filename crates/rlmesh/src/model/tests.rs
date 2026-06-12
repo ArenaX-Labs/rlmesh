@@ -167,6 +167,55 @@ impl crate::SingleEnv for SmokeEnv {
     }
 }
 
+/// A single-env that records the reset seed it was asked to use, and ends each
+/// episode after one step so a bounded run terminates promptly.
+struct SeedRecordingEnv {
+    inner: SmokeEnv,
+    reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
+}
+
+#[async_trait]
+impl crate::SingleEnv for SeedRecordingEnv {
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        crate::SingleEnv::observation_space(&self.inner)
+    }
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        crate::SingleEnv::action_space(&self.inner)
+    }
+    fn env_contract(&self) -> &spaces::EnvContract {
+        crate::SingleEnv::env_contract(&self.inner)
+    }
+
+    async fn reset(
+        &mut self,
+        req: spaces::request::ResetRequest,
+    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+        self.reset_seeds.lock().await.push(req.seed);
+        crate::SingleEnv::reset(&mut self.inner, req).await
+    }
+
+    async fn step(
+        &mut self,
+        req: spaces::request::StepRequest,
+    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::step(&mut self.inner, req).await
+    }
+
+    async fn render(
+        &mut self,
+        req: spaces::RenderRequest,
+    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::render(&mut self.inner, req).await
+    }
+
+    async fn close(
+        &mut self,
+        req: spaces::CloseRequest,
+    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::close(&mut self.inner, req).await
+    }
+}
+
 struct SmokeModel {
     predicts: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
@@ -213,6 +262,68 @@ async fn run_local_smoke_uses_in_process_model() {
     assert!(predicts.load(Ordering::SeqCst) >= 1);
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     env_server.abort();
+}
+
+#[tokio::test]
+async fn user_set_base_seed_reaches_the_env_reset_seeds() {
+    async fn run_with_base_seed(base_seed: Option<i64>) -> Vec<Option<i64>> {
+        let reset_seeds = Arc::new(Mutex::new(Vec::new()));
+        let env = SeedRecordingEnv {
+            inner: SmokeEnv::new(),
+            reset_seeds: Arc::clone(&reset_seeds),
+        };
+        // Bind first so the listener is accepting before run_local connects.
+        let bound = crate::EnvServer::new(crate::SingleEnvAdapter::new(env))
+            .bind(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        let mut options = RunLocalOptions::parse(&address).unwrap().for_episodes(1);
+        options.base_seed = base_seed;
+
+        ModelWorker::new(SmokeModel {
+            predicts: Arc::new(AtomicUsize::new(0)),
+            closes: Arc::new(AtomicUsize::new(0)),
+        })
+        .run_local_async(options)
+        .await
+        .unwrap();
+
+        // The served env stays up across client sessions (see the close()
+        // contract); abort the server task now that the run is done.
+        server.abort();
+
+        reset_seeds.lock().await.clone()
+    }
+
+    // With a user-set base_seed, the env's first reset receives a concrete
+    // (deterministic) seed rather than None.
+    let seeded = run_with_base_seed(Some(4242)).await;
+    assert!(
+        seeded.first().map(Option::is_some).unwrap_or(false),
+        "expected a concrete reset seed, got {seeded:?}"
+    );
+
+    // Determinism: the same base_seed yields the same reset seed.
+    let seeded_again = run_with_base_seed(Some(4242)).await;
+    assert_eq!(
+        seeded.first(),
+        seeded_again.first(),
+        "the same base_seed must produce the same reset seed"
+    );
+
+    // Without a base_seed, no seed is injected (the env decides).
+    let unseeded = run_with_base_seed(None).await;
+    assert_eq!(
+        unseeded.first(),
+        Some(&None),
+        "no base_seed must leave the reset seed unset, got {unseeded:?}"
+    );
 }
 
 #[test]
