@@ -2707,7 +2707,7 @@
       },
       "Value": {
         "kind": "type alias",
-        "signature": "Value = PrimitiveValue | _Tensor | list['Value'] | tuple['Value', ...] | dict[str, 'Value']",
+        "signature": "Value = Union[PrimitiveValue, '_Tensor', list['Value'], tuple['Value', ...], dict[str, 'Value']]",
         "stability": "Stable"
       },
       "VectorEnvLike": {

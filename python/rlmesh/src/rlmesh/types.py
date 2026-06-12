@@ -3,14 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, SupportsFloat, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    SupportsFloat,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
-from ._rlmesh import Tensor as _Tensor
+if TYPE_CHECKING:
+    # Typing-only import so this pure-protocol module stays importable without
+    # the compiled extension (e.g. for unit tests against the typing surface).
+    from ._rlmesh import Tensor as _Tensor
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
-Value: TypeAlias = (
-    PrimitiveValue | _Tensor | list["Value"] | tuple["Value", ...] | dict[str, "Value"]
-)
+# ``_Tensor`` is a string forward reference so this module imports without the
+# compiled extension; ``Union`` (unlike ``|``) accepts string members at runtime.
+Value: TypeAlias = Union[
+    PrimitiveValue,
+    "_Tensor",
+    list["Value"],
+    tuple["Value", ...],
+    dict[str, "Value"],
+]
 Metadata: TypeAlias = Mapping[str, object]
 InfoDict: TypeAlias = dict[str, object]
 
