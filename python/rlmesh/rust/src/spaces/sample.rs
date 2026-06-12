@@ -1,9 +1,14 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
+use pyo3::types::{PyAny, PyDict, PyTuple};
 use rand::RngExt;
 use rand::rngs::StdRng;
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec};
+use rlmesh_spaces::{
+    BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec, Scalar, encode_scalars,
+};
+
+use crate::spaces::tensor::make_tensor;
+use crate::spaces::utils::dtype_name;
 
 pub(super) fn sample_space_value<'py>(
     py: Python<'py>,
@@ -28,9 +33,9 @@ pub(super) fn sample_space_value<'py>(
         }
         SpaceKind::MultiBinary(spec) => {
             let shape = multi_binary_shape(space, spec);
-            sample_boolean_array(py, &shape, rng)
+            sample_boolean_array(py, space, &shape, rng)
         }
-        SpaceKind::MultiDiscrete(spec) => sample_multi_discrete(py, spec, rng),
+        SpaceKind::MultiDiscrete(spec) => sample_multi_discrete(py, space, spec, rng),
         SpaceKind::Text(spec) => sample_text(py, spec, rng),
         SpaceKind::Dict(spec) => sample_dict(py, spec, rng),
         SpaceKind::Tuple(spec) => sample_tuple(py, spec, rng),
@@ -48,16 +53,38 @@ fn sample_box<'py>(
         .iter()
         .map(|dim| *dim as usize)
         .collect::<Vec<_>>();
-    let numel = shape.iter().product::<usize>().max(1);
-    let (low, high) = box_bounds(spec, numel);
-    let values = low
+    let numel = shape.iter().product::<usize>();
+    let (low, high) = box_bounds(spec, numel.max(1));
+    let scalars = low
         .iter()
         .zip(high.iter())
-        .map(|(low, high)| {
-            sample_box_scalar(py, rng, *low, *high, space.dtype).map(|value| value.unbind())
-        })
+        .take(numel)
+        .map(|(low, high)| sample_box_scalar(rng, *low, *high, space.dtype))
         .collect::<PyResult<Vec<_>>>()?;
-    reshape_values(py, &values, &shape)
+    tensor_from_scalars(py, &scalars, shape, space.dtype)
+}
+
+/// Encode sampled scalars straight into a native Tensor buffer, avoiding a
+/// round trip through per-element Python objects, nested lists, and a
+/// Python-side struct.pack.
+fn tensor_from_scalars<'py>(
+    py: Python<'py>,
+    scalars: &[Scalar],
+    shape: Vec<usize>,
+    dtype: DType,
+) -> PyResult<Bound<'py, PyAny>> {
+    let dtype = normalize_dtype(dtype);
+    let bytes = encode_scalars(scalars, dtype)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    make_tensor(py, bytes, shape, dtype_name(dtype as i32))
+}
+
+/// The sampler treats `Unspecified` specs as float32, matching the codecs.
+fn normalize_dtype(dtype: DType) -> DType {
+    match dtype {
+        DType::Unspecified => DType::Float32,
+        other => other,
+    }
 }
 
 fn box_bounds(spec: &BoxSpec, numel: usize) -> (Vec<f64>, Vec<f64>) {
@@ -92,13 +119,21 @@ fn repeat_or_truncate(values: &[f64], len: usize, default: f64) -> Vec<f64> {
     }
 }
 
-fn sample_box_scalar<'py>(
-    py: Python<'py>,
-    rng: &mut StdRng,
-    low: f64,
-    high: f64,
-    dtype: DType,
-) -> PyResult<Bound<'py, PyAny>> {
+fn sample_box_scalar(rng: &mut StdRng, low: f64, high: f64, dtype: DType) -> PyResult<Scalar> {
+    if is_integer_dtype(dtype) {
+        return sample_integer_box_scalar(rng, low, high, dtype);
+    }
+
+    let value = sample_continuous(rng, low, high)?;
+    if matches!(dtype, DType::Bool) {
+        return Ok(Scalar::Bool(value.round() != 0.0));
+    }
+    Ok(Scalar::Float(value))
+}
+
+/// Sample a continuous value within `[low, high]`, falling back to
+/// exponential/normal sampling for half- and un-bounded ranges.
+fn sample_continuous(rng: &mut StdRng, low: f64, high: f64) -> PyResult<f64> {
     let value = if low.is_finite() && high.is_finite() {
         if low > high {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -113,20 +148,70 @@ fn sample_box_scalar<'py>(
     } else {
         normal_sample(rng)
     };
+    Ok(value)
+}
 
-    match dtype {
-        DType::Bool => Ok(pyo3::types::PyBool::new(py, value.round() != 0.0)
-            .to_owned()
-            .into_any()),
+/// Sample an integer-dtype Box element with a uniform integer distribution
+/// over `[ceil(low), floor(high)]`, matching Gymnasium instead of rounding a
+/// continuous uniform (which biases the endpoints).
+fn sample_integer_box_scalar(
+    rng: &mut StdRng,
+    low: f64,
+    high: f64,
+    dtype: DType,
+) -> PyResult<Scalar> {
+    // Clamp the open ends to the dtype's representable range so an unbounded
+    // integer Box still samples a finite value.
+    let (dtype_lo, dtype_hi) = integer_dtype_bounds(dtype);
+    let lo = if low.is_finite() {
+        low.ceil()
+    } else {
+        dtype_lo
+    };
+    let hi = if high.is_finite() {
+        high.floor()
+    } else {
+        dtype_hi
+    };
+    if lo > hi {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "cannot sample integer Box element with low {low} greater than high {high}"
+        )));
+    }
+    let lo = lo as i64;
+    let hi = hi as i64;
+    Ok(Scalar::Int(rng.random_range(lo..=hi)))
+}
+
+fn is_integer_dtype(dtype: DType) -> bool {
+    matches!(
+        dtype,
         DType::Uint8
-        | DType::Int8
-        | DType::Int16
-        | DType::Int32
-        | DType::Int64
-        | DType::Uint16
-        | DType::Uint32
-        | DType::Uint64 => Ok((value.round() as i64).into_pyobject(py)?.into_any()),
-        _ => Ok(value.into_pyobject(py)?.into_any()),
+            | DType::Int8
+            | DType::Int16
+            | DType::Int32
+            | DType::Int64
+            | DType::Uint16
+            | DType::Uint32
+            | DType::Uint64
+    )
+}
+
+/// Conservative finite sampling bounds for an unbounded integer Box element.
+/// These stay well within `i64` so `random_range` cannot overflow.
+fn integer_dtype_bounds(dtype: DType) -> (f64, f64) {
+    match dtype {
+        DType::Bool => (0.0, 1.0),
+        DType::Uint8 => (0.0, u8::MAX as f64),
+        DType::Int8 => (i8::MIN as f64, i8::MAX as f64),
+        DType::Int16 => (i16::MIN as f64, i16::MAX as f64),
+        DType::Uint16 => (0.0, u16::MAX as f64),
+        DType::Int32 => (i32::MIN as f64, i32::MAX as f64),
+        DType::Uint32 => (0.0, u32::MAX as f64),
+        // Keep i64/u64 within a range that round-trips through f64 exactly.
+        DType::Int64 => (-(1i64 << 53) as f64, (1i64 << 53) as f64),
+        DType::Uint64 => (0.0, (1u64 << 53) as f64),
+        _ => (-(1i64 << 53) as f64, (1i64 << 53) as f64),
     }
 }
 
@@ -154,23 +239,20 @@ fn multi_binary_shape(space: &SpaceSpec, spec: &rlmesh_spaces::MultiBinarySpec) 
 
 fn sample_boolean_array<'py>(
     py: Python<'py>,
+    space: &SpaceSpec,
     shape: &[usize],
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let numel = shape.iter().product::<usize>().max(1);
-    let values = (0..numel)
-        .map(|_| {
-            Ok(((rng.random::<bool>()) as i64)
-                .into_pyobject(py)?
-                .into_any()
-                .unbind())
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    reshape_values(py, &values, shape)
+    let numel = shape.iter().product::<usize>();
+    let scalars = (0..numel)
+        .map(|_| Scalar::Int(i64::from(rng.random::<bool>())))
+        .collect::<Vec<_>>();
+    tensor_from_scalars(py, &scalars, shape.to_vec(), space.dtype)
 }
 
 fn sample_multi_discrete<'py>(
     py: Python<'py>,
+    space: &SpaceSpec,
     spec: &rlmesh_spaces::MultiDiscreteSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
@@ -185,7 +267,7 @@ fn sample_multi_discrete<'py>(
             .collect::<Vec<_>>(),
         None => vec![],
     };
-    let values = nvec
+    let scalars = nvec
         .iter()
         .map(|n| {
             if *n == 0 {
@@ -193,18 +275,16 @@ fn sample_multi_discrete<'py>(
                     "cannot sample MultiDiscrete space with a zero-sized dimension",
                 ));
             }
-            Ok(rng
-                .random_range(0..(*n as i64))
-                .into_pyobject(py)?
-                .into_any()
-                .unbind())
+            Ok(Scalar::Int(rng.random_range(0..(*n as i64))))
         })
         .collect::<PyResult<Vec<_>>>()?;
-    if let Some(MultiDiscreteNvec::Shaped(matrix)) = &spec.nvec {
-        let shape = [matrix.len(), matrix.first().map_or(0, |row| row.len())];
-        return reshape_values(py, &values, &shape);
-    }
-    reshape_values(py, &values, &[nvec.len()])
+    let shape = match &spec.nvec {
+        Some(MultiDiscreteNvec::Shaped(matrix)) => {
+            vec![matrix.len(), matrix.first().map_or(0, |row| row.len())]
+        }
+        _ => vec![nvec.len()],
+    };
+    tensor_from_scalars(py, &scalars, shape, space.dtype)
 }
 
 fn sample_text<'py>(
@@ -252,44 +332,4 @@ fn sample_tuple<'py>(
         .map(|child| sample_space_value(py, child, rng).map(|value| value.unbind()))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, values)?.into_any())
-}
-
-fn reshape_values<'py>(
-    py: Python<'py>,
-    values: &[Py<PyAny>],
-    shape: &[usize],
-) -> PyResult<Bound<'py, PyAny>> {
-    if shape.is_empty() {
-        return Ok(values
-            .first()
-            .map(|value| value.clone_ref(py))
-            .unwrap_or_else(|| py.None())
-            .bind(py)
-            .clone());
-    }
-    let mut index = 0;
-    reshape_values_recursive(py, values, shape, &mut index)
-}
-
-fn reshape_values_recursive<'py>(
-    py: Python<'py>,
-    values: &[Py<PyAny>],
-    shape: &[usize],
-    index: &mut usize,
-) -> PyResult<Bound<'py, PyAny>> {
-    if shape.is_empty() {
-        let value = values
-            .get(*index)
-            .map(|value| value.clone_ref(py))
-            .unwrap_or_else(|| py.None());
-        *index += 1;
-        return Ok(value.bind(py).clone());
-    }
-
-    let items = (0..shape[0])
-        .map(|_| {
-            reshape_values_recursive(py, values, &shape[1..], index).map(|value| value.unbind())
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok(PyList::new(py, items)?.into_any())
 }

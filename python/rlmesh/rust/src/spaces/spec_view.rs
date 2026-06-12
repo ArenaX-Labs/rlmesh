@@ -595,6 +595,31 @@ mod tests {
     }
 
     #[test]
+    fn box_sample_returns_native_tensor() {
+        use rlmesh_spaces::spaces::BoxSpaceBuilder;
+
+        Python::attach(|py| {
+            let spec = BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2, 3])
+                .dtype(rlmesh_spaces::DType::Float32)
+                .build()
+                .unwrap();
+            let space = PySpace::new(spec);
+
+            // The sampler now builds a Tensor buffer directly rather than
+            // emitting nested Python lists for Python to repack.
+            let sample = space.sample(py).unwrap();
+            assert!(
+                sample
+                    .extract::<pyo3::PyRef<'_, crate::spaces::tensor::PyTensor>>()
+                    .is_ok()
+            );
+            let shape: Vec<usize> = sample.getattr("shape").unwrap().extract().unwrap();
+            assert_eq!(shape, vec![2, 3]);
+            assert!(space.contains(py, &sample));
+        });
+    }
+
+    #[test]
     fn malformed_discrete_sample_errors_without_poisoning() {
         use rlmesh_spaces::DType;
         use rlmesh_spaces::DiscreteSpec;
