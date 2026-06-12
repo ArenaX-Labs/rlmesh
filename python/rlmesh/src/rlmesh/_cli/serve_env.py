@@ -138,7 +138,7 @@ def serve_from_args(args: ServeArgs) -> int:
             if path is None:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
-                path = f"/tmp/rlmesh-{_socket_label(source_name)}.sock"
+                path = _default_unix_socket_path(source_name)
             server = EnvServer(env, path=path, transport="unix")
         else:
             server = (
@@ -279,6 +279,31 @@ def _json_object(value: str) -> dict[str, Any]:
 
 def _socket_label(value: str) -> str:
     return re.sub(r"[^a-z0-9_-]+", "_", value.lower()).strip("_") or "env"
+
+
+def _default_unix_socket_path(source_name: str) -> str:
+    """Return a per-user private default path for the unix socket.
+
+    A predictable world-readable name in shared ``/tmp`` lets another local
+    user squat the socket or pre-bind it. Prefer ``$XDG_RUNTIME_DIR`` (already
+    per-user and 0700) and otherwise create a private ``0700`` temp directory,
+    so the default socket is not reachable or hijackable by other users.
+    """
+    import tempfile
+
+    filename = f"rlmesh-{_socket_label(source_name)}.sock"
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        base = os.path.join(runtime_dir, "rlmesh")
+        try:
+            os.makedirs(base, mode=0o700, exist_ok=True)
+            return os.path.join(base, filename)
+        except OSError:
+            pass
+
+    private_dir = tempfile.mkdtemp(prefix="rlmesh-")
+    return os.path.join(private_dir, filename)
 
 
 if __name__ == "__main__":  # pragma: no cover

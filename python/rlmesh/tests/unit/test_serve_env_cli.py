@@ -180,3 +180,43 @@ def _server_factory(captured: dict[str, object]) -> type[object]:
             captured["served"] = True
 
     return FakeServer
+
+
+def test_default_unix_socket_path_uses_xdg_runtime_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    import os
+
+    from rlmesh._cli import serve_env
+
+    runtime_dir = tmp_path / "run"
+    runtime_dir.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+
+    path = serve_env._default_unix_socket_path("CartPole-v1")
+
+    assert path.startswith(str(runtime_dir))
+    assert path.endswith("rlmesh-cartpole-v1.sock")
+    parent = os.path.dirname(path)
+    assert os.path.isdir(parent)
+    assert (os.stat(parent).st_mode & 0o777) == 0o700
+
+
+def test_default_unix_socket_path_avoids_shared_tmp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import stat
+
+    from rlmesh._cli import serve_env
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    path = serve_env._default_unix_socket_path("CartPole-v1")
+
+    parent = os.path.dirname(path)
+    # Must not be the predictable, world-readable /tmp/rlmesh-*.sock path.
+    assert path != "/tmp/rlmesh-cartpole-v1.sock"
+    assert parent != "/tmp"
+    mode = stat.S_IMODE(os.stat(parent).st_mode)
+    assert mode == 0o700
