@@ -390,6 +390,22 @@ def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
     assert env.close_calls == 1
 
 
+@pytest.mark.parametrize("spec_id", [None, 123, object()])
+def test_env_contract_id_falls_back_for_non_string_spec_id(spec_id: object) -> None:
+    """Review finding #104: a non-str spec.id must use the documented sentinel.
+
+    Previously extract::<String>().unwrap_or_default() published an empty-string
+    contract id; the documented fallback is "UnknownEnv-v1".
+    """
+    env = TinyEnv()
+    env.spec = SimpleNamespace(id=spec_id)  # type: ignore[attr-defined]
+    server = env_server(env)
+    try:
+        assert server.env_contract.id == "UnknownEnv-v1"
+    finally:
+        server.shutdown()
+
+
 def test_env_server_vector_contract_reports_num_envs() -> None:
     env = TinySpecVectorEnv()
     server = env_server(env)

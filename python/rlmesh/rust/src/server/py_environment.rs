@@ -137,7 +137,12 @@ impl PyEnvironment {
             let env_id = if env_ref.hasattr("spec")? {
                 let spec = env_ref.getattr("spec")?;
                 if !spec.is_none() && spec.hasattr("id")? {
-                    spec.getattr("id")?.extract::<String>().unwrap_or_default()
+                    // spec.id is a non-str (None, custom spec object, ...): fall
+                    // back to the documented sentinel rather than an empty-string
+                    // contract id (review finding #104).
+                    spec.getattr("id")?
+                        .extract::<String>()
+                        .unwrap_or_else(|_| String::from("UnknownEnv-v1"))
                 } else {
                     String::from("UnknownEnv-v1")
                 }
