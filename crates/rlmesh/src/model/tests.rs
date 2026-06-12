@@ -126,9 +126,9 @@ impl crate::SingleEnv for SmokeEnv {
 
     async fn reset(
         &mut self,
-        _req: spaces::ResetRequest,
-    ) -> std::result::Result<spaces::ResetResult, spaces::EnvRuntimeError> {
-        Ok(spaces::ResetResult {
+        _req: spaces::request::ResetRequest,
+    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::ResetResult {
             observation: Some(spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
             )),
@@ -139,9 +139,9 @@ impl crate::SingleEnv for SmokeEnv {
 
     async fn step(
         &mut self,
-        _req: spaces::StepRequest,
-    ) -> std::result::Result<spaces::StepResult, spaces::EnvRuntimeError> {
-        Ok(spaces::StepResult {
+        _req: spaces::request::StepRequest,
+    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::StepResult {
             observation: Some(spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![1], vec![1], spaces::DType::Uint8).unwrap(),
             )),
@@ -162,8 +162,8 @@ impl crate::SingleEnv for SmokeEnv {
     async fn close(
         &mut self,
         _req: spaces::CloseRequest,
-    ) -> std::result::Result<spaces::CloseResult, spaces::EnvRuntimeError> {
-        Ok(spaces::CloseResult)
+    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::CloseResult)
     }
 }
 

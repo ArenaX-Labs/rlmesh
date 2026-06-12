@@ -223,6 +223,36 @@ fn python_binding_cargo_no_longer_depends_on_rlmesh_proto() {
 }
 
 #[test]
+fn curated_spaces_facade_separates_the_two_request_families() {
+    // The crate-root request types are the vectorized env-layer family.
+    let env_layer = crate::ResetRequest {
+        seeds: vec![1, 2, 3],
+        ..Default::default()
+    };
+    assert_eq!(env_layer.seeds.len(), 3);
+
+    // The single-env request family is namespaced under `spaces::request`,
+    // resolving the previous same-named `rlmesh::ResetRequest` vs
+    // `rlmesh::spaces::ResetRequest` glob collision.
+    let single_env = crate::spaces::request::ResetRequest {
+        seed: Some(7),
+        ..Default::default()
+    };
+    assert_eq!(single_env.seed, Some(7));
+
+    // The two families are genuinely distinct types reachable through curated
+    // (non-glob) paths.
+    fn assert_distinct<A: 'static, B: 'static>() {
+        assert_ne!(
+            std::any::TypeId::of::<A>(),
+            std::any::TypeId::of::<B>(),
+            "env-layer and single-env ResetRequest must be distinct types"
+        );
+    }
+    assert_distinct::<crate::ResetRequest, crate::spaces::request::ResetRequest>();
+}
+
+#[test]
 fn python_server_uses_facade_env_boundary() {
     let py_environment = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

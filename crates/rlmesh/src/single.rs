@@ -8,13 +8,13 @@ pub trait SingleEnv: Send + Sync {
 
     async fn reset(
         &mut self,
-        req: spaces::ResetRequest,
-    ) -> std::result::Result<spaces::ResetResult, spaces::EnvRuntimeError>;
+        req: spaces::request::ResetRequest,
+    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError>;
 
     async fn step(
         &mut self,
-        req: spaces::StepRequest,
-    ) -> std::result::Result<spaces::StepResult, spaces::EnvRuntimeError>;
+        req: spaces::request::StepRequest,
+    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError>;
 
     async fn render(
         &mut self,
@@ -24,7 +24,7 @@ pub trait SingleEnv: Send + Sync {
     async fn close(
         &mut self,
         req: spaces::CloseRequest,
-    ) -> std::result::Result<spaces::CloseResult, spaces::EnvRuntimeError>;
+    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError>;
 }
 
 pub struct SingleEnvAdapter<E> {
@@ -73,7 +73,7 @@ impl<E: SingleEnv> Env for SingleEnvAdapter<E> {
     ) -> std::result::Result<ResetResult, spaces::EnvRuntimeError> {
         let result = self
             .inner
-            .reset(spaces::ResetRequest {
+            .reset(spaces::request::ResetRequest {
                 seed: req.seeds.first().copied(),
                 options: req.options,
                 timeout_ms: req.timeout_ms,
@@ -93,7 +93,7 @@ impl<E: SingleEnv> Env for SingleEnvAdapter<E> {
     ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
         let result = self
             .inner
-            .step(spaces::StepRequest {
+            .step(spaces::request::StepRequest {
                 action: req.actions.into_iter().next(),
                 timeout_ms: req.timeout_ms,
             })
