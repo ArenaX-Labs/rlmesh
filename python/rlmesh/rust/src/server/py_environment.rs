@@ -239,17 +239,36 @@ type VectorStepResultParts<'py> = (
 fn normalize_reset_result<'py>(
     py: Python<'py>,
     result: Bound<'py, PyAny>,
+    observation_space: &SpaceSpec,
 ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     if let Ok(tuple) = result.cast::<PyTuple>()
         && tuple.len() == 2
     {
         let info = tuple.get_item(1)?;
         if info.is_none() || info.cast::<PyDict>().is_ok() {
-            return Ok((tuple.get_item(0)?, info));
+            // Ambiguity: a 2-tuple whose second element is a dict/None looks like
+            // gymnasium's (obs, info), but a legacy obs-only reset() of a
+            // Tuple(A, B) observation space returns exactly that shape as the
+            // observation. When the declared observation space is itself a
+            // 2-element Tuple we cannot tell them apart from the wire, so we
+            // honour the contract and treat the whole 2-tuple as the observation
+            // rather than silently stripping the second element as info
+            // (review finding #37). Non-tuple / differently-sized observation
+            // spaces stay unambiguous, so the (obs, info) split is kept there.
+            if !is_two_element_tuple_space(observation_space) {
+                return Ok((tuple.get_item(0)?, info));
+            }
         }
     }
 
     Ok((result, PyDict::new(py).into_any()))
+}
+
+fn is_two_element_tuple_space(space: &SpaceSpec) -> bool {
+    matches!(
+        space.spec.as_ref(),
+        Some(rlmesh_spaces::spaces::SpaceKind::Tuple(spec)) if spec.spaces.len() == 2
+    )
 }
 
 fn normalize_single_step_result<'py>(
@@ -427,7 +446,7 @@ impl PyEnvironment {
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
                 let _ = call_guard.finish(0);
 
-                let (obs, info) = normalize_reset_result(py, result)?;
+                let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
                 let encode_guard = profiler.start("server.reset.encode_obs");
                 let observation = py_any_to_space_value_with_backend(
@@ -665,7 +684,7 @@ impl PyEnvironment {
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
                 let _ = call_guard.finish(0);
 
-                let (obs, info) = normalize_reset_result(py, result)?;
+                let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
                 let encode_guard = profiler.start("server.reset.encode_obs");
                 let observations = py_any_to_batched_space_values_with_backend(
@@ -992,12 +1011,25 @@ fn native_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlmesh_spaces::spaces::{DiscreteBuilder, TupleSpaceBuilder};
+
+    fn discrete_space() -> SpaceSpec {
+        DiscreteBuilder::new(8).build().unwrap()
+    }
+
+    fn tuple_two_space() -> SpaceSpec {
+        TupleSpaceBuilder::new()
+            .with(DiscreteBuilder::new(8).build().unwrap())
+            .with(DiscreteBuilder::new(8).build().unwrap())
+            .build()
+            .unwrap()
+    }
 
     #[test]
     fn legacy_reset_obs_only_gets_empty_info() {
         Python::attach(|py| {
             let result = 7i64.into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result).unwrap();
+            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
 
             assert_eq!(obs.extract::<i64>().unwrap(), 7);
             assert!(info.cast::<PyDict>().unwrap().is_empty());
@@ -1010,7 +1042,7 @@ mod tests {
             let info = PyDict::new(py);
             info.set_item("seed", 123).unwrap();
             let result = (7i64, info).into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result).unwrap();
+            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
 
             assert_eq!(obs.extract::<i64>().unwrap(), 7);
             assert_eq!(
@@ -1023,6 +1055,24 @@ mod tests {
                     .unwrap(),
                 123
             );
+        });
+    }
+
+    #[test]
+    fn legacy_obs_only_two_tuple_is_not_split_for_tuple_space() {
+        // Review finding #37: a legacy obs-only reset() of a Tuple(A, B) space
+        // returns (a, b); the second element (a dict here) must not be stripped
+        // as info. The whole 2-tuple is the observation.
+        Python::attach(|py| {
+            let second = PyDict::new(py);
+            second.set_item("pos", 1).unwrap();
+            let result = (7i64, second).into_pyobject(py).unwrap().into_any();
+            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
+
+            let obs_tuple = obs.cast::<PyTuple>().unwrap();
+            assert_eq!(obs_tuple.len(), 2);
+            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
+            assert!(info.cast::<PyDict>().unwrap().is_empty());
         });
     }
 
