@@ -1217,7 +1217,7 @@ dependencies = [
 dev = [
     { name = "basedpyright" },
     { name = "pytest" },
-    { name = "rlmesh", extra = ["bfloat16", "gymnasium", "numpy", "torch"] },
+    { name = "rlmesh", extra = ["bfloat16", "gymnasium", "jax", "numpy", "torch"] },
     { name = "rlmesh-api-surface" },
     { name = "rlmesh-system" },
     { name = "rlmesh-system-fixtures" },
@@ -1242,7 +1242,7 @@ requires-dist = [{ name = "rlmesh", editable = "python/rlmesh" }]
 dev = [
     { name = "basedpyright", specifier = "==1.36.1" },
     { name = "pytest", specifier = "==8.4.2" },
-    { name = "rlmesh", extras = ["gymnasium", "numpy", "torch", "bfloat16"], editable = "python/rlmesh" },
+    { name = "rlmesh", extras = ["gymnasium", "numpy", "torch", "bfloat16", "jax"], editable = "python/rlmesh" },
     { name = "rlmesh-api-surface", editable = "tools/rlmesh_api_surface" },
     { name = "rlmesh-system", editable = "tools/rlmesh_system" },
     { name = "rlmesh-system-fixtures", editable = "tools/rlmesh_system_fixtures" },
