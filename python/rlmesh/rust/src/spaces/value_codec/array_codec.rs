@@ -105,6 +105,34 @@ fn encode_with_numpy(
 
 fn encode_without_numpy(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     if let Some(tensor) = extract_tensor(value)? {
+        let expected = normalize_dtype(resolve_dtype(space.dtype));
+        let actual = normalize_dtype(tensor.inner.dtype());
+        if actual != expected {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tensor dtype {} does not match space dtype {}",
+                actual.name(),
+                expected.name(),
+            )));
+        }
+
+        // The bytes are reinterpreted against the space's element layout, so a
+        // tensor that is neither a single sample nor a whole number of samples
+        // would silently misdecode. Reject those instead of shipping garbage.
+        let base_numel = element_count(&shape_to_usize(&space.shape)?);
+        let tensor_numel = tensor.inner.numel();
+        if base_numel == 0 {
+            if tensor_numel != 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "tensor has {tensor_numel} elements but the space is empty",
+                )));
+            }
+        } else if !tensor_numel.is_multiple_of(base_numel) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tensor element count {tensor_numel} is not a multiple of the space \
+                 element count {base_numel}",
+            )));
+        }
+
         return Ok(tensor.inner.to_contiguous_bytes().into_owned());
     }
     let mut flattened = Vec::new();
@@ -287,5 +315,65 @@ fn scalar_to_object(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
         Scalar::Bool(flag) => Ok(PyBool::new(py, *flag).to_owned().into_any().unbind()),
         Scalar::Int(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
         Scalar::Float(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::ValueBackend;
+    use super::encode_array_like_value_with_backend;
+    use crate::spaces::tensor::wrap_native_tensor;
+    use pyo3::Python;
+    use rlmesh_spaces::Tensor;
+    use rlmesh_spaces::spaces::BoxSpaceBuilder;
+
+    #[test]
+    fn encode_without_numpy_rejects_dtype_mismatched_tensor() {
+        Python::attach(|py| {
+            let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![3])
+                .dtype(rlmesh_spaces::DType::Int32)
+                .build()
+                .unwrap();
+
+            // A float32 tensor whose bytes would otherwise be reinterpreted as
+            // int32 and pass bound checks.
+            let tensor = Tensor::from_slice(
+                &1.0f32.to_le_bytes().repeat(3),
+                &[3],
+                rlmesh_spaces::DType::Float32,
+            )
+            .unwrap();
+            let value = wrap_native_tensor(py, tensor).unwrap();
+
+            let err =
+                encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Native)
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("does not match space dtype"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn encode_without_numpy_accepts_matching_tensor() {
+        Python::attach(|py| {
+            let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![3])
+                .dtype(rlmesh_spaces::DType::Int32)
+                .build()
+                .unwrap();
+            let tensor = Tensor::from_slice(
+                &1i32.to_le_bytes().repeat(3),
+                &[3],
+                rlmesh_spaces::DType::Int32,
+            )
+            .unwrap();
+            let value = wrap_native_tensor(py, tensor).unwrap();
+
+            let bytes =
+                encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Native)
+                    .unwrap();
+            assert_eq!(bytes.len(), 3 * 4);
+        });
     }
 }
