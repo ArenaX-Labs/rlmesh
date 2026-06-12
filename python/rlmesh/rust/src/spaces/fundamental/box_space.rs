@@ -1,8 +1,8 @@
 use crate::spaces::utils::*;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::spaces::*;
-use rlmesh_spaces::v1::{AxiswiseBounds, BoxSpec, UniformBounds, box_spec};
+use rlmesh_spaces::spaces::*;
+use rlmesh_spaces::{AxiswiseBounds, BoxSpec, UniformBounds, box_spec};
 
 pub fn make_box<'py>(
     py: Python<'py>,
@@ -136,7 +136,7 @@ fn build_box_bounds<'py>(
 
             return Ok(BoxSpec {
                 bounds: Some(box_spec::Bounds::Elementwise(
-                    rlmesh_spaces::v1::ElementwiseBounds {
+                    rlmesh_spaces::ElementwiseBounds {
                         low: lo_vec,
                         high: hi_vec,
                     },
@@ -171,8 +171,8 @@ mod tests {
     use crate::spaces::utils::import_gym;
     use pyo3::Python;
     use pyo3::types::PyAnyMethods;
-    use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-    use rlmesh_spaces::v1::{BoxSpec, DType, box_spec};
+    use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
+    use rlmesh_spaces::{BoxSpec, DType, box_spec};
 
     #[test]
     fn make_box_keeps_unbounded_float32_bounds_at_float32() {

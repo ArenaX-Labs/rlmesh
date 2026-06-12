@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::v1::{SpaceValue, Tensor, contains};
+use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::{SpaceValue, Tensor, contains};
 
 use super::ValueBackend;
 use super::array_codec::{
@@ -188,8 +188,8 @@ mod tests {
     use crate::spaces::ValueBackend;
     use pyo3::Python;
     use pyo3::types::{PyAnyMethods, PyDictMethods};
-    use rlmesh_spaces::v1::MetaValue;
-    use rlmesh_spaces::v1::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
+    use rlmesh_spaces::MetaValue;
+    use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
 
     #[test]
     fn metadata_roundtrips_without_protobuf() {

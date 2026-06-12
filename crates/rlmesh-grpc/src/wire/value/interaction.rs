@@ -1,7 +1,7 @@
 use rlmesh_proto::env::v1::{
     RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 use crate::wire::spaces::{meta_map_from_struct, meta_map_to_struct};

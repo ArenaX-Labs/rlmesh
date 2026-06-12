@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use rlmesh_spaces::v1::DType;
+use rlmesh_spaces::DType;
 
 /// Parse a tensor dtype name, rejecting anything unknown.
 ///

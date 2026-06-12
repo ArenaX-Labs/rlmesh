@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use rlmesh_spaces::v1::multi_binary_spec;
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::multi_binary_spec;
+use rlmesh_spaces::spaces::*;
 
 pub fn make_multibinary<'py>(
     py: Python<'py>,

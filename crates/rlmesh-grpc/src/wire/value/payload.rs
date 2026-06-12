@@ -1,6 +1,6 @@
 use rlmesh_proto::common::v1::MessageBytes;
 use rlmesh_proto::spaces::v1::SpaceValue;
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 

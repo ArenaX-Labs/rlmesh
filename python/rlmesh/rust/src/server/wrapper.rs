@@ -14,7 +14,7 @@ use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
     ShutdownTrigger, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
 };
-use rlmesh_spaces::v1::EnvContract;
+use rlmesh_spaces::EnvContract;
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;

@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::spaces::*;
-use rlmesh_spaces::v1::{DType, DiscreteSpec};
+use rlmesh_spaces::spaces::*;
+use rlmesh_spaces::{DType, DiscreteSpec};
 
 pub fn make_discrete<'py>(
     py: Python<'py>,

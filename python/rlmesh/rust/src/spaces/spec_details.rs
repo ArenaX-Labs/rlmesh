@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList};
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::v1::{BoxSpec, box_spec, multi_binary_spec, multi_discrete_spec};
+use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::{BoxSpec, box_spec, multi_binary_spec, multi_discrete_spec};
 
 use super::spec_view::PySpaceSpec;
 use crate::spaces::utils::dtype_name;

@@ -1,6 +1,6 @@
 use prost_types::{Value, value};
-use rlmesh_spaces::v1 as native;
-use rlmesh_spaces::v1::Scalar;
+use rlmesh_spaces as native;
+use rlmesh_spaces::Scalar;
 
 use crate::error::ProtocolError;
 

@@ -4,8 +4,8 @@ use pyo3::types::{PyAny, PyBytes, PyTuple};
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::{ConnectAddress, RemoteEnv};
-use rlmesh_spaces::v1::spaces::SpaceSpec;
-use rlmesh_spaces::v1::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
+use rlmesh_spaces::spaces::SpaceSpec;
+use rlmesh_spaces::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -823,20 +823,20 @@ fn vector_bool_to_py<'py>(py: Python<'py>, values: &[bool]) -> PyResult<Py<PyAny
     Ok(tensor_from_shape(py, bytes, vec![values.len()], "bool")?.unbind())
 }
 
-fn observation_size(value: Option<&rlmesh_spaces::v1::SpaceValue>) -> usize {
+fn observation_size(value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
     value.map_or(0, space_value_size)
 }
 
-fn space_value_size(value: &rlmesh_spaces::v1::SpaceValue) -> usize {
+fn space_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
     match value {
-        rlmesh_spaces::v1::SpaceValue::Box(value) => value.nbytes(),
-        rlmesh_spaces::v1::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
-        rlmesh_spaces::v1::SpaceValue::MultiBinary(values) => values.len(),
-        rlmesh_spaces::v1::SpaceValue::MultiDiscrete(values) => {
+        rlmesh_spaces::SpaceValue::Box(value) => value.nbytes(),
+        rlmesh_spaces::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
+        rlmesh_spaces::SpaceValue::MultiBinary(values) => values.len(),
+        rlmesh_spaces::SpaceValue::MultiDiscrete(values) => {
             values.len() * std::mem::size_of::<i64>()
         }
-        rlmesh_spaces::v1::SpaceValue::Text(value) => value.len(),
-        rlmesh_spaces::v1::SpaceValue::Dict(values) => values.values().map(space_value_size).sum(),
-        rlmesh_spaces::v1::SpaceValue::Tuple(values) => values.iter().map(space_value_size).sum(),
+        rlmesh_spaces::SpaceValue::Text(value) => value.len(),
+        rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(space_value_size).sum(),
+        rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(space_value_size).sum(),
     }
 }

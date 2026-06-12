@@ -2,8 +2,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 use rand::RngExt;
 use rand::rngs::StdRng;
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::v1::{BoxSpec, DType, box_spec, multi_binary_spec, multi_discrete_spec};
+use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::{BoxSpec, DType, box_spec, multi_binary_spec, multi_discrete_spec};
 
 pub(super) fn sample_space_value<'py>(
     py: Python<'py>,
@@ -132,7 +132,7 @@ fn normal_sample(rng: &mut StdRng) -> f64 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
-fn multi_binary_shape(space: &SpaceSpec, spec: &rlmesh_spaces::v1::MultiBinarySpec) -> Vec<usize> {
+fn multi_binary_shape(space: &SpaceSpec, spec: &rlmesh_spaces::MultiBinarySpec) -> Vec<usize> {
     if !space.shape.is_empty() {
         return space.shape.iter().map(|dim| *dim as usize).collect();
     }
@@ -164,7 +164,7 @@ fn sample_boolean_array<'py>(
 
 fn sample_multi_discrete<'py>(
     py: Python<'py>,
-    spec: &rlmesh_spaces::v1::MultiDiscreteSpec,
+    spec: &rlmesh_spaces::MultiDiscreteSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
     let nvec = match &spec.nvec {
@@ -202,7 +202,7 @@ fn sample_multi_discrete<'py>(
 
 fn sample_text<'py>(
     py: Python<'py>,
-    spec: &rlmesh_spaces::v1::TextSpec,
+    spec: &rlmesh_spaces::TextSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
     let printable_ascii = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?";
@@ -224,7 +224,7 @@ fn sample_text<'py>(
 
 fn sample_dict<'py>(
     py: Python<'py>,
-    spec: &rlmesh_spaces::v1::DictSpec,
+    spec: &rlmesh_spaces::DictSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
     let dict = PyDict::new(py);
@@ -236,7 +236,7 @@ fn sample_dict<'py>(
 
 fn sample_tuple<'py>(
     py: Python<'py>,
-    spec: &rlmesh_spaces::v1::TupleSpec,
+    spec: &rlmesh_spaces::TupleSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
     let values = spec

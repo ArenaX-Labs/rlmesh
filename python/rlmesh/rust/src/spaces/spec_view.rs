@@ -5,11 +5,11 @@ use pyo3::types::{PyAny, PyDict, PyModule};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use rlmesh_spaces::v1::spaces::{
+use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
     SpaceSpec, TextBuilder, TupleSpaceBuilder,
 };
-use rlmesh_spaces::v1::{DType, EnvContract};
+use rlmesh_spaces::{DType, EnvContract};
 
 use super::sample::sample_space_value;
 use super::spec_details::{space_kind_name, space_spec_details_to_py, space_spec_to_pydict};
@@ -513,8 +513,8 @@ mod tests {
     use pyo3::IntoPyObject;
     use pyo3::Python;
     use pyo3::types::{PyAnyMethods, PyDictMethods};
-    use rlmesh_spaces::v1::EnvContract;
-    use rlmesh_spaces::v1::spaces::{DiscreteBuilder, TextBuilder};
+    use rlmesh_spaces::EnvContract;
+    use rlmesh_spaces::spaces::{DiscreteBuilder, TextBuilder};
 
     #[test]
     fn converts_env_contract_to_native_python_object() {

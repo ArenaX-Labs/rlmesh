@@ -8,7 +8,7 @@ use rlmesh::{
     ModelObservation, ModelWorker,
 };
 use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
-use rlmesh_spaces::v1::{
+use rlmesh_spaces::{
     SpaceValue,
     spaces::{SpaceSpec, space_spec},
 };
@@ -354,10 +354,10 @@ mod tests {
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use rlmesh::spaces::BinaryPayload;
     use rlmesh_grpc::wire::encode_batched_partial_values;
-    use rlmesh_spaces::v1::SpaceValue;
-    use rlmesh_spaces::v1::spaces::{DictSpaceBuilder, TextBuilder};
+    use rlmesh_spaces::SpaceValue;
+    use rlmesh_spaces::spaces::{DictSpaceBuilder, TextBuilder};
 
-    fn instruction_space() -> rlmesh_spaces::v1::SpaceSpec {
+    fn instruction_space() -> rlmesh_spaces::SpaceSpec {
         DictSpaceBuilder::new()
             .insert("instruction", TextBuilder::new(32).build().unwrap())
             .build()

@@ -1,6 +1,6 @@
 use proptest::prelude::*;
-use rlmesh_spaces::v1 as native;
-use rlmesh_spaces::v1::{DType, Tensor, dtype_size};
+use rlmesh_spaces as native;
+use rlmesh_spaces::{DType, Tensor, dtype_size};
 
 use super::{
     decode_batched_partial_values, decode_value_bytes, encode_batched_partial_values,

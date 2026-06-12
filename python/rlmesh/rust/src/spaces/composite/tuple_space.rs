@@ -2,7 +2,7 @@ use crate::spaces::space::{make_space, parse_space};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::spaces::*;
 
 pub(crate) fn make_tuple<'py>(
     py: Python<'py>,

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use prost_types::{ListValue, Struct, Value, value};
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 

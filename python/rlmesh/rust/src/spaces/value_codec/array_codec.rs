@@ -4,7 +4,7 @@ use crate::spaces::utils::dtype_name;
 use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
-use rlmesh_spaces::v1::{
+use rlmesh_spaces::{
     DType, Scalar,
     spaces::{SpaceSpec, space_spec},
 };
@@ -78,7 +78,7 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
 }
 
 pub(crate) fn encode_i64_sequence_bytes(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
-    rlmesh_spaces::v1::encode_i64_scalars(values, normalize_dtype(dtype))
+    rlmesh_spaces::encode_i64_scalars(values, normalize_dtype(dtype))
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
@@ -234,7 +234,7 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
 }
 
 fn decode_scalars(bytes: &[u8], dtype: DType) -> PyResult<Vec<Scalar>> {
-    rlmesh_spaces::v1::decode_scalars(bytes, normalize_dtype(dtype))
+    rlmesh_spaces::decode_scalars(bytes, normalize_dtype(dtype))
         .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
@@ -257,7 +257,7 @@ fn dtype_size(dtype: DType) -> usize {
     // Unspecified follows the extension-wide float32 fallback.
     match dtype {
         DType::Unspecified => 4,
-        other => rlmesh_spaces::v1::dtype_size(other),
+        other => rlmesh_spaces::dtype_size(other),
     }
 }
 

@@ -1,8 +1,8 @@
 use crate::spaces::utils::dtype_to_py;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::multi_discrete_spec;
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::multi_discrete_spec;
+use rlmesh_spaces::spaces::*;
 
 pub fn make_multidiscrete<'py>(
     py: Python<'py>,

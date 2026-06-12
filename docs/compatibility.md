@@ -28,15 +28,16 @@ require. Each floor has a concrete reason:
 | Package | Floor      | Why                                                                                     |
 | ------- | ---------- | --------------------------------------------------------------------------------------- |
 | Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels.                     |
-| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage (and `np.from_dlpack`).          |
+| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.                                 |
 | torch   | `>=1.11`   | First release with full `cp310` wheels and top-level `torch.from_dlpack`.               |
 | jax     | `>=0.4.24` | First release with DLPack `bool` support; `jaxlib` below `0.4.18` is no longer on PyPI. |
 
 The floors are executed — not just declared — by `mise run test:python:floors`, which builds a
 `cp310` wheel and runs the framework test suites against exactly these versions. Versions below a
-floor may work but are unsupported. Within a framework, some dtypes need newer releases: Torch
-`bool` over DLPack needs 2.2 (older versions fall back to a copy), and Torch `uint16/32/64` need
-2.3.
+floor may work but are unsupported. Within a framework, some features need newer releases:
+`rlmesh.numpy` itself converts through the buffer protocol on any supported numpy, but consuming
+RLMesh tensors with `np.from_dlpack` needs numpy 1.23 (`bool` needs 1.25). Torch `bool` over DLPack
+needs 2.2 (older versions fall back to a copy), and Torch `uint16/32/64` need 2.3.
 
 ## Value Semantics and Caveats
 

@@ -1,6 +1,6 @@
 use prost_types::{ListValue, Value, value};
 use rlmesh_proto::common::v1::MessageBytes;
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 

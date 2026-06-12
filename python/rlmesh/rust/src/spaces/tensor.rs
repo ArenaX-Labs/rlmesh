@@ -6,7 +6,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMemoryView};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_spaces::v1::{DType, Tensor, TensorError, dtype_size};
+use rlmesh_spaces::{DType, Tensor, TensorError, dtype_size};
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 

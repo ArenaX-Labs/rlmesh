@@ -17,7 +17,7 @@
 use std::ffi::{CStr, c_void};
 
 use pyo3::prelude::*;
-use rlmesh_spaces::v1::{
+use rlmesh_spaces::{
     DLPackType, Storage, Tensor, contiguous_strides, dlpack_type, dtype_from_dlpack, dtype_size,
 };
 
@@ -332,7 +332,7 @@ unsafe fn copy_dl_tensor(dl: &DLTensor) -> PyResult<Tensor> {
         let numel: usize = shape.iter().map(|&dim| dim as usize).product();
         let itemsize = dtype_size(dtype);
 
-        let into_py_err = |err: rlmesh_spaces::v1::TensorError| {
+        let into_py_err = |err: rlmesh_spaces::TensorError| {
             pyo3::exceptions::PyValueError::new_err(err.to_string())
         };
 

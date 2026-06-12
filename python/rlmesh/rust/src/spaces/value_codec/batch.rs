@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::SpaceValue;
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::SpaceValue;
+use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
 
 use super::ValueBackend;
 use super::metadata::normalize_py_value;

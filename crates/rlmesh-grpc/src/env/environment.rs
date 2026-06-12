@@ -5,7 +5,7 @@ pub use rlmesh_proto::env::v1::{
     CloseResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
 };
-use rlmesh_spaces::v1::{EnvContract, spaces::SpaceSpec};
+use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
 
 use crate::error::EnvError;
 

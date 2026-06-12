@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::spaces::*;
 
 pub fn make_text<'py>(
     py: Python<'py>,

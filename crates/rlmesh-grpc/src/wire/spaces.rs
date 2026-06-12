@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use prost_types::{ListValue, Struct, Value, value};
 use rlmesh_proto::env::v1 as env_proto;
 use rlmesh_proto::spaces::v1 as proto;
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 

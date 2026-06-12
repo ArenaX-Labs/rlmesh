@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::SpaceValue;
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::SpaceValue;
+use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
 
 use super::array_codec::encode_i64_sequence_bytes;
 use crate::spaces::tensor::make_tensor;

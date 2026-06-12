@@ -1,8 +1,8 @@
 use half::bf16;
 use prost_types::{ListValue, Value, value};
 use rlmesh_proto::common::v1::MessageBytes;
-use rlmesh_spaces::v1::spaces::{BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder};
-use rlmesh_spaces::v1::{BinaryPayload, DType, RenderRequest, SpaceValue, Tensor};
+use rlmesh_spaces::spaces::{BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder};
+use rlmesh_spaces::{BinaryPayload, DType, RenderRequest, SpaceValue, Tensor};
 
 use super::codec::decode_value_for_space;
 use super::{
@@ -239,7 +239,7 @@ fn bfloat16_box_roundtrips_raw_and_legacy_scalar_list() {
 
 #[test]
 fn strided_box_view_encodes_contiguously() {
-    use rlmesh_spaces::v1::Storage;
+    use rlmesh_spaces::Storage;
 
     let space = BoxSpaceBuilder::scalar(0.0, 255.0, vec![2])
         .dtype(DType::Uint8)

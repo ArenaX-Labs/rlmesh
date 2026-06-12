@@ -4,7 +4,7 @@ use crate::spaces::spec_view::extract_space_spec;
 use crate::spaces::utils::*;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::spaces::*;
 
 pub fn parse_space<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     if let Some(spec) = extract_space_spec(space) {
@@ -59,7 +59,7 @@ mod tests {
     use pyo3::Bound;
     use pyo3::Python;
     use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
-    use rlmesh_spaces::v1::spaces::{TextBuilder, space_spec};
+    use rlmesh_spaces::spaces::{TextBuilder, space_spec};
 
     fn discrete_space<'py>(py: Python<'py>, n: i64) -> Bound<'py, PyAny> {
         import_gym(py)
