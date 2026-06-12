@@ -72,4 +72,5 @@ user-guide/sandbox
 
 api/index
 compatibility
+editions/index
 ```
