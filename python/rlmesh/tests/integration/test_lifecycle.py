@@ -44,6 +44,24 @@ class TinySpecEnv(TinyEnv):
         self.spec = SimpleNamespace(id="TinySpecEnv-v0")
 
 
+class RenderingEnv(TinyEnv):
+    """Env that renders a fixed-shape rgb_array frame."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.render_mode = "rgb_array"
+        self._channels = channels
+
+    def render(self) -> NumpyArray:
+        import numpy as np
+
+        if self._channels == 1:
+            return np.arange(4 * 3, dtype=np.uint8).reshape(4, 3)
+        return np.arange(4 * 3 * self._channels, dtype=np.uint8).reshape(
+            4, 3, self._channels
+        )
+
+
 class TinyVectorEnv:
     def __init__(self) -> None:
         from rlmesh import spaces
@@ -411,6 +429,39 @@ def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
         server.shutdown()
 
     assert env.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("channels", "expected_shape"),
+    [(3, (4, 3, 3)), (4, (4, 3, 4)), (1, (4, 3))],
+)
+def test_remote_render_preserves_source_channel_count(
+    channels: int, expected_shape: tuple[int, ...]
+) -> None:
+    """Review finding #35: remote render() must match Gymnasium's rgb_array shape.
+
+    The client used to widen every frame to RGBA8 (H, W, 4); RGB sources should
+    stay (H, W, 3) and grayscale (H, W).
+    """
+    import numpy as np
+    import rlmesh
+
+    env = RenderingEnv(channels)
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            remote.reset(seed=0)
+            frame = remote.render()
+            assert frame is not None
+            array = np.asarray(frame)
+            assert array.shape == expected_shape
+            assert array.dtype == np.uint8
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
 
 
 def test_background_server_survives_unrelated_sigint() -> None:

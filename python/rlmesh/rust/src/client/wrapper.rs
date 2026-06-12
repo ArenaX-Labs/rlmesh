@@ -793,14 +793,31 @@ fn decode_render_frame<'py>(
 }
 
 fn decode_render_bytes(frame: &NativeRenderFrame) -> Result<DecodedRenderFrame, String> {
+    use image::DynamicImage;
+
     let image = image::load_from_memory_with_format(&frame.png_frame, ImageFormat::Png)
         .map_err(|err| err.to_string())?;
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(DecodedRenderFrame {
-        shape: vec![height as usize, width as usize, 4],
-        raw: rgba.into_raw(),
-    })
+
+    // Preserve the source channel count so a remote render() matches the
+    // Gymnasium rgb_array contract: RGB -> (H, W, 3), grayscale -> (H, W), and
+    // only genuinely 4-channel sources stay (H, W, 4). The server encodes the
+    // PNG with the original ColorType, so the decoded color type is authoritative.
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let (channels, raw) = match image {
+        DynamicImage::ImageLuma8(buf) => (1usize, buf.into_raw()),
+        DynamicImage::ImageRgb8(buf) => (3, buf.into_raw()),
+        DynamicImage::ImageRgba8(buf) => (4, buf.into_raw()),
+        // Grayscale-with-alpha and any 16-bit/float PNG (not produced by the
+        // server encoder) fall back to RGBA8 rather than failing.
+        other => (4, other.to_rgba8().into_raw()),
+    };
+
+    let shape = if channels == 1 {
+        vec![height, width]
+    } else {
+        vec![height, width, channels]
+    };
+    Ok(DecodedRenderFrame { shape, raw })
 }
 
 fn render_packet(frame: &NativeRenderFrame) -> &[u8] {
@@ -838,5 +855,44 @@ fn space_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
         rlmesh_spaces::SpaceValue::Text(value) => value.len(),
         rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(space_value_size).sum(),
         rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(space_value_size).sum(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeRenderFrame, decode_render_bytes};
+    use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
+
+    fn png_frame(raw: &[u8], width: u32, height: u32, color: ColorType) -> NativeRenderFrame {
+        let mut encoded = Vec::new();
+        PngEncoder::new(&mut encoded)
+            .write_image(raw, width, height, color.into())
+            .unwrap();
+        NativeRenderFrame { png_frame: encoded }
+    }
+
+    #[test]
+    fn rgb_source_decodes_to_three_channels() {
+        // 2x1 RGB image -> Gymnasium rgb_array contract is (H, W, 3).
+        let frame = png_frame(&[1, 2, 3, 4, 5, 6], 2, 1, ColorType::Rgb8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![1, 2, 3]);
+        assert_eq!(decoded.raw, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn rgba_source_decodes_to_four_channels() {
+        let frame = png_frame(&[1, 2, 3, 4, 5, 6, 7, 8], 2, 1, ColorType::Rgba8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![1, 2, 4]);
+        assert_eq!(decoded.raw, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn grayscale_source_decodes_to_two_dimensions() {
+        let frame = png_frame(&[10, 20, 30, 40], 2, 2, ColorType::L8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![2, 2]);
+        assert_eq!(decoded.raw, vec![10, 20, 30, 40]);
     }
 }
