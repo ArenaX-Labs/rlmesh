@@ -8,8 +8,10 @@ use rlmesh_proto::{
     },
     supported_workflow_editions,
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::{Error as GrpcError, ProtocolError, TransportError};
@@ -17,30 +19,35 @@ use crate::helpers::normalize_tcp_session_address;
 use crate::states::ClientState;
 
 use super::protocol::{join_request_kind_name, model_error_to_grpc_error};
-use super::stream::spawn_response_pump;
+use super::stream::{PendingResponses, spawn_response_pump};
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
 
 /// Client for a ModelService server's Join bidi stream.
 ///
-/// # Single-flight contract
+/// # Concurrency: demux by `request_id`
 ///
-/// This client is **single-flight per connection**: every request-issuing
-/// method takes `&mut self` and waits for the matching response before
-/// returning, so at most one request is outstanding on the stream at a time and
-/// responses are consumed in order. The wire protocol carries a `request_id`
-/// (it is demux-shaped), but the server does not yet pipeline concurrent
-/// requests; to overlap work, use multiple `ModelClient`s (multiple
-/// connections). If a response arrives whose `request_id` does not match the
-/// awaited request (e.g. a late response from an abandoned request), it is
-/// discarded.
+/// Responses are demultiplexed by `request_id` through a shared pending map, so
+/// **multiple requests can be in flight on one connection at once**. A response
+/// pump routes each response to the matching waiter; a response with no pending
+/// waiter (a late one from an abandoned request, or an unknown id) is logged and
+/// dropped.
+///
+/// The public per-request methods ([`predict`](Self::predict),
+/// [`configure_route`](Self::configure_route), [`close_route`](Self::close_route),
+/// [`close`](Self::close)) take `&mut self` and await their own response, so used
+/// alone they behave exactly as before (one request at a time, response matched
+/// by id). To actually overlap predicts on one connection, use
+/// [`predict_concurrent`](Self::predict_concurrent), which takes `&self` and may
+/// be called from multiple tasks concurrently. The matching server advertises
+/// the `rlmesh.model.concurrent_predict.v1` capability when it pipelines.
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,
     token: String,
     state: ClientState,
     request_tx: Option<mpsc::Sender<JoinRequest>>,
-    response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
-    request_counter: u64,
+    pending: PendingResponses,
+    request_counter: Arc<AtomicU64>,
     last_telemetry: Option<OperationTelemetry>,
 }
 
@@ -64,8 +71,8 @@ impl ModelClient {
             token: token.to_string(),
             state: ClientState::Connected,
             request_tx: None,
-            response_rx: None,
-            request_counter: 0,
+            pending: Default::default(),
+            request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
         })
     }
@@ -269,10 +276,50 @@ impl ModelClient {
         if response.accepted {
             self.state = ClientState::Closed;
             self.request_tx.take();
-            self.response_rx.take();
+            // Drop the request stream sender; the pump will then see the stream
+            // end and fail any still-pending waiters.
+            self.pending.lock().expect("pending map poisoned").clear();
         }
 
         Ok(response)
+    }
+
+    /// Issue a predict that may overlap other in-flight requests on the same
+    /// connection. Takes `&self`, so it can be called from multiple tasks
+    /// concurrently; responses are demuxed by `request_id`.
+    ///
+    /// Unlike [`predict`](Self::predict), this does not record
+    /// `last_telemetry` (that field is single-threaded `&mut self` state); read
+    /// per-call telemetry from the returned response if needed. The server only
+    /// pipelines these when it advertises `rlmesh.model.concurrent_predict.v1`;
+    /// against a serial server they still complete correctly, just serialized.
+    pub async fn predict_concurrent(
+        &self,
+        request: PredictRequest,
+    ) -> Result<PredictResponse, GrpcError> {
+        self.ensure_ready()?;
+        validate_predict_route(
+            request
+                .context
+                .as_ref()
+                .ok_or_else(|| decode_error("predict missing route context"))?,
+        )?;
+        let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
+        let response = self
+            .send_on_stream(JoinRequest {
+                kind: Some(join_request::Kind::Predict(request)),
+                request_id,
+            })
+            .await?;
+        match response.kind {
+            Some(join_response::Kind::Predict(predict)) => Ok(predict),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "PredictResponse".to_string(),
+                actual: format!("{:?}", response.kind),
+            }
+            .into()),
+        }
     }
 
     async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
@@ -287,57 +334,59 @@ impl ModelClient {
             .map_err(crate::error::status_to_grpc_error)?;
 
         self.request_tx = Some(tx);
-        self.response_rx = Some(spawn_response_pump(response.into_inner()));
+        spawn_response_pump(response.into_inner(), Arc::clone(&self.pending));
         Ok(())
     }
 
-    async fn send_on_stream(&mut self, request: JoinRequest) -> Result<JoinResponse, GrpcError> {
+    /// Send one request and await its response, matched by `request_id` through
+    /// the shared pending map. Takes `&self` so both the `&mut self` public
+    /// methods and the concurrent `predict_concurrent` path can use it.
+    async fn send_on_stream(&self, request: JoinRequest) -> Result<JoinResponse, GrpcError> {
         let request_id = request.request_id.clone();
         let request_kind = join_request_kind_name(request.kind.as_ref());
         let tx = self
             .request_tx
-            .as_ref()
+            .clone()
             .ok_or(crate::error::ClientError::NotHandshaked)?;
-        tx.send(request)
-            .await
-            .map_err(|_| TransportError::ConnectionClosed)?;
 
-        let rx = self
-            .response_rx
-            .as_mut()
-            .ok_or(crate::error::ClientError::NotHandshaked)?;
-        loop {
-            let response = rx.recv().await.ok_or_else(|| {
+        // Register the waiter *before* sending so a fast response cannot race
+        // ahead of the pending insert.
+        let (response_tx, response_rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("pending map poisoned")
+            .insert(request_id.clone(), response_tx);
+
+        if tx.send(request).await.is_err() {
+            // The stream is gone; clean up our pending entry.
+            self.pending
+                .lock()
+                .expect("pending map poisoned")
+                .remove(&request_id);
+            return Err(TransportError::ConnectionClosed.into());
+        }
+
+        match response_rx.await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(status)) => {
+                tracing::error!(
+                    request_id = %request_id,
+                    request_kind,
+                    code = ?status.code(),
+                    message = %status.message(),
+                    "model join stream returned an error status"
+                );
+                Err(crate::error::status_to_grpc_error(status))
+            }
+            Err(_) => {
+                // The pump dropped our sender without sending — the stream closed.
                 tracing::error!(
                     request_id = %request_id,
                     request_kind,
                     "model join stream closed while waiting for response"
                 );
-                GrpcError::from(TransportError::ConnectionClosed)
-            })?;
-            let response = match response {
-                Ok(response) => response,
-                Err(status) => {
-                    tracing::error!(
-                        request_id = %request_id,
-                        request_kind,
-                        code = ?status.code(),
-                        message = %status.message(),
-                        "model join stream returned an error status"
-                    );
-                    return Err(crate::error::status_to_grpc_error(status));
-                }
-            };
-            if response.request_id == request_id {
-                return Ok(response);
+                Err(TransportError::ConnectionClosed.into())
             }
-            tracing::warn!(
-                request_id = %request_id,
-                stale_request_id = %response.request_id,
-                request_kind,
-                response_kind = ?response.kind,
-                "discarding stale model response from abandoned request"
-            );
         }
     }
 
@@ -350,9 +399,9 @@ impl ModelClient {
         }
     }
 
-    fn next_request_id(&mut self) -> String {
-        self.request_counter += 1;
-        format!("model-grpc-req-{}", self.request_counter)
+    fn next_request_id(&self) -> String {
+        let id = self.request_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("model-grpc-req-{id}")
     }
 
     fn authorized_request<T>(&self, message: T) -> Result<tonic::Request<T>, GrpcError> {
@@ -372,54 +421,128 @@ impl ModelClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_proto::model::v1::{CloseRouteResponse, PredictResponse};
+    use rlmesh_proto::model::v1::PredictResponse;
     use tonic::transport::Endpoint;
 
-    #[tokio::test]
-    async fn send_on_stream_discards_stale_responses_until_request_id_matches() {
-        let (request_tx, mut request_rx) = mpsc::channel(4);
-        let (response_tx, response_rx) = mpsc::channel(4);
+    /// Build a `Ready` client wired to an in-memory request channel, plus a
+    /// "fake pump" handle: a closure-friendly clone of the pending map and the
+    /// receiver of outgoing requests. This drives the real `send_on_stream`
+    /// demux without a transport.
+    fn ready_client() -> (ModelClient, mpsc::Receiver<JoinRequest>, PendingResponses) {
+        let (request_tx, request_rx) = mpsc::channel(8);
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let mut client = ModelClient {
+        let pending: PendingResponses = Default::default();
+        let client = ModelClient {
             address: "tcp://127.0.0.1:1".to_string(),
             client: ModelServiceClient::new(channel),
             token: String::new(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
-            response_rx: Some(response_rx),
-            request_counter: 0,
+            pending: Arc::clone(&pending),
+            request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
         };
+        (client, request_rx, pending)
+    }
 
-        response_tx
-            .send(Ok(JoinResponse {
-                request_id: "abandoned".to_string(),
-                kind: Some(join_response::Kind::Predict(PredictResponse::default())),
-                telemetry: None,
-            }))
-            .await
-            .unwrap();
-        response_tx
-            .send(Ok(JoinResponse {
-                request_id: "target".to_string(),
-                kind: Some(join_response::Kind::CloseRoute(CloseRouteResponse {})),
-                telemetry: None,
-            }))
-            .await
-            .unwrap();
+    /// Route a response into the pending map exactly as the real pump would.
+    fn deliver(pending: &PendingResponses, request_id: &str, response: JoinResponse) {
+        let sender = pending
+            .lock()
+            .unwrap()
+            .remove(request_id)
+            .expect("expected a pending waiter for the request id");
+        sender.send(Ok(response)).expect("waiter still alive");
+    }
 
-        let response = client
-            .send_on_stream(JoinRequest {
-                request_id: "target".to_string(),
-                kind: Some(join_request::Kind::CloseRoute(CloseRouteRequest::default())),
+    fn predict_response_for(request_id: &str) -> JoinResponse {
+        JoinResponse {
+            request_id: request_id.to_string(),
+            kind: Some(join_response::Kind::Predict(PredictResponse::default())),
+            telemetry: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_on_stream_resolves_by_request_id() {
+        let (client, mut request_rx, pending) = ready_client();
+
+        let send = tokio::spawn(async move {
+            client
+                .send_on_stream(JoinRequest {
+                    request_id: "target".to_string(),
+                    kind: Some(join_request::Kind::Predict(PredictRequest::default())),
+                })
+                .await
+        });
+
+        // The request reaches the stream and a waiter is registered.
+        let sent = request_rx.recv().await.unwrap();
+        assert_eq!(sent.request_id, "target");
+        deliver(&pending, "target", predict_response_for("target"));
+
+        let response = send.await.unwrap().unwrap();
+        assert_eq!(response.request_id, "target");
+    }
+
+    #[tokio::test]
+    async fn two_overlapping_requests_demux_out_of_order() {
+        let (client, mut request_rx, pending) = ready_client();
+        let client = Arc::new(client);
+
+        // Two predicts in flight at once on the same connection.
+        let c1 = Arc::clone(&client);
+        let first = tokio::spawn(async move {
+            c1.send_on_stream(JoinRequest {
+                request_id: "req-1".to_string(),
+                kind: Some(join_request::Kind::Predict(PredictRequest::default())),
             })
             .await
-            .unwrap();
+        });
+        let c2 = Arc::clone(&client);
+        let second = tokio::spawn(async move {
+            c2.send_on_stream(JoinRequest {
+                request_id: "req-2".to_string(),
+                kind: Some(join_request::Kind::Predict(PredictRequest::default())),
+            })
+            .await
+        });
 
-        assert!(matches!(
-            response.kind,
-            Some(join_response::Kind::CloseRoute(_))
-        ));
-        assert_eq!(request_rx.recv().await.unwrap().request_id, "target");
+        // Both requests are sent before either response arrives.
+        let mut sent_ids = vec![
+            request_rx.recv().await.unwrap().request_id,
+            request_rx.recv().await.unwrap().request_id,
+        ];
+        sent_ids.sort();
+        assert_eq!(sent_ids, vec!["req-1".to_string(), "req-2".to_string()]);
+
+        // Deliver responses out of order: req-2 first, then req-1.
+        deliver(&pending, "req-2", predict_response_for("req-2"));
+        deliver(&pending, "req-1", predict_response_for("req-1"));
+
+        // Each waiter gets exactly its own response, regardless of order.
+        assert_eq!(first.await.unwrap().unwrap().request_id, "req-1");
+        assert_eq!(second.await.unwrap().unwrap().request_id, "req-2");
+    }
+
+    #[tokio::test]
+    async fn send_on_stream_errors_when_waiter_dropped_by_stream_close() {
+        let (client, _request_rx, pending) = ready_client();
+
+        let send = tokio::spawn(async move {
+            client
+                .send_on_stream(JoinRequest {
+                    request_id: "orphan".to_string(),
+                    kind: Some(join_request::Kind::Predict(PredictRequest::default())),
+                })
+                .await
+        });
+
+        // Simulate the pump dropping every pending sender on stream close.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        pending.lock().unwrap().clear();
+
+        let result = send.await.unwrap();
+        assert!(result.is_err(), "a closed stream must fail the waiter");
     }
 }

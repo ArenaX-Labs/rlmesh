@@ -1125,6 +1125,92 @@ async fn close_drains_after_in_flight_same_route_predict() {
 }
 
 #[tokio::test]
+async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
+    // End-to-end: the high-level ModelClient issues two overlapping predicts via
+    // predict_concurrent against the real pipelined server; both must resolve to
+    // their own response (demux by request_id), even though they overlap.
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(100),
+        predict_order: Arc::new(Mutex::new(Vec::new())),
+        route_events: Arc::new(Mutex::new(Vec::new())),
+    };
+    let bound = ModelWorker::new(handler)
+        .bind_async(
+            ServeModelOptions::new(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .token("tok")
+            .serve_options(ServeOptions {
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut client = rlmesh_grpc::ModelClient::connect(&address, "tok")
+        .await
+        .unwrap();
+    client.handshake().await.unwrap();
+    client
+        .configure_route(ConfigureRouteRequest {
+            context: Some(rlmesh_proto::model::v1::PredictContext {
+                session_id: "s".to_string(),
+                route_id: "r".to_string(),
+                request_id: "cfg".to_string(),
+                ..Default::default()
+            }),
+            env_contract: Some(rlmesh_proto::env::v1::EnvContract {
+                id: "Ordering-v0".to_string(),
+                observation_space: None,
+                action_space: None,
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            }),
+        })
+        .await
+        .unwrap();
+
+    let client = Arc::new(client);
+    let make_predict = |request_id: &str, step: i64| PredictRequest {
+        context: Some(rlmesh_proto::model::v1::PredictContext {
+            session_id: "s".to_string(),
+            route_id: "r".to_string(),
+            request_id: request_id.to_string(),
+            slots: vec![rlmesh_proto::model::v1::PredictSlot {
+                episode_id: "ep".to_string(),
+                env_index: 0,
+                step,
+                reset: step == 0,
+            }],
+        }),
+        observation: None,
+    };
+
+    let c1 = Arc::clone(&client);
+    let p1 = make_predict("predict-1", 0);
+    let first = tokio::spawn(async move { c1.predict_concurrent(p1).await });
+    let c2 = Arc::clone(&client);
+    let p2 = make_predict("predict-2", 1);
+    let second = tokio::spawn(async move { c2.predict_concurrent(p2).await });
+
+    let r1 = first.await.unwrap().unwrap();
+    let r2 = second.await.unwrap().unwrap();
+    assert_eq!(r1.context.unwrap().request_id, "predict-1");
+    assert_eq!(r2.context.unwrap().request_id, "predict-2");
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn pipelined_idle_activity_stays_balanced() {
     // Every request emits exactly one Started/Finished pair. If pipelining ever
     // leaked an unbalanced Started, the idle-shutdown counter would never return
