@@ -83,6 +83,8 @@ impl Episode {
 /// Manages episode tracking for all environments.
 pub struct EpisodeTracker {
     active: HashMap<i32, Episode>,
+    /// Episodes interrupted by a replacing reset, awaiting the next drain.
+    interrupted: Vec<EpisodeMetadata>,
 }
 
 impl EpisodeTracker {
@@ -90,6 +92,7 @@ impl EpisodeTracker {
     pub fn new() -> Self {
         Self {
             active: HashMap::new(),
+            interrupted: Vec::new(),
         }
     }
 
@@ -104,16 +107,29 @@ impl EpisodeTracker {
         let episode = Episode::new(env_index, seed);
         let episode_id = episode.id.clone();
 
-        // Replace any existing episode for this env_index
+        // A reset can legitimately interrupt an in-flight episode (manual
+        // vector reset, runtime reset racing a lane autoreset). Complete the
+        // replaced episode as truncated and buffer it so the next drain point
+        // (step completed_episodes / close final_episodes) surfaces it instead
+        // of silently dropping its accounting.
         if let Some(old_episode) = self.active.insert(env_index, episode) {
-            tracing::warn!(
-                "Starting new episode for env {} while previous episode {} was still active",
-                env_index,
-                old_episode.id
+            tracing::debug!(
+                "Episode {} for env {} interrupted by a new episode; completing as truncated",
+                old_episode.id,
+                env_index
             );
+            self.interrupted
+                .push(old_episode.complete(false, true, None));
         }
 
         episode_id
+    }
+
+    /// Drain episodes that were interrupted by a replacing reset since the
+    /// last drain. Callers fold these into the completed-episode stream so
+    /// interrupted episodes surface exactly once.
+    pub fn drain_interrupted(&mut self) -> Vec<EpisodeMetadata> {
+        std::mem::take(&mut self.interrupted)
     }
 
     /// Record a step for the given environment.
@@ -152,7 +168,7 @@ impl EpisodeTracker {
             reason
         );
 
-        let mut completed = Vec::new();
+        let mut completed = std::mem::take(&mut self.interrupted);
         for (_env_index, episode) in self.active.drain() {
             let metadata = episode.complete(false, true, None);
             completed.push(metadata);
@@ -206,6 +222,50 @@ mod tests {
         assert!(!metadata.truncated);
 
         assert_eq!(active_count(&tracker), 0);
+    }
+
+    #[test]
+    fn interrupted_episode_is_completed_as_truncated_and_drained_once() {
+        let mut tracker = EpisodeTracker::new();
+
+        let first = tracker.start_episode(0, Some(7));
+        tracker.record_step(0, 1.5);
+        tracker.record_step(0, 2.5);
+
+        // A replacing reset interrupts the in-flight episode: its accounting
+        // must surface as a truncated completion instead of being dropped.
+        let second = tracker.start_episode(0, None);
+        assert_ne!(first, second);
+        assert_eq!(active_count(&tracker), 1);
+
+        let interrupted = tracker.drain_interrupted();
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].episode_id, first);
+        assert_eq!(interrupted[0].step_count, 2);
+        assert_eq!(interrupted[0].cumulative_reward, 4.0);
+        assert!(!interrupted[0].terminated);
+        assert!(interrupted[0].truncated);
+
+        // Exactly once: a second drain is empty.
+        assert!(tracker.drain_interrupted().is_empty());
+    }
+
+    #[test]
+    fn complete_all_includes_undrained_interrupted_episodes() {
+        let mut tracker = EpisodeTracker::new();
+
+        let first = tracker.start_episode(0, Some(1));
+        tracker.record_step(0, 1.0);
+        let second = tracker.start_episode(0, None);
+
+        let mut all = tracker.complete_all("client close");
+        all.sort_by(|a, b| a.episode_id.cmp(&b.episode_id));
+        let mut expected = vec![first, second];
+        expected.sort();
+        let mut got: Vec<String> = all.iter().map(|m| m.episode_id.clone()).collect();
+        got.sort();
+        assert_eq!(got, expected);
+        assert!(tracker.drain_interrupted().is_empty());
     }
 
     #[test]

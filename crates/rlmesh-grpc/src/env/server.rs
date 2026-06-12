@@ -462,7 +462,9 @@ async fn handle_env_request<E: Environment>(
             match result {
                 Ok(mut ok) => {
                     let mut tracker = episode_tracker.lock().await;
-                    let mut completed_episodes = Vec::new();
+                    // Episodes interrupted by a replacing reset surface here so
+                    // their accounting is not lost.
+                    let mut completed_episodes = tracker.drain_interrupted();
                     let shared_info = decode_info_struct(ok.infos.as_ref());
 
                     for env_idx in 0..num_envs {
