@@ -8,6 +8,7 @@ use super::{
 };
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HookError {
     #[error("{0}")]
     Message(String),

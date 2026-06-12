@@ -28,6 +28,7 @@ use crate::timing::{RuntimeTiming, StepTimingSample};
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RuntimeError {
     #[error("invalid runtime session spec: {0}")]
     InvalidSpec(String),
@@ -237,6 +238,7 @@ pub trait RuntimeModel: Send {
 /// one via [`RuntimeDriver::run_with_cancellation_reason`].
 const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 
+#[must_use = "a RuntimeDriver does nothing until one of its run methods is awaited"]
 pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
     env: E,
