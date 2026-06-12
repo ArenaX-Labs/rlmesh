@@ -4,7 +4,7 @@ use rlmesh_spaces::SpaceValue;
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 
 use super::array_codec::encode_i64_sequence_bytes;
-use crate::spaces::tensor::make_tensor;
+use crate::spaces::tensor::{make_tensor, wrap_native_tensor};
 use crate::spaces::utils::dtype_name;
 
 pub(crate) fn space_value_to_py_neutral<'py>(
@@ -13,12 +13,9 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
-        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => tensor_from_array_bytes(
-            py,
-            value.to_contiguous_bytes().into_owned(),
-            value.shape().to_vec(),
-            value.dtype(),
-        ),
+        // Hand the native tensor over directly: shares the (aligned) wire
+        // storage instead of copying into a fresh unaligned buffer.
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => wrap_native_tensor(py, value.clone()),
         (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }

@@ -55,10 +55,12 @@ pub struct PyTensor {
 }
 
 impl PyTensor {
-    fn from_parts(data: Vec<u8>, shape: Vec<usize>, dtype: String) -> PyResult<Self> {
+    /// Copies `data` into fresh 64-byte-aligned storage so DLPack consumers
+    /// with alignment requirements (modern XLA) can share it zero-copy.
+    fn from_parts(data: &[u8], shape: Vec<usize>, dtype: String) -> PyResult<Self> {
         let dtype_id = parse_dtype_strict(&dtype)?;
         let dims: Vec<i64> = shape.iter().map(|&dim| dim as i64).collect();
-        match Tensor::from_vec(data, dims, dtype_id) {
+        match Tensor::from_slice(data, &dims, dtype_id) {
             Ok(inner) => Ok(Self { inner }),
             Err(TensorError::ByteLengthMismatch { expected, actual }) => {
                 Err(pyo3::exceptions::PyValueError::new_err(format!(
@@ -93,7 +95,12 @@ impl PyTensor {
         shape: Vec<usize>,
         dtype: String,
     ) -> PyResult<Self> {
-        Self::from_parts(extract_buffer_bytes(buffer)?, shape, dtype)
+        // Borrow bytes objects directly so construction costs exactly one
+        // (aligned) copy; other buffer-likes go through tobytes() first.
+        if let Ok(bytes) = buffer.cast::<pyo3::types::PyBytes>() {
+            return Self::from_parts(bytes.as_bytes(), shape, dtype);
+        }
+        Self::from_parts(&extract_buffer_bytes(buffer)?, shape, dtype)
     }
 
     #[getter]
@@ -368,10 +375,21 @@ pub(crate) fn make_tensor<'py>(
     dtype: impl Into<String>,
 ) -> PyResult<Bound<'py, PyAny>> {
     Ok(
-        Py::new(py, PyTensor::from_parts(data, shape, dtype.into())?)?
+        Py::new(py, PyTensor::from_parts(&data, shape, dtype.into())?)?
             .into_bound(py)
             .into_any(),
     )
+}
+
+/// Wrap an existing native tensor without copying; the Python object shares
+/// the tensor's storage (and its alignment).
+pub(crate) fn wrap_native_tensor<'py>(
+    py: Python<'py>,
+    tensor: Tensor,
+) -> PyResult<Bound<'py, PyAny>> {
+    Ok(Py::new(py, PyTensor::from(tensor))?
+        .into_bound(py)
+        .into_any())
 }
 
 pub(crate) fn extract_tensor<'py>(

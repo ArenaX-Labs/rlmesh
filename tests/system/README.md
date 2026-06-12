@@ -86,7 +86,9 @@ Expected shape of results (what "healthy" looks like):
 - `tensor.numpy.asarray` and `tensor.torch.as_tensor` are zero-copy views: median times stay flat as
   size grows 8000x; reported throughput therefore _rises_ with size. If view times start scaling
   with size, a copy snuck in.
-- `tensor.jax.asarray` imports over DLPack; XLA shares RLMesh's 64-byte aligned buffers, so it
-  should track the view costs plus jax dispatch overhead, not the copy costs.
+- `tensor.jax.asarray` imports over DLPack; XLA shares RLMesh's 64-byte-aligned storage, which every
+  Python-visible tensor uses (constructor, wire decode, and codec handoff). Expect flat times equal
+  to jax's fixed dispatch overhead (~20 us); if this row starts scaling with size, an unaligned
+  buffer crept back in and XLA is copying.
 - `tensor.export.bytes`, `tensor.numpy.from_array`, `tensor.from_dlpack`, and `tensor.torch.export`
   are copies: times scale linearly with size and throughput plateaus at memory bandwidth.
