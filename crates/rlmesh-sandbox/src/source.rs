@@ -3,6 +3,8 @@ use std::fmt;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::SandboxError;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EnvironmentSourceRef {
@@ -11,7 +13,13 @@ pub enum EnvironmentSourceRef {
 }
 
 impl EnvironmentSourceRef {
-    pub fn parse(value: &str) -> Result<Self> {
+    /// Parse a sandbox source reference (`gym://...`, `hf://...`, or a bare
+    /// gymnasium env id).
+    pub fn parse(value: &str) -> std::result::Result<Self, SandboxError> {
+        Self::parse_inner(value).map_err(SandboxError::invalid_source)
+    }
+
+    fn parse_inner(value: &str) -> Result<Self> {
         let value = value.trim();
         if value.is_empty() {
             bail!("sandbox source must not be empty");

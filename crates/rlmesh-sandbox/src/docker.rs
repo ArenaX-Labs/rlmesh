@@ -1,6 +1,5 @@
 use std::fs;
 use std::process::Command;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -67,7 +66,7 @@ impl DockerBackend {
         Ok(BuildArtifact { image_id })
     }
 
-    pub fn run_container(
+    pub async fn run_container_async(
         &self,
         spec: &EffectiveSandboxSpec,
         artifact: &BuildArtifact,
@@ -104,7 +103,7 @@ impl DockerBackend {
             }
         };
         let address = format!("tcp://127.0.0.1:{host_port}");
-        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)) {
+        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
             let report = self.startup_failure_report(&container_id, &container_name, &err);
             let _ = self.stop_container(&container_id);
             return Err(report);
@@ -337,38 +336,33 @@ struct HfBootstrapSpec {
     vectorization_mode: String,
 }
 
-fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
-    let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
 
     loop {
-        match runtime.block_on(async {
-            tokio::time::timeout(READY_PROBE_TIMEOUT, async {
-                let mut client = EnvClient::connect(address).await?;
-                client.handshake().await?;
-                Ok::<_, rlmesh_grpc::error::Error>(())
-            })
-            .await
-        }) {
+        let probe = tokio::time::timeout(READY_PROBE_TIMEOUT, async {
+            let mut client = EnvClient::connect(address).await?;
+            client.handshake().await?;
+            Ok::<_, rlmesh_grpc::error::Error>(())
+        })
+        .await;
+
+        match probe {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(err)) => {
-                if let Some(state) = inspect_container_state(container_id)?
-                    && state.is_terminal()
-                {
-                    bail!("sandbox container exited before ready: {}", state.summary());
+                if container_exited(container_id)? {
+                    bail!("sandbox container exited before ready");
                 }
                 if Instant::now() >= deadline {
                     return Err(err.into());
                 }
-                thread::sleep(Duration::from_millis(300));
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) if Instant::now() < deadline => {
-                if let Some(state) = inspect_container_state(container_id)?
-                    && state.is_terminal()
-                {
-                    bail!("sandbox container exited before ready: {}", state.summary());
+                if container_exited(container_id)? {
+                    bail!("sandbox container exited before ready");
                 }
-                thread::sleep(Duration::from_millis(300));
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) => bail!(
                 "sandbox container did not respond within {} seconds",
@@ -376,6 +370,14 @@ fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Resul
             ),
         }
     }
+}
+
+/// Whether the container has reached a terminal state. Returns `Ok(false)` if
+/// the state is currently unknown so the readiness wait keeps polling.
+fn container_exited(container_id: &str) -> Result<bool> {
+    Ok(inspect_container_state(container_id)?
+        .map(|state| state.is_terminal())
+        .unwrap_or(false))
 }
 
 fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {

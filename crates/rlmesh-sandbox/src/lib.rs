@@ -1,4 +1,5 @@
 mod docker;
+mod error;
 mod hf;
 mod source;
 
@@ -10,6 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use error::SandboxError;
 pub use source::{EnvironmentSourceRef, GymSourceRef, HfSourceRef};
 
 pub const DEFAULT_BASE_IMAGE: &str = "python:3.11-slim";
@@ -53,11 +55,13 @@ pub enum VectorizationMode {
 }
 
 impl VectorizationMode {
-    pub fn parse(value: Option<&str>) -> Result<Self> {
+    pub fn parse(value: Option<&str>) -> std::result::Result<Self, SandboxError> {
         match value.unwrap_or("sync").trim() {
             "sync" => Ok(Self::Sync),
             "async" => Ok(Self::Async),
-            other => anyhow::bail!("vectorization_mode must be 'sync' or 'async', got '{other}'"),
+            other => Err(SandboxError::invalid_option(format!(
+                "vectorization_mode must be 'sync' or 'async', got '{other}'"
+            ))),
         }
     }
 
@@ -117,20 +121,29 @@ pub(crate) struct EffectiveSandboxSpec {
 }
 
 impl EffectiveSandboxSpec {
-    fn resolve(source: EnvironmentSourceRef, options: SandboxOptions) -> Result<Self> {
-        let base_image = validate_nonempty("base_image", options.resolved_base_image())?;
-        let rlmesh_package = options.resolved_rlmesh_package(&base_image)?;
-        let packages = validate_specs("packages", options.packages)?;
-        let imports = validate_specs("imports", options.imports)?;
+    fn resolve(
+        source: EnvironmentSourceRef,
+        options: SandboxOptions,
+    ) -> std::result::Result<Self, SandboxError> {
+        let base_image = validate_nonempty("base_image", options.resolved_base_image())
+            .map_err(SandboxError::invalid_option)?;
+        let rlmesh_package = options
+            .resolved_rlmesh_package(&base_image)
+            .map_err(SandboxError::wheel)?;
+        let packages =
+            validate_specs("packages", options.packages).map_err(SandboxError::invalid_option)?;
+        let imports =
+            validate_specs("imports", options.imports).map_err(SandboxError::invalid_option)?;
         validate_source_trust(
             &source,
             options.trust_remote_code,
             options.allow_unpinned_hf,
-        )?;
+        )
+        .map_err(SandboxError::huggingface_policy)?;
         let kwargs = options.kwargs;
-        let num_envs = validate_num_envs(options.num_envs)?;
+        let num_envs = validate_num_envs(options.num_envs).map_err(SandboxError::invalid_option)?;
         let vectorization_mode = options.vectorization_mode;
-        let resolved_source = resolve_source(&source)?;
+        let resolved_source = resolve_source(&source).map_err(SandboxError::source_resolution)?;
         // build_hash deliberately excludes runtime-only parameters (kwargs,
         // num_envs, vectorization_mode): they are delivered to the container at
         // `docker run` time via the bootstrap payload, never baked into the
@@ -143,7 +156,8 @@ impl EffectiveSandboxSpec {
             rlmesh_package: &rlmesh_package,
             packages: &packages,
             imports: &imports,
-        })?;
+        })
+        .map_err(SandboxError::invalid_option)?;
 
         Ok(Self {
             schema_version: BOOTSTRAP_SCHEMA_VERSION,
@@ -263,11 +277,43 @@ fn resolve_source(source: &EnvironmentSourceRef) -> Result<source::ResolvedEnvir
     }
 }
 
-pub fn start_env(source: EnvironmentSourceRef, options: SandboxOptions) -> Result<RunResult> {
+/// Build the sandbox image and start a container for `source`.
+///
+/// This is a synchronous convenience wrapper around [`start_env_async`]. It
+/// MUST NOT be called from within an existing tokio runtime: it creates its
+/// own runtime internally and will panic ("Cannot start a runtime from within
+/// a runtime") if one is already active. From async code, call
+/// [`start_env_async`] directly.
+pub fn start_env(
+    source: EnvironmentSourceRef,
+    options: SandboxOptions,
+) -> std::result::Result<RunResult, SandboxError> {
+    let runtime = tokio::runtime::Runtime::new().map_err(|err| {
+        SandboxError::container_startup(format!("failed to create runtime: {err}"))
+    })?;
+    runtime.block_on(start_env_async(source, options))
+}
+
+/// Build the sandbox image and start a container for `source`.
+///
+/// This is the async-first entry point; it is safe to call from inside a tokio
+/// runtime. The synchronous [`start_env`] wrapper is provided for convenience
+/// and must not be called from an async context.
+pub async fn start_env_async(
+    source: EnvironmentSourceRef,
+    options: SandboxOptions,
+) -> std::result::Result<RunResult, SandboxError> {
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
     let docker = docker::DockerBackend;
-    let artifact = docker.ensure_image(&spec)?;
-    let started = docker.run_container(&spec, &artifact)?;
+    let artifact = docker.ensure_image(&spec).map_err(|err| {
+        SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
+    })?;
+    let started = docker
+        .run_container_async(&spec, &artifact)
+        .await
+        .map_err(|err| {
+            SandboxError::from_docker_op(err, |m| SandboxError::ContainerStartup { message: m })
+        })?;
 
     Ok(RunResult {
         requested_source: spec.requested_display(),
@@ -277,16 +323,21 @@ pub fn start_env(source: EnvironmentSourceRef, options: SandboxOptions) -> Resul
     })
 }
 
-pub fn stop_container(container_id: &str) -> Result<()> {
-    docker::DockerBackend.stop_container(container_id)
+/// Stop and remove a sandbox container by id.
+pub fn stop_container(container_id: &str) -> std::result::Result<(), SandboxError> {
+    docker::DockerBackend
+        .stop_container(container_id)
+        .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 
 /// Best-effort reap of rlmesh-owned sandbox containers left behind by hard
 /// process kills (SIGKILL/OOM). Containers are identified by the
 /// `rlmesh.sandbox` label that [`start_env`] stamps on every container it
 /// starts. Returns the ids that were removed.
-pub fn reap_orphaned_containers() -> Result<Vec<String>> {
-    docker::DockerBackend.reap_orphaned_containers()
+pub fn reap_orphaned_containers() -> std::result::Result<Vec<String>, SandboxError> {
+    docker::DockerBackend
+        .reap_orphaned_containers()
+        .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 
 pub fn default_rlmesh_package() -> String {
@@ -568,6 +619,39 @@ mod tests {
         .unwrap();
 
         assert_ne!(base.build_hash, changed.build_hash);
+    }
+
+    #[test]
+    fn public_errors_are_typed_and_discriminable() {
+        // num_envs == 0 must surface as a typed InvalidOption, not a stringly error.
+        let err = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
+            SandboxOptions {
+                num_envs: 0,
+                ..SandboxOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, SandboxError::InvalidOption { .. }));
+
+        // Unpinned hf source surfaces as a HuggingFacePolicy error.
+        let err = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse("hf://org/repo@main").unwrap(),
+            SandboxOptions {
+                trust_remote_code: true,
+                ..SandboxOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, SandboxError::HuggingFacePolicy { .. }));
+
+        // vectorization_mode parse failures are typed too.
+        let err = VectorizationMode::parse(Some("parallel")).unwrap_err();
+        assert!(matches!(err, SandboxError::InvalidOption { .. }));
+
+        // Source parse failures are typed.
+        let err = EnvironmentSourceRef::parse("ftp://nope").unwrap_err();
+        assert!(matches!(err, SandboxError::InvalidSource { .. }));
     }
 
     #[test]
