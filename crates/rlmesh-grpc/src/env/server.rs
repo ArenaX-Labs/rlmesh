@@ -148,6 +148,11 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     "protocol generation {} not compatible with server {}",
                     req.protocol_generation, PROTOCOL_GENERATION
                 )
+            } else if req.supported_workflow_editions.is_empty() {
+                format!(
+                    "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
+                    supported_workflow_editions().join(", ")
+                )
             } else {
                 format!(
                     "no mutually supported workflow edition; client offered [{}], server supports [{}]",
@@ -763,6 +768,13 @@ mod tests {
 
             assert!(!response.compatible, "offer {offer:?} must be rejected");
             assert!(response.error_message.contains("workflow edition"));
+            if offer.is_empty() {
+                assert!(
+                    response
+                        .error_message
+                        .contains("predate edition negotiation")
+                );
+            }
             assert_eq!(
                 response.supported_workflow_editions,
                 supported_workflow_editions()
