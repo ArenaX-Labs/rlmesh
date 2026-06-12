@@ -8,26 +8,19 @@ from ..types import Value
 from ._base import SpaceBridge
 
 
-def native_sample(value: object, spec: SpaceSpec) -> Value:
-    """Adapt native space samples to RLMesh Value leaves.
-
-    The Rust sampler emits RLMesh Tensor values for tensor-like spaces (and
-    nested dicts/tuples thereof) directly, so the native Python backend exposes
-    the sample tree unchanged, matching remote reset/step decoding when NumPy or
-    Torch is not selected.
-    """
-    _ = spec
-    return cast(Value, value)
-
-
 def space_bridge_from_value_bridge(bridge: ValueBridge) -> SpaceBridge[Any]:
-    """Build a space bridge from an existing runtime value bridge."""
+    """Build a space bridge from an existing runtime value bridge.
 
-    def sample(value: object, spec: SpaceSpec) -> object:
-        return bridge.decode(native_sample(value, spec))
+    The Rust sampler already emits RLMesh ``Value`` trees (Tensor leaves for
+    tensor-like spaces, nested dicts/tuples thereof), so sampling only routes
+    the native value through the framework bridge's ``decode``; the spec is not
+    needed to reshape it.
+    """
 
-    def input(value: object, spec: SpaceSpec) -> object:
-        _ = spec
+    def sample(value: object, _spec: SpaceSpec) -> object:
+        return bridge.decode(cast(Value, value))
+
+    def input(value: object, _spec: SpaceSpec) -> object:
         return bridge.encode(value)
 
     return SpaceBridge(sample, input)
