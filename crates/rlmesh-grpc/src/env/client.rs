@@ -150,7 +150,8 @@ impl EnvClient {
         self.last_telemetry.take()
     }
 
-    /// Perform the handshake RPC and set up the Join bidi stream.
+    /// Perform the handshake RPC. The Join bidi stream (the env's exclusive
+    /// session slot) is opened lazily by the first reset/step/render/close.
     #[tracing::instrument(
         name = "rlmesh.grpc.client.handshake",
         skip_all,
@@ -183,8 +184,6 @@ impl EnvClient {
             workflow_edition: res.selected_workflow_edition,
             supported_workflow_editions: res.supported_workflow_editions,
         };
-        self.setup_join_stream().await?;
-
         self.state = ClientState::Ready;
 
         Ok(handshake)
@@ -220,6 +219,7 @@ impl EnvClient {
     )]
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Reset(req)),
@@ -248,6 +248,7 @@ impl EnvClient {
     )]
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Step(req)),
@@ -276,6 +277,7 @@ impl EnvClient {
     )]
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Render(req)),
@@ -307,6 +309,7 @@ impl EnvClient {
     /// reuse-across-sessions behavior is intentional (review finding #81).
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Close(
@@ -363,6 +366,17 @@ impl EnvClient {
         self.request_tx.take();
         self.response_rx.take();
         self.state = ClientState::Closed;
+    }
+
+    /// Open the Join stream on first use. The stream is the env's exclusive
+    /// session slot (the server admits one Join at a time), so it is acquired
+    /// lazily on the first streaming operation rather than at handshake —
+    /// an idle connected client must not lock other clients out of the env.
+    async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
+        if self.request_tx.is_none() || self.response_rx.is_none() {
+            self.setup_join_stream().await?;
+        }
+        Ok(())
     }
 
     async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
@@ -813,7 +827,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_join_failure_leaves_client_connected() {
+    async fn join_failure_surfaces_on_first_operation_and_leaves_client_usable() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
@@ -836,9 +850,21 @@ mod tests {
             .await
             .expect("test server did not start");
 
-        let error = client.handshake().await.unwrap_err();
+        // The handshake itself succeeds: the Join stream (the exclusive
+        // session slot) is only acquired lazily by the first streaming op.
+        client.handshake().await.expect("handshake is join-free");
+        assert_eq!(client.state(), ClientState::Ready);
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+
+        // The join failure surfaces on the first operation and leaves the
+        // client un-wedged (no half-open stream state).
+        let error = client
+            .reset(ResetRequest::default())
+            .await
+            .expect_err("join is unavailable");
         assert!(error.to_string().contains("join unavailable"));
-        assert_eq!(client.state(), ClientState::Connected);
+        assert_eq!(client.state(), ClientState::Ready);
         assert!(client.request_tx.is_none());
         assert!(client.response_rx.is_none());
 
