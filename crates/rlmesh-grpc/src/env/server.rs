@@ -165,6 +165,8 @@ pub fn env_service<E: Environment + 'static>(
     env: E,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
     rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
 }
 
 #[doc(hidden)]
@@ -180,6 +182,8 @@ pub fn env_service_from_shared<E: Environment + 'static>(
         serve_options,
         activity_tx,
     ))
+    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
 }
 
 #[tonic::async_trait]
@@ -658,11 +662,8 @@ pub async fn serve<E: Environment + 'static>(
     env: E,
     addr: impl Into<std::net::SocketAddr>,
 ) -> Result<(), tonic::transport::Error> {
-    use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-
-    let server = GrpcEnvServer::new(env);
     tonic::transport::Server::builder()
-        .add_service(EnvServiceServer::new(server))
+        .add_service(env_service(env))
         .serve(addr.into())
         .await
 }

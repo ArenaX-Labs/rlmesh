@@ -125,6 +125,12 @@ impl From<rlmesh_grpc::error::Error> for Error {
                 rlmesh_grpc::error::TransportError::MessageTooLarge { size, max } => {
                     Self::Connection(format!("message too large: {size} > {max}"))
                 }
+                rlmesh_grpc::error::TransportError::Unavailable(message) => {
+                    Self::Connection(message)
+                }
+                rlmesh_grpc::error::TransportError::Status { code, message } => {
+                    Self::Connection(format!("{code:?}: {message}"))
+                }
             },
             rlmesh_grpc::error::Error::Protocol(error) => Self::Internal(error.to_string()),
             rlmesh_grpc::error::Error::Environment(error) => {

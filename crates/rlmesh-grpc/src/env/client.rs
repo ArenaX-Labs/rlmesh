@@ -46,7 +46,7 @@ pub struct EnvClient {
     /// Sender half of the Join bidi stream request channel.
     request_tx: Option<mpsc::Sender<JoinRequest>>,
     /// Receiver half of the Join bidi stream response channel.
-    response_rx: Option<mpsc::Receiver<JoinResponse>>,
+    response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
     /// Counter for generating unique request IDs.
     request_counter: u64,
     /// Telemetry attached to the last Join response.
@@ -93,7 +93,9 @@ impl EnvClient {
         };
 
         Ok(Self {
-            client: EnvServiceClient::new(channel),
+            client: EnvServiceClient::new(channel)
+                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
             address: target.display_address().to_string(),
             state: ClientState::Connected,
             request_tx: None,
@@ -377,6 +379,19 @@ impl EnvClient {
                 );
                 GrpcError::from(TransportError::ConnectionClosed)
             })?;
+            let response = match response {
+                Ok(response) => response,
+                Err(status) => {
+                    tracing::error!(
+                        request_id = %request_id,
+                        request_kind,
+                        code = ?status.code(),
+                        message = %status.message(),
+                        "env join stream returned an error status"
+                    );
+                    return Err(super::protocol::status_to_grpc_error(status));
+                }
+            };
             if response.request_id == request_id {
                 return Ok(response);
             }
@@ -479,19 +494,19 @@ mod tests {
         };
 
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Step(StepResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "target".to_string(),
                 kind: Some(join_response::Kind::Close(CloseResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
 
@@ -505,6 +520,51 @@ mod tests {
 
         assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
         assert_eq!(request_rx.recv().await.unwrap().request_id, "target");
+    }
+
+    #[tokio::test]
+    async fn send_on_stream_surfaces_pump_status_error_to_caller() {
+        let (request_tx, _request_rx) = mpsc::channel(1);
+        let (response_tx, response_rx) = mpsc::channel(1);
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            address: "tcp://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: Some(request_tx),
+            response_rx: Some(response_rx),
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        // The response pump propagates a transport Status (e.g. a response that
+        // exceeded the decode limit) instead of just dropping it. The pending
+        // caller must observe that status, not an opaque "connection closed".
+        response_tx
+            .send(Err(tonic::Status::new(
+                tonic::Code::ResourceExhausted,
+                "message length too large",
+            )))
+            .await
+            .unwrap();
+
+        let error = client
+            .step(StepRequest::default())
+            .await
+            .expect_err("a stream status error must surface to the caller");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("message length too large"),
+            "expected the gRPC status message to survive, got: {message}"
+        );
+        assert!(
+            !matches!(
+                error,
+                GrpcError::Transport(TransportError::ConnectionClosed)
+            ),
+            "status error was collapsed into opaque ConnectionClosed"
+        );
     }
 
     #[tokio::test]
@@ -523,11 +583,11 @@ mod tests {
         };
 
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "grpc-req-1".to_string(),
                 kind: Some(join_response::Kind::Close(CloseResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
 

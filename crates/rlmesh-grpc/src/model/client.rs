@@ -44,7 +44,9 @@ impl ModelClient {
 
         Ok(Self {
             address,
-            client: ModelServiceClient::new(channel),
+            client: ModelServiceClient::new(channel)
+                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
             token: token.to_string(),
             state: ClientState::Connected,
             request_tx: None,

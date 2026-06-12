@@ -46,10 +46,41 @@ impl Error {
             Self::Timeout(_) => true,
             Self::Environment(error) => error.is_recoverable,
             Self::Model(error) => error.is_recoverable,
+            Self::Transport(TransportError::Unavailable(_)) => true,
             Self::Transport(TransportError::Io(_)) => false,
             Self::Transport(TransportError::ConnectionClosed) => false,
             _ => false,
         }
+    }
+}
+
+/// Map a `tonic::Status` from an established connection into a structured
+/// [`Error`], preserving the gRPC status code so callers can distinguish a
+/// retryable condition (e.g. `Unavailable`) from a permanent one (e.g.
+/// `Unimplemented`) instead of seeing every failure as `failed to connect`.
+pub fn status_to_grpc_error(status: tonic::Status) -> Error {
+    use tonic::Code;
+
+    let message = status.message().to_string();
+    match status.code() {
+        // Retryable / transport-ish conditions.
+        Code::Unavailable | Code::ResourceExhausted | Code::Aborted => {
+            Error::Transport(TransportError::Unavailable(message))
+        }
+        Code::DeadlineExceeded => Error::Timeout(Duration::ZERO),
+        Code::Cancelled => Error::Cancelled(message),
+        Code::Unauthenticated | Code::PermissionDenied => {
+            Error::Transport(TransportError::Status {
+                code: status.code(),
+                message,
+            })
+        }
+        // Everything else (Unimplemented, Internal, InvalidArgument, ...) is a
+        // permanent protocol/server error; keep the structured code.
+        _ => Error::Transport(TransportError::Status {
+            code: status.code(),
+            message,
+        }),
     }
 }
 
@@ -79,6 +110,19 @@ pub enum TransportError {
     /// Message too large
     #[error("message too large: {size} > {max}")]
     MessageTooLarge { size: usize, max: usize },
+
+    /// Server is temporarily unavailable (retryable).
+    #[error("server unavailable: {0}")]
+    Unavailable(String),
+
+    /// A gRPC status returned on an established connection, preserving its code.
+    #[error("grpc status {code:?}: {message}")]
+    Status {
+        /// The gRPC status code.
+        code: tonic::Code,
+        /// The status message.
+        message: String,
+    },
 }
 
 /// Protocol-level errors.
