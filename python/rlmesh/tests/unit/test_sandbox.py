@@ -143,6 +143,45 @@ def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
         )
 
 
+def test_sandbox_retries_close_after_transient_stop_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    stop_calls: list[str] = []
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def close(self) -> None:
+            pass
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    def flaky_stop(*, container_id: str) -> None:
+        stop_calls.append(container_id)
+        if len(stop_calls) == 1:
+            raise RuntimeError("docker daemon unavailable")
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", _start_result)
+    monkeypatch.setattr(sandbox, "_sandbox_stop_env", flaky_stop)
+
+    session = SandboxUnderTest("CartPole-v1")
+
+    # First close attempt fails while stopping the container.
+    with pytest.raises(RuntimeError, match="docker daemon unavailable"):
+        session.close()
+    # Session must not be marked closed, so the container is not leaked.
+    assert session._closed is False
+
+    # A retry succeeds and stops the container.
+    session.close()
+    assert session._closed is True
+    assert stop_calls == ["container-1", "container-1"]
+
+
 @pytest.mark.parametrize("field", ["packages", "imports"])
 def test_sandbox_rejects_bare_str_packages_imports(
     field: str,

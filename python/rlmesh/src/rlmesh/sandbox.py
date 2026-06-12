@@ -366,10 +366,12 @@ class SandboxSessionBase(Generic[RemoteT]):
         except BaseException as exc:  # pragma: no cover - best effort cleanup path
             remote_error = exc
 
-        try:
-            _sandbox_stop_env(container_id=self.sandbox.container_id)
-        finally:
-            self._closed = True
+        # Only mark the session closed once the container is actually stopped.
+        # If stopping fails (e.g. a transient Docker daemon error) leave
+        # ``_closed`` False so close()/__exit__/__del__ can retry the teardown
+        # instead of permanently leaking the container.
+        _sandbox_stop_env(container_id=self.sandbox.container_id)
+        self._closed = True
 
         if remote_error is not None:
             raise remote_error
