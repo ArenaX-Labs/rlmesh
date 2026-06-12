@@ -1,3 +1,6 @@
+//! Model-side API: the [`ModelHandler`] trait, the [`ModelWorker`] that drives
+//! or serves it, and the observation/route/lifecycle types a handler receives.
+
 mod handler;
 mod lifecycle;
 mod local;

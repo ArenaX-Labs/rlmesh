@@ -3,11 +3,21 @@ use super::server::BoundModelServer;
 use super::{local, server};
 use crate::{BindAddress, ConnectAddress, Error, Result, ServeOptions};
 
+/// Drives or serves a [`ModelHandler`].
+///
+/// Construct with [`ModelWorker::new`], then pick a mode:
+///
+/// - [`run_local`](ModelWorker::run_local) / [`run_local_async`](ModelWorker::run_local_async):
+///   connect to a remote env and run the model/env loop in-process.
+/// - [`serve`](ModelWorker::serve) / [`serve_async`](ModelWorker::serve_async) /
+///   [`bind_async`](ModelWorker::bind_async): host the handler as a model
+///   endpoint that an orchestrator joins.
 pub struct ModelWorker<H> {
     handler: H,
 }
 
 impl<H> ModelWorker<H> {
+    /// Wrap a [`ModelHandler`] to be driven or served.
     pub fn new(handler: H) -> Self {
         Self { handler }
     }
