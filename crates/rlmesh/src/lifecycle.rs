@@ -15,6 +15,7 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
             idle_timeout: value.idle_timeout,
             drain_timeout: value.drain_timeout,
             close_timeout: value.close_timeout,
+            token: None,
         }
     }
 }

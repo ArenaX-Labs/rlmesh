@@ -8,12 +8,15 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOptions {
     pub allow_remote_shutdown: bool,
     pub idle_timeout: Option<Duration>,
     pub drain_timeout: Option<Duration>,
     pub close_timeout: Option<Duration>,
+    /// Optional bearer token required on the `authorization` gRPC metadata
+    /// header for every request. `None` (the default) disables authentication.
+    pub token: Option<String>,
 }
 
 #[doc(hidden)]
@@ -164,6 +167,7 @@ mod tests {
                 idle_timeout: None,
                 drain_timeout: None,
                 close_timeout: None,
+                token: None,
             }
         );
     }

@@ -41,6 +41,8 @@ pub struct EnvClient {
     client: EnvServiceClient<tonic::transport::Channel>,
     /// Connected address in normalized display form.
     address: String,
+    /// Bearer token sent on the `authorization` metadata header (empty = none).
+    token: String,
     /// Client state.
     state: ClientState,
     /// Sender half of the Join bidi stream request channel.
@@ -59,6 +61,13 @@ impl EnvClient {
     /// `addr` may be `"host:port"`, `"tcp://host:port"`, `"http://host:port"`,
     /// or `"unix:///path/to/socket"` on Unix.
     pub async fn connect(addr: &str) -> Result<Self, GrpcError> {
+        Self::connect_with_token(addr, "").await
+    }
+
+    /// Connect to an EnvService server, sending `token` on the `authorization`
+    /// metadata header of every request. An empty token sends no header and is
+    /// equivalent to [`EnvClient::connect`].
+    pub async fn connect_with_token(addr: &str, token: &str) -> Result<Self, GrpcError> {
         let target = parse_env_connect_target(addr)?;
 
         #[cfg(unix)]
@@ -97,6 +106,7 @@ impl EnvClient {
                 .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
                 .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
             address: target.display_address().to_string(),
+            token: token.to_string(),
             state: ClientState::Connected,
             request_tx: None,
             response_rx: None,
@@ -176,7 +186,7 @@ impl EnvClient {
 
         Ok(self
             .client
-            .handshake(req)
+            .handshake(self.authorized_request(req)?)
             .await
             .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
             .into_inner())
@@ -305,9 +315,9 @@ impl EnvClient {
 
         let response = self
             .client
-            .shutdown(ShutdownRequest {
+            .shutdown(self.authorized_request(ShutdownRequest {
                 reason: reason.into(),
-            })
+            })?)
             .await
             .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
             .into_inner();
@@ -333,13 +343,28 @@ impl EnvClient {
 
         let response = self
             .client
-            .join(request_stream)
+            .join(self.authorized_request(request_stream)?)
             .await
             .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
 
         self.request_tx = Some(tx);
         self.response_rx = Some(spawn_response_pump(response.into_inner()));
         Ok(())
+    }
+
+    /// Wrap a message in a `tonic::Request`, attaching the `authorization`
+    /// metadata header when a token is configured.
+    fn authorized_request<T>(&self, message: T) -> Result<tonic::Request<T>, GrpcError> {
+        let mut request = tonic::Request::new(message);
+        if !self.token.is_empty() {
+            request.metadata_mut().insert(
+                "authorization",
+                self.token
+                    .parse()
+                    .map_err(|_| TransportError::InvalidAddress("invalid token".to_string()))?,
+            );
+        }
+        Ok(request)
     }
 
     #[tracing::instrument(
@@ -485,6 +510,7 @@ mod tests {
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
+            token: String::new(),
             address: "http://127.0.0.1:1".to_string(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
@@ -529,6 +555,7 @@ mod tests {
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
+            token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
@@ -574,6 +601,7 @@ mod tests {
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
+            token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
@@ -643,6 +671,120 @@ mod tests {
                 ..Default::default()
             }))
         }
+    }
+
+    #[tokio::test]
+    async fn connect_with_token_authenticates_against_token_server() {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
+
+        struct TokenEnv {
+            contract: SpaceEnvContract,
+        }
+        #[async_trait::async_trait]
+        impl crate::env::Environment for TokenEnv {
+            fn observation_space(&self) -> &SpaceSpec {
+                self.contract.observation_space.as_ref().unwrap()
+            }
+            fn action_space(&self) -> &SpaceSpec {
+                self.contract.action_space.as_ref().unwrap()
+            }
+            fn num_envs(&self) -> usize {
+                1
+            }
+            fn env_contract(&self) -> &SpaceEnvContract {
+                &self.contract
+            }
+            async fn reset(
+                &mut self,
+                _req: ResetRequest,
+            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+                Ok(ResetResponse::default())
+            }
+            async fn step(
+                &mut self,
+                _req: StepRequest,
+            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+                Ok(StepResponse::default())
+            }
+            async fn render(
+                &mut self,
+                _req: RenderRequest,
+            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+                Ok(RenderResponse::default())
+            }
+            async fn close(
+                &mut self,
+            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+                Ok(CloseResponse::default())
+            }
+        }
+
+        let space = SpaceSpec::default();
+        let env = TokenEnv {
+            contract: SpaceEnvContract {
+                id: "token-env".to_string(),
+                action_space: Some(space.clone()),
+                observation_space: Some(space),
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            },
+        };
+        let options = ServeOptions {
+            token: Some("s3cret".to_string()),
+            ..Default::default()
+        };
+        let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
+            env,
+            ShutdownTrigger::new(),
+            options,
+            None,
+        ));
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+
+        // A client without the token is rejected at handshake.
+        let mut anon = loop {
+            match EnvClient::connect(&address).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+        let err = anon.handshake().await.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid env token"),
+            "unauthenticated handshake should be rejected, got: {err}"
+        );
+
+        // A client with the correct token handshakes successfully.
+        let mut authed = EnvClient::connect_with_token(&address, "s3cret")
+            .await
+            .unwrap();
+        authed.handshake().await.expect("authorized handshake");
+        assert_eq!(authed.state(), ClientState::Ready);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test]

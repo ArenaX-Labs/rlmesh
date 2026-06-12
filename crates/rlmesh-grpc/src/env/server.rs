@@ -103,6 +103,9 @@ pub struct GrpcEnvServer<E: Environment> {
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
+    /// Optional bearer token required on the `authorization` metadata header.
+    /// Empty means authentication is disabled.
+    token: String,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     /// Whether a Join stream is currently active. The env protocol has no
     /// session identity and a single env / episode tracker is shared across all
@@ -150,14 +153,34 @@ impl<E: Environment> GrpcEnvServer<E> {
         serve_options: ServeOptions,
         activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
+        let token = serve_options.token.clone().unwrap_or_default();
         Self {
             env,
             episode_tracker: Arc::new(Mutex::new(EpisodeTracker::new())),
             shutdown,
             serve_options,
+            token,
             activity_tx,
             join_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Reject the request when a token is configured and the request's
+    /// `authorization` metadata does not match it. Mirrors the model service's
+    /// bearer-token check. A no-op when no token is configured.
+    fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
+        if self.token.is_empty() {
+            return Ok(());
+        }
+        let provided = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if provided != self.token {
+            return Err(Status::unauthenticated("invalid env token"));
+        }
+        Ok(())
     }
 }
 
@@ -200,6 +223,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeResponse>, Status> {
+        self.authenticate(&request)?;
         let req = request.into_inner();
 
         tracing::info!(
@@ -269,6 +293,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<Streaming<JoinRequest>>,
     ) -> Result<Response<Self::JoinStream>, Status> {
+        self.authenticate(&request)?;
         // Reject a second concurrent Join stream: the env protocol carries no
         // session identity and the env + episode tracker are shared, so two
         // streams cannot safely coexist.
@@ -343,6 +368,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<ShutdownRequest>,
     ) -> Result<Response<ShutdownResponse>, Status> {
+        self.authenticate(&request)?;
         let request = request.into_inner();
 
         if !self.serve_options.allow_remote_shutdown {
@@ -697,6 +723,77 @@ mod tests {
 
     use super::{Environment, GrpcEnvServer};
     use crate::error::EnvError;
+
+    #[tokio::test]
+    async fn handshake_enforces_optional_bearer_token() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+
+        let options = ServeOptions {
+            token: Some("secret-token".to_string()),
+            ..Default::default()
+        };
+        let server = GrpcEnvServer::new_with_options(
+            HandshakeOnlyEnv::default(),
+            ShutdownTrigger::new(),
+            options,
+            None,
+        );
+
+        // No token -> rejected.
+        let err = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .expect_err("missing token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Wrong token -> rejected.
+        let mut wrong = Request::new(handshake_request(
+            PROTOCOL_GENERATION,
+            &[CURRENT_WORKFLOW_EDITION],
+        ));
+        wrong
+            .metadata_mut()
+            .insert("authorization", "nope".parse().unwrap());
+        let err = EnvService::handshake(&server, wrong)
+            .await
+            .expect_err("wrong token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Correct token -> accepted.
+        let mut ok = Request::new(handshake_request(
+            PROTOCOL_GENERATION,
+            &[CURRENT_WORKFLOW_EDITION],
+        ));
+        ok.metadata_mut()
+            .insert("authorization", "secret-token".parse().unwrap());
+        let response = EnvService::handshake(&server, ok)
+            .await
+            .expect("correct token must be accepted")
+            .into_inner();
+        assert!(response.compatible);
+    }
+
+    #[tokio::test]
+    async fn handshake_without_token_is_unauthenticated_by_default() {
+        // A server with no configured token accepts unauthenticated requests.
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let response = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .expect("no-token server accepts requests")
+        .into_inner();
+        assert!(response.compatible);
+    }
 
     struct HandshakeOnlyEnv {
         contract: SpaceEnvContract,
