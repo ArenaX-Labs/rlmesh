@@ -282,6 +282,11 @@ fn validate_ref_part(label: &str, value: &str) -> Result<String> {
     if value.contains(char::is_whitespace) {
         bail!("{label} must not contain whitespace");
     }
+    // Reject leading '-' so the value can never be reparsed as a CLI option
+    // when it is later handed to git (e.g. as a revision passed to ls-remote).
+    if value.starts_with('-') {
+        bail!("{label} must not start with '-'");
+    }
     Ok(value.to_string())
 }
 
