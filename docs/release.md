@@ -27,6 +27,13 @@ Confirm the release policy manifest:
 python scripts/check_rlmesh_policy.py
 ```
 
+Regenerate the changelog with the unreleased entries placed under the release tag, then review and
+commit it (entries come from conventional commit messages; see `cliff.toml`):
+
+```bash
+mise run changelog:release v0.1.0-beta.3
+```
+
 Confirm protobuf compatibility against the checked-in public protocol baseline:
 
 ```bash
@@ -87,7 +94,9 @@ cargo publish -p rlmesh
 
 Python is a core RLMesh artifact. Python-only fixes may produce a Python patch release without
 forcing no-op publishes for unrelated bindings, but the package family in `rlmesh.toml` must stay
-unchanged. Protocol generation or workflow edition changes need an explicit compatibility review.
+unchanged. Protocol generation or workflow edition changes need an explicit compatibility review;
+see {doc}`editions/index` for when a change mints a new edition. A stable (non-beta) release must
+not ship a provisional edition — seal it in `rlmesh.toml` first.
 
 RLMesh currently publishes Python wheels only. Do not build or upload a Python source distribution;
 native builds are covered by the explicit wheel matrix below.

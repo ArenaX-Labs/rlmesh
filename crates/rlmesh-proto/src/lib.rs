@@ -14,12 +14,9 @@ pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 /// Current workflow semantics edition.
 pub const CURRENT_WORKFLOW_EDITION: &str = "2026.06";
 
-/// Legacy workflow edition accepted as an alias for the current beta semantics.
-pub const LEGACY_WORKFLOW_EDITION_2026: &str = "2026";
-
-/// Workflow editions understood by this crate.
-pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] =
-    &[CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026];
+/// Workflow editions this crate can operate under. Each edition names an
+/// immutable behavioral contract documented in `docs/editions/<edition>.md`.
+pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] = &[CURRENT_WORKFLOW_EDITION];
 
 /// Stable capability names exchanged during handshake.
 pub mod capabilities {
@@ -43,42 +40,27 @@ pub fn is_workflow_edition_supported(edition: &str) -> bool {
     SUPPORTED_WORKFLOW_EDITIONS.contains(&edition.trim())
 }
 
-/// Return whether a workflow edition is compatible with this protocol generation.
+/// Select the workflow edition governing a session from a peer's offer.
 ///
-/// Workflow editions describe semantic feature epochs. Unknown future editions
-/// are allowed to handshake as long as the wire protocol generation is still
-/// compatible; individual features should be guarded by capabilities.
-pub fn is_workflow_edition_compatible(edition: &str) -> bool {
-    parse_workflow_edition(edition).is_some()
+/// Returns the highest edition both peers support; the zero-padded `YYYY.MM`
+/// format makes lexicographic order chronological. `None` means there is no
+/// mutual edition and the handshake must report `compatible = false`. Only
+/// explicitly supported editions are eligible — unknown editions in the offer
+/// are ignored, never accepted on the assumption they are compatible.
+pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
+    SUPPORTED_WORKFLOW_EDITIONS
+        .iter()
+        .copied()
+        .filter(|edition| offered.iter().any(|offer| offer.trim() == *edition))
+        .max()
 }
 
-/// Return supported workflow editions as owned strings for protobuf responses.
+/// Return supported workflow editions as owned strings for protobuf messages.
 pub fn supported_workflow_editions() -> Vec<String> {
     SUPPORTED_WORKFLOW_EDITIONS
         .iter()
         .map(|edition| (*edition).to_string())
         .collect()
-}
-
-fn parse_workflow_edition(edition: &str) -> Option<(u16, Option<u8>)> {
-    let mut parts = edition.trim().split('.');
-    let year = parts.next()?;
-    if year.len() != 4 || !year.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    let year = year.parse().ok()?;
-
-    let Some(month) = parts.next() else {
-        return Some((year, None));
-    };
-    if parts.next().is_some() || month.len() != 2 || !month.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    let month = month.parse().ok()?;
-    if !(1..=12).contains(&month) {
-        return None;
-    }
-    Some((year, Some(month)))
 }
 
 /// Return a handshake capability map for the given capability names.
@@ -134,11 +116,15 @@ pub mod model {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026, MIN_SUPPORTED_PROTOCOL_GENERATION,
-        PROTOCOL_GENERATION, SUPPORTED_WORKFLOW_EDITIONS, capabilities, capability_map,
-        is_protocol_generation_compatible, is_workflow_edition_compatible,
-        is_workflow_edition_supported, missing_required_capabilities, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        SUPPORTED_WORKFLOW_EDITIONS, capabilities, capability_map,
+        is_protocol_generation_compatible, is_workflow_edition_supported,
+        missing_required_capabilities, negotiate_workflow_edition, supported_workflow_editions,
     };
+
+    fn offer(editions: &[&str]) -> Vec<String> {
+        editions.iter().map(|edition| edition.to_string()).collect()
+    }
 
     #[test]
     fn current_protocol_generation_is_compatible() {
@@ -169,46 +155,51 @@ mod tests {
     #[test]
     fn current_workflow_edition_is_supported() {
         assert!(is_workflow_edition_supported(CURRENT_WORKFLOW_EDITION));
-        assert_eq!(
-            SUPPORTED_WORKFLOW_EDITIONS,
-            &[CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026]
-        );
+        assert_eq!(SUPPORTED_WORKFLOW_EDITIONS, &[CURRENT_WORKFLOW_EDITION]);
         assert_eq!(
             supported_workflow_editions(),
-            vec![
-                CURRENT_WORKFLOW_EDITION.to_string(),
-                LEGACY_WORKFLOW_EDITION_2026.to_string()
-            ]
+            vec![CURRENT_WORKFLOW_EDITION.to_string()]
         );
-    }
-
-    #[test]
-    fn legacy_workflow_edition_alias_is_supported() {
-        assert!(is_workflow_edition_supported(LEGACY_WORKFLOW_EDITION_2026));
     }
 
     #[test]
     fn unknown_workflow_edition_is_not_supported() {
+        assert!(!is_workflow_edition_supported(""));
+        assert!(!is_workflow_edition_supported("2026"));
         assert!(!is_workflow_edition_supported("2026.11"));
         assert!(!is_workflow_edition_supported("2027.01"));
     }
 
     #[test]
-    fn well_formed_future_workflow_editions_are_compatible() {
-        assert!(is_workflow_edition_compatible(CURRENT_WORKFLOW_EDITION));
-        assert!(is_workflow_edition_compatible(LEGACY_WORKFLOW_EDITION_2026));
-        assert!(is_workflow_edition_compatible("2026.11"));
-        assert!(is_workflow_edition_compatible("2027.01"));
+    fn negotiation_selects_mutual_edition() {
+        assert_eq!(
+            negotiate_workflow_edition(&offer(&[CURRENT_WORKFLOW_EDITION])),
+            Some(CURRENT_WORKFLOW_EDITION)
+        );
+        assert_eq!(
+            negotiate_workflow_edition(&offer(&["2025.01", CURRENT_WORKFLOW_EDITION, "2031.12"])),
+            Some(CURRENT_WORKFLOW_EDITION)
+        );
     }
 
     #[test]
-    fn malformed_workflow_editions_are_not_compatible() {
-        assert!(!is_workflow_edition_supported(""));
-        assert!(!is_workflow_edition_compatible(""));
-        assert!(!is_workflow_edition_compatible("next"));
-        assert!(!is_workflow_edition_compatible("2026.13"));
-        assert!(!is_workflow_edition_compatible("2026.1"));
-        assert!(!is_workflow_edition_compatible("2026.06.01"));
+    fn negotiation_trims_offered_editions() {
+        assert_eq!(
+            negotiate_workflow_edition(&offer(&[" 2026.06 "])),
+            Some(CURRENT_WORKFLOW_EDITION)
+        );
+    }
+
+    #[test]
+    fn negotiation_rejects_unknown_or_empty_offers() {
+        assert_eq!(negotiate_workflow_edition(&[]), None);
+        assert_eq!(negotiate_workflow_edition(&offer(&[""])), None);
+        assert_eq!(negotiate_workflow_edition(&offer(&["2026"])), None);
+        assert_eq!(negotiate_workflow_edition(&offer(&["next"])), None);
+        assert_eq!(
+            negotiate_workflow_edition(&offer(&["2026.11", "2027.01"])),
+            None
+        );
     }
 
     #[test]

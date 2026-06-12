@@ -10,7 +10,13 @@ message HandshakeRequest {
   string client_name = 2;
   string client_version = 3;
   map<string, string> capabilities = 4;
-  string workflow_edition = 5;
+
+  // Every workflow edition the client can operate under. The server selects
+  // the highest mutual edition; an empty intersection fails the handshake.
+  repeated string supported_workflow_editions = 6;
+
+  reserved 5;
+  reserved "workflow_edition";
 }
 
 message HandshakeResponse {
@@ -20,8 +26,15 @@ message HandshakeResponse {
   string error_message = 4;
   map<string, string> capabilities = 5;
   rlmesh.env.v1.EnvContract env_contract = 6;
-  string workflow_edition = 7;
+
+  // Workflow editions the server supports, for diagnostics on failure.
   repeated string supported_workflow_editions = 8;
+
+  // Edition governing this session; empty when compatible is false.
+  string selected_workflow_edition = 9;
+
+  reserved 7;
+  reserved "workflow_edition";
 }
 
 message ShutdownRequest {

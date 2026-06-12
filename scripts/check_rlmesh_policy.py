@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -117,6 +118,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
                 )
 
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol, workflow))
+    errors.extend(_validate_workflow_editions(repo_root, workflow, release))
     errors.extend(
         _validate_api_surface(
             repo_root, api_surface, artifact_ids, release, package_family
@@ -273,6 +275,63 @@ def _validate_protocol_and_workflow(
         errors.append("buf.yaml is required for proto lint and breaking-change policy")
     elif "breaking:" not in buf_config.read_text(encoding="utf-8"):
         errors.append("buf.yaml must include a breaking-change policy")
+
+    return errors
+
+
+def _validate_workflow_editions(
+    repo_root: Path, workflow: dict[str, Any], release: dict[str, Any]
+) -> list[str]:
+    errors: list[str] = []
+    editions = workflow.get("editions")
+    if not isinstance(editions, dict):
+        return ["missing [workflow.editions] table"]
+
+    supported = workflow.get("supported_editions")
+    for edition in supported if isinstance(supported, list) else []:
+        if isinstance(edition, str) and edition not in editions:
+            errors.append(
+                f'supported edition {edition!r} has no [workflow.editions."{edition}"] entry'
+            )
+
+    release_status = release.get("status")
+    for edition, entry in editions.items():
+        prefix = f'[workflow.editions."{edition}"]'
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix} must be a table")
+            continue
+
+        status = entry.get("status")
+        if status not in {"provisional", "sealed"}:
+            errors.append(f"{prefix}.status must be 'provisional' or 'sealed'")
+        if status == "provisional" and release_status == "stable":
+            errors.append(
+                f"{prefix}: stable releases must not ship provisional editions; "
+                "seal the edition first"
+            )
+
+        spec = entry.get("spec")
+        if not isinstance(spec, str):
+            errors.append(f"{prefix}.spec must be a string path")
+            continue
+        spec_path = repo_root / spec
+        if not spec_path.exists():
+            errors.append(f"{prefix}.spec does not exist: {spec}")
+            continue
+
+        spec_sha256 = entry.get("spec_sha256")
+        if status == "sealed":
+            if not isinstance(spec_sha256, str):
+                errors.append(f"{prefix}.spec_sha256 is required once sealed")
+            else:
+                actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+                if actual != spec_sha256:
+                    errors.append(
+                        f"{prefix}: sealed spec {spec} was modified "
+                        f"(sha256 {actual}, manifest declares {spec_sha256})"
+                    )
+        elif spec_sha256 is not None:
+            errors.append(f"{prefix}.spec_sha256 is only recorded when sealed")
 
     return errors
 

@@ -7,7 +7,11 @@ package_family = "0.1"
 
 [workflow]
 current_edition = "2026.06"
-supported_editions = ["2026.06", "2026"]
+supported_editions = ["2026.06"]
+
+[workflow.editions."2026.06"]
+status = "provisional"
+spec = "docs/editions/2026.06.md"
 
 [protocol]
 current_generation = "rlmesh.protocol.v1"

@@ -10,6 +10,7 @@ uv = "0.11"
 zig = "0.16"
 node = "24"
 oxfmt = "0.53"
+git-cliff = "2.13"
 "cargo:maturin" = "1.13"
 "cargo:cargo-zigbuild" = "0.22"
 "cargo:cargo-deny" = "0.19"
@@ -187,6 +188,24 @@ run = "uv run --only-group docs sphinx-autobuild -b dirhtml docs site"
 description = "Build Rust library docs with warnings denied"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --lib"
+
+# ──────────────────────────────────────────────
+# Changelog (generated from conventional commits; see cliff.toml)
+# ──────────────────────────────────────────────
+[tasks."changelog:unreleased"]
+description = "Preview unreleased changelog entries from commit messages"
+run = "git cliff rust/v0.1.0-beta.1..HEAD --unreleased"
+
+[tasks."changelog:build"]
+description = "Regenerate CHANGELOG.md, including an Unreleased section"
+run = ["git cliff rust/v0.1.0-beta.1..HEAD -o CHANGELOG.md", "oxfmt --write CHANGELOG.md"]
+
+[tasks."changelog:release"]
+description = "Regenerate CHANGELOG.md with unreleased entries under the given tag (e.g. v0.1.0-beta.3)"
+run = [
+  'git cliff rust/v0.1.0-beta.1..HEAD --tag {{arg(name="version")}} -o CHANGELOG.md',
+  "oxfmt --write CHANGELOG.md",
+]
 
 # ──────────────────────────────────────────────
 # Native Python stubs

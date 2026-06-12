@@ -65,6 +65,13 @@ metadata between them and the wire.
 - **Mutation:** decoded views are read-only by contract. NumPy enforces this; Torch does not (see
   the Torch backend page). JAX arrays are immutable by construction.
 
+## Workflow Editions
+
+Workflow semantics are governed by a negotiated workflow edition. Each edition string names an
+immutable behavioral contract documented in {doc}`editions/index`; the handshake selects the highest
+edition supported by both peers. Editions change only on deliberate semantic redesigns — new
+features and new APIs do not mint editions.
+
 ## Artifact Versions
 
 Core feature releases move together. Patch releases may be artifact-specific when the fix is

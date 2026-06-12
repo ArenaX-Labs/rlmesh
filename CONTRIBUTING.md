@@ -23,6 +23,22 @@ Changes that touch public Python or Rust APIs should update API surface snapshot
 native stubs when needed. Changes that touch packaging, wheels, sandboxing, transport, or
 compatibility should explain which system validation was run or why it was skipped.
 
+## Commit Messages
+
+Commits follow the [Conventional Commits](https://www.conventionalcommits.org) format:
+`type(scope): summary`, with `!` after the type or scope for breaking changes (`feat(proto)!: ...`).
+Common types are `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, and `build`.
+
+The changelog is generated from these messages (see `cliff.toml`): `feat`, `fix`, `perf`,
+`refactor`, and `docs` commits become entries; `chore`, `ci`, `test`, and `build` commits are
+omitted unless marked breaking. Write summaries that read well in release notes. Squash-merged pull
+requests must keep a conventional title, since that title becomes the commit message. Preview
+pending entries with:
+
+```bash
+mise run changelog:unreleased
+```
+
 ## Local Setup
 
 Install local tools, Python development dependencies, and git hooks:
