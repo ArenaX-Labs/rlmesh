@@ -1,10 +1,11 @@
 # RLMesh
 
-RLMesh is a Python SDK for model-environment evaluation workflows. It can serve Gymnasium-style
-environments, connect clients over local or remote transports, and adapt values for plain Python,
-NumPy, and Torch users.
+RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments,
+connects clients over local or remote transports, and adapts values for plain Python, NumPy, and
+Torch users.
 
-> Beta: APIs and package structure may change before the stable release.
+> Beta: pin versions for active projects. APIs and package structure may change before the stable
+> release.
 
 ## Installation
 

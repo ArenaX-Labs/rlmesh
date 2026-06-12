@@ -1,6 +1,6 @@
 # Remote Environments
 
-Remote clients connect to an environment endpoint and expose the same high-level workflow as a local
+Remote clients connect to an environment endpoint and expose the same core calls as a local
 Gymnasium environment: `reset`, `step`, `render`, and `close`.
 
 Use the concrete backend modules in application code:

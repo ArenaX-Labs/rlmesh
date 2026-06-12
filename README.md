@@ -13,18 +13,18 @@
 
 </div>
 
-RLMesh is an evaluation framework for connecting models to environments. The Python SDK serves
-Gymnasium-style environments, connects local or remote evaluators, and keeps the same workflow
-usable when evaluation moves behind a service boundary. Rust crates provide the lower-level runtime,
-protocol, and packaging layers.
+RLMesh connects models to environments for evaluation. The Python SDK serves Gymnasium-style
+environments and lets evaluators call `reset`, `step`, `render`, and `close` over local or remote
+transports. Rust crates provide the lower-level runtime, protocol, and packaging layers.
 
 ## Project Status
 
-RLMesh is in beta. The published beta is for early adopters and feedback; APIs and package structure
-may still change before a stable release.
+RLMesh is in beta. Pin versions for active projects; APIs and package structure may still change
+before a stable release.
 
 RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are
-supported today. Additional bindings will follow demand; C++ is a likely early candidate.
+supported today. Additional language bindings are future work, not part of the current public
+surface.
 
 ## Installation
 

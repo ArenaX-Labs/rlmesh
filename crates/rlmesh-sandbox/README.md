@@ -1,6 +1,6 @@
 # rlmesh-sandbox
 
-Docker-backed environment packaging and execution for RLMesh evaluation workflows.
+Docker-backed environment packaging and execution for RLMesh environments.
 
 This crate contains the Rust sandbox primitives used to resolve environment sources, build container
 specs, and launch packaged environments. Python users normally access sandboxed environments through

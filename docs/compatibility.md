@@ -1,17 +1,19 @@
 # Compatibility
 
-RLMesh promises stable workflows, not frozen internals. During beta, stability labels describe the
-intended support level, but APIs and package structure may still change.
+RLMesh documents compatibility at the workflow level rather than treating every internal type as
+frozen. During beta, stability labels describe the intended support level, but APIs and package
+structure may still change.
 
 ## Stable
 
 Stable workflows include documented public APIs, supported CLI flows, and supported remote
 environment/model interactions.
 
-- Imports, signatures, and documented behavior should stay usable.
-- New runtimes should keep accepting older stable clients and packages.
-- New features may require newer packages or capabilities, but older stable workflows should still
-  fail clearly or keep working.
+- Imports, signatures, and documented behavior are expected to stay usable within the compatibility
+  policy.
+- New runtimes are expected to keep accepting older stable clients and packages.
+- New features may require newer packages or capabilities, but older stable workflows should fail
+  clearly or keep working.
 
 ## Preview and Experimental
 

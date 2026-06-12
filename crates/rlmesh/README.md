@@ -1,6 +1,6 @@
 # rlmesh
 
-Rust SDK for RLMesh model-environment evaluation workflows.
+Rust SDK for serving RLMesh environments and connecting Rust evaluators.
 
 Use this crate when you want to serve environments, connect to remote environments, or build
 directly against RLMesh's Rust API. Most Python users should install the `rlmesh` Python package

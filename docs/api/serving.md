@@ -1,8 +1,8 @@
 # Serving Helpers
 
 ```{note}
-`rlmesh.serving` is **experimental** in this beta. The helpers are stable enough to build on, but
-their signatures may still change before the stable release.
+`rlmesh.serving` is **experimental** in this beta. Use it with version pinning; signatures may still
+change before the stable release.
 ```
 
 `rlmesh.serving` exposes a small surface for constructing an environment to serve through
