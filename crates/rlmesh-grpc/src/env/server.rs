@@ -454,15 +454,28 @@ async fn handle_env_request<E: Environment>(
                             .map(|&b| b != 0)
                             .unwrap_or(false);
 
-                        if (terminated || truncated)
-                            && let Some(metadata) = tracker.complete_episode(
+                        if terminated || truncated {
+                            if let Some(metadata) = tracker.complete_episode(
                                 env_idx as i32,
                                 terminated,
                                 truncated,
                                 extract_env_final_info(shared_info.as_ref(), env_idx, num_envs),
-                            )
-                        {
-                            completed_episodes.push(metadata);
+                            ) {
+                                completed_episodes.push(metadata);
+                            }
+
+                            // Gymnasium vector environments autoreset a lane
+                            // internally after it terminates: the client never
+                            // calls reset(), and subsequent steps continue on a
+                            // fresh episode. Start that episode here so per-step
+                            // recording does not warn endlessly and episode
+                            // accounting stays correct for the rest of the run.
+                            // The autoreset is unseeded, so the new episode has
+                            // no recorded seed. Single (non-vector) envs follow
+                            // the explicit-reset contract and are left alone.
+                            if num_envs > 1 {
+                                tracker.start_episode(env_idx as i32, None);
+                            }
                         }
                     }
 
@@ -1079,5 +1092,130 @@ mod tests {
             assert!(response.selected_workflow_edition.is_empty());
             assert!(response.env_contract.is_none());
         }
+    }
+
+    /// A 2-lane vector env whose first step terminates lane 0 and whose later
+    /// steps never terminate, modelling a Gymnasium autoresetting vector env.
+    struct AutoresetVectorEnv {
+        contract: SpaceEnvContract,
+        step_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl AutoresetVectorEnv {
+        fn new() -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "autoreset".to_string(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 2,
+                },
+                step_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for AutoresetVectorEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            2
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            let n = self
+                .step_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Lane 0 terminates on the first step only; lane 1 never terminates.
+            let terminated_mask = if n == 0 {
+                vec![1u8, 0u8]
+            } else {
+                vec![0u8, 0u8]
+            };
+            Ok(StepResponse {
+                rewards: vec![1.0, 1.0],
+                terminated_mask,
+                truncated_mask: vec![0u8, 0u8],
+                ..Default::default()
+            })
+        }
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn vector_autoreset_keeps_tracking_episodes_after_termination() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+
+        let env = Arc::new(Mutex::new(AutoresetVectorEnv::new()));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        // Reset both lanes.
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "reset".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+
+        let step_req = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+
+        // Step 1: lane 0 terminates and autoresets.
+        let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
+        let first = match first.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+        assert_eq!(first.completed_episodes.len(), 1, "lane 0 should complete");
+        // Both lanes still have an active episode id (lane 0 was autoreset).
+        assert_eq!(first.episode_ids.len(), 2);
+        assert!(
+            first.episode_ids.iter().all(|id| !id.is_empty()),
+            "both lanes must have an active episode after lane 0 autoreset"
+        );
+
+        // Step 2: lane 0 continues on its new episode and lane 1 continues; no
+        // lane records against a missing episode, and accounting is intact.
+        let second = super::handle_env_request(step_req("s2"), env.clone(), tracker.clone()).await;
+        let second = match second.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+        assert!(second.completed_episodes.is_empty());
+        assert_eq!(second.episode_ids.len(), 2);
+        assert!(second.episode_ids.iter().all(|id| !id.is_empty()));
+
+        // Lane 0's new episode has accumulated a step, proving it is tracked.
+        let mut tracker = tracker.lock().await;
+        let lane0_meta = tracker
+            .complete_episode(0, true, false, None)
+            .expect("lane 0 must have an active autoreset episode");
+        assert_eq!(lane0_meta.step_count, 1, "post-autoreset step was tracked");
+        // The autoreset episode is unseeded.
+        assert_eq!(lane0_meta.seed, super::super::episode::UNSEEDED_SENTINEL);
     }
 }
