@@ -80,5 +80,9 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
         return err_space!(path, "Text", "max_length must be > 0");
     }
 
+    if t.min_length > t.max_length {
+        return err_space!(path, "Text", "min_length must be <= max_length");
+    }
+
     Ok(())
 }
