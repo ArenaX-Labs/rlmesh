@@ -1,10 +1,10 @@
 use half::bf16;
-use prost_types::{ListValue, Value, value};
 use rlmesh_proto::common::v1::MessageBytes;
-use rlmesh_spaces::spaces::{BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder};
+use rlmesh_spaces::spaces::{
+    BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, TupleSpaceBuilder,
+};
 use rlmesh_spaces::{BinaryPayload, DType, RenderRequest, SpaceValue, Tensor};
 
-use super::codec::{decode_value_for_space, encode_value_for_space};
 use super::{
     binary_to_bytes, decode_batch_bytes, decode_batched_partial_values, decode_value_bytes,
     encode_batch_bytes, encode_batched_partial_values, encode_value_bytes,
@@ -107,23 +107,42 @@ fn binary_payload_roundtrips_through_message_bytes() {
 }
 
 #[test]
-fn nested_image_box_roundtrips_and_stays_compact() {
+fn nested_image_box_roundtrips_byte_exact_without_base64_inflation() {
+    // D1: a Dict{image: uint8 Box, choice: Discrete(2^53+1)} must round-trip
+    // byte-exact, and a 100KB image leaf must not pay base64 inflation: the
+    // encoded payload is the raw bytes plus modest proto framing (< 1.1x).
+    let big_discrete = (1i64 << 53) + 1;
     let space = DictSpaceBuilder::new()
         .insert(
             "image",
-            BoxSpaceBuilder::scalar(0.0, 255.0, vec![16, 16, 3])
+            BoxSpaceBuilder::scalar(0.0, 255.0, vec![200, 200, 3])
                 .dtype(DType::Uint8)
                 .build()
                 .unwrap(),
         )
+        .insert(
+            "choice",
+            DiscreteBuilder::new(big_discrete).build().unwrap(),
+        )
         .build()
         .unwrap();
-    let raw: Vec<u8> = (0..16 * 16 * 3).map(|i| (i % 256) as u8).collect();
+    let raw: Vec<u8> = (0..200 * 200 * 3).map(|i| (i % 256) as u8).collect();
+    assert!(raw.len() > 100_000, "image leaf must exceed 100KB");
     let value = SpaceValue::Dict(
-        [(
-            "image".to_string(),
-            SpaceValue::Box(Tensor::from_vec(raw.clone(), vec![16, 16, 3], DType::Uint8).unwrap()),
-        )]
+        [
+            (
+                "choice".to_string(),
+                // 2^53 + 1 is inexact as an f64; the old composite encoding rode
+                // Discrete through NumberValue and would corrupt it.
+                SpaceValue::Discrete(big_discrete - 1),
+            ),
+            (
+                "image".to_string(),
+                SpaceValue::Box(
+                    Tensor::from_vec(raw.clone(), vec![200, 200, 3], DType::Uint8).unwrap(),
+                ),
+            ),
+        ]
         .into_iter()
         .collect(),
     );
@@ -132,36 +151,48 @@ fn nested_image_box_roundtrips_and_stays_compact() {
     let decoded = decode_value_bytes(Some(&payload), &space).unwrap().unwrap();
 
     assert_eq!(decoded, value);
-    assert!(payload.data.len() < raw.len() * 2);
-}
-
-#[test]
-fn legacy_scalar_list_box_payload_still_decodes() {
-    let space = BoxSpaceBuilder::scalar(0.0, 255.0, vec![3])
-        .dtype(DType::Uint8)
-        .build()
-        .unwrap();
-    let value = Value {
-        kind: Some(value::Kind::ListValue(ListValue {
-            values: vec![1.0, 2.0, 3.0]
-                .into_iter()
-                .map(|number| Value {
-                    kind: Some(value::Kind::NumberValue(number)),
-                })
-                .collect(),
-        })),
-    };
-
-    let decoded = decode_value_for_space(&value, &space).unwrap();
-
-    assert_eq!(
-        decoded,
-        SpaceValue::Box(Tensor::from_vec(vec![1, 2, 3], vec![3], DType::Uint8).unwrap())
+    // No base64 (which would be ~1.33x); framing stays well under 1.1x.
+    assert!(
+        (payload.data.len() as f64) < (raw.len() as f64) * 1.1,
+        "encoded {} bytes for a {}-byte image leaf inflated past 1.1x",
+        payload.data.len(),
+        raw.len(),
     );
 }
 
 #[test]
-fn int16_box_roundtrips_raw_and_base64() {
+fn nested_tuple_values_roundtrip_byte_exact() {
+    // D1: tuple nesting, including a nested dict, round-trips exactly.
+    let inner_dict = DictSpaceBuilder::new()
+        .insert("choice", DiscreteBuilder::new(4).build().unwrap())
+        .build()
+        .unwrap();
+    let space = TupleSpaceBuilder::new()
+        .with(
+            BoxSpaceBuilder::scalar(0.0, 255.0, vec![2])
+                .dtype(DType::Uint8)
+                .build()
+                .unwrap(),
+        )
+        .with(inner_dict)
+        .build()
+        .unwrap();
+    let value = SpaceValue::Tuple(vec![
+        SpaceValue::Box(Tensor::from_vec(vec![7, 9], vec![2], DType::Uint8).unwrap()),
+        SpaceValue::Dict(
+            [("choice".to_string(), SpaceValue::Discrete(3))]
+                .into_iter()
+                .collect(),
+        ),
+    ]);
+
+    let payload = encode_value_bytes(&value, &space).unwrap();
+    let decoded = decode_value_bytes(Some(&payload), &space).unwrap().unwrap();
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn int16_box_roundtrips_raw_and_nested() {
     let space = BoxSpaceBuilder::scalar(-1000.0, 1000.0, vec![3])
         .dtype(DType::Int16)
         .build()
@@ -185,7 +216,8 @@ fn int16_box_roundtrips_raw_and_base64() {
     let decoded = decode_batched_partial_values(Some(&batch), &space).unwrap();
     assert_eq!(decoded, values);
 
-    // Base64 path (Box nested in a Dict goes through proto Value encoding).
+    // Nested in a Dict, the leaf carries the same raw little-endian bytes
+    // verbatim (no base64), so round-trip stays byte-exact.
     let dict_space = DictSpaceBuilder::new()
         .insert(
             "reading",
@@ -205,7 +237,7 @@ fn int16_box_roundtrips_raw_and_base64() {
 }
 
 #[test]
-fn bfloat16_box_roundtrips_raw_and_legacy_scalar_list() {
+fn bfloat16_box_roundtrips_raw() {
     let space = BoxSpaceBuilder::scalar(0.0, 10.0, vec![2])
         .dtype(DType::Bfloat16)
         .build()
@@ -220,20 +252,6 @@ fn bfloat16_box_roundtrips_raw_and_legacy_scalar_list() {
     let payload = encode_value_bytes(&value, &space).unwrap();
     assert_eq!(payload.data, data);
     let decoded = decode_value_bytes(Some(&payload), &space).unwrap().unwrap();
-    assert_eq!(decoded, value);
-
-    // Legacy scalar-list payload packs through the bf16 scalar codec.
-    let legacy = Value {
-        kind: Some(value::Kind::ListValue(ListValue {
-            values: vec![0.5, 2.0]
-                .into_iter()
-                .map(|number| Value {
-                    kind: Some(value::Kind::NumberValue(number)),
-                })
-                .collect(),
-        })),
-    };
-    let decoded = decode_value_for_space(&legacy, &space).unwrap();
     assert_eq!(decoded, value);
 }
 
@@ -257,57 +275,27 @@ fn strided_box_view_encodes_contiguously() {
 }
 
 #[test]
-fn discrete_decode_rejects_fractional_and_nonfinite_floats() {
-    let space = DiscreteBuilder::new(8).build().unwrap();
-
-    let fractional = Value {
-        kind: Some(value::Kind::NumberValue(3.7)),
-    };
-    let err = decode_value_for_space(&fractional, &space)
-        .expect_err("a fractional Discrete action must be rejected, not truncated to 3");
-    assert!(err.to_string().contains("fractional"));
-
-    let nan = Value {
-        kind: Some(value::Kind::NumberValue(f64::NAN)),
-    };
-    let err = decode_value_for_space(&nan, &space)
-        .expect_err("a NaN Discrete action must be rejected, not coerced to 0");
-    assert!(err.to_string().contains("non-finite"));
-}
-
-#[test]
-fn discrete_encode_rejects_precision_losing_integers() {
-    let space = DiscreteBuilder::new(8).build().unwrap();
-
-    // 2^53 + 1 cannot be represented exactly as an f64; encoding it as a JSON
-    // number would silently corrupt the value.
-    let value = SpaceValue::Discrete((1i64 << 53) + 1);
-    let err = encode_value_for_space(&value, &space)
-        .expect_err("encoding an integer beyond 2^53 must be rejected");
-    assert!(err.to_string().contains("2^53"));
-
-    // A value within the exact-float range round-trips fine.
-    let value = SpaceValue::Discrete(5);
-    let encoded = encode_value_for_space(&value, &space).unwrap();
-    assert_eq!(
-        decode_value_for_space(&encoded, &space).unwrap(),
-        SpaceValue::Discrete(5)
+fn nested_discrete_survives_beyond_two_pow_53_exactly() {
+    // D1: a Discrete value of 2^53 + 1 nested in a Dict must survive byte-exact.
+    // The old composite encoding rode it through f64 and decoded back to 2^53.
+    let big = (1i64 << 53) + 1;
+    let space = DictSpaceBuilder::new()
+        .insert("choice", DiscreteBuilder::new(big + 1).build().unwrap())
+        .build()
+        .unwrap();
+    let value = SpaceValue::Dict(
+        [("choice".to_string(), SpaceValue::Discrete(big))]
+            .into_iter()
+            .collect(),
     );
-}
 
-#[test]
-fn int_to_proto_f64_rejects_i64_min_without_overflow() {
-    use super::scalars::int_to_proto_f64;
-
-    // i64::MIN.abs() overflows; the guard must reject the value, not panic
-    // (debug) or wrap negative and accept a lossy encode (release).
-    let err = int_to_proto_f64(i64::MIN)
-        .expect_err("i64::MIN exceeds the exact-float range and must be rejected");
-    assert!(err.to_string().contains("2^53"));
-
-    assert_eq!(int_to_proto_f64(1 << 53).unwrap(), 9007199254740992.0);
-    let err = int_to_proto_f64((1 << 53) + 1).expect_err("2^53 + 1 must be rejected");
-    assert!(err.to_string().contains("2^53"));
+    let payload = encode_value_bytes(&value, &space).unwrap();
+    let decoded = decode_value_bytes(Some(&payload), &space).unwrap().unwrap();
+    assert_eq!(decoded, value);
+    let SpaceValue::Dict(map) = decoded else {
+        panic!("expected dict");
+    };
+    assert_eq!(map.get("choice"), Some(&SpaceValue::Discrete(big)));
 }
 
 #[test]

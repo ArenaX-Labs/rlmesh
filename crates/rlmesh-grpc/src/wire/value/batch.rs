@@ -1,27 +1,23 @@
-use prost_types::{ListValue, Value, value};
+use prost::Message;
 use rlmesh_proto::common::v1::MessageBytes;
+use rlmesh_proto::spaces::v1::ValueList;
 use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::codec::{
-    decode_space_value, decode_value_for_space, encode_space_value, encode_value_for_space,
-};
-use super::proto_value::{decode_proto_value, encode_proto_value, expect_list_value};
+use super::codec::{decode_space_value, decode_value_node, encode_space_value, encode_value_node};
 
 pub fn encode_batch_bytes(
     values: &[native::SpaceValue],
     space: &native::SpaceSpec,
 ) -> Result<MessageBytes, ProtocolError> {
-    let values = values
+    let items = values
         .iter()
-        .map(|value| encode_value_for_space(value, space))
+        .map(|value| encode_value_node(value, space))
         .collect::<Result<_, _>>()?;
 
     Ok(MessageBytes {
-        data: encode_proto_value(&Value {
-            kind: Some(value::Kind::ListValue(ListValue { values })),
-        }),
+        data: ValueList { items }.encode_to_vec(),
     })
 }
 
@@ -32,12 +28,12 @@ pub fn decode_batch_bytes(
     let Some(bytes) = payload else {
         return Ok(vec![]);
     };
-    let decoded = decode_proto_value(&bytes.data)?;
-    let values = expect_list_value(&decoded, "batched space value")?;
-    values
-        .values
+    let list = ValueList::decode(bytes.data.as_slice()).map_err(|err| {
+        ProtocolError::DecodeError(format!("failed to decode batched space value: {err}"))
+    })?;
+    list.items
         .iter()
-        .map(|value| decode_value_for_space(value, space))
+        .map(|node| decode_value_node(node, space))
         .collect()
 }
 

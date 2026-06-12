@@ -1,13 +1,7 @@
-use prost_types::{Value, value};
 use rlmesh_spaces as native;
 use rlmesh_spaces::Scalar;
 
 use crate::error::ProtocolError;
-
-use super::proto_value::expect_list_value;
-
-/// Largest integer magnitude that survives an f64 round-trip exactly (2^53).
-const MAX_EXACT_F64_INT: i64 = 1 << 53;
 
 /// Convert a decoded float into an integer, rejecting fractional and
 /// non-finite values instead of silently truncating them or mapping NaN to 0.
@@ -30,20 +24,6 @@ pub(super) fn float_to_int(value: f64) -> Result<i64, ProtocolError> {
         )));
     }
     Ok(value as i64)
-}
-
-/// Convert an integer into the f64 used by proto Value, rejecting magnitudes
-/// that would lose precision in the round-trip (|value| > 2^53).
-pub(super) fn int_to_proto_f64(value: i64) -> Result<f64, ProtocolError> {
-    // unsigned_abs: `i64::MIN.abs()` overflows (panics in debug, wraps in
-    // release to a negative value that would slip past the bound check).
-    if value.unsigned_abs() > MAX_EXACT_F64_INT as u64 {
-        return Err(ProtocolError::EncodeError(format!(
-            "integer {value} exceeds the exact-float range (2^53) and cannot be encoded as a \
-             JSON number without precision loss"
-        )));
-    }
-    Ok(value as f64)
 }
 
 pub(super) fn encode_scalar(value: i64, dtype: native::DType) -> Result<Vec<u8>, ProtocolError> {
@@ -73,11 +53,6 @@ pub(super) fn decode_scalar(bytes: &[u8], dtype: native::DType) -> Result<i64, P
         ScalarValue::Bool(value) => i64::from(*value),
         ScalarValue::Int(value) => *value,
         ScalarValue::Float(value) => float_to_int(*value)?,
-        ScalarValue::String(_) => {
-            return Err(ProtocolError::DecodeError(
-                "scalar text is not valid for integer decode".to_string(),
-            ));
-        }
     })
 }
 
@@ -91,9 +66,6 @@ pub(super) fn decode_int_sequence(
             ScalarValue::Bool(value) => Ok(i64::from(value)),
             ScalarValue::Int(value) => Ok(value),
             ScalarValue::Float(value) => float_to_int(value),
-            ScalarValue::String(_) => Err(ProtocolError::DecodeError(
-                "text is not valid in integer sequence".to_string(),
-            )),
         })
         .collect()
 }
@@ -105,14 +77,11 @@ pub(super) fn encode_scalars(
     let scalars = values
         .iter()
         .map(|value| match value {
-            ScalarValue::Bool(value) => Ok(Scalar::Bool(*value)),
-            ScalarValue::Int(value) => Ok(Scalar::Int(*value)),
-            ScalarValue::Float(value) => Ok(Scalar::Float(*value)),
-            ScalarValue::String(_) => Err(ProtocolError::EncodeError(format!(
-                "unsupported scalar encoding for dtype {dtype:?}"
-            ))),
+            ScalarValue::Bool(value) => Scalar::Bool(*value),
+            ScalarValue::Int(value) => Scalar::Int(*value),
+            ScalarValue::Float(value) => Scalar::Float(*value),
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     native::encode_scalars(&scalars, dtype).map_err(|_| {
         ProtocolError::EncodeError(format!("unsupported scalar encoding for dtype {dtype:?}"))
     })
@@ -144,54 +113,9 @@ pub(super) fn decode_scalars(
         })
 }
 
-pub(super) fn decode_proto_array(value: &Value) -> Result<Vec<ScalarValue>, ProtocolError> {
-    expect_list_value(value, "array")?
-        .values
-        .iter()
-        .map(|value| match &value.kind {
-            Some(value::Kind::BoolValue(flag)) => Ok(ScalarValue::Bool(*flag)),
-            Some(value::Kind::NumberValue(number)) => {
-                if number.is_finite() && number.fract() == 0.0 {
-                    Ok(ScalarValue::Int(float_to_int(*number)?))
-                } else {
-                    Ok(ScalarValue::Float(*number))
-                }
-            }
-            Some(value::Kind::StringValue(text)) => Ok(ScalarValue::String(text.clone())),
-            _ => Err(ProtocolError::DecodeError(
-                "array payload contained non-scalar value".to_string(),
-            )),
-        })
-        .collect()
-}
-
-pub(super) fn scalar_to_proto_value(value: impl Into<ScalarValue>) -> Result<Value, ProtocolError> {
-    Ok(match value.into() {
-        ScalarValue::Bool(value) => Value {
-            kind: Some(value::Kind::BoolValue(value)),
-        },
-        ScalarValue::Int(value) => Value {
-            kind: Some(value::Kind::NumberValue(int_to_proto_f64(value)?)),
-        },
-        ScalarValue::Float(value) => Value {
-            kind: Some(value::Kind::NumberValue(value)),
-        },
-        ScalarValue::String(value) => Value {
-            kind: Some(value::Kind::StringValue(value)),
-        },
-    })
-}
-
 #[derive(Debug, Clone)]
 pub(super) enum ScalarValue {
     Bool(bool),
     Int(i64),
     Float(f64),
-    String(String),
-}
-
-impl From<i64> for ScalarValue {
-    fn from(value: i64) -> Self {
-        Self::Int(value)
-    }
 }

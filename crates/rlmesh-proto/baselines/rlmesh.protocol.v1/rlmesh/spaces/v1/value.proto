@@ -8,3 +8,32 @@ import "rlmesh/common/v1/payload.proto";
 message SpaceValue {
   rlmesh.common.v1.MessageBytes bytes = 1;
 }
+
+// Recursive transport node for composite (Dict/Tuple) space values, mirroring
+// SpaceSpec. Leaf arms carry the same exact encodings used at the top level:
+// raw little-endian bytes for tensor-shaped leaves and an exact int64 for
+// Discrete. No base64, no f64 for integers.
+message SpaceValueNode {
+  oneof kind {
+    // Box leaf: raw contiguous little-endian element bytes.
+    bytes tensor = 1;
+    // Discrete leaf: the exact index, never narrowed through f64.
+    int64 discrete = 2;
+    // MultiBinary / MultiDiscrete leaf: raw element bytes for the child dtype.
+    bytes multi = 3;
+    // Text leaf.
+    string text = 4;
+    // Tuple node.
+    ValueList tuple = 5;
+    // Dict node.
+    ValueMap dict = 6;
+  }
+}
+
+message ValueList {
+  repeated SpaceValueNode items = 1;
+}
+
+message ValueMap {
+  map<string, SpaceValueNode> entries = 1;
+}
