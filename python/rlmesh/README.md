@@ -24,10 +24,10 @@ pip install --pre "rlmesh[torch]"
 
 ## Quickstart
 
-Install RLMesh with Gymnasium support:
+Install RLMesh with Gymnasium support and the NumPy client adapter:
 
 ```bash
-pip install --pre "rlmesh[gymnasium]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
 In one process, serve any Gymnasium-compatible environment:

@@ -37,10 +37,10 @@ pip install --pre rlmesh
 
 ## Quickstart
 
-Install the Python package with Gymnasium support:
+Install the Python package with Gymnasium support and the NumPy client adapter:
 
 ```bash
-pip install --pre "rlmesh[gymnasium]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
 In one process, serve a standard Gymnasium environment:
