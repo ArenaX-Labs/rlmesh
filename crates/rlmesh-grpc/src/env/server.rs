@@ -438,7 +438,7 @@ async fn handle_env_request<E: Environment>(
 
                     for env_idx in 0..num_envs {
                         let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                        tracker.record_step(env_idx as i32, reward, None);
+                        tracker.record_step(env_idx as i32, reward);
 
                         let terminated = ok
                             .terminated_mask
