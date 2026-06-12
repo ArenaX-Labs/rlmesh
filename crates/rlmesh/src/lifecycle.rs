@@ -1,10 +1,25 @@
+//! Server lifecycle options shared by the env and model servers.
+
 use std::time::Duration;
 
+/// Transport lifecycle policy for a server (shutdown, timeouts, auth).
+///
+/// Defaults are conservative: remote shutdown is disabled, every timeout is
+/// unset (no idle shutdown, no drain/close bound), and no token is required.
+/// Pass an instance to [`EnvServer::bind_with_options`](crate::EnvServer::bind_with_options)
+/// or via [`ServeModelOptions`](crate::ServeModelOptions) for the model server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOptions {
+    /// Honor a client `shutdown` RPC. When `false`, remote shutdown requests
+    /// are rejected and the server stops only via its own idle/drain policy.
     pub allow_remote_shutdown: bool,
+    /// Shut the server down after this much inactivity. `None` never times out.
     pub idle_timeout: Option<Duration>,
+    /// Maximum time to drain in-flight requests during shutdown. `None` waits
+    /// indefinitely.
     pub drain_timeout: Option<Duration>,
+    /// Maximum time the environment/handler close hook may take on shutdown.
+    /// `None` waits indefinitely.
     pub close_timeout: Option<Duration>,
     /// Bearer token required on the `authorization` metadata header of every
     /// request to this endpoint.

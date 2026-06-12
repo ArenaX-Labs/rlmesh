@@ -3,25 +3,40 @@ use std::time::Duration;
 
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 
+/// The result type used throughout this crate: `Result<T, `[`Error`]`>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Classifies an [`EnvironmentError`] reported by an environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
+    /// No specific code was provided.
     Unspecified,
+    /// The operation exceeded its deadline.
     Timeout,
+    /// The submitted action was invalid for the action space.
     InvalidAction,
+    /// The environment is not ready to serve the request yet.
     NotReady,
+    /// The environment is busy with another request.
     Busy,
+    /// An internal environment error.
     Internal,
+    /// The environment process crashed.
     Crashed,
+    /// The operation was cancelled.
     Cancelled,
+    /// The environment (or session) is closed.
     Closed,
 }
 
+/// A failure reported by the environment when serving a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentError {
+    /// Machine-readable classification of the failure.
     pub code: ErrorCode,
+    /// Human-readable description.
     pub message: String,
+    /// Whether the operation may be retried.
     pub is_recoverable: bool,
 }
 
@@ -32,7 +47,9 @@ pub struct EnvironmentError {
 /// rlmesh itself, so the runtime can report and retry it appropriately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {
+    /// Human-readable description of why the handler declined.
     pub message: String,
+    /// Whether the caller may retry the request.
     pub is_recoverable: bool,
 }
 
@@ -44,15 +61,28 @@ impl fmt::Display for ModelError {
 
 impl std::error::Error for ModelError {}
 
+/// The error type for every fallible operation in this crate.
+///
+/// The variants separate transport/setup faults ([`Error::Address`],
+/// [`Error::Connection`], [`Error::Server`], [`Error::Internal`]) from the two
+/// domain failures: [`Error::Environment`] (the env reported a failure) and
+/// [`Error::Model`] (a user [`crate::ModelHandler`] declined a request). Use
+/// [`Error::is_recoverable`] to decide whether to retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
+    /// An address or bind target could not be parsed.
     Address(String),
+    /// A transport-level connection failure (treated as recoverable).
     Connection(String),
+    /// An operation exceeded its deadline (treated as recoverable).
     Timeout(Duration),
+    /// The environment reported a failure; see [`EnvironmentError`].
     Environment(EnvironmentError),
     /// A failure raised by a user-implemented [`crate::ModelHandler`].
     Model(ModelError),
+    /// A server-side failure (e.g. bind failed, close hook failed).
     Server(String),
+    /// An internal/protocol error that should not normally occur.
     Internal(String),
 }
 

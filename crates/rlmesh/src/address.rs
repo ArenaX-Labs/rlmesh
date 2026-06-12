@@ -5,19 +5,48 @@ use rlmesh_grpc::helpers::{BindTarget, parse_bind_target, parse_env_connect_targ
 
 use crate::{Error, Result};
 
+/// A client-side address for connecting to a running server.
+///
+/// Build one with [`ConnectAddress::parse`], or pass a `&str` directly to the
+/// connect helpers (e.g. [`crate::RemoteEnv::connect`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectAddress {
+    /// A TCP endpoint, e.g. `tcp://host:port`.
     Tcp(String),
+    /// A Unix-domain socket path (Unix only).
     Unix(PathBuf),
 }
 
+/// A server-side address to bind a listener to.
+///
+/// Build one with [`BindAddress::parse`]. Bind to TCP port `0` to let the OS
+/// assign a free port and read the result back from the bound server's
+/// `local_addr()`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindAddress {
-    Tcp { host: String, port: u16 },
-    Unix { path: PathBuf },
+    /// A TCP host/port to bind. Port `0` requests an OS-assigned port.
+    Tcp {
+        /// Host or interface to bind (e.g. `127.0.0.1`, `0.0.0.0`).
+        host: String,
+        /// Port to bind; `0` requests an OS-assigned port.
+        port: u16,
+    },
+    /// A Unix-domain socket path to bind (Unix only).
+    Unix {
+        /// Filesystem path for the socket.
+        path: PathBuf,
+    },
 }
 
 impl ConnectAddress {
+    /// Parse a connect target such as `host:port`, `tcp://host:port`, or
+    /// `unix:///path/to.sock`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Address`](crate::Error::Address) if `value` is not a
+    /// recognized address (including a `unix://` path on Windows, where Unix
+    /// sockets are unsupported).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         let target = parse_env_connect_target(value.as_ref()).map_err(Error::from)?;
         Ok(match target.unix_path() {
@@ -26,6 +55,7 @@ impl ConnectAddress {
         })
     }
 
+    /// The address rendered as a connect string (`tcp://...` or `unix://...`).
     pub fn as_str(&self) -> String {
         match self {
             Self::Tcp(value) => value.clone(),
@@ -41,6 +71,13 @@ impl fmt::Display for ConnectAddress {
 }
 
 impl BindAddress {
+    /// Parse a bind target such as `port`, `host:port`, `tcp://host:port`, or
+    /// `unix:///path/to.sock`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Address`](crate::Error::Address) if `value` is not a
+    /// recognized bind target (including a `unix://` path on Windows).
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         Ok(
             match parse_bind_target(value.as_ref()).map_err(Error::from)? {
@@ -50,6 +87,7 @@ impl BindAddress {
         )
     }
 
+    /// The address rendered as a `tcp://host:port` or `unix://path` string.
     pub fn display_address(&self) -> String {
         match self {
             Self::Tcp { host, port } => format!("tcp://{host}:{port}"),
