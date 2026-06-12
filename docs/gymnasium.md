@@ -23,7 +23,7 @@ policy in `api_metadata.json`: `Stable` spaces follow the compatibility guarante
 | `Box`           | `Box`           | Stable       | Uniform and array bounds are accepted.                                    |
 | `Discrete`      | `Discrete`      | Stable       | `start` is preserved.                                                     |
 | `MultiBinary`   | `MultiBinary`   | Experimental | Integer and shaped forms are accepted.                                    |
-| `MultiDiscrete` | `MultiDiscrete` | Experimental | One-dimensional `nvec` is supported.                                      |
+| `MultiDiscrete` | `MultiDiscrete` | Experimental | One- and two-dimensional `nvec` are supported.                            |
 | `Text`          | `Text`          | Experimental | Custom charsets are preserved; default charsets are treated as unbounded. |
 
 For `Text`, RLMesh still preserves `min_length` and `max_length`. Only the default Gymnasium charset
