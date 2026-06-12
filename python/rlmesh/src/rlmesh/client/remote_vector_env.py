@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 
@@ -218,7 +218,9 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         Returns:
             Batched observations, rewards, terminations, truncations, and info.
         """
-        obs, rewards, terminated, truncated, info = self._client.step(actions)
+        obs, rewards, terminated, truncated, info = self._client.step(
+            self._encode_actions(actions)
+        )
         self._refresh_viewer(pace=True)
         return (
             cast(ValueT, self._bridge.decode(obs)),
@@ -227,6 +229,36 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
             cast(ValueT, self._bridge.decode(truncated)),
             info,
         )
+
+    def _encode_actions(self, actions: ActionT) -> object:
+        """Encode a batched action through the value bridge when possible.
+
+        For leaf array action spaces (Box/Discrete/MultiDiscrete/MultiBinary)
+        a CleanRL-style batched action is a single framework array of shape
+        ``(num_envs, *action_shape)``. We split it into per-environment slices
+        and encode each through the value bridge, yielding a list of zero-copy
+        ``Tensor`` leaves that the Rust codec packs via its tensor fast path
+        instead of materializing every scalar through ``.tolist()``.
+
+        Anything the bridge cannot map cleanly (the identity bridge, ``Dict``/
+        ``Tuple`` action structures, or non-array batches) is passed through
+        unchanged so the existing Rust batching path handles it.
+        """
+        bridge = self._bridge
+        # The identity (rlmesh-native) bridge has no array leaves to fast-path.
+        if bridge.name == "rlmesh":
+            return actions
+        if self._space_spec("action").kind in ("dict", "tuple", "text"):
+            return actions
+        if not _is_array_batch(actions):
+            return actions
+        try:
+            per_env = list(cast("Iterable[object]", actions))
+        except TypeError:
+            return actions
+        if len(per_env) != self.num_envs:
+            return actions
+        return [bridge.encode(item) for item in per_env]
 
     def render(self, *, env_index: int = 0) -> ValueT | None:
         """Render a frame from one environment in the vector.
@@ -297,6 +329,23 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         if bridge is None:
             return cast(Space[ActionT], space_from_spec(spec))
         return cast(Space[ActionT], space_from_spec(spec, bridge=bridge))
+
+
+def _is_array_batch(actions: object) -> bool:
+    """Return ``True`` for a single framework array batch (not a container).
+
+    Python lists/tuples are already per-environment containers that the Rust
+    codec iterates directly; ``str``/``bytes``/``Mapping`` are never batches.
+    A framework array (numpy ``ndarray``/torch ``Tensor``) is sized and iterable
+    over its leading axis, which is exactly the per-environment split we want.
+    """
+    if isinstance(actions, (str, bytes, bytearray, Mapping)):
+        return False
+    if isinstance(actions, (list, tuple)):
+        return False
+    if isinstance(actions, Sequence):
+        return False
+    return hasattr(actions, "__len__") and hasattr(actions, "__iter__")
 
 
 def _normalize_autoreset_mode(metadata: Mapping[str, object]) -> Metadata:
