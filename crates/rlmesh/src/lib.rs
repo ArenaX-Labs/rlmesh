@@ -108,7 +108,8 @@
 //!     async fn predict(&mut self, _obs: ModelObservation)
 //!         -> rlmesh::Result<BinaryPayload>
 //!     {
-//!         // Decode `_obs`, run your policy, return the encoded action bytes.
+//!         // Decode `_obs`, run your policy, then encode the chosen action with
+//!         // `rlmesh::encode_action(&value, space)`. Here we return empty bytes.
 //!         Ok(BinaryPayload::default())
 //!     }
 //! }
@@ -143,7 +144,7 @@ pub use lifecycle::ServeOptions;
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
     ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker, RunLocalOptions,
-    ServeModelOptions,
+    ServeModelOptions, encode_action,
 };
 pub use single::{SingleEnv, SingleEnvAdapter};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
