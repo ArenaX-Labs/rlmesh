@@ -266,6 +266,10 @@
             "kind": "property",
             "signature": "property dtype: str"
           },
+          "from_dlpack": {
+            "kind": "function",
+            "signature": "from_dlpack(obj: object) -> Tensor"
+          },
           "is_contiguous": {
             "kind": "function",
             "signature": "is_contiguous() -> bool"

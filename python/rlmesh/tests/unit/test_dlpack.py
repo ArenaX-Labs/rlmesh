@@ -135,6 +135,151 @@ def test_numpy_sees_int64_and_bool_dtypes() -> None:
     assert np.from_dlpack(bool_tensor).tolist() == [True, False]
 
 
+def test_from_dlpack_roundtrip_legacy_and_versioned() -> None:
+    import rlmesh
+
+    data = struct.pack("<6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    tensor = rlmesh.Tensor(data, [2, 3], "float32")
+
+    # Object path: from_dlpack calls __dlpack__() with no kwargs -> legacy.
+    imported = rlmesh.Tensor.from_dlpack(tensor)
+    assert imported.shape == [2, 3]
+    assert imported.dtype == "float32"
+    assert imported.tobytes() == data
+
+    # Raw capsule paths, both flavors.
+    legacy = rlmesh.Tensor.from_dlpack(tensor.__dlpack__())
+    assert legacy.tobytes() == data
+    versioned = rlmesh.Tensor.from_dlpack(tensor.__dlpack__(max_version=(1, 0)))
+    assert versioned.tobytes() == data
+
+
+def test_from_dlpack_consumes_capsule_once() -> None:
+    import rlmesh
+
+    tensor = rlmesh.Tensor(b"\x01\x02", [2], "uint8")
+    capsule = tensor.__dlpack__()
+
+    first = rlmesh.Tensor.from_dlpack(capsule)
+    assert first.tobytes() == b"\x01\x02"
+    assert _capsule_name_is(capsule, b"used_dltensor")
+
+    # A consumed capsule is no longer importable.
+    with pytest.raises(TypeError):
+        rlmesh.Tensor.from_dlpack(capsule)
+
+    versioned = tensor.__dlpack__(max_version=(1, 0))
+    rlmesh.Tensor.from_dlpack(versioned)
+    assert _capsule_name_is(versioned, b"used_dltensor_versioned")
+
+
+def test_from_dlpack_imports_numpy_arrays() -> None:
+    np = pytest.importorskip("numpy")
+    import rlmesh
+
+    array = np.arange(12, dtype=np.int32).reshape(3, 4)
+    tensor = rlmesh.Tensor.from_dlpack(array)
+    assert tensor.shape == [3, 4]
+    assert tensor.dtype == "int32"
+    assert tensor.tobytes() == array.tobytes()
+
+    # Strided source: every other column is a non-contiguous view.
+    view = array[:, ::2]
+    tensor = rlmesh.Tensor.from_dlpack(view)
+    assert tensor.shape == [3, 2]
+    assert tensor.is_contiguous() is True
+    assert tensor.tobytes() == np.ascontiguousarray(view).tobytes()
+
+    bools = np.array([True, False, True])
+    tensor = rlmesh.Tensor.from_dlpack(bools)
+    assert tensor.dtype == "bool"
+    assert tensor.tobytes() == b"\x01\x00\x01"
+
+
+def test_from_dlpack_copies_out_of_the_source() -> None:
+    np = pytest.importorskip("numpy")
+    import sys
+
+    import rlmesh
+
+    array = np.arange(4, dtype=np.float64)
+    refcount_before = sys.getrefcount(array)
+    tensor = rlmesh.Tensor.from_dlpack(array)
+    # The import copies and releases the producer immediately: no lingering
+    # reference to the numpy array survives.
+    assert sys.getrefcount(array) == refcount_before
+
+    array[0] = 99.0
+    assert tensor.tobytes() == struct.pack("<4d", 0.0, 1.0, 2.0, 3.0)
+
+
+def test_from_dlpack_rejects_non_dlpack_objects() -> None:
+    import rlmesh
+
+    with pytest.raises(TypeError, match="__dlpack__"):
+        rlmesh.Tensor.from_dlpack(object())
+
+    with pytest.raises(TypeError, match="__dlpack__"):
+        rlmesh.Tensor.from_dlpack(b"raw bytes")
+
+
+def test_from_dlpack_rejects_non_cpu_devices() -> None:
+    """Fabricate a kDLCUDA capsule with ctypes and check it is refused."""
+    import rlmesh
+
+    class DLDevice(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("device_type", ctypes.c_int32),
+            ("device_id", ctypes.c_int32),
+        ]
+
+    class DLDataType(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("code", ctypes.c_uint8),
+            ("bits", ctypes.c_uint8),
+            ("lanes", ctypes.c_uint16),
+        ]
+
+    class DLTensor(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("data", ctypes.c_void_p),
+            ("device", DLDevice),
+            ("ndim", ctypes.c_int32),
+            ("dtype", DLDataType),
+            ("shape", ctypes.POINTER(ctypes.c_int64)),
+            ("strides", ctypes.POINTER(ctypes.c_int64)),
+            ("byte_offset", ctypes.c_uint64),
+        ]
+
+    class DLManagedTensor(ctypes.Structure):
+        _fields_: ClassVar = [
+            ("dl_tensor", DLTensor),
+            ("manager_ctx", ctypes.c_void_p),
+            ("deleter", ctypes.c_void_p),
+        ]
+
+    shape = (ctypes.c_int64 * 1)(1)
+    payload = (ctypes.c_uint8 * 4)(0, 0, 0, 0)
+    managed = DLManagedTensor()
+    managed.dl_tensor.data = ctypes.cast(payload, ctypes.c_void_p)
+    managed.dl_tensor.device = DLDevice(device_type=2, device_id=0)  # kDLCUDA
+    managed.dl_tensor.ndim = 1
+    managed.dl_tensor.dtype = DLDataType(code=2, bits=32, lanes=1)
+    managed.dl_tensor.shape = shape
+    managed.dl_tensor.byte_offset = 0
+    managed.deleter = None
+
+    new_capsule = ctypes.pythonapi.PyCapsule_New
+    new_capsule.restype = ctypes.py_object
+    new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    capsule = new_capsule(
+        ctypes.cast(ctypes.byref(managed), ctypes.c_void_p), b"dltensor", None
+    )
+
+    with pytest.raises(ValueError, match="only CPU"):
+        rlmesh.Tensor.from_dlpack(capsule)
+
+
 def test_dlpack_capsule_data_pointer_and_strides() -> None:
     """Walk the legacy DLManagedTensor struct via ctypes and check fields."""
     import rlmesh

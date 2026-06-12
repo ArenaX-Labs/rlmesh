@@ -251,6 +251,14 @@ class Tensor:
         r"""
         DLPack device of the tensor data: `(kDLCPU, 0)`.
         """
+    @staticmethod
+    def from_dlpack(obj: object) -> Tensor:
+        r"""
+        Import a tensor from a DLPack capsule or any object implementing
+        `__dlpack__`. Accepts both legacy and versioned capsules; the
+        elements are always copied into fresh storage and the source
+        capsule is consumed.
+        """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
 

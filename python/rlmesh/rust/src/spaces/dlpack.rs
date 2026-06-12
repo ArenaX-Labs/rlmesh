@@ -17,10 +17,14 @@
 use std::ffi::{CStr, c_void};
 
 use pyo3::prelude::*;
-use rlmesh_spaces::v1::{Storage, Tensor, dlpack_type};
+use rlmesh_spaces::v1::{
+    DLPackType, Storage, Tensor, contiguous_strides, dlpack_type, dtype_from_dlpack, dtype_size,
+};
 
 pub(crate) static DLTENSOR_NAME: &CStr = c"dltensor";
 pub(crate) static DLTENSOR_VERSIONED_NAME: &CStr = c"dltensor_versioned";
+pub(crate) static USED_DLTENSOR_NAME: &CStr = c"used_dltensor";
+pub(crate) static USED_DLTENSOR_VERSIONED_NAME: &CStr = c"used_dltensor_versioned";
 
 /// `DLPACK_FLAG_BITMASK_READ_ONLY` from dlpack.h.
 const FLAG_READ_ONLY: u64 = 1;
@@ -215,6 +219,169 @@ unsafe fn new_capsule<'py>(
             return Err(PyErr::fetch(py));
         }
         Ok(Bound::from_owned_ptr(py, capsule))
+    }
+}
+
+/// Import a DLPack capsule (either flavor) or any object implementing
+/// `__dlpack__` into a fresh, copied [`Tensor`].
+///
+/// The producer's `__dlpack__` is called with no arguments for maximum
+/// compatibility (e.g. JAX on Python 3.10 never emits versioned capsules).
+/// Consumed capsules are renamed to `used_*` and the producer deleter runs
+/// immediately, since the data has been copied out.
+pub(crate) fn import_tensor(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+    let capsule = if is_capsule(obj, DLTENSOR_NAME) || is_capsule(obj, DLTENSOR_VERSIONED_NAME) {
+        obj.clone()
+    } else if obj.hasattr("__dlpack__")? {
+        let capsule = obj.call_method0("__dlpack__")?;
+        if !is_capsule(&capsule, DLTENSOR_NAME) && !is_capsule(&capsule, DLTENSOR_VERSIONED_NAME) {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "__dlpack__ did not return a DLPack capsule",
+            ));
+        }
+        capsule
+    } else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected a DLPack capsule or an object implementing __dlpack__",
+        ));
+    };
+
+    unsafe {
+        if is_capsule(&capsule, DLTENSOR_VERSIONED_NAME) {
+            let managed =
+                pyo3::ffi::PyCapsule_GetPointer(capsule.as_ptr(), DLTENSOR_VERSIONED_NAME.as_ptr())
+                    as *mut DLManagedTensorVersioned;
+            if managed.is_null() {
+                return Err(PyErr::fetch(capsule.py()));
+            }
+            if (*managed).version.major > 1 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unsupported DLPack major version {}",
+                    (*managed).version.major
+                )));
+            }
+            let tensor = copy_dl_tensor(&(*managed).dl_tensor)?;
+            pyo3::ffi::PyCapsule_SetName(capsule.as_ptr(), USED_DLTENSOR_VERSIONED_NAME.as_ptr());
+            if let Some(deleter) = (*managed).deleter {
+                deleter(managed);
+            }
+            Ok(tensor)
+        } else {
+            let managed = pyo3::ffi::PyCapsule_GetPointer(capsule.as_ptr(), DLTENSOR_NAME.as_ptr())
+                as *mut DLManagedTensor;
+            if managed.is_null() {
+                return Err(PyErr::fetch(capsule.py()));
+            }
+            let tensor = copy_dl_tensor(&(*managed).dl_tensor)?;
+            pyo3::ffi::PyCapsule_SetName(capsule.as_ptr(), USED_DLTENSOR_NAME.as_ptr());
+            if let Some(deleter) = (*managed).deleter {
+                deleter(managed);
+            }
+            Ok(tensor)
+        }
+    }
+}
+
+fn is_capsule(obj: &Bound<'_, PyAny>, name: &CStr) -> bool {
+    unsafe { pyo3::ffi::PyCapsule_IsValid(obj.as_ptr(), name.as_ptr()) == 1 }
+}
+
+/// Copy the elements described by a producer's `DLTensor` into a fresh
+/// tensor. Trusts the producer's metadata, as every DLPack consumer must.
+unsafe fn copy_dl_tensor(dl: &DLTensor) -> PyResult<Tensor> {
+    if dl.device.device_type != 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "only CPU DLPack tensors are supported, got device type {}",
+            dl.device.device_type
+        )));
+    }
+    let dtype = dtype_from_dlpack(DLPackType {
+        code: dl.dtype.code,
+        bits: dl.dtype.bits,
+        lanes: dl.dtype.lanes,
+    })
+    .ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "unsupported DLPack dtype (code={}, bits={}, lanes={})",
+            dl.dtype.code, dl.dtype.bits, dl.dtype.lanes
+        ))
+    })?;
+    if dl.ndim < 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "DLPack tensor has negative ndim",
+        ));
+    }
+    let ndim = dl.ndim as usize;
+    if ndim > 0 && dl.shape.is_null() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "DLPack tensor has a null shape",
+        ));
+    }
+
+    unsafe {
+        let shape: Vec<i64> = if ndim == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(dl.shape, ndim).to_vec()
+        };
+        if shape.iter().any(|&dim| dim < 0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "DLPack tensor has a negative dimension",
+            ));
+        }
+        let numel: usize = shape.iter().map(|&dim| dim as usize).product();
+        let itemsize = dtype_size(dtype);
+
+        let into_py_err = |err: rlmesh_spaces::v1::TensorError| {
+            pyo3::exceptions::PyValueError::new_err(err.to_string())
+        };
+
+        if numel == 0 {
+            return Tensor::from_slice(&[], &shape, dtype).map_err(into_py_err);
+        }
+        if dl.data.is_null() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "DLPack tensor has null data",
+            ));
+        }
+        let base = (dl.data as *const u8).add(dl.byte_offset as usize);
+
+        let strides: Option<Vec<i64>> = if dl.strides.is_null() {
+            None
+        } else {
+            Some(std::slice::from_raw_parts(dl.strides, ndim).to_vec())
+        };
+        let is_contiguous = match &strides {
+            None => true,
+            Some(strides) => *strides == contiguous_strides(&shape),
+        };
+
+        if is_contiguous {
+            let bytes = std::slice::from_raw_parts(base, numel * itemsize);
+            return Tensor::from_slice(bytes, &shape, dtype).map_err(into_py_err);
+        }
+
+        // Strided (possibly negative-stride) gather in C order.
+        let strides = strides.expect("strided path");
+        let mut data = Vec::with_capacity(numel * itemsize);
+        let mut index = vec![0i64; ndim];
+        for _ in 0..numel {
+            let element: i64 = index
+                .iter()
+                .zip(&strides)
+                .map(|(&i, &stride)| i * stride)
+                .sum();
+            let src = base.offset(element as isize * itemsize as isize);
+            data.extend_from_slice(std::slice::from_raw_parts(src, itemsize));
+            for axis in (0..ndim).rev() {
+                index[axis] += 1;
+                if index[axis] < shape[axis] {
+                    break;
+                }
+                index[axis] = 0;
+            }
+        }
+        Tensor::from_vec(data, shape, dtype).map_err(into_py_err)
     }
 }
 

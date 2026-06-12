@@ -228,6 +228,17 @@ impl PyTensor {
         (i32::from(self.inner.device()), 0)
     }
 
+    /// Import a tensor from a DLPack capsule or any object implementing
+    /// `__dlpack__`. Accepts both legacy and versioned capsules; the
+    /// elements are always copied into fresh storage and the source
+    /// capsule is consumed.
+    #[staticmethod]
+    fn from_dlpack(
+        #[gen_stub(override_type(type_repr = "object", imports = ()))] obj: &Bound<'_, PyAny>,
+    ) -> PyResult<Self> {
+        super::dlpack::import_tensor(obj).map(Self::from)
+    }
+
     fn tobytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner.to_contiguous_bytes())
     }
