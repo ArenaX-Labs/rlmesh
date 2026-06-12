@@ -4,6 +4,7 @@ use crate::{DType, DictSpec};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct DictSpaceBuilder {
     entries: BTreeMap<String, SpaceSpec>,
 }

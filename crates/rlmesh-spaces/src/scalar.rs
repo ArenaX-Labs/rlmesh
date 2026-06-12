@@ -26,6 +26,7 @@ impl Scalar {
 
 /// Errors raised by the scalar byte codec.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScalarError {
     #[error("cannot encode or decode scalars with unspecified dtype")]
     UnspecifiedDtype,

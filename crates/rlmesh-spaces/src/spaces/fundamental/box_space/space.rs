@@ -3,6 +3,7 @@ use crate::errors::{SpaceError, err_space};
 use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{AxiswiseBounds, BoxBounds, BoxSpec, ElementwiseBounds, UniformBounds};
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct BoxSpaceBuilder {
     shape: Vec<i64>,
     dtype: DType,

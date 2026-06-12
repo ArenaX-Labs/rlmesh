@@ -9,6 +9,7 @@ macro_rules! text_space_v1 {
     };
 }
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct TextBuilder {
     min_length: i64,
     max_length: i64,

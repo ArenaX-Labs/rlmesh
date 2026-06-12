@@ -2,6 +2,7 @@ use crate::errors::{SpaceError, err_space};
 use crate::spaces::{SpaceKind, SpaceSpec, validate_space};
 use crate::{DType, MultiBinaryDims, MultiBinarySpec};
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct MultiBinaryBuilder {
     shape: Vec<i64>,
     dtype: DType,
