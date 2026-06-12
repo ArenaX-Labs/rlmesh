@@ -26,3 +26,23 @@ pub use hooks::{
     TimingSummary,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
+
+/// Re-export of the protocol crate whose generated types appear in this
+/// crate's public API.
+///
+/// The `RuntimeEnv`/`RuntimeModel` traits, the hook events, and
+/// [`RuntimeSessionSpec`] are currently expressed directly in
+/// `rlmesh_proto::*::v1` generated types (e.g. [`rlmesh_proto::env::v1::ResetRequest`],
+/// [`rlmesh_proto::common::v1::MessageBytes`], [`rlmesh_proto::spaces::v1::SpaceSpec`]).
+/// Downstream implementors must be able to name those types without taking an
+/// independent dependency on `rlmesh-proto` (which would have to be kept at an
+/// exactly matching version), so they are re-exported here as the sanctioned
+/// path.
+///
+/// Coupling note: because the public surface is proto-generated, a protocol
+/// regeneration or a major `prost`/`tonic` bump is a breaking change for this
+/// crate and all `RuntimeHooks`/`RuntimeEnv`/`RuntimeModel` implementors. A
+/// future crate-owned domain boundary (mirroring `rlmesh-spaces`) could
+/// decouple them; until then, depend on this re-export rather than on
+/// `rlmesh-proto` directly.
+pub use rlmesh_proto;
