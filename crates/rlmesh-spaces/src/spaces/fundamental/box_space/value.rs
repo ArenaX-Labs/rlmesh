@@ -141,6 +141,9 @@ fn validate_box_scalar(
     path: &str,
     index: usize,
 ) -> Result<(), SpaceError> {
+    if value.is_nan() && (low.is_finite() || high.is_finite()) {
+        return err_space!(path, format!("Box value at element {index} is NaN"));
+    }
     if value < low || value > high {
         return err_space!(
             path,
@@ -191,6 +194,20 @@ mod tests {
         let space = box_space(0.0, 1.0, vec![2], DType::Float32);
 
         let data: Vec<u8> = [0.5f32, 2.5f32]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let invalid =
+            SpaceValue::Box(Tensor::from_vec(data, vec![2], DType::Float32).expect("valid tensor"));
+
+        assert!(contains(&space, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_box_contains_rejects_nan_for_bounded_float_values() {
+        let space = box_space(0.0, 1.0, vec![2], DType::Float32);
+
+        let data: Vec<u8> = [f32::NAN, 0.5]
             .iter()
             .flat_map(|value| value.to_le_bytes())
             .collect();
