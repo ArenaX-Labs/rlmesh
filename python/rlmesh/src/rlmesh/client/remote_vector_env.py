@@ -157,11 +157,19 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
 
     @property
     def metadata(self) -> Metadata:
-        """Endpoint metadata reported by the environment contract."""
+        """Endpoint metadata reported by the environment contract.
+
+        The wire codec degrades Gymnasium's ``AutoresetMode`` enum to its plain
+        string value, but Gymnasium 1.x vector consumers (for example
+        ``RecordEpisodeStatistics``) assert that
+        ``metadata["autoreset_mode"]`` is an ``AutoresetMode`` instance. We
+        restore the enum here so a Gymnasium-compliant training loop can read
+        the server-side autoreset convention.
+        """
         metadata = self._env_contract.metadata
         if metadata is None:
             return EMPTY_METADATA
-        return cast(Mapping[str, object], metadata)
+        return _normalize_autoreset_mode(cast(Mapping[str, object], metadata))
 
     def _render_client(self) -> PyVectorEnvClient:
         return self._client
@@ -289,6 +297,29 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         if bridge is None:
             return cast(Space[ActionT], space_from_spec(spec))
         return cast(Space[ActionT], space_from_spec(spec, bridge=bridge))
+
+
+def _normalize_autoreset_mode(metadata: Mapping[str, object]) -> Metadata:
+    """Restore ``autoreset_mode`` to a Gymnasium ``AutoresetMode`` enum.
+
+    The value is returned unchanged when the key is absent, when it is already
+    an ``AutoresetMode``, when it does not match a known mode, or when
+    Gymnasium is not installed.
+    """
+    mode = metadata.get("autoreset_mode")
+    if mode is None or not isinstance(mode, str):
+        return metadata
+    try:
+        from gymnasium.vector import AutoresetMode
+    except ImportError:  # pragma: no cover - gymnasium optional
+        return metadata
+    try:
+        enum_mode = AutoresetMode(mode)
+    except ValueError:
+        return metadata
+    normalized = dict(metadata)
+    normalized["autoreset_mode"] = enum_mode
+    return normalized
 
 
 __all__ = ["ActionT", "RemoteVectorEnvBase", "ValueT"]
