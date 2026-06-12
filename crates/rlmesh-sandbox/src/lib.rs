@@ -131,6 +131,11 @@ impl EffectiveSandboxSpec {
         let num_envs = validate_num_envs(options.num_envs)?;
         let vectorization_mode = options.vectorization_mode;
         let resolved_source = resolve_source(&source)?;
+        // build_hash deliberately excludes runtime-only parameters (kwargs,
+        // num_envs, vectorization_mode): they are delivered to the container at
+        // `docker run` time via the bootstrap payload, never baked into the
+        // image, so changing them must not produce a new image tag or trigger a
+        // rebuild.
         let build_hash = build_hash(&BuildHashInput {
             schema_version: BOOTSTRAP_SCHEMA_VERSION,
             source: &resolved_source,
@@ -138,9 +143,6 @@ impl EffectiveSandboxSpec {
             rlmesh_package: &rlmesh_package,
             packages: &packages,
             imports: &imports,
-            kwargs: &kwargs,
-            num_envs,
-            vectorization_mode,
         })?;
 
         Ok(Self {
@@ -179,9 +181,6 @@ struct BuildHashInput<'a> {
     rlmesh_package: &'a ResolvedRlmeshPackage,
     packages: &'a [String],
     imports: &'a [String],
-    kwargs: &'a BTreeMap<String, serde_json::Value>,
-    num_envs: usize,
-    vectorization_mode: VectorizationMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +568,31 @@ mod tests {
         .unwrap();
 
         assert_ne!(base.build_hash, changed.build_hash);
+    }
+
+    #[test]
+    fn build_hash_is_stable_across_runtime_only_params() {
+        // kwargs, num_envs, and vectorization_mode are delivered at run time
+        // and must not change the image tag, otherwise every gym.make kwarg
+        // tweak rebuilds the image and re-downloads the pip layers.
+        let source = EnvironmentSourceRef::parse("CartPole-v1").unwrap();
+        let base =
+            EffectiveSandboxSpec::resolve(source.clone(), SandboxOptions::default()).unwrap();
+
+        let mut kwargs = BTreeMap::new();
+        kwargs.insert("render_mode".to_string(), serde_json::json!("rgb_array"));
+        let with_runtime_params = EffectiveSandboxSpec::resolve(
+            source,
+            SandboxOptions {
+                kwargs,
+                num_envs: 8,
+                vectorization_mode: VectorizationMode::Async,
+                ..SandboxOptions::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(base.build_hash, with_runtime_params.build_hash);
     }
 
     #[test]

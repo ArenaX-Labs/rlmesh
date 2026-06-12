@@ -16,16 +16,34 @@ def main(
     *,
     prog: str = "python -m rlmesh._bootstrap.sandbox_env",
 ) -> int:
-    """Serve a sandbox environment from a bootstrap JSON file."""
-    argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1:
-        print(
-            f"usage: {prog} <bootstrap.json>",
-            file=sys.stderr,
-        )
-        return 2
+    """Serve a sandbox environment from a bootstrap payload.
 
-    payload_data = cast(object, json.loads(Path(argv[0]).read_text(encoding="utf-8")))
+    The payload is supplied either inline via the ``RLMESH_BOOTSTRAP_JSON``
+    environment variable (the sandbox runner delivers runtime-only parameters
+    this way so they never need to be baked into the image) or, for backward
+    compatibility, as a path to a JSON file passed as the sole argument.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+
+    inline = os.environ.get("RLMESH_BOOTSTRAP_JSON")
+    if inline is not None:
+        if argv:
+            print(
+                f"usage: {prog} (set RLMESH_BOOTSTRAP_JSON, no arguments)",
+                file=sys.stderr,
+            )
+            return 2
+        raw = inline
+    else:
+        if len(argv) != 1:
+            print(
+                f"usage: {prog} <bootstrap.json> (or set RLMESH_BOOTSTRAP_JSON)",
+                file=sys.stderr,
+            )
+            return 2
+        raw = Path(argv[0]).read_text(encoding="utf-8")
+
+    payload_data = cast(object, json.loads(raw))
     payload = expect_mapping(payload_data, "bootstrap payload")
     spec = expect_mapping(payload.get("spec"), "bootstrap spec")
 

@@ -1,6 +1,4 @@
 use std::fs;
-use std::io::Write;
-use std::path::Path;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -75,8 +73,18 @@ impl DockerBackend {
         artifact: &BuildArtifact,
     ) -> Result<StartedContainer> {
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
+        // The bootstrap payload carries runtime-only parameters (kwargs,
+        // num_envs, vectorization_mode, ...). It is delivered at `docker run`
+        // time via an env var rather than baked into the image, so changing a
+        // runtime parameter never rebuilds the image or invalidates the pip
+        // install layer.
+        let bootstrap_json = render_bootstrap_json(spec)?;
         let output = Command::new("docker")
-            .args(docker_run_args(&container_name, &artifact.image_id))
+            .args(docker_run_args(
+                &container_name,
+                &artifact.image_id,
+                &bootstrap_json,
+            ))
             .output()
             .context("failed to start docker container")?;
         if !output.status.success() {
@@ -236,13 +244,6 @@ impl DockerBackend {
             )?;
         }
 
-        write_json(
-            &tempdir.path().join("bootstrap.json"),
-            &BootstrapConfigFile {
-                spec: BootstrapSpec::from_effective_spec(spec),
-            },
-        )?;
-
         let dockerfile = render_dockerfile(spec)?;
         fs::write(tempdir.path().join("Dockerfile"), dockerfile)
             .context("failed to write generated Dockerfile")?;
@@ -391,24 +392,35 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     };
     let package_command = render_package_install_command(spec);
 
+    // The bootstrap payload is supplied at run time via the
+    // RLMESH_BOOTSTRAP_JSON env var (see docker_run_args), not COPY'd into the
+    // image, so runtime-only parameters never invalidate the image cache.
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
 ENV RLMESH_ENV_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
-COPY bootstrap.json /opt/rlmesh/bootstrap.json\n\
 {}\
 {}\
 \n\
 RUN sh -lc {}\n\n\
 EXPOSE {DEFAULT_CONTAINER_PORT}\n\
-ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\", \"/opt/rlmesh/bootstrap.json\"]\n",
+ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
         spec.base_image,
         source_copy,
         package_copy,
         shell_quote(&package_command),
     ))
+}
+
+/// Serialize the bootstrap payload that is injected at run time via the
+/// `RLMESH_BOOTSTRAP_JSON` env var.
+fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
+    serde_json::to_string(&BootstrapConfigFile {
+        spec: BootstrapSpec::from_effective_spec(spec),
+    })
+    .context("failed to serialize sandbox bootstrap payload")
 }
 
 fn render_package_install_command(spec: &EffectiveSandboxSpec) -> String {
@@ -451,16 +463,6 @@ fn validate_dockerfile_token(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, value)?;
-    file.write_all(b"\n")?;
-    Ok(())
-}
-
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -496,7 +498,7 @@ fn format_startup_failure_report(
     )
 }
 
-fn docker_run_args(container_name: &str, image_id: &str) -> Vec<String> {
+fn docker_run_args(container_name: &str, image_id: &str, bootstrap_json: &str) -> Vec<String> {
     vec![
         "run".to_string(),
         "-d".to_string(),
@@ -507,6 +509,10 @@ fn docker_run_args(container_name: &str, image_id: &str) -> Vec<String> {
         // Mark the container as rlmesh-owned so orphans can be reaped.
         "--label".to_string(),
         OWNER_LABEL.to_string(),
+        // Deliver the bootstrap payload (runtime-only parameters) at run time
+        // so changing it never rebuilds the image.
+        "--env".to_string(),
+        format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
         "--name".to_string(),
         container_name.to_string(),
         // Let docker pick a free host port (binding it atomically) instead of
@@ -662,8 +668,8 @@ mod tests {
 
     use super::{
         BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        parse_container_ids, parse_container_state, parse_published_port, render_dockerfile,
-        shell_quote, tail_text,
+        parse_container_ids, parse_container_state, parse_published_port, render_bootstrap_json,
+        render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -703,11 +709,15 @@ mod tests {
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
         assert!(!dockerfile.contains("COPY source"));
+        // The bootstrap payload is delivered at run time, not baked into the
+        // image, so runtime-only parameter changes never invalidate the build.
+        assert!(!dockerfile.contains("COPY bootstrap.json"));
+        assert!(!dockerfile.contains("bootstrap.json"));
     }
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -719,7 +729,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -728,7 +738,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -736,6 +746,48 @@ mod tests {
             args.get(label_idx.unwrap() + 1).map(String::as_str),
             Some("rlmesh.sandbox=1")
         );
+    }
+
+    #[test]
+    fn docker_run_args_inject_bootstrap_payload_at_run_time() {
+        let args = docker_run_args(
+            "rlmesh-sandbox-test",
+            "sha256:abc",
+            "{\"spec\":{\"kind\":\"gym\"}}",
+        );
+
+        let env_idx = args.iter().position(|arg| arg == "--env");
+        assert!(env_idx.is_some(), "bootstrap must be passed via --env");
+        assert_eq!(
+            args.get(env_idx.unwrap() + 1).map(String::as_str),
+            Some("RLMESH_BOOTSTRAP_JSON={\"spec\":{\"kind\":\"gym\"}}")
+        );
+    }
+
+    #[test]
+    fn render_bootstrap_json_carries_runtime_params() {
+        let mut kwargs = BTreeMap::new();
+        kwargs.insert("render_mode".to_string(), json!("rgb_array"));
+        let spec = EffectiveSandboxSpec {
+            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
+            resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
+                env_id: "CartPole-v1".to_string(),
+            }),
+            base_image: "python:3.12-slim".to_string(),
+            rlmesh_package: pip_rlmesh_package(),
+            packages: vec![],
+            imports: vec![],
+            kwargs,
+            num_envs: 4,
+            vectorization_mode: VectorizationMode::Async,
+            build_hash: "abcdef0123456789".to_string(),
+        };
+
+        let json = render_bootstrap_json(&spec).unwrap();
+        assert!(json.contains("rgb_array"));
+        assert!(json.contains("\"num_envs\":4"));
+        assert!(json.contains("async"));
     }
 
     #[test]
