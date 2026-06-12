@@ -6,11 +6,41 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMemoryView};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_spaces::v1::{Tensor, TensorError, dtype_size};
+use rlmesh_spaces::v1::{DType, Tensor, TensorError, dtype_size};
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 
 use super::utils::{dtype_name, parse_dtype_strict};
+
+/// Heap state kept alive for the duration of an exported buffer view,
+/// referenced from `Py_buffer.internal` and freed in `__releasebuffer__`.
+struct ViewState {
+    shape: Vec<isize>,
+    strides: Vec<isize>,
+    format: Option<CString>,
+}
+
+/// Python `struct`-module format code for a dtype. `bfloat16` has no code.
+///
+/// 64-bit integers use `"q"`/`"Q"`: the `"l"`/`"L"` codes are platform
+/// `long`, which is 32-bit on LLP64 targets such as Windows.
+fn buffer_format(dtype: DType) -> Option<&'static str> {
+    match dtype {
+        DType::Bool => Some("?"),
+        DType::Int8 => Some("b"),
+        DType::Uint8 => Some("B"),
+        DType::Int16 => Some("h"),
+        DType::Uint16 => Some("H"),
+        DType::Int32 => Some("i"),
+        DType::Uint32 => Some("I"),
+        DType::Int64 => Some("q"),
+        DType::Uint64 => Some("Q"),
+        DType::Float16 => Some("e"),
+        DType::Float32 => Some("f"),
+        DType::Float64 => Some("d"),
+        DType::Bfloat16 | DType::Unspecified => None,
+    }
+}
 
 #[gen_stub_pyclass]
 #[pyclass(
@@ -154,6 +184,10 @@ impl PyTensor {
         if view.is_null() {
             return Err(pyo3::exceptions::PyBufferError::new_err("view is null"));
         }
+        // On failure the exporter must leave view.obj null.
+        unsafe {
+            (*view).obj = ptr::null_mut();
+        }
         if (flags & pyo3::ffi::PyBUF_WRITABLE) == pyo3::ffi::PyBUF_WRITABLE {
             return Err(pyo3::exceptions::PyBufferError::new_err(
                 "Tensor buffer is read-only",
@@ -161,11 +195,41 @@ impl PyTensor {
         }
 
         let borrowed = slf.borrow();
-        if !borrowed.inner.is_contiguous() {
+        let dtype = borrowed.inner.dtype();
+        let Some(format) = buffer_format(dtype) else {
             return Err(pyo3::exceptions::PyBufferError::new_err(
-                "Tensor buffer requires a contiguous layout; call copy() first",
+                "bfloat16 tensors do not support the buffer protocol; use __dlpack__ or tobytes()",
+            ));
+        };
+        if !borrowed.inner.is_contiguous()
+            && (flags & pyo3::ffi::PyBUF_STRIDES) != pyo3::ffi::PyBUF_STRIDES
+        {
+            return Err(pyo3::exceptions::PyBufferError::new_err(
+                "tensor is not C-contiguous; the buffer request requires strides",
             ));
         }
+
+        let item_size = dtype_size(dtype) as isize;
+        let state = Box::new(ViewState {
+            shape: borrowed
+                .inner
+                .shape()
+                .iter()
+                .map(|&dim| dim as isize)
+                .collect(),
+            strides: borrowed
+                .inner
+                .effective_strides()
+                .iter()
+                .map(|&stride| stride as isize * item_size)
+                .collect(),
+            format: if (flags & pyo3::ffi::PyBUF_FORMAT) == pyo3::ffi::PyBUF_FORMAT {
+                Some(CString::new(format).expect("static format"))
+            } else {
+                None
+            },
+        });
+
         let data_len = borrowed.inner.nbytes();
         let storage = borrowed.inner.storage().as_slice();
         let data_ptr = if data_len == 0 {
@@ -173,31 +237,34 @@ impl PyTensor {
         } else {
             storage[borrowed.inner.byte_offset()..].as_ptr()
         };
+        let ndim = borrowed.inner.shape().len();
         drop(borrowed);
         unsafe {
-            (*view).obj = slf.into_any().into_ptr();
             (*view).buf = data_ptr as *mut c_void;
             (*view).len = data_len as isize;
             (*view).readonly = 1;
-            (*view).itemsize = 1;
-            (*view).format = if (flags & pyo3::ffi::PyBUF_FORMAT) == pyo3::ffi::PyBUF_FORMAT {
-                CString::new("B").expect("static format").into_raw()
+            (*view).itemsize = item_size;
+            (*view).format = state
+                .format
+                .as_ref()
+                .map_or(ptr::null_mut(), |format| format.as_ptr() as *mut _);
+            // Without PyBUF_ND the protocol requires shape = NULL, and the
+            // consumer treats the buffer as a 1-D byte stream.
+            if (flags & pyo3::ffi::PyBUF_ND) == pyo3::ffi::PyBUF_ND {
+                (*view).ndim = ndim as c_int;
+                (*view).shape = state.shape.as_ptr() as *mut isize;
             } else {
-                ptr::null_mut()
-            };
-            (*view).ndim = 1;
-            (*view).shape = if (flags & pyo3::ffi::PyBUF_ND) == pyo3::ffi::PyBUF_ND {
-                &mut (*view).len
-            } else {
-                ptr::null_mut()
-            };
+                (*view).ndim = 1;
+                (*view).shape = ptr::null_mut();
+            }
             (*view).strides = if (flags & pyo3::ffi::PyBUF_STRIDES) == pyo3::ffi::PyBUF_STRIDES {
-                &mut (*view).itemsize
+                state.strides.as_ptr() as *mut isize
             } else {
                 ptr::null_mut()
             };
             (*view).suboffsets = ptr::null_mut();
-            (*view).internal = ptr::null_mut();
+            (*view).internal = Box::into_raw(state) as *mut c_void;
+            (*view).obj = slf.into_any().into_ptr();
         }
         Ok(())
     }
@@ -205,9 +272,13 @@ impl PyTensor {
     #[gen_stub(skip)]
     unsafe fn __releasebuffer__(&self, view: *mut pyo3::ffi::Py_buffer) {
         unsafe {
-            if !view.is_null() && !(*view).format.is_null() {
-                drop(CString::from_raw((*view).format));
-                (*view).format = ptr::null_mut();
+            if view.is_null() {
+                return;
+            }
+            let state = (*view).internal as *mut ViewState;
+            if !state.is_null() {
+                drop(Box::from_raw(state));
+                (*view).internal = ptr::null_mut();
             }
         }
     }
