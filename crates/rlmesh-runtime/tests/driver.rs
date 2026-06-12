@@ -209,6 +209,38 @@ async fn observation_emitted_always_carries_transformed_payload() {
     );
 }
 
+#[tokio::test]
+async fn shutdown_enforces_service_close_timeout_on_hung_model() {
+    let env = TestEnv::default();
+    let model = TestModel {
+        close_route_hangs: true,
+        ..Default::default()
+    };
+    let mut spec = one_episode_spec();
+    spec.limits.service_close_timeout = Duration::from_millis(50);
+
+    // Without driver-side timeout enforcement, run() would hang forever in
+    // shutdown on the hung close_route. The driver must give up after
+    // service_close_timeout and complete the session.
+    let report = tokio::time::timeout(
+        Duration::from_secs(5),
+        RuntimeDriver::new(
+            spec,
+            env,
+            model.clone(),
+            Arc::new(RecordingHooks::default()),
+        )
+        .run(),
+    )
+    .await
+    .expect("driver hung in shutdown despite service_close_timeout")
+    .expect("session should complete");
+
+    assert_eq!(report.total_episodes, 1);
+    // The hung close never set `closed`, confirming the driver abandoned it.
+    assert!(!model.closed.load(Ordering::SeqCst));
+}
+
 #[derive(Clone)]
 struct TestEnv {
     closed: Arc<AtomicBool>,
@@ -284,6 +316,9 @@ struct TestModel {
     predicts: Arc<AtomicUsize>,
     predict_delay: Option<Duration>,
     seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
+    // Simulates a close_route impl that blocks (e.g. an RPC on a hung
+    // connection) without honoring the supplied timeout.
+    close_route_hangs: bool,
 }
 
 #[async_trait]
@@ -320,6 +355,10 @@ impl RuntimeModel for TestModel {
         _request: CloseRouteRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
+        if self.close_route_hangs {
+            // Ignore the supplied timeout entirely, like a misbehaving impl.
+            std::future::pending::<()>().await;
+        }
         self.closed.store(true, Ordering::SeqCst);
         Ok(())
     }

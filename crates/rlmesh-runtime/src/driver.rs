@@ -539,20 +539,27 @@ where
         request: CloseRouteRequest,
     ) {
         let timeout = self.spec.limits.service_close_timeout;
-        let model_close = self.model.close_route(request, timeout);
+        // The timeout is also forwarded to the impls, but the driver enforces
+        // it independently: a close impl that blocks (e.g. an RPC on a hung
+        // connection) without honoring the deadline must not be able to hang
+        // run()/run_with_cancellation() forever during shutdown.
+        let model_close = tokio::time::timeout(timeout, self.model.close_route(request, timeout));
         if self.spec.close_env_on_end {
-            let env_close = self.env.close(timeout);
+            let env_close = tokio::time::timeout(timeout, self.env.close(timeout));
             let (env_result, model_result) = tokio::join!(env_close, model_close);
-            if let Err(err) = env_result {
-                tracing::warn!(error = %err, "environment close failed during route shutdown");
+            match env_result {
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "environment close failed during route shutdown");
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        timeout_ms = timeout.as_millis(),
+                        "environment close timed out during route shutdown; abandoning close"
+                    );
+                }
+                Ok(Ok(())) => {}
             }
-            if let Err(err) = model_result {
-                tracing::warn!(
-                    error = %err,
-                    reason,
-                    "model route close failed during route shutdown; relying on owner shutdown"
-                );
-            }
+            log_model_close_result(model_result, reason, timeout);
             return;
         }
 
@@ -561,13 +568,7 @@ where
             reason,
             "skipping environment close for route; endpoint remains owned by the run"
         );
-        if let Err(err) = model_close.await {
-            tracing::warn!(
-                error = %err,
-                reason,
-                "model route close failed during route shutdown; relying on owner shutdown"
-            );
-        }
+        log_model_close_result(model_close.await, reason, timeout);
     }
 
     fn cancelled_error(&self, state: &RouteState, step: i64) -> RuntimeError {
@@ -817,6 +818,30 @@ where
             Ok(result) => result,
             Err(_) => Err(timeout_error),
         },
+    }
+}
+
+fn log_model_close_result(
+    result: Result<Result<(), String>, tokio::time::error::Elapsed>,
+    reason: &str,
+    timeout: Duration,
+) {
+    match result {
+        Ok(Err(err)) => {
+            tracing::warn!(
+                error = %err,
+                reason,
+                "model route close failed during route shutdown; relying on owner shutdown"
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = timeout.as_millis(),
+                reason,
+                "model route close timed out during route shutdown; relying on owner shutdown"
+            );
+        }
+        Ok(Ok(())) => {}
     }
 }
 
