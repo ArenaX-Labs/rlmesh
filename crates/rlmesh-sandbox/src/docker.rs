@@ -43,9 +43,10 @@ impl DockerBackend {
             &spec.build_hash[..12.min(spec.build_hash.len())]
         );
 
-        if docker_image_exists(&image_tag)?
-            && let Some(image_id) = inspect_image_id(&image_tag)?
-        {
+        // A single `docker image inspect` answers both "does it exist" and
+        // "what is its id": inspect_image_id returns Ok(None) when the image is
+        // absent, so a second existence probe is redundant.
+        if let Some(image_id) = inspect_image_id(&image_tag)? {
             return Ok(BuildArtifact { image_id });
         }
 
@@ -350,7 +351,7 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
         match probe {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(err)) => {
-                if container_exited(container_id)? {
+                if container_terminated(container_id) {
                     bail!("sandbox container exited before ready");
                 }
                 if Instant::now() >= deadline {
@@ -359,7 +360,7 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) if Instant::now() < deadline => {
-                if container_exited(container_id)? {
+                if container_terminated(container_id) {
                     bail!("sandbox container exited before ready");
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -372,12 +373,22 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
     }
 }
 
-/// Whether the container has reached a terminal state. Returns `Ok(false)` if
-/// the state is currently unknown so the readiness wait keeps polling.
-fn container_exited(container_id: &str) -> Result<bool> {
-    Ok(inspect_container_state(container_id)?
-        .map(|state| state.is_terminal())
-        .unwrap_or(false))
+/// Whether the container is *confirmed* to have reached a terminal state.
+///
+/// A transient `docker inspect` failure (e.g. the daemon is briefly busy) is
+/// treated as "not confirmed terminal" so the readiness wait keeps polling
+/// until its own deadline, rather than tearing down a container that is about
+/// to become ready. Only an inspect that succeeds and reports a terminal
+/// status returns `true`.
+fn container_terminated(container_id: &str) -> bool {
+    is_confirmed_terminal(inspect_container_state(container_id))
+}
+
+/// Decide whether an inspect result confirms the container is terminal. A
+/// transient inspect error or a not-yet-found container is treated as "not
+/// confirmed", so the readiness wait keeps polling instead of aborting.
+fn is_confirmed_terminal(inspected: Result<Option<ContainerState>>) -> bool {
+    matches!(inspected, Ok(Some(state)) if state.is_terminal())
 }
 
 fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
@@ -641,14 +652,6 @@ fn tail_text(value: &str, max_bytes: usize) -> String {
     )
 }
 
-fn docker_image_exists(image_ref: &str) -> Result<bool> {
-    let output = Command::new("docker")
-        .args(["image", "inspect", image_ref])
-        .output()
-        .context("failed to inspect docker image")?;
-    Ok(output.status.success())
-}
-
 fn inspect_image_id(image_ref: &str) -> Result<Option<String>> {
     let output = Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", image_ref])
@@ -666,12 +669,13 @@ fn inspect_image_id(image_ref: &str) -> Result<Option<String>> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use anyhow::anyhow;
     use serde_json::json;
 
     use super::{
         BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        parse_container_ids, parse_container_state, parse_published_port, render_bootstrap_json,
-        render_dockerfile, shell_quote, tail_text,
+        is_confirmed_terminal, parse_container_ids, parse_container_state, parse_published_port,
+        render_bootstrap_json, render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -790,6 +794,30 @@ mod tests {
         assert!(json.contains("rgb_array"));
         assert!(json.contains("\"num_envs\":4"));
         assert!(json.contains("async"));
+    }
+
+    #[test]
+    fn transient_inspect_failure_does_not_confirm_termination() {
+        let running = ContainerState {
+            status: "running".to_string(),
+            exit_code: None,
+            error: String::new(),
+        };
+        let exited = ContainerState {
+            status: "exited".to_string(),
+            exit_code: Some(0),
+            error: String::new(),
+        };
+
+        // Only a successful inspect reporting a terminal state confirms exit.
+        assert!(is_confirmed_terminal(Ok(Some(exited))));
+        assert!(!is_confirmed_terminal(Ok(Some(running))));
+        // A transient inspect error or a not-yet-found container must NOT abort
+        // the readiness wait (it would tear down a healthy container).
+        assert!(!is_confirmed_terminal(Ok(None)));
+        assert!(!is_confirmed_terminal(Err(anyhow!(
+            "docker inspect failed: daemon busy"
+        ))));
     }
 
     #[test]
