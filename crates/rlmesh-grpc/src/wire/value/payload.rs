@@ -11,7 +11,7 @@ pub fn encode_value_bytes(
     space: &native::SpaceSpec,
 ) -> Result<MessageBytes, ProtocolError> {
     Ok(MessageBytes {
-        data: encode_space_value(value, space)?,
+        data: encode_space_value(value, space)?.into_owned(),
     })
 }
 

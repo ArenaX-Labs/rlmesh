@@ -8,10 +8,10 @@ use std::collections::BTreeMap;
 use crate::errors::{SpaceError, err_space};
 use crate::v1::spaces::composite::{contains_dict, contains_tuple};
 use crate::v1::spaces::fundamental::{
-    BoxValue, contains_box, contains_discrete, contains_multibinary, contains_multidiscrete,
-    contains_text,
+    contains_box, contains_discrete, contains_multibinary, contains_multidiscrete, contains_text,
 };
 use crate::v1::spaces::{SpaceSpec, SpaceType};
+use crate::v1::tensor::Tensor;
 
 /// A runtime value that can belong to a space.
 ///
@@ -20,7 +20,7 @@ use crate::v1::spaces::{SpaceSpec, SpaceType};
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpaceValue {
     /// Box space value - continuous tensor
-    Box(BoxValue),
+    Box(Tensor),
 
     /// Discrete space value - single integer
     Discrete(i64),

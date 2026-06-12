@@ -13,9 +13,12 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
-            tensor_from_array_bytes(py, value.data.clone(), value.shape.clone(), value.dtype)
-        }
+        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => tensor_from_array_bytes(
+            py,
+            value.to_contiguous_bytes().into_owned(),
+            value.shape().to_vec(),
+            value.dtype(),
+        ),
         (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }
@@ -81,7 +84,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
             let mut bytes = Vec::new();
             for value in values {
                 match value {
-                    SpaceValue::Box(value) => bytes.extend_from_slice(&value.data),
+                    SpaceValue::Box(value) => bytes.extend_from_slice(&value.to_contiguous_bytes()),
                     _ => {
                         return Err(pyo3::exceptions::PyTypeError::new_err(
                             "batched value kind mismatch for Box space",

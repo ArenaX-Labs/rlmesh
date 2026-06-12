@@ -39,8 +39,8 @@ impl DummyEnv {
         }
     }
 
-    fn observation(&self) -> spaces::BoxValue {
-        spaces::BoxValue::new(vec![0, 1, 2, 3], vec![4], spaces::DType::Uint8)
+    fn observation(&self) -> spaces::Tensor {
+        spaces::Tensor::from_vec(vec![0, 1, 2, 3], vec![4], spaces::DType::Uint8).unwrap()
     }
 }
 

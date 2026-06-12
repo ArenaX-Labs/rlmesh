@@ -10,7 +10,7 @@ pub use dtype::{DType, dtype_size};
 pub use meta::{MetaMap, MetaValue};
 pub use render::{BinaryPayload, RenderFrame, RenderRequest, RenderResult};
 pub use request::{CloseRequest, CloseResult, ResetRequest, ResetResult, StepRequest, StepResult};
-pub use spaces::{BoxValue, SpaceValue, contains, validate_space};
+pub use spaces::{SpaceValue, contains, validate_space};
 pub use tensor::{
     DLPackType, Device, Storage, Tensor, TensorError, contiguous_strides, dlpack_type,
     dtype_from_dlpack,

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use prost_types::{ListValue, Struct, Value, value};
 use rlmesh_spaces::v1 as native;
@@ -12,29 +14,31 @@ use super::scalars::{
     encode_scalars, scalar_to_proto_value,
 };
 
-pub(super) fn encode_space_value(
-    value: &native::SpaceValue,
+pub(super) fn encode_space_value<'v>(
+    value: &'v native::SpaceValue,
     space: &native::SpaceSpec,
-) -> Result<Vec<u8>, ProtocolError> {
+) -> Result<Cow<'v, [u8]>, ProtocolError> {
     match (space.spec.as_ref(), value) {
         (Some(native::space_spec::Spec::Box(_)), native::SpaceValue::Box(value)) => {
-            Ok(value.data.clone())
+            Ok(value.to_contiguous_bytes())
         }
         (Some(native::space_spec::Spec::Discrete(_)), native::SpaceValue::Discrete(value)) => {
-            encode_scalar(*value, space.dtype)
+            Ok(Cow::Owned(encode_scalar(*value, space.dtype)?))
         }
         (
             Some(native::space_spec::Spec::MultiBinary(_)),
             native::SpaceValue::MultiBinary(values),
-        ) => Ok(values.iter().map(|value| u8::from(*value)).collect()),
+        ) => Ok(Cow::Owned(
+            values.iter().map(|value| u8::from(*value)).collect(),
+        )),
         (
             Some(native::space_spec::Spec::MultiDiscrete(_)),
             native::SpaceValue::MultiDiscrete(values),
-        ) => encode_int_sequence(values, space.dtype),
+        ) => Ok(Cow::Owned(encode_int_sequence(values, space.dtype)?)),
         (Some(native::space_spec::Spec::Text(_)), native::SpaceValue::Text(value)) => {
-            Ok(encode_proto_value(&Value {
+            Ok(Cow::Owned(encode_proto_value(&Value {
                 kind: Some(value::Kind::StringValue(value.clone())),
-            }))
+            })))
         }
         (Some(native::space_spec::Spec::Dict(spec)), native::SpaceValue::Dict(values)) => {
             let fields = spec
@@ -48,9 +52,9 @@ pub(super) fn encode_space_value(
                     Ok((key.clone(), encode_value_for_space(value, space)?))
                 })
                 .collect::<Result<_, ProtocolError>>()?;
-            Ok(encode_proto_value(&Value {
+            Ok(Cow::Owned(encode_proto_value(&Value {
                 kind: Some(value::Kind::StructValue(Struct { fields })),
-            }))
+            })))
         }
         (Some(native::space_spec::Spec::Tuple(spec)), native::SpaceValue::Tuple(values)) => {
             let values = values
@@ -58,9 +62,9 @@ pub(super) fn encode_space_value(
                 .zip(spec.spaces.iter())
                 .map(|(value, space)| encode_value_for_space(value, space))
                 .collect::<Result<_, _>>()?;
-            Ok(encode_proto_value(&Value {
+            Ok(Cow::Owned(encode_proto_value(&Value {
                 kind: Some(value::Kind::ListValue(ListValue { values })),
-            }))
+            })))
         }
         _ => Err(ProtocolError::EncodeError(format!(
             "value kind did not match space {:?}",
@@ -74,11 +78,10 @@ pub(super) fn decode_space_value(
     space: &native::SpaceSpec,
 ) -> Result<native::SpaceValue, ProtocolError> {
     match space.spec.as_ref() {
-        Some(native::space_spec::Spec::Box(_)) => Ok(native::SpaceValue::Box(native::BoxValue {
-            data: bytes.to_vec(),
-            shape: space.shape.clone(),
-            dtype: space.dtype,
-        })),
+        Some(native::space_spec::Spec::Box(_)) => Ok(native::SpaceValue::Box(
+            native::Tensor::from_slice(bytes, &space.shape, space.dtype)
+                .map_err(|err| ProtocolError::DecodeError(format!("invalid box payload: {err}")))?,
+        )),
         Some(native::space_spec::Spec::Discrete(_)) => Ok(native::SpaceValue::Discrete(
             decode_scalar(bytes, space.dtype)?,
         )),
@@ -97,9 +100,7 @@ pub(super) fn decode_space_value(
         Some(native::space_spec::Spec::Dict(spec)) => {
             let value = decode_proto_value(bytes)?;
             let struct_value = expect_struct_value(&value, "dict")?;
-            let mut decoded = native::MetaMap::new();
             let mut result = std::collections::BTreeMap::new();
-            let _ = &mut decoded;
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_value = struct_value.fields.get(key).ok_or_else(|| {
                     ProtocolError::DecodeError(format!("missing dict field '{key}'"))
@@ -139,7 +140,7 @@ pub fn encode_space_value_bytes(
     value: &native::SpaceValue,
     space: &native::SpaceSpec,
 ) -> Result<Vec<u8>, ProtocolError> {
-    encode_space_value(value, space)
+    Ok(encode_space_value(value, space)?.into_owned())
 }
 
 pub fn decode_space_value_bytes(
@@ -155,7 +156,9 @@ pub(super) fn encode_value_for_space(
 ) -> Result<Value, ProtocolError> {
     match value {
         native::SpaceValue::Box(boxed) => Ok(Value {
-            kind: Some(value::Kind::StringValue(BASE64.encode(&boxed.data))),
+            kind: Some(value::Kind::StringValue(
+                BASE64.encode(boxed.to_contiguous_bytes()),
+            )),
         }),
         native::SpaceValue::Discrete(value) => Ok(Value {
             kind: Some(value::Kind::NumberValue(*value as f64)),
@@ -205,11 +208,11 @@ pub(super) fn decode_value_for_space(
                     encode_scalars(&scalars, space.dtype)?
                 }
             };
-            Ok(native::SpaceValue::Box(native::BoxValue {
-                data,
-                shape: space.shape.clone(),
-                dtype: space.dtype,
-            }))
+            Ok(native::SpaceValue::Box(
+                native::Tensor::from_vec(data, space.shape.clone(), space.dtype).map_err(
+                    |err| ProtocolError::DecodeError(format!("invalid box payload: {err}")),
+                )?,
+            ))
         }
         Some(native::space_spec::Spec::Discrete(_)) => match value.kind {
             Some(value::Kind::NumberValue(number)) => {

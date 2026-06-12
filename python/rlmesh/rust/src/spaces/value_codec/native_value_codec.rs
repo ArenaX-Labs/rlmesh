@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::v1::{BoxValue, SpaceValue, contains};
+use rlmesh_spaces::v1::{SpaceValue, Tensor, contains};
 
 use super::ValueBackend;
 use super::array_codec::{
@@ -20,7 +20,7 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
         (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
-            decode_array_like_value_with_backend(py, &value.data, space, backend)
+            decode_array_like_value_with_backend(py, &value.to_contiguous_bytes(), space, backend)
         }
         (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
@@ -97,11 +97,16 @@ fn py_any_to_space_value_unchecked(
     backend: ValueBackend,
 ) -> PyResult<SpaceValue> {
     Ok(match space.spec.as_ref() {
-        Some(space_spec::Spec::Box(_)) => SpaceValue::Box(BoxValue::new(
-            encode_array_like_value_with_backend(py, value, space, backend)?,
-            space.shape.clone(),
-            space.dtype,
-        )),
+        Some(space_spec::Spec::Box(_)) => SpaceValue::Box(
+            Tensor::from_vec(
+                encode_array_like_value_with_backend(py, value, space, backend)?,
+                space.shape.clone(),
+                space.dtype,
+            )
+            .map_err(|err| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid box value: {err}"))
+            })?,
+        ),
         Some(space_spec::Spec::Discrete(_)) => {
             let normalized = normalize_py_value(value)?;
             let value = if let Ok(flag) = normalized.extract::<bool>() {

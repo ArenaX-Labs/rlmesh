@@ -330,7 +330,9 @@ fn neutral_observation<'py>(
 
 fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => Ok(value.data.clone()),
+        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
+            Ok(value.to_contiguous_bytes().into_owned())
+        }
         (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.to_le_bytes().to_vec())
         }

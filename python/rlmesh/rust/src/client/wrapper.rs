@@ -829,7 +829,7 @@ fn observation_size(value: Option<&rlmesh_spaces::v1::SpaceValue>) -> usize {
 
 fn space_value_size(value: &rlmesh_spaces::v1::SpaceValue) -> usize {
     match value {
-        rlmesh_spaces::v1::SpaceValue::Box(value) => value.data.len(),
+        rlmesh_spaces::v1::SpaceValue::Box(value) => value.nbytes(),
         rlmesh_spaces::v1::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
         rlmesh_spaces::v1::SpaceValue::MultiBinary(values) => values.len(),
         rlmesh_spaces::v1::SpaceValue::MultiDiscrete(values) => {

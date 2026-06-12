@@ -44,8 +44,9 @@ mod tests {
 
     use crate::v1::DType;
     use crate::v1::spaces::composite::DictSpaceBuilder;
-    use crate::v1::spaces::fundamental::{BoxSpaceBuilder, BoxValue, DiscreteBuilder};
+    use crate::v1::spaces::fundamental::{BoxSpaceBuilder, DiscreteBuilder};
     use crate::v1::spaces::{SpaceValue, contains};
+    use crate::v1::tensor::Tensor;
 
     #[test]
     fn test_dict_contains() {
@@ -61,7 +62,9 @@ mod tests {
         let valid = SpaceValue::Dict(BTreeMap::from([
             (
                 "obs".to_string(),
-                SpaceValue::Box(BoxValue::new(vec![0u8; 12], vec![3], DType::Float32)),
+                SpaceValue::Box(
+                    Tensor::from_vec(vec![0u8; 12], vec![3], DType::Float32).expect("valid tensor"),
+                ),
             ),
             ("action".to_string(), SpaceValue::Discrete(2)),
         ]));
@@ -70,7 +73,9 @@ mod tests {
         // Missing key
         let missing = SpaceValue::Dict(BTreeMap::from([(
             "obs".to_string(),
-            SpaceValue::Box(BoxValue::new(vec![0u8; 12], vec![3], DType::Float32)),
+            SpaceValue::Box(
+                Tensor::from_vec(vec![0u8; 12], vec![3], DType::Float32).expect("valid tensor"),
+            ),
         )]));
         assert!(contains(&space, &missing).is_err());
 
@@ -78,7 +83,9 @@ mod tests {
         let extra = SpaceValue::Dict(BTreeMap::from([
             (
                 "obs".to_string(),
-                SpaceValue::Box(BoxValue::new(vec![0u8; 12], vec![3], DType::Float32)),
+                SpaceValue::Box(
+                    Tensor::from_vec(vec![0u8; 12], vec![3], DType::Float32).expect("valid tensor"),
+                ),
             ),
             ("action".to_string(), SpaceValue::Discrete(2)),
             ("extra".to_string(), SpaceValue::Discrete(0)),

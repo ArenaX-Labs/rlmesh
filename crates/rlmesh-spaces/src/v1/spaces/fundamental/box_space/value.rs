@@ -1,237 +1,95 @@
 use crate::errors::{SpaceError, err_space};
 use crate::v1::box_spec;
-use crate::v1::dtype::{DType, dtype_size};
+use crate::v1::dtype::DType;
 use crate::v1::spaces::{SpaceSpec, SpaceValue, space_spec};
 use half::{bf16, f16};
-
-/// A continuous tensor value for Box spaces.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BoxValue {
-    /// Raw byte data in C-contiguous order
-    pub data: Vec<u8>,
-    /// Shape of the tensor
-    pub shape: Vec<i64>,
-    /// Data type
-    pub dtype: DType,
-}
-
-impl BoxValue {
-    /// Create a new BoxValue from raw bytes.
-    pub fn new(data: Vec<u8>, shape: Vec<i64>, dtype: DType) -> Self {
-        Self { data, shape, dtype }
-    }
-
-    /// Get the number of elements in the tensor.
-    pub fn numel(&self) -> usize {
-        self.shape.iter().map(|&d| d as usize).product()
-    }
-
-    /// Get the expected byte size of the data.
-    pub fn expected_byte_size(&self) -> usize {
-        self.numel() * dtype_size(self.dtype)
-    }
-
-    /// Check if the data size matches the expected size.
-    pub fn is_valid_size(&self) -> bool {
-        self.data.len() == self.expected_byte_size()
-    }
-}
 
 pub(crate) fn contains_box(
     space: &SpaceSpec,
     value: &SpaceValue,
     path: &str,
 ) -> Result<(), SpaceError> {
-    let box_val = match value {
-        SpaceValue::Box(v) => v,
+    let tensor = match value {
+        SpaceValue::Box(tensor) => tensor,
         _ => return err_space!(path, "expected Box value"),
     };
 
-    // Check shape matches
-    if box_val.shape != space.shape {
+    if tensor.shape() != space.shape.as_slice() {
         return err_space!(
             path,
             format!(
                 "shape mismatch: expected {:?}, got {:?}",
-                space.shape, box_val.shape
+                space.shape,
+                tensor.shape()
             )
         );
     }
 
-    // Check dtype matches
-    let expected_dtype = space.dtype;
-    if box_val.dtype != expected_dtype {
+    if tensor.dtype() != space.dtype {
         return err_space!(
             path,
             format!(
                 "dtype mismatch: expected {:?}, got {:?}",
-                expected_dtype, box_val.dtype
+                space.dtype,
+                tensor.dtype()
             )
         );
     }
 
-    // Check data size
-    if !box_val.is_valid_size() {
-        return err_space!(
-            path,
-            format!(
-                "data size mismatch: expected {} bytes, got {}",
-                box_val.expected_byte_size(),
-                box_val.data.len()
-            )
-        );
+    let (low, high) = box_bounds(space, tensor.numel(), path)?;
+    let data = tensor.to_contiguous_bytes();
+
+    // i64/u64 values beyond 2^53 lose precision in the f64 comparison.
+    match tensor.dtype() {
+        DType::Bool => check_bounds::<1>(&data, &low, &high, path, |bytes| {
+            if bytes[0] == 0 { 0.0 } else { 1.0 }
+        }),
+        DType::Uint8 => check_bounds::<1>(&data, &low, &high, path, |bytes| bytes[0] as f64),
+        DType::Int8 => check_bounds::<1>(&data, &low, &high, path, |bytes| bytes[0] as i8 as f64),
+        DType::Int16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
+            i16::from_le_bytes(bytes) as f64
+        }),
+        DType::Uint16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
+            u16::from_le_bytes(bytes) as f64
+        }),
+        DType::Int32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
+            i32::from_le_bytes(bytes) as f64
+        }),
+        DType::Uint32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
+            u32::from_le_bytes(bytes) as f64
+        }),
+        DType::Int64 => check_bounds::<8>(&data, &low, &high, path, |bytes| {
+            i64::from_le_bytes(bytes) as f64
+        }),
+        DType::Uint64 => check_bounds::<8>(&data, &low, &high, path, |bytes| {
+            u64::from_le_bytes(bytes) as f64
+        }),
+        DType::Float16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
+            f16::from_le_bytes(bytes).to_f64()
+        }),
+        DType::Bfloat16 => check_bounds::<2>(&data, &low, &high, path, |bytes| {
+            bf16::from_le_bytes(bytes).to_f64()
+        }),
+        DType::Float32 => check_bounds::<4>(&data, &low, &high, path, |bytes| {
+            f32::from_le_bytes(bytes) as f64
+        }),
+        DType::Float64 => check_bounds::<8>(&data, &low, &high, path, f64::from_le_bytes),
+        // Tensor constructors reject Unspecified, so this cannot occur.
+        DType::Unspecified => err_space!(path, "Box value dtype is unspecified"),
     }
+}
 
-    let numel = box_val.numel();
-    let (low_bounds, high_bounds) = box_bounds(space, numel, path)?;
-
-    match box_val.dtype {
-        DType::Bool => {
-            for (index, byte) in box_val.data.iter().enumerate() {
-                validate_box_scalar(
-                    if *byte == 0 { 0.0 } else { 1.0 },
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Uint8 => {
-            for (index, byte) in box_val.data.iter().enumerate() {
-                validate_box_scalar(
-                    *byte as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Int32 => {
-            for (index, chunk) in box_val.data.chunks_exact(4).enumerate() {
-                validate_box_scalar(
-                    i32::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Int64 => {
-            for (index, chunk) in box_val.data.chunks_exact(8).enumerate() {
-                validate_box_scalar(
-                    i64::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Float32 | DType::Unspecified => {
-            for (index, chunk) in box_val.data.chunks_exact(4).enumerate() {
-                validate_box_scalar(
-                    f32::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Float64 => {
-            for (index, chunk) in box_val.data.chunks_exact(8).enumerate() {
-                validate_box_scalar(
-                    f64::from_le_bytes(chunk.try_into().expect("chunk")),
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Float16 => {
-            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
-                validate_box_scalar(
-                    f16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64(),
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Bfloat16 => {
-            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
-                validate_box_scalar(
-                    bf16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64(),
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Int8 => {
-            for (index, byte) in box_val.data.iter().enumerate() {
-                validate_box_scalar(
-                    *byte as i8 as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Int16 => {
-            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
-                validate_box_scalar(
-                    i16::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Uint16 => {
-            for (index, chunk) in box_val.data.chunks_exact(2).enumerate() {
-                validate_box_scalar(
-                    u16::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        DType::Uint32 => {
-            for (index, chunk) in box_val.data.chunks_exact(4).enumerate() {
-                validate_box_scalar(
-                    u32::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
-        // i64/u64 values beyond 2^53 lose precision in the f64 comparison.
-        DType::Uint64 => {
-            for (index, chunk) in box_val.data.chunks_exact(8).enumerate() {
-                validate_box_scalar(
-                    u64::from_le_bytes(chunk.try_into().expect("chunk")) as f64,
-                    low_bounds[index],
-                    high_bounds[index],
-                    path,
-                    index,
-                )?;
-            }
-        }
+fn check_bounds<const N: usize>(
+    data: &[u8],
+    low: &[f64],
+    high: &[f64],
+    path: &str,
+    decode: impl Fn([u8; N]) -> f64,
+) -> Result<(), SpaceError> {
+    for (index, chunk) in data.chunks_exact(N).enumerate() {
+        let bytes: [u8; N] = chunk.try_into().expect("chunks_exact yields N-byte chunks");
+        validate_box_scalar(decode(bytes), low[index], high[index], path, index)?;
     }
-
     Ok(())
 }
 
@@ -301,47 +159,115 @@ mod tests {
     use super::*;
     use crate::v1::spaces::contains;
     use crate::v1::spaces::fundamental::BoxSpaceBuilder;
+    use crate::v1::tensor::{Storage, Tensor};
+
+    fn box_space(low: f64, high: f64, shape: Vec<i64>, dtype: DType) -> SpaceSpec {
+        BoxSpaceBuilder::scalar(low, high, shape)
+            .dtype(dtype)
+            .build()
+            .expect("valid space")
+    }
 
     #[test]
     fn test_box_contains() {
-        let space = BoxSpaceBuilder::scalar(0.0, 1.0, vec![2, 3])
-            .dtype(DType::Float32)
-            .build()
-            .unwrap();
+        let space = box_space(0.0, 1.0, vec![2, 3], DType::Float32);
 
-        // Valid value: 2*3*4 = 24 bytes
-        let valid = SpaceValue::Box(BoxValue::new(vec![0u8; 24], vec![2, 3], DType::Float32));
+        let valid = SpaceValue::Box(
+            Tensor::from_vec(vec![0u8; 24], vec![2, 3], DType::Float32).expect("valid tensor"),
+        );
         assert!(contains(&space, &valid).is_ok());
 
-        // Wrong shape
-        let wrong_shape = SpaceValue::Box(BoxValue::new(vec![0u8; 12], vec![3, 2], DType::Float32));
+        let wrong_shape = SpaceValue::Box(
+            Tensor::from_vec(vec![0u8; 24], vec![3, 2], DType::Float32).expect("valid tensor"),
+        );
         assert!(contains(&space, &wrong_shape).is_err());
 
-        // Wrong dtype
-        let wrong_dtype = SpaceValue::Box(BoxValue::new(
-            vec![0u8; 48], // 2*3*8 for float64
-            vec![2, 3],
-            DType::Float64,
-        ));
+        let wrong_dtype = SpaceValue::Box(
+            Tensor::from_vec(vec![0u8; 48], vec![2, 3], DType::Float64).expect("valid tensor"),
+        );
         assert!(contains(&space, &wrong_dtype).is_err());
     }
 
     #[test]
     fn test_box_contains_rejects_out_of_bounds_values() {
-        let space = BoxSpaceBuilder::scalar(0.0, 1.0, vec![2])
-            .dtype(DType::Float32)
-            .build()
-            .unwrap();
+        let space = box_space(0.0, 1.0, vec![2], DType::Float32);
 
-        let invalid = SpaceValue::Box(BoxValue::new(
-            vec![
-                0, 0, 0, 63, // 0.5f32
-                0, 0, 32, 64, // 2.5f32
-            ],
-            vec![2],
-            DType::Float32,
-        ));
+        let data: Vec<u8> = [0.5f32, 2.5f32]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let invalid =
+            SpaceValue::Box(Tensor::from_vec(data, vec![2], DType::Float32).expect("valid tensor"));
 
         assert!(contains(&space, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_box_contains_new_int_dtypes() {
+        let space = box_space(-100.0, 100.0, vec![2], DType::Int16);
+        let in_bounds: Vec<u8> = [(-50i16), 99]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let valid = SpaceValue::Box(
+            Tensor::from_vec(in_bounds, vec![2], DType::Int16).expect("valid tensor"),
+        );
+        assert!(contains(&space, &valid).is_ok());
+
+        let out_of_bounds: Vec<u8> = [(-50i16), 101]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let invalid = SpaceValue::Box(
+            Tensor::from_vec(out_of_bounds, vec![2], DType::Int16).expect("valid tensor"),
+        );
+        assert!(contains(&space, &invalid).is_err());
+
+        let space = box_space(0.0, 70000.0, vec![1], DType::Uint32);
+        let value = SpaceValue::Box(
+            Tensor::from_vec(65536u32.to_le_bytes().to_vec(), vec![1], DType::Uint32)
+                .expect("valid tensor"),
+        );
+        assert!(contains(&space, &value).is_ok());
+    }
+
+    #[test]
+    fn test_box_contains_bfloat16_bounds() {
+        let space = box_space(0.0, 1.0, vec![2], DType::Bfloat16);
+
+        let in_bounds: Vec<u8> = [bf16::from_f32(0.25), bf16::from_f32(1.0)]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let valid = SpaceValue::Box(
+            Tensor::from_vec(in_bounds, vec![2], DType::Bfloat16).expect("valid tensor"),
+        );
+        assert!(contains(&space, &valid).is_ok());
+
+        let out_of_bounds: Vec<u8> = [bf16::from_f32(0.25), bf16::from_f32(2.5)]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let invalid = SpaceValue::Box(
+            Tensor::from_vec(out_of_bounds, vec![2], DType::Bfloat16).expect("valid tensor"),
+        );
+        assert!(contains(&space, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_strided_view_passes_contains() {
+        // Storage holds [0.5, 9.0, 0.5, 9.0]; the stride-2 view sees only
+        // [0.5, 0.5], so the out-of-bounds 9.0s must not be inspected.
+        let data: Vec<u8> = [0.5f32, 9.0, 0.5, 9.0]
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let storage = Storage::from_slice(&data);
+        let view = Tensor::from_storage(storage, DType::Float32, vec![2], Some(vec![2]), 0)
+            .expect("valid tensor");
+        assert!(!view.is_contiguous());
+
+        let space = box_space(0.0, 1.0, vec![2], DType::Float32);
+        assert!(contains(&space, &SpaceValue::Box(view)).is_ok());
     }
 }

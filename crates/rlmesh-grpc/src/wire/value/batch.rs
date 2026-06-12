@@ -7,7 +7,6 @@ use crate::error::ProtocolError;
 use super::codec::{
     decode_space_value, decode_value_for_space, encode_space_value, encode_value_for_space,
 };
-use super::payload::binary_to_bytes;
 use super::proto_value::{decode_proto_value, encode_proto_value, expect_list_value};
 
 pub fn encode_batch_bytes(
@@ -48,14 +47,11 @@ pub fn encode_batched_partial_values(
     space: &native::SpaceSpec,
 ) -> Result<MessageBytes, ProtocolError> {
     if uses_raw_batch_encoding(space) {
-        let raw = values
-            .iter()
-            .map(|value| encode_space_value(value, space))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        Ok(binary_to_bytes(&native::BinaryPayload { data: raw }))
+        let mut raw = Vec::new();
+        for value in values {
+            raw.extend_from_slice(&encode_space_value(value, space)?);
+        }
+        Ok(MessageBytes { data: raw })
     } else {
         encode_batch_bytes(values, space)
     }

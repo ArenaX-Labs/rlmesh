@@ -128,11 +128,9 @@ impl crate::SingleEnv for SmokeEnv {
         _req: spaces::ResetRequest,
     ) -> std::result::Result<spaces::ResetResult, spaces::EnvRuntimeError> {
         Ok(spaces::ResetResult {
-            observation: Some(spaces::SpaceValue::Box(spaces::BoxValue::new(
-                vec![0],
-                vec![1],
-                spaces::DType::Uint8,
-            ))),
+            observation: Some(spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
+            )),
             info: None,
             episode_id: Some("ep-smoke".to_string()),
         })
@@ -143,11 +141,9 @@ impl crate::SingleEnv for SmokeEnv {
         _req: spaces::StepRequest,
     ) -> std::result::Result<spaces::StepResult, spaces::EnvRuntimeError> {
         Ok(spaces::StepResult {
-            observation: Some(spaces::SpaceValue::Box(spaces::BoxValue::new(
-                vec![1],
-                vec![1],
-                spaces::DType::Uint8,
-            ))),
+            observation: Some(spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(vec![1], vec![1], spaces::DType::Uint8).unwrap(),
+            )),
             reward: 1.0,
             terminated: true,
             truncated: false,

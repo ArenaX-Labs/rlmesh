@@ -38,8 +38,9 @@ pub(crate) fn contains_tuple(
 mod tests {
     use crate::v1::DType;
     use crate::v1::spaces::composite::TupleSpaceBuilder;
-    use crate::v1::spaces::fundamental::{BoxSpaceBuilder, BoxValue, DiscreteBuilder};
+    use crate::v1::spaces::fundamental::{BoxSpaceBuilder, DiscreteBuilder};
     use crate::v1::spaces::{SpaceValue, contains};
+    use crate::v1::tensor::Tensor;
 
     #[test]
     fn test_tuple_contains() {
@@ -53,7 +54,9 @@ mod tests {
             .unwrap();
 
         let valid = SpaceValue::Tuple(vec![
-            SpaceValue::Box(BoxValue::new(vec![0u8; 12], vec![3], DType::Float32)),
+            SpaceValue::Box(
+                Tensor::from_vec(vec![0u8; 12], vec![3], DType::Float32).expect("valid tensor"),
+            ),
             SpaceValue::Discrete(2),
         ]);
         assert!(contains(&space, &valid).is_ok());
