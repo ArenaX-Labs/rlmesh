@@ -23,6 +23,10 @@ crate-type = ["cdylib", "rlib"]
 name = "stub_gen"
 path = "src/bin/stub_gen.rs"
 doc = false
+# The stub generator is the only consumer of pyo3-stub-gen, so it is the only
+# target that needs the (dev-only) feature that links it in (review finding
+# #115).
+required-features = ["stub-gen"]
 
 [features]
 default = []
@@ -31,6 +35,12 @@ abi3-py311 = ["pyo3/abi3-py311"]
 # default so release wheels stay lean and headless; enable for builds that ship
 # the local render viewer (review finding #113).
 viewer = ["dep:rlmesh-cli"]
+# Links the pyo3-stub-gen framework (and its rustpython-parser/unicode_names2
+# Unicode tables) into the build so the stub_gen bin can emit `_rlmesh.pyi`. Off
+# by default so release wheels neither ship that machinery nor carry its
+# third-party license obligation; only the dev-time stub generation enables it
+# (review finding #115).
+stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
 rlmesh = { workspace = true }
@@ -54,7 +64,12 @@ pyo3 = { workspace = true, features = [
   "extension-module",
   "generate-import-lib",
 ] }
-pyo3-stub-gen = { workspace = true }
+pyo3-stub-gen = { workspace = true, optional = true }
+# Non-optional on purpose: a build-time-only proc-macro whose
+# rustpython-parser/unicode_names2 deps are host tools that never link into the
+# cdylib. Supplies `gen_stub_*` (under `stub-gen`) and the `remove_gen_stub`
+# no-op shim (without it) for the inert `#[gen_stub(...)]` helper attributes.
+pyo3-stub-gen-derive = { workspace = true }
 rand = { workspace = true }
 
 [build-dependencies]

@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -18,7 +19,7 @@ use crate::spaces::{
     ValueBackend, make_space, meta_map_to_pydict, parse_space, py_any_to_space_value_with_backend,
 };
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "SpaceSpec",
@@ -30,7 +31,8 @@ pub struct PySpaceSpec {
     pub(super) inner: SpaceSpec,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PySpaceSpec {
     #[getter]
@@ -78,7 +80,7 @@ impl PySpaceSpec {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "EnvContract",
@@ -90,7 +92,8 @@ pub struct PyEnvContract {
     inner: EnvContract,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyEnvContract {
     #[getter]
@@ -189,14 +192,15 @@ impl PyEnvContract {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "Space")]
 pub struct PySpace {
     spec: SpaceSpec,
     rng: Mutex<StdRng>,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PySpace {
     #[getter]
@@ -268,11 +272,14 @@ impl PySpace {
     }
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def space_spec_from_gym_space(space: object) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn space_spec_from_gym_space(py: Python<'_>, space: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -285,11 +292,14 @@ fn space_spec_from_gym_space(py: Python<'_>, space: &Bound<'_, PyAny>) -> PyResu
     .map(|value| value.into_any())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (low, high, shape, dtype=None))]
@@ -308,11 +318,14 @@ fn box_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (n, start=0, dtype=None))]
@@ -331,11 +344,14 @@ fn discrete_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (shape, dtype=None))]
@@ -352,11 +368,14 @@ fn multi_binary_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (nvec, dtype=None))]
@@ -373,11 +392,14 @@ fn multi_discrete_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def text_space_spec(max_length: int, min_length: int = 1, charset: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (max_length, min_length=1, charset=None))]
@@ -394,11 +416,14 @@ fn text_space_spec(
     space_spec_to_pyobject(py, builder.build())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn dict_space_spec(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -416,11 +441,14 @@ fn dict_space_spec(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Py<Py
     space_spec_to_pyobject(py, builder.build())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def tuple_space_spec(spaces: list[object]) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn tuple_space_spec(py: Python<'_>, spaces: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {

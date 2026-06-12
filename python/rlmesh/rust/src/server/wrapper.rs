@@ -7,6 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::env::WireEnvAdapter;
 use rlmesh::{BindAddress, ServeOptions};
@@ -55,7 +56,7 @@ enum ServerState {
 }
 
 /// Python wrapper for the RLMesh EnvService server.
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyEnvServer {
     state: StdMutex<ServerState>,
@@ -64,7 +65,8 @@ pub struct PyEnvServer {
     shutdown: ShutdownTrigger,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyEnvServer {
     /// Create a new RLMesh environment server.

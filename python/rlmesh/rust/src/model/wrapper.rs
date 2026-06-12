@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use pyo3::prelude::*;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::spaces::BinaryPayload;
 use rlmesh::{
@@ -128,7 +130,7 @@ impl ModelHandler for PyModelHandler {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyModel {
     predict_fn: Py<PyAny>,
@@ -286,6 +288,7 @@ impl PyModel {
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"

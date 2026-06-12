@@ -75,6 +75,12 @@ uuid = "1"
 pyo3 = "0.28"
 pyo3-build-config = "0.28"
 pyo3-stub-gen = { version = "0.22.3", default-features = false }
+# The derive crate is a build-time-only proc-macro (it and its
+# rustpython-parser/unicode_names2 deps are host tools that are NOT linked into
+# the cdylib), so it stays non-optional to provide the `remove_gen_stub` no-op
+# shim that strips inert `#[gen_stub(...)]` helper attributes when the runtime
+# crate is gated out of release wheels (review finding #115).
+pyo3-stub-gen-derive = "0.22.3"
 
 # GUI / CLI
 clap = "4.6"

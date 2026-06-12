@@ -5,7 +5,9 @@ use std::time::Duration;
 use image::ImageFormat;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyTuple};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::{ConnectAddress, RemoteEnv, ResetResult, StepResult};
 use rlmesh_spaces::spaces::SpaceSpec;
@@ -274,7 +276,7 @@ enum RpcOutcome<T> {
     TimedOut,
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyEnvClient {
     core: ClientCore,
@@ -479,7 +481,7 @@ impl Drop for PyEnvClient {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyVectorEnvClient {
     core: ClientCore,
@@ -678,6 +680,7 @@ impl Drop for PyVectorEnvClient {
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"
@@ -698,6 +701,7 @@ class PyEnvClient:
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"

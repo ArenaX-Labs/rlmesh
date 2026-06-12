@@ -5,6 +5,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMemoryView};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_spaces::{DType, Tensor, TensorError, dtype_size};
 use std::ffi::{CString, c_int, c_void};
@@ -42,7 +43,7 @@ fn buffer_format(dtype: DType) -> Option<&'static str> {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "Tensor",
@@ -85,7 +86,8 @@ impl From<Tensor> for PyTensor {
     }
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyTensor {
     #[new]

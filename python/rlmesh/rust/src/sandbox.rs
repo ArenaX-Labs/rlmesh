@@ -3,15 +3,19 @@ use std::collections::BTreeMap;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 use rlmesh_sandbox::{EnvironmentSourceRef, SandboxOptions, VectorizationMode};
 
 #[allow(clippy::too_many_arguments)]
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False) -> SandboxRunInfo: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(
@@ -88,11 +92,14 @@ pub fn sandbox_start_env(
     })
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def sandbox_stop_env(*, container_id: str) -> None: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (*, container_id))]

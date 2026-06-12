@@ -3099,6 +3099,7 @@ dependencies = [
  "pyo3",
  "pyo3-build-config",
  "pyo3-stub-gen",
+ "pyo3-stub-gen-derive",
  "rand 0.10.1",
  "rlmesh",
  "rlmesh-cli",

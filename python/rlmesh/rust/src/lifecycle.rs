@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use pyo3::prelude::*;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::ServeOptions;
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "ServeOptions",
@@ -16,7 +17,7 @@ pub struct PyServeOptions {
     options: ServeOptions,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyServeOptions {
     #[new]

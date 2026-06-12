@@ -210,13 +210,17 @@ run = [
 # ──────────────────────────────────────────────
 # Native Python stubs
 # ──────────────────────────────────────────────
+# The dev-only `stub-gen` feature links pyo3-stub-gen (and its
+# rustpython-parser/unicode_names2 stack) into the build; release wheels leave
+# it off so they ship neither (review finding #115). The stub_gen bin declares
+# it via required-features, so it must be passed explicitly here.
 [tasks."stubs:generate"]
 description = "Generate native Python stubs"
-run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen"
 
 [tasks."stubs:check"]
 description = "Check generated native Python stubs without modifying files"
-run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen -- --check"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen -- --check"
 
 # ──────────────────────────────────────────────
 # Compatibility policy (non-mutating)
