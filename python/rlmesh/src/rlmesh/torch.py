@@ -5,8 +5,9 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter, decode_tree, encode_tree
+from ._values import UNHANDLED, ValueAdapter
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
@@ -14,7 +15,7 @@ from .spaces import Space, SpaceAdapter
 from .spaces import space_from_spec as _space_from_spec
 from .spaces._sample import space_adapter_from_value_adapter
 from .specs import SpaceSpec
-from .types import PrimitiveValue, Value
+from .types import PrimitiveValue
 
 if TYPE_CHECKING:
     import torch
@@ -120,33 +121,23 @@ def _torch_dtype(dtype: str) -> object:
         raise ValueError(f"unsupported tensor dtype {dtype!r}") from exc
 
 
-@final
-class _TorchAdapter:
-    name: ClassVar[str] = "torch"
+def _encode_leaf(value: object) -> object:
+    import torch
 
-    def ensure_available(self) -> None:
-        ensure_available()
-
-    def decode(self, value: Value | None) -> object:
-        ensure_available()
-        return decode_tree(value, as_tensor)
-
-    def encode(self, value: object) -> Value:
-        ensure_available()
-        return encode_tree(value, self._encode_leaf)
-
-    def _encode_leaf(self, value: object) -> object:
-        import torch
-
-        if isinstance(value, torch.Tensor):
-            return from_tensor(value)
-        return UNHANDLED
+    if isinstance(value, torch.Tensor):
+        return from_tensor(value)
+    return UNHANDLED
 
 
-_torch_adapter: ValueAdapter = _TorchAdapter()
+_torch_bridge: ValueAdapter = FrameworkBridge(
+    name="torch",
+    ensure_available=ensure_available,
+    decode_leaf=as_tensor,
+    encode_leaf=_encode_leaf,
+)
 _torch_space_adapter: SpaceAdapter[TorchValue] = cast(
     SpaceAdapter[TorchValue],
-    space_adapter_from_value_adapter(_torch_adapter),
+    space_adapter_from_value_adapter(_torch_bridge),
 )
 
 
@@ -170,7 +161,7 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_adapter
+    _adapter: ClassVar[ValueAdapter] = _torch_bridge
     _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
 
 
@@ -186,7 +177,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_adapter
+    _adapter: ClassVar[ValueAdapter] = _torch_bridge
     _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
 
 
@@ -201,7 +192,7 @@ class Model(ModelBase[TorchValue, TorchValue]):
         on_close: Optional callback invoked when the model worker closes.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_adapter
+    _adapter: ClassVar[ValueAdapter] = _torch_bridge
 
 
 @final

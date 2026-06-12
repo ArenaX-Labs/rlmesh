@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import ClassVar, Final, Protocol, TypeVar, cast
+from typing import Final, Protocol, TypeVar, cast
 
 from ._rlmesh import Tensor
 from .types import PrimitiveValue, Value
@@ -13,7 +13,7 @@ ValueT = TypeVar("ValueT")
 
 
 class ValueAdapter(Protocol):
-    name: ClassVar[str]
+    name: str
 
     def ensure_available(self) -> None: ...
 
@@ -23,7 +23,7 @@ class ValueAdapter(Protocol):
 
 
 class IdentityAdapter:
-    name: ClassVar[str] = "rlmesh"
+    name: str = "rlmesh"
 
     def ensure_available(self) -> None:
         return None

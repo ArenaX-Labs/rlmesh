@@ -5,8 +5,9 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter, decode_tree, encode_tree
+from ._values import UNHANDLED, ValueAdapter
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
@@ -14,7 +15,7 @@ from .spaces import Space, SpaceAdapter
 from .spaces import space_from_spec as _space_from_spec
 from .spaces._sample import space_adapter_from_value_adapter
 from .specs import SpaceSpec
-from .types import PrimitiveValue, Value
+from .types import PrimitiveValue
 
 if TYPE_CHECKING:
     import numpy as np
@@ -92,33 +93,23 @@ def from_array(array: object) -> Tensor | PrimitiveValue:
     )
 
 
-@final
-class _NumpyAdapter:
-    name: ClassVar[str] = "numpy"
+def _encode_leaf(value: object) -> object:
+    import numpy as np
 
-    def ensure_available(self) -> None:
-        ensure_available()
-
-    def decode(self, value: Value | None) -> object:
-        ensure_available()
-        return decode_tree(value, asarray)
-
-    def encode(self, value: object) -> Value:
-        ensure_available()
-        return encode_tree(value, self._encode_leaf)
-
-    def _encode_leaf(self, value: object) -> object:
-        import numpy as np
-
-        if isinstance(value, np.generic | np.ndarray):
-            return from_array(cast(NumpyArray, value))
-        return UNHANDLED
+    if isinstance(value, np.generic | np.ndarray):
+        return from_array(cast(NumpyArray, value))
+    return UNHANDLED
 
 
-_numpy_adapter: ValueAdapter = _NumpyAdapter()
+_numpy_bridge: ValueAdapter = FrameworkBridge(
+    name="numpy",
+    ensure_available=ensure_available,
+    decode_leaf=asarray,
+    encode_leaf=_encode_leaf,
+)
 _numpy_space_adapter: SpaceAdapter[NumpyValue] = cast(
     SpaceAdapter[NumpyValue],
-    space_adapter_from_value_adapter(_numpy_adapter),
+    space_adapter_from_value_adapter(_numpy_bridge),
 )
 
 
@@ -151,7 +142,7 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
         >>> env.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
     _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
 
 
@@ -179,7 +170,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
         >>> envs.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
     _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
 
 
@@ -202,7 +193,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
 
 
 @final
