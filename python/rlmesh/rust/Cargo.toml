@@ -27,10 +27,14 @@ doc = false
 [features]
 default = []
 abi3-py311 = ["pyo3/abi3-py311"]
+# Bundles the egui/eframe render viewer (rlmesh-cli) into the extension. Off by
+# default so release wheels stay lean and headless; enable for builds that ship
+# the local render viewer (review finding #113).
+viewer = ["dep:rlmesh-cli"]
 
 [dependencies]
 rlmesh = { workspace = true }
-rlmesh-cli = { workspace = true }
+rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-spaces = { workspace = true }

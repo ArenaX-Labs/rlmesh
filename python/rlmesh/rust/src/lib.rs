@@ -7,12 +7,16 @@ mod spaces;
 mod telemetry;
 mod types;
 
+#[cfg(feature = "viewer")]
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+#[cfg(feature = "viewer")]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3_stub_gen::derive::{gen_stub_pyfunction, gen_type_alias_from_python};
+#[cfg(feature = "viewer")]
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
+use pyo3_stub_gen::derive::gen_type_alias_from_python;
 
 gen_type_alias_from_python!(
     "rlmesh._rlmesh",
@@ -24,6 +28,13 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
+// The render viewer (and its egui/eframe/glow/wayland/x11 stack via rlmesh-cli)
+// is only linked into the extension when the `viewer` feature is enabled, so
+// default release wheels stay lean and headless (review finding #113). Builds
+// that ship the viewer expose `run_cli`, which `python -m rlmesh viewer`
+// drives; lean wheels simply omit it (the Python entrypoint degrades to an
+// ImportError-guarded fallback).
+#[cfg(feature = "viewer")]
 #[gen_stub_pyfunction(
     module = "rlmesh._rlmesh",
     python = r#"
@@ -60,6 +71,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Add client classes
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
+    #[cfg(feature = "viewer")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
