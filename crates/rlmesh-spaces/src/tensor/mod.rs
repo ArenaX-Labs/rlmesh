@@ -157,8 +157,9 @@ impl Tensor {
             }
         }
         let required = required_bytes(&shape, strides.as_deref(), dtype)?;
-        let available = storage.len().saturating_sub(byte_offset);
-        if required > available {
+        // The offset must stay inside the storage even for zero-element
+        // views: accessors slice `storage[byte_offset..]` unconditionally.
+        if byte_offset > storage.len() || required > storage.len() - byte_offset {
             return Err(TensorError::OutOfBounds {
                 required,
                 byte_offset,
@@ -744,6 +745,25 @@ mod tests {
             f32_bytes(&[3.0, 4.0]).as_slice()
         );
         assert_eq!(tail.byte_offset(), 8);
+    }
+
+    #[test]
+    fn test_empty_view_offset_must_stay_inside_storage() {
+        // Zero-element views need no bytes, but an offset past the storage
+        // would make to_contiguous_bytes() slice out of bounds.
+        let storage = Storage::zeroed(8);
+        assert_eq!(
+            Tensor::from_storage(storage.clone(), DType::Float32, vec![0], None, 9),
+            Err(TensorError::OutOfBounds {
+                required: 0,
+                byte_offset: 9,
+                available: 8
+            })
+        );
+        // An offset exactly at the end is fine for an empty view.
+        let at_end = Tensor::from_storage(storage, DType::Float32, vec![0], None, 8)
+            .expect("valid empty view");
+        assert!(at_end.to_contiguous_bytes().is_empty());
     }
 
     #[test]
