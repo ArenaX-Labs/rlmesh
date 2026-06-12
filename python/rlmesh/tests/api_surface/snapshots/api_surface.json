@@ -301,6 +301,570 @@
       }
     }
   },
+  "rlmesh.adapters": {
+    "exports": [
+      "ACTION_DELTA_POS",
+      "ACTION_DELTA_POS_2",
+      "ACTION_DELTA_ROT",
+      "ACTION_DELTA_ROT_2",
+      "ACTION_GRIPPER",
+      "ACTION_GRIPPER_2",
+      "EEF_POS",
+      "EEF_POS_2",
+      "EEF_ROT",
+      "EEF_ROT_2",
+      "ENV_METADATA_KEY",
+      "GRIPPER_POS",
+      "GRIPPER_POS_2",
+      "IMAGE_PRIMARY",
+      "IMAGE_SECONDARY",
+      "IMAGE_WRIST",
+      "INSTRUCTION",
+      "JOINT_POS",
+      "JOINT_VEL",
+      "MODEL_METADATA_KEY",
+      "ROTATION_DIMS",
+      "ActionComponent",
+      "ActionLayout",
+      "AdapterBase",
+      "AdapterResolutionError",
+      "CustomInput",
+      "EnvFeature",
+      "EnvIOSpec",
+      "EnvImage",
+      "EnvState",
+      "EnvText",
+      "IOAdapter",
+      "ImageInput",
+      "ImageLayout",
+      "ModelIOSpec",
+      "ModelInput",
+      "ObsTransform",
+      "RotationEncoding",
+      "StateComponent",
+      "StateInput",
+      "TextInput",
+      "resolve"
+    ],
+    "objects": {
+      "ACTION_DELTA_POS": {
+        "kind": "type alias",
+        "signature": "ACTION_DELTA_POS = str",
+        "stability": "Experimental"
+      },
+      "ACTION_DELTA_POS_2": {
+        "kind": "type alias",
+        "signature": "ACTION_DELTA_POS_2 = str",
+        "stability": "Experimental"
+      },
+      "ACTION_DELTA_ROT": {
+        "kind": "type alias",
+        "signature": "ACTION_DELTA_ROT = str",
+        "stability": "Experimental"
+      },
+      "ACTION_DELTA_ROT_2": {
+        "kind": "type alias",
+        "signature": "ACTION_DELTA_ROT_2 = str",
+        "stability": "Experimental"
+      },
+      "ACTION_GRIPPER": {
+        "kind": "type alias",
+        "signature": "ACTION_GRIPPER = str",
+        "stability": "Experimental"
+      },
+      "ACTION_GRIPPER_2": {
+        "kind": "type alias",
+        "signature": "ACTION_GRIPPER_2 = str",
+        "stability": "Experimental"
+      },
+      "ActionComponent": {
+        "kind": "class",
+        "members": {
+          "binary": {
+            "kind": "attribute",
+            "signature": "binary: bool"
+          },
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int"
+          },
+          "encoding": {
+            "kind": "attribute",
+            "signature": "encoding: RotationEncoding | None"
+          },
+          "range": {
+            "kind": "attribute",
+            "signature": "range: tuple[float, float] | None"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          }
+        },
+        "signature": "ActionComponent(role: str, dim: int, encoding: RotationEncoding | None = None, range: tuple[float, float] | None = None, binary: bool = False)",
+        "stability": "Experimental"
+      },
+      "ActionLayout": {
+        "kind": "class",
+        "members": {
+          "clip": {
+            "kind": "attribute",
+            "signature": "clip: tuple[float, float] | None"
+          },
+          "components": {
+            "kind": "attribute",
+            "signature": "components: tuple[ActionComponent, ...]"
+          },
+          "dim": {
+            "kind": "property",
+            "signature": "property dim: int"
+          }
+        },
+        "signature": "ActionLayout(components: tuple[ActionComponent, ...], clip: tuple[float, float] | None = None)",
+        "stability": "Experimental"
+      },
+      "AdapterBase": {
+        "kind": "class",
+        "members": {
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> str"
+          },
+          "transform_action": {
+            "kind": "function",
+            "signature": "transform_action(raw_action: object) -> ActionT"
+          },
+          "transform_obs": {
+            "kind": "function",
+            "signature": "transform_obs(raw_obs: Mapping[str, Any]) -> dict[str, Any]"
+          },
+          "wrap_predict": {
+            "kind": "function",
+            "signature": "wrap_predict(predict_fn: Callable[[dict[str, Any]], object]) -> Callable[[Any], ActionT]"
+          }
+        },
+        "stability": "Experimental"
+      },
+      "AdapterResolutionError": {
+        "kind": "class",
+        "stability": "Experimental"
+      },
+      "CustomInput": {
+        "kind": "class",
+        "members": {
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "transform": {
+            "kind": "attribute",
+            "signature": "transform: ObsTransform | str"
+          }
+        },
+        "signature": "CustomInput(key: str, transform: ObsTransform | str)",
+        "stability": "Experimental"
+      },
+      "EEF_POS": {
+        "kind": "type alias",
+        "signature": "EEF_POS = str",
+        "stability": "Experimental"
+      },
+      "EEF_POS_2": {
+        "kind": "type alias",
+        "signature": "EEF_POS_2 = str",
+        "stability": "Experimental"
+      },
+      "EEF_ROT": {
+        "kind": "type alias",
+        "signature": "EEF_ROT = str",
+        "stability": "Experimental"
+      },
+      "EEF_ROT_2": {
+        "kind": "type alias",
+        "signature": "EEF_ROT_2 = str",
+        "stability": "Experimental"
+      },
+      "ENV_METADATA_KEY": {
+        "kind": "type alias",
+        "signature": "ENV_METADATA_KEY = str",
+        "stability": "Experimental"
+      },
+      "EnvFeature": {
+        "kind": "type alias",
+        "signature": "EnvFeature = EnvImage | EnvState | EnvText",
+        "stability": "Experimental"
+      },
+      "EnvIOSpec": {
+        "kind": "class",
+        "members": {
+          "action": {
+            "kind": "attribute",
+            "signature": "action: ActionLayout"
+          },
+          "from_dict": {
+            "kind": "function",
+            "signature": "from_dict(data: Mapping[str, Any])"
+          },
+          "from_json": {
+            "kind": "function",
+            "signature": "from_json(payload: str)"
+          },
+          "from_metadata": {
+            "kind": "function",
+            "signature": "from_metadata(metadata: Mapping[str, Any])"
+          },
+          "observation": {
+            "kind": "attribute",
+            "signature": "observation: tuple[EnvFeature, ...]"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict()"
+          },
+          "to_json": {
+            "kind": "function",
+            "signature": "to_json()"
+          },
+          "to_metadata": {
+            "kind": "function",
+            "signature": "to_metadata()"
+          }
+        },
+        "signature": "EnvIOSpec(observation: tuple[EnvFeature, ...], action: ActionLayout)",
+        "stability": "Experimental"
+      },
+      "EnvImage": {
+        "kind": "class",
+        "members": {
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "layout": {
+            "kind": "attribute",
+            "signature": "layout: ImageLayout"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          },
+          "upside_down": {
+            "kind": "attribute",
+            "signature": "upside_down: bool"
+          }
+        },
+        "signature": "EnvImage(key: str, role: str = IMAGE_PRIMARY, layout: ImageLayout = 'hwc', upside_down: bool = False)",
+        "stability": "Experimental"
+      },
+      "EnvState": {
+        "kind": "class",
+        "members": {
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int | None"
+          },
+          "encoding": {
+            "kind": "attribute",
+            "signature": "encoding: RotationEncoding | None"
+          },
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "range": {
+            "kind": "attribute",
+            "signature": "range: tuple[float, float] | None"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          }
+        },
+        "signature": "EnvState(key: str, role: str = JOINT_POS, dim: int | None = None, encoding: RotationEncoding | None = None, range: tuple[float, float] | None = None)",
+        "stability": "Experimental"
+      },
+      "EnvText": {
+        "kind": "class",
+        "members": {
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          }
+        },
+        "signature": "EnvText(key: str, role: str = INSTRUCTION)",
+        "stability": "Experimental"
+      },
+      "GRIPPER_POS": {
+        "kind": "type alias",
+        "signature": "GRIPPER_POS = str",
+        "stability": "Experimental"
+      },
+      "GRIPPER_POS_2": {
+        "kind": "type alias",
+        "signature": "GRIPPER_POS_2 = str",
+        "stability": "Experimental"
+      },
+      "IMAGE_PRIMARY": {
+        "kind": "type alias",
+        "signature": "IMAGE_PRIMARY = str",
+        "stability": "Experimental"
+      },
+      "IMAGE_SECONDARY": {
+        "kind": "type alias",
+        "signature": "IMAGE_SECONDARY = str",
+        "stability": "Experimental"
+      },
+      "IMAGE_WRIST": {
+        "kind": "type alias",
+        "signature": "IMAGE_WRIST = str",
+        "stability": "Experimental"
+      },
+      "INSTRUCTION": {
+        "kind": "type alias",
+        "signature": "INSTRUCTION = str",
+        "stability": "Experimental"
+      },
+      "IOAdapter": {
+        "kind": "class",
+        "members": {
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> str"
+          },
+          "transform_action": {
+            "kind": "function",
+            "signature": "transform_action(raw_action: object) -> NumpyArray"
+          },
+          "transform_obs": {
+            "kind": "function",
+            "signature": "transform_obs(raw_obs: Mapping[str, Any]) -> dict[str, Any]"
+          },
+          "wrap_predict": {
+            "kind": "function",
+            "signature": "wrap_predict(predict_fn: Callable[[dict[str, Any]], object]) -> Callable[[Any], ActionT]"
+          }
+        },
+        "signature": "IOAdapter(plan: AdapterPlan, customs: Mapping[str, ObsTransform])",
+        "stability": "Experimental"
+      },
+      "ImageInput": {
+        "kind": "class",
+        "members": {
+          "dtype": {
+            "kind": "attribute",
+            "signature": "dtype: str"
+          },
+          "height": {
+            "kind": "attribute",
+            "signature": "height: int | None"
+          },
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "layout": {
+            "kind": "attribute",
+            "signature": "layout: ImageLayout"
+          },
+          "lead_dims": {
+            "kind": "attribute",
+            "signature": "lead_dims: int"
+          },
+          "normalize": {
+            "kind": "attribute",
+            "signature": "normalize: bool"
+          },
+          "resample": {
+            "kind": "attribute",
+            "signature": "resample: str"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          },
+          "upside_down": {
+            "kind": "attribute",
+            "signature": "upside_down: bool"
+          },
+          "width": {
+            "kind": "attribute",
+            "signature": "width: int | None"
+          }
+        },
+        "signature": "ImageInput(key: str, role: str = IMAGE_PRIMARY, height: int | None = None, width: int | None = None, layout: ImageLayout = 'hwc', dtype: str = 'uint8', normalize: bool = False, lead_dims: int = 0, upside_down: bool = False, resample: str = 'bilinear_aa')",
+        "stability": "Experimental"
+      },
+      "ImageLayout": {
+        "kind": "type alias",
+        "signature": "ImageLayout = Literal['hwc', 'chw']",
+        "stability": "Experimental"
+      },
+      "JOINT_POS": {
+        "kind": "type alias",
+        "signature": "JOINT_POS = str",
+        "stability": "Experimental"
+      },
+      "JOINT_VEL": {
+        "kind": "type alias",
+        "signature": "JOINT_VEL = str",
+        "stability": "Experimental"
+      },
+      "MODEL_METADATA_KEY": {
+        "kind": "type alias",
+        "signature": "MODEL_METADATA_KEY = str",
+        "stability": "Experimental"
+      },
+      "ModelIOSpec": {
+        "kind": "class",
+        "members": {
+          "action": {
+            "kind": "attribute",
+            "signature": "action: ActionLayout"
+          },
+          "from_dict": {
+            "kind": "function",
+            "signature": "from_dict(data: Mapping[str, Any])"
+          },
+          "from_json": {
+            "kind": "function",
+            "signature": "from_json(payload: str)"
+          },
+          "from_metadata": {
+            "kind": "function",
+            "signature": "from_metadata(metadata: Mapping[str, Any])"
+          },
+          "inputs": {
+            "kind": "attribute",
+            "signature": "inputs: tuple[ModelInput, ...]"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict()"
+          },
+          "to_json": {
+            "kind": "function",
+            "signature": "to_json()"
+          },
+          "to_metadata": {
+            "kind": "function",
+            "signature": "to_metadata()"
+          }
+        },
+        "signature": "ModelIOSpec(inputs: tuple[ModelInput, ...], action: ActionLayout)",
+        "stability": "Experimental"
+      },
+      "ModelInput": {
+        "kind": "type alias",
+        "signature": "ModelInput = ImageInput | StateInput | TextInput | CustomInput",
+        "stability": "Experimental"
+      },
+      "ObsTransform": {
+        "kind": "type alias",
+        "signature": "ObsTransform = Callable[[Mapping[str, Any]], Any]",
+        "stability": "Experimental"
+      },
+      "ROTATION_DIMS": {
+        "kind": "type alias",
+        "signature": "ROTATION_DIMS = dict[str, int]",
+        "stability": "Experimental"
+      },
+      "RotationEncoding": {
+        "kind": "type alias",
+        "signature": "RotationEncoding = Literal['quat_xyzw', 'quat_wxyz', 'axis_angle', 'rot6d']",
+        "stability": "Experimental"
+      },
+      "StateComponent": {
+        "kind": "class",
+        "members": {
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int | None"
+          },
+          "encoding": {
+            "kind": "attribute",
+            "signature": "encoding: RotationEncoding | None"
+          },
+          "index": {
+            "kind": "attribute",
+            "signature": "index: int | None"
+          },
+          "optional": {
+            "kind": "attribute",
+            "signature": "optional: bool"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          }
+        },
+        "signature": "StateComponent(role: str, encoding: RotationEncoding | None = None, dim: int | None = None, index: int | None = None, optional: bool = False)",
+        "stability": "Experimental"
+      },
+      "StateInput": {
+        "kind": "class",
+        "members": {
+          "components": {
+            "kind": "attribute",
+            "signature": "components: tuple[StateComponent, ...]"
+          },
+          "container": {
+            "kind": "attribute",
+            "signature": "container: Literal['array', 'list']"
+          },
+          "dtype": {
+            "kind": "attribute",
+            "signature": "dtype: str"
+          },
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "pad_to": {
+            "kind": "attribute",
+            "signature": "pad_to: int | None"
+          },
+          "reshape": {
+            "kind": "attribute",
+            "signature": "reshape: tuple[int, ...] | None"
+          }
+        },
+        "signature": "StateInput(key: str, components: tuple[StateComponent, ...], pad_to: int | None = None, dtype: str = 'float32', reshape: tuple[int, ...] | None = None, container: Literal['array', 'list'] = 'array')",
+        "stability": "Experimental"
+      },
+      "TextInput": {
+        "kind": "class",
+        "members": {
+          "container": {
+            "kind": "attribute",
+            "signature": "container: Literal['str', 'list']"
+          },
+          "default": {
+            "kind": "attribute",
+            "signature": "default: str | None"
+          },
+          "key": {
+            "kind": "attribute",
+            "signature": "key: str"
+          },
+          "role": {
+            "kind": "attribute",
+            "signature": "role: str"
+          }
+        },
+        "signature": "TextInput(key: str, role: str = INSTRUCTION, container: Literal['str', 'list'] = 'str', default: str | None = None)",
+        "stability": "Experimental"
+      },
+      "resolve": {
+        "kind": "function",
+        "signature": "resolve(env_spec: EnvIOSpec, model_spec: ModelIOSpec, *, trust_entrypoints: bool = False) -> IOAdapter",
+        "stability": "Experimental"
+      }
+    }
+  },
   "rlmesh.client": {
     "exports": [
       "RemoteEnvBase",

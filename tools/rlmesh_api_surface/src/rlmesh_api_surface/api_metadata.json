@@ -90,7 +90,8 @@
     "rlmesh.sandbox",
     "rlmesh.spaces",
     "rlmesh.types",
-    "rlmesh.specs"
+    "rlmesh.specs",
+    "rlmesh.adapters"
   ],
   "modules": {
     "rlmesh": {
@@ -152,6 +153,12 @@
       "description": "Native environment and space spec classes.",
       "stability": "Stable",
       "status": "Stable selected native spec classes."
+    },
+    "rlmesh.adapters": {
+      "title": "rlmesh.adapters",
+      "description": "Experimental generalized env-to-model IO adapters resolved from declarative specs.",
+      "stability": "Experimental",
+      "status": "Experimental."
     }
   },
   "exports": {

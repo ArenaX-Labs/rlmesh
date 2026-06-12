@@ -1,0 +1,95 @@
+{
+  "env_spec": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": [
+      {
+        "key": "cam",
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      {
+        "dim": 3,
+        "encoding": null,
+        "key": "eef_pos",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      {
+        "dim": null,
+        "encoding": "quat_xyzw",
+        "key": "eef_quat",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      {
+        "dim": 2,
+        "encoding": null,
+        "key": "gripper",
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      {
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  },
+  "expect": {
+    "error_contains": "env action needs role"
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "container": "str",
+        "default": null,
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  }
+}

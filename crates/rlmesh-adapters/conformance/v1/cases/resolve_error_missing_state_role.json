@@ -1,0 +1,91 @@
+{
+  "env_spec": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": [
+      {
+        "dim": 3,
+        "encoding": null,
+        "key": "eef_pos",
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    ]
+  },
+  "expect": {
+    "error_contains": "needs state role"
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": null,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "role": "proprio/gripper"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": null,
+        "reshape": null,
+        "type": "state"
+      }
+    ]
+  }
+}

@@ -1,6 +1,9 @@
 [project]
 name = "rlmesh"
-version = "0.1.0b2"
+# Version is single-sourced from the Cargo workspace (rust/Cargo.toml ->
+# workspace.package.version); maturin converts semver pre-releases to
+# PEP 440 (0.1.0-beta.2 -> 0.1.0b2).
+dynamic = ["version"]
 description = "Python SDK for model-environment evaluation workflows"
 authors = [{ name = "ArenaX Labs, Inc.", email = "research@competesai.com" }]
 maintainers = [{ name = "Josh Blayone", email = "josh@arenaxlabs.com" }]

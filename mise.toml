@@ -237,8 +237,8 @@ description = "Run Rust workspace tests"
 run = "cargo test --workspace --all-targets"
 
 [tasks."test:python"]
-description = "Run Python unit and integration tests"
-run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration -q"
+description = "Run Python unit, integration, and conformance tests"
+run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:unit"]
 description = "Run Python unit tests"

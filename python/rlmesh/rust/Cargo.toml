@@ -25,6 +25,7 @@ path = "src/bin/stub_gen.rs"
 doc = false
 
 [dependencies]
+rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true }
 rlmesh = { workspace = true }
 rlmesh-grpc = { workspace = true }
@@ -47,7 +48,7 @@ pyo3 = { workspace = true, features = [
   "generate-import-lib",
 ] }
 pyo3-stub-gen = { workspace = true }
-image = { workspace = true, features = ["png"] }
+image = { workspace = true, features = ["jpeg", "png"] }
 
 [features]
 default = []

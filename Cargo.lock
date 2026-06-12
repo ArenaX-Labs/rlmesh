@@ -1573,6 +1573,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2961,6 +2963,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-adapters"
+version = "0.1.0-beta.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rlmesh-cli"
 version = "0.1.0-beta.2"
 dependencies = [
@@ -3018,6 +3029,7 @@ dependencies = [
  "pyo3-stub-gen",
  "rand 0.10.1",
  "rlmesh",
+ "rlmesh-adapters",
  "rlmesh-cli",
  "rlmesh-grpc",
  "rlmesh-sandbox",

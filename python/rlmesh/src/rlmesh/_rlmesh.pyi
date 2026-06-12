@@ -9,17 +9,41 @@ __all__ = [
     "RLMeshException",
     "ProtocolException",
     "EnvironmentException",
+    "ACTION_DELTA_POS",
+    "ACTION_DELTA_POS_2",
+    "ACTION_DELTA_ROT",
+    "ACTION_DELTA_ROT_2",
+    "ACTION_GRIPPER",
+    "ACTION_GRIPPER_2",
+    "AdapterPlan",
+    "EEF_POS",
+    "EEF_POS_2",
+    "EEF_ROT",
+    "EEF_ROT_2",
+    "ENV_METADATA_KEY",
     "EnvContract",
+    "GRIPPER_POS",
+    "GRIPPER_POS_2",
+    "IMAGE_LAYOUTS",
+    "IMAGE_PRIMARY",
+    "IMAGE_SECONDARY",
+    "IMAGE_WRIST",
+    "INSTRUCTION",
+    "JOINT_POS",
+    "JOINT_VEL",
+    "MODEL_METADATA_KEY",
     "PrimitiveValue",
     "PyEnvClient",
     "PyEnvServer",
     "PyModel",
     "PyVectorEnvClient",
+    "ROTATION_DIMS",
     "ServeOptions",
     "Space",
     "SpaceSpec",
     "Tensor",
     "Value",
+    "adapters_resolve",
     "box_space_spec",
     "dict_space_spec",
     "discrete_space_spec",
@@ -35,6 +59,28 @@ __all__ = [
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
 Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...] | dict[str, "Value"]
+ACTION_DELTA_POS: builtins.str
+ACTION_DELTA_POS_2: builtins.str
+ACTION_DELTA_ROT: builtins.str
+ACTION_DELTA_ROT_2: builtins.str
+ACTION_GRIPPER: builtins.str
+ACTION_GRIPPER_2: builtins.str
+EEF_POS: builtins.str
+EEF_POS_2: builtins.str
+EEF_ROT: builtins.str
+EEF_ROT_2: builtins.str
+ENV_METADATA_KEY: builtins.str
+GRIPPER_POS: builtins.str
+GRIPPER_POS_2: builtins.str
+IMAGE_LAYOUTS: builtins.list[builtins.str]
+IMAGE_PRIMARY: builtins.str
+IMAGE_SECONDARY: builtins.str
+IMAGE_WRIST: builtins.str
+INSTRUCTION: builtins.str
+JOINT_POS: builtins.str
+JOINT_VEL: builtins.str
+MODEL_METADATA_KEY: builtins.str
+ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
 class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...
@@ -54,6 +100,31 @@ class SandboxRunInfo(TypedDict):
     resolved_source: str
     address: str
     container_id: str
+
+@typing.final
+class AdapterPlan:
+    r"""
+    A resolved adapter plan handle backed by the `rlmesh-adapters` core.
+    """
+    def describe(self) -> builtins.str:
+        r"""
+        Human-readable summary of the resolved transformations.
+        """
+    def custom_inputs(self) -> builtins.list[tuple[builtins.str, builtins.str]]:
+        r"""
+        `(model_key, transform)` pairs for custom-input holes, plan order.
+        """
+    def transform_obs(self, raw_obs: typing.Any) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Apply the observation plans to a bridge-encoded observation map.
+        
+        Returns `{model_key: encoded_value}`; custom inputs are omitted
+        (the caller fills them from the raw host observation).
+        """
+    def transform_action(self, raw_action: typing.Any) -> typing.Any:
+        r"""
+        Apply the action plan to a bridge-encoded model action.
+        """
 
 @typing.final
 class EnvContract:
@@ -219,6 +290,8 @@ class Tensor:
     def __new__(cls, buffer: object, shape: typing.Sequence[builtins.int], dtype: builtins.str) -> Tensor: ...
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
+
+def adapters_resolve(env_spec_json: str, model_spec_json: str) -> AdapterPlan: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
