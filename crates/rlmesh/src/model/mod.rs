@@ -7,6 +7,7 @@ mod wire;
 mod worker;
 
 pub use handler::ModelHandler;
+pub use server::BoundModelServer;
 pub use types::{ModelEpisodeEnd, ModelObservation, ModelRouteContext, ModelRouteSlot};
 pub use worker::ModelWorker;
 

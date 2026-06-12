@@ -1,4 +1,5 @@
 use super::handler::ModelHandler;
+use super::server::BoundModelServer;
 use super::{local, server};
 use crate::{BindAddress, ConnectAddress, Error, Result, ServeOptions};
 
@@ -141,6 +142,33 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         token: &str,
         options: ServeOptions,
     ) -> Result<()> {
-        server::serve_model_with_options(self.handler, address, token, options).await
+        self.bind_to_async_with_options(address, token, options)
+            .await?
+            .serve()
+            .await
+    }
+
+    /// Bind the model server to `address` without yet serving.
+    ///
+    /// The returned [`BoundModelServer`] exposes its resolved address via
+    /// [`BoundModelServer::local_addr`] (e.g. the OS-assigned port for TCP port
+    /// 0) before [`BoundModelServer::serve`] is awaited.
+    pub async fn bind_to_async(
+        self,
+        address: BindAddress,
+        token: &str,
+    ) -> Result<BoundModelServer> {
+        self.bind_to_async_with_options(address, token, ServeOptions::default())
+            .await
+    }
+
+    /// Bind the model server to `address` with explicit [`ServeOptions`].
+    pub async fn bind_to_async_with_options(
+        self,
+        address: BindAddress,
+        token: &str,
+        options: ServeOptions,
+    ) -> Result<BoundModelServer> {
+        server::bind_model_with_options(self.handler, address, token, options).await
     }
 }

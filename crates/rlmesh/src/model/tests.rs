@@ -513,6 +513,54 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
 }
 
 #[tokio::test]
+async fn model_bind_resolves_port_zero_before_serving() {
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_to_async_with_options(
+        BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+        "route-token",
+        ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    // The OS-assigned port is known before serving begins.
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    assert_ne!(port, 0, "port 0 must resolve to a real port");
+
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    // No poll-connect race: the resolved address is immediately usable.
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut client = rlmesh_grpc::ModelClient::connect(&address, "route-token")
+        .await
+        .unwrap();
+    client.handshake().await.unwrap();
+    let shutdown = client.shutdown("test complete").await.unwrap();
+    assert!(shutdown.accepted);
+
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn served_lifecycle_allows_predict_for_every_observation() {
     let observations = vec![
         raw_observation("ep-1", 0, 0, true),

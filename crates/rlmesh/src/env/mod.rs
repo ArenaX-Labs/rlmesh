@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::spaces;
 
 pub use client::RemoteEnv;
-pub use server::EnvServer;
+pub use server::{BoundEnvServer, EnvServer};
 pub use types::{
     CloseRequest, CloseResult, EpisodeMetadata, RenderRequest, RenderResult, ResetRequest,
     ResetResult, StepRequest, StepResult,

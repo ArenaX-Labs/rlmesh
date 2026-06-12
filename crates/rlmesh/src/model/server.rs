@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rlmesh_grpc::lifecycle::{
-    IdleActivity, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
-};
+use rlmesh_grpc::lifecycle::{IdleActivity, await_close_with_timeout, start_idle_shutdown};
 use rlmesh_grpc::wire::env_contract_from_proto;
 use rlmesh_proto::model::v1::{
     CloseResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
@@ -16,14 +14,8 @@ use rlmesh_proto::{
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
     negotiate_workflow_edition, supported_workflow_editions,
 };
-use tokio::net::TcpListener;
-#[cfg(unix)]
-use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::TcpListenerStream;
-#[cfg(unix)]
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use super::handler::ModelHandler;
@@ -33,14 +25,54 @@ use super::wire::{
     model_join_request_operation, model_observation_from_endpoint_request,
     model_operation_telemetry,
 };
+use crate::bound::BoundListener;
 use crate::{BindAddress, Error, Result, ServeOptions, spaces};
 
-pub(super) async fn serve_model_with_options<H>(
+/// A model server that has bound its listener but not yet started serving.
+///
+/// Created by [`bind_model_with_options`]. Use [`BoundModelServer::local_addr`]
+/// to read the resolved bind address (e.g. the OS-assigned port for TCP port
+/// 0), then [`BoundModelServer::serve`] to run until shutdown.
+pub struct BoundModelServer {
+    listener: BoundListener,
+    router: tonic::transport::server::Router,
+    shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
+    handler: Arc<Mutex<dyn ModelHandler>>,
+    local_addr: BindAddress,
+    drain_timeout: Option<Duration>,
+    close_timeout: Option<Duration>,
+}
+
+impl BoundModelServer {
+    /// The resolved address the server is bound to.
+    pub fn local_addr(&self) -> &BindAddress {
+        &self.local_addr
+    }
+
+    /// Serve until shutdown, then run the handler close hook.
+    pub async fn serve(self) -> Result<()> {
+        let serve_result = self
+            .listener
+            .serve(self.router, self.shutdown, self.drain_timeout)
+            .await;
+        let close_result = close_model(self.handler, self.close_timeout).await;
+        match (serve_result, close_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
+                "model server failed: {serve_err}; close hook failed: {close_err}"
+            ))),
+        }
+    }
+}
+
+pub(super) async fn bind_model_with_options<H>(
     handler: H,
     address: BindAddress,
     token: &str,
     options: ServeOptions,
-) -> Result<()>
+) -> Result<BoundModelServer>
 where
     H: ModelHandler + 'static,
 {
@@ -56,71 +88,27 @@ where
         shutdown.clone(),
         options,
     );
-    let serve_result = match address {
-        BindAddress::Tcp { host, port } => {
-            let listener = TcpListener::bind((host.as_str(), port))
-                .await
-                .map_err(|err| Error::Server(err.to_string()))?;
-            await_server_shutdown(
-                tonic::transport::Server::builder()
-                    .add_service(service)
-                    .serve_with_incoming_shutdown(
-                        TcpListenerStream::new(listener),
-                        shutdown.cancelled_owned(),
-                    ),
-                shutdown.clone(),
-                drain_timeout,
-            )
-            .await
-            .map_err(|err| Error::Server(err.to_string()))
-        }
-        BindAddress::Unix { path } => {
-            #[cfg(not(unix))]
-            {
-                let _ = path;
-                return Err(Error::Address(
-                    "unix sockets are not supported on Windows; use tcp://host:port instead"
-                        .to_string(),
-                ));
-            }
 
-            #[cfg(unix)]
-            {
-                crate::address::remove_stale_socket(&path)?;
-                let listener =
-                    UnixListener::bind(&path).map_err(|err| Error::Server(err.to_string()))?;
-                let result = await_server_shutdown(
-                    tonic::transport::Server::builder()
-                        .add_service(service)
-                        .serve_with_incoming_shutdown(
-                            UnixListenerStream::new(listener),
-                            shutdown.cancelled_owned(),
-                        ),
-                    shutdown.clone(),
-                    drain_timeout,
-                )
-                .await
-                .map_err(|err| Error::Server(err.to_string()));
-                // Unlink the socket file on shutdown so a subsequent serve on
-                // the same path does not fail with AddrInUse.
-                let _ = std::fs::remove_file(&path);
-                result
-            }
-        }
-    };
-    let close_result = close_model(handler, close_timeout).await;
-    match (serve_result, close_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(err), Ok(())) => Err(err),
-        (Ok(()), Err(err)) => Err(err),
-        (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
-            "model server failed: {serve_err}; close hook failed: {close_err}"
-        ))),
-    }
+    let listener = BoundListener::bind(address).await?;
+    let local_addr = listener.local_addr()?;
+    let router = tonic::transport::Server::builder().add_service(service);
+    // Upcast so the bound handle does not leak the handler generic; only the
+    // close hook needs the handler afterward.
+    let handler: Arc<Mutex<dyn ModelHandler>> = handler;
+
+    Ok(BoundModelServer {
+        listener,
+        router,
+        shutdown,
+        handler,
+        local_addr,
+        drain_timeout,
+        close_timeout,
+    })
 }
 
-async fn close_model<H: ModelHandler + 'static>(
-    handler: Arc<Mutex<H>>,
+async fn close_model(
+    handler: Arc<Mutex<dyn ModelHandler>>,
     close_timeout: Option<Duration>,
 ) -> Result<()> {
     let close = async { handler.lock().await.on_close().await };

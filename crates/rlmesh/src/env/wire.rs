@@ -692,4 +692,43 @@ mod tests {
             .unwrap()
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn env_bind_resolves_port_zero_before_serving() {
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // The OS-assigned port is known before we await shutdown.
+        let resolved = bound.local_addr().clone();
+        let port = match resolved {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp bind address, got {other:?}"),
+        };
+        assert_ne!(port, 0, "port 0 must resolve to a real port");
+
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        // No poll-connect race: the resolved address is immediately usable.
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+        let _ = client.reset(ResetRequest::default()).await.unwrap();
+        assert!(client.shutdown("test shutdown").await.unwrap());
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }
