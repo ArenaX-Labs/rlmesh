@@ -793,4 +793,57 @@ mod tests {
             .unwrap()
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn served_env_reports_grpc_health_serving() {
+        use tonic_health::ServingStatus;
+        use tonic_health::pb::HealthCheckRequest;
+        use tonic_health::pb::health_client::HealthClient;
+
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        // A standard grpc.health.v1 client sees overall server health = SERVING.
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut health = HealthClient::new(channel);
+        let response = health
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.status, ServingStatus::Serving as i32);
+
+        // Shut the server down through the existing env client path.
+        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        assert!(client.shutdown("done").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }

@@ -740,6 +740,66 @@ async fn model_bind_resolves_port_zero_before_serving() {
 }
 
 #[tokio::test]
+async fn served_model_reports_grpc_health_serving() {
+    use tonic_health::ServingStatus;
+    use tonic_health::pb::HealthCheckRequest;
+    use tonic_health::pb::health_client::HealthClient;
+
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .token("route-token")
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    // The standard health service requires no route token (it is a distinct
+    // gRPC service from ModelService) and reports overall health = SERVING.
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut health = HealthClient::new(channel);
+    let response = health
+        .check(HealthCheckRequest {
+            service: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response.status, ServingStatus::Serving as i32);
+
+    let mut client =
+        rlmesh_grpc::ModelClient::connect(&format!("tcp://127.0.0.1:{port}"), "route-token")
+            .await
+            .unwrap();
+    assert!(client.shutdown("done").await.unwrap().accepted);
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn served_lifecycle_allows_predict_for_every_observation() {
     let observations = vec![
         raw_observation("ep-1", 0, 0, true),

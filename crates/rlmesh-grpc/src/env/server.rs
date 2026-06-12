@@ -700,7 +700,9 @@ pub async fn serve<E: Environment + 'static>(
     env: E,
     addr: impl Into<std::net::SocketAddr>,
 ) -> Result<(), tonic::transport::Error> {
+    let (_health_reporter, health_service) = crate::health::serving_health_service().await;
     tonic::transport::Server::builder()
+        .add_service(health_service)
         .add_service(env_service(env))
         .serve(addr.into())
         .await

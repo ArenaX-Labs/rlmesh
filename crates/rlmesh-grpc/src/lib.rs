@@ -1,6 +1,7 @@
 pub mod connect;
 pub mod env;
 pub mod error;
+pub mod health;
 pub mod helpers;
 pub mod lifecycle;
 pub mod model;
