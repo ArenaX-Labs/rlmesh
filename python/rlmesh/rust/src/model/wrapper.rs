@@ -5,7 +5,7 @@ use pyo3_stub_gen::inventory::submit;
 use rlmesh::spaces::BinaryPayload;
 use rlmesh::{
     BindAddress, ConnectAddress, Error as RLMeshError, ModelEpisodeEnd, ModelHandler,
-    ModelObservation, ModelWorker,
+    ModelObservation, ModelWorker, RunLocalOptions, ServeModelOptions,
 };
 use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
 use rlmesh_spaces::{
@@ -191,7 +191,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async(env_address)
+                    .run_local_async(RunLocalOptions::new(env_address))
                     .await
             })
         })
@@ -233,7 +233,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async_for_episodes(env_address, max_episodes)
+                    .run_local_async(RunLocalOptions::new(env_address).for_episodes(max_episodes))
                     .await
             })
         })
@@ -271,7 +271,11 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .serve_to_async_with_options(address, &token, options)
+                    .serve_async(
+                        ServeModelOptions::new(address)
+                            .token(token)
+                            .serve_options(options),
+                    )
                     .await
             })
         })

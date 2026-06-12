@@ -18,10 +18,11 @@ use super::wire::{
 };
 use crate::{ConnectAddress, Error, Result, spaces};
 
-pub(super) async fn run_local_to_async_with_max_episodes<H>(
+pub(super) async fn run_local<H>(
     handler: &mut H,
     env_address: ConnectAddress,
     max_episodes: Option<u64>,
+    base_seed: Option<i64>,
 ) -> Result<()>
 where
     H: ModelHandler + 'static,
@@ -48,7 +49,7 @@ where
         env_id,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
-        base_seed: None,
+        base_seed,
         max_episodes,
         close_env_on_end: false,
         limits: Default::default(),

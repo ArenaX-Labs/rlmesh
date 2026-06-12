@@ -206,13 +206,49 @@ async fn run_local_smoke_uses_in_process_model() {
         predicts: Arc::clone(&predicts),
         closes: Arc::clone(&closes),
     })
-    .run_local_to_async_for_episodes(ConnectAddress::Tcp(env_address), 1)
+    .run_local_async(RunLocalOptions::new(ConnectAddress::Tcp(env_address)).for_episodes(1))
     .await
     .unwrap();
 
     assert!(predicts.load(Ordering::SeqCst) >= 1);
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     env_server.abort();
+}
+
+#[test]
+fn run_local_and_serve_options_cover_all_axes() {
+    // run_local: address + for_episodes + base_seed axes via one options struct.
+    let run = RunLocalOptions::parse("tcp://env:50051")
+        .unwrap()
+        .for_episodes(5)
+        .base_seed(123);
+    assert_eq!(run.max_episodes, Some(5));
+    assert_eq!(run.base_seed, Some(123));
+    assert_eq!(
+        run.env_address,
+        ConnectAddress::parse("tcp://env:50051").unwrap()
+    );
+
+    // Defaults: unbounded, no seed.
+    let default_run = RunLocalOptions::new(ConnectAddress::parse("tcp://env:1").unwrap());
+    assert_eq!(default_run.max_episodes, None);
+    assert_eq!(default_run.base_seed, None);
+
+    // serve: address + token + serve options axes via one options struct.
+    let serve = ServeModelOptions::parse("tcp://0.0.0.0:50061")
+        .unwrap()
+        .token("secret")
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        });
+    assert_eq!(serve.token, "secret");
+    assert!(serve.serve.allow_remote_shutdown);
+
+    // No token => empty (auth disabled), default serve options.
+    let default_serve = ServeModelOptions::new(BindAddress::parse("tcp://0.0.0.0:1").unwrap());
+    assert!(default_serve.token.is_empty());
+    assert_eq!(default_serve.serve, ServeOptions::default());
 }
 
 #[tokio::test]
@@ -461,16 +497,16 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
             predicts: server_predicts,
             closes: server_closes,
         })
-        .serve_to_async_with_options(
-            BindAddress::Tcp {
+        .serve_async(
+            ServeModelOptions::new(BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port,
-            },
-            "route-token",
-            ServeOptions {
+            })
+            .token("route-token")
+            .serve_options(ServeOptions {
                 allow_remote_shutdown: true,
                 ..ServeOptions::default()
-            },
+            }),
         )
         .await
     });
@@ -552,16 +588,16 @@ async fn model_bind_resolves_port_zero_before_serving() {
         predicts: Arc::clone(&predicts),
         closes: Arc::clone(&closes),
     })
-    .bind_to_async_with_options(
-        BindAddress::Tcp {
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
             port: 0,
-        },
-        "route-token",
-        ServeOptions {
+        })
+        .token("route-token")
+        .serve_options(ServeOptions {
             allow_remote_shutdown: true,
             ..ServeOptions::default()
-        },
+        }),
     )
     .await
     .unwrap();
