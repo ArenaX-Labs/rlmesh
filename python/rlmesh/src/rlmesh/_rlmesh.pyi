@@ -231,7 +231,8 @@ class Tensor:
         """
     def reshape(self, shape: typing.Sequence[builtins.int]) -> Tensor:
         r"""
-        A tensor with the same elements and a new shape. Shares the
+        A tensor with the same elements and a new shape. One dimension may
+        be ``-1`` to infer its size from the element count. Shares the
         underlying data when this tensor is contiguous.
         """
     def copy(self) -> Tensor:

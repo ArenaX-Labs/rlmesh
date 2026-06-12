@@ -48,6 +48,8 @@ pub enum TensorError {
     },
     #[error("cannot reshape {from} elements into {to}")]
     NumelMismatch { from: usize, to: usize },
+    #[error("reshape shape may contain at most one -1")]
+    AmbiguousReshape,
     #[error("stack requires at least one tensor")]
     EmptyStack,
     #[error("stack requires uniform dtype and shape; tensor {index} differs")]
@@ -240,10 +242,13 @@ impl Tensor {
 
     /// A tensor with the same elements and a new shape.
     ///
-    /// Returns a zero-copy view sharing this tensor's storage when the
-    /// layout is contiguous, and a contiguous copy otherwise.
+    /// At most one dimension may be `-1`, which is inferred from the
+    /// element count. Returns a zero-copy view sharing this tensor's
+    /// storage when the layout is contiguous, and a contiguous copy
+    /// otherwise.
     pub fn reshape(&self, shape: &[i64]) -> Result<Self, TensorError> {
-        let to = checked_numel(shape)?;
+        let shape = self.resolve_reshape_dims(shape)?;
+        let to = checked_numel(&shape)?;
         let from = self.numel();
         if from != to {
             return Err(TensorError::NumelMismatch { from, to });
@@ -252,14 +257,46 @@ impl Tensor {
             Self::from_storage(
                 self.storage.clone(),
                 self.dtype,
-                shape.to_vec(),
+                shape,
                 None,
                 self.byte_offset,
             )
         } else {
             let storage = Storage::aligned_with(self.nbytes(), |buf| self.gather_into(buf));
-            Self::from_storage(storage, self.dtype, shape.to_vec(), None, 0)
+            Self::from_storage(storage, self.dtype, shape, None, 0)
         }
+    }
+
+    /// Replace a single `-1` dimension with the size inferred from this
+    /// tensor's element count.
+    fn resolve_reshape_dims(&self, shape: &[i64]) -> Result<Vec<i64>, TensorError> {
+        let wildcards = shape.iter().filter(|&&dim| dim == -1).count();
+        if wildcards > 1 {
+            return Err(TensorError::AmbiguousReshape);
+        }
+        if wildcards == 0 {
+            return Ok(shape.to_vec());
+        }
+        let mut known = 1usize;
+        for &dim in shape {
+            if dim < -1 {
+                return Err(TensorError::NegativeDim(dim));
+            }
+            if dim >= 0 {
+                known = known
+                    .checked_mul(dim as usize)
+                    .ok_or(TensorError::Overflow)?;
+            }
+        }
+        let from = self.numel();
+        if known == 0 || !from.is_multiple_of(known) {
+            return Err(TensorError::NumelMismatch { from, to: known });
+        }
+        let inferred = (from / known) as i64;
+        Ok(shape
+            .iter()
+            .map(|&dim| if dim == -1 { inferred } else { dim })
+            .collect())
     }
 
     /// The element bytes in C order.
@@ -539,6 +576,43 @@ mod tests {
         assert_eq!(
             tensor.reshape(&[4, 2]),
             Err(TensorError::NumelMismatch { from: 6, to: 8 })
+        );
+    }
+
+    #[test]
+    fn test_reshape_infers_one_dimension() {
+        let tensor = Tensor::zeros(&[2, 3, 4], DType::Uint8).expect("valid tensor");
+
+        let inferred = tensor.reshape(&[2, -1, 3]).expect("valid reshape");
+        assert_eq!(inferred.shape(), &[2, 4, 3]);
+        assert!(inferred.storage().ptr_eq(tensor.storage()));
+
+        let flat = tensor.reshape(&[-1]).expect("valid reshape");
+        assert_eq!(flat.shape(), &[24]);
+
+        assert_eq!(
+            tensor.reshape(&[-1, -1]),
+            Err(TensorError::AmbiguousReshape)
+        );
+        assert_eq!(
+            tensor.reshape(&[-1, 5]),
+            Err(TensorError::NumelMismatch { from: 24, to: 5 })
+        );
+        assert_eq!(tensor.reshape(&[-2, 4]), Err(TensorError::NegativeDim(-2)));
+    }
+
+    #[test]
+    fn test_reshape_inference_on_empty_tensors() {
+        let empty = Tensor::zeros(&[0, 3], DType::Float32).expect("valid tensor");
+
+        // 0 elements / 3 known => inferred 0.
+        let inferred = empty.reshape(&[-1, 3]).expect("valid reshape");
+        assert_eq!(inferred.shape(), &[0, 3]);
+
+        // A zero-sized known dimension leaves -1 ambiguous.
+        assert_eq!(
+            empty.reshape(&[0, -1]),
+            Err(TensorError::NumelMismatch { from: 0, to: 0 })
         );
     }
 

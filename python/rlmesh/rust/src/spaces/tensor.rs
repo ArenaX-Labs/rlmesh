@@ -143,12 +143,12 @@ impl PyTensor {
         self.inner.is_contiguous()
     }
 
-    /// A tensor with the same elements and a new shape. Shares the
+    /// A tensor with the same elements and a new shape. One dimension may
+    /// be ``-1`` to infer its size from the element count. Shares the
     /// underlying data when this tensor is contiguous.
-    fn reshape(&self, shape: Vec<usize>) -> PyResult<Self> {
-        let dims: Vec<i64> = shape.iter().map(|&dim| dim as i64).collect();
+    fn reshape(&self, shape: Vec<i64>) -> PyResult<Self> {
         self.inner
-            .reshape(&dims)
+            .reshape(&shape)
             .map(Self::from)
             .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
     }

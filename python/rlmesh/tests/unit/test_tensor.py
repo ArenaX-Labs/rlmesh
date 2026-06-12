@@ -165,6 +165,13 @@ def test_tensor_reshape_and_copy() -> None:
     assert reshaped.tobytes() == tensor.tobytes()
     assert reshaped.is_contiguous() is True
 
+    inferred = tensor.reshape([3, -1])
+    assert inferred.shape == [3, 2]
+    assert inferred.tobytes() == tensor.tobytes()
+
+    with pytest.raises(ValueError, match="at most one -1"):
+        tensor.reshape([-1, -1])
+
     copied = tensor.copy()
     assert copied.shape == [2, 3]
     assert copied.tobytes() == tensor.tobytes()
