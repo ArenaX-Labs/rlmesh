@@ -282,6 +282,14 @@ pub fn stop_container(container_id: &str) -> Result<()> {
     docker::DockerBackend.stop_container(container_id)
 }
 
+/// Best-effort reap of rlmesh-owned sandbox containers left behind by hard
+/// process kills (SIGKILL/OOM). Containers are identified by the
+/// `rlmesh.sandbox` label that [`start_env`] stamps on every container it
+/// starts. Returns the ids that were removed.
+pub fn reap_orphaned_containers() -> Result<Vec<String>> {
+    docker::DockerBackend.reap_orphaned_containers()
+}
+
 pub fn default_rlmesh_package() -> String {
     format!(
         "{DEFAULT_PACKAGE_NAME}=={}",

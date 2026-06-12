@@ -18,6 +18,12 @@ const DEFAULT_CONTAINER_PORT: u16 = 50051;
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
 
+/// Label stamped on every container rlmesh starts, so orphaned containers
+/// (e.g. left behind when the owning process is SIGKILLed) can be enumerated
+/// and reaped without relying on fragile name-prefix matching.
+const OWNER_LABEL: &str = "rlmesh.sandbox=1";
+const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
+
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
     pub image_id: String,
@@ -111,6 +117,24 @@ impl DockerBackend {
             self.stop_running_container(container_id)?;
         }
         self.remove_container(container_id)
+    }
+
+    /// Best-effort reap of rlmesh-owned containers, identified by the
+    /// `rlmesh.sandbox` label. Returns the ids that were successfully removed.
+    ///
+    /// This collects orphans left behind when an owning process is hard-killed
+    /// (SIGKILL/OOM) before it can call [`stop_container`]. Failures to inspect
+    /// or remove individual containers are skipped rather than aborting the
+    /// whole sweep, so a single stuck container cannot block the reaper.
+    pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
+        let ids = list_owned_container_ids()?;
+        let mut reaped = Vec::new();
+        for id in ids {
+            if self.stop_container(&id).is_ok() {
+                reaped.push(id);
+            }
+        }
+        Ok(reaped)
     }
 
     fn stop_running_container(&self, container_id: &str) -> Result<()> {
@@ -480,6 +504,9 @@ fn docker_run_args(container_name: &str, image_id: &str) -> Vec<String> {
         "ALL".to_string(),
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
+        // Mark the container as rlmesh-owned so orphans can be reaped.
+        "--label".to_string(),
+        OWNER_LABEL.to_string(),
         "--name".to_string(),
         container_name.to_string(),
         // Let docker pick a free host port (binding it atomically) instead of
@@ -515,6 +542,39 @@ fn parse_published_port(raw: &str) -> Option<u16> {
     raw.lines()
         .filter_map(|line| line.trim().rsplit_once(':'))
         .find_map(|(_, port)| port.trim().parse::<u16>().ok())
+}
+
+/// List ids of every rlmesh-owned container (running or stopped) by filtering
+/// on the `rlmesh.sandbox` label.
+fn list_owned_container_ids() -> Result<Vec<String>> {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "--filter",
+            OWNER_LABEL_FILTER,
+        ])
+        .output()
+        .context("failed to list rlmesh sandbox containers")?;
+    if !output.status.success() {
+        bail!(
+            "docker ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_container_ids(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_container_ids(raw: &str) -> Vec<String> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn inspect_container_state(container_id: &str) -> Result<Option<ContainerState>> {
@@ -602,7 +662,8 @@ mod tests {
 
     use super::{
         BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        parse_container_state, parse_published_port, render_dockerfile, shell_quote, tail_text,
+        parse_container_ids, parse_container_state, parse_published_port, render_dockerfile,
+        shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -663,6 +724,28 @@ mod tests {
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
         assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:4")));
+    }
+
+    #[test]
+    fn docker_run_args_label_container_for_reaping() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
+
+        let label_idx = args.iter().position(|arg| arg == "--label");
+        assert!(label_idx.is_some(), "containers must carry an owner label");
+        assert_eq!(
+            args.get(label_idx.unwrap() + 1).map(String::as_str),
+            Some("rlmesh.sandbox=1")
+        );
+    }
+
+    #[test]
+    fn parse_container_ids_splits_and_trims_lines() {
+        assert_eq!(
+            parse_container_ids("abc123\n  def456 \n\n"),
+            vec!["abc123".to_string(), "def456".to_string()]
+        );
+        assert!(parse_container_ids("\n  \n").is_empty());
+        assert!(parse_container_ids("").is_empty());
     }
 
     #[test]
