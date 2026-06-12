@@ -17,7 +17,20 @@ pub struct ServeOptions {
     /// Optional bearer token required on the `authorization` gRPC metadata
     /// header for every request. `None` (the default) disables authentication.
     pub token: Option<String>,
+    /// Maximum number of model Join-stream requests processed concurrently per
+    /// connection (pipelined predict). `None` applies
+    /// [`DEFAULT_PREDICT_CONCURRENCY`]. Per-route lifecycle ordering is always
+    /// preserved regardless of the cap; this only bounds how many decode/encode
+    /// and handler critical sections may overlap. Ignored by the env server.
+    pub predict_concurrency: Option<usize>,
 }
+
+/// Default per-connection concurrency cap for pipelined model predict requests.
+///
+/// Bounds outstanding per-request tasks so a flood of requests cannot spawn
+/// unboundedly. Decode/encode overlap up to this many requests; handler calls
+/// still serialize behind the handler mutex (see the model server docs).
+pub const DEFAULT_PREDICT_CONCURRENCY: usize = 32;
 
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +181,7 @@ mod tests {
                 drain_timeout: None,
                 close_timeout: None,
                 token: None,
+                predict_concurrency: None,
             }
         );
     }

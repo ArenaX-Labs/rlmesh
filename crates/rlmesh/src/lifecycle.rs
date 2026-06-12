@@ -27,6 +27,12 @@ pub struct ServeOptions {
     /// `None` (or an empty string) **disables authentication**: the endpoint
     /// accepts every request without a token. Set this to require a token.
     pub token: Option<String>,
+    /// Maximum number of model Join-stream requests a served model processes
+    /// concurrently per connection (pipelined predict). `None` applies the
+    /// default cap. Per-route lifecycle ordering is preserved regardless; this
+    /// only bounds how many decode/encode and handler critical sections overlap.
+    /// Has no effect on the environment server.
+    pub predict_concurrency: Option<usize>,
 }
 
 impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
@@ -37,6 +43,7 @@ impl From<ServeOptions> for rlmesh_grpc::ServeOptions {
             drain_timeout: value.drain_timeout,
             close_timeout: value.close_timeout,
             token: value.token.filter(|token| !token.is_empty()),
+            predict_concurrency: value.predict_concurrency,
         }
     }
 }
@@ -55,6 +62,7 @@ mod tests {
                 drain_timeout: None,
                 close_timeout: None,
                 token: None,
+                predict_concurrency: None,
             }
         );
     }
@@ -67,6 +75,7 @@ mod tests {
             drain_timeout: Some(Duration::from_secs(2)),
             close_timeout: Some(Duration::from_secs(3)),
             token: Some("s3cret".to_string()),
+            predict_concurrency: Some(8),
         };
         let grpc_options = rlmesh_grpc::ServeOptions::from(options.clone());
         assert_eq!(
@@ -77,6 +86,10 @@ mod tests {
         assert_eq!(grpc_options.drain_timeout, options.drain_timeout);
         assert_eq!(grpc_options.close_timeout, options.close_timeout);
         assert_eq!(grpc_options.token.as_deref(), Some("s3cret"));
+        assert_eq!(
+            grpc_options.predict_concurrency,
+            options.predict_concurrency
+        );
     }
 
     #[test]

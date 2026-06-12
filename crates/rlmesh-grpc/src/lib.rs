@@ -34,5 +34,5 @@ pub(crate) fn configure_endpoint(
 
 pub use connect::{ConnectOptions, retry_connect};
 pub use env::{EnvClient, EnvHandshake};
-pub use lifecycle::ServeOptions;
+pub use lifecycle::{DEFAULT_PREDICT_CONCURRENCY, ServeOptions};
 pub use model::ModelClient;

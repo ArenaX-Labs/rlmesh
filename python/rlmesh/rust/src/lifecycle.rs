@@ -36,6 +36,11 @@ impl PyServeOptions {
                 drain_timeout: optional_duration("drain_timeout_seconds", drain_timeout_seconds)?,
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
                 token,
+                // The Python model client wrapper is inherently single-flight
+                // (its `block_on` predict API serializes by construction), so the
+                // server-side concurrency cap is left at the default here. A
+                // future Python knob can surface it without a wire change.
+                predict_concurrency: None,
             },
         })
     }
