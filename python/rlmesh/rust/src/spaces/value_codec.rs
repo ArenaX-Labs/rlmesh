@@ -6,7 +6,6 @@ mod neutral_value_codec;
 
 use pyo3::prelude::*;
 
-pub(crate) use self::array_codec::encode_i64_sequence_bytes;
 pub(crate) use self::batch::{
     batched_space_values_to_py_with_backend, py_any_to_batched_space_values_with_backend,
 };
