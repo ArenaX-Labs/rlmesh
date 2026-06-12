@@ -254,9 +254,21 @@
             "kind": "property",
             "signature": "property buffer: memoryview"
           },
+          "copy": {
+            "kind": "function",
+            "signature": "copy() -> Tensor"
+          },
+          "device": {
+            "kind": "property",
+            "signature": "property device: str"
+          },
           "dtype": {
             "kind": "property",
             "signature": "property dtype: str"
+          },
+          "is_contiguous": {
+            "kind": "function",
+            "signature": "is_contiguous() -> bool"
           },
           "nbytes": {
             "kind": "property",
@@ -265,6 +277,10 @@
           "ndim": {
             "kind": "property",
             "signature": "property ndim: int"
+          },
+          "reshape": {
+            "kind": "function",
+            "signature": "reshape(shape: Sequence[int]) -> Tensor"
           },
           "shape": {
             "kind": "property",

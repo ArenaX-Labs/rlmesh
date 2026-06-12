@@ -2,6 +2,31 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use rlmesh_spaces::v1::DType;
 
+/// Parse a tensor dtype name, rejecting anything unknown.
+///
+/// Unlike [`extract_dtype`], there is no `Unspecified` fallback: tensors
+/// must carry a concrete dtype.
+pub fn parse_dtype_strict(dtype: &str) -> PyResult<DType> {
+    match dtype {
+        "bool" => Ok(DType::Bool),
+        "uint8" => Ok(DType::Uint8),
+        "int8" => Ok(DType::Int8),
+        "int16" => Ok(DType::Int16),
+        "int32" => Ok(DType::Int32),
+        "int64" => Ok(DType::Int64),
+        "uint16" => Ok(DType::Uint16),
+        "uint32" => Ok(DType::Uint32),
+        "uint64" => Ok(DType::Uint64),
+        "float16" => Ok(DType::Float16),
+        "bfloat16" => Ok(DType::Bfloat16),
+        "float32" => Ok(DType::Float32),
+        "float64" => Ok(DType::Float64),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unsupported tensor dtype {other:?}"
+        ))),
+    }
+}
+
 pub fn extract_shape<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<usize>> {
     if let Ok(t) = obj.cast::<PyTuple>() {
         return t.iter().map(|x| x.extract::<usize>()).collect();

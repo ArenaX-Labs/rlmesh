@@ -212,11 +212,32 @@ class Tensor:
     @property
     def nbytes(self) -> builtins.int: ...
     @property
-    def strides(self) -> builtins.list[builtins.int]: ...
+    def strides(self) -> builtins.list[builtins.int]:
+        r"""
+        Strides in bytes per dimension, C-order.
+        """
+    @property
+    def device(self) -> builtins.str:
+        r"""
+        Device holding the tensor data. Always `"cpu"`.
+        """
     @property
     def buffer(self) -> memoryview: ...
     def __buffer__(self, flags: builtins.int, /) -> memoryview: ...
     def __new__(cls, buffer: object, shape: typing.Sequence[builtins.int], dtype: builtins.str) -> Tensor: ...
+    def is_contiguous(self) -> builtins.bool:
+        r"""
+        Whether the elements are laid out C-contiguously.
+        """
+    def reshape(self, shape: typing.Sequence[builtins.int]) -> Tensor:
+        r"""
+        A tensor with the same elements and a new shape. Shares the
+        underlying data when this tensor is contiguous.
+        """
+    def copy(self) -> Tensor:
+        r"""
+        A deep copy backed by fresh storage.
+        """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
 

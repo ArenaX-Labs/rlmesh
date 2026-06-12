@@ -130,7 +130,7 @@ fn encode_with_numpy(
 
 fn encode_without_numpy(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     if let Some(tensor) = extract_tensor(value)? {
-        return Ok(tensor.data.clone());
+        return Ok(tensor.inner.to_contiguous_bytes().into_owned());
     }
     let mut flattened = Vec::new();
     flatten_scalars(value, &mut flattened)?;

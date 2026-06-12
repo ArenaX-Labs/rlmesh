@@ -6,8 +6,11 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyMemoryView};
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
+use rlmesh_spaces::v1::{Tensor, TensorError, dtype_size};
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
+
+use super::utils::{dtype_name, parse_dtype_strict};
 
 #[gen_stub_pyclass]
 #[pyclass(
@@ -18,21 +21,35 @@ use std::ptr;
 )]
 #[derive(Clone, Debug)]
 pub struct PyTensor {
-    pub(crate) data: Vec<u8>,
-    pub(crate) shape: Vec<usize>,
-    pub(crate) dtype: String,
+    pub(crate) inner: Tensor,
 }
 
 impl PyTensor {
     fn from_parts(data: Vec<u8>, shape: Vec<usize>, dtype: String) -> PyResult<Self> {
-        let expected_len = expected_nbytes(&shape, &dtype)?;
-        if data.len() != expected_len {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "tensor byte length mismatch: expected {expected_len} bytes for shape {shape:?} and dtype {dtype:?}, got {}",
-                data.len()
-            )));
+        let dtype_id = parse_dtype_strict(&dtype)?;
+        let dims: Vec<i64> = shape.iter().map(|&dim| dim as i64).collect();
+        match Tensor::from_vec(data, dims, dtype_id) {
+            Ok(inner) => Ok(Self { inner }),
+            Err(TensorError::ByteLengthMismatch { expected, actual }) => {
+                Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "tensor byte length mismatch: expected {expected} bytes for shape {shape:?} and dtype {dtype:?}, got {actual}"
+                )))
+            }
+            Err(TensorError::Overflow) => Err(pyo3::exceptions::PyOverflowError::new_err(
+                "tensor element count overflow",
+            )),
+            Err(err) => Err(pyo3::exceptions::PyValueError::new_err(err.to_string())),
         }
-        Ok(Self { data, shape, dtype })
+    }
+
+    fn shape_usize(&self) -> Vec<usize> {
+        self.inner.shape().iter().map(|&dim| dim as usize).collect()
+    }
+}
+
+impl From<Tensor> for PyTensor {
+    fn from(inner: Tensor) -> Self {
+        Self { inner }
     }
 }
 
@@ -51,32 +68,70 @@ impl PyTensor {
 
     #[getter]
     fn shape(&self) -> Vec<usize> {
-        self.shape.clone()
+        self.shape_usize()
     }
 
     #[getter]
     fn dtype(&self) -> String {
-        self.dtype.clone()
+        dtype_name(self.inner.dtype()).to_string()
     }
 
     #[getter]
     fn ndim(&self) -> usize {
-        self.shape.len()
+        self.inner.shape().len()
     }
 
     #[getter]
     fn size(&self) -> usize {
-        element_count(&self.shape)
+        self.inner.numel()
     }
 
     #[getter]
     fn nbytes(&self) -> usize {
-        self.data.len()
+        self.inner.nbytes()
     }
 
+    /// Strides in bytes per dimension, C-order.
     #[getter]
-    fn strides(&self) -> PyResult<Vec<usize>> {
-        c_contiguous_strides(&self.shape, dtype_size(&self.dtype)?)
+    fn strides(&self) -> Vec<usize> {
+        let item_size = dtype_size(self.inner.dtype());
+        self.inner
+            .effective_strides()
+            .iter()
+            .map(|&stride| stride as usize * item_size)
+            .collect()
+    }
+
+    /// Device holding the tensor data. Always `"cpu"`.
+    #[getter]
+    fn device(&self) -> &'static str {
+        "cpu"
+    }
+
+    /// Whether the elements are laid out C-contiguously.
+    fn is_contiguous(&self) -> bool {
+        self.inner.is_contiguous()
+    }
+
+    /// A tensor with the same elements and a new shape. Shares the
+    /// underlying data when this tensor is contiguous.
+    fn reshape(&self, shape: Vec<usize>) -> PyResult<Self> {
+        let dims: Vec<i64> = shape.iter().map(|&dim| dim as i64).collect();
+        self.inner
+            .reshape(&dims)
+            .map(Self::from)
+            .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
+    }
+
+    /// A deep copy backed by fresh storage.
+    fn copy(&self) -> PyResult<Self> {
+        Tensor::from_slice(
+            &self.inner.to_contiguous_bytes(),
+            self.inner.shape(),
+            self.inner.dtype(),
+        )
+        .map(Self::from)
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
     }
 
     #[getter]
@@ -87,7 +142,7 @@ impl PyTensor {
     }
 
     fn tobytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.data)
+        PyBytes::new(py, &self.inner.to_contiguous_bytes())
     }
 
     #[gen_stub(skip)]
@@ -106,8 +161,18 @@ impl PyTensor {
         }
 
         let borrowed = slf.borrow();
-        let data_ptr = borrowed.data.as_ptr();
-        let data_len = borrowed.data.len();
+        if !borrowed.inner.is_contiguous() {
+            return Err(pyo3::exceptions::PyBufferError::new_err(
+                "Tensor buffer requires a contiguous layout; call copy() first",
+            ));
+        }
+        let data_len = borrowed.inner.nbytes();
+        let storage = borrowed.inner.storage().as_slice();
+        let data_ptr = if data_len == 0 {
+            storage.as_ptr()
+        } else {
+            storage[borrowed.inner.byte_offset()..].as_ptr()
+        };
         drop(borrowed);
         unsafe {
             (*view).obj = slf.into_any().into_ptr();
@@ -150,9 +215,9 @@ impl PyTensor {
     fn __repr__(&self) -> String {
         format!(
             "Tensor(dtype={:?}, shape={:?}, bytes={})",
-            self.dtype,
-            self.shape,
-            self.data.len()
+            self.dtype(),
+            self.shape_usize(),
+            self.inner.nbytes()
         )
     }
 }
@@ -189,54 +254,4 @@ pub(crate) fn extract_buffer_bytes(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
     Err(pyo3::exceptions::PyTypeError::new_err(
         "expected a Tensor, bytes-like object, or value with tobytes()",
     ))
-}
-
-fn element_count(shape: &[usize]) -> usize {
-    if shape.is_empty() {
-        1
-    } else {
-        shape.iter().copied().product()
-    }
-}
-
-fn expected_nbytes(shape: &[usize], dtype: &str) -> PyResult<usize> {
-    element_count_checked(shape)?
-        .checked_mul(dtype_size(dtype)?)
-        .ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("tensor byte length overflow"))
-}
-
-fn element_count_checked(shape: &[usize]) -> PyResult<usize> {
-    if shape.is_empty() {
-        return Ok(1);
-    }
-    shape.iter().try_fold(1usize, |count, dim| {
-        count.checked_mul(*dim).ok_or_else(|| {
-            pyo3::exceptions::PyOverflowError::new_err("tensor element count overflow")
-        })
-    })
-}
-
-fn c_contiguous_strides(shape: &[usize], item_size: usize) -> PyResult<Vec<usize>> {
-    let mut stride = item_size;
-    let mut strides = Vec::with_capacity(shape.len());
-    for dim in shape.iter().rev() {
-        strides.push(stride);
-        stride = stride.checked_mul(*dim).ok_or_else(|| {
-            pyo3::exceptions::PyOverflowError::new_err("tensor strides overflow usize")
-        })?;
-    }
-    strides.reverse();
-    Ok(strides)
-}
-
-fn dtype_size(dtype: &str) -> PyResult<usize> {
-    match dtype {
-        "bool" | "uint8" | "int8" => Ok(1),
-        "float16" | "bfloat16" | "int16" | "uint16" => Ok(2),
-        "int32" | "uint32" | "float32" => Ok(4),
-        "int64" | "uint64" | "float64" => Ok(8),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported tensor dtype {other:?}"
-        ))),
-    }
 }
