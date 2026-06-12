@@ -132,9 +132,13 @@ def _env_address(env_or_address: object) -> str:
     address = getattr(env_or_address, "_address", None)
     if isinstance(address, str):
         return address
-    address_method = getattr(env_or_address, "address", None)
-    if callable(address_method):
-        value = address_method()
+    # Accept ``address`` exposed as a property or plain string attribute
+    # (as on rlmesh's own EnvServer) in addition to a callable ``address()``.
+    address_attr = getattr(env_or_address, "address", None)
+    if isinstance(address_attr, str):
+        return address_attr
+    if callable(address_attr):
+        value = address_attr()
         if isinstance(value, str):
             return value
     raise TypeError("Model.run() expects a remote env object or address string")
@@ -143,7 +147,11 @@ def _env_address(env_or_address: object) -> str:
 def _shutdown_env(env_or_address: object, address: str) -> None:
     shutdown = getattr(env_or_address, "shutdown", None)
     if callable(shutdown):
-        shutdown("local model run complete")
+        try:
+            shutdown("local model run complete")
+        except TypeError:
+            # Some wrappers (e.g. EnvServer.shutdown()) take no reason argument.
+            shutdown()
         return
 
     from rlmesh._rlmesh import PyEnvClient
