@@ -222,6 +222,10 @@ where
             capabilities: capability_map(&[
                 capabilities::MODEL_SERVICE_V1,
                 capabilities::SPACES_CORE_V1,
+                // The served model pipelines Join-stream requests (see `join`).
+                // Advisory: lets clients detect that overlapping predicts will
+                // actually pipeline rather than serialize behind the handler.
+                capabilities::MODEL_CONCURRENT_PREDICT_V1,
             ]),
             selected_workflow_edition: if compatible {
                 selected_edition.unwrap_or_default().to_string()
@@ -237,17 +241,49 @@ where
 
     /// Handle a Join bidi stream.
     ///
-    /// # Single-flight contract
+    /// # Concurrency contract (pipelined predict)
     ///
-    /// Each request on the stream is processed to completion (and its response
-    /// sent) before the next is read. This is deliberately **single-flight**:
-    /// at most one request per connection is in flight at a time, responses are
-    /// emitted in request order, and the matching [`crate::model`] client sends
-    /// one request at a time (its `&mut self` send API enforces this). Although
-    /// requests carry a `request_id` (the protocol is demux-shaped), the server
-    /// does not yet pipeline concurrent requests on a single stream. Clients
-    /// that need more throughput should open multiple connections; concurrent
-    /// sends on one logical stream are serialized rather than overlapped.
+    /// Requests on the stream are **pipelined**: the read loop spawns a task per
+    /// request rather than awaiting each to completion before reading the next,
+    /// so decode/validation, the handler critical section, encode, and the
+    /// response pump overlap across requests. Responses are tagged with their
+    /// originating `request_id` and emitted in **completion order**, which may
+    /// differ from arrival order (a slow request no longer head-of-line-blocks a
+    /// fast one). The matching [`crate::model`] client demuxes responses by
+    /// `request_id`. The capability `model.concurrent_predict.v1` advertises this
+    /// behavior at handshake.
+    ///
+    /// ## What is serialized, and why
+    ///
+    /// The user handler is an `Arc<Mutex<H>>` with `&mut self` hooks, so every
+    /// handler/lifecycle critical section still runs one at a time (option (a):
+    /// we keep the mutex rather than break the public `ModelHandler` trait to
+    /// `&self`). The win is real even so: decode/encode and the stream pump no
+    /// longer block behind the handler.
+    ///
+    /// ## Ordering guarantees
+    ///
+    /// - **Per-route order is preserved.** Each request is assigned, in arrival
+    ///   order, a slot on a per-route chain of completion signals; a request's
+    ///   handler critical section waits for the previous same-route request to
+    ///   finish before acquiring the handler lock. So for a given route,
+    ///   `ConfigureRoute` → `Predict` → … → `CloseRoute` run their lifecycle
+    ///   updates and predicts in exactly the order the client sent them. This
+    ///   keeps `active_episodes` / `update_lifecycle` correct and prevents a
+    ///   `CloseRoute` from overtaking an in-flight `Predict` for the same route
+    ///   and dropping its episode accounting.
+    /// - **Different routes interleave.** Critical sections for distinct routes
+    ///   may run in either order (still one at a time under the mutex); per-route
+    ///   episode accounting is independent, so this is safe and is what yields
+    ///   out-of-order completion.
+    /// - **`Close` is a barrier.** A whole-session `Close` drains *all* routes'
+    ///   episodes, so it waits for every outstanding request on the stream to
+    ///   finish before draining, then ends the stream. It can never overtake an
+    ///   in-flight predict on any route.
+    ///
+    /// Idle-shutdown `IdleActivity::Started`/`Finished` is emitted as a balanced
+    /// pair around each request's processing (inside the per-request task), so
+    /// the active count tracks genuinely in-flight work even while pipelined.
     async fn join(
         &self,
         request: Request<Streaming<JoinRequest>>,
@@ -258,9 +294,22 @@ where
         let active_episodes = Arc::clone(&self.active_episodes);
         let route_configs = Arc::clone(&self.route_configs);
         let activity_tx = self.activity_tx.clone();
+        let concurrency = self
+            .serve_options
+            .predict_concurrency
+            .unwrap_or(rlmesh_grpc::DEFAULT_PREDICT_CONCURRENCY)
+            .max(1);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
         tokio::spawn(async move {
+            // Per-route tail of completion signals. Reading happens on this single
+            // task, in arrival order, so the map needs no locking. Each entry is a
+            // receiver that fires when the most recently enqueued request for that
+            // route finishes its handler critical section.
+            let mut route_tails: HashMap<String, tokio::sync::oneshot::Receiver<()>> =
+                HashMap::new();
+
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
                     Ok(request) => request,
@@ -270,26 +319,69 @@ where
                     }
                 };
                 let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
+                let route_key = join_request_route_key(&request);
+
+                // Compute the gate this request must wait on before entering its
+                // handler critical section, and the signal it fires on completion.
+                let (gate, done_tx): (RequestGate, tokio::sync::oneshot::Sender<()>) =
+                    if close_after {
+                        // Close drains every route: wait for all outstanding requests.
+                        let prev = route_tails.drain().map(|(_, rx)| rx).collect::<Vec<_>>();
+                        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
+                        (RequestGate::All(prev), done_tx)
+                    } else {
+                        // Chain this request after the previous one on its route (if
+                        // any). Requests with no route key (malformed) are ungated.
+                        let prev = route_key.as_ref().and_then(|key| route_tails.remove(key));
+                        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+                        if let Some(key) = &route_key {
+                            route_tails.insert(key.clone(), done_rx);
+                        }
+                        (RequestGate::Prev(prev), done_tx)
+                    };
+
+                // Acquire a permit before spawning so the number of outstanding
+                // per-request tasks stays bounded; held for the task's lifetime.
+                let permit = match Arc::clone(&semaphore).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+
                 if let Some(activity_tx) = &activity_tx {
                     let _ = activity_tx.send(IdleActivity::Started);
                 }
-                let response = handle_model_request(
-                    request,
-                    Arc::clone(&handler),
-                    Arc::clone(&active_episodes),
-                    Arc::clone(&route_configs),
-                )
-                .await;
-                if let Some(activity_tx) = &activity_tx {
-                    let _ = activity_tx.send(IdleActivity::Finished);
-                }
-                let send_result = tx.send(Ok(response)).await;
-                if send_result.is_err() {
-                    tracing::warn!(
-                        "model join response receiver closed before response could be delivered"
-                    );
-                    break;
-                }
+
+                let handler = Arc::clone(&handler);
+                let active_episodes = Arc::clone(&active_episodes);
+                let route_configs = Arc::clone(&route_configs);
+                let activity_tx = activity_tx.clone();
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    // Wait for predecessors so the handler critical section runs in
+                    // per-route arrival order (or, for Close, after every route).
+                    gate.wait().await;
+
+                    let response =
+                        handle_model_request(request, handler, active_episodes, route_configs)
+                            .await;
+
+                    // Release successors on this route *before* sending the
+                    // response, so per-route ordering does not depend on the
+                    // unbounded response channel draining.
+                    let _ = done_tx.send(());
+
+                    if let Some(activity_tx) = &activity_tx {
+                        let _ = activity_tx.send(IdleActivity::Finished);
+                    }
+                    if tx.send(Ok(response)).await.is_err() {
+                        tracing::warn!(
+                            "model join response receiver closed before response could be delivered"
+                        );
+                    }
+                });
+
                 if close_after {
                     break;
                 }
@@ -479,6 +571,53 @@ async fn handle_predict<H: ModelHandler + 'static>(
     .await
     .unwrap_or_else(|error| model_error_from_error(&error))
     .into()
+}
+
+/// The set of predecessor completion signals a request must await before it may
+/// enter its handler critical section, preserving per-route arrival order.
+enum RequestGate {
+    /// Wait for the previous same-route request (if any). A dropped/`None`
+    /// sender resolves immediately, so a failed predecessor never deadlocks a
+    /// successor.
+    Prev(Option<tokio::sync::oneshot::Receiver<()>>),
+    /// Wait for every outstanding request across all routes (whole-session
+    /// `Close` barrier).
+    All(Vec<tokio::sync::oneshot::Receiver<()>>),
+}
+
+impl RequestGate {
+    async fn wait(self) {
+        match self {
+            RequestGate::Prev(prev) => {
+                if let Some(rx) = prev {
+                    // A `RecvError` means the predecessor's sender was dropped
+                    // (it finished or its task panicked); either way we proceed.
+                    let _ = rx.await;
+                }
+            }
+            RequestGate::All(prev) => {
+                for rx in prev {
+                    let _ = rx.await;
+                }
+            }
+        }
+    }
+}
+
+/// Route key for ordering a Join request on its per-route chain.
+///
+/// `ConfigureRoute` / `Predict` / `CloseRoute` are keyed by their
+/// `session_id:route_id`; whole-session `Close` and malformed requests (missing
+/// context or ids) return `None` — `Close` is handled as an all-routes barrier
+/// by the caller, and ungated malformed requests still produce an in-band error.
+fn join_request_route_key(request: &JoinRequest) -> Option<String> {
+    let context = match request.kind.as_ref()? {
+        join_request::Kind::ConfigureRoute(request) => request.context.as_ref()?,
+        join_request::Kind::Predict(request) => request.context.as_ref()?,
+        join_request::Kind::CloseRoute(request) => request.context.as_ref()?,
+        join_request::Kind::Close(_) => return None,
+    };
+    route_config_key(context)
 }
 
 fn route_config_key(context: &rlmesh_proto::model::v1::PredictContext) -> Option<String> {

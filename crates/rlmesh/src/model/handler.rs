@@ -20,8 +20,7 @@ use crate::{Result, spaces};
 /// [`Error::model_recoverable`](crate::Error::model_recoverable) to signal that
 /// the model *declined* a request rather than hit an internal fault.
 ///
-/// See [`predict`](ModelHandler::predict) for the single-flight concurrency
-/// contract.
+/// See [`predict`](ModelHandler::predict) for the concurrency contract.
 #[async_trait]
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
@@ -29,18 +28,24 @@ pub trait ModelHandler: Send {
     /// Returns the encoded action bytes as a
     /// [`BinaryPayload`](crate::spaces::BinaryPayload).
     ///
-    /// # Concurrency contract (single-flight)
+    /// # Concurrency contract (pipelined predict)
     ///
-    /// The served model endpoint is **single-flight per connection**:
-    /// `predict` (and the other lifecycle hooks) are invoked one at a time, in
-    /// stream order, for a given Join stream — the server awaits each request to
-    /// completion before reading the next, and the `&mut self` receiver
-    /// statically prevents concurrent calls. A handler therefore does not need
-    /// internal synchronization for its own state, but must not assume that
-    /// multiple predicts can be in flight on one connection. To increase
-    /// throughput, run multiple connections (each is independently
-    /// single-flight). Pipelined/concurrent predict on a single connection is
-    /// not yet supported (see the crate docs).
+    /// The served model endpoint **pipelines** Join-stream requests: decode,
+    /// encode, and the response pump overlap across requests, so a slow predict
+    /// no longer head-of-line-blocks a faster later one and responses may
+    /// complete out of arrival order. The handler itself, however, is **never**
+    /// invoked concurrently: `predict` and the lifecycle hooks take `&mut self`,
+    /// and the server holds a per-handler mutex across each call, so exactly one
+    /// hook runs at a time. A handler therefore still does not need internal
+    /// synchronization for its own state.
+    ///
+    /// **Per-route ordering is preserved**: for a given route, `on_reset` /
+    /// `predict` / `on_episode_end` are invoked in the order the client sent the
+    /// corresponding requests, and a route's `CloseRoute`/`Close` drain runs
+    /// after every earlier predict on that route. Calls for *different* routes
+    /// may interleave (still one at a time). To increase throughput further, run
+    /// multiple connections. The `model.concurrent_predict.v1` handshake
+    /// capability advertises this pipelining to clients.
     async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload>;
 
     /// Called when a new episode begins, before its first `predict`.
