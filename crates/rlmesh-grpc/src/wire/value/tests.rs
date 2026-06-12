@@ -4,7 +4,7 @@ use rlmesh_proto::common::v1::MessageBytes;
 use rlmesh_spaces::spaces::{BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder};
 use rlmesh_spaces::{BinaryPayload, DType, RenderRequest, SpaceValue, Tensor};
 
-use super::codec::decode_value_for_space;
+use super::codec::{decode_value_for_space, encode_value_for_space};
 use super::{
     binary_to_bytes, decode_batch_bytes, decode_batched_partial_values, decode_value_bytes,
     encode_batch_bytes, encode_batched_partial_values, encode_value_bytes,
@@ -254,4 +254,43 @@ fn strided_box_view_encodes_contiguously() {
     assert_eq!(payload.data, vec![1, 3]);
     let decoded = decode_value_bytes(Some(&payload), &space).unwrap().unwrap();
     assert_eq!(decoded, value);
+}
+
+#[test]
+fn discrete_decode_rejects_fractional_and_nonfinite_floats() {
+    let space = DiscreteBuilder::new(8).build().unwrap();
+
+    let fractional = Value {
+        kind: Some(value::Kind::NumberValue(3.7)),
+    };
+    let err = decode_value_for_space(&fractional, &space)
+        .expect_err("a fractional Discrete action must be rejected, not truncated to 3");
+    assert!(err.to_string().contains("fractional"));
+
+    let nan = Value {
+        kind: Some(value::Kind::NumberValue(f64::NAN)),
+    };
+    let err = decode_value_for_space(&nan, &space)
+        .expect_err("a NaN Discrete action must be rejected, not coerced to 0");
+    assert!(err.to_string().contains("non-finite"));
+}
+
+#[test]
+fn discrete_encode_rejects_precision_losing_integers() {
+    let space = DiscreteBuilder::new(8).build().unwrap();
+
+    // 2^53 + 1 cannot be represented exactly as an f64; encoding it as a JSON
+    // number would silently corrupt the value.
+    let value = SpaceValue::Discrete((1i64 << 53) + 1);
+    let err = encode_value_for_space(&value, &space)
+        .expect_err("encoding an integer beyond 2^53 must be rejected");
+    assert!(err.to_string().contains("2^53"));
+
+    // A value within the exact-float range round-trips fine.
+    let value = SpaceValue::Discrete(5);
+    let encoded = encode_value_for_space(&value, &space).unwrap();
+    assert_eq!(
+        decode_value_for_space(&encoded, &space).unwrap(),
+        SpaceValue::Discrete(5)
+    );
 }

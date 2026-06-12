@@ -11,7 +11,7 @@ use super::proto_value::{
 };
 use super::scalars::{
     decode_int_sequence, decode_proto_array, decode_scalar, encode_int_sequence, encode_scalar,
-    encode_scalars, scalar_to_proto_value,
+    encode_scalars, float_to_int, int_to_proto_f64, scalar_to_proto_value,
 };
 
 pub(super) fn encode_space_value<'v>(
@@ -158,7 +158,7 @@ pub(super) fn encode_value_for_space(
             )),
         }),
         native::SpaceValue::Discrete(value) => Ok(Value {
-            kind: Some(value::Kind::NumberValue(*value as f64)),
+            kind: Some(value::Kind::NumberValue(int_to_proto_f64(*value)?)),
         }),
         native::SpaceValue::MultiBinary(values) => Ok(Value {
             kind: Some(value::Kind::ListValue(ListValue {
@@ -175,7 +175,7 @@ pub(super) fn encode_value_for_space(
                 values: values
                     .iter()
                     .map(|value| scalar_to_proto_value(*value))
-                    .collect(),
+                    .collect::<Result<_, _>>()?,
             })),
         }),
         native::SpaceValue::Text(value) => Ok(Value {
@@ -213,7 +213,7 @@ pub(super) fn decode_value_for_space(
         }
         Some(native::SpaceKind::Discrete(_)) => match value.kind {
             Some(value::Kind::NumberValue(number)) => {
-                Ok(native::SpaceValue::Discrete(number as i64))
+                Ok(native::SpaceValue::Discrete(float_to_int(number)?))
             }
             Some(value::Kind::BoolValue(flag)) => Ok(native::SpaceValue::Discrete(i64::from(flag))),
             _ => Err(ProtocolError::DecodeError(
@@ -238,7 +238,7 @@ pub(super) fn decode_value_for_space(
                 .values
                 .iter()
                 .map(|value| match value.kind {
-                    Some(value::Kind::NumberValue(number)) => Ok(number as i64),
+                    Some(value::Kind::NumberValue(number)) => float_to_int(number),
                     _ => Err(ProtocolError::DecodeError(
                         "multidiscrete element was not numeric".to_string(),
                     )),
