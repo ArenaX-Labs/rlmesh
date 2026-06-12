@@ -8,11 +8,17 @@ use super::{Env, WireEnvAdapter};
 use crate::bound::BoundListener;
 use crate::{BindAddress, EnvironmentError, Error, Result, ServeOptions};
 
+/// Hosts an [`Env`] as a gRPC environment server.
+///
+/// Construct with [`EnvServer::new`], then either [`bind`](EnvServer::bind) to
+/// reserve the socket and learn the resolved address before serving, or
+/// [`serve`](EnvServer::serve) to bind and run in one call.
 pub struct EnvServer<E: Env> {
     env: E,
 }
 
 impl<E: Env> EnvServer<E> {
+    /// Wrap an [`Env`] implementation to be served.
     pub fn new(env: E) -> Self {
         Self { env }
     }
@@ -66,14 +72,22 @@ impl<E: Env + 'static> EnvServer<E> {
         })
     }
 
+    /// Bind to `addr` and serve until shutdown, with default [`ServeOptions`].
+    ///
+    /// Equivalent to [`bind`](EnvServer::bind) followed by
+    /// [`BoundEnvServer::serve`], for callers that do not need the resolved
+    /// address up front.
     pub async fn serve(self, addr: BindAddress) -> Result<()> {
         self.serve_with_options(addr, ServeOptions::default()).await
     }
 
+    /// Bind to `addr` and serve until shutdown, with explicit [`ServeOptions`].
     pub async fn serve_with_options(self, addr: BindAddress, options: ServeOptions) -> Result<()> {
         self.bind_with_options(addr, options).await?.serve().await
     }
 
+    /// Convenience wrapper around [`serve`](EnvServer::serve) for a
+    /// [`SocketAddr`](std::net::SocketAddr) TCP bind target.
     pub async fn serve_tcp(self, addr: impl Into<std::net::SocketAddr>) -> Result<()> {
         let addr = addr.into();
         self.serve(BindAddress::Tcp {

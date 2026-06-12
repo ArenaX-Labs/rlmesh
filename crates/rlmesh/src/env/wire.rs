@@ -15,11 +15,15 @@ use super::Env;
 use super::types::{CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, StepRequest};
 use crate::spaces;
 
+/// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
+#[doc(hidden)]
 pub struct WireEnvAdapter<E> {
     inner: E,
 }
 
 impl<E> WireEnvAdapter<E> {
+    /// Wrap an [`Env`] for the wire layer.
+    #[doc(hidden)]
     pub fn new(inner: E) -> Self {
         Self { inner }
     }

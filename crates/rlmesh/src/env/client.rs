@@ -14,6 +14,17 @@ use super::wire::{
 };
 use crate::{ConnectAddress, Error, Result, spaces};
 
+/// A client handle to a remote environment server.
+///
+/// Connect with [`RemoteEnv::connect`] (or [`RemoteEnv::connect_with_token`]
+/// for an authenticated endpoint), then drive the env by hand with
+/// [`reset`](RemoteEnv::reset) / [`step`](RemoteEnv::step) — the same
+/// vectorized request family an [`Env`](crate::Env) implementor serves. Use
+/// this when your code is the client; to hand control to a policy instead, see
+/// [`ModelWorker`](crate::ModelWorker).
+///
+/// The observation/action specs are shared behind an `Arc`, so each
+/// reset/step clones a cheap handle rather than deep-copying the spec.
 pub struct RemoteEnv {
     inner: rlmesh_grpc::EnvClient,
     env_contract: spaces::EnvContract,
@@ -26,16 +37,28 @@ pub struct RemoteEnv {
 }
 
 impl RemoteEnv {
+    /// Connect to an env server at `address` and perform the handshake.
+    ///
+    /// `address` accepts the same forms as
+    /// [`ConnectAddress::parse`](crate::ConnectAddress::parse) (e.g.
+    /// `tcp://host:port`, `unix:///path.sock`).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::Error`] if the address is invalid, the connection
+    /// fails, or the handshake reports an incompatible / malformed env contract.
     pub async fn connect(address: &str) -> Result<Self> {
         Self::connect_to(ConnectAddress::parse(address)?).await
     }
 
     /// Connect to an env server that requires a bearer token (see
-    /// `ServeOptions::token`). An empty token behaves like [`RemoteEnv::connect`].
+    /// [`ServeOptions::token`](crate::ServeOptions::token)). An empty token
+    /// behaves like [`RemoteEnv::connect`].
     pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
         Self::connect_to_with_token(ConnectAddress::parse(address)?, token).await
     }
 
+    /// Connect to an already-parsed [`ConnectAddress`].
     pub async fn connect_to(address: ConnectAddress) -> Result<Self> {
         Self::connect_to_with_token(address, "").await
     }
@@ -71,18 +94,29 @@ impl RemoteEnv {
         })
     }
 
+    /// The address this client is connected to.
     pub fn address(&self) -> &str {
         self.inner.address()
     }
 
+    /// The environment contract reported by the server at handshake (spaces,
+    /// id, render mode, metadata).
     pub fn env_contract(&self) -> &spaces::EnvContract {
         &self.env_contract
     }
 
+    /// The number of sub-environments the remote env steps in lockstep.
     pub fn num_envs(&self) -> usize {
         self.num_envs
     }
 
+    /// Reset the remote environment and return the initial observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Environment`](crate::Error::Environment) if the env
+    /// reports a failure or returns a batch whose size does not match
+    /// [`num_envs`](RemoteEnv::num_envs), or a transport error on RPC failure.
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResult> {
         let observation_space = std::sync::Arc::clone(&self.observation_space);
 
@@ -111,6 +145,15 @@ impl RemoteEnv {
         })
     }
 
+    /// Apply one action per sub-environment and return the batched transition.
+    ///
+    /// `req.actions` must contain exactly [`num_envs`](RemoteEnv::num_envs)
+    /// actions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Environment`](crate::Error::Environment) on an env
+    /// failure or batch-size mismatch, or a transport error on RPC failure.
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResult> {
         let action_space = std::sync::Arc::clone(&self.action_space);
         let observation_space = std::sync::Arc::clone(&self.observation_space);
@@ -172,6 +215,7 @@ impl RemoteEnv {
         })
     }
 
+    /// Request a render frame from the remote environment.
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResult> {
         let response = self
             .inner
@@ -204,6 +248,12 @@ impl RemoteEnv {
         })
     }
 
+    /// Ask the server to shut itself down, returning whether it accepted.
+    ///
+    /// Unlike [`close`](RemoteEnv::close), this stops the *server*, but only if
+    /// it was started with
+    /// [`ServeOptions::allow_remote_shutdown`](crate::ServeOptions::allow_remote_shutdown);
+    /// otherwise the request is declined and this returns `Ok(false)`.
     pub async fn shutdown(&mut self, reason: impl Into<String>) -> Result<bool> {
         let response = self
             .inner
