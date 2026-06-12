@@ -543,7 +543,20 @@ mod tests {
             }
         };
 
-        client.close().await.unwrap();
+        let _ = client
+            .reset(ResetRequest {
+                seeds: vec![11, 22],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        let mut final_episodes = client.close().await.unwrap().final_episodes;
+        final_episodes.sort_by_key(|episode| episode.env_index);
+        assert_eq!(final_episodes.len(), 2);
+        assert_eq!(final_episodes[0].env_index, 0);
+        assert_eq!(final_episodes[0].seed, 11);
+        assert_eq!(final_episodes[1].env_index, 1);
+        assert_eq!(final_episodes[1].seed, 22);
         assert_eq!(closes.load(Ordering::SeqCst), 0);
 
         let mut second_client = RemoteEnv::connect(&address).await.unwrap();

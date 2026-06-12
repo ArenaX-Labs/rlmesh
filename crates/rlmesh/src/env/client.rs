@@ -167,9 +167,14 @@ impl RemoteEnv {
     }
 
     pub async fn close(&mut self) -> Result<CloseResult> {
-        let _ = self.inner.close().await.map_err(Error::from)?;
+        let response = self.inner.close().await.map_err(Error::from)?;
         Ok(CloseResult {
-            final_episodes: vec![],
+            final_episodes: response
+                .final_episodes
+                .into_iter()
+                .map(proto_episode_metadata_to_public)
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(protocol_error_to_error)?,
         })
     }
 
