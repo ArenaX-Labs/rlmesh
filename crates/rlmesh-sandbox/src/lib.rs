@@ -97,7 +97,16 @@ impl SandboxOptions {
     }
 }
 
+/// Details of a started sandbox container, returned by [`start_env`] and
+/// [`start_env_async`].
+///
+/// Dropping this without recording `container_id` leaks a running container, so
+/// it is `#[must_use]`. It is `#[non_exhaustive]` so future fields (extra
+/// container metadata, ports, ...) can be added without breaking callers that
+/// read fields by name.
 #[derive(Debug, Clone)]
+#[must_use = "dropping a RunResult without its container_id leaks the started container"]
+#[non_exhaustive]
 pub struct RunResult {
     pub requested_source: String,
     pub resolved_source: String,
