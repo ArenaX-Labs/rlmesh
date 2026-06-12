@@ -245,6 +245,11 @@ pub struct RuntimeDriver<E, M> {
     model: M,
     hooks: Arc<dyn RuntimeHooks>,
     cancellation_reason: String,
+    /// Action/observation space specs shared into every per-step hook event.
+    /// Populated once after [`validate`](RuntimeSessionSpec::validate) so the
+    /// hot path clones an `Arc` instead of deep-copying the spec each step.
+    action_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
+    observation_space: Arc<rlmesh_proto::spaces::v1::SpaceSpec>,
 }
 
 impl<E, M> RuntimeDriver<E, M>
@@ -259,6 +264,9 @@ where
             model,
             hooks,
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
+            // Filled from the validated spec at run time; default until then.
+            action_space: Arc::default(),
+            observation_space: Arc::default(),
         }
     }
 
@@ -311,6 +319,10 @@ where
     ) -> Result<RuntimeReport, RuntimeError> {
         self.cancellation_reason = reason.into();
         self.spec.validate().map_err(RuntimeError::InvalidSpec)?;
+        // validate() confirmed both spaces are present; cache them as shared
+        // Arcs so per-step hook events clone a pointer, not the whole spec.
+        self.action_space = Arc::new(self.spec.action_space_validated().clone());
+        self.observation_space = Arc::new(self.spec.observation_space_validated().clone());
         let mut state = RouteState::new(&self.spec);
         let result = self.run_loop(&mut state, &cancellation).await;
         if let Err(error) = &result {
@@ -439,7 +451,7 @@ where
                 episode_record_ids: predict_snapshot.episode_record_ids.clone(),
                 step: action_step,
                 env_index: predict_snapshot.env_index,
-                action_space: self.spec.action_space_validated().clone(),
+                action_space: Arc::clone(&self.action_space),
                 action: model_action,
             };
             action_event.action = self.invoke_transform_action(action_event.clone()).await?;
@@ -870,7 +882,7 @@ where
             env_index: snapshot.env_index,
             is_reset,
             num_envs: self.spec.num_envs as u32,
-            observation_space: self.spec.observation_space_validated().clone(),
+            observation_space: Arc::clone(&self.observation_space),
             observation,
         }
     }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use prost_types::Struct;
 use rlmesh_proto::common::v1::MessageBytes;
 use rlmesh_proto::spaces::v1::SpaceSpec;
@@ -110,7 +112,9 @@ pub struct ActionReceivedEvent {
     pub episode_record_ids: Vec<String>,
     pub step: i64,
     pub env_index: i32,
-    pub action_space: SpaceSpec,
+    /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
+    /// rather than deep-copying the action space spec on every step.
+    pub action_space: Arc<SpaceSpec>,
     pub action: Option<MessageBytes>,
 }
 
@@ -137,7 +141,9 @@ pub struct ObservationEmittedEvent {
     pub env_index: i32,
     pub is_reset: bool,
     pub num_envs: u32,
-    pub observation_space: SpaceSpec,
+    /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
+    /// rather than deep-copying the observation space spec on every step.
+    pub observation_space: Arc<SpaceSpec>,
     pub observation: Option<MessageBytes>,
 }
 

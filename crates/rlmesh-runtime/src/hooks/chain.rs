@@ -250,7 +250,7 @@ mod tests {
             episode_record_ids: vec!["episode-artifact".to_string()],
             step: 1,
             env_index: 0,
-            action_space: SpaceSpec::default(),
+            action_space: std::sync::Arc::new(SpaceSpec::default()),
             action: Some(MessageBytes { data }),
         }
     }
