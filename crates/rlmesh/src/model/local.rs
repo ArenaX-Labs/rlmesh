@@ -160,7 +160,8 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// [`rlmesh_runtime::RuntimeDriver`].
 ///
 /// Use this to drive your handler from your own `RuntimeDriver` embedding. The
-/// adapter decodes the runtime's predict request into a [`ModelObservation`],
+/// adapter decodes the runtime's predict request into a
+/// [`ModelObservation`](crate::ModelObservation),
 /// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
 /// each `predict`, and re-encodes the action — the same choreography the
 /// in-process `run_local` path performs.

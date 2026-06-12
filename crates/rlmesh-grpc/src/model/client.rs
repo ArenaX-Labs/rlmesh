@@ -20,6 +20,19 @@ use super::protocol::{join_request_kind_name, model_error_to_grpc_error};
 use super::stream::spawn_response_pump;
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
 
+/// Client for a ModelService server's Join bidi stream.
+///
+/// # Single-flight contract
+///
+/// This client is **single-flight per connection**: every request-issuing
+/// method takes `&mut self` and waits for the matching response before
+/// returning, so at most one request is outstanding on the stream at a time and
+/// responses are consumed in order. The wire protocol carries a `request_id`
+/// (it is demux-shaped), but the server does not yet pipeline concurrent
+/// requests; to overlap work, use multiple `ModelClient`s (multiple
+/// connections). If a response arrives whose `request_id` does not match the
+/// awaited request (e.g. a late response from an abandoned request), it is
+/// discarded.
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,

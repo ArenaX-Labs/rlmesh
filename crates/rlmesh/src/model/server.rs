@@ -30,7 +30,8 @@ use crate::{BindAddress, Error, Result, ServeOptions, spaces};
 
 /// A model server that has bound its listener but not yet started serving.
 ///
-/// Created by [`bind_model_with_options`]. Use [`BoundModelServer::local_addr`]
+/// Created by [`crate::ModelWorker::bind_async`]. Use
+/// [`BoundModelServer::local_addr`]
 /// to read the resolved bind address (e.g. the OS-assigned port for TCP port
 /// 0), then [`BoundModelServer::serve`] to run until shutdown.
 pub struct BoundModelServer {
@@ -210,6 +211,19 @@ where
     type JoinStream =
         tokio_stream::wrappers::ReceiverStream<std::result::Result<JoinResponse, Status>>;
 
+    /// Handle a Join bidi stream.
+    ///
+    /// # Single-flight contract
+    ///
+    /// Each request on the stream is processed to completion (and its response
+    /// sent) before the next is read. This is deliberately **single-flight**:
+    /// at most one request per connection is in flight at a time, responses are
+    /// emitted in request order, and the matching [`crate::model`] client sends
+    /// one request at a time (its `&mut self` send API enforces this). Although
+    /// requests carry a `request_id` (the protocol is demux-shaped), the server
+    /// does not yet pipeline concurrent requests on a single stream. Clients
+    /// that need more throughput should open multiple connections; concurrent
+    /// sends on one logical stream are serialized rather than overlapped.
     async fn join(
         &self,
         request: Request<Streaming<JoinRequest>>,
