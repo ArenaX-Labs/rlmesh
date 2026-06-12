@@ -50,28 +50,33 @@ def ensure_available() -> None:
 
 
 def asarray(tensor: Tensor) -> NumpyArray:
-    """Return a NumPy array view over an RLMesh tensor.
+    """Return a writable NumPy array containing an RLMesh tensor's data.
+
+    The returned array owns a fresh copy of the tensor bytes, so it is writable
+    and matches Gymnasium, where ``reset``/``step`` observations are writable
+    (idioms such as ``obs /= 255.0`` work). For an opt-in zero-copy view that
+    shares the tensor buffer, use the buffer protocol or DLPack directly
+    (for example ``numpy.from_dlpack(tensor)``), treating the result as
+    read-only.
 
     Args:
-        tensor: RLMesh tensor value to view.
+        tensor: RLMesh tensor value to convert.
 
     Returns:
-        Read-only, zero-copy array view over the tensor buffer. ``bfloat16``
-        tensors are copied, since the buffer protocol cannot describe them,
-        and require the ``ml_dtypes`` package (``rlmesh[bfloat16]``).
+        A writable NumPy array with a copy of the tensor data. ``bfloat16``
+        tensors require the ``ml_dtypes`` package (``rlmesh[bfloat16]``).
     """
     ensure_available()
     import numpy as np
 
     shape = tuple(tensor.shape)
     if tensor.dtype == "bfloat16":
-        array = np.frombuffer(tensor.tobytes(), dtype=_bfloat16_dtype())
+        dtype = _bfloat16_dtype()
     else:
-        try:
-            array = np.frombuffer(tensor.buffer, dtype=np.dtype(tensor.dtype))
-        except (BufferError, ValueError):
-            # Non-contiguous tensors cannot serve a flat buffer request.
-            array = np.frombuffer(tensor.copy().buffer, dtype=np.dtype(tensor.dtype))
+        dtype = np.dtype(tensor.dtype)
+    # ``bytearray`` yields a writable buffer, so the resulting array is writable
+    # (np.frombuffer over immutable ``bytes`` would be read-only).
+    array = np.frombuffer(bytearray(tensor.tobytes()), dtype=dtype)
     return cast(NumpyArray, np.reshape(array, shape if shape else ()))
 
 

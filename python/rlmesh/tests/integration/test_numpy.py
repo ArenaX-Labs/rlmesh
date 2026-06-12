@@ -80,17 +80,21 @@ def test_numpy_tensor_roundtrip_extended_dtypes(
     np.testing.assert_array_equal(restored, source)
 
 
-def test_numpy_asarray_is_zero_copy_and_read_only() -> None:
+def test_numpy_asarray_is_writable_copy() -> None:
     from rlmesh import Tensor
     from rlmesh import numpy as rlmesh_numpy
 
     tensor = Tensor(np.arange(4, dtype=np.float32).tobytes(), [4], "float32")
-    view = rlmesh_numpy.asarray(tensor)
+    array = rlmesh_numpy.asarray(tensor)
 
-    assert view.base is not None
-    assert view.flags.writeable is False
-    with pytest.raises(ValueError, match="read-only"):
-        view[0] = 1.0
+    # Matches Gymnasium: decoded observations are writable.
+    assert array.flags.writeable is True
+    array[0] = 1.0
+    # Writing the decoded array must not corrupt the tensor buffer.
+    np.testing.assert_array_equal(
+        rlmesh_numpy.asarray(tensor),
+        np.arange(4, dtype=np.float32),
+    )
 
 
 def test_numpy_bfloat16_roundtrip_with_ml_dtypes() -> None:
