@@ -14,8 +14,8 @@ rlmesh-runtime = "0.1.0-beta.2"
 
 ## Status
 
-This is a public repository implementation crate. It is published for integration work, but the
-direct Rust API is unstable during beta.
+This implementation crate is published for integration work. The direct Rust API is unstable during
+beta.
 
 ## Links
 

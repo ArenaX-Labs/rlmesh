@@ -24,7 +24,7 @@ lexicographic order chronological order. The selection is returned in
   the assumption that it is probably compatible; forward compatibility lives in the client's offer
   set, not in server leniency.
 
-## Edition vs. capability vs. bug fix
+## Edition vs. Capability vs. Bug Fix
 
 Most development never touches the edition:
 
@@ -35,7 +35,7 @@ Most development never touches the edition:
 - An implementation that deviates from the governing spec document has a bug. Fixing it needs no
   edition.
 
-## Lifecycle: provisional, then sealed
+## Lifecycle: Provisional, Then Sealed
 
 An edition is **provisional** while no stable release has shipped it: its spec document may still be
 edited in place, and beta releases may change its semantics as a hard break. The first stable
@@ -46,7 +46,7 @@ release that ships an edition **seals** it permanently: the spec document become
 remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on
 a schedule.
 
-## Support window
+## Support Window
 
 Servers and clients each support a set of editions. During the beta the supported set may be pruned
 to the current edition only. A deprecation window for older editions will be chosen when a second

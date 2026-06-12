@@ -23,7 +23,7 @@ rlmesh = "0.1.0-beta.2"
 ## Status
 
 This crate is part of the `0.1.0-beta.2` release line. The public Rust API is supported for beta
-users, but may still change before a stable release.
+users and may still change before a stable release.
 
 ## Links
 

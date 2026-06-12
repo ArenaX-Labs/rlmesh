@@ -20,12 +20,11 @@ protocol, and packaging layers.
 
 ## Project Status
 
-RLMesh is currently in beta. The published beta is intended for early adopters and feedback; APIs
-and package structure may still change before a stable release.
+RLMesh is in beta. The published beta is for early adopters and feedback; APIs and package structure
+may still change before a stable release.
 
-RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are the
-current supported surfaces, and the project intends to support clean, simple bindings for additional
-languages where there is demand, with C++ as a likely early candidate.
+RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are
+supported today. Additional bindings will follow demand; C++ is a likely early candidate.
 
 ## Installation
 
@@ -69,9 +68,9 @@ while not (terminated or truncated):
 env.close()
 ```
 
-For runnable files and exact commands, see the [`examples/python`](examples/python) index. Start
-with the quickstart example, use sandbox examples for owned Docker-backed environments, and use the
-optional MuJoCo and Pygame examples for isolated heavier dependency stacks.
+For runnable files and exact commands, see [`examples/python`](examples/python). Start with the
+quickstart, then try sandbox examples for Docker-backed environments or the optional MuJoCo and
+Pygame examples for heavier dependency stacks.
 
 ## Building the Rust SDK
 

@@ -34,8 +34,8 @@ follow the same shape:
 Vectorized environments can expose `num_envs`, `single_observation_space`, and
 `single_action_space`.
 
-Common Gymnasium wrappers can stay in place. RLMesh reads the spaces and calls the wrapped
-environment methods through the normal Gymnasium API.
+Common Gymnasium wrappers can stay in place. RLMesh reads the spaces and calls the wrapped methods
+through the normal Gymnasium API.
 
 ## Environment Contract
 
@@ -74,18 +74,15 @@ rlmesh.EnvServer(env, path="/tmp/rlmesh-env.sock")
 
 ## Readiness
 
-RLMesh exposes two machine-readable readiness signals so supervisors, container probes, and
-orchestrators can wait for a server to come up **without** grepping log output. These are the
-supported readiness contract. Prefer them over parsing the human-friendly startup prints, which are
-not a stable interface.
+RLMesh exposes two machine-readable readiness signals. Use them instead of parsing startup prints;
+the human-readable output is not a stable interface.
 
-### gRPC health service
+### gRPC Health Service
 
-Every RLMesh gRPC server (env and model) serves the standard
+Every RLMesh gRPC server serves the standard
 [`grpc.health.v1`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) health service.
-It is always on and needs no configuration or authentication (it is a distinct service from the
-env/model RPCs). The overall server health (the empty `""` service name) reports `SERVING` as soon
-as the listener is accepting connections, because RLMesh binds the socket before it starts serving.
+It is always on and separate from the env/model RPCs. Overall server health, the empty `""` service
+name, reports `SERVING` once the listener accepts connections.
 
 Any standard health client can probe it, for example with
 [`grpc-health-probe`](https://github.com/grpc-ecosystem/grpc-health-probe):
@@ -95,8 +92,7 @@ grpc-health-probe -addr 127.0.0.1:5555
 # status: SERVING
 ```
 
-This is the recommended signal for long-lived deployments and for liveness / readiness probes in
-container platforms.
+Use this for long-lived deployments and container readiness probes.
 
 ```{note}
 The Rust `EnvServer` / `ModelWorker` serve paths register the health service
@@ -104,14 +100,11 @@ today. The Python `rlmesh.EnvServer` wrapper is gaining the same registration;
 until that lands, use the ready file descriptor below for the Python CLI path.
 ```
 
-### Ready file descriptor (CLI)
+### Ready File Descriptor (CLI)
 
-The env-serve CLI (`python -m rlmesh._cli.serve_env`) accepts `--ready-fd <int>`. RLMesh writes a
-single line containing the resolved bind address, for example `tcp://127.0.0.1:54321`, to that file
-descriptor and closes it once the server is bound and accepting. A supervisor passes a writable
-descriptor and blocks reading it until the line arrives; the close gives the reader a deterministic
-end-of-file. This avoids the bind-drop-rebind and poll-the-port races of log-grepping, and works
-even when the bind port is `0` (OS-assigned), since the line carries the resolved address.
+The env-serve CLI (`python -m rlmesh._cli.serve_env`) accepts `--ready-fd <int>`. RLMesh writes one
+line containing the resolved bind address, for example `tcp://127.0.0.1:54321`, then closes the file
+descriptor. This works when the bind port is `0` because the line carries the resolved address.
 
 ```sh
 # Open fd 3 onto a file, point --ready-fd at it, then read the address back.
@@ -125,5 +118,4 @@ addr=$(head -n1 /tmp/rlmesh-ready)   # the resolved bind address
 echo "ready at $addr"
 ```
 
-In Python, the write is exposed as a testable helper (`rlmesh._cli.serve_env.write_ready_fd`) for
-embedders that drive the server themselves.
+Python embedders can call `rlmesh._cli.serve_env.write_ready_fd` directly.

@@ -1,7 +1,6 @@
 # NumPy
 
-The NumPy backend is the recommended default for examples, notebooks, and model code that already
-works with arrays.
+Use the NumPy backend for examples, notebooks, and model code that already works with arrays.
 
 ## What This Backend Changes
 

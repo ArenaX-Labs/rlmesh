@@ -1,49 +1,36 @@
-//! Rust SDK for rlmesh model-environment evaluation workflows.
+//! Rust SDK for RLMesh model-environment evaluation workflows.
 //!
-//! rlmesh connects a *model* (your policy) to an *environment* (the task it
-//! acts in) over gRPC. This crate is the user-facing facade: it hides the
-//! transport, wire, and runtime crates behind a small set of traits and
-//! servers. Most Python users should install the `rlmesh` Python package
-//! instead; reach for this crate to serve or drive environments and models
-//! directly from Rust.
+//! RLMesh connects a model to an environment over gRPC. This crate is the Rust
+//! facade over the transport, wire, and runtime crates. Python users should
+//! start with the `rlmesh` Python package; use this crate when serving or
+//! driving environments and models from Rust.
 //!
 //! # The two roles
 //!
-//! Everything here serves one of two roles, and a typical deployment runs one
-//! of each, in separate processes:
+//! Most deployments have one environment server and one model worker.
 //!
-//! - **Serve an environment.** Implement [`Env`] (vectorized: one server may
-//!   step `num_envs` sub-environments at once) or [`SingleEnv`] (one
-//!   sub-environment; wrap it in [`SingleEnvAdapter`] to get an [`Env`]), then
-//!   host it with [`EnvServer`]. Clients connect over gRPC.
+//! - **Serve an environment.** Implement [`Env`] for vectorized environments,
+//!   or [`SingleEnv`] for a single environment, then host it with [`EnvServer`].
 //!
-//! - **Drive or serve a model.** Implement [`ModelHandler`] (your `predict`
-//!   policy plus episode-lifecycle hooks), then either
-//!   [`ModelWorker::run_local`] it against a remote environment in-process, or
-//!   [`ModelWorker::serve`] it as a standalone model endpoint that an
-//!   orchestrator joins.
+//! - **Drive or serve a model.** Implement [`ModelHandler`], then run it against
+//!   a remote environment with [`ModelWorker::run_local`] or serve it as an
+//!   endpoint with [`ModelWorker::serve`].
 //!
-//! To act as a *client* of an already-running environment server — stepping it
-//! by hand rather than handing control to a [`ModelHandler`] — connect with
-//! [`RemoteEnv`].
+//! Use [`RemoteEnv`] when you want to step an environment server directly.
 //!
 //! # Bind-first servers
 //!
-//! Both servers are *bind-first*: [`EnvServer::bind`] /
-//! [`ModelWorker::bind_async`] reserve the socket and return a bound handle
-//! ([`BoundEnvServer`] / [`BoundModelServer`]) whose `local_addr()` reports the
-//! resolved address — crucially the OS-assigned port when you bind to port 0 —
-//! *before* you call `serve()` to run until shutdown. This removes the
-//! bind-drop-rebind races and poll-connect loops callers otherwise reimplement.
-//! The one-shot `serve`/`serve_async` methods bind and serve in a single call
-//! when you do not need the address up front.
+//! [`EnvServer::bind`] and [`ModelWorker::bind_async`] reserve the socket before
+//! serving and return the resolved address, including OS-assigned port 0. This
+//! avoids bind-drop-rebind races and poll-connect loops. Use the one-shot
+//! `serve`/`serve_async` methods when you do not need that address first.
 //!
 //! # Errors
 //!
-//! All fallible operations return [`Result`] (alias for `Result<T, `[`Error`]`>`).
+//! Fallible operations return [`Result`] (alias for `Result<T, `[`Error`]`>`).
 //! [`Error`] separates transport/server faults from two domain failures:
 //! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`] (a
-//! failure your [`ModelHandler`] *raised*, distinct from an rlmesh bug). Both
+//! failure your [`ModelHandler`] raised, distinct from an RLMesh bug). Both
 //! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`].
 //!
 //! # Example: serve an environment
@@ -64,8 +51,7 @@
 //!     fn num_envs(&self) -> usize { 1 }
 //!     fn env_contract(&self) -> &EnvContract { &self.contract }
 //!
-//!     // `Result` here is the two-arg `std::result::Result`: the prelude does
-//!     // not glob in the single-arg `rlmesh::Result` alias that would shadow it.
+//!     // Env methods use the two-arg std::result::Result form.
 //!     async fn reset(&mut self, _req: ResetRequest)
 //!         -> Result<ResetResult, EnvRuntimeError>
 //!     {
@@ -89,7 +75,7 @@
 //! }
 //!
 //! # async fn run(env: MyEnv) -> rlmesh::Result<()> {
-//! // Bind first to learn the resolved address, then serve until shutdown.
+//! // Bind first when the caller needs the resolved address.
 //! let bound = EnvServer::new(env).bind(BindAddress::parse("tcp://127.0.0.1:0")?).await?;
 //! println!("listening on {}", bound.local_addr());
 //! bound.serve().await
@@ -108,14 +94,13 @@
 //!     async fn predict(&mut self, _obs: ModelObservation)
 //!         -> rlmesh::Result<BinaryPayload>
 //!     {
-//!         // Decode `_obs`, run your policy, then encode the chosen action with
-//!         // `rlmesh::encode_action(&value, space)`. Here we return empty bytes.
+//!         // Decode `_obs`, run your policy, then encode the action.
 //!         Ok(BinaryPayload::default())
 //!     }
 //! }
 //!
 //! # async fn run() -> rlmesh::Result<()> {
-//! // Connect in-process to a running env server and run 100 episodes.
+//! // Drive a running env server for 100 episodes.
 //! ModelWorker::new(MyModel)
 //!     .run_local_async(RunLocalOptions::parse("tcp://127.0.0.1:50051")?.for_episodes(100))
 //!     .await

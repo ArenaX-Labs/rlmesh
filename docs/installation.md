@@ -6,8 +6,8 @@ Install the published Python beta:
 pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
-RLMesh supports Python 3.10 and newer. Gymnasium is the easiest first environment surface, and the
-NumPy backend is the best default for examples and notebooks.
+RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend
+for examples and notebooks.
 
 ## Optional Extras
 

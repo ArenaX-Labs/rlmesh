@@ -14,8 +14,8 @@ set, or one machine. The Python SDK serves Gymnasium-style environments, connect
 evaluators, and keeps the same workflow usable when evaluation moves behind a service boundary. Rust
 crates provide the lower-level runtime, protocol, and packaging layers.
 
-RLMesh is currently in beta. The published beta is intended for early adopters and feedback; APIs
-and package structure may still change before a stable release.
+RLMesh is in beta. The published beta is for early adopters and feedback; APIs and package structure
+may still change before a stable release.
 
 ## Try First
 
@@ -37,11 +37,11 @@ That lets you:
 
 - run a model against an environment without merging their dependency stacks;
 - run multiple environment endpoints at the same time;
-- drop in existing Gymnasium registrations, wrappers, and environment objects with minimal changes.
+- reuse existing Gymnasium registrations, wrappers, and environment objects with small changes.
 
-The managed platform builds on this foundation for larger workloads: scheduling, batching, resource
-allocation, dashboards, and cluster orchestration. The OSS framework is the first thing to try
-because it shows the model-environment boundary directly.
+The managed platform builds on the same boundary for scheduling, batching, resource allocation,
+dashboards, and cluster orchestration. Start with the open-source framework to see that boundary
+directly.
 
 ```{toctree}
 :hidden:

@@ -1,7 +1,7 @@
 # Sandbox Examples
 
-Sandbox helpers are experimental. Use them when an environment should start in an owned
-Docker-backed process instead of a separate server terminal.
+Sandbox helpers are experimental. Use them when an environment needs an owned Docker-backed process
+instead of a separate server terminal.
 
 The runnable files live in `examples/python/sandbox`.
 

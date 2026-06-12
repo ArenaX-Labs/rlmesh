@@ -1,7 +1,7 @@
 # Contributing
 
-RLMesh is currently in beta. Issues and focused pull requests are welcome. Maintainers may be
-selective while the API and package structure are still settling.
+RLMesh is in beta. Issues and focused pull requests are welcome. Maintainers may be selective while
+the API and package structure are still settling.
 
 For larger API, architecture, dependency, or roadmap changes, please open an issue before starting
 implementation work. Small bug fixes, docs improvements, tests, and narrowly scoped compatibility

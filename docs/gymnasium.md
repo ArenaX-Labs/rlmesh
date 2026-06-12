@@ -12,9 +12,9 @@ wrappers can stay in place.
 
 ## Spaces
 
-RLMesh currently supports these Gymnasium spaces. The **Stability** column matches the API surface
-policy in `api_metadata.json`: `Stable` spaces follow the compatibility guarantees in
-{doc}`compatibility`, while `Experimental` spaces may still change before the stable release.
+RLMesh supports these Gymnasium spaces. The **Stability** column matches the API surface policy in
+`api_metadata.json`: `Stable` spaces follow the compatibility guarantees in {doc}`compatibility`,
+while `Experimental` spaces may still change before the stable release.
 
 ### Fundamental Spaces
 

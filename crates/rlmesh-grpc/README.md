@@ -14,8 +14,8 @@ rlmesh-grpc = "0.1.0-beta.2"
 
 ## Status
 
-This is a public repository implementation crate. It is published so protocol integrators can build
-against it, but the API is still unstable during beta.
+This implementation crate is published for protocol integrators. The API is still unstable during
+beta.
 
 ## Links
 

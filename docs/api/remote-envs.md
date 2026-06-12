@@ -3,7 +3,7 @@
 Remote clients connect to an environment endpoint and expose the same high-level workflow as a local
 Gymnasium environment: `reset`, `step`, `render`, and `close`.
 
-Use the concrete backend modules for normal code:
+Use the concrete backend modules in application code:
 
 - `rlmesh.RemoteEnv` and `rlmesh.RemoteVectorEnv` preserve RLMesh-native values.
 - `rlmesh.numpy.RemoteEnv` and `rlmesh.numpy.RemoteVectorEnv` decode tensor leaves as NumPy arrays.
@@ -24,12 +24,10 @@ shared mixin:
   an explicit limit, or `None` to disable pacing.
 - `close_viewer()` closes the window if one is open. It is also called on client `close()`.
 
-The viewer is **best-effort and experimental**. It launches a separate GUI process via
-`python -m rlmesh viewer` (the `rlmesh-cli` binary), so it requires a desktop/GUI-capable host and
-is not intended for headless or production use. The environment must produce frames (typically
-`render_mode="rgb_array"`); frame pushes are dropped rather than allowed to block the step loop when
-the viewer stalls. Because the methods are best-effort tooling rather than part of the stable client
-contract, treat their signatures and behavior as experimental.
+The viewer is best-effort and experimental. It launches a separate GUI process via
+`python -m rlmesh viewer` (the `rlmesh-cli` binary), so it needs a desktop host. The environment
+must produce frames, typically `render_mode="rgb_array"`. Frame pushes are dropped instead of
+blocking the step loop when the viewer stalls.
 
 ## Single Environment Base
 

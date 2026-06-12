@@ -16,7 +16,6 @@ pub(crate) fn contains_dict(
         _ => return err_space!(path, "space is not Dict"),
     };
 
-    // Check all required keys are present
     for (i, key) in d.keys.iter().enumerate() {
         match dict_val.get(key) {
             Some(sub_val) => {
@@ -28,7 +27,6 @@ pub(crate) fn contains_dict(
         }
     }
 
-    // Check no extra keys
     for key in dict_val.keys() {
         if !d.keys.contains(key) {
             return err_space!(path, format!("unexpected key '{}'", key));
@@ -70,7 +68,6 @@ mod tests {
         ]));
         assert!(contains(&space, &valid).is_ok());
 
-        // Missing key
         let missing = SpaceValue::Dict(BTreeMap::from([(
             "obs".to_string(),
             SpaceValue::Box(
@@ -79,7 +76,6 @@ mod tests {
         )]));
         assert!(contains(&space, &missing).is_err());
 
-        // Extra key
         let extra = SpaceValue::Dict(BTreeMap::from([
             (
                 "obs".to_string(),

@@ -98,10 +98,10 @@ unchanged. Protocol generation or workflow edition changes need an explicit comp
 see {doc}`editions/index` for when a change mints a new edition. A stable (non-beta) release must
 seal any provisional edition in `rlmesh.toml` before it ships.
 
-RLMesh currently publishes Python wheels only. Do not build or upload a Python source distribution;
-native builds are covered by the explicit wheel matrix below.
+RLMesh publishes Python wheels only. Do not build or upload a Python source distribution; native
+builds are covered by the explicit wheel matrix below.
 
-Local smoke builds may produce plain `linux_*` platform tags. Those wheels are useful for
+Local smoke builds may produce plain `linux_*` platform tags. Those wheels work for
 installed-artifact validation but cannot be uploaded to PyPI. Release validation intentionally
 rejects plain `linux_*` tags; expected Linux release wheels use uploadable tags such as `manylinux`
 or `musllinux`.
@@ -123,9 +123,9 @@ Wheel builds are host-specific:
 - Linux: `mise run release:python:wheels:linux` builds the Linux and Windows subset.
 
 The generic `release:python:wheels` task dispatches to the current host's supported wheel set. Linux
-cannot cross-link macOS frameworks, and Windows is not currently a supported development or
-release-build host. Release wheel tasks remove stale `rlmesh-*.whl` files first so local smoke
-wheels with plain `linux_*` tags cannot be uploaded accidentally.
+cannot cross-link macOS frameworks, and Windows is not a supported development or release-build
+host. Release wheel tasks remove stale `rlmesh-*.whl` files first so local smoke wheels with plain
+`linux_*` tags cannot be uploaded accidentally.
 
 For focused builds, use `build:python:wheel <target>` with one of `local`, `macos-arm`, `macos-x86`,
 `linux-x86`, `linux-arm`, `linux-musl-x86`, `linux-musl-arm`, or `windows`. The
