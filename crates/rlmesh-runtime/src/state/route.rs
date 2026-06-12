@@ -77,7 +77,13 @@ impl RouteState {
 
     pub(crate) fn next_request_id(&mut self, phase: &str) -> String {
         self.request_seq += 1;
-        format!("{}:{}:{:06}", self.session_id, phase, self.request_seq)
+        // Include route_id: a session can fan out to multiple routes, and
+        // request_seq restarts at 0 per RouteState, so omitting it would make
+        // sibling routes emit identical request IDs.
+        format!(
+            "{}:{}:{}:{:06}",
+            self.session_id, self.route_id, phase, self.request_seq
+        )
     }
 
     pub(crate) fn slots(&self) -> Vec<PredictSlot> {
