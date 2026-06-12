@@ -104,6 +104,22 @@ pub struct GrpcEnvServer<E: Environment> {
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
+    /// Whether a Join stream is currently active. The env protocol has no
+    /// session identity and a single env / episode tracker is shared across all
+    /// streams, so concurrent Join streams would interleave reset/step on the
+    /// same non-thread-safe environment and one client's Close would complete
+    /// every other client's episodes. We therefore admit only one Join stream at
+    /// a time and reject the rest until the active one ends.
+    join_active: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// RAII guard that releases the single-Join-stream slot when dropped.
+struct JoinSlotGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for JoinSlotGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl<E: Environment> GrpcEnvServer<E> {
@@ -140,6 +156,7 @@ impl<E: Environment> GrpcEnvServer<E> {
             shutdown,
             serve_options,
             activity_tx,
+            join_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -248,6 +265,27 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<Streaming<JoinRequest>>,
     ) -> Result<Response<Self::JoinStream>, Status> {
+        // Reject a second concurrent Join stream: the env protocol carries no
+        // session identity and the env + episode tracker are shared, so two
+        // streams cannot safely coexist.
+        if self
+            .join_active
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            tracing::warn!("rejecting Join stream: environment already has an active session");
+            return Err(Status::failed_precondition(
+                "environment already has an active Join session; only one client may be connected \
+                 at a time",
+            ));
+        }
+        let join_slot = JoinSlotGuard(self.join_active.clone());
+
         let mut req_stream = request.into_inner();
         let env = self.env.clone();
         let episode_tracker = self.episode_tracker.clone();
@@ -256,6 +294,9 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<JoinResponse, Status>>(64);
 
         tokio::spawn(async move {
+            // Hold the slot guard for the lifetime of this stream; dropping it
+            // (on normal completion, error, or task cancellation) frees the slot.
+            let _join_slot = join_slot;
             while let Some(req_result) = req_stream.next().await {
                 let req = match req_result {
                     Ok(req) => req,
@@ -852,6 +893,81 @@ mod tests {
         );
         // Both steps actually executed to completion in the env.
         assert_eq!(completed.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn join_rejects_a_second_concurrent_stream() {
+        use rlmesh_proto::env::v1::JoinRequest;
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use tokio::sync::oneshot;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(GrpcEnvServer::new(
+                    HandshakeOnlyEnv::default(),
+                )))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("http://{addr}");
+        let mut client = loop {
+            match EnvServiceClient::connect(endpoint.clone()).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+        let mut client2 = EnvServiceClient::connect(endpoint.clone()).await.unwrap();
+
+        // First Join stream: the slot is claimed synchronously in the join
+        // handler before it returns, so holding the request channel open keeps
+        // the stream active on the server.
+        let (tx1, rx1) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let first = client
+            .join(ReceiverStream::new(rx1))
+            .await
+            .expect("first join accepted")
+            .into_inner();
+
+        // Second Join stream must be rejected.
+        let (_tx2, rx2) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let second = client2.join(ReceiverStream::new(rx2)).await;
+        let status = second.expect_err("second concurrent join must be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+        // After the first stream ends, a new Join is admitted again.
+        drop(tx1);
+        drop(first);
+        let mut admitted = None;
+        for _ in 0..50 {
+            let (_tx3, rx3) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+            match client2.join(ReceiverStream::new(rx3)).await {
+                Ok(stream) => {
+                    admitted = Some((_tx3, stream));
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        assert!(
+            admitted.is_some(),
+            "slot was not released after the first stream ended"
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test]
