@@ -1,7 +1,8 @@
 use crate::dtype::dtype_size;
 use crate::errors::{SpaceError, err_space};
 use crate::scalar::{
-    Scalar, check_int_in_dtype_range, check_uint_in_dtype_range, decode_scalars, encode_i64_scalars,
+    Scalar, check_int_in_dtype_range, check_uint_in_dtype_range, decode_scalars,
+    encode_i64_scalars, encode_scalars,
 };
 use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{
@@ -149,11 +150,23 @@ fn encode_int_bound(values: &[i64], dtype: DType) -> Result<Vec<u8>, SpaceError>
     encode_i64_scalars(values, dtype).map_err(bound_encode_error)
 }
 
-/// Encode unsigned-integer bounds, failing fast on out-of-range values. The
-/// bit pattern is preserved through the `i64` codec: for `Uint64`, `u64::MAX`
-/// re-encodes to all-ones bytes; smaller unsigned dtypes fit `i64` after the
-/// range check.
+/// Encode unsigned-integer bounds, failing fast on out-of-range values. Integer
+/// dtypes preserve the bit pattern through the `i64` codec: for `Uint64`,
+/// `u64::MAX` re-encodes to all-ones bytes; smaller unsigned dtypes fit `i64`
+/// after the range check. Float dtypes encode the numeric `u64` value directly.
 fn encode_uint_bound(values: &[u64], dtype: DType) -> Result<Vec<u8>, SpaceError> {
+    if matches!(
+        dtype,
+        DType::Float16 | DType::Bfloat16 | DType::Float32 | DType::Float64
+    ) {
+        let mut scalars = Vec::with_capacity(values.len());
+        for &value in values {
+            check_uint_in_dtype_range(value, dtype).map_err(bound_encode_error)?;
+            scalars.push(Scalar::Float(value as f64));
+        }
+        return encode_scalars(&scalars, dtype).map_err(bound_encode_error);
+    }
+
     let mut signed = Vec::with_capacity(values.len());
     for &value in values {
         check_uint_in_dtype_range(value, dtype).map_err(bound_encode_error)?;
@@ -346,6 +359,34 @@ mod tests {
             panic!("expected typed-uniform bounds");
         };
         assert_eq!(t.high, u64::MAX.to_le_bytes());
+    }
+
+    #[test]
+    fn test_uint_builder_encodes_large_float_bounds_without_signed_wrap() {
+        let low = u64::MAX - 1;
+        let high = u64::MAX;
+        let spec = BoxSpaceBuilder::uint_scalar(low, high, vec![1])
+            .dtype(DType::Float64)
+            .build()
+            .expect("valid space");
+        let Some(SpaceKind::Box(b)) = spec.spec else {
+            panic!("expected Box");
+        };
+        let Some(BoxBounds::TypedUniform(t)) = b.bounds else {
+            panic!("expected typed-uniform bounds");
+        };
+        let decoded_low = decode_typed(&t.low, DType::Float64, "$").expect("decode");
+        let [Scalar::Float(decoded_low)] = decoded_low.as_slice() else {
+            panic!("expected float low bound");
+        };
+        let decoded_high = decode_typed(&t.high, DType::Float64, "$").expect("decode");
+        let [Scalar::Float(decoded_high)] = decoded_high.as_slice() else {
+            panic!("expected float high bound");
+        };
+        assert_eq!(*decoded_low, low as f64);
+        assert_eq!(*decoded_high, high as f64);
+        assert!(*decoded_low > 0.0);
+        assert!(*decoded_high > 0.0);
     }
 
     #[test]

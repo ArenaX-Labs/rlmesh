@@ -247,20 +247,29 @@ fn normalize_reset_result<'py>(
         && tuple.len() == 2
     {
         let info = tuple.get_item(1)?;
-        if (info.is_none() || info.cast::<PyDict>().is_ok())
-            && !is_two_element_tuple_space(observation_space)
-        {
-            return Ok((tuple.get_item(0)?, info));
+        if info.is_none() || info.cast::<PyDict>().is_ok() {
+            let obs = tuple.get_item(0)?;
+            if !is_tuple_space(observation_space)
+                || py_any_to_space_value_with_backend(
+                    py,
+                    &obs,
+                    observation_space,
+                    ValueBackend::Auto,
+                )
+                .is_ok()
+            {
+                return Ok((obs, info));
+            }
         }
     }
 
     Ok((result, PyDict::new(py).into_any()))
 }
 
-fn is_two_element_tuple_space(space: &SpaceSpec) -> bool {
+fn is_tuple_space(space: &SpaceSpec) -> bool {
     matches!(
         space.spec.as_ref(),
-        Some(rlmesh_spaces::spaces::SpaceKind::Tuple(spec)) if spec.spaces.len() == 2
+        Some(rlmesh_spaces::spaces::SpaceKind::Tuple(_))
     )
 }
 
@@ -1024,6 +1033,31 @@ mod tests {
             let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
 
             assert_eq!(obs.extract::<i64>().unwrap(), 7);
+            assert_eq!(
+                info.cast::<PyDict>()
+                    .unwrap()
+                    .get_item("seed")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<i64>()
+                    .unwrap(),
+                123
+            );
+        });
+    }
+
+    #[test]
+    fn modern_reset_splits_two_tuple_observation_space() {
+        Python::attach(|py| {
+            let info = PyDict::new(py);
+            info.set_item("seed", 123).unwrap();
+            let result = ((7i64, 3i64), info).into_pyobject(py).unwrap().into_any();
+            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
+
+            let obs_tuple = obs.cast::<PyTuple>().unwrap();
+            assert_eq!(obs_tuple.len(), 2);
+            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
+            assert_eq!(obs_tuple.get_item(1).unwrap().extract::<i64>().unwrap(), 3);
             assert_eq!(
                 info.cast::<PyDict>()
                     .unwrap()

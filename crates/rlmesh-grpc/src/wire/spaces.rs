@@ -64,12 +64,20 @@ fn validate_typed_bound_lengths(spec: &native::SpaceSpec) -> Result<(), Protocol
     let (low, high, count) = match &box_spec.bounds {
         Some(native::BoxBounds::TypedUniform(bounds)) => (&bounds.low, &bounds.high, 1),
         Some(native::BoxBounds::TypedElementwise(bounds)) => {
-            let numel = spec.shape.iter().product::<i64>().unsigned_abs() as usize;
+            let numel = checked_box_shape_numel(&spec.shape)?;
             (&bounds.low, &bounds.high, numel)
         }
         _ => return Ok(()),
     };
-    let expected = count * native::dtype_size(spec.dtype);
+    let elem = native::dtype_size(spec.dtype);
+    if elem == 0 {
+        return Err(ProtocolError::DecodeError(
+            "typed Box bounds require a concrete dtype".to_string(),
+        ));
+    }
+    let expected = count.checked_mul(elem).ok_or_else(|| {
+        ProtocolError::DecodeError("typed Box bounds byte length overflowed".to_string())
+    })?;
     for (name, bytes) in [("low", low), ("high", high)] {
         if bytes.len() != expected {
             return Err(ProtocolError::DecodeError(format!(
@@ -81,6 +89,26 @@ fn validate_typed_bound_lengths(spec: &native::SpaceSpec) -> Result<(), Protocol
         }
     }
     Ok(())
+}
+
+fn checked_box_shape_numel(shape: &[i64]) -> Result<usize, ProtocolError> {
+    if shape.is_empty() {
+        return Err(ProtocolError::DecodeError(
+            "typed elementwise Box bounds require a non-empty shape".to_string(),
+        ));
+    }
+    shape.iter().enumerate().try_fold(1usize, |acc, (i, &dim)| {
+        if dim <= 0 {
+            return Err(ProtocolError::DecodeError(format!(
+                "typed elementwise Box bounds shape[{i}] must be > 0"
+            )));
+        }
+        acc.checked_mul(dim as usize).ok_or_else(|| {
+            ProtocolError::DecodeError(
+                "typed elementwise Box bounds shape product overflowed".to_string(),
+            )
+        })
+    })
 }
 
 fn space_kind_to_proto(kind: &native::SpaceKind) -> proto::space_spec::Spec {
@@ -505,6 +533,48 @@ mod tests {
         );
         let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
         assert!(err.to_string().contains("typed Box bounds"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_negative_shape() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: 0i64.to_le_bytes().to_vec(),
+                high: 1i64.to_le_bytes().to_vec(),
+            }),
+            vec![-1],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("shape[0] must be > 0"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_shape_product_overflow() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: Vec::new(),
+                high: Vec::new(),
+            }),
+            vec![i64::MAX, 3],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("shape product overflowed"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_byte_length_overflow() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: Vec::new(),
+                high: Vec::new(),
+            }),
+            vec![i64::MAX, 2],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("byte length overflowed"));
     }
 
     fn meta_roundtrip(value: native::MetaValue) -> native::MetaValue {

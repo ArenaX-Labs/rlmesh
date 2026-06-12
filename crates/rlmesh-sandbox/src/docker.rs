@@ -27,14 +27,16 @@ const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
 /// its owner process is no longer alive, so a live process's running container
 /// is never torn down by another process's reap sweep.
 const OWNER_PID_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid";
+const OWNER_PID_NS_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid-ns";
 
-/// `docker ps --format` template emitting one `<id>|<owner-pid>|<status>` line
+/// `docker ps --format` template emitting one
+/// `<id>|<owner-pid>|<owner-pid-ns>|<status>` line
 /// per container. A `|` delimiter (rather than whitespace) is used so the
 /// *empty* owner-pid field of legacy containers that predate per-process
 /// labeling is preserved as an empty middle column rather than collapsed away.
 /// `.State` is the single-word state (e.g. `running`, `exited`), matching the
 /// values [`ContainerState::status`] holds.
-const REAP_PS_FORMAT: &str = "{{.ID}}|{{.Label \"rlmesh.sandbox.owner-pid\"}}|{{.State}}";
+const REAP_PS_FORMAT: &str = "{{.ID}}|{{.Label \"rlmesh.sandbox.owner-pid\"}}|{{.Label \"rlmesh.sandbox.owner-pid-ns\"}}|{{.State}}";
 
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
@@ -162,6 +164,7 @@ impl DockerBackend {
     pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
         let candidates = list_owned_containers()?;
         let self_pid = std::process::id();
+        let self_pid_namespace = current_pid_namespace_id();
         let mut reaped = Vec::new();
         for candidate in candidates {
             // Never reap our own containers, even if a pid-reuse coincidence
@@ -169,8 +172,16 @@ impl DockerBackend {
             if candidate.owner_pid == Some(self_pid) {
                 continue;
             }
-            let pid_alive = candidate.owner_pid.is_some_and(pid_is_alive);
-            if !is_orphan(&candidate.status, candidate.owner_pid, pid_alive) {
+            let owner_liveness = candidate
+                .owner_pid
+                .map_or(OwnerPidLiveness::Unknown, |pid| {
+                    owner_pid_liveness(
+                        pid,
+                        candidate.owner_pid_namespace.as_deref(),
+                        self_pid_namespace.as_deref(),
+                    )
+                });
+            if !is_orphan(&candidate.status, candidate.owner_pid, owner_liveness) {
                 continue;
             }
             if self.stop_container(&candidate.id).is_ok() {
@@ -557,7 +568,7 @@ fn docker_run_args(
     bootstrap_json: &str,
     owner_pid: u32,
 ) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "run".to_string(),
         "-d".to_string(),
         "--cap-drop".to_string(),
@@ -572,6 +583,14 @@ fn docker_run_args(
         // is gone are reaped.
         "--label".to_string(),
         format!("{OWNER_PID_LABEL_KEY}={owner_pid}"),
+    ];
+    if let Some(pid_namespace) = current_pid_namespace_id() {
+        args.extend([
+            "--label".to_string(),
+            format!("{OWNER_PID_NS_LABEL_KEY}={pid_namespace}"),
+        ]);
+    }
+    args.extend([
         // Deliver the bootstrap payload (runtime-only parameters) at run time
         // so changing it never rebuilds the image.
         "--env".to_string(),
@@ -584,7 +603,8 @@ fn docker_run_args(
         "-p".to_string(),
         format!("127.0.0.1:0:{DEFAULT_CONTAINER_PORT}"),
         image_id.to_string(),
-    ]
+    ]);
+    args
 }
 
 /// Read back the host port docker published for the container's gRPC port.
@@ -619,6 +639,7 @@ fn parse_published_port(raw: &str) -> Option<u16> {
 struct OwnedContainer {
     id: String,
     owner_pid: Option<u32>,
+    owner_pid_namespace: Option<String>,
     status: String,
 }
 
@@ -658,13 +679,23 @@ fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
             let mut fields = line.split('|');
             let id = fields.next()?.trim();
             let owner_pid = fields.next().unwrap_or("").trim();
-            let status = fields.next().unwrap_or("").trim();
+            let owner_pid_namespace_or_status = fields.next().unwrap_or("").trim();
+            let status = fields.next();
+            let (owner_pid_namespace, status) = match status {
+                Some(status) => (
+                    (!owner_pid_namespace_or_status.is_empty())
+                        .then(|| owner_pid_namespace_or_status.to_string()),
+                    status.trim(),
+                ),
+                None => (None, owner_pid_namespace_or_status),
+            };
             if id.is_empty() || status.is_empty() {
                 return None;
             }
             Some(OwnedContainer {
                 id: id.to_string(),
                 owner_pid: owner_pid.parse::<u32>().ok(),
+                owner_pid_namespace,
                 status: status.to_string(),
             })
         })
@@ -688,9 +719,16 @@ fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
 ///   only when it is not running, since we cannot prove an owner is gone; a
 ///   running unlabeled container is left alone to avoid killing a live session
 ///   started by an older rlmesh build.
-fn is_orphan(status: &str, owner_pid: Option<u32>, pid_alive: bool) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerPidLiveness {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+fn is_orphan(status: &str, owner_pid: Option<u32>, owner_liveness: OwnerPidLiveness) -> bool {
     match owner_pid {
-        Some(_) => !pid_alive,
+        Some(_) => owner_liveness == OwnerPidLiveness::Dead,
         None => !is_running_status(status),
     }
 }
@@ -698,6 +736,29 @@ fn is_orphan(status: &str, owner_pid: Option<u32>, pid_alive: bool) -> bool {
 /// Whether a docker state word denotes a running container.
 fn is_running_status(status: &str) -> bool {
     status.eq_ignore_ascii_case("running")
+}
+
+fn owner_pid_liveness(
+    pid: u32,
+    owner_pid_namespace: Option<&str>,
+    self_pid_namespace: Option<&str>,
+) -> OwnerPidLiveness {
+    match (owner_pid_namespace, self_pid_namespace) {
+        (Some(owner), Some(current)) if owner == current => {
+            if pid_is_alive(pid) {
+                OwnerPidLiveness::Alive
+            } else {
+                OwnerPidLiveness::Dead
+            }
+        }
+        _ => OwnerPidLiveness::Unknown,
+    }
+}
+
+fn current_pid_namespace_id() -> Option<String> {
+    fs::read_link("/proc/self/ns/pid")
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// Best-effort liveness check for a process id, std-only via `/proc/<pid>`
@@ -788,10 +849,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, OwnedContainer, confirmed_terminal_summary, docker_run_args,
-        format_startup_failure_report, is_orphan, parse_container_state, parse_owned_containers,
-        parse_published_port, pid_is_alive, render_bootstrap_json, render_dockerfile, shell_quote,
-        tail_text,
+        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
+        confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
+        format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
+        parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
+        render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -884,6 +946,20 @@ mod tests {
     }
 
     #[test]
+    fn docker_run_args_stamp_owner_pid_namespace_when_available() {
+        let Some(pid_namespace) = current_pid_namespace_id() else {
+            return;
+        };
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        assert!(
+            args.iter()
+                .any(|arg| arg == &format!("rlmesh.sandbox.owner-pid-ns={pid_namespace}")),
+            "containers must record their owner pid namespace when available: {args:?}"
+        );
+    }
+
+    #[test]
     fn docker_run_args_inject_bootstrap_payload_at_run_time() {
         let args = docker_run_args(
             "rlmesh-sandbox-test",
@@ -953,18 +1029,22 @@ mod tests {
 
     #[test]
     fn parse_owned_containers_reads_id_pid_and_status() {
-        let parsed = parse_owned_containers("abc123|4242|running\ndef456|7|exited\n");
+        let parsed = parse_owned_containers(
+            "abc123|4242|pid:[4026531836]|running\ndef456|7|pid:[4026531837]|exited\n",
+        );
         assert_eq!(
             parsed,
             vec![
                 OwnedContainer {
                     id: "abc123".to_string(),
                     owner_pid: Some(4242),
+                    owner_pid_namespace: Some("pid:[4026531836]".to_string()),
                     status: "running".to_string(),
                 },
                 OwnedContainer {
                     id: "def456".to_string(),
                     owner_pid: Some(7),
+                    owner_pid_namespace: Some("pid:[4026531837]".to_string()),
                     status: "exited".to_string(),
                 },
             ]
@@ -976,18 +1056,20 @@ mod tests {
         // `docker ps --format` renders an absent label as an empty field; with
         // the `|` delimiter the empty owner-pid column is preserved so the
         // status is not misread. A non-numeric pid field must parse to None.
-        let parsed = parse_owned_containers("abc123||running\nxyz789|notapid|exited\n");
+        let parsed = parse_owned_containers("abc123|||running\nxyz789|notapid||exited\n");
         assert_eq!(
             parsed,
             vec![
                 OwnedContainer {
                     id: "abc123".to_string(),
                     owner_pid: None,
+                    owner_pid_namespace: None,
                     status: "running".to_string(),
                 },
                 OwnedContainer {
                     id: "xyz789".to_string(),
                     owner_pid: None,
+                    owner_pid_namespace: None,
                     status: "exited".to_string(),
                 },
             ]
@@ -1000,28 +1082,50 @@ mod tests {
     fn is_orphan_spares_containers_owned_by_a_live_process() {
         // The core bug: a running container owned by a still-alive process must
         // NOT be reaped, regardless of state.
-        assert!(!is_orphan("running", Some(4242), true));
-        assert!(!is_orphan("exited", Some(4242), true));
+        assert!(!is_orphan("running", Some(4242), OwnerPidLiveness::Alive));
+        assert!(!is_orphan("exited", Some(4242), OwnerPidLiveness::Alive));
     }
 
     #[test]
     fn is_orphan_reaps_containers_whose_owner_is_gone() {
         // Owner process gone: reap regardless of container state, including a
         // running leftover from a hard-killed owner.
-        assert!(is_orphan("running", Some(4242), false));
-        assert!(is_orphan("exited", Some(4242), false));
+        assert!(is_orphan("running", Some(4242), OwnerPidLiveness::Dead));
+        assert!(is_orphan("exited", Some(4242), OwnerPidLiveness::Dead));
+    }
+
+    #[test]
+    fn is_orphan_spares_containers_when_owner_liveness_is_unknown() {
+        assert!(!is_orphan("running", Some(4242), OwnerPidLiveness::Unknown));
+        assert!(!is_orphan("exited", Some(4242), OwnerPidLiveness::Unknown));
     }
 
     #[test]
     fn is_orphan_treats_legacy_unlabeled_containers_conservatively() {
         // No owner-pid label: only reap when not running, since we cannot prove
         // the owner is gone. A running unlabeled container is left alone.
-        assert!(is_orphan("exited", None, false));
-        assert!(is_orphan("dead", None, false));
-        assert!(is_orphan("created", None, false));
-        assert!(!is_orphan("running", None, false));
+        assert!(is_orphan("exited", None, OwnerPidLiveness::Unknown));
+        assert!(is_orphan("dead", None, OwnerPidLiveness::Unknown));
+        assert!(is_orphan("created", None, OwnerPidLiveness::Unknown));
+        assert!(!is_orphan("running", None, OwnerPidLiveness::Unknown));
         // State word casing must not change the decision.
-        assert!(!is_orphan("Running", None, false));
+        assert!(!is_orphan("Running", None, OwnerPidLiveness::Unknown));
+    }
+
+    #[test]
+    fn owner_pid_liveness_is_unknown_without_matching_namespace() {
+        assert_eq!(
+            owner_pid_liveness(4242, None, Some("pid:[1]")),
+            OwnerPidLiveness::Unknown
+        );
+        assert_eq!(
+            owner_pid_liveness(4242, Some("pid:[2]"), Some("pid:[1]")),
+            OwnerPidLiveness::Unknown
+        );
+        assert_eq!(
+            owner_pid_liveness(4242, Some("pid:[1]"), None),
+            OwnerPidLiveness::Unknown
+        );
     }
 
     #[test]
