@@ -116,21 +116,15 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>
 fn decode_typed_one(bytes: &[u8], dtype: DType) -> Option<f64> {
     decode_scalars(bytes, dtype)
         .ok()
-        .and_then(|scalars| scalars.first().copied().map(scalar_to_f64))
+        .and_then(|scalars| scalars.first().copied().map(|s| s.to_f64(dtype)))
 }
 
 fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> Vec<f64> {
     match decode_scalars(bytes, dtype) {
-        Ok(scalars) if scalars.len() == numel => scalars.into_iter().map(scalar_to_f64).collect(),
+        Ok(scalars) if scalars.len() == numel => {
+            scalars.into_iter().map(|s| s.to_f64(dtype)).collect()
+        }
         _ => vec![default; numel],
-    }
-}
-
-fn scalar_to_f64(scalar: Scalar) -> f64 {
-    match scalar {
-        Scalar::Bool(value) => f64::from(u8::from(value)),
-        Scalar::Int(value) => value as f64,
-        Scalar::Float(value) => value,
     }
 }
 
@@ -357,4 +351,48 @@ fn sample_tuple<'py>(
         .map(|child| sample_space_value(py, child, rng).map(|value| value.unbind()))
         .collect::<PyResult<Vec<_>>>()?;
     Ok(PyTuple::new(py, values)?.into_any())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rlmesh_spaces::{TypedUniformBounds, encode_i64_scalars};
+
+    fn typed_uniform_spec(low: i64, high: i64, dtype: DType) -> BoxSpec {
+        BoxSpec {
+            bounds: Some(BoxBounds::TypedUniform(TypedUniformBounds {
+                low: encode_i64_scalars(&[low], dtype).expect("encode low"),
+                high: encode_i64_scalars(&[high], dtype).expect("encode high"),
+            })),
+        }
+    }
+
+    #[test]
+    fn test_uint64_max_bound_decodes_to_positive_for_sampling() {
+        // Bug 2: a Uint64 bound of u64::MAX decodes as Scalar::Int(-1). Without
+        // the dtype-aware to_f64 it reached the sampler as -1.0, so the low/high
+        // bounds inverted (0 > -1) and sampling raised 'low greater than high'.
+        // u64::MAX as i64 == -1.
+        let spec = typed_uniform_spec(0, -1, DType::Uint64);
+        let (low, high) = box_bounds(&spec, 1, DType::Uint64);
+        assert_eq!(low, vec![0.0]);
+        assert_eq!(high, vec![u64::MAX as f64], "u64::MAX must decode positive");
+
+        // Sampling the integer Box scalar must succeed (low <= high).
+        let mut rng = StdRng::seed_from_u64(7);
+        let sampled = sample_integer_box_scalar(&mut rng, low[0], high[0], DType::Uint64);
+        assert!(
+            sampled.is_ok(),
+            "sampling a [0, u64::MAX] Uint64 box must not error: {sampled:?}"
+        );
+    }
+
+    #[test]
+    fn test_scalar_to_f64_via_to_f64_matches_dtype() {
+        // The sampler now routes through Scalar::to_f64(dtype); Uint64 -1 bits
+        // read as the large positive magnitude.
+        assert_eq!(Scalar::Int(-1).to_f64(DType::Uint64), u64::MAX as f64);
+        assert_eq!(Scalar::Int(-1).to_f64(DType::Int64), -1.0);
+    }
 }

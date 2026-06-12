@@ -39,6 +39,40 @@ pub enum IdleActivity {
     Finished,
 }
 
+/// RAII guard that emits [`IdleActivity::Finished`] when dropped, pairing the
+/// [`IdleActivity::Started`] a server's read loop sends before dispatching a
+/// request.
+///
+/// Both the env and model servers spawn each request on its own task. If that
+/// task panics (e.g. a user `step`/`reset`/`predict` panics), tokio swallows the
+/// unwind and any inline `Finished` send after the handler never runs — so the
+/// idle-shutdown tracker's in-flight count stays elevated forever and a server
+/// with an `idle_timeout` never shuts down (`wait_for_idle_shutdown` does a
+/// timeout-free `recv().await` while `in_flight > 0`). Holding this guard inside
+/// the spawned task guarantees the `Finished` fires on every exit path —
+/// success, error, or panic.
+#[doc(hidden)]
+pub struct ActivityFinishedGuard(Option<mpsc::UnboundedSender<IdleActivity>>);
+
+impl ActivityFinishedGuard {
+    /// Create a guard that will send [`IdleActivity::Finished`] on drop.
+    ///
+    /// The caller is responsible for having already sent the paired
+    /// [`IdleActivity::Started`]. A `None` sender (idle shutdown disabled) makes
+    /// the guard a no-op.
+    pub fn new(activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>) -> Self {
+        Self(activity_tx)
+    }
+}
+
+impl Drop for ActivityFinishedGuard {
+    fn drop(&mut self) {
+        if let Some(activity_tx) = &self.0 {
+            let _ = activity_tx.send(IdleActivity::Finished);
+        }
+    }
+}
+
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct ShutdownTrigger {
@@ -212,6 +246,44 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(250), shutdown.cancelled())
             .await
             .expect("idle shutdown should fire after in-flight request finishes");
+        assert_eq!(shutdown.reason().as_deref(), Some("idle timeout"));
+    }
+
+    #[tokio::test]
+    async fn activity_finished_guard_sends_finished_on_drop() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        {
+            let _guard = ActivityFinishedGuard::new(Some(tx));
+            // Nothing sent yet while the guard is alive.
+            assert!(rx.try_recv().is_err());
+        }
+        // Dropping the guard emits exactly one Finished.
+        assert_eq!(rx.try_recv().ok(), Some(IdleActivity::Finished));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn activity_finished_guard_pairs_started_even_on_panic() {
+        // Model the spawned-request task panicking: the Started/Finished pair must
+        // still net to zero in-flight so idle shutdown can fire afterward.
+        let shutdown = ShutdownTrigger::new();
+        let tx = start_idle_shutdown(Some(Duration::from_millis(10)), shutdown.clone()).unwrap();
+
+        let task_tx = tx.clone();
+        let handle = tokio::spawn(async move {
+            let _guard = ActivityFinishedGuard::new(Some(task_tx.clone()));
+            task_tx
+                .send(IdleActivity::Started)
+                .expect("idle activity receiver should be open");
+            panic!("request handler panicked");
+        });
+        assert!(handle.await.is_err(), "task was expected to panic");
+
+        // Despite the panic, the guard's Drop sent Finished, so the in-flight
+        // count returns to zero and idle shutdown fires.
+        tokio::time::timeout(Duration::from_millis(250), shutdown.cancelled())
+            .await
+            .expect("idle shutdown must fire after a panicking request's guard drops");
         assert_eq!(shutdown.reason().as_deref(), Some("idle timeout"));
     }
 

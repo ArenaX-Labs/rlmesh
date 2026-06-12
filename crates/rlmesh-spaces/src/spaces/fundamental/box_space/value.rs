@@ -476,6 +476,55 @@ mod tests {
     }
 
     #[test]
+    fn test_box_contains_float_bound_uint64_dtype_no_truncation() {
+        // Bug 1: scalar(-1.0, 100.0).dtype(Uint64). The float low -1.0 must NOT
+        // be reinterpreted as u64::MAX; values 0..=100 are in bounds.
+        let space = box_space(-1.0, 100.0, vec![1], DType::Uint64);
+        for v in [0u64, 1, 50, 100] {
+            let value = SpaceValue::Box(
+                Tensor::from_vec(v.to_le_bytes().to_vec(), vec![1], DType::Uint64).expect("tensor"),
+            );
+            assert!(
+                contains(&space, &value).is_ok(),
+                "u64 {v} must be in [-1.0, 100.0]"
+            );
+        }
+        // 101 is above the high bound.
+        let above = SpaceValue::Box(
+            Tensor::from_vec(101u64.to_le_bytes().to_vec(), vec![1], DType::Uint64)
+                .expect("tensor"),
+        );
+        assert!(contains(&space, &above).is_err());
+    }
+
+    #[test]
+    fn test_box_contains_fractional_float_bound_int_dtype_is_exact() {
+        // Bug 1: scalar(0.5, 10.0).dtype(Int64). 0 is below the low bound 0.5
+        // and must be rejected (truncating 0.5 -> 0 would wrongly accept it).
+        let space = box_space(0.5, 10.0, vec![1], DType::Int64);
+        let zero = SpaceValue::Box(
+            Tensor::from_vec(0i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+        );
+        assert!(contains(&space, &zero).is_err(), "0 < 0.5 must be rejected");
+
+        // 1 is in [0.5, 10.0].
+        let one = SpaceValue::Box(
+            Tensor::from_vec(1i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+        );
+        assert!(contains(&space, &one).is_ok());
+
+        // 10 is in bounds (== high); 11 is above.
+        let ten = SpaceValue::Box(
+            Tensor::from_vec(10i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+        );
+        assert!(contains(&space, &ten).is_ok());
+        let eleven = SpaceValue::Box(
+            Tensor::from_vec(11i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+        );
+        assert!(contains(&space, &eleven).is_err());
+    }
+
+    #[test]
     fn test_validate_rejects_typed_bounds_byte_length_mismatch() {
         use crate::{BoxSpec, TypedUniformBounds};
 

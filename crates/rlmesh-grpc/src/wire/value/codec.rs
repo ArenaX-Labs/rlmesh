@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use prost::Message;
+use prost::bytes::Bytes;
 use prost_types::{Value, value};
 use rlmesh_proto::spaces::v1::space_value_node::Kind as NodeKind;
 use rlmesh_proto::spaces::v1::{SpaceValueNode, ValueList, ValueMap};
@@ -103,14 +104,19 @@ pub(super) fn encode_value_node(
     space: &native::SpaceSpec,
 ) -> Result<SpaceValueNode, ProtocolError> {
     let kind = match value {
-        native::SpaceValue::Box(_)
-        | native::SpaceValue::MultiBinary(_)
-        | native::SpaceValue::MultiDiscrete(_) => {
-            let raw = encode_space_value(value, space)?.into_owned();
-            match value {
-                native::SpaceValue::Box(_) => NodeKind::Tensor(raw),
-                _ => NodeKind::Multi(raw),
+        native::SpaceValue::Box(tensor) => {
+            if !matches!(space.spec.as_ref(), Some(native::SpaceKind::Box(_))) {
+                return Err(ProtocolError::EncodeError(format!(
+                    "value kind did not match space {:?}",
+                    space.space_type()
+                )));
             }
+            NodeKind::Tensor(tensor_wire_bytes(tensor))
+        }
+        native::SpaceValue::MultiBinary(_) | native::SpaceValue::MultiDiscrete(_) => {
+            // These arms always encode into a fresh Vec, so into_owned() is a
+            // move and Bytes::from is refcount-only — no copy.
+            NodeKind::Multi(encode_space_value(value, space)?.into_owned().into())
         }
         native::SpaceValue::Discrete(value) => NodeKind::Discrete(*value),
         native::SpaceValue::Text(value) => NodeKind::Text(value.clone()),
@@ -144,6 +150,33 @@ pub(super) fn encode_value_node(
         }
     };
     Ok(SpaceValueNode { kind: Some(kind) })
+}
+
+/// The tensor's element bytes as a wire-ready [`Bytes`].
+///
+/// A contiguous tensor shares its refcounted [`Storage`](native::Storage)
+/// with the message — no element bytes are copied until the node tree is
+/// serialized. Non-contiguous layouts gather into a fresh buffer, which
+/// `Bytes` then adopts without a further copy.
+fn tensor_wire_bytes(tensor: &native::Tensor) -> Bytes {
+    match tensor.to_contiguous_bytes() {
+        Cow::Borrowed(_) => {
+            let start = tensor.byte_offset();
+            Bytes::from_owner(SharedStorage(tensor.storage().clone()))
+                .slice(start..start + tensor.nbytes())
+        }
+        Cow::Owned(gathered) => Bytes::from(gathered),
+    }
+}
+
+/// Adapter giving [`Bytes::from_owner`] a view of a tensor's refcounted
+/// storage, keeping the allocation alive for the message's lifetime.
+struct SharedStorage(native::Storage);
+
+impl AsRef<[u8]> for SharedStorage {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
 }
 
 /// Decode a recursive `SpaceValueNode` against its space spec.

@@ -71,11 +71,27 @@ impl Episode {
     }
 }
 
+/// Maximum number of interrupted-but-undrained episodes the tracker buffers.
+///
+/// The buffer is drained on the next `Step` (folded into `completed_episodes`)
+/// or on `Close`/session-end (`complete_all`). A client that loops `Reset`
+/// without ever stepping would otherwise grow this buffer without bound
+/// (`num_envs` entries per reset), leaking server memory and eventually folding
+/// a backlog larger than the gRPC message limit into one `Step` response. We cap
+/// it and evict oldest-first, matching the bounded completed-episode buffer that
+/// existed before the `interrupted` rework. Chosen to comfortably cover normal
+/// vector widths between drains while bounding worst-case memory.
+const MAX_INTERRUPTED_EPISODES: usize = 100;
+
 /// Manages episode tracking for all environments.
 pub struct EpisodeTracker {
     active: HashMap<i32, Episode>,
     /// Episodes interrupted by a replacing reset, awaiting the next drain.
+    /// Bounded by [`MAX_INTERRUPTED_EPISODES`] with oldest-first eviction.
     interrupted: Vec<EpisodeMetadata>,
+    /// Count of interrupted episodes dropped because the buffer was full since
+    /// the last drain, surfaced in a single warn log when the drain happens.
+    interrupted_dropped: u64,
 }
 
 impl EpisodeTracker {
@@ -84,7 +100,37 @@ impl EpisodeTracker {
         Self {
             active: HashMap::new(),
             interrupted: Vec::new(),
+            interrupted_dropped: 0,
         }
+    }
+
+    /// Buffer an interrupted episode, evicting the oldest entry (and counting
+    /// the drop) when the buffer is already at [`MAX_INTERRUPTED_EPISODES`]. A
+    /// client that loops `Reset` without `Step` cannot grow this buffer without
+    /// bound; the dropped count is surfaced when the buffer is next drained.
+    fn push_interrupted(&mut self, metadata: EpisodeMetadata) {
+        if self.interrupted.len() >= MAX_INTERRUPTED_EPISODES {
+            // Evict oldest-first so the most recent interruptions are retained.
+            self.interrupted.remove(0);
+            self.interrupted_dropped = self.interrupted_dropped.saturating_add(1);
+        }
+        self.interrupted.push(metadata);
+    }
+
+    /// Take the buffered interrupted episodes, logging any that were dropped
+    /// because the buffer overflowed since the last drain.
+    fn take_interrupted(&mut self) -> Vec<EpisodeMetadata> {
+        if self.interrupted_dropped > 0 {
+            tracing::warn!(
+                dropped = self.interrupted_dropped,
+                cap = MAX_INTERRUPTED_EPISODES,
+                "interrupted-episode buffer overflowed; oldest interrupted episodes were \
+                 dropped before they could be delivered (a client looping Reset without Step \
+                 grows this buffer); their accounting is lost"
+            );
+            self.interrupted_dropped = 0;
+        }
+        std::mem::take(&mut self.interrupted)
     }
 
     /// Start a new episode for the given environment index.
@@ -109,8 +155,7 @@ impl EpisodeTracker {
                 old_episode.id,
                 env_index
             );
-            self.interrupted
-                .push(old_episode.complete(false, true, None));
+            self.push_interrupted(old_episode.complete(false, true, None));
         }
 
         episode_id
@@ -120,7 +165,7 @@ impl EpisodeTracker {
     /// last drain. Callers fold these into the completed-episode stream so
     /// interrupted episodes surface exactly once.
     pub fn drain_interrupted(&mut self) -> Vec<EpisodeMetadata> {
-        std::mem::take(&mut self.interrupted)
+        self.take_interrupted()
     }
 
     /// Record a step for the given environment.
@@ -159,7 +204,7 @@ impl EpisodeTracker {
             reason
         );
 
-        let mut completed = std::mem::take(&mut self.interrupted);
+        let mut completed = self.take_interrupted();
         for (_env_index, episode) in self.active.drain() {
             let metadata = episode.complete(false, true, None);
             completed.push(metadata);
@@ -256,6 +301,40 @@ mod tests {
         let mut got: Vec<String> = all.iter().map(|m| m.episode_id.clone()).collect();
         got.sort();
         assert_eq!(got, expected);
+        assert!(tracker.drain_interrupted().is_empty());
+    }
+
+    #[test]
+    fn interrupted_buffer_is_bounded_under_repeated_reset_without_step() {
+        let mut tracker = EpisodeTracker::new();
+
+        // Model a client looping Reset (each reset replaces a lane's episode,
+        // pushing the old one into `interrupted`) without ever stepping/draining.
+        // Use a single lane and many resets so the cap is exercised by a wide
+        // margin.
+        let resets = MAX_INTERRUPTED_EPISODES * 5;
+        for _ in 0..resets {
+            tracker.start_episode(0, None);
+            // The buffer must never grow past the cap, regardless of reset count.
+            assert!(
+                tracker.interrupted.len() <= MAX_INTERRUPTED_EPISODES,
+                "interrupted buffer exceeded its cap"
+            );
+        }
+
+        // It sits exactly at the cap (the very first reset created the active
+        // episode without interrupting anything; every subsequent reset added an
+        // interrupted entry, then eviction held it at the cap).
+        assert_eq!(tracker.interrupted.len(), MAX_INTERRUPTED_EPISODES);
+        // The overflow was counted so the next drain can warn.
+        assert!(tracker.interrupted_dropped > 0);
+
+        // Draining empties the buffer and clears the dropped counter (the warn
+        // log fires here), and yields at most the cap many episodes — never the
+        // whole unbounded backlog at once.
+        let drained = tracker.drain_interrupted();
+        assert_eq!(drained.len(), MAX_INTERRUPTED_EPISODES);
+        assert_eq!(tracker.interrupted_dropped, 0);
         assert!(tracker.drain_interrupted().is_empty());
     }
 

@@ -1,6 +1,8 @@
 use crate::dtype::dtype_size;
 use crate::errors::{SpaceError, err_space};
-use crate::scalar::{Scalar, decode_scalars, encode_i64_scalars};
+use crate::scalar::{
+    Scalar, check_int_in_dtype_range, check_uint_in_dtype_range, decode_scalars, encode_i64_scalars,
+};
 use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{
     BoxBounds, BoxSpec, DType, ElementwiseBounds, TypedElementwiseBounds, TypedUniformBounds,
@@ -114,16 +116,14 @@ impl BoxSpaceBuilder {
             }
             PendingBounds::UintUniform { low, high } => {
                 BoxBounds::TypedUniform(TypedUniformBounds {
-                    low: encode_int_bound(&[low as i64], dtype)?,
-                    high: encode_int_bound(&[high as i64], dtype)?,
+                    low: encode_uint_bound(&[low], dtype)?,
+                    high: encode_uint_bound(&[high], dtype)?,
                 })
             }
             PendingBounds::UintTensor { low, high } => {
-                let low: Vec<i64> = low.into_iter().map(|v| v as i64).collect();
-                let high: Vec<i64> = high.into_iter().map(|v| v as i64).collect();
                 BoxBounds::TypedElementwise(TypedElementwiseBounds {
-                    low: encode_int_bound(&low, dtype)?,
-                    high: encode_int_bound(&high, dtype)?,
+                    low: encode_uint_bound(&low, dtype)?,
+                    high: encode_uint_bound(&high, dtype)?,
                 })
             }
         };
@@ -139,11 +139,34 @@ impl BoxSpaceBuilder {
     }
 }
 
+/// Encode signed-integer bounds, failing fast if any value falls outside the
+/// dtype's exact integer range rather than silently wrapping (which would build
+/// a "valid" space whose bounds differ from what the caller requested).
 fn encode_int_bound(values: &[i64], dtype: DType) -> Result<Vec<u8>, SpaceError> {
-    encode_i64_scalars(values, dtype).map_err(|err| SpaceError::Invalid {
+    for &value in values {
+        check_int_in_dtype_range(value, dtype).map_err(bound_encode_error)?;
+    }
+    encode_i64_scalars(values, dtype).map_err(bound_encode_error)
+}
+
+/// Encode unsigned-integer bounds, failing fast on out-of-range values. The
+/// bit pattern is preserved through the `i64` codec: for `Uint64`, `u64::MAX`
+/// re-encodes to all-ones bytes; smaller unsigned dtypes fit `i64` after the
+/// range check.
+fn encode_uint_bound(values: &[u64], dtype: DType) -> Result<Vec<u8>, SpaceError> {
+    let mut signed = Vec::with_capacity(values.len());
+    for &value in values {
+        check_uint_in_dtype_range(value, dtype).map_err(bound_encode_error)?;
+        signed.push(value as i64);
+    }
+    encode_i64_scalars(&signed, dtype).map_err(bound_encode_error)
+}
+
+fn bound_encode_error(err: crate::scalar::ScalarError) -> SpaceError {
+    SpaceError::Invalid {
         path: "Box".to_string(),
         msg: format!("cannot encode integer Box bounds: {err}"),
-    })
+    }
 }
 
 pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), SpaceError> {
@@ -280,15 +303,15 @@ fn decode_typed(bytes: &[u8], dtype: DType, path: &str) -> Result<Vec<Scalar>, S
     })
 }
 
-/// Compare two decoded scalars in their native domain. `Uint64` is the one
-/// dtype whose values do not fit `i64`; it is compared as `u64`.
+/// `low > high` in the dtype's native domain, via the centralized
+/// [`Scalar::cmp_typed`]. Integers compare as integers (`Uint64` unsigned),
+/// floats as floats, and a mixed float-bound/int-value pair is compared exactly
+/// (no truncation of either side). A `NaN` operand is unordered; for the
+/// `low > high` validation question we treat that as "not greater" (`false`) so
+/// NaN is handled by the dedicated NaN check at containment time rather than
+/// here.
 pub(crate) fn scalar_gt(low: Scalar, high: Scalar, dtype: DType) -> bool {
-    match (low, high) {
-        (Scalar::Float(lo), Scalar::Float(hi)) => lo > hi,
-        (Scalar::Bool(lo), Scalar::Bool(hi)) => lo & !hi,
-        (lo, hi) if dtype == DType::Uint64 => (lo.as_i64() as u64) > (hi.as_i64() as u64),
-        (lo, hi) => lo.as_i64() > hi.as_i64(),
-    }
+    low.cmp_typed(high, dtype) == Some(std::cmp::Ordering::Greater)
 }
 
 #[cfg(test)]
@@ -339,6 +362,41 @@ mod tests {
             })),
         };
         assert!(crate::spaces::validate_space(&spec).is_err());
+    }
+
+    #[test]
+    fn test_int_builder_rejects_out_of_dtype_range_bounds() {
+        // Bug 3: int_scalar(0, 300).dtype(Int8) must fail, not wrap 300 -> 44.
+        let err = BoxSpaceBuilder::int_scalar(0, 300, vec![1])
+            .dtype(DType::Int8)
+            .build();
+        assert!(
+            err.is_err(),
+            "300 is out of Int8 range and must be rejected"
+        );
+
+        // uint_scalar(0, 1<<33).dtype(Uint32) must fail, not wrap high -> 0.
+        let err = BoxSpaceBuilder::uint_scalar(0, 1 << 33, vec![1])
+            .dtype(DType::Uint32)
+            .build();
+        assert!(
+            err.is_err(),
+            "1<<33 is out of Uint32 range and must be rejected"
+        );
+
+        // A value that *does* fit still builds.
+        assert!(
+            BoxSpaceBuilder::int_scalar(0, 100, vec![1])
+                .dtype(DType::Int8)
+                .build()
+                .is_ok()
+        );
+        // uint_scalar still round-trips u64::MAX exactly under Uint64.
+        assert!(
+            BoxSpaceBuilder::uint_scalar(0, u64::MAX, vec![1])
+                .build()
+                .is_ok()
+        );
     }
 
     #[test]

@@ -8,6 +8,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "rlmesh.model.v1.JoinRequest.kind",
             "#[allow(clippy::large_enum_variant)]",
         )
+        // Composite value leaves carry tensor payloads; generate them as
+        // refcounted `bytes::Bytes` so encoders can share the tensor's
+        // storage instead of copying element bytes into the message.
+        .bytes(".rlmesh.spaces.v1.SpaceValueNode.tensor")
+        .bytes(".rlmesh.spaces.v1.SpaceValueNode.multi")
         .compile_protos(
             &[
                 // Common

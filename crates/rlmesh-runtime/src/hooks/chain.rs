@@ -58,13 +58,23 @@ macro_rules! fan_out_event {
 /// Folds `$event`'s `$payload` field through every hook via `$method`, feeding
 /// each hook's output into the next and short-circuiting on the first error
 /// (transform semantics).
+///
+/// The payload (a tensor-carrying [`MessageBytes`]) is *moved* through each
+/// per-hook event rather than deep-copied: the template event carries `None` in
+/// `$payload`, each iteration clones only the cheap metadata (`action_space` is
+/// an `Arc`) and moves the current payload in. This avoids an `O(hooks)` memcpy
+/// of the full payload per step while preserving identical fold semantics.
 macro_rules! fold_transform {
     ($self:ident, $method:ident, $event:ident, $payload:ident) => {{
         let mut event = $event;
+        // Lift the payload out so the per-hook clone never copies it.
+        let mut payload = event.$payload.take();
         for hook in &$self.hooks {
-            event.$payload = hook.$method(event.clone()).await?;
+            let mut per_hook = event.clone();
+            per_hook.$payload = payload;
+            payload = hook.$method(per_hook).await?;
         }
-        Ok(event.$payload)
+        Ok(payload)
     }};
 }
 

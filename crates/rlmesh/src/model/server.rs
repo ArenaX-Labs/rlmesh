@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rlmesh_grpc::lifecycle::{IdleActivity, await_close_with_timeout, start_idle_shutdown};
+use rlmesh_grpc::lifecycle::{
+    ActivityFinishedGuard, IdleActivity, await_close_with_timeout, start_idle_shutdown,
+};
 use rlmesh_grpc::wire::env_contract_from_proto;
 use rlmesh_proto::model::v1::{
     CloseResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
@@ -138,18 +140,6 @@ async fn close_model(
     await_close_with_timeout(close, close_timeout)
         .await
         .map_err(Error::Timeout)?
-}
-
-/// Sends `IdleActivity::Finished` on drop, pairing the `Started` emitted by
-/// the read loop even when the per-request task unwinds.
-struct ActivityFinishedGuard(Option<mpsc::UnboundedSender<IdleActivity>>);
-
-impl Drop for ActivityFinishedGuard {
-    fn drop(&mut self) {
-        if let Some(activity_tx) = &self.0 {
-            let _ = activity_tx.send(IdleActivity::Finished);
-        }
-    }
 }
 
 struct ServedModelServer<H> {
@@ -315,12 +305,10 @@ where
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
         tokio::spawn(async move {
-            // Per-route tail of completion signals. Reading happens on this single
-            // task, in arrival order, so the map needs no locking. Each entry is a
-            // receiver that fires when the most recently enqueued request for that
-            // route finishes its handler critical section.
-            let mut route_tails: HashMap<String, tokio::sync::oneshot::Receiver<()>> =
-                HashMap::new();
+            // Per-route tail of completion signals, kept bounded across the
+            // stream's lifetime even as it cycles fresh route keys per episode.
+            // See [`RouteTails`] for the ordering and reaping invariants.
+            let mut route_tails = RouteTails::new();
 
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
@@ -335,21 +323,18 @@ where
 
                 // Compute the gate this request must wait on before entering its
                 // handler critical section, and the signal it fires on completion.
+                // `CloseRoute` is keyed like any other request: it replaces its
+                // route's tail so a later `ConfigureRoute` reopening the same key
+                // chains after it, and its fired tail is later reaped, keeping the
+                // map bounded for long-lived streams.
                 let (gate, done_tx): (RequestGate, tokio::sync::oneshot::Sender<()>) =
                     if close_after {
                         // Close drains every route: wait for all outstanding requests.
-                        let prev = route_tails.drain().map(|(_, rx)| rx).collect::<Vec<_>>();
-                        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
-                        (RequestGate::All(prev), done_tx)
+                        route_tails.close_all_gate()
                     } else {
                         // Chain this request after the previous one on its route (if
                         // any). Requests with no route key (malformed) are ungated.
-                        let prev = route_key.as_ref().and_then(|key| route_tails.remove(key));
-                        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-                        if let Some(key) = &route_key {
-                            route_tails.insert(key.clone(), done_rx);
-                        }
-                        (RequestGate::Prev(prev), done_tx)
+                        route_tails.next_keyed_gate(route_key.as_deref())
                     };
 
                 // Acquire a permit before spawning so the number of outstanding
@@ -365,7 +350,7 @@ where
                 // RAII pairing: the matching Finished must fire even if the
                 // spawned request task panics, or the idle-shutdown in-flight
                 // count stays elevated forever and idle shutdown never fires.
-                let activity_guard = ActivityFinishedGuard(activity_tx.clone());
+                let activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
 
                 let handler = Arc::clone(&handler);
                 let active_episodes = Arc::clone(&active_episodes);
@@ -586,6 +571,83 @@ async fn handle_predict<H: ModelHandler + 'static>(
     .into()
 }
 
+/// Per-route tail of completion signals for a single Join stream.
+///
+/// Each entry maps `session_id:route_id` to a receiver that fires when the most
+/// recently enqueued request for that route finishes its handler critical
+/// section. The reader task is single-threaded and consults this in arrival
+/// order, so it needs no locking.
+///
+/// # Bounded growth
+///
+/// A keyed request (`ConfigureRoute` / `Predict` / `CloseRoute`) always replaces
+/// its route's tail so the next request on that route — including a
+/// `ConfigureRoute` that *reopens* a key after `CloseRoute` — chains correctly
+/// after the in-flight predecessor. A `CloseRoute` is the typical last request
+/// on a route, so without pruning its fired tail would linger forever and a
+/// long-lived stream cycling fresh `session_id:route_id` keys per episode would
+/// leak one entry per closed route, growing unboundedly over days. To bound the
+/// map, [`RouteTails::next_gate`] reaps every entry whose receiver has already
+/// completed (sender fired or dropped) on each call: a completed tail means that
+/// route's last request already finished, so a future reopen needs nothing to
+/// wait on. The map therefore holds at most the routes with work still in
+/// flight (plus any completed-but-not-yet-reaped tails since the last call),
+/// independent of how many routes the stream has cycled through.
+#[derive(Default)]
+struct RouteTails {
+    tails: HashMap<String, tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl RouteTails {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Compute the gate a keyed (`route_key = Some`) or malformed (`None`)
+    /// request must await, and the sender it fires on completion. The request's
+    /// fresh tail replaces its route's previous tail; completed tails for *other*
+    /// routes are reaped so the map stays bounded over the stream's lifetime.
+    fn next_keyed_gate(
+        &mut self,
+        route_key: Option<&str>,
+    ) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+        let prev = route_key.and_then(|key| self.tails.remove(key));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        if let Some(key) = route_key {
+            self.tails.insert(key.to_string(), done_rx);
+        }
+        self.reap_completed();
+        (RequestGate::Prev(prev), done_tx)
+    }
+
+    /// Compute the whole-session `Close` barrier: drain every outstanding route
+    /// tail to wait on, then hand back a discarded sender for type uniformity.
+    fn close_all_gate(&mut self) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+        let prev = self.tails.drain().map(|(_, rx)| rx).collect::<Vec<_>>();
+        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
+        (RequestGate::All(prev), done_tx)
+    }
+
+    /// Drop tails whose receiver has already completed — the sender fired or was
+    /// dropped — meaning that route's last enqueued request has finished. A fired
+    /// `oneshot::Receiver` resolves immediately, so reaping it never relaxes
+    /// ordering: a route reopened after its tail was reaped had its predecessor
+    /// already complete, hence nothing left to wait on.
+    fn reap_completed(&mut self) {
+        self.tails.retain(|_, rx| {
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            )
+        });
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tails.len()
+    }
+}
+
 /// The set of predecessor completion signals a request must await before it may
 /// enter its handler critical section, preserving per-route arrival order.
 enum RequestGate {
@@ -786,6 +848,130 @@ mod tests {
                 supported_workflow_editions()
             );
         }
+    }
+
+    /// Drive a tail through its lifecycle: take the gate, fire the sender, and
+    /// confirm the gate it handed out (the *predecessor* of this request) is
+    /// already satisfied where expected.
+    fn fire(done_tx: tokio::sync::oneshot::Sender<()>) {
+        let _ = done_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn route_tails_reaps_closed_routes_so_the_map_stays_bounded() {
+        // A long-lived Join stream cycling fresh `session_id:route_id` keys
+        // (ConfigureRoute → Predict → CloseRoute per episode) must not leak one
+        // tail entry per closed route. After each episode's requests complete,
+        // the next episode's first request reaps the prior fired tails.
+        let mut tails = RouteTails::new();
+
+        for episode in 0..1_000 {
+            let key = format!("session:{episode}");
+
+            // ConfigureRoute: no predecessor on a fresh key, installs a tail.
+            let (gate, configure_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(None)));
+            // Predict: gated on ConfigureRoute, replaces the tail.
+            let (gate, predict_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(Some(_))));
+            // CloseRoute: gated on Predict, replaces the tail once more.
+            let (gate, close_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(Some(_))));
+
+            // Requests complete (in handler order) and fire their tails.
+            fire(configure_done);
+            fire(predict_done);
+            fire(close_done);
+
+            // The CloseRoute's fired tail still lingers until the next call reaps
+            // it; the map never holds more than this single episode's tail.
+            assert!(
+                tails.len() <= 1,
+                "episode {episode}: route tails grew to {} entries",
+                tails.len()
+            );
+        }
+
+        // After the final episode's CloseRoute fired, one more keyed request on a
+        // brand-new route reaps the leftover tail, leaving only the new one.
+        let (_gate, _done) = tails.next_keyed_gate(Some("session:final"));
+        assert_eq!(
+            tails.len(),
+            1,
+            "only the in-flight route should remain after reaping"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_tails_reopen_after_close_still_sequences() {
+        // Reopening a route key after CloseRoute must gate the new ConfigureRoute
+        // on the still-in-flight CloseRoute, never overtake it.
+        let mut tails = RouteTails::new();
+        let key = "session:route";
+
+        let (_g, configure_done) = tails.next_keyed_gate(Some(key));
+        let (_g, close_done) = tails.next_keyed_gate(Some(key));
+        fire(configure_done);
+
+        // CloseRoute is still in flight (close_done not fired): a reopening
+        // ConfigureRoute on the same key must chain after it.
+        let (reopen_gate, _reopen_done) = tails.next_keyed_gate(Some(key));
+        let mut reopen_prev = match reopen_gate {
+            RequestGate::Prev(Some(rx)) => rx,
+            RequestGate::Prev(None) => {
+                panic!("reopen must gate on the in-flight CloseRoute, got an ungated request")
+            }
+            RequestGate::All(_) => panic!("a keyed request must never produce an All gate"),
+        };
+
+        // The reopen gate is unresolved until CloseRoute completes.
+        assert!(matches!(
+            reopen_prev.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        // Once CloseRoute fires, the reopen gate resolves and the reopen proceeds.
+        fire(close_done);
+        assert!(reopen_prev.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn route_tails_reopen_after_reaped_close_is_ungated() {
+        // If the CloseRoute already completed *and* was reaped, a reopen on the
+        // same key has nothing to wait on — ordering is still correct because the
+        // predecessor genuinely finished.
+        let mut tails = RouteTails::new();
+        let key = "session:route";
+
+        let (_g, configure_done) = tails.next_keyed_gate(Some(key));
+        let (_g, close_done) = tails.next_keyed_gate(Some(key));
+        fire(configure_done);
+        fire(close_done);
+        // A keyed request on another route triggers reaping of the fired tail.
+        let (_g, _d) = tails.next_keyed_gate(Some("other:route"));
+
+        // Reopen the original key: its tail was reaped, so no predecessor gate.
+        let (reopen_gate, _d) = tails.next_keyed_gate(Some(key));
+        assert!(
+            matches!(reopen_gate, RequestGate::Prev(None)),
+            "reaped-then-reopened route should be ungated"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_tails_close_drains_every_route() {
+        // Whole-session Close is a barrier over all outstanding routes and clears
+        // the map regardless of how many routes are in flight.
+        let mut tails = RouteTails::new();
+        let (_g, _d0) = tails.next_keyed_gate(Some("a:1"));
+        let (_g, _d1) = tails.next_keyed_gate(Some("b:1"));
+        assert_eq!(tails.len(), 2);
+
+        let (gate, _close_done) = tails.close_all_gate();
+        match gate {
+            RequestGate::All(prev) => assert_eq!(prev.len(), 2),
+            RequestGate::Prev(_) => panic!("Close must produce an All gate over every route"),
+        }
+        assert_eq!(tails.len(), 0, "Close must clear every route tail");
     }
 
     #[tokio::test]

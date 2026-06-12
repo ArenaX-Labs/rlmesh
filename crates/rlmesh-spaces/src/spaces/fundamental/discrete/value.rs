@@ -19,7 +19,14 @@ pub(crate) fn contains_discrete(
     // Check value is in range [start, start + n).
     // Compute `val - d.start` instead of `d.start + d.n` so a range ending at
     // i64::MAX (start + n - 1 == i64::MAX) does not overflow in containment.
-    let in_range = val >= d.start && val.wrapping_sub(d.start) < d.n;
+    //
+    // Compare the offset in the *unsigned* domain. For any `val >= d.start`,
+    // `val.wrapping_sub(d.start)` is the true non-negative offset reinterpreted
+    // as bits, which `as u64` reads as the correct magnitude (e.g. start =
+    // i64::MIN, val = 0 gives an offset of 2^63, which is positive — a signed
+    // `< d.n` comparison would read it as i64::MIN and wrongly accept it).
+    // `d.n` is validated `> 0`, so `d.n as u64` is its exact value.
+    let in_range = val >= d.start && (val.wrapping_sub(d.start) as u64) < d.n as u64;
     if !in_range {
         // d.start + d.n may overflow; render the exclusive end safely.
         let end = match d.start.checked_add(d.n) {
@@ -71,5 +78,22 @@ mod tests {
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX)).is_ok());
         // Just below the range.
         assert!(contains(&space, &SpaceValue::Discrete(i64::MAX - 4)).is_err());
+    }
+
+    #[test]
+    fn test_discrete_range_starting_at_i64_min_rejects_far_values() {
+        // Bug 4: start = i64::MIN, n = 4 -> valid range [i64::MIN, i64::MIN+3].
+        // contains(0) computes 0.wrapping_sub(i64::MIN) == i64::MIN, which as a
+        // *signed* offset is negative and < n, wrongly accepting 0. The unsigned
+        // comparison (offset == 2^63) correctly rejects it.
+        let space = DiscreteBuilder::new(4).start(i64::MIN).build().unwrap();
+
+        // The four in-range values are accepted.
+        assert!(contains(&space, &SpaceValue::Discrete(i64::MIN)).is_ok());
+        assert!(contains(&space, &SpaceValue::Discrete(i64::MIN + 3)).is_ok());
+        // Out-of-range values far above start must be rejected.
+        assert!(contains(&space, &SpaceValue::Discrete(i64::MIN + 4)).is_err());
+        assert!(contains(&space, &SpaceValue::Discrete(0)).is_err());
+        assert!(contains(&space, &SpaceValue::Discrete(i64::MAX)).is_err());
     }
 }

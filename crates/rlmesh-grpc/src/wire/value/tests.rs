@@ -35,6 +35,41 @@ fn render_request_with_env_index_maps_to_single_bit_mask() {
 }
 
 #[test]
+fn composite_tensor_leaf_shares_storage_with_the_encoded_node() {
+    use rlmesh_proto::spaces::v1::space_value_node::Kind as NodeKind;
+
+    let space = DictSpaceBuilder::new()
+        .insert(
+            "obs",
+            BoxSpaceBuilder::scalar(0.0, 255.0, vec![4])
+                .dtype(DType::Uint8)
+                .build()
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    let tensor = Tensor::from_vec(vec![1, 2, 3, 4], vec![4], DType::Uint8).unwrap();
+    let storage_ptr = tensor.to_contiguous_bytes().as_ptr();
+    let value = SpaceValue::Dict(
+        [("obs".to_string(), SpaceValue::Box(tensor))]
+            .into_iter()
+            .collect(),
+    );
+
+    let node = super::codec::encode_value_node(&value, &space).unwrap();
+    let Some(NodeKind::Dict(map)) = node.kind.as_ref() else {
+        panic!("expected dict node, got {:?}", node.kind);
+    };
+    let Some(NodeKind::Tensor(raw)) = map.entries["obs"].kind.as_ref() else {
+        panic!("expected tensor leaf, got {:?}", map.entries["obs"].kind);
+    };
+
+    // The leaf must view the tensor's refcounted storage, not a copy.
+    assert_eq!(raw.as_ptr(), storage_ptr);
+    assert_eq!(&raw[..], &[1, 2, 3, 4]);
+}
+
+#[test]
 fn batched_dict_values_roundtrip_through_wire_helpers() {
     let space = DictSpaceBuilder::new()
         .insert("choice", DiscreteBuilder::new(4).build().unwrap())

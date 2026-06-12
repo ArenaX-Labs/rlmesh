@@ -183,11 +183,9 @@ fn typed_bounds_to_py<'py>(
 fn scalar_to_py<'py>(py: Python<'py>, scalar: Scalar, dtype: DType) -> PyResult<Bound<'py, PyAny>> {
     Ok(match scalar {
         Scalar::Bool(value) => value.into_pyobject(py)?.to_owned().into_any(),
-        // `Uint64` decodes into a wrapped i64; reinterpret as u64 so values
-        // above i64::MAX surface as the correct positive Python int.
-        Scalar::Int(value) if dtype == DType::Uint64 => {
-            (value as u64).into_pyobject(py)?.into_any()
-        }
+        // `Uint64` decodes into a wrapped i64; use the centralized reinterpret
+        // so values above i64::MAX surface as the correct positive Python int.
+        Scalar::Int(_) if dtype == DType::Uint64 => scalar.as_u64().into_pyobject(py)?.into_any(),
         Scalar::Int(value) => value.into_pyobject(py)?.into_any(),
         Scalar::Float(value) => value.into_pyobject(py)?.into_any(),
     })

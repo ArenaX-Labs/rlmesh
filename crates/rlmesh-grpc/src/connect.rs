@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::error::Error as GrpcError;
+use crate::error::{Error as GrpcError, TransportError};
 
 /// Policy for [`retry_connect`] and the client `connect_with_retry` helpers.
 #[derive(Clone, Default)]
@@ -70,6 +70,12 @@ where
         .deadline
         .map(|budget| tokio::time::Instant::now() + budget);
 
+    // Records the most recent attempt error so a deadline expiry can surface a
+    // real connection failure rather than a synthetic timeout. Seeded for the
+    // case where the very first attempt is clipped before it ever fails.
+    let mut last_error: GrpcError =
+        TransportError::ConnectFailed("connect deadline exceeded".to_string()).into();
+
     loop {
         if let Some(token) = &options.cancellation
             && token.is_cancelled()
@@ -77,7 +83,26 @@ where
             return Err(GrpcError::Cancelled("connect cancelled".to_string()));
         }
 
-        let last_error = match attempt().await {
+        // Clip the in-flight attempt to whatever time remains; the endpoint's
+        // own (fixed) connect timeout can outlast the caller's budget against a
+        // SYN-blackholing address, so without this the deadline is only honored
+        // between attempts.
+        let attempt_result = match deadline {
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(last_error);
+                }
+                match tokio::time::timeout(remaining, attempt()).await {
+                    // The attempt outran the deadline; surface the last error.
+                    Err(_elapsed) => return Err(last_error),
+                    Ok(result) => result,
+                }
+            }
+            None => attempt().await,
+        };
+
+        last_error = match attempt_result {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
@@ -108,7 +133,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::error::TransportError;
 
     #[tokio::test]
     async fn retries_until_success() {
@@ -142,6 +166,39 @@ mod tests {
         .await;
         let error = result.unwrap_err();
         assert!(error.to_string().contains("down"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn deadline_clips_a_hanging_attempt() {
+        // A SYN-blackholing address makes each attempt hang for the endpoint's
+        // fixed connect timeout (longer than the caller's budget). The deadline
+        // must still be honored mid-attempt rather than only between attempts:
+        // a never-resolving attempt must not outlast the caller's budget.
+        let started = tokio::time::Instant::now();
+        let result: Result<(), GrpcError> = retry_connect(
+            &ConnectOptions::with_deadline(Duration::from_millis(50)),
+            // Never resolves; without mid-attempt clipping this hangs forever.
+            std::future::pending,
+        )
+        .await;
+
+        let error = result.unwrap_err();
+        // The deadline surfaces a connect failure (not a hang), and we returned
+        // at the deadline rather than waiting on the unbounded attempt.
+        assert!(
+            matches!(
+                error,
+                GrpcError::Transport(TransportError::ConnectFailed(_))
+            ),
+            "got: {error}"
+        );
+        // Generous real-time bound: the 50ms deadline must be honored well
+        // before any fixed per-attempt connect timeout (seconds) would elapse.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "retry_connect waited {:?}, past the 50ms deadline",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

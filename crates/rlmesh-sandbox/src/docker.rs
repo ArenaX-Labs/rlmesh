@@ -21,6 +21,21 @@ const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
 const OWNER_LABEL: &str = "rlmesh.sandbox=1";
 const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
 
+/// Label key recording the OS process id of the rlmesh process that started a
+/// container. The reaper reads this back (via `docker ps --format`) to decide
+/// whether a labeled container is an orphan: a container is only reaped when
+/// its owner process is no longer alive, so a live process's running container
+/// is never torn down by another process's reap sweep.
+const OWNER_PID_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid";
+
+/// `docker ps --format` template emitting one `<id>|<owner-pid>|<status>` line
+/// per container. A `|` delimiter (rather than whitespace) is used so the
+/// *empty* owner-pid field of legacy containers that predate per-process
+/// labeling is preserved as an empty middle column rather than collapsed away.
+/// `.State` is the single-word state (e.g. `running`, `exited`), matching the
+/// values [`ContainerState::status`] holds.
+const REAP_PS_FORMAT: &str = "{{.ID}}|{{.Label \"rlmesh.sandbox.owner-pid\"}}|{{.State}}";
+
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
     pub image_id: String,
@@ -84,6 +99,7 @@ impl DockerBackend {
                 &container_name,
                 &artifact.image_id,
                 &bootstrap_json,
+                std::process::id(),
             ))
             .output()
             .context("failed to start docker container")?;
@@ -127,19 +143,38 @@ impl DockerBackend {
         self.remove_container(container_id)
     }
 
-    /// Best-effort reap of rlmesh-owned containers, identified by the
+    /// Best-effort reap of *orphaned* rlmesh-owned containers, identified by the
     /// `rlmesh.sandbox` label. Returns the ids that were successfully removed.
     ///
-    /// This collects orphans left behind when an owning process is hard-killed
-    /// (SIGKILL/OOM) before it can call [`stop_container`]. Failures to inspect
-    /// or remove individual containers are skipped rather than aborting the
-    /// whole sweep, so a single stuck container cannot block the reaper.
+    /// An orphan is a container left behind when its owning process is
+    /// hard-killed (SIGKILL/OOM) before it can call [`stop_container`].
+    /// Ownership is recorded at creation via the
+    /// `rlmesh.sandbox.owner-pid=<pid>` label; a container is reaped only when
+    /// that owner process is no longer alive (see [`is_orphan`]). This means a
+    /// reap sweep run by one process never tears down a *running* container
+    /// that another live process is still using mid-session.
+    ///
+    /// Containers owned by the *current* process are excluded defensively, and
+    /// legacy containers without an owner-pid label are reaped only when they
+    /// are not running. Failures to inspect or remove individual containers are
+    /// skipped rather than aborting the whole sweep, so a single stuck
+    /// container cannot block the reaper.
     pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
-        let ids = list_owned_container_ids()?;
+        let candidates = list_owned_containers()?;
+        let self_pid = std::process::id();
         let mut reaped = Vec::new();
-        for id in ids {
-            if self.stop_container(&id).is_ok() {
-                reaped.push(id);
+        for candidate in candidates {
+            // Never reap our own containers, even if a pid-reuse coincidence
+            // were to make the liveness check ambiguous.
+            if candidate.owner_pid == Some(self_pid) {
+                continue;
+            }
+            let pid_alive = candidate.owner_pid.is_some_and(pid_is_alive);
+            if !is_orphan(&candidate.status, candidate.owner_pid, pid_alive) {
+                continue;
+            }
+            if self.stop_container(&candidate.id).is_ok() {
+                reaped.push(candidate.id);
             }
         }
         Ok(reaped)
@@ -516,7 +551,12 @@ fn format_startup_failure_report(
     )
 }
 
-fn docker_run_args(container_name: &str, image_id: &str, bootstrap_json: &str) -> Vec<String> {
+fn docker_run_args(
+    container_name: &str,
+    image_id: &str,
+    bootstrap_json: &str,
+    owner_pid: u32,
+) -> Vec<String> {
     vec![
         "run".to_string(),
         "-d".to_string(),
@@ -527,6 +567,11 @@ fn docker_run_args(container_name: &str, image_id: &str, bootstrap_json: &str) -
         // Mark the container as rlmesh-owned so orphans can be reaped.
         "--label".to_string(),
         OWNER_LABEL.to_string(),
+        // Record the owning process so the reaper can tell a live owner's
+        // container apart from an orphan: only containers whose owner process
+        // is gone are reaped.
+        "--label".to_string(),
+        format!("{OWNER_PID_LABEL_KEY}={owner_pid}"),
         // Deliver the bootstrap payload (runtime-only parameters) at run time
         // so changing it never rebuilds the image.
         "--env".to_string(),
@@ -568,17 +613,27 @@ fn parse_published_port(raw: &str) -> Option<u16> {
         .find_map(|(_, port)| port.trim().parse::<u16>().ok())
 }
 
-/// List ids of every rlmesh-owned container (running or stopped) by filtering
-/// on the `rlmesh.sandbox` label.
-fn list_owned_container_ids() -> Result<Vec<String>> {
+/// A rlmesh-owned container candidate for reaping: its id, the recorded owner
+/// process id (absent for legacy containers), and its docker state word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedContainer {
+    id: String,
+    owner_pid: Option<u32>,
+    status: String,
+}
+
+/// List every rlmesh-owned container (running or stopped), together with its
+/// recorded owner pid and state, by filtering on the `rlmesh.sandbox` label.
+fn list_owned_containers() -> Result<Vec<OwnedContainer>> {
     let output = Command::new("docker")
         .args([
             "ps",
             "--all",
-            "--quiet",
             "--no-trunc",
             "--filter",
             OWNER_LABEL_FILTER,
+            "--format",
+            REAP_PS_FORMAT,
         ])
         .output()
         .context("failed to list rlmesh sandbox containers")?;
@@ -588,17 +643,72 @@ fn list_owned_container_ids() -> Result<Vec<String>> {
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    Ok(parse_container_ids(&String::from_utf8_lossy(
+    Ok(parse_owned_containers(&String::from_utf8_lossy(
         &output.stdout,
     )))
 }
 
-fn parse_container_ids(raw: &str) -> Vec<String> {
+/// Parse pipe-delimited `docker ps --format` output (see [`REAP_PS_FORMAT`])
+/// into [`OwnedContainer`] rows. Lines without an id and a non-empty state are
+/// skipped; an empty or non-numeric owner-pid field (legacy containers) parses
+/// to `None`.
+fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
     raw.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
+        .filter_map(|line| {
+            let mut fields = line.split('|');
+            let id = fields.next()?.trim();
+            let owner_pid = fields.next().unwrap_or("").trim();
+            let status = fields.next().unwrap_or("").trim();
+            if id.is_empty() || status.is_empty() {
+                return None;
+            }
+            Some(OwnedContainer {
+                id: id.to_string(),
+                owner_pid: owner_pid.parse::<u32>().ok(),
+                status: status.to_string(),
+            })
+        })
         .collect()
+}
+
+/// Decide whether a rlmesh-owned container is an orphan that may be reaped.
+///
+/// This is the pure core of the reaper, factored out so it can be tested
+/// without Docker. Inputs are the container's docker state word, its recorded
+/// owner pid (`None` for legacy containers that predate per-process labeling),
+/// and whether that pid is currently alive.
+///
+/// Rules:
+/// - A container whose owner process is still alive is never an orphan (this is
+///   the live-session case the reaper must not disturb).
+/// - A container whose recorded owner process is gone is an orphan regardless
+///   of state (running leftovers from a hard-killed owner are exactly what we
+///   reap).
+/// - A legacy container *without* an owner-pid label is treated as an orphan
+///   only when it is not running, since we cannot prove an owner is gone; a
+///   running unlabeled container is left alone to avoid killing a live session
+///   started by an older rlmesh build.
+fn is_orphan(status: &str, owner_pid: Option<u32>, pid_alive: bool) -> bool {
+    match owner_pid {
+        Some(_) => !pid_alive,
+        None => !is_running_status(status),
+    }
+}
+
+/// Whether a docker state word denotes a running container.
+fn is_running_status(status: &str) -> bool {
+    status.eq_ignore_ascii_case("running")
+}
+
+/// Best-effort liveness check for a process id, std-only via `/proc/<pid>`
+/// existence (Linux). This carries an inherent pid-reuse race: if the original
+/// owner died and the OS recycled its pid for an unrelated process, the
+/// container is mistaken for live and skipped this sweep (it will be reaped on
+/// a later sweep once the recycled pid also exits). That residual race is
+/// acceptable: erring toward *not* reaping is the safe direction, since the
+/// cost is a leaked container, not a killed live session.
+fn pid_is_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
 fn inspect_container_state(container_id: &str) -> Result<Option<ContainerState>> {
@@ -678,9 +788,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, confirmed_terminal_summary, docker_run_args,
-        format_startup_failure_report, parse_container_ids, parse_container_state,
-        parse_published_port, render_bootstrap_json, render_dockerfile, shell_quote, tail_text,
+        BootstrapSpec, ContainerState, OwnedContainer, confirmed_terminal_summary, docker_run_args,
+        format_startup_failure_report, is_orphan, parse_container_state, parse_owned_containers,
+        parse_published_port, pid_is_alive, render_bootstrap_json, render_dockerfile, shell_quote,
+        tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -728,7 +839,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -740,7 +851,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -749,7 +860,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -760,11 +871,25 @@ mod tests {
     }
 
     #[test]
+    fn docker_run_args_stamp_owner_pid_label() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        // The owner-pid label must be present so the reaper can tell a live
+        // owner's container apart from an orphan.
+        assert!(
+            args.iter()
+                .any(|arg| arg == "rlmesh.sandbox.owner-pid=4242"),
+            "containers must record their owner pid: {args:?}"
+        );
+    }
+
+    #[test]
     fn docker_run_args_inject_bootstrap_payload_at_run_time() {
         let args = docker_run_args(
             "rlmesh-sandbox-test",
             "sha256:abc",
             "{\"spec\":{\"kind\":\"gym\"}}",
+            4242,
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -827,13 +952,84 @@ mod tests {
     }
 
     #[test]
-    fn parse_container_ids_splits_and_trims_lines() {
+    fn parse_owned_containers_reads_id_pid_and_status() {
+        let parsed = parse_owned_containers("abc123|4242|running\ndef456|7|exited\n");
         assert_eq!(
-            parse_container_ids("abc123\n  def456 \n\n"),
-            vec!["abc123".to_string(), "def456".to_string()]
+            parsed,
+            vec![
+                OwnedContainer {
+                    id: "abc123".to_string(),
+                    owner_pid: Some(4242),
+                    status: "running".to_string(),
+                },
+                OwnedContainer {
+                    id: "def456".to_string(),
+                    owner_pid: Some(7),
+                    status: "exited".to_string(),
+                },
+            ]
         );
-        assert!(parse_container_ids("\n  \n").is_empty());
-        assert!(parse_container_ids("").is_empty());
+    }
+
+    #[test]
+    fn parse_owned_containers_handles_legacy_unlabeled_pid() {
+        // `docker ps --format` renders an absent label as an empty field; with
+        // the `|` delimiter the empty owner-pid column is preserved so the
+        // status is not misread. A non-numeric pid field must parse to None.
+        let parsed = parse_owned_containers("abc123||running\nxyz789|notapid|exited\n");
+        assert_eq!(
+            parsed,
+            vec![
+                OwnedContainer {
+                    id: "abc123".to_string(),
+                    owner_pid: None,
+                    status: "running".to_string(),
+                },
+                OwnedContainer {
+                    id: "xyz789".to_string(),
+                    owner_pid: None,
+                    status: "exited".to_string(),
+                },
+            ]
+        );
+        assert!(parse_owned_containers("\n  \n").is_empty());
+        assert!(parse_owned_containers("").is_empty());
+    }
+
+    #[test]
+    fn is_orphan_spares_containers_owned_by_a_live_process() {
+        // The core bug: a running container owned by a still-alive process must
+        // NOT be reaped, regardless of state.
+        assert!(!is_orphan("running", Some(4242), true));
+        assert!(!is_orphan("exited", Some(4242), true));
+    }
+
+    #[test]
+    fn is_orphan_reaps_containers_whose_owner_is_gone() {
+        // Owner process gone: reap regardless of container state, including a
+        // running leftover from a hard-killed owner.
+        assert!(is_orphan("running", Some(4242), false));
+        assert!(is_orphan("exited", Some(4242), false));
+    }
+
+    #[test]
+    fn is_orphan_treats_legacy_unlabeled_containers_conservatively() {
+        // No owner-pid label: only reap when not running, since we cannot prove
+        // the owner is gone. A running unlabeled container is left alone.
+        assert!(is_orphan("exited", None, false));
+        assert!(is_orphan("dead", None, false));
+        assert!(is_orphan("created", None, false));
+        assert!(!is_orphan("running", None, false));
+        // State word casing must not change the decision.
+        assert!(!is_orphan("Running", None, false));
+    }
+
+    #[test]
+    fn pid_is_alive_detects_current_process() {
+        // The test process itself is alive; a very high pid is overwhelmingly
+        // unlikely to exist on a normal system.
+        assert!(pid_is_alive(std::process::id()));
+        assert!(!pid_is_alive(u32::MAX));
     }
 
     #[test]

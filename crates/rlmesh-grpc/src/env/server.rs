@@ -15,7 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::env::Environment;
 use crate::env::episode::EpisodeTracker;
 use crate::error::EnvError;
-use crate::lifecycle::{IdleActivity, ServeOptions, ShutdownTrigger};
+use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
 use crate::wire::value_bytes_ref;
 
@@ -338,12 +338,15 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 if let Some(activity_tx) = &activity_tx {
                     let _ = activity_tx.send(IdleActivity::Started);
                 }
-
-                let res = handle_env_request(req, env.clone(), episode_tracker.clone()).await;
-
-                if let Some(activity_tx) = &activity_tx {
-                    let _ = activity_tx.send(IdleActivity::Finished);
-                }
+                // RAII pairing: the matching Finished must fire even if the
+                // served environment's reset/step/render panics and unwinds out
+                // of this loop, or the idle-shutdown in-flight count stays
+                // elevated forever and idle shutdown never fires. The guard's
+                // scope ends at the bottom of this loop iteration (request done).
+                let res = {
+                    let _activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
+                    handle_env_request(req, env.clone(), episode_tracker.clone()).await
+                };
 
                 let send_result = tx.send(Ok(res)).await;
 
@@ -494,28 +497,25 @@ async fn handle_env_request<E: Environment>(
                             .map(|&b| b != 0)
                             .unwrap_or(false);
 
-                        if terminated || truncated {
-                            if let Some(metadata) = tracker.complete_episode(
+                        // On termination/truncation the lane's episode completes
+                        // exactly once. Per the sealed 2026.06 edition contract
+                        // (docs/editions/2026.06.md "Episode accounting") the
+                        // edition does NOT restart a sub-environment on
+                        // termination: a terminated lane's `episode_ids` entry is
+                        // empty until the next explicit `Reset`. Auto-starting a
+                        // replacement episode here (the former `num_envs > 1`
+                        // heuristic) delivered phantom 0-step truncated episodes
+                        // for non-autoresetting vector envs (e.g. gymnasium
+                        // AutoresetMode::DISABLED), so we do not start one.
+                        if (terminated || truncated)
+                            && let Some(metadata) = tracker.complete_episode(
                                 env_idx as i32,
                                 terminated,
                                 truncated,
                                 extract_env_final_info(shared_info.as_ref(), env_idx, num_envs),
-                            ) {
-                                completed_episodes.push(metadata);
-                            }
-
-                            // Gymnasium vector environments autoreset a lane
-                            // internally after it terminates: the client never
-                            // calls reset(), and subsequent steps continue on a
-                            // fresh episode. Start that episode here so per-step
-                            // recording does not warn endlessly and episode
-                            // accounting stays correct for the rest of the run.
-                            // The autoreset is unseeded, so the new episode has
-                            // no recorded seed. Single (non-vector) envs follow
-                            // the explicit-reset contract and are left alone.
-                            if num_envs > 1 {
-                                tracker.start_episode(env_idx as i32, None);
-                            }
+                            )
+                        {
+                            completed_episodes.push(metadata);
                         }
                     }
 
@@ -1208,18 +1208,19 @@ mod tests {
     }
 
     /// A 2-lane vector env whose first step terminates lane 0 and whose later
-    /// steps never terminate, modelling a Gymnasium autoresetting vector env.
-    struct AutoresetVectorEnv {
+    /// steps never terminate, modelling a non-autoresetting vector env (e.g.
+    /// gymnasium `AutoresetMode::DISABLED`) that keeps accepting steps.
+    struct TerminatingVectorEnv {
         contract: SpaceEnvContract,
         step_count: std::sync::atomic::AtomicUsize,
     }
 
-    impl AutoresetVectorEnv {
+    impl TerminatingVectorEnv {
         fn new() -> Self {
             let space = SpaceSpec::default();
             Self {
                 contract: SpaceEnvContract {
-                    id: "autoreset".to_string(),
+                    id: "terminating".to_string(),
                     action_space: Some(space.clone()),
                     observation_space: Some(space),
                     metadata: None,
@@ -1232,7 +1233,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Environment for AutoresetVectorEnv {
+    impl Environment for TerminatingVectorEnv {
         fn observation_space(&self) -> &SpaceSpec {
             self.contract.observation_space.as_ref().unwrap()
         }
@@ -1274,7 +1275,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vector_autoreset_keeps_tracking_episodes_after_termination() {
+    async fn terminated_lane_starts_no_phantom_episode_until_reset() {
+        // Sealed 2026.06 contract (docs/editions/2026.06.md "Episode
+        // accounting"): the edition does not restart a sub-environment on
+        // termination; a terminated lane's `episode_ids` entry is empty until the
+        // next explicit `Reset`. The server must NOT auto-start a replacement
+        // episode (the old `num_envs > 1` heuristic), which surfaced phantom
+        // 0-step truncated episodes for non-autoresetting vector envs.
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
@@ -1282,7 +1289,7 @@ mod tests {
             JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
         };
 
-        let env = Arc::new(Mutex::new(AutoresetVectorEnv::new()));
+        let env = Arc::new(Mutex::new(TerminatingVectorEnv::new()));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         // Reset both lanes.
@@ -1297,38 +1304,52 @@ mod tests {
             request_id: id.to_string(),
         };
 
-        // Step 1: lane 0 terminates and autoresets.
+        // Step 1: lane 0 terminates. Its episode completes exactly once; no
+        // replacement episode is started, so lane 0's `episode_id` is now empty.
         let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
         let first = match first.kind {
             Some(join_response::Kind::Step(ok)) => ok,
             other => panic!("expected step response, got {other:?}"),
         };
         assert_eq!(first.completed_episodes.len(), 1, "lane 0 should complete");
-        // Both lanes still have an active episode id (lane 0 was autoreset).
         assert_eq!(first.episode_ids.len(), 2);
         assert!(
-            first.episode_ids.iter().all(|id| !id.is_empty()),
-            "both lanes must have an active episode after lane 0 autoreset"
+            first.episode_ids[0].is_empty(),
+            "terminated lane 0 must have no active episode until the next Reset"
+        );
+        assert!(
+            !first.episode_ids[1].is_empty(),
+            "lane 1 keeps its active episode"
         );
 
-        // Step 2: lane 0 continues on its new episode and lane 1 continues; no
-        // lane records against a missing episode, and accounting is intact.
+        // Step 2: no phantom episode is delivered for lane 0 (no spurious
+        // truncated 0-step completion), and lane 0 still has no active episode.
         let second = super::handle_env_request(step_req("s2"), env.clone(), tracker.clone()).await;
         let second = match second.kind {
             Some(join_response::Kind::Step(ok)) => ok,
             other => panic!("expected step response, got {other:?}"),
         };
-        assert!(second.completed_episodes.is_empty());
-        assert_eq!(second.episode_ids.len(), 2);
-        assert!(second.episode_ids.iter().all(|id| !id.is_empty()));
+        assert!(
+            second.completed_episodes.is_empty(),
+            "no phantom episode may be delivered for the terminated lane"
+        );
+        assert!(second.episode_ids[0].is_empty());
+        assert!(!second.episode_ids[1].is_empty());
 
-        // Lane 0's new episode has accumulated a step, proving it is tracked.
-        let mut tracker = tracker.lock().await;
-        let lane0_meta = tracker
-            .complete_episode(0, true, false, None)
-            .expect("lane 0 must have an active autoreset episode");
-        assert_eq!(lane0_meta.step_count, 1, "post-autoreset step was tracked");
-        // The autoreset episode is unseeded: the seed field is left unset.
-        assert_eq!(lane0_meta.seed, None);
+        // An explicit Reset re-establishes a tracked episode for every lane.
+        let _ = super::handle_env_request(
+            JoinRequest {
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+                request_id: "reset2".to_string(),
+            },
+            env.clone(),
+            tracker.clone(),
+        )
+        .await;
+        let tracker = tracker.lock().await;
+        assert!(
+            tracker.active_episode_id(0).is_some(),
+            "Reset must re-establish lane 0's tracked episode"
+        );
     }
 }

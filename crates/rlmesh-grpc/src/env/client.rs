@@ -309,7 +309,17 @@ impl EnvClient {
     /// reuse-across-sessions behavior is intentional (review finding #81).
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
-        self.ensure_join_stream().await?;
+
+        // A client that never opened the Join stream holds none of the server's
+        // exclusive session slot, so there is nothing to close remotely. Opening
+        // a fresh Join here just to close it would race any *other* client's
+        // active session and earn a FailedPrecondition from the server's
+        // join_active CAS — exactly the lockout the lazy Join stream exists to
+        // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
+        if self.request_tx.is_none() || self.response_rx.is_none() {
+            self.close_local();
+            return Ok(CloseResponse::default());
+        }
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Close(
@@ -681,6 +691,159 @@ mod tests {
         let request = request_rx.recv().await.unwrap();
         assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
         assert_eq!(request.request_id, "grpc-req-1");
+    }
+
+    #[tokio::test]
+    async fn close_on_never_used_client_is_local_only_and_opens_no_join() {
+        // A client that handshook but never ran an operation has no Join stream.
+        // close() must not open one just to tear it down — that would race any
+        // other client's active session (server join_active CAS). It should
+        // short-circuit to a local-only close.
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            token: String::new(),
+            address: "tcp://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: None,
+            response_rx: None,
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        let response = client.close().await.unwrap();
+
+        assert!(response.final_episodes.is_empty());
+        assert_eq!(client.state(), ClientState::Closed);
+        // No Join stream was ever opened, and the request counter was not bumped
+        // (no JoinRequest was minted).
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+        assert_eq!(client.request_counter, 0);
+    }
+
+    #[tokio::test]
+    async fn idle_client_close_does_not_lock_out_an_active_session() {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
+
+        struct PlainEnv {
+            contract: SpaceEnvContract,
+        }
+        #[async_trait::async_trait]
+        impl crate::env::Environment for PlainEnv {
+            fn observation_space(&self) -> &SpaceSpec {
+                self.contract.observation_space.as_ref().unwrap()
+            }
+            fn action_space(&self) -> &SpaceSpec {
+                self.contract.action_space.as_ref().unwrap()
+            }
+            fn num_envs(&self) -> usize {
+                1
+            }
+            fn env_contract(&self) -> &SpaceEnvContract {
+                &self.contract
+            }
+            async fn reset(
+                &mut self,
+                _req: ResetRequest,
+            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+                Ok(ResetResponse::default())
+            }
+            async fn step(
+                &mut self,
+                _req: StepRequest,
+            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+                Ok(StepResponse::default())
+            }
+            async fn render(
+                &mut self,
+                _req: RenderRequest,
+            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+                Ok(RenderResponse::default())
+            }
+            async fn close(
+                &mut self,
+            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+                Ok(CloseResponse::default())
+            }
+        }
+
+        let space = SpaceSpec::default();
+        let env = PlainEnv {
+            contract: SpaceEnvContract {
+                id: "plain-env".to_string(),
+                action_space: Some(space.clone()),
+                observation_space: Some(space),
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            },
+        };
+        let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
+            env,
+            ShutdownTrigger::new(),
+            ServeOptions::default(),
+            None,
+        ));
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+
+        // Client A holds the env's single Join session (opened lazily by reset).
+        let mut client_a = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        client_a.handshake().await.expect("handshake A");
+        client_a
+            .reset(ResetRequest::default())
+            .await
+            .expect("A reset");
+        assert!(client_a.request_tx.is_some());
+
+        // Idle client B handshakes but never runs an op, then calls close() in a
+        // finally-style teardown. Pre-fix this opened a second Join and earned a
+        // FailedPrecondition; now it must be a local-only no-op.
+        let mut client_b = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        client_b.handshake().await.expect("handshake B");
+        assert!(client_b.request_tx.is_none());
+
+        client_b
+            .close()
+            .await
+            .expect("idle client close must not contend for the active Join slot");
+        assert_eq!(client_b.state(), ClientState::Closed);
+        assert!(client_b.request_tx.is_none());
+
+        // Client A's session is undisturbed and remains usable.
+        client_a
+            .step(StepRequest::default())
+            .await
+            .expect("A still usable after B close");
+        client_a.close().await.expect("A graceful close");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[derive(Default)]
