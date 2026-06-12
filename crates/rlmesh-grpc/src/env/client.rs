@@ -360,6 +360,16 @@ impl EnvClient {
         Ok(response)
     }
 
+    /// Tear down the local session state without a Close round-trip.
+    ///
+    /// Dropping the Join stream releases the server's exclusive session slot
+    /// when the stream ends; in-flight episodes are completed by the server's
+    /// own bookkeeping. Use when a graceful [`EnvClient::close`] is not
+    /// possible (e.g. it timed out behind a long-draining operation).
+    pub fn detach(&mut self) {
+        self.close_local();
+    }
+
     // ---- Private helpers ----
 
     fn close_local(&mut self) {

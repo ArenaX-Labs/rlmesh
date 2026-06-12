@@ -99,6 +99,16 @@ impl RemoteEnv {
         self.inner.address()
     }
 
+    /// Tear down the session locally without waiting for a Close round-trip.
+    ///
+    /// Releases the env's exclusive session slot by dropping the Join stream;
+    /// final episode metadata from the server is forfeited. Prefer
+    /// [`RemoteEnv::close`]; use this when close cannot complete (e.g. it
+    /// timed out behind a long-draining server operation).
+    pub fn detach(&mut self) {
+        self.inner.detach();
+    }
+
     /// The environment contract reported by the server at handshake (spaces,
     /// id, render mode, metadata).
     pub fn env_contract(&self) -> &spaces::EnvContract {

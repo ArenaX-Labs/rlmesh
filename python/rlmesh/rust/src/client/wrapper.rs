@@ -256,7 +256,26 @@ impl ClientCore {
     }
 
     fn close_rpc(&mut self, py: Python<'_>) -> PyResult<()> {
-        self.run_rpc(py, self.default_timeout, |client| Box::pin(client.close()))?;
+        let result = self.run_rpc(py, self.default_timeout, |client| Box::pin(client.close()));
+        match result {
+            Ok(_) => {}
+            // Teardown is best-effort: when the graceful Close cannot complete
+            // within the client's default timeout (e.g. the server is still
+            // draining a slow step), detach locally instead of raising out of
+            // what is almost always a `finally` block. Dropping the stream
+            // releases the server's session slot.
+            Err(err)
+                if Python::attach(|py| {
+                    err.is_instance_of::<pyo3::exceptions::PyTimeoutError>(py)
+                }) =>
+            {
+                tracing::warn!(
+                    "close timed out behind an in-flight server operation;                      detaching the session locally"
+                );
+                self.client.detach();
+            }
+            Err(err) => return Err(err),
+        }
         self.profiler.log_summary_once();
         Ok(())
     }
