@@ -14,7 +14,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::env::Environment;
 use crate::env::episode::EpisodeTracker;
 use crate::error::EnvError;
-use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+use crate::lifecycle::{IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
 use crate::wire::value_bytes_ref;
 
@@ -37,7 +37,7 @@ pub struct GrpcEnvServer<E: Environment> {
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
 }
 
 impl<E: Environment> GrpcEnvServer<E> {
@@ -51,7 +51,7 @@ impl<E: Environment> GrpcEnvServer<E> {
         env: E,
         shutdown: ShutdownTrigger,
         serve_options: ServeOptions,
-        activity_tx: Option<mpsc::UnboundedSender<()>>,
+        activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
         Self::from_shared(
             Arc::new(Mutex::new(env)),
@@ -66,7 +66,7 @@ impl<E: Environment> GrpcEnvServer<E> {
         env: Arc<Mutex<E>>,
         shutdown: ShutdownTrigger,
         serve_options: ServeOptions,
-        activity_tx: Option<mpsc::UnboundedSender<()>>,
+        activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
         Self {
             env,
@@ -89,7 +89,7 @@ pub fn env_service_from_shared<E: Environment + 'static>(
     env: Arc<Mutex<E>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
     rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::from_shared(
         env,
@@ -201,10 +201,14 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
                 let close_after = matches!(req.kind, Some(join_request::Kind::Close(_)));
                 if let Some(activity_tx) = &activity_tx {
-                    let _ = activity_tx.send(());
+                    let _ = activity_tx.send(IdleActivity::Started);
                 }
 
                 let res = handle_env_request(req, env.clone(), episode_tracker.clone()).await;
+
+                if let Some(activity_tx) = &activity_tx {
+                    let _ = activity_tx.send(IdleActivity::Finished);
+                }
 
                 let send_result = tx.send(Ok(res)).await;
 

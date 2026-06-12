@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rlmesh_grpc::lifecycle::{
-    await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
+    IdleActivity, await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
 };
 use rlmesh_grpc::wire::env_contract_from_proto;
 use rlmesh_proto::model::v1::{
@@ -126,7 +126,7 @@ struct ServedModelServer<H> {
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
     token: String,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
 }
@@ -140,7 +140,7 @@ pub(super) struct ModelRouteConfig {
 fn model_service<H>(
     handler: Arc<Mutex<H>>,
     token: String,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
 ) -> ModelServiceServer<ServedModelServer<H>>
@@ -236,14 +236,19 @@ where
                     }
                 };
                 let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
+                if let Some(activity_tx) = &activity_tx {
+                    let _ = activity_tx.send(IdleActivity::Started);
+                }
                 let response = handle_model_request(
                     request,
                     Arc::clone(&handler),
                     Arc::clone(&active_episodes),
                     Arc::clone(&route_configs),
-                    activity_tx.clone(),
                 )
                 .await;
+                if let Some(activity_tx) = &activity_tx {
+                    let _ = activity_tx.send(IdleActivity::Finished);
+                }
                 let send_result = tx.send(Ok(response)).await;
                 if send_result.is_err() {
                     break;
@@ -292,14 +297,10 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     handler: Arc<Mutex<H>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
 ) -> JoinResponse {
     let request_id = request.request_id.clone();
     let operation = model_join_request_operation(request.kind.as_ref());
     let started_at = Instant::now();
-    if let Some(activity_tx) = &activity_tx {
-        let _ = activity_tx.send(());
-    }
 
     let kind = match request.kind {
         Some(join_request::Kind::ConfigureRoute(request)) => {

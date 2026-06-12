@@ -17,6 +17,13 @@ pub struct ServeOptions {
 }
 
 #[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleActivity {
+    Started,
+    Finished,
+}
+
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct ShutdownTrigger {
     token: CancellationToken,
@@ -65,13 +72,26 @@ impl ShutdownTrigger {
 
 #[doc(hidden)]
 pub async fn wait_for_idle_shutdown(
-    activity_rx: &mut mpsc::UnboundedReceiver<()>,
+    activity_rx: &mut mpsc::UnboundedReceiver<IdleActivity>,
     idle_timeout: Duration,
 ) {
+    let mut in_flight = 0_usize;
     loop {
-        match tokio::time::timeout(idle_timeout, activity_rx.recv()).await {
-            Ok(Some(())) => {}
-            Ok(None) | Err(_) => return,
+        let activity = if in_flight == 0 {
+            match tokio::time::timeout(idle_timeout, activity_rx.recv()).await {
+                Ok(Some(activity)) => activity,
+                Ok(None) | Err(_) => return,
+            }
+        } else {
+            match activity_rx.recv().await {
+                Some(activity) => activity,
+                None => return,
+            }
+        };
+
+        match activity {
+            IdleActivity::Started => in_flight = in_flight.saturating_add(1),
+            IdleActivity::Finished => in_flight = in_flight.saturating_sub(1),
         }
     }
 }
@@ -80,7 +100,7 @@ pub async fn wait_for_idle_shutdown(
 pub fn start_idle_shutdown(
     idle_timeout: Option<Duration>,
     shutdown: ShutdownTrigger,
-) -> Option<mpsc::UnboundedSender<()>> {
+) -> Option<mpsc::UnboundedSender<IdleActivity>> {
     let idle_timeout = idle_timeout?;
     let (tx, mut rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -156,6 +176,24 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(250), shutdown.cancelled())
             .await
             .unwrap();
+        assert_eq!(shutdown.reason().as_deref(), Some("idle timeout"));
+    }
+
+    #[tokio::test]
+    async fn idle_shutdown_does_not_fire_while_request_is_in_flight() {
+        let shutdown = ShutdownTrigger::new();
+        let tx = start_idle_shutdown(Some(Duration::from_millis(10)), shutdown.clone()).unwrap();
+
+        tx.send(IdleActivity::Started)
+            .expect("idle activity receiver should be open");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!shutdown.token.is_cancelled());
+
+        tx.send(IdleActivity::Finished)
+            .expect("idle activity receiver should be open");
+        tokio::time::timeout(Duration::from_millis(250), shutdown.cancelled())
+            .await
+            .expect("idle shutdown should fire after in-flight request finishes");
         assert_eq!(shutdown.reason().as_deref(), Some("idle timeout"));
     }
 

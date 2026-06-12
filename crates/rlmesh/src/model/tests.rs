@@ -236,7 +236,6 @@ async fn served_model_configure_route_requires_env_contract() {
         })),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
-        None,
     )
     .await;
 
@@ -276,7 +275,6 @@ async fn served_model_predict_mirrors_route_context() {
                 num_envs: 1,
             },
         )]))),
-        None,
     )
     .await;
 
@@ -326,7 +324,6 @@ async fn served_model_predict_rejects_route_wider_than_opened_route() {
                 num_envs: 1,
             },
         )]))),
-        None,
     )
     .await;
 
@@ -379,7 +376,6 @@ async fn served_model_close_route_drains_route_episodes() {
         Arc::clone(&handler),
         Arc::clone(&active_episodes),
         Arc::clone(&route_configs),
-        None,
     )
     .await;
 
@@ -430,7 +426,6 @@ async fn served_model_close_drains_all_active_episodes() {
         Arc::clone(&handler),
         Arc::clone(&active_episodes),
         Arc::new(Mutex::new(HashMap::new())),
-        None,
     )
     .await;
 
@@ -605,7 +600,10 @@ async fn idle_shutdown_arms_immediately_and_activity_extends_window() {
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert!(!shutdown.is_finished());
 
-    tx.send(()).unwrap();
+    tx.send(rlmesh_grpc::lifecycle::IdleActivity::Started)
+        .expect("idle activity receiver should be open");
+    tx.send(rlmesh_grpc::lifecycle::IdleActivity::Finished)
+        .expect("idle activity receiver should be open");
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!shutdown.is_finished());
 
