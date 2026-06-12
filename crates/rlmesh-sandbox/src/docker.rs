@@ -351,8 +351,8 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
         match probe {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(err)) => {
-                if container_terminated(container_id) {
-                    bail!("sandbox container exited before ready");
+                if let Some(state) = container_terminated(container_id) {
+                    bail!("sandbox container exited before ready ({state})");
                 }
                 if Instant::now() >= deadline {
                     return Err(err.into());
@@ -360,8 +360,8 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) if Instant::now() < deadline => {
-                if container_terminated(container_id) {
-                    bail!("sandbox container exited before ready");
+                if let Some(state) = container_terminated(container_id) {
+                    bail!("sandbox container exited before ready ({state})");
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
@@ -380,15 +380,20 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
 /// until its own deadline, rather than tearing down a container that is about
 /// to become ready. Only an inspect that succeeds and reports a terminal
 /// status returns `true`.
-fn container_terminated(container_id: &str) -> bool {
-    is_confirmed_terminal(inspect_container_state(container_id))
+/// When the container is confirmed terminal, returns its state summary for
+/// the error message; None while it is still running or not yet inspectable.
+fn container_terminated(container_id: &str) -> Option<String> {
+    confirmed_terminal_summary(inspect_container_state(container_id))
 }
 
 /// Decide whether an inspect result confirms the container is terminal. A
 /// transient inspect error or a not-yet-found container is treated as "not
 /// confirmed", so the readiness wait keeps polling instead of aborting.
-fn is_confirmed_terminal(inspected: Result<Option<ContainerState>>) -> bool {
-    matches!(inspected, Ok(Some(state)) if state.is_terminal())
+fn confirmed_terminal_summary(inspected: Result<Option<ContainerState>>) -> Option<String> {
+    match inspected {
+        Ok(Some(state)) if state.is_terminal() => Some(state.summary()),
+        _ => None,
+    }
 }
 
 fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
@@ -673,9 +678,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        is_confirmed_terminal, parse_container_ids, parse_container_state, parse_published_port,
-        render_bootstrap_json, render_dockerfile, shell_quote, tail_text,
+        BootstrapSpec, ContainerState, confirmed_terminal_summary, docker_run_args,
+        format_startup_failure_report, parse_container_ids, parse_container_state,
+        parse_published_port, render_bootstrap_json, render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -810,14 +815,15 @@ mod tests {
         };
 
         // Only a successful inspect reporting a terminal state confirms exit.
-        assert!(is_confirmed_terminal(Ok(Some(exited))));
-        assert!(!is_confirmed_terminal(Ok(Some(running))));
+        assert!(confirmed_terminal_summary(Ok(Some(exited))).is_some());
+        assert!(confirmed_terminal_summary(Ok(Some(running))).is_none());
         // A transient inspect error or a not-yet-found container must NOT abort
         // the readiness wait (it would tear down a healthy container).
-        assert!(!is_confirmed_terminal(Ok(None)));
-        assert!(!is_confirmed_terminal(Err(anyhow!(
-            "docker inspect failed: daemon busy"
-        ))));
+        assert!(confirmed_terminal_summary(Ok(None)).is_none());
+        assert!(
+            confirmed_terminal_summary(Err(anyhow!("docker inspect failed: daemon busy")))
+                .is_none()
+        );
     }
 
     #[test]

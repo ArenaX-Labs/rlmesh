@@ -256,26 +256,24 @@ fn sample_multi_discrete<'py>(
     spec: &rlmesh_spaces::MultiDiscreteSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let nvec = match &spec.nvec {
-        Some(MultiDiscreteNvec::Flat(vector)) => vector
-            .iter()
-            .map(|value| *value as usize)
-            .collect::<Vec<_>>(),
-        Some(MultiDiscreteNvec::Shaped(matrix)) => matrix
-            .iter()
-            .flat_map(|row| row.iter().map(|value| *value as usize))
-            .collect::<Vec<_>>(),
+    let nvec: Vec<i64> = match &spec.nvec {
+        Some(MultiDiscreteNvec::Flat(vector)) => vector.clone(),
+        Some(MultiDiscreteNvec::Shaped(matrix)) => {
+            matrix.iter().flat_map(|row| row.iter().copied()).collect()
+        }
         None => vec![],
     };
     let scalars = nvec
         .iter()
         .map(|n| {
-            if *n == 0 {
+            // A non-positive dimension would invert the random_range bounds
+            // and panic (a negative i64 previously wrapped through `as usize`).
+            if *n <= 0 {
                 return Err(pyo3::exceptions::PyValueError::new_err(
-                    "cannot sample MultiDiscrete space with a zero-sized dimension",
+                    "cannot sample MultiDiscrete space with a non-positive dimension",
                 ));
             }
-            Ok(Scalar::Int(rng.random_range(0..(*n as i64))))
+            Ok(Scalar::Int(rng.random_range(0..*n)))
         })
         .collect::<PyResult<Vec<_>>>()?;
     let shape = match &spec.nvec {
