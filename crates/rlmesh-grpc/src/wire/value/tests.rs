@@ -294,3 +294,35 @@ fn discrete_encode_rejects_precision_losing_integers() {
         SpaceValue::Discrete(5)
     );
 }
+
+#[test]
+fn int_to_proto_f64_rejects_i64_min_without_overflow() {
+    use super::scalars::int_to_proto_f64;
+
+    // i64::MIN.abs() overflows; the guard must reject the value, not panic
+    // (debug) or wrap negative and accept a lossy encode (release).
+    let err = int_to_proto_f64(i64::MIN)
+        .expect_err("i64::MIN exceeds the exact-float range and must be rejected");
+    assert!(err.to_string().contains("2^53"));
+
+    assert_eq!(int_to_proto_f64(1 << 53).unwrap(), 9007199254740992.0);
+    let err = int_to_proto_f64((1 << 53) + 1).expect_err("2^53 + 1 must be rejected");
+    assert!(err.to_string().contains("2^53"));
+}
+
+#[test]
+fn float_to_int_rejects_two_pow_63_boundary() {
+    use super::scalars::float_to_int;
+
+    // `i64::MAX as f64` rounds up to 2^63; an exact 2^63 input must be
+    // rejected rather than saturated to i64::MAX by `as i64`.
+    let two_pow_63 = (i64::MAX as f64) + 1.0 - 1.0; // 2^63 exactly
+    assert_eq!(two_pow_63, 9223372036854775808.0);
+    let err = float_to_int(two_pow_63).expect_err("2^63 is out of i64 range");
+    assert!(err.to_string().contains("out of range"));
+
+    // The largest f64 strictly below 2^63 and i64::MIN itself both convert.
+    let below = f64::from_bits(two_pow_63.to_bits() - 1);
+    assert_eq!(float_to_int(below).unwrap(), below as i64);
+    assert_eq!(float_to_int(i64::MIN as f64).unwrap(), i64::MIN);
+}

@@ -22,7 +22,9 @@ pub(super) fn float_to_int(value: f64) -> Result<i64, ProtocolError> {
             "fractional value {value} is not a valid integer"
         )));
     }
-    if value < i64::MIN as f64 || value > i64::MAX as f64 {
+    // `i64::MAX as f64` rounds up to 2^63, which `as i64` would saturate to
+    // i64::MAX; the exclusive upper bound must therefore be 2^63 itself.
+    if value < i64::MIN as f64 || value >= -(i64::MIN as f64) {
         return Err(ProtocolError::DecodeError(format!(
             "value {value} is out of range for a 64-bit integer"
         )));
@@ -33,7 +35,9 @@ pub(super) fn float_to_int(value: f64) -> Result<i64, ProtocolError> {
 /// Convert an integer into the f64 used by proto Value, rejecting magnitudes
 /// that would lose precision in the round-trip (|value| > 2^53).
 pub(super) fn int_to_proto_f64(value: i64) -> Result<f64, ProtocolError> {
-    if value.abs() > MAX_EXACT_F64_INT {
+    // unsigned_abs: `i64::MIN.abs()` overflows (panics in debug, wraps in
+    // release to a negative value that would slip past the bound check).
+    if value.unsigned_abs() > MAX_EXACT_F64_INT as u64 {
         return Err(ProtocolError::EncodeError(format!(
             "integer {value} exceeds the exact-float range (2^53) and cannot be encoded as a \
              JSON number without precision loss"
