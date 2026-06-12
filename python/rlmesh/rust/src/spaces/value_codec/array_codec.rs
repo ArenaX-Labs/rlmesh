@@ -155,18 +155,20 @@ fn decode_with_numpy<'py>(
 
     let item_count: usize = raw_array.getattr("size")?.extract()?;
     let base_shape: Vec<i64> = space.shape.clone();
+    // Mirror the native backend's element_count: an empty shape is a single
+    // scalar, otherwise the product of the dims (which is 0 for a (0,) space).
+    // Using .max(1) here missized zero-size spaces into a (0, 0) batch.
     let base_numel = if base_shape.is_empty() {
         1
     } else {
-        base_shape.iter().product::<i64>().max(1) as usize
+        base_shape.iter().product::<i64>() as usize
     };
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) {
+        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) || base_shape.is_empty() {
+            // Scalar () spaces decode to a Python scalar, matching the native
+            // backend instead of leaving frombuffer's stray (1,) array.
             return raw_array.call_method0("item");
-        }
-        if base_shape.is_empty() {
-            return Ok(raw_array);
         }
         return raw_array.call_method1("reshape", (base_shape,));
     }
@@ -321,11 +323,31 @@ fn scalar_to_object(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
 #[cfg(test)]
 mod tests {
     use super::super::ValueBackend;
-    use super::encode_array_like_value_with_backend;
+    use super::{decode_array_like_value_with_backend, encode_array_like_value_with_backend};
     use crate::spaces::tensor::wrap_native_tensor;
     use pyo3::Python;
+    use pyo3::types::PyAnyMethods;
     use rlmesh_spaces::Tensor;
     use rlmesh_spaces::spaces::BoxSpaceBuilder;
+
+    fn numpy_available(py: Python<'_>) -> bool {
+        py.import("numpy").is_ok()
+    }
+
+    fn box_spec(shape: Vec<i64>) -> rlmesh_spaces::spaces::SpaceSpec {
+        use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+        use rlmesh_spaces::{BoxBounds, BoxSpec, DType, UniformBounds};
+        SpaceSpec {
+            shape,
+            dtype: DType::Float32,
+            spec: Some(SpaceKind::Box(BoxSpec {
+                bounds: Some(BoxBounds::Uniform(UniformBounds {
+                    low: -1.0,
+                    high: 1.0,
+                })),
+            })),
+        }
+    }
 
     #[test]
     fn encode_without_numpy_rejects_dtype_mismatched_tensor() {
@@ -374,6 +396,42 @@ mod tests {
                 encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Native)
                     .unwrap();
             assert_eq!(bytes.len(), 3 * 4);
+        });
+    }
+
+    #[test]
+    fn decode_with_numpy_scalar_box_returns_scalar() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let space = box_spec(Vec::<i64>::new());
+            let bytes = 0.5f32.to_le_bytes();
+
+            let decoded =
+                decode_array_like_value_with_backend(py, &bytes, &space, ValueBackend::Auto)
+                    .unwrap();
+            // A scalar () space decodes to a Python float, not a (1,) array.
+            assert!(
+                !decoded.hasattr("shape").unwrap(),
+                "expected a scalar, got an array-like: {decoded:?}"
+            );
+            assert!((decoded.extract::<f64>().unwrap() - 0.5).abs() < 1e-6);
+        });
+    }
+
+    #[test]
+    fn decode_with_numpy_zero_size_box_keeps_rank_one() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let space = box_spec(vec![0]);
+
+            let decoded =
+                decode_array_like_value_with_backend(py, &[], &space, ValueBackend::Auto).unwrap();
+            let shape: Vec<i64> = decoded.getattr("shape").unwrap().extract().unwrap();
+            assert_eq!(shape, vec![0]);
         });
     }
 }
