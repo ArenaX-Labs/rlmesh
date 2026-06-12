@@ -16,7 +16,7 @@ use crate::error::{Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::normalize_tcp_session_address;
 use crate::states::ClientState;
 
-use super::protocol::{join_request_kind_name, model_error_to_protocol_error};
+use super::protocol::{join_request_kind_name, model_error_to_grpc_error};
 use super::stream::spawn_response_pump;
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
 
@@ -115,7 +115,7 @@ impl ModelClient {
         self.last_telemetry = response.telemetry.clone();
         match response.kind {
             Some(join_response::Kind::ConfigureRoute(_)) => Ok(()),
-            Some(join_response::Kind::Error(error)) => Err(model_error_to_protocol_error(error)),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "ConfigureRouteResponse".to_string(),
                 actual: format!("{:?}", response.kind),
@@ -143,7 +143,7 @@ impl ModelClient {
 
         match response.kind {
             Some(join_response::Kind::Predict(predict)) => Ok(predict),
-            Some(join_response::Kind::Error(error)) => Err(model_error_to_protocol_error(error)),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "PredictResponse".to_string(),
                 actual: format!("{:?}", response.kind),
@@ -170,7 +170,7 @@ impl ModelClient {
         self.last_telemetry = response.telemetry.clone();
         match response.kind {
             Some(join_response::Kind::CloseRoute(_)) => Ok(()),
-            Some(join_response::Kind::Error(error)) => Err(model_error_to_protocol_error(error)),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "CloseRouteResponse".to_string(),
                 actual: format!("{:?}", response.kind),
@@ -209,7 +209,7 @@ impl ModelClient {
 
         match response.kind {
             Some(join_response::Kind::Close(_)) => Ok(()),
-            Some(join_response::Kind::Error(error)) => Err(model_error_to_protocol_error(error)),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "CloseResponse".to_string(),
                 actual: format!("{:?}", response.kind),

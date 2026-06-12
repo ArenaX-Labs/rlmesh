@@ -18,6 +18,10 @@ pub enum Error {
     #[error("environment error: {0}")]
     Environment(#[from] EnvError),
 
+    /// Model error (from a served model handler)
+    #[error("model error: {0}")]
+    Model(#[from] ModelError),
+
     /// Operation timed out
     #[error("timeout after {0:?}")]
     Timeout(Duration),
@@ -41,6 +45,7 @@ impl Error {
         match self {
             Self::Timeout(_) => true,
             Self::Environment(error) => error.is_recoverable,
+            Self::Model(error) => error.is_recoverable,
             Self::Transport(TransportError::Io(_)) => false,
             Self::Transport(TransportError::ConnectionClosed) => false,
             _ => false,
@@ -201,6 +206,59 @@ impl From<EnvErrorCode> for rlmesh_proto::env::v1::EnvErrorCode {
             EnvErrorCode::Crashed => ProtoCode::Crashed,
             EnvErrorCode::Cancelled => ProtoCode::Cancelled,
             EnvErrorCode::Closed => ProtoCode::Closed,
+        }
+    }
+}
+
+/// Model errors (from a served model handler).
+#[derive(Debug, Error)]
+pub struct ModelError {
+    /// Error code
+    pub code: ModelErrorCode,
+    /// Human-readable message
+    pub message: String,
+    /// Whether this error is recoverable
+    pub is_recoverable: bool,
+    /// Debug information
+    pub debug_info: Option<String>,
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{:?}] {}", self.code, self.message)
+    }
+}
+
+/// Model error codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelErrorCode {
+    /// Unspecified error
+    Unspecified,
+    /// The request was invalid
+    InvalidRequest,
+    /// The route was not configured
+    NotConfigured,
+    /// The model is busy with another operation
+    Busy,
+    /// Internal error
+    Internal,
+    /// Operation was cancelled
+    Cancelled,
+    /// The model/route was closed
+    Closed,
+}
+
+impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
+    fn from(code: rlmesh_proto::model::v1::ModelErrorCode) -> Self {
+        use rlmesh_proto::model::v1::ModelErrorCode as ProtoCode;
+        match code {
+            ProtoCode::Unspecified => ModelErrorCode::Unspecified,
+            ProtoCode::InvalidRequest => ModelErrorCode::InvalidRequest,
+            ProtoCode::NotConfigured => ModelErrorCode::NotConfigured,
+            ProtoCode::Busy => ModelErrorCode::Busy,
+            ProtoCode::Internal => ModelErrorCode::Internal,
+            ProtoCode::Cancelled => ModelErrorCode::Cancelled,
+            ProtoCode::Closed => ModelErrorCode::Closed,
         }
     }
 }
