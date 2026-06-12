@@ -49,6 +49,12 @@ multiple-versions = "allow"
 wildcards = "deny"
 highlight = "simplest-path"
 
+# Architecture boundary: only the protocol-aware crates may depend on
+# rlmesh-proto directly. In particular the Python binding crate must stay
+# behind the rlmesh facade / rlmesh-grpc wire layer. (Replaces the former
+# include_str!-based architecture test in crates/rlmesh/src/tests.rs.)
+deny = [{ name = "rlmesh-proto", wrappers = ["rlmesh", "rlmesh-grpc", "rlmesh-runtime"] }]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
