@@ -17,6 +17,12 @@ pub(super) fn sample_space_value<'py>(
     {
         SpaceKind::Box(spec) => sample_box(py, space, spec, rng),
         SpaceKind::Discrete(spec) => {
+            if spec.n <= 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "cannot sample Discrete space with n={}",
+                    spec.n
+                )));
+            }
             let value = rng.random_range(spec.start..(spec.start + spec.n));
             Ok(value.into_pyobject(py)?.into_any())
         }
@@ -94,6 +100,11 @@ fn sample_box_scalar<'py>(
     dtype: DType,
 ) -> PyResult<Bound<'py, PyAny>> {
     let value = if low.is_finite() && high.is_finite() {
+        if low > high {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "cannot sample Box element with low {low} greater than high {high}"
+            )));
+        }
         rng.random_range(low..=high)
     } else if low.is_finite() {
         low + exp_sample(rng)
@@ -177,6 +188,11 @@ fn sample_multi_discrete<'py>(
     let values = nvec
         .iter()
         .map(|n| {
+            if *n == 0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "cannot sample MultiDiscrete space with a zero-sized dimension",
+                ));
+            }
             Ok(rng
                 .random_range(0..(*n as i64))
                 .into_pyobject(py)?

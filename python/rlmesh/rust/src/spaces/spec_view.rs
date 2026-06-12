@@ -228,13 +228,15 @@ impl PySpace {
 
     fn seed(&self, seed: Option<u64>) -> Option<u64> {
         let seed = seed.unwrap_or_else(rand::random);
-        *self.rng.lock().expect("rng mutex poisoned") = StdRng::seed_from_u64(seed);
+        // Recover from a poisoned mutex: a prior sample() that raised a Python
+        // exception while holding the guard must not permanently brick the RNG.
+        *self.rng.lock().unwrap_or_else(|err| err.into_inner()) = StdRng::seed_from_u64(seed);
         Some(seed)
     }
 
     #[gen_stub(override_return_type(type_repr = "object", imports = ()))]
     fn sample<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mut rng = self.rng.lock().expect("rng mutex poisoned");
+        let mut rng = self.rng.lock().unwrap_or_else(|err| err.into_inner());
         sample_space_value(py, &self.spec, &mut rng)
     }
 
@@ -589,6 +591,30 @@ mod tests {
             let sample = space.sample(py).unwrap();
 
             assert!(space.contains(py, &sample));
+        });
+    }
+
+    #[test]
+    fn malformed_discrete_sample_errors_without_poisoning() {
+        use rlmesh_spaces::DType;
+        use rlmesh_spaces::DiscreteSpec;
+        use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+
+        Python::attach(|py| {
+            // A remote contract can carry an invalid Discrete{n:0}; sampling it
+            // must raise a clean Python error rather than panicking.
+            let spec = SpaceSpec {
+                shape: vec![],
+                dtype: DType::Int64,
+                spec: Some(SpaceKind::Discrete(DiscreteSpec { n: 0, start: 0 })),
+            };
+            let space = PySpace::new(spec);
+
+            assert!(space.sample(py).is_err());
+            // The RNG mutex must not be poisoned: seeding and re-sampling still
+            // return clean errors instead of panicking.
+            assert_eq!(space.seed(Some(7)), Some(7));
+            assert!(space.sample(py).is_err());
         });
     }
 
