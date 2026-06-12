@@ -47,9 +47,10 @@ pub struct ModelClient {
 impl ModelClient {
     pub async fn connect(address: &str, token: &str) -> Result<Self, GrpcError> {
         let address = normalize_tcp_session_address(address)?;
-        let endpoint =
+        let endpoint = crate::configure_endpoint(
             tonic::transport::Endpoint::from_shared(address.replacen("tcp://", "http://", 1))
-                .map_err(|err| TransportError::InvalidAddress(err.to_string()))?;
+                .map_err(|err| TransportError::InvalidAddress(err.to_string()))?,
+        );
         let channel = endpoint
             .connect()
             .await

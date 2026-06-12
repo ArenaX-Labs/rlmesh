@@ -16,6 +16,21 @@ pub mod wire;
 /// large observations/actions are not capped at an undiagnosable 4 MiB.
 pub const MAX_MESSAGE_SIZE: usize = 256 * 1024 * 1024;
 
+/// Harden a client endpoint so dead peers are detected instead of hanging
+/// forever: a bounded connect, HTTP/2 keepalive pings (also effective over
+/// unix sockets), and TCP keepalive for tcp transports. Without these a silent
+/// network partition leaves RPC futures pending indefinitely.
+pub(crate) fn configure_endpoint(
+    endpoint: tonic::transport::Endpoint,
+) -> tonic::transport::Endpoint {
+    endpoint
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .http2_keep_alive_interval(std::time::Duration::from_secs(30))
+        .keep_alive_timeout(std::time::Duration::from_secs(10))
+        .keep_alive_while_idle(true)
+        .tcp_keepalive(Some(std::time::Duration::from_secs(60)))
+}
+
 pub use connect::{ConnectOptions, retry_connect};
 pub use env::{EnvClient, EnvHandshake};
 pub use lifecycle::ServeOptions;

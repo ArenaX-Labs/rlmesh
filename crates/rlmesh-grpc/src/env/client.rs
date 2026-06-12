@@ -72,8 +72,10 @@ impl EnvClient {
 
         #[cfg(unix)]
         let channel = if let Some(socket_path) = target.unix_path().cloned() {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
 
             endpoint
                 .connect_with_connector(service_fn(move |_: tonic::transport::Uri| {
@@ -83,8 +85,10 @@ impl EnvClient {
                 .await
                 .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
         } else {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
             endpoint
                 .connect()
                 .await
@@ -93,8 +97,10 @@ impl EnvClient {
 
         #[cfg(not(unix))]
         let channel = {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
             endpoint
                 .connect()
                 .await
