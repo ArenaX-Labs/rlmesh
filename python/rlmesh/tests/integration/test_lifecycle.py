@@ -56,6 +56,27 @@ class SlowStepEnv(TinyEnv):
         return super().step(action)
 
 
+class InfoKeyEnv(TinyEnv):
+    """Env that emits its own episode_ids/completed_episodes info keys."""
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ):
+        return 0, {"episode_ids": ["env-supplied"]}
+
+    def step(self, action: object):
+        return (
+            1,
+            1.0,
+            True,
+            False,
+            {
+                "episode_ids": ["env-supplied"],
+                "completed_episodes": "env-value",
+            },
+        )
+
+
 class RenderingEnv(TinyEnv):
     """Env that renders a fixed-shape rgb_array frame."""
 
@@ -488,6 +509,50 @@ def test_remote_render_preserves_source_channel_count(
             assert array.dtype == np.uint8
         finally:
             remote.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_preserves_env_provided_info_keys() -> None:
+    """Root cause of finding #43: rlmesh must not clobber env info keys.
+
+    An env emitting its own episode_ids/completed_episodes keeps them; rlmesh
+    only fills those keys when the env did not provide them.
+    """
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = InfoKeyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            _, reset_info = client.reset()
+            assert reset_info["episode_ids"] == ["env-supplied"]
+
+            _, _, _, _, step_info = client.step(0)
+            assert step_info["episode_ids"] == ["env-supplied"]
+            assert step_info["completed_episodes"] == "env-value"
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_injects_episode_ids_when_env_omits_them() -> None:
+    """When the env omits the key, rlmesh still injects its telemetry."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            _, reset_info = client.reset()
+            assert "episode_ids" in reset_info
+        finally:
+            client.close()
     finally:
         server.shutdown()
 

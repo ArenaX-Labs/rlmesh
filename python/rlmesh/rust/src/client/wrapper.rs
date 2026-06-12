@@ -347,7 +347,10 @@ impl PyEnvClient {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        info.set_item("episode_ids", result.episode_ids.to_vec())?;
+        // Don't clobber an env-provided "episode_ids" key (finding #43).
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids.to_vec())?;
+        }
 
         let tuple = PyTuple::new(py, [obs.as_any(), info.as_any()])?;
         let _ = total_guard.finish(options_bytes + obs_bytes_len + info_bytes_len);
@@ -388,7 +391,8 @@ impl PyEnvClient {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
-        if terminated || truncated {
+        // Don't clobber an env-provided "completed_episodes" key (finding #43).
+        if (terminated || truncated) && !info.contains("completed_episodes")? {
             info.set_item("completed_episodes", 1)?;
         }
 
@@ -545,7 +549,10 @@ impl PyVectorEnvClient {
             &self.core.observation_space,
         )?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        info.set_item("episode_ids", result.episode_ids)?;
+        // Don't clobber an env-provided "episode_ids" key (finding #43).
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids)?;
+        }
         Ok(PyTuple::new(py, [obs.as_any(), info.as_any()])?
             .into_any()
             .unbind())
@@ -579,8 +586,14 @@ impl PyVectorEnvClient {
         let terminated = vector_bool_to_py(py, &result.terminated)?;
         let truncated = vector_bool_to_py(py, &result.truncated)?;
         let info = info_to_pydict(py, result.info.as_ref())?;
-        info.set_item("episode_ids", result.episode_ids)?;
-        info.set_item("completed_episodes", result.completed_episodes.len())?;
+        // Don't clobber env-provided "episode_ids"/"completed_episodes" keys
+        // (finding #43).
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids)?;
+        }
+        if !info.contains("completed_episodes")? {
+            info.set_item("completed_episodes", result.completed_episodes.len())?;
+        }
 
         Ok(PyTuple::new(
             py,
