@@ -13,6 +13,24 @@ Every remote client keeps the endpoint handshake in `env_contract`. The `spec` p
 for that same contract. `observation_space` and `action_space` are client-side wrappers built from
 the contract's `SpaceSpec` values.
 
+## Render Viewer
+
+Every remote client (and the experimental sandbox sessions) inherits two viewer methods from a
+shared mixin:
+
+- `open_viewer(*, env_index=0, fps="env")` opens a local render window and streams frames after each
+  `reset`, `step`, and `render`. `env_index` selects which sub-environment of a vector client to
+  view. `fps` accepts `"env"` (read `render_fps` from environment metadata), a positive number for
+  an explicit limit, or `None` to disable pacing.
+- `close_viewer()` closes the window if one is open. It is also called on client `close()`.
+
+The viewer is **best-effort and experimental**. It launches a separate GUI process via
+`python -m rlmesh viewer` (the `rlmesh-cli` binary), so it requires a desktop/GUI-capable host and
+is not intended for headless or production use. The environment must produce frames (typically
+`render_mode="rgb_array"`); frame pushes are dropped rather than allowed to block the step loop when
+the viewer stalls. Because the methods are best-effort tooling rather than part of the stable client
+contract, treat their signatures and behavior as experimental.
+
 ## Single Environment Base
 
 ```{eval-rst}
