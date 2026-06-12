@@ -1,4 +1,6 @@
 mod dlpack;
+#[cfg(test)]
+mod proptests;
 mod storage;
 
 pub use dlpack::{DLPackType, dlpack_type, dtype_from_dlpack};

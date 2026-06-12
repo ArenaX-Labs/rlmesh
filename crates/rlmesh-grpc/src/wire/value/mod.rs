@@ -13,6 +13,8 @@ mod proto_value;
 mod scalars;
 
 #[cfg(test)]
+mod proptests;
+#[cfg(test)]
 mod tests;
 
 pub use batch::{

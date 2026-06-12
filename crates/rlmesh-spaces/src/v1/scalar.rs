@@ -277,4 +277,56 @@ mod tests {
         assert_eq!(Scalar::Float(f64::INFINITY).as_i64(), i64::MAX);
         assert_eq!(Scalar::Bool(true).as_i64(), 1);
     }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// The integer range each dtype represents exactly (floats are
+        /// limited by their mantissa width).
+        fn exact_range(dtype: DType) -> std::ops::RangeInclusive<i64> {
+            match dtype {
+                DType::Bool => 0..=1,
+                DType::Uint8 => 0..=u8::MAX as i64,
+                DType::Int8 => i8::MIN as i64..=i8::MAX as i64,
+                DType::Int16 => i16::MIN as i64..=i16::MAX as i64,
+                DType::Uint16 => 0..=u16::MAX as i64,
+                DType::Int32 => i32::MIN as i64..=i32::MAX as i64,
+                DType::Uint32 => 0..=u32::MAX as i64,
+                DType::Int64 | DType::Uint64 => i64::MIN..=i64::MAX,
+                DType::Float16 => -2048..=2048,
+                DType::Bfloat16 => -256..=256,
+                DType::Float32 => -(1 << 24)..=(1 << 24),
+                DType::Float64 => -(1 << 53)..=(1 << 53),
+                DType::Unspecified => unreachable!("not generated"),
+            }
+        }
+
+        fn dtype_and_values() -> impl Strategy<Value = (DType, Vec<i64>)> {
+            prop::sample::select(
+                DType::ALL
+                    .into_iter()
+                    .filter(|&dtype| dtype != DType::Unspecified)
+                    .collect::<Vec<_>>(),
+            )
+            .prop_flat_map(|dtype| {
+                prop::collection::vec(exact_range(dtype), 0..=16)
+                    .prop_map(move |values| (dtype, values))
+            })
+        }
+
+        proptest! {
+            /// Integers within a dtype's exact range survive the byte codec.
+            #[test]
+            fn prop_exact_integers_roundtrip((dtype, values) in dtype_and_values()) {
+                let encoded = encode_i64_scalars(&values, dtype).expect("encode");
+                prop_assert_eq!(encoded.len(), values.len() * dtype_size(dtype));
+                let decoded = decode_scalars(&encoded, dtype).expect("decode");
+                let roundtripped: Vec<i64> =
+                    decoded.into_iter().map(Scalar::as_i64).collect();
+                prop_assert_eq!(roundtripped, values);
+            }
+        }
+    }
 }
