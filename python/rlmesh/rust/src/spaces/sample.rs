@@ -92,8 +92,8 @@ fn box_bounds(spec: &BoxSpec, numel: usize, dtype: DType) -> (Vec<f64>, Vec<f64>
     match &spec.bounds {
         Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
         Some(BoxBounds::Elementwise(bounds)) => (
-            repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
-            repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
+            elementwise_or_default(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
+            elementwise_or_default(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
         // Typed byte bounds are decoded with the space dtype into f64 for
         // sampling. The sampler only needs an approximate range, so the f64
@@ -134,18 +134,15 @@ fn scalar_to_f64(scalar: Scalar) -> f64 {
     }
 }
 
-fn repeat_or_truncate(values: &[f64], len: usize, default: f64) -> Vec<f64> {
-    match values.len() {
-        0 => vec![default; len],
-        1 => vec![values[0]; len],
-        current if current >= len => values[..len].to_vec(),
-        current => values
-            .iter()
-            .copied()
-            .cycle()
-            .take(len.max(current))
-            .take(len)
-            .collect(),
+/// Validated elementwise bounds always carry one value per element; anything
+/// else falls back to the unbounded default for sampling purposes. (The old
+/// cycle/truncate expansion was the AxiswiseBounds ambiguity removed by the
+/// wire redesign — sampling must not resurrect it.)
+fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Vec<f64> {
+    if values.len() == len {
+        values.to_vec()
+    } else {
+        vec![default; len]
     }
 }
 

@@ -43,11 +43,44 @@ pub fn space_spec_to_proto(spec: &native::SpaceSpec) -> proto::SpaceSpec {
 }
 
 pub fn space_spec_from_proto(spec: proto::SpaceSpec) -> Result<native::SpaceSpec, ProtocolError> {
-    Ok(native::SpaceSpec {
+    let decoded = native::SpaceSpec {
         shape: spec.shape,
         dtype: native_dtype_from_proto(spec.dtype)?,
         spec: spec.spec.map(space_kind_from_proto).transpose()?,
-    })
+    };
+    validate_typed_bound_lengths(&decoded)?;
+    Ok(decoded)
+}
+
+/// Fail fast on malformed typed Box bounds at wire decode instead of letting a
+/// bad spec handshake successfully and only error on the first `contains()`.
+/// Bounds bytes are little-endian scalars in the space's dtype (the codebase
+/// assumes little-endian hosts throughout): one scalar for uniform bounds,
+/// `numel` scalars elementwise.
+fn validate_typed_bound_lengths(spec: &native::SpaceSpec) -> Result<(), ProtocolError> {
+    let Some(native::SpaceKind::Box(box_spec)) = &spec.spec else {
+        return Ok(());
+    };
+    let (low, high, count) = match &box_spec.bounds {
+        Some(native::BoxBounds::TypedUniform(bounds)) => (&bounds.low, &bounds.high, 1),
+        Some(native::BoxBounds::TypedElementwise(bounds)) => {
+            let numel = spec.shape.iter().product::<i64>().unsigned_abs() as usize;
+            (&bounds.low, &bounds.high, numel)
+        }
+        _ => return Ok(()),
+    };
+    let expected = count * native::dtype_size(spec.dtype);
+    for (name, bytes) in [("low", low), ("high", high)] {
+        if bytes.len() != expected {
+            return Err(ProtocolError::DecodeError(format!(
+                "typed Box bounds `{name}` carries {} bytes; expected {expected} \
+                 ({count} {:?} scalar(s))",
+                bytes.len(),
+                spec.dtype,
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn space_kind_to_proto(kind: &native::SpaceKind) -> proto::space_spec::Spec {
@@ -456,6 +489,22 @@ mod tests {
         };
         assert_eq!(t.high, i64::MAX.to_le_bytes());
         assert_eq!(t.low, (i64::MAX - 1).to_le_bytes());
+    }
+
+    #[test]
+    fn malformed_typed_bounds_fail_at_wire_decode() {
+        // A typed bound with the wrong byte length must be rejected at spec
+        // decode (handshake time), not deferred to the first contains().
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: vec![0u8; 4], // 4 bytes, but Int64 needs 8
+                high: i64::MAX.to_le_bytes().to_vec(),
+            }),
+            vec![2],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("typed Box bounds"));
     }
 
     fn meta_roundtrip(value: native::MetaValue) -> native::MetaValue {
