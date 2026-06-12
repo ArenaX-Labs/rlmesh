@@ -35,6 +35,12 @@ impl RuntimeSessionSpec {
         if self.num_envs == 0 {
             return Err("runtime num_envs must be greater than zero".to_string());
         }
+        if self.num_envs > 1 {
+            return Err(
+                "runtime num_envs greater than one is not supported until per-lane reset is available"
+                    .to_string(),
+            );
+        }
         if self.env_contract.observation_space.is_none() {
             return Err("runtime env_contract is missing observation_space".to_string());
         }
@@ -225,9 +231,42 @@ mod duration_millis {
 mod tests {
     use std::time::Duration;
 
+    use rlmesh_proto::env::v1::EnvContract;
+    use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
-    use super::RuntimeLimits;
+    use super::{RuntimeLimits, RuntimeSessionSpec};
+
+    fn valid_spec() -> RuntimeSessionSpec {
+        RuntimeSessionSpec {
+            session_id: "session".to_string(),
+            route_id: "route".to_string(),
+            env_component_id: "env".to_string(),
+            model_component_id: "model".to_string(),
+            env_id: "env-id".to_string(),
+            env_contract: EnvContract {
+                observation_space: Some(SpaceSpec::default()),
+                action_space: Some(SpaceSpec::default()),
+                num_envs: 1,
+                ..Default::default()
+            },
+            num_envs: 1,
+            max_episodes: Some(1),
+            close_env_on_end: true,
+            limits: RuntimeLimits::default(),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_vectorized_runtime_sessions() {
+        let mut spec = valid_spec();
+        spec.num_envs = 2;
+        spec.env_contract.num_envs = 2;
+
+        let error = spec.validate().unwrap_err();
+
+        assert!(error.contains("per-lane reset"));
+    }
 
     #[test]
     fn runtime_limits_json_uses_explicit_millisecond_fields() {
