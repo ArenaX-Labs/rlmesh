@@ -268,7 +268,11 @@ impl TelemetryWindowAccumulator {
             steps_per_second: Some(self.step_count as f64 / elapsed.as_secs_f64()),
             request_bytes_per_second: Some(self.request_bytes as f64 / elapsed.as_secs_f64()),
             response_bytes_per_second: Some(self.response_bytes as f64 / elapsed.as_secs_f64()),
-            timings: timing_summaries(&self.timing_samples),
+            timings: timing_summaries(
+                self.timing_samples
+                    .iter()
+                    .map(|(key, values)| (key, values.as_slice(), values.len() as u64)),
+            ),
             metrics: metric_summaries(&self.metric_samples),
             env_latency_ms_avg: average_ms(&self.env_step_samples),
             env_latency_ms_p50: percentile_ms(&self.env_step_samples, 0.50),
@@ -309,7 +313,11 @@ impl TelemetryWindowAccumulator {
             response_bytes_per_second: Some(
                 self.total_response_bytes as f64 / elapsed.as_secs_f64(),
             ),
-            timings: reservoir_timing_summaries(&self.total_timing_samples),
+            timings: timing_summaries(self.total_timing_samples.iter().map(|(key, reservoir)| {
+                // Report the true number of observed samples, not the bounded
+                // reservoir size, so summary counts stay accurate.
+                (key, reservoir.samples(), reservoir.seen())
+            })),
             metrics: metric_summaries(&self.total_metric_samples),
             env_latency_ms_avg: average_ms(self.total_env_step_samples.samples()),
             env_latency_ms_p50: percentile_ms(self.total_env_step_samples.samples(), 0.50),
@@ -360,18 +368,24 @@ impl TelemetryWindowAccumulator {
     }
 }
 
-fn timing_summaries(samples: &BTreeMap<TimingKey, Vec<Duration>>) -> Vec<TimingSummary> {
-    samples
-        .iter()
-        .map(|(key, values)| TimingSummary {
+/// Build one [`TimingSummary`] per `(key, durations, sample_count)` triple.
+///
+/// Window samples report `sample_count` as the raw buffer length; session
+/// totals report the reservoir's `seen()` count instead, so the caller supplies
+/// the count alongside the (possibly bounded) duration slice.
+fn timing_summaries<'a>(
+    summaries: impl Iterator<Item = (&'a TimingKey, &'a [Duration], u64)>,
+) -> Vec<TimingSummary> {
+    summaries
+        .map(|(key, durations, sample_count)| TimingSummary {
             operation: key.operation.clone(),
             component_id: key.component_id.clone(),
             name: key.name.clone(),
-            sample_count: values.len() as u64,
-            avg_ms: average_ms(values),
-            p50_ms: percentile_ms(values, 0.50),
-            p95_ms: percentile_ms(values, 0.95),
-            p99_ms: percentile_ms(values, 0.99),
+            sample_count,
+            avg_ms: average_ms(durations),
+            p50_ms: percentile_ms(durations, 0.50),
+            p95_ms: percentile_ms(durations, 0.95),
+            p99_ms: percentile_ms(durations, 0.99),
         })
         .collect()
 }
@@ -393,29 +407,6 @@ fn metric_summaries(samples: &BTreeMap<MetricKey, ValueReservoir>) -> Vec<Metric
                 p50: percentile_f64_samples(values, 0.50),
                 p95: percentile_f64_samples(values, 0.95),
                 p99: percentile_f64_samples(values, 0.99),
-            }
-        })
-        .collect()
-}
-
-fn reservoir_timing_summaries(
-    samples: &BTreeMap<TimingKey, DurationReservoir>,
-) -> Vec<TimingSummary> {
-    samples
-        .iter()
-        .map(|(key, reservoir)| {
-            let values = reservoir.samples();
-            TimingSummary {
-                operation: key.operation.clone(),
-                component_id: key.component_id.clone(),
-                name: key.name.clone(),
-                // Report the true number of observed samples, not the bounded
-                // reservoir size, so summary counts stay accurate.
-                sample_count: reservoir.seen(),
-                avg_ms: average_ms(values),
-                p50_ms: percentile_ms(values, 0.50),
-                p95_ms: percentile_ms(values, 0.95),
-                p99_ms: percentile_ms(values, 0.99),
             }
         })
         .collect()
