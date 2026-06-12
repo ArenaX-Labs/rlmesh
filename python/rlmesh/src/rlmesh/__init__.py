@@ -14,7 +14,12 @@ from .server import EnvServer
 try:
     __version__ = package_version("rlmesh")
 except PackageNotFoundError:
-    __version__ = str(getattr(_rlmesh, "__version__", "0.0.0"))
+    # The distribution metadata is not visible (e.g. a PyInstaller/zipapp
+    # bundle or a vendored site-packages copy without dist-info). The compiled
+    # extension does not expose a version, so report an explicit "unknown"
+    # marker instead of a misleading concrete version that downstream version
+    # gating could trust.
+    __version__ = "0+unknown"
 
 __doc__ = _rlmesh.__doc__
 
