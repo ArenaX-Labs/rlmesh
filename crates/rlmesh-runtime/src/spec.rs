@@ -1,8 +1,14 @@
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use rlmesh_proto::env::v1::EnvContract;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 use serde::{Deserialize, Serialize};
+
+/// Empty fallback returned by the internal `*_validated` accessors only on the
+/// unreachable path where the space is absent despite validation (see their
+/// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
+static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSessionSpec {
@@ -62,18 +68,50 @@ impl RuntimeSessionSpec {
         }
     }
 
-    pub fn observation_space(&self) -> &SpaceSpec {
+    /// Returns the observation space, or `None` if the spec has not been
+    /// populated/validated (`env_contract.observation_space` is unset).
+    ///
+    /// All `RuntimeSessionSpec` fields are public, so an unvalidated spec is
+    /// trivial to construct; this accessor never panics. The driver validates
+    /// the spec before running and uses the infallible internal accessor.
+    pub fn observation_space(&self) -> Option<&SpaceSpec> {
+        self.env_contract.observation_space.as_ref()
+    }
+
+    /// Returns the action space, or `None` if the spec has not been
+    /// populated/validated (`env_contract.action_space` is unset).
+    ///
+    /// See [`RuntimeSessionSpec::observation_space`] for why this is fallible.
+    pub fn action_space(&self) -> Option<&SpaceSpec> {
+        self.env_contract.action_space.as_ref()
+    }
+
+    /// Observation space for internal use after [`validate`](Self::validate)
+    /// has confirmed it is present.
+    pub(crate) fn observation_space_validated(&self) -> &SpaceSpec {
+        debug_assert!(
+            self.env_contract.observation_space.is_some(),
+            "observation_space accessed before validate()"
+        );
+        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.env_contract
             .observation_space
             .as_ref()
-            .expect("RuntimeSessionSpec validated observation_space")
+            .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 
-    pub fn action_space(&self) -> &SpaceSpec {
+    /// Action space for internal use after [`validate`](Self::validate) has
+    /// confirmed it is present.
+    pub(crate) fn action_space_validated(&self) -> &SpaceSpec {
+        debug_assert!(
+            self.env_contract.action_space.is_some(),
+            "action_space accessed before validate()"
+        );
+        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.env_contract
             .action_space
             .as_ref()
-            .expect("RuntimeSessionSpec validated action_space")
+            .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 }
 
@@ -257,6 +295,24 @@ mod tests {
             close_env_on_end: true,
             limits: RuntimeLimits::default(),
         }
+    }
+
+    #[test]
+    fn space_accessors_return_none_on_unvalidated_spec() {
+        let mut spec = valid_spec();
+        // An unvalidated spec is trivially constructible since all fields are
+        // public; the accessors must not panic.
+        spec.env_contract = EnvContract::default();
+
+        assert!(spec.observation_space().is_none());
+        assert!(spec.action_space().is_none());
+    }
+
+    #[test]
+    fn space_accessors_return_some_on_populated_spec() {
+        let spec = valid_spec();
+        assert!(spec.observation_space().is_some());
+        assert!(spec.action_space().is_some());
     }
 
     #[test]

@@ -353,7 +353,7 @@ where
                 episode_record_ids: predict_snapshot.episode_record_ids.clone(),
                 step: action_step,
                 env_index: predict_snapshot.env_index,
-                action_space: self.spec.action_space().clone(),
+                action_space: self.spec.action_space_validated().clone(),
                 action: model_action,
             };
             action_event.action = self.invoke_transform_action(action_event.clone()).await?;
@@ -784,7 +784,7 @@ where
             env_index: snapshot.env_index,
             is_reset,
             num_envs: self.spec.num_envs as u32,
-            observation_space: self.spec.observation_space().clone(),
+            observation_space: self.spec.observation_space_validated().clone(),
             observation,
         }
     }
