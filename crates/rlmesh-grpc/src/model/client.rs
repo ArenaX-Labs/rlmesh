@@ -352,10 +352,19 @@ impl ModelClient {
         // Register the waiter *before* sending so a fast response cannot race
         // ahead of the pending insert.
         let (response_tx, response_rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .expect("pending map poisoned")
-            .insert(request_id.clone(), response_tx);
+        {
+            let mut pending = self.pending.lock().expect("pending map poisoned");
+            // The demux is keyed by request_id; silently overwriting a live
+            // entry would strand the first caller until stream end. Reject a
+            // duplicate caller-supplied id instead.
+            if pending.contains_key(&request_id) {
+                return Err(crate::error::ProtocolError::DecodeError(format!(
+                    "request_id {request_id:?} is already in flight on this stream"
+                ))
+                .into());
+            }
+            pending.insert(request_id.clone(), response_tx);
+        }
 
         if tx.send(request).await.is_err() {
             // The stream is gone; clean up our pending entry.

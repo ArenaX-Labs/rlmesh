@@ -140,6 +140,18 @@ async fn close_model(
         .map_err(Error::Timeout)?
 }
 
+/// Sends `IdleActivity::Finished` on drop, pairing the `Started` emitted by
+/// the read loop even when the per-request task unwinds.
+struct ActivityFinishedGuard(Option<mpsc::UnboundedSender<IdleActivity>>);
+
+impl Drop for ActivityFinishedGuard {
+    fn drop(&mut self) {
+        if let Some(activity_tx) = &self.0 {
+            let _ = activity_tx.send(IdleActivity::Finished);
+        }
+    }
+}
+
 struct ServedModelServer<H> {
     handler: Arc<Mutex<H>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
@@ -350,15 +362,19 @@ where
                 if let Some(activity_tx) = &activity_tx {
                     let _ = activity_tx.send(IdleActivity::Started);
                 }
+                // RAII pairing: the matching Finished must fire even if the
+                // spawned request task panics, or the idle-shutdown in-flight
+                // count stays elevated forever and idle shutdown never fires.
+                let activity_guard = ActivityFinishedGuard(activity_tx.clone());
 
                 let handler = Arc::clone(&handler);
                 let active_episodes = Arc::clone(&active_episodes);
                 let route_configs = Arc::clone(&route_configs);
-                let activity_tx = activity_tx.clone();
                 let tx = tx.clone();
 
                 tokio::spawn(async move {
                     let _permit = permit;
+                    let _activity_guard = activity_guard;
                     // Wait for predecessors so the handler critical section runs in
                     // per-route arrival order (or, for Close, after every route).
                     gate.wait().await;
@@ -372,9 +388,6 @@ where
                     // unbounded response channel draining.
                     let _ = done_tx.send(());
 
-                    if let Some(activity_tx) = &activity_tx {
-                        let _ = activity_tx.send(IdleActivity::Finished);
-                    }
                     if tx.send(Ok(response)).await.is_err() {
                         tracing::warn!(
                             "model join response receiver closed before response could be delivered"
