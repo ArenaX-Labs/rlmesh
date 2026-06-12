@@ -155,6 +155,60 @@ async fn driver_threads_deterministic_reset_seeds() {
     assert_ne!(first_seeds[0], first_seeds[1]);
 }
 
+#[tokio::test]
+async fn observation_emitted_always_carries_transformed_payload() {
+    // Two-step episode so there is at least one non-terminal step observation
+    // that is transformed and sent to the model (previously the raw,
+    // pre-transform bytes leaked to observation_emitted here).
+    let env = TestEnv {
+        terminal_after: 2,
+        ..Default::default()
+    };
+    let model = TestModel::default();
+    const MARKER: u8 = 0xAB;
+    let hooks = Arc::new(RecordingHooks {
+        observation_marker: Some(MARKER),
+        ..Default::default()
+    });
+
+    RuntimeDriver::new(one_episode_spec(), env, model.clone(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    let emitted = hooks
+        .emitted_observations
+        .lock()
+        .expect("emitted observation recorder lock poisoned")
+        .clone();
+
+    // Model saw: initial reset observation + the step observation for the
+    // non-terminal step. (The terminal step's observation is never sent.)
+    assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
+    // Every emitted observation must be the transformed payload the model
+    // actually received, i.e. carry the marker byte.
+    for (_, bytes) in &emitted {
+        assert_eq!(
+            bytes.first().copied(),
+            Some(MARKER),
+            "observation_emitted exposed pre-transform bytes: {bytes:?}"
+        );
+    }
+    // The model received exactly these transformed observations.
+    let seen = model
+        .seen_observations
+        .lock()
+        .expect("model observation recorder lock poisoned")
+        .clone();
+    assert_eq!(
+        seen,
+        emitted
+            .iter()
+            .map(|(_, bytes)| bytes.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
 #[derive(Clone)]
 struct TestEnv {
     closed: Arc<AtomicBool>,
@@ -229,6 +283,7 @@ struct TestModel {
     closed: Arc<AtomicBool>,
     predicts: Arc<AtomicUsize>,
     predict_delay: Option<Duration>,
+    seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
 }
 
 #[async_trait]
@@ -241,6 +296,16 @@ impl RuntimeModel for TestModel {
             tokio::time::sleep(delay).await;
         }
         self.predicts.fetch_add(1, Ordering::SeqCst);
+        let observation_bytes = request
+            .observation
+            .as_ref()
+            .and_then(|value| value.bytes.as_ref())
+            .map(|message| message.data.clone())
+            .unwrap_or_default();
+        self.seen_observations
+            .lock()
+            .expect("model observation recorder lock poisoned")
+            .push(observation_bytes);
         Ok(RuntimeModelPrediction {
             response: PredictResponse {
                 context: request.context,
@@ -266,6 +331,11 @@ struct RecordingHooks {
     ended: AtomicUsize,
     failed: AtomicUsize,
     fail_action_transform: bool,
+    // When set, transform_observation prepends this marker byte to every
+    // observation it forwards to the model.
+    observation_marker: Option<u8>,
+    // Records (is_reset, observation_bytes) for every observation_emitted hook.
+    emitted_observations: Mutex<Vec<(bool, Vec<u8>)>>,
 }
 
 #[async_trait]
@@ -283,6 +353,34 @@ impl RuntimeHooks for RecordingHooks {
             return Err(HookError::Message("transform failed".to_string()));
         }
         Ok(event.action)
+    }
+
+    async fn transform_observation(
+        &self,
+        event: rlmesh_runtime::ObservationEmittedEvent,
+    ) -> Result<Option<MessageBytes>, HookError> {
+        let Some(marker) = self.observation_marker else {
+            return Ok(event.observation);
+        };
+        Ok(event.observation.map(|mut value| {
+            value.data.insert(0, marker);
+            value
+        }))
+    }
+
+    async fn observation_emitted(
+        &self,
+        event: rlmesh_runtime::ObservationEmittedEvent,
+    ) -> Result<(), HookError> {
+        let bytes = event
+            .observation
+            .map(|value| value.data)
+            .unwrap_or_default();
+        self.emitted_observations
+            .lock()
+            .expect("emitted observation recorder lock poisoned")
+            .push((event.is_reset, bytes));
+        Ok(())
     }
 
     async fn session_ended(

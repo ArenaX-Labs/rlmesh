@@ -407,20 +407,15 @@ where
                 self.invoke_telemetry_window(event).await;
             }
 
-            let observation_snapshot = if step_ok.response.episode_ids.is_empty() {
-                state.snapshot()
-            } else {
+            if !step_ok.response.episode_ids.is_empty() {
                 let started_episodes = state.observe_episode_ids(step_ok.response.episode_ids);
                 self.invoke_started_episodes(state, started_episodes).await;
-                state.snapshot()
-            };
-            self.invoke_observation_emitted(self.observation_event(
-                state,
-                observation_snapshot,
-                false,
-                step_observation.clone(),
-            ))
-            .await;
+            }
+            // The observation_emitted hook fires once per observation actually
+            // sent to the model, post-transform, below (or at the initial
+            // reset). Emitting the raw step observation here would expose
+            // pre-transform bytes and, when the episode completes, an
+            // observation the model never sees.
 
             self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
                 .await;
@@ -509,10 +504,11 @@ where
                 .await?;
             outgoing_observation_event.observation = transformed_observation.clone();
             obs_msg.observation = transformed_observation.map(bytes_value);
-            if is_reset_msg {
-                self.invoke_observation_emitted(outgoing_observation_event)
-                    .await;
-            }
+            // Emit the transformed observation actually sent to the model, for
+            // both step and reset observations, so hooks always see the same
+            // payload model.predict receives.
+            self.invoke_observation_emitted(outgoing_observation_event)
+                .await;
 
             pending_observation_msg = obs_msg;
         }
