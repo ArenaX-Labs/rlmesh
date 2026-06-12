@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 
 def test_remote_handle_protocols_share_a_common_base() -> None:
     """The two remote-handle protocols are deduplicated via a shared base.
@@ -13,8 +15,10 @@ def test_remote_handle_protocols_share_a_common_base() -> None:
         _RemoteHandleBase,
     )
 
-    assert _RemoteHandleBase in RemoteEnvHandle.__mro__
-    assert _RemoteHandleBase in RemoteVectorEnvHandle.__mro__
+    env_handle_mro: tuple[type, ...] = cast(Any, RemoteEnvHandle).__mro__
+    vector_handle_mro: tuple[type, ...] = cast(Any, RemoteVectorEnvHandle).__mro__
+    assert _RemoteHandleBase in env_handle_mro
+    assert _RemoteHandleBase in vector_handle_mro
 
     shared = (
         "env_contract",

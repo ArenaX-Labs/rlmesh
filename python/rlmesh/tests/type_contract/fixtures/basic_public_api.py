@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import assert_type, cast
+from typing import cast
 
 import rlmesh
 from rlmesh import types
+from typing_extensions import assert_type
 
 options = rlmesh.ServeOptions(allow_remote_shutdown=True, idle_timeout_seconds=1.0)
 assert_type(options.allow_remote_shutdown, bool)

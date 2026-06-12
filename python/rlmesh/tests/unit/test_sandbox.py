@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -203,7 +203,8 @@ def test_sandbox_rejects_bare_str_packages_imports(
     )
 
     with pytest.raises(TypeError, match=rf"{field}= expects a sequence of strings"):
-        SandboxUnderTest("CartPole-v1", **{field: "ale-py"})
+        kwargs: dict[str, Any] = {field: "ale-py"}
+        SandboxUnderTest("CartPole-v1", **kwargs)
 
 
 @pytest.mark.parametrize("field", ["packages", "imports"])
@@ -237,7 +238,8 @@ def test_sandbox_accepts_string_sequence_packages_imports(
         lambda *, container_id: stopped.append(container_id),
     )
 
-    with SandboxUnderTest("CartPole-v1", **{field: ["ale-py"]}):
+    kwargs: dict[str, Any] = {field: ["ale-py"]}
+    with SandboxUnderTest("CartPole-v1", **kwargs):
         pass
 
     assert captured[field] == ["ale-py"]

@@ -10,7 +10,7 @@ def _make_numpy_vector_env(*, action_kind: str, num_envs: int) -> Any:
     from rlmesh.client.remote_vector_env import RemoteVectorEnvBase
     from rlmesh.numpy import RemoteVectorEnv
 
-    env = RemoteVectorEnv.__new__(RemoteVectorEnv)
+    env: Any = RemoteVectorEnv.__new__(RemoteVectorEnv)
     action_space = SimpleNamespace(kind=action_kind)
     env._env_contract = SimpleNamespace(action_space=action_space)
     env._client = SimpleNamespace(num_envs=lambda: num_envs)

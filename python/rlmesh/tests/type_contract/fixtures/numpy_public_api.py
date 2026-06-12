@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, assert_type, cast
+from typing import Any, cast
 
 import numpy as np
 from rlmesh import Tensor, spaces
 from rlmesh import numpy as rlmesh_numpy
 from rlmesh.types import PrimitiveValue
+from typing_extensions import assert_type
 
 array = np.zeros((2, 3), dtype=np.float32)
 value: rlmesh_numpy.NumpyValue = {"observation": array}

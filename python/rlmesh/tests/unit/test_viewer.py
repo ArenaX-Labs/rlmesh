@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from typing import Any, cast
 
 import pytest
 
@@ -29,7 +30,7 @@ def test_push_viewer_packet_does_not_hang_on_stalled_viewer() -> None:
     process = _FakeProcess(write_fd)
 
     mixin = ViewerMixin()
-    mixin._viewer = ViewerProcess(process, env_index=0, fps_limit=None)
+    mixin._viewer = ViewerProcess(cast(Any, process), env_index=0, fps_limit=None)
 
     # A large packet that cannot fit in the (undrained) OS pipe buffer.
     big_packet = b"\x00" * (4 * 1024 * 1024)
@@ -59,7 +60,7 @@ def test_push_viewer_packet_writes_complete_frame_when_drained() -> None:
     process = _FakeProcess(write_fd)
 
     mixin = ViewerMixin()
-    mixin._viewer = ViewerProcess(process, env_index=0, fps_limit=None)
+    mixin._viewer = ViewerProcess(cast(Any, process), env_index=0, fps_limit=None)
 
     payload = b"frame-bytes"
     mixin._push_viewer_packet(payload)

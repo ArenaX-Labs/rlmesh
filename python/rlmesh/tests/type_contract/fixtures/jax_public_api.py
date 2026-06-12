@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import assert_type, cast
+from typing import cast
 
 import jax
 import jax.numpy as jnp
 from rlmesh import Tensor, spaces
 from rlmesh import jax as rlmesh_jax
 from rlmesh.types import PrimitiveValue
+from typing_extensions import assert_type
 
 tensor = Tensor(bytes(range(16)), [4], "int32")
 view = rlmesh_jax.asarray(tensor)

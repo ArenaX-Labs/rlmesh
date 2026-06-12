@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import assert_type, cast
+from typing import cast
 
 import torch
 from rlmesh import Tensor, spaces
 from rlmesh import torch as rlmesh_torch
+from typing_extensions import assert_type
 
 tensor = Tensor(bytes(range(16)), [4], "int32")
 view = rlmesh_torch.as_tensor(tensor)

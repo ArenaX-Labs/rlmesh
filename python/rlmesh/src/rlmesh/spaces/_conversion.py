@@ -169,8 +169,9 @@ def _rlmesh_text_charset_from_gymnasium(space: Any) -> str | None:
 def _box_from_gymnasium(space: Any) -> Box:
     import numpy as np
 
-    low = np.asarray(space.low)
-    high = np.asarray(space.high)
+    # Annotated Any: numpy's stubs degrade under the 3.10 typecheck floor.
+    low: Any = np.asarray(space.low)
+    high: Any = np.asarray(space.high)
     if (
         low.size > 0
         and high.size > 0
@@ -196,6 +197,8 @@ def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
     shape = tuple(spec.shape)
     dtype = np.dtype(spec.dtype)
     bounds_kind = details.get("bounds_kind")
+    low: Any
+    high: Any
     if bounds_kind == "unbounded":
         low = np.full(shape, -np.inf, dtype=dtype)
         high = np.full(shape, np.inf, dtype=dtype)
@@ -203,8 +206,10 @@ def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
         low = np.full(shape, details["low"], dtype=dtype)
         high = np.full(shape, details["high"], dtype=dtype)
     else:
-        low = np.asarray(details["low"], dtype=dtype).reshape(shape)
-        high = np.asarray(details["high"], dtype=dtype).reshape(shape)
+        low_flat: Any = np.asarray(details["low"], dtype=dtype)
+        high_flat: Any = np.asarray(details["high"], dtype=dtype)
+        low = low_flat.reshape(shape)
+        high = high_flat.reshape(shape)
     return gym_spaces.Box(low=low, high=high, shape=shape, dtype=dtype)
 
 
