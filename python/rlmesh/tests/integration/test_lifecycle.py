@@ -413,6 +413,54 @@ def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
     assert env.close_calls == 1
 
 
+def test_background_server_survives_unrelated_sigint() -> None:
+    """Review finding #33: start() must not install a process-wide SIGINT handler.
+
+    A Ctrl+C aimed at an unrelated computation in a notebook/REPL used to trip the
+    tokio signal task and silently tear down a backgrounded server. After the fix
+    only the blocking serve() path owns signal disposition, so a SIGINT delivered
+    while the server runs in the background must leave it serving.
+    """
+    import os
+    import signal as signal_module
+
+    import rlmesh
+
+    if not hasattr(signal_module, "SIGINT"):
+        pytest.skip("SIGINT not available on this platform")
+
+    env = TinyEnv()
+    server = env_server(env)
+
+    previous_handler = signal_module.getsignal(signal_module.SIGINT)
+    # Swallow SIGINT in the test process so the raised KeyboardInterrupt (chained
+    # from Python's own handler) does not abort the test runner.
+    signal_module.signal(signal_module.SIGINT, lambda *_: None)
+    try:
+        server.start()
+        try:
+            remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+            remote.close()
+
+            os.kill(os.getpid(), signal_module.SIGINT)
+            time.sleep(0.5)
+
+            # Server should still be serving: a fresh client connects and steps.
+            survivor = connect_with_retry(rlmesh.RemoteEnv, server.address)
+            try:
+                observation, _ = survivor.reset(seed=7)
+                assert observation == 0
+            finally:
+                survivor.close()
+            assert server.wait(0.01) is False
+        finally:
+            server.shutdown()
+    finally:
+        signal_module.signal(signal_module.SIGINT, previous_handler)
+
+    assert env.close_calls == 1
+
+
 def test_env_server_wait_after_shutdown_returns_true() -> None:
     env = TinyEnv()
     server = env_server(env)

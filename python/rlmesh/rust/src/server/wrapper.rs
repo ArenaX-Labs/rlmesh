@@ -205,7 +205,10 @@ impl PyEnvServer {
         let address = self.address.clone();
         let shutdown = self.shutdown.clone();
 
-        let result = py.detach(move || run_server(resources, address, shutdown));
+        // Only the blocking foreground path owns the process's signal disposition;
+        // installing a SIGINT/SIGTERM handler from a background start() would let an
+        // unrelated Ctrl+C silently tear down the server (see review finding #33).
+        let result = py.detach(move || run_server(resources, address, shutdown, true));
 
         let mut state = self.state.lock().expect("server state mutex poisoned");
         *state = ServerState::Stopped;
@@ -215,14 +218,14 @@ impl PyEnvServer {
     }
 
     /// Start serving on a background thread.
-    fn start(&self) -> PyResult<()> {
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
         let resources = take_resources(&self.state, "start", ServerState::StartingBackground)?;
         let address = self.address.clone();
         let shutdown = self.shutdown.clone();
 
         let handle = std::thread::Builder::new()
             .name("rlmesh-env-server".to_string())
-            .spawn(move || run_server(resources, address, shutdown))
+            .spawn(move || run_server(resources, address, shutdown, false))
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                     "failed to spawn server thread: {}",
@@ -246,7 +249,10 @@ impl PyEnvServer {
         };
 
         if let Some(handle) = action {
-            join_background_server(handle)?;
+            // Release the GIL while joining: the server thread's shutdown path runs
+            // env.close() under Python::attach and would deadlock against a held GIL
+            // (see review finding #34).
+            py.detach(|| join_background_server(handle))?;
         }
 
         Ok(())
@@ -450,6 +456,7 @@ fn run_server(
     resources: ServerResources,
     address: String,
     shutdown: ShutdownTrigger,
+    install_signal_handlers: bool,
 ) -> ServeResult {
     let ServerResources {
         env,
@@ -460,7 +467,9 @@ fn run_server(
 
     runtime.block_on(async move {
         tracing::info!("EnvService serving on {}", address);
-        spawn_signal_shutdown(shutdown.clone());
+        if install_signal_handlers {
+            spawn_signal_shutdown(shutdown.clone());
+        }
 
         match env {
             PyServerEnv::Single(env) => {
