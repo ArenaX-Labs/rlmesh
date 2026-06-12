@@ -108,52 +108,51 @@ fn build_box_bounds<'py>(
     let rank = shape.len();
     let n = numel(shape);
 
-    if let (Ok(lo_vec), Ok(hi_vec)) = (extract_1d_f64(low), extract_1d_f64(high)) {
-        if lo_vec.len() == rank && hi_vec.len() == rank {
-            return Ok(BoxSpec {
-                bounds: Some(BoxBounds::Axiswise(AxiswiseBounds {
-                    low: lo_vec,
-                    high: hi_vec,
-                })),
-            });
-        }
+    // Flatten low/high in row-major order so per-element bounds survive for
+    // Boxes of any rank, rather than collapsing rank>=2 arrays to a global
+    // min/max (which would silently accept out-of-bounds values).
+    let lo_vec = flatten_f64(low)?;
+    let hi_vec = flatten_f64(high)?;
 
-        if lo_vec.len() == n && hi_vec.len() == n {
-            if lo_vec
-                .iter()
-                .all(|x| x.is_infinite() && x.is_sign_negative())
-                && hi_vec
-                    .iter()
-                    .all(|x| x.is_infinite() && x.is_sign_positive())
-            {
-                return Ok(BoxSpec {
-                    bounds: Some(BoxBounds::Unbounded(true)),
-                });
-            }
-
-            return Ok(BoxSpec {
-                bounds: Some(BoxBounds::Elementwise(rlmesh_spaces::ElementwiseBounds {
-                    low: lo_vec,
-                    high: hi_vec,
-                })),
-            });
-        }
-    }
-
-    let lo_min = deep_min_f64(low)?;
-    let hi_max = deep_max_f64(high)?;
-    if is_unbounded_scalar(lo_min, hi_max) {
-        Ok(BoxSpec {
-            bounds: Some(BoxBounds::Unbounded(true)),
-        })
-    } else {
-        Ok(BoxSpec {
-            bounds: Some(BoxBounds::Uniform(UniformBounds {
-                low: lo_min,
-                high: hi_max,
+    if lo_vec.len() == rank && hi_vec.len() == rank && rank != n {
+        return Ok(BoxSpec {
+            bounds: Some(BoxBounds::Axiswise(AxiswiseBounds {
+                low: lo_vec,
+                high: hi_vec,
             })),
-        })
+        });
     }
+
+    if lo_vec.len() == n && hi_vec.len() == n {
+        if lo_vec
+            .iter()
+            .all(|x| x.is_infinite() && x.is_sign_negative())
+            && hi_vec
+                .iter()
+                .all(|x| x.is_infinite() && x.is_sign_positive())
+        {
+            return Ok(BoxSpec {
+                bounds: Some(BoxBounds::Unbounded(true)),
+            });
+        }
+
+        return Ok(BoxSpec {
+            bounds: Some(BoxBounds::Elementwise(rlmesh_spaces::ElementwiseBounds {
+                low: lo_vec,
+                high: hi_vec,
+            })),
+        });
+    }
+
+    // Per-element bounds whose element count matches neither the rank nor the
+    // numel cannot be represented without silently degrading them. Error out
+    // rather than collapse to a lossy uniform range.
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "Box low/high have {} and {} elements, which match neither the rank ({rank}) \
+         nor the element count ({n}) of shape {shape:?}",
+        lo_vec.len(),
+        hi_vec.len(),
+    )))
 }
 
 fn is_unbounded_scalar(lo: f64, hi: f64) -> bool {
@@ -162,12 +161,46 @@ fn is_unbounded_scalar(lo: f64, hi: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::make_box;
+    use super::{make_box, parse_box};
     use crate::spaces::utils::import_gym;
     use pyo3::Python;
-    use pyo3::types::PyAnyMethods;
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
     use rlmesh_spaces::{BoxBounds, BoxSpec, DType};
+
+    fn gym_box<'py>(
+        py: pyo3::Python<'py>,
+        expr: &std::ffi::CStr,
+    ) -> pyo3::Bound<'py, pyo3::types::PyAny> {
+        let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();
+        let np = py.import("numpy").unwrap();
+        let globals = PyDict::new(py);
+        globals.set_item("spaces", spaces).unwrap();
+        globals.set_item("np", np).unwrap();
+        py.eval(expr, Some(&globals), None).unwrap()
+    }
+
+    #[test]
+    fn parse_box_preserves_rank2_elementwise_bounds() {
+        Python::attach(|py| {
+            let space = gym_box(
+                py,
+                pyo3::ffi::c_str!(
+                    "spaces.Box(low=np.array([[0.,0.],[5.,5.]]), high=np.array([[1.,1.],[10.,10.]]))"
+                ),
+            );
+
+            let parsed = parse_box(&space).unwrap();
+            let Some(SpaceKind::Box(spec)) = parsed.spec else {
+                panic!("expected Box space");
+            };
+            let Some(BoxBounds::Elementwise(bounds)) = spec.bounds else {
+                panic!("expected per-element bounds, got {:?}", spec.bounds);
+            };
+            assert_eq!(bounds.low, vec![0.0, 0.0, 5.0, 5.0]);
+            assert_eq!(bounds.high, vec![1.0, 1.0, 10.0, 10.0]);
+        });
+    }
 
     #[test]
     fn make_box_keeps_unbounded_float32_bounds_at_float32() {
