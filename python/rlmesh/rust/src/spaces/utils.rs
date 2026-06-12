@@ -7,24 +7,9 @@ use rlmesh_spaces::v1::DType;
 /// Unlike [`extract_dtype`], there is no `Unspecified` fallback: tensors
 /// must carry a concrete dtype.
 pub fn parse_dtype_strict(dtype: &str) -> PyResult<DType> {
-    match dtype {
-        "bool" => Ok(DType::Bool),
-        "uint8" => Ok(DType::Uint8),
-        "int8" => Ok(DType::Int8),
-        "int16" => Ok(DType::Int16),
-        "int32" => Ok(DType::Int32),
-        "int64" => Ok(DType::Int64),
-        "uint16" => Ok(DType::Uint16),
-        "uint32" => Ok(DType::Uint32),
-        "uint64" => Ok(DType::Uint64),
-        "float16" => Ok(DType::Float16),
-        "bfloat16" => Ok(DType::Bfloat16),
-        "float32" => Ok(DType::Float32),
-        "float64" => Ok(DType::Float64),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported tensor dtype {other:?}"
-        ))),
-    }
+    DType::from_name(dtype).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unsupported tensor dtype {dtype:?}"))
+    })
 }
 
 pub fn extract_shape<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<usize>> {
@@ -41,23 +26,7 @@ pub fn extract_dtype<'py>(obj: &Bound<'py, PyAny>) -> PyResult<DType> {
         obj.str()?.to_string()
     };
     let norm = name.to_lowercase();
-
-    Ok(match norm.as_str() {
-        "bool" => DType::Bool,
-        "uint8" => DType::Uint8,
-        "int32" => DType::Int32,
-        "int64" => DType::Int64,
-        "float16" => DType::Float16,
-        "float32" => DType::Float32,
-        "float64" => DType::Float64,
-        "int8" => DType::Int8,
-        "int16" => DType::Int16,
-        "uint16" => DType::Uint16,
-        "uint32" => DType::Uint32,
-        "uint64" => DType::Uint64,
-        "bfloat16" => DType::Bfloat16,
-        _ => DType::Unspecified,
-    })
+    Ok(DType::from_name(&norm).unwrap_or(DType::Unspecified))
 }
 
 pub fn dtype_to_py<'py, T>(py: Python<'py>, dt: T) -> PyResult<Bound<'py, PyAny>>
@@ -74,20 +43,9 @@ where
     T: Into<i32>,
 {
     match DType::try_from(dt.into()).unwrap_or(DType::Unspecified) {
-        DType::Bool => "bool",
-        DType::Uint8 => "uint8",
-        DType::Int32 => "int32",
-        DType::Int64 => "int64",
-        DType::Float16 => "float16",
-        DType::Float32 => "float32",
-        DType::Float64 => "float64",
-        DType::Int8 => "int8",
-        DType::Int16 => "int16",
-        DType::Uint16 => "uint16",
-        DType::Uint32 => "uint32",
-        DType::Uint64 => "uint64",
-        DType::Bfloat16 => "bfloat16",
+        // Legacy display fallback: unspecified specs surface as float32.
         DType::Unspecified => "float32",
+        dtype => dtype.name(),
     }
 }
 

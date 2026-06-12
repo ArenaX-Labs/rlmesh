@@ -15,6 +15,8 @@ from ._rlmesh import Tensor
 from ._values import decode_tree, encode_tree
 from .types import Value
 
+# Mirrors rlmesh_spaces DType::ALL (minus Unspecified); the Rust core is the
+# source of truth for dtype names.
 SUPPORTED_DTYPES: Final[tuple[str, ...]] = (
     "bool",
     "uint8",

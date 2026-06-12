@@ -482,24 +482,10 @@ fn parse_dtype(value: Option<&str>, default: DType) -> PyResult<DType> {
     let Some(value) = value else {
         return Ok(default);
     };
-    match value.to_ascii_lowercase().as_str() {
-        "bool" => Ok(DType::Bool),
-        "uint8" => Ok(DType::Uint8),
-        "int32" => Ok(DType::Int32),
-        "int64" => Ok(DType::Int64),
-        "float16" => Ok(DType::Float16),
-        "float32" => Ok(DType::Float32),
-        "float64" => Ok(DType::Float64),
-        "int8" => Ok(DType::Int8),
-        "int16" => Ok(DType::Int16),
-        "uint16" => Ok(DType::Uint16),
-        "uint32" => Ok(DType::Uint32),
-        "uint64" => Ok(DType::Uint64),
-        "bfloat16" => Ok(DType::Bfloat16),
-        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "unsupported dtype {other:?}"
-        ))),
-    }
+    let norm = value.to_ascii_lowercase();
+    DType::from_name(&norm).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unsupported dtype {norm:?}"))
+    })
 }
 
 fn required_space_spec_to_py<'py>(

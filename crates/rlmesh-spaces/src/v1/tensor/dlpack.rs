@@ -74,22 +74,6 @@ mod tests {
     use super::*;
     use crate::v1::dtype::dtype_size;
 
-    const SUPPORTED: [DType; 13] = [
-        DType::Bool,
-        DType::Uint8,
-        DType::Uint16,
-        DType::Uint32,
-        DType::Uint64,
-        DType::Int8,
-        DType::Int16,
-        DType::Int32,
-        DType::Int64,
-        DType::Float16,
-        DType::Float32,
-        DType::Float64,
-        DType::Bfloat16,
-    ];
-
     #[test]
     fn test_dlpack_type_table() {
         let expected = [
@@ -116,7 +100,7 @@ mod tests {
 
     #[test]
     fn test_dlpack_type_bits_match_dtype_size() {
-        for dtype in SUPPORTED {
+        for dtype in DType::ALL.into_iter().filter(|&d| d != DType::Unspecified) {
             let ty = dlpack_type(dtype).expect("supported dtype");
             assert_eq!(ty.bits as usize, dtype_size(dtype) * 8, "{dtype:?}");
         }
@@ -124,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_dlpack_type_roundtrip() {
-        for dtype in SUPPORTED {
+        for dtype in DType::ALL.into_iter().filter(|&d| d != DType::Unspecified) {
             let ty = dlpack_type(dtype).expect("supported dtype");
             assert_eq!(dtype_from_dlpack(ty), Some(dtype));
         }
