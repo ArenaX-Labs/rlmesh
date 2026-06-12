@@ -84,19 +84,30 @@ Pass options to `EnvServer(..., options=options)` or model-serving APIs that acc
 Native tensor value used at the dependency-free RLMesh value boundary.
 ```
 
-`Tensor` stores a contiguous buffer plus shape and dtype metadata. The NumPy and Torch adapters
-convert tensor leaves to backend arrays or tensors.
+`Tensor` is a validated transport container — immutable element bytes plus shape, dtype, and stride
+metadata — with DLPack and buffer-protocol edges. It is not an ndarray: compute, slicing, and
+broadcasting belong to the frameworks. The NumPy, Torch, and JAX backends convert tensor leaves to
+backend arrays or tensors.
 
-| Attribute or method | Type         | Meaning                                      |
-| ------------------- | ------------ | -------------------------------------------- |
-| `shape`             | `list[int]`  | Tensor dimensions.                           |
-| `dtype`             | `str`        | Element dtype.                               |
-| `ndim`              | `int`        | Number of dimensions.                        |
-| `size`              | `int`        | Number of elements.                          |
-| `nbytes`            | `int`        | Buffer size in bytes.                        |
-| `strides`           | `list[int]`  | Native row-major strides.                    |
-| `buffer`            | `memoryview` | Read-only memory view over the tensor bytes. |
-| `tobytes()`         | `bytes`      | Copy the tensor buffer into Python bytes.    |
+| Attribute or method   | Type         | Meaning                                                       |
+| --------------------- | ------------ | ------------------------------------------------------------- |
+| `shape`               | `list[int]`  | Tensor dimensions.                                            |
+| `dtype`               | `str`        | Element dtype name (for example `"float32"`, `"bfloat16"`).   |
+| `ndim`                | `int`        | Number of dimensions.                                         |
+| `size`                | `int`        | Number of elements.                                           |
+| `nbytes`              | `int`        | Element data size in bytes.                                   |
+| `strides`             | `list[int]`  | Byte strides per dimension, C order.                          |
+| `device`              | `str`        | Device holding the data; always `"cpu"`.                      |
+| `is_contiguous()`     | `bool`       | Whether elements are laid out C-contiguously.                 |
+| `reshape(shape)`      | `Tensor`     | Same elements, new shape; zero-copy view when contiguous.     |
+| `copy()`              | `Tensor`     | Deep copy backed by fresh storage.                            |
+| `buffer`              | `memoryview` | Read-only N-D typed memory view over the elements.            |
+| `tobytes()`           | `bytes`      | Copy the element bytes (C order) into Python bytes.           |
+| `__dlpack__(...)`     | capsule      | DLPack export; negotiates legacy or v1.0 capsules.            |
+| `__dlpack_device__()` | `(int, int)` | DLPack device tuple, `(kDLCPU, 0)`.                           |
+| `from_dlpack(obj)`    | `Tensor`     | Static method; imports (and copies) from any DLPack producer. |
 
-Use `rlmesh.numpy.asarray(tensor)` to view an RLMesh tensor as a NumPy array and
-`rlmesh.torch.as_tensor(tensor)` to view or copy it as a Torch tensor.
+Use `rlmesh.numpy.asarray(tensor)` to view an RLMesh tensor as a NumPy array,
+`rlmesh.torch.as_tensor(tensor)` to view or copy it as a Torch tensor, and
+`rlmesh.jax.asarray(tensor)` to import it as a JAX array. `bfloat16` tensors are not representable
+through the buffer protocol; use DLPack or `tobytes()` for those.

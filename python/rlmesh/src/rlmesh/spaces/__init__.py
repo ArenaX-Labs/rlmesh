@@ -1,9 +1,9 @@
-"""Named RLMesh-native spaces and optional Gymnasium adapters."""
+"""Named RLMesh-native spaces and optional Gymnasium conversions."""
 
 from __future__ import annotations
 
 from ..specs import SpaceSpec
-from ._base import Space, SpaceAdapter
+from ._base import Space, SpaceBridge
 from ._conversion import from_gymnasium_space, to_gymnasium_space
 from ._registry import space_from_spec
 from .box import Box
@@ -21,7 +21,7 @@ __all__ = [
     "MultiBinary",
     "MultiDiscrete",
     "Space",
-    "SpaceAdapter",
+    "SpaceBridge",
     "SpaceSpec",
     "Text",
     "Tuple",

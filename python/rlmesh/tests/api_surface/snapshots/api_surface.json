@@ -254,9 +254,25 @@
             "kind": "property",
             "signature": "property buffer: memoryview"
           },
+          "copy": {
+            "kind": "function",
+            "signature": "copy() -> Tensor"
+          },
+          "device": {
+            "kind": "property",
+            "signature": "property device: str"
+          },
           "dtype": {
             "kind": "property",
             "signature": "property dtype: str"
+          },
+          "from_dlpack": {
+            "kind": "function",
+            "signature": "from_dlpack(obj: object) -> Tensor"
+          },
+          "is_contiguous": {
+            "kind": "function",
+            "signature": "is_contiguous() -> bool"
           },
           "nbytes": {
             "kind": "property",
@@ -265,6 +281,10 @@
           "ndim": {
             "kind": "property",
             "signature": "property ndim: int"
+          },
+          "reshape": {
+            "kind": "function",
+            "signature": "reshape(shape: Sequence[int]) -> Tensor"
           },
           "shape": {
             "kind": "property",
@@ -478,6 +498,396 @@
         "kind": "function",
         "signature": "normalize_connect_address(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None) -> str",
         "stability": "Stable"
+      }
+    }
+  },
+  "rlmesh.jax": {
+    "exports": [
+      "JaxValue",
+      "Model",
+      "RemoteEnv",
+      "RemoteVectorEnv",
+      "SandboxEnv",
+      "SandboxInfo",
+      "SandboxVectorEnv",
+      "asarray",
+      "from_array",
+      "space_from_spec"
+    ],
+    "objects": {
+      "JaxValue": {
+        "kind": "type alias",
+        "signature": "JaxValue = PrimitiveValue | JaxArray | list['JaxValue'] | tuple['JaxValue', ...] | dict[str, 'JaxValue']",
+        "stability": "Experimental"
+      },
+      "Model": {
+        "kind": "class",
+        "members": {
+          "run": {
+            "kind": "function",
+            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+          },
+          "run_local": {
+            "kind": "function",
+            "signature": "run_local(env_address: str, *, token: str = '') -> None"
+          },
+          "run_local_for_episodes": {
+            "kind": "function",
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          }
+        },
+        "signature": "Model(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None) -> None",
+        "stability": "Experimental"
+      },
+      "RemoteEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
+          }
+        },
+        "signature": "RemoteEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None) -> None",
+        "stability": "Experimental"
+      },
+      "RemoteVectorEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
+          },
+          "single_action_space": {
+            "kind": "property",
+            "signature": "property single_action_space: Space[ActionT]"
+          },
+          "single_observation_space": {
+            "kind": "property",
+            "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
+          }
+        },
+        "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None) -> None",
+        "stability": "Experimental"
+      },
+      "SandboxEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "sandbox": {
+            "kind": "attribute",
+            "signature": "sandbox: SandboxInfo"
+          },
+          "source": {
+            "kind": "property",
+            "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
+          }
+        },
+        "signature": "SandboxEnv(source: str, *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
+        "stability": "Experimental"
+      },
+      "SandboxInfo": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "attribute",
+            "signature": "address: str"
+          },
+          "container_id": {
+            "kind": "attribute",
+            "signature": "container_id: str"
+          },
+          "requested_source": {
+            "kind": "attribute",
+            "signature": "requested_source: str"
+          },
+          "resolved_source": {
+            "kind": "attribute",
+            "signature": "resolved_source: str"
+          }
+        },
+        "signature": "SandboxInfo(requested_source: str, resolved_source: str, address: str, container_id: str)",
+        "stability": "Experimental"
+      },
+      "SandboxVectorEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "sandbox": {
+            "kind": "attribute",
+            "signature": "sandbox: SandboxInfo"
+          },
+          "single_action_space": {
+            "kind": "property",
+            "signature": "property single_action_space: Space[ActionT]"
+          },
+          "single_observation_space": {
+            "kind": "property",
+            "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "source": {
+            "kind": "property",
+            "signature": "property source: str"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
+          }
+        },
+        "signature": "SandboxVectorEnv(source: str, num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
+        "stability": "Experimental"
+      },
+      "asarray": {
+        "kind": "function",
+        "signature": "asarray(tensor: Tensor) -> JaxArray",
+        "stability": "Experimental"
+      },
+      "from_array": {
+        "kind": "function",
+        "signature": "from_array(array: object) -> Tensor | PrimitiveValue",
+        "stability": "Experimental"
+      },
+      "space_from_spec": {
+        "kind": "function",
+        "signature": "space_from_spec(spec: SpaceSpec) -> Space[JaxValue]",
+        "stability": "Experimental"
       }
     }
   },
@@ -1306,7 +1716,7 @@
       "MultiBinary",
       "MultiDiscrete",
       "Space",
-      "SpaceAdapter",
+      "SpaceBridge",
       "SpaceSpec",
       "Text",
       "Tuple",
@@ -1585,7 +1995,7 @@
         "signature": "Space(spec: SpaceSpec)",
         "stability": "Stable"
       },
-      "SpaceAdapter": {
+      "SpaceBridge": {
         "kind": "class",
         "members": {
           "input": {
@@ -1597,7 +2007,7 @@
             "signature": "sample(value: object, spec: SpaceSpec) -> OutputT"
           }
         },
-        "signature": "SpaceAdapter(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
+        "signature": "SpaceBridge(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
         "stability": "Stable"
       },
       "SpaceSpec": {
@@ -1727,7 +2137,7 @@
       },
       "space_from_spec": {
         "kind": "function",
-        "signature": "space_from_spec(spec: SpaceSpec, *, adapter: SpaceAdapter[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
+        "signature": "space_from_spec(spec: SpaceSpec, *, bridge: SpaceBridge[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
         "stability": "Stable"
       },
       "to_gymnasium_space": {

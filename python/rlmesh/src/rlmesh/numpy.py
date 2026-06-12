@@ -5,16 +5,17 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter, decode_tree, encode_tree
+from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .spaces import Space, SpaceAdapter
+from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_adapter_from_value_adapter
+from .spaces._sample import space_bridge_from_value_bridge
 from .specs import SpaceSpec
-from .types import PrimitiveValue, Value
+from .types import PrimitiveValue
 
 if TYPE_CHECKING:
     import numpy as np
@@ -55,14 +56,34 @@ def asarray(tensor: Tensor) -> NumpyArray:
         tensor: RLMesh tensor value to view.
 
     Returns:
-        Read-only array view over the tensor buffer.
+        Read-only, zero-copy array view over the tensor buffer. ``bfloat16``
+        tensors are copied, since the buffer protocol cannot describe them,
+        and require the ``ml_dtypes`` package (``rlmesh[bfloat16]``).
     """
     ensure_available()
     import numpy as np
 
-    array = np.frombuffer(tensor.buffer, dtype=np.dtype(tensor.dtype))
     shape = tuple(tensor.shape)
+    if tensor.dtype == "bfloat16":
+        array = np.frombuffer(tensor.tobytes(), dtype=_bfloat16_dtype())
+    else:
+        try:
+            array = np.frombuffer(tensor.buffer, dtype=np.dtype(tensor.dtype))
+        except (BufferError, ValueError):
+            # Non-contiguous tensors cannot serve a flat buffer request.
+            array = np.frombuffer(tensor.copy().buffer, dtype=np.dtype(tensor.dtype))
     return cast(NumpyArray, np.reshape(array, shape if shape else ()))
+
+
+def _bfloat16_dtype() -> Any:
+    try:
+        import ml_dtypes
+    except ImportError as exc:
+        raise ImportError(
+            "bfloat16 tensors require ml_dtypes for NumPy conversion. "
+            "Install rlmesh[bfloat16]."
+        ) from exc
+    return ml_dtypes.bfloat16
 
 
 def from_array(array: object) -> Tensor | PrimitiveValue:
@@ -92,39 +113,29 @@ def from_array(array: object) -> Tensor | PrimitiveValue:
     )
 
 
-@final
-class _NumpyAdapter:
-    name: ClassVar[str] = "numpy"
+def _encode_leaf(value: object) -> object:
+    import numpy as np
 
-    def ensure_available(self) -> None:
-        ensure_available()
-
-    def decode(self, value: Value | None) -> object:
-        ensure_available()
-        return decode_tree(value, asarray)
-
-    def encode(self, value: object) -> Value:
-        ensure_available()
-        return encode_tree(value, self._encode_leaf)
-
-    def _encode_leaf(self, value: object) -> object:
-        import numpy as np
-
-        if isinstance(value, np.generic | np.ndarray):
-            return from_array(cast(NumpyArray, value))
-        return UNHANDLED
+    if isinstance(value, np.generic | np.ndarray):
+        return from_array(cast(NumpyArray, value))
+    return UNHANDLED
 
 
-_numpy_adapter: ValueAdapter = _NumpyAdapter()
-_numpy_space_adapter: SpaceAdapter[NumpyValue] = cast(
-    SpaceAdapter[NumpyValue],
-    space_adapter_from_value_adapter(_numpy_adapter),
+_numpy_bridge: ValueBridge = FrameworkBridge(
+    name="numpy",
+    ensure_available=ensure_available,
+    decode_leaf=asarray,
+    encode_leaf=_encode_leaf,
+)
+_numpy_space_bridge: SpaceBridge[NumpyValue] = cast(
+    SpaceBridge[NumpyValue],
+    space_bridge_from_value_bridge(_numpy_bridge),
 )
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]:
     """Create a NumPy-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, adapter=_numpy_space_adapter)
+    return _space_from_spec(spec, bridge=_numpy_space_bridge)
 
 
 @final
@@ -151,8 +162,8 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
         >>> env.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -179,8 +190,8 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
         >>> envs.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -202,7 +213,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_adapter
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
 
 @final

@@ -69,7 +69,7 @@ def serve_from_args(args: ServeModelArgs) -> int:
         print("Model endpoint stopped")
         return 0
     except KeyboardInterrupt:
-        print("\nStopping model adapter")
+        print("\nStopping model bridge")
         return 0
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)

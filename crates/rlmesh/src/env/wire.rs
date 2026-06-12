@@ -357,16 +357,14 @@ mod tests {
         ) -> std::result::Result<ResetResult, spaces::EnvRuntimeError> {
             Ok(ResetResult {
                 observations: vec![
-                    spaces::SpaceValue::Box(spaces::BoxValue::new(
-                        vec![0; 8],
-                        vec![2],
-                        spaces::DType::Float32,
-                    )),
-                    spaces::SpaceValue::Box(spaces::BoxValue::new(
-                        vec![1; 8],
-                        vec![2],
-                        spaces::DType::Float32,
-                    )),
+                    spaces::SpaceValue::Box(
+                        spaces::Tensor::from_vec(vec![0; 8], vec![2], spaces::DType::Float32)
+                            .unwrap(),
+                    ),
+                    spaces::SpaceValue::Box(
+                        spaces::Tensor::from_vec(vec![1; 8], vec![2], spaces::DType::Float32)
+                            .unwrap(),
+                    ),
                 ],
                 info: None,
                 episode_ids: vec!["ep-0".to_string(), "ep-1".to_string()],
@@ -382,13 +380,14 @@ mod tests {
                     .actions
                     .into_iter()
                     .map(|action| match action {
-                        spaces::SpaceValue::Discrete(value) => {
-                            spaces::SpaceValue::Box(spaces::BoxValue::new(
+                        spaces::SpaceValue::Discrete(value) => spaces::SpaceValue::Box(
+                            spaces::Tensor::from_vec(
                                 vec![value as u8; 8],
                                 vec![2],
                                 spaces::DType::Float32,
-                            ))
-                        }
+                            )
+                            .unwrap(),
+                        ),
                         other => other,
                     })
                     .collect(),

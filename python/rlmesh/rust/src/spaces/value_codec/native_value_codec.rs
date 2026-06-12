@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::v1::{BoxValue, SpaceValue, contains};
+use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+use rlmesh_spaces::{SpaceValue, Tensor, contains};
 
 use super::ValueBackend;
 use super::array_codec::{
@@ -19,27 +19,27 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
-            decode_array_like_value_with_backend(py, &value.data, space, backend)
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => {
+            decode_array_like_value_with_backend(py, &value.to_contiguous_bytes(), space, backend)
         }
-        (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
+        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }
-        (Some(space_spec::Spec::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
+        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
             let bytes = values
                 .iter()
                 .map(|value| u8::from(*value))
                 .collect::<Vec<_>>();
             decode_array_like_value_with_backend(py, &bytes, space, backend)
         }
-        (Some(space_spec::Spec::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
+        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
             let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
             decode_array_like_value_with_backend(py, &bytes, space, backend)
         }
-        (Some(space_spec::Spec::Text(_)), SpaceValue::Text(value)) => {
+        (Some(SpaceKind::Text(_)), SpaceValue::Text(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }
-        (Some(space_spec::Spec::Dict(spec)), SpaceValue::Dict(values)) => {
+        (Some(SpaceKind::Dict(spec)), SpaceValue::Dict(values)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_value = values.get(key).ok_or_else(|| {
@@ -54,7 +54,7 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
             }
             Ok(dict.into_any())
         }
-        (Some(space_spec::Spec::Tuple(spec)), SpaceValue::Tuple(values)) => {
+        (Some(SpaceKind::Tuple(spec)), SpaceValue::Tuple(values)) => {
             if values.len() != spec.spaces.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "tuple arity mismatch: expected {}, got {}",
@@ -97,12 +97,17 @@ fn py_any_to_space_value_unchecked(
     backend: ValueBackend,
 ) -> PyResult<SpaceValue> {
     Ok(match space.spec.as_ref() {
-        Some(space_spec::Spec::Box(_)) => SpaceValue::Box(BoxValue::new(
-            encode_array_like_value_with_backend(py, value, space, backend)?,
-            space.shape.clone(),
-            space.dtype,
-        )),
-        Some(space_spec::Spec::Discrete(_)) => {
+        Some(SpaceKind::Box(_)) => SpaceValue::Box(
+            Tensor::from_vec(
+                encode_array_like_value_with_backend(py, value, space, backend)?,
+                space.shape.clone(),
+                space.dtype,
+            )
+            .map_err(|err| {
+                pyo3::exceptions::PyValueError::new_err(format!("invalid box value: {err}"))
+            })?,
+        ),
+        Some(SpaceKind::Discrete(_)) => {
             let normalized = normalize_py_value(value)?;
             let value = if let Ok(flag) = normalized.extract::<bool>() {
                 i64::from(flag)
@@ -113,18 +118,18 @@ fn py_any_to_space_value_unchecked(
             };
             SpaceValue::Discrete(value)
         }
-        Some(space_spec::Spec::MultiBinary(_)) => {
+        Some(SpaceKind::MultiBinary(_)) => {
             let bytes = encode_array_like_value_with_backend(py, value, space, backend)?;
             SpaceValue::MultiBinary(bytes.into_iter().map(|value| value != 0).collect())
         }
-        Some(space_spec::Spec::MultiDiscrete(_)) => {
+        Some(SpaceKind::MultiDiscrete(_)) => {
             let bytes = encode_array_like_value_with_backend(py, value, space, backend)?;
             SpaceValue::MultiDiscrete(decode_i64_sequence_bytes(&bytes, space.dtype)?)
         }
-        Some(space_spec::Spec::Text(_)) => {
+        Some(SpaceKind::Text(_)) => {
             SpaceValue::Text(normalize_py_value(value)?.extract::<String>()?)
         }
-        Some(space_spec::Spec::Dict(spec)) => {
+        Some(SpaceKind::Dict(spec)) => {
             let normalized = normalize_py_value(value)?;
             let dict = normalized.cast::<PyDict>()?;
             let mut values = BTreeMap::new();
@@ -139,7 +144,7 @@ fn py_any_to_space_value_unchecked(
             }
             SpaceValue::Dict(values)
         }
-        Some(space_spec::Spec::Tuple(spec)) => {
+        Some(SpaceKind::Tuple(spec)) => {
             let items = if let Ok(tuple) = value.cast::<PyTuple>() {
                 tuple.iter().collect::<Vec<_>>()
             } else if let Ok(list) = value.cast::<PyList>() {
@@ -183,8 +188,8 @@ mod tests {
     use crate::spaces::ValueBackend;
     use pyo3::Python;
     use pyo3::types::{PyAnyMethods, PyDictMethods};
-    use rlmesh_spaces::v1::MetaValue;
-    use rlmesh_spaces::v1::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
+    use rlmesh_spaces::MetaValue;
+    use rlmesh_spaces::spaces::{DictSpaceBuilder, DiscreteBuilder, TextBuilder};
 
     #[test]
     fn metadata_roundtrips_without_protobuf() {

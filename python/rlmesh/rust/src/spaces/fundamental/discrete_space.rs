@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::spaces::*;
-use rlmesh_spaces::v1::{DType, DiscreteSpec};
+use rlmesh_spaces::spaces::*;
+use rlmesh_spaces::{DType, DiscreteSpec};
 
 pub fn make_discrete<'py>(
     py: Python<'py>,
@@ -9,7 +9,7 @@ pub fn make_discrete<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     let d = match &space.spec {
-        Some(space_spec::Spec::Discrete(d)) => d,
+        Some(SpaceKind::Discrete(d)) => d,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "spec.discrete missing",
@@ -42,6 +42,6 @@ pub fn parse_discrete<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     Ok(SpaceSpec {
         shape: vec![],
         dtype: DType::Int64,
-        spec: Some(space_spec::Spec::Discrete(DiscreteSpec { n, start })),
+        spec: Some(SpaceKind::Discrete(DiscreteSpec { n, start })),
     })
 }

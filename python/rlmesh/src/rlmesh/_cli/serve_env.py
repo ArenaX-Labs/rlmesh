@@ -95,7 +95,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def create_parser() -> argparse.ArgumentParser:
-    """Create the standalone parser used by the Rust CLI adapter."""
+    """Create the standalone parser used by the Rust CLI bridge."""
     parser = argparse.ArgumentParser(
         prog="python -m rlmesh._cli.serve_env",
         description="Serve a Python environment through RLMesh",

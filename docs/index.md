@@ -21,7 +21,7 @@ and package structure may still change before a stable release.
 
 Start with the shortest local loop:
 
-- {doc}`Install RLMesh <installation>` with Gymnasium and the NumPy adapter.
+- {doc}`Install RLMesh <installation>` with Gymnasium and the NumPy backend.
 - {doc}`Run the quickstart <quickstart>`: serve `CartPole-v1`, connect one evaluator.
 - {doc}`Check Gymnasium compatibility <gymnasium>` for the current supported space set.
 - {doc}`Try the examples <examples>`: swap environments, run sandboxed or isolated dependency
@@ -61,7 +61,7 @@ examples
 
 user-guide/serving-environments
 user-guide/remote-clients
-user-guide/adapters
+user-guide/backends
 user-guide/sandbox
 ```
 

@@ -590,7 +590,7 @@ mod tests {
         CURRENT_WORKFLOW_EDITION, LEGACY_WORKFLOW_EDITION_2026, MIN_SUPPORTED_PROTOCOL_GENERATION,
         PROTOCOL_GENERATION, capabilities, supported_workflow_editions,
     };
-    use rlmesh_spaces::v1::{EnvContract as SpaceEnvContract, SpaceSpec};
+    use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
     use tonic::Request;
 
     use super::{Environment, GrpcEnvServer};

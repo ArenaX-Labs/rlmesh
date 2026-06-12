@@ -268,6 +268,17 @@ run = "uv run rlmesh-system run"
 description = "Run heavy installed-artifact system scenarios against python/rlmesh/dist"
 run = "uv run rlmesh-system run --profile heavy"
 
+[tasks."perf:baseline"]
+description = "Capture the local tensor-conversion performance baseline (perf profile)"
+run = [
+  "uv run rlmesh-system run --profile perf --kind artifact",
+  "bash -c 'cp \"$(ls -t target/python-validation/reports/validation-*.json | head -1)\" target/python-validation/perf-baseline.json && echo baseline=target/python-validation/perf-baseline.json'",
+]
+
+[tasks."perf:check"]
+description = "Re-run the perf profile and fail on drift against the local baseline"
+run = "uv run rlmesh-system run --profile perf --kind artifact --baseline target/python-validation/perf-baseline.json --fail-on-regression"
+
 [tasks."test:system:clean"]
 description = "Remove installed-artifact system venvs, logs, and reports"
 run = "uv run rlmesh-system clean"

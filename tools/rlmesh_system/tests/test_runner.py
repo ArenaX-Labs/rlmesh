@@ -29,6 +29,7 @@ def test_profiles_keep_system_surface_explicit() -> None:
         "gymnasium",
         "heavy",
         "mujoco",
+        "perf",
         "torch",
     }
     assert "stress" not in spec.profiles
@@ -37,6 +38,9 @@ def test_profiles_keep_system_surface_explicit() -> None:
         "basic-py311",
         "gymnasium-py311",
         "mujoco-py311",
+        "perf-jax-py311",
+        "perf-numpy-py311",
+        "perf-torch-py311",
         "torch-py311",
     }
     assert spec.scenarios["counter-entrypoint"].kind == "trace"

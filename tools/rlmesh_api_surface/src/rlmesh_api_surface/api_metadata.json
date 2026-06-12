@@ -87,6 +87,7 @@
     "rlmesh.client",
     "rlmesh.numpy",
     "rlmesh.torch",
+    "rlmesh.jax",
     "rlmesh.sandbox",
     "rlmesh.spaces",
     "rlmesh.types",
@@ -137,7 +138,7 @@
     },
     "rlmesh.spaces": {
       "title": "rlmesh.spaces",
-      "description": "Named RLMesh-native space wrappers and Gymnasium adapters.",
+      "description": "Named RLMesh-native space wrappers and Gymnasium backends.",
       "stability": "Stable",
       "status": "Stable core spaces; extra wrappers are experimental."
     },
@@ -152,6 +153,12 @@
       "description": "Native environment and space spec classes.",
       "stability": "Stable",
       "status": "Stable selected native spec classes."
+    },
+    "rlmesh.jax": {
+      "description": "JAX-backed clients, models, sandbox sessions, and tensor helpers.",
+      "stability": "Experimental",
+      "status": "Experimental.",
+      "title": "rlmesh.jax"
     }
   },
   "exports": {

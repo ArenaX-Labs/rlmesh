@@ -1,12 +1,12 @@
 use super::ValueBackend;
 use crate::spaces::tensor::{extract_tensor, make_tensor};
 use crate::spaces::utils::dtype_name;
-use half::f16;
+use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
-use rlmesh_spaces::v1::{
-    DType,
-    spaces::{SpaceSpec, space_spec},
+use rlmesh_spaces::{
+    DType, Scalar,
+    spaces::{SpaceKind, SpaceSpec},
 };
 
 pub(crate) fn encode_array_like_value_with_backend(
@@ -34,13 +34,11 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
     let base_shape = shape_to_usize(&space.shape)?;
     let base_numel = element_count(&base_shape);
     let dtype = resolve_dtype(space.dtype);
-    let item_size = dtype_size(dtype)?;
+    let item_size = dtype_size(dtype);
     let item_count = bytes.len() / item_size;
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(space_spec::Spec::Discrete(_)))
-            || base_shape.is_empty()
-        {
+        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) || base_shape.is_empty() {
             let scalars = decode_scalars(bytes, dtype)?;
             return scalar_to_bound(
                 py,
@@ -78,32 +76,15 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
 }
 
 pub(crate) fn encode_i64_sequence_bytes(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(values.len() * dtype_size(dtype)?);
-    for value in values {
-        match dtype {
-            DType::Bool => bytes.push(u8::from(*value != 0)),
-            DType::Uint8 => bytes.push(*value as u8),
-            DType::Int32 => bytes.extend((*value as i32).to_le_bytes()),
-            DType::Int64 => bytes.extend(value.to_le_bytes()),
-            DType::Float32 | DType::Unspecified => {
-                bytes.extend((*value as f32).to_le_bytes());
-            }
-            DType::Float64 => bytes.extend((*value as f64).to_le_bytes()),
-            DType::Float16 => bytes.extend(f16::from_f32(*value as f32).to_le_bytes()),
-        }
-    }
-    Ok(bytes)
+    rlmesh_spaces::encode_i64_scalars(values, normalize_dtype(dtype))
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
 pub(crate) fn decode_i64_sequence_bytes(bytes: &[u8], dtype: DType) -> PyResult<Vec<i64>> {
-    decode_scalars(bytes, dtype)?
+    Ok(decode_scalars(bytes, dtype)?
         .into_iter()
-        .map(|value| match value {
-            ScalarValue::Bool(flag) => Ok(i64::from(flag)),
-            ScalarValue::Int(number) => Ok(number),
-            ScalarValue::Float(number) => Ok(number as i64),
-        })
-        .collect()
+        .map(Scalar::as_i64)
+        .collect())
 }
 
 fn encode_with_numpy(
@@ -124,12 +105,12 @@ fn encode_with_numpy(
 
 fn encode_without_numpy(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     if let Some(tensor) = extract_tensor(value)? {
-        return Ok(tensor.data.clone());
+        return Ok(tensor.inner.to_contiguous_bytes().into_owned());
     }
     let mut flattened = Vec::new();
     flatten_scalars(value, &mut flattened)?;
     let dtype = resolve_dtype(space.dtype);
-    let mut bytes = Vec::with_capacity(flattened.len() * dtype_size(dtype)?);
+    let mut bytes = Vec::with_capacity(flattened.len() * dtype_size(dtype));
     for item in flattened {
         pack_scalar_bytes(item.bind(value.py()), dtype, &mut bytes)?;
     }
@@ -153,7 +134,7 @@ fn decode_with_numpy<'py>(
     };
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(space_spec::Spec::Discrete(_))) {
+        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) {
             return raw_array.call_method0("item");
         }
         if base_shape.is_empty() {
@@ -233,65 +214,34 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
             out.push(if flag { 1 } else { 0 });
         }
         DType::Uint8 => out.push(value.extract::<u8>()?),
+        DType::Int8 => out.extend(value.extract::<i8>()?.to_le_bytes()),
+        DType::Int16 => out.extend(value.extract::<i16>()?.to_le_bytes()),
         DType::Int32 => out.extend((value.extract::<i64>()? as i32).to_le_bytes()),
         DType::Int64 => out.extend(value.extract::<i64>()?.to_le_bytes()),
+        DType::Uint16 => out.extend(value.extract::<u16>()?.to_le_bytes()),
+        DType::Uint32 => out.extend(value.extract::<u32>()?.to_le_bytes()),
+        DType::Uint64 => out.extend(value.extract::<u64>()?.to_le_bytes()),
         DType::Float32 | DType::Unspecified => {
             out.extend((value.extract::<f64>()? as f32).to_le_bytes());
         }
         DType::Float64 => out.extend(value.extract::<f64>()?.to_le_bytes()),
         DType::Float16 => out.extend(f16::from_f32(value.extract::<f64>()? as f32).to_le_bytes()),
+        DType::Bfloat16 => out.extend(bf16::from_f64(value.extract::<f64>()?).to_le_bytes()),
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ScalarValue {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
+fn decode_scalars(bytes: &[u8], dtype: DType) -> PyResult<Vec<Scalar>> {
+    rlmesh_spaces::decode_scalars(bytes, normalize_dtype(dtype))
+        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))
 }
 
-fn decode_scalars(bytes: &[u8], dtype: DType) -> PyResult<Vec<ScalarValue>> {
+/// The extension treats `Unspecified` specs as float32 throughout.
+fn normalize_dtype(dtype: DType) -> DType {
     match dtype {
-        DType::Bool => Ok(bytes
-            .iter()
-            .map(|value| ScalarValue::Bool(*value != 0))
-            .collect()),
-        DType::Uint8 => Ok(bytes
-            .iter()
-            .map(|value| ScalarValue::Int(*value as i64))
-            .collect()),
-        DType::Int32 => decode_chunks(bytes, 4, |chunk| {
-            ScalarValue::Int(i32::from_le_bytes(chunk.try_into().expect("chunk")) as i64)
-        }),
-        DType::Int64 => decode_chunks(bytes, 8, |chunk| {
-            ScalarValue::Int(i64::from_le_bytes(chunk.try_into().expect("chunk")))
-        }),
-        DType::Float32 | DType::Unspecified => decode_chunks(bytes, 4, |chunk| {
-            ScalarValue::Float(f32::from_le_bytes(chunk.try_into().expect("chunk")) as f64)
-        }),
-        DType::Float64 => decode_chunks(bytes, 8, |chunk| {
-            ScalarValue::Float(f64::from_le_bytes(chunk.try_into().expect("chunk")))
-        }),
-        DType::Float16 => decode_chunks(bytes, 2, |chunk| {
-            ScalarValue::Float(f16::from_le_bytes(chunk.try_into().expect("chunk")).to_f64())
-        }),
+        DType::Unspecified => DType::Float32,
+        other => other,
     }
-}
-
-fn decode_chunks<F>(bytes: &[u8], chunk_size: usize, f: F) -> PyResult<Vec<ScalarValue>>
-where
-    F: Fn(&[u8]) -> ScalarValue,
-{
-    if !bytes.len().is_multiple_of(chunk_size) {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "byte length {} is not a multiple of element size {}",
-            bytes.len(),
-            chunk_size
-        )));
-    }
-
-    Ok(bytes.chunks_exact(chunk_size).map(f).collect())
 }
 
 fn resolve_dtype<T>(dtype: T) -> DType
@@ -301,12 +251,11 @@ where
     DType::try_from(dtype.into()).unwrap_or(DType::Float32)
 }
 
-fn dtype_size(dtype: DType) -> PyResult<usize> {
+fn dtype_size(dtype: DType) -> usize {
+    // Unspecified follows the extension-wide float32 fallback.
     match dtype {
-        DType::Bool | DType::Uint8 => Ok(1),
-        DType::Float16 => Ok(2),
-        DType::Int32 | DType::Float32 | DType::Unspecified => Ok(4),
-        DType::Int64 | DType::Float64 => Ok(8),
+        DType::Unspecified => 4,
+        other => rlmesh_spaces::dtype_size(other),
     }
 }
 
@@ -329,14 +278,14 @@ fn element_count(shape: &[usize]) -> usize {
     }
 }
 
-fn scalar_to_bound<'py>(py: Python<'py>, scalar: &ScalarValue) -> PyResult<Bound<'py, PyAny>> {
+fn scalar_to_bound<'py>(py: Python<'py>, scalar: &Scalar) -> PyResult<Bound<'py, PyAny>> {
     Ok(scalar_to_object(py, scalar)?.bind(py).clone())
 }
 
-fn scalar_to_object(py: Python<'_>, scalar: &ScalarValue) -> PyResult<Py<PyAny>> {
+fn scalar_to_object(py: Python<'_>, scalar: &Scalar) -> PyResult<Py<PyAny>> {
     match scalar {
-        ScalarValue::Bool(flag) => Ok(PyBool::new(py, *flag).to_owned().into_any().unbind()),
-        ScalarValue::Int(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
-        ScalarValue::Float(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
+        Scalar::Bool(flag) => Ok(PyBool::new(py, *flag).to_owned().into_any().unbind()),
+        Scalar::Int(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
+        Scalar::Float(number) => Ok(number.into_pyobject(py)?.into_any().unbind()),
     }
 }

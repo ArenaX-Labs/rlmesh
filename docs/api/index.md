@@ -1,6 +1,6 @@
 # API Reference
 
-Use this when you need exact imports, methods, and adapter behavior.
+Use this when you need exact imports, methods, and backend behavior.
 
 ## Behavior
 
@@ -13,10 +13,11 @@ Use this when you need exact imports, methods, and adapter behavior.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
 - {doc}`types`: structural protocols and shared value aliases.
 
-## Adapters
+## Framework Backends
 
 - {doc}`numpy`: NumPy-backed clients, models, and tensor helpers.
 - {doc}`torch`: experimental Torch-backed clients, models, and tensor helpers.
+- {doc}`jax`: experimental JAX-backed clients, models, and tensor helpers.
 
 ```{toctree}
 :maxdepth: 2
@@ -28,6 +29,7 @@ contracts
 models
 numpy
 torch
+jax
 spaces
 types
 sandbox

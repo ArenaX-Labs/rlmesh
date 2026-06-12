@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use prost_types::{ListValue, Struct, Value, value};
 use rlmesh_proto::env::v1 as env_proto;
 use rlmesh_proto::spaces::v1 as proto;
-use rlmesh_spaces::v1 as native;
+use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
@@ -132,22 +132,22 @@ fn space_kind_from_proto(
     })
 }
 
-fn box_bounds_to_proto(bounds: &native::box_spec::Bounds) -> proto::box_spec::Bounds {
+fn box_bounds_to_proto(bounds: &native::BoxBounds) -> proto::box_spec::Bounds {
     match bounds {
-        native::box_spec::Bounds::Unbounded(value) => proto::box_spec::Bounds::Unbounded(*value),
-        native::box_spec::Bounds::Uniform(bounds) => {
+        native::BoxBounds::Unbounded(value) => proto::box_spec::Bounds::Unbounded(*value),
+        native::BoxBounds::Uniform(bounds) => {
             proto::box_spec::Bounds::Uniform(proto::UniformBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
         }
-        native::box_spec::Bounds::Axiswise(bounds) => {
+        native::BoxBounds::Axiswise(bounds) => {
             proto::box_spec::Bounds::Axiswise(proto::AxiswiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
             })
         }
-        native::box_spec::Bounds::Elementwise(bounds) => {
+        native::BoxBounds::Elementwise(bounds) => {
             proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
@@ -158,23 +158,23 @@ fn box_bounds_to_proto(bounds: &native::box_spec::Bounds) -> proto::box_spec::Bo
 
 fn box_bounds_from_proto(
     bounds: proto::box_spec::Bounds,
-) -> Result<native::box_spec::Bounds, ProtocolError> {
+) -> Result<native::BoxBounds, ProtocolError> {
     Ok(match bounds {
-        proto::box_spec::Bounds::Unbounded(value) => native::box_spec::Bounds::Unbounded(value),
+        proto::box_spec::Bounds::Unbounded(value) => native::BoxBounds::Unbounded(value),
         proto::box_spec::Bounds::Uniform(bounds) => {
-            native::box_spec::Bounds::Uniform(native::UniformBounds {
+            native::BoxBounds::Uniform(native::UniformBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
         }
         proto::box_spec::Bounds::Axiswise(bounds) => {
-            native::box_spec::Bounds::Axiswise(native::AxiswiseBounds {
+            native::BoxBounds::Axiswise(native::AxiswiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
         }
         proto::box_spec::Bounds::Elementwise(bounds) => {
-            native::box_spec::Bounds::Elementwise(native::ElementwiseBounds {
+            native::BoxBounds::Elementwise(native::ElementwiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
@@ -182,45 +182,38 @@ fn box_bounds_from_proto(
     })
 }
 
-fn multibinary_n_to_proto(value: &native::multi_binary_spec::N) -> proto::multi_binary_spec::N {
+fn multibinary_n_to_proto(value: &native::MultiBinaryDims) -> proto::multi_binary_spec::N {
     match value {
-        native::multi_binary_spec::N::Size(size) => proto::multi_binary_spec::N::Size(*size),
-        native::multi_binary_spec::N::Dims(dims) => {
-            proto::multi_binary_spec::N::Dims(proto::VectorInt {
-                data: dims.data.clone(),
-            })
+        native::MultiBinaryDims::Size(size) => proto::multi_binary_spec::N::Size(*size),
+        native::MultiBinaryDims::Dims(dims) => {
+            proto::multi_binary_spec::N::Dims(proto::VectorInt { data: dims.clone() })
         }
     }
 }
 
 fn multibinary_n_from_proto(
     value: proto::multi_binary_spec::N,
-) -> Result<native::multi_binary_spec::N, ProtocolError> {
+) -> Result<native::MultiBinaryDims, ProtocolError> {
     Ok(match value {
-        proto::multi_binary_spec::N::Size(size) => native::multi_binary_spec::N::Size(size),
-        proto::multi_binary_spec::N::Dims(dims) => {
-            native::multi_binary_spec::N::Dims(native::VectorInt { data: dims.data })
-        }
+        proto::multi_binary_spec::N::Size(size) => native::MultiBinaryDims::Size(size),
+        proto::multi_binary_spec::N::Dims(dims) => native::MultiBinaryDims::Dims(dims.data),
     })
 }
 
 fn multidiscrete_nvec_to_proto(
-    value: &native::multi_discrete_spec::Nvec,
+    value: &native::MultiDiscreteNvec,
 ) -> proto::multi_discrete_spec::Nvec {
     match value {
-        native::multi_discrete_spec::Nvec::Flat(vector) => {
+        native::MultiDiscreteNvec::Flat(vector) => {
             proto::multi_discrete_spec::Nvec::Flat(proto::VectorInt {
-                data: vector.data.clone(),
+                data: vector.clone(),
             })
         }
-        native::multi_discrete_spec::Nvec::Shaped(matrix) => {
+        native::MultiDiscreteNvec::Shaped(matrix) => {
             proto::multi_discrete_spec::Nvec::Shaped(proto::MatrixInt {
                 data: matrix
-                    .data
                     .iter()
-                    .map(|row| proto::VectorInt {
-                        data: row.data.clone(),
-                    })
+                    .map(|row| proto::VectorInt { data: row.clone() })
                     .collect(),
             })
         }
@@ -229,19 +222,13 @@ fn multidiscrete_nvec_to_proto(
 
 fn multidiscrete_nvec_from_proto(
     value: proto::multi_discrete_spec::Nvec,
-) -> Result<native::multi_discrete_spec::Nvec, ProtocolError> {
+) -> Result<native::MultiDiscreteNvec, ProtocolError> {
     Ok(match value {
         proto::multi_discrete_spec::Nvec::Flat(vector) => {
-            native::multi_discrete_spec::Nvec::Flat(native::VectorInt { data: vector.data })
+            native::MultiDiscreteNvec::Flat(vector.data)
         }
         proto::multi_discrete_spec::Nvec::Shaped(matrix) => {
-            native::multi_discrete_spec::Nvec::Shaped(native::MatrixInt {
-                data: matrix
-                    .data
-                    .into_iter()
-                    .map(|row| native::VectorInt { data: row.data })
-                    .collect(),
-            })
+            native::MultiDiscreteNvec::Shaped(matrix.data.into_iter().map(|row| row.data).collect())
         }
     })
 }
@@ -313,6 +300,12 @@ fn proto_dtype_from_native(dtype: native::DType) -> proto::DType {
         native::DType::Float16 => proto::DType::Float16,
         native::DType::Float32 => proto::DType::Float32,
         native::DType::Float64 => proto::DType::Float64,
+        native::DType::Int8 => proto::DType::Int8,
+        native::DType::Int16 => proto::DType::Int16,
+        native::DType::Uint16 => proto::DType::Uint16,
+        native::DType::Uint32 => proto::DType::Uint32,
+        native::DType::Uint64 => proto::DType::Uint64,
+        native::DType::Bfloat16 => proto::DType::Bfloat16,
     }
 }
 
@@ -328,5 +321,49 @@ fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
         proto::DType::Float16 => native::DType::Float16,
         proto::DType::Float32 => native::DType::Float32,
         proto::DType::Float64 => native::DType::Float64,
+        proto::DType::Int8 => native::DType::Int8,
+        proto::DType::Int16 => native::DType::Int16,
+        proto::DType::Uint16 => native::DType::Uint16,
+        proto::DType::Uint32 => native::DType::Uint32,
+        proto::DType::Uint64 => native::DType::Uint64,
+        proto::DType::Bfloat16 => native::DType::Bfloat16,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dtype_proto_roundtrip() {
+        let all = [
+            native::DType::Unspecified,
+            native::DType::Bool,
+            native::DType::Uint8,
+            native::DType::Int32,
+            native::DType::Int64,
+            native::DType::Float16,
+            native::DType::Float32,
+            native::DType::Float64,
+            native::DType::Int8,
+            native::DType::Int16,
+            native::DType::Uint16,
+            native::DType::Uint32,
+            native::DType::Uint64,
+            native::DType::Bfloat16,
+        ];
+        for dtype in all {
+            let wire = proto_dtype_from_native(dtype) as i32;
+            assert_eq!(
+                native_dtype_from_proto(wire).expect("known dtype"),
+                dtype,
+                "roundtrip mismatch for {dtype:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dtype_from_proto_rejects_unknown_value() {
+        assert!(native_dtype_from_proto(999).is_err());
+    }
 }

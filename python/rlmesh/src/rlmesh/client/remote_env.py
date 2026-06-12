@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 
-from .._values import ValueAdapter
-from ..spaces import Space, SpaceAdapter, space_from_spec
+from .._values import ValueBridge
+from ..spaces import Space, SpaceBridge, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata, Value
 from .endpoint import Transport, normalize_connect_address
@@ -24,7 +24,7 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
     """Base class for backend-specific single-environment remote clients.
 
     Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
-    value adapter. User code should normally instantiate those concrete
+    value bridge. User code should normally instantiate those concrete
     backends instead of this base class.
 
     Args:
@@ -35,8 +35,8 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter]
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = None
+    _bridge: ClassVar[ValueBridge]
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = None
     _address: str
     _viewer_warning_emitted: bool
 
@@ -87,7 +87,7 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
 
-        self._adapter.ensure_available()
+        self._bridge.ensure_available()
         normalized_address = normalize_connect_address(
             address,
             host=host,
@@ -188,7 +188,7 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         seeds = [seed] if seed is not None else None
         obs, info = self._client.reset(seeds=seeds, options=options)
         self._refresh_viewer()
-        return cast(ValueT, self._adapter.decode(obs)), info
+        return cast(ValueT, self._bridge.decode(obs)), info
 
     def step(self, action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]:
         """Step the remote environment with one encoded action.
@@ -200,11 +200,11 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
             Observation, reward, terminated flag, truncated flag, and step info.
         """
         obs, reward, terminated, truncated, info = self._client.step(
-            self._adapter.encode(action)
+            self._bridge.encode(action)
         )
         self._refresh_viewer(pace=True)
         return (
-            cast(ValueT, self._adapter.decode(obs)),
+            cast(ValueT, self._bridge.decode(obs)),
             reward,
             terminated,
             truncated,
@@ -227,10 +227,10 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
                 self._client.render_bundle(env_index=env_index),
             )
             self._push_viewer_packet(packet)
-            return cast(ValueT | None, self._adapter.decode(frame))
+            return cast(ValueT | None, self._bridge.decode(frame))
         return cast(
             ValueT | None,
-            self._adapter.decode(self._client.render(env_index=env_index)),
+            self._bridge.decode(self._client.render(env_index=env_index)),
         )
 
     def close(self) -> None:
@@ -270,17 +270,17 @@ class RemoteEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
 
     def _load_observation_space(self) -> Space[ValueT]:
         spec = self._space_spec("observation")
-        adapter = self._space_adapter
-        if adapter is None:
+        bridge = self._space_bridge
+        if bridge is None:
             return cast(Space[ValueT], space_from_spec(spec))
-        return cast(Space[ValueT], space_from_spec(spec, adapter=adapter))
+        return cast(Space[ValueT], space_from_spec(spec, bridge=bridge))
 
     def _load_action_space(self) -> Space[ActionT]:
         spec = self._space_spec("action")
-        adapter = self._space_adapter
-        if adapter is None:
+        bridge = self._space_bridge
+        if bridge is None:
             return cast(Space[ActionT], space_from_spec(spec))
-        return cast(Space[ActionT], space_from_spec(spec, adapter=adapter))
+        return cast(Space[ActionT], space_from_spec(spec, bridge=bridge))
 
 
 __all__ = ["ActionT", "RemoteEnvBase", "ValueT"]

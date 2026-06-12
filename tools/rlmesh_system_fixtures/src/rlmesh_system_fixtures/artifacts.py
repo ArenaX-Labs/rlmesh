@@ -100,6 +100,12 @@ def run_artifact(
         return tensor_export_copy(tier=tier, samples=samples, warmups=warmups)
     if name == "tensor-torch-export-copy":
         return tensor_torch_export_copy(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-jax-view":
+        return tensor_jax_view(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-dlpack-import":
+        return tensor_dlpack_import(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-numpy-encode":
+        return tensor_numpy_encode(tier=tier, samples=samples, warmups=warmups)
     raise SystemExit(f"unknown artifact {name!r}")
 
 
@@ -201,6 +207,82 @@ def tensor_torch_export_copy(
                 iterations=iterations,
                 bytes_per_iter=size,
                 metadata={"path": "torch-roundtrip"},
+            )
+        )
+    return measurements
+
+
+def tensor_jax_view(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+    import jax
+    from rlmesh import Tensor
+    from rlmesh import jax as rlmesh_jax
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        tensor = Tensor(bytes(size), [size], "uint8")
+        array = rlmesh_jax.asarray(tensor)
+        assert isinstance(array, jax.Array)
+        assert array.shape == (size,)
+        iterations = view_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.jax.asarray/{size_label(size)}",
+                # block_until_ready keeps async dispatch honest in the timing.
+                lambda tensor=tensor: rlmesh_jax.asarray(tensor).block_until_ready(),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata={"path": "dlpack-shared"},
+            )
+        )
+    return measurements
+
+
+def tensor_dlpack_import(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+    import numpy as np
+    from rlmesh import Tensor
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        array = np.zeros(size, dtype=np.uint8)
+        imported = Tensor.from_dlpack(array)
+        assert imported.shape == [size]
+        iterations = copy_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.from_dlpack/{size_label(size)}",
+                lambda array=array: Tensor.from_dlpack(array),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata={"path": "copy-import"},
+            )
+        )
+    return measurements
+
+
+def tensor_numpy_encode(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+    import numpy as np
+    from rlmesh import Tensor
+    from rlmesh import numpy as rlmesh_numpy
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        array = np.zeros(size, dtype=np.uint8)
+        encoded = rlmesh_numpy.from_array(array)
+        assert isinstance(encoded, Tensor)
+        iterations = copy_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.numpy.from_array/{size_label(size)}",
+                lambda array=array: rlmesh_numpy.from_array(array),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata={"path": "copy"},
             )
         )
     return measurements

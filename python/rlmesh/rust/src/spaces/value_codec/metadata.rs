@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::{MetaMap, MetaValue};
+use rlmesh_spaces::{MetaMap, MetaValue};
 
 pub(crate) fn meta_map_to_pydict<'py>(
     py: Python<'py>,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast
 
-from ._values import ValueAdapter
+from ._values import ValueBridge
 from .types import Value
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class ModelBase(Generic[ObsT, ActT]):
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 
-    _adapter: ClassVar[ValueAdapter]
+    _bridge: ClassVar[ValueBridge]
 
     def __init__(
         self,
@@ -51,12 +51,12 @@ class ModelBase(Generic[ObsT, ActT]):
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
 
-        self._adapter.ensure_available()
+        self._bridge.ensure_available()
 
         def wrapped_predict(observation: Value) -> Value:
-            decoded = cast(ObsT, self._adapter.decode(observation))
+            decoded = cast(ObsT, self._bridge.decode(observation))
             action = predict_fn(decoded)
-            return self._adapter.encode(action)
+            return self._bridge.encode(action)
 
         self._worker: PyModel = PyModel(
             predict_fn=wrapped_predict,

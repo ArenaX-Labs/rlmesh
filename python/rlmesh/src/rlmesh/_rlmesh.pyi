@@ -212,11 +212,54 @@ class Tensor:
     @property
     def nbytes(self) -> builtins.int: ...
     @property
-    def strides(self) -> builtins.list[builtins.int]: ...
+    def strides(self) -> builtins.list[builtins.int]:
+        r"""
+        Strides in bytes per dimension, C-order.
+        """
+    @property
+    def device(self) -> builtins.str:
+        r"""
+        Device holding the tensor data. Always `"cpu"`.
+        """
     @property
     def buffer(self) -> memoryview: ...
     def __buffer__(self, flags: builtins.int, /) -> memoryview: ...
     def __new__(cls, buffer: object, shape: typing.Sequence[builtins.int], dtype: builtins.str) -> Tensor: ...
+    def is_contiguous(self) -> builtins.bool:
+        r"""
+        Whether the elements are laid out C-contiguously.
+        """
+    def reshape(self, shape: typing.Sequence[builtins.int]) -> Tensor:
+        r"""
+        A tensor with the same elements and a new shape. One dimension may
+        be ``-1`` to infer its size from the element count. Shares the
+        underlying data when this tensor is contiguous.
+        """
+    def copy(self) -> Tensor:
+        r"""
+        A deep copy backed by fresh storage.
+        """
+    def __dlpack__(self, *, stream: object | None = None, max_version: typing.Optional[tuple[builtins.int, builtins.int]] = None, dl_device: typing.Optional[tuple[builtins.int, builtins.int]] = None, copy: typing.Optional[builtins.bool] = None) -> object:
+        r"""
+        Export the tensor as a DLPack capsule.
+        
+        With `max_version` of `(1, 0)` or newer the capsule is a DLPack 1.0
+        `DLManagedTensorVersioned` flagged read-only; otherwise it is a
+        legacy `DLManagedTensor`. `copy=True` exports a fresh writable
+        buffer. Only `stream=None` and CPU `dl_device` are accepted.
+        """
+    def __dlpack_device__(self) -> tuple[builtins.int, builtins.int]:
+        r"""
+        DLPack device of the tensor data: `(kDLCPU, 0)`.
+        """
+    @staticmethod
+    def from_dlpack(obj: object) -> Tensor:
+        r"""
+        Import a tensor from a DLPack capsule or any object implementing
+        `__dlpack__`. Accepts both legacy and versioned capsules; the
+        elements are always copied into fresh storage and the source
+        capsule is consumed.
+        """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
 

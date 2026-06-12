@@ -12,8 +12,8 @@ use rlmesh::{
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
-use rlmesh_spaces::v1::spaces::SpaceSpec;
-use rlmesh_spaces::v1::{
+use rlmesh_spaces::spaces::SpaceSpec;
+use rlmesh_spaces::{
     CloseRequest, CloseRequest as SingleCloseRequest, CloseResult as SingleCloseResult,
     EnvContract, MetaMap, RenderFrame as NativeRenderFrame, RenderRequest,
     RenderRequest as SingleRenderRequest, RenderResult, RenderResult as SingleRenderResult,
@@ -975,17 +975,17 @@ impl RLMeshEnv for PyVectorEnv {
     }
 }
 
-fn native_value_size(value: &rlmesh_spaces::v1::SpaceValue) -> usize {
+fn native_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
     match value {
-        rlmesh_spaces::v1::SpaceValue::Box(value) => value.data.len(),
-        rlmesh_spaces::v1::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
-        rlmesh_spaces::v1::SpaceValue::MultiBinary(values) => values.len(),
-        rlmesh_spaces::v1::SpaceValue::MultiDiscrete(values) => {
+        rlmesh_spaces::SpaceValue::Box(value) => value.nbytes(),
+        rlmesh_spaces::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
+        rlmesh_spaces::SpaceValue::MultiBinary(values) => values.len(),
+        rlmesh_spaces::SpaceValue::MultiDiscrete(values) => {
             values.len() * std::mem::size_of::<i64>()
         }
-        rlmesh_spaces::v1::SpaceValue::Text(value) => value.len(),
-        rlmesh_spaces::v1::SpaceValue::Dict(values) => values.values().map(native_value_size).sum(),
-        rlmesh_spaces::v1::SpaceValue::Tuple(values) => values.iter().map(native_value_size).sum(),
+        rlmesh_spaces::SpaceValue::Text(value) => value.len(),
+        rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(native_value_size).sum(),
+        rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(native_value_size).sum(),
     }
 }
 

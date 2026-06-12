@@ -1,6 +1,16 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use rlmesh_spaces::v1::DType;
+use rlmesh_spaces::DType;
+
+/// Parse a tensor dtype name, rejecting anything unknown.
+///
+/// Unlike [`extract_dtype`], there is no `Unspecified` fallback: tensors
+/// must carry a concrete dtype.
+pub fn parse_dtype_strict(dtype: &str) -> PyResult<DType> {
+    DType::from_name(dtype).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("unsupported tensor dtype {dtype:?}"))
+    })
+}
 
 pub fn extract_shape<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<usize>> {
     if let Ok(t) = obj.cast::<PyTuple>() {
@@ -16,17 +26,7 @@ pub fn extract_dtype<'py>(obj: &Bound<'py, PyAny>) -> PyResult<DType> {
         obj.str()?.to_string()
     };
     let norm = name.to_lowercase();
-
-    Ok(match norm.as_str() {
-        "bool" => DType::Bool,
-        "uint8" => DType::Uint8,
-        "int32" => DType::Int32,
-        "int64" => DType::Int64,
-        "float16" => DType::Float16,
-        "float32" => DType::Float32,
-        "float64" => DType::Float64,
-        _ => DType::Unspecified,
-    })
+    Ok(DType::from_name(&norm).unwrap_or(DType::Unspecified))
 }
 
 pub fn dtype_to_py<'py, T>(py: Python<'py>, dt: T) -> PyResult<Bound<'py, PyAny>>
@@ -43,14 +43,9 @@ where
     T: Into<i32>,
 {
     match DType::try_from(dt.into()).unwrap_or(DType::Unspecified) {
-        DType::Bool => "bool",
-        DType::Uint8 => "uint8",
-        DType::Int32 => "int32",
-        DType::Int64 => "int64",
-        DType::Float16 => "float16",
-        DType::Float32 => "float32",
-        DType::Float64 => "float64",
+        // Legacy display fallback: unspecified specs surface as float32.
         DType::Unspecified => "float32",
+        dtype => dtype.name(),
     }
 }
 

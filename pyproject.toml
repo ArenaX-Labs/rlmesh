@@ -12,7 +12,7 @@ dev = [
   "basedpyright==1.36.1",
   "ruff==0.14.9",
   "pytest==8.4.2",
-  "rlmesh[gymnasium,numpy,torch]",
+  "rlmesh[gymnasium,numpy,torch,bfloat16,jax]",
   "rlmesh-api-surface",
   "rlmesh-system",
   "rlmesh-system-fixtures",

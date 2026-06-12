@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::SpaceValue;
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::SpaceValue;
+use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 
 use super::ValueBackend;
 use super::metadata::normalize_py_value;
@@ -18,7 +18,7 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
     match space.spec.as_ref() {
-        Some(space_spec::Spec::Dict(spec)) => {
+        Some(SpaceKind::Dict(spec)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_values = values
@@ -46,7 +46,7 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
             }
             Ok(dict.into_any())
         }
-        Some(space_spec::Spec::Tuple(spec)) => {
+        Some(SpaceKind::Tuple(spec)) => {
             let mut columns = vec![Vec::with_capacity(values.len()); spec.spaces.len()];
             for value in values {
                 let items = match value {
@@ -95,7 +95,7 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
     }
 
     match space.spec.as_ref() {
-        Some(space_spec::Spec::Dict(spec)) => {
+        Some(SpaceKind::Dict(spec)) => {
             let normalized = normalize_py_value(value)?;
             let dict = normalized.cast::<PyDict>()?;
             let child_batches = spec
@@ -131,7 +131,7 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
 
             Ok(values.into_iter().map(SpaceValue::Dict).collect())
         }
-        Some(space_spec::Spec::Tuple(spec)) => {
+        Some(SpaceKind::Tuple(spec)) => {
             let items = if let Ok(tuple) = value.cast::<PyTuple>() {
                 tuple.iter().collect::<Vec<_>>()
             } else if let Ok(list) = value.cast::<PyList>() {
@@ -200,10 +200,10 @@ fn batched_values_to_py<'py>(
         .collect::<PyResult<Vec<_>>>()?;
 
     match child_space.spec.as_ref() {
-        Some(space_spec::Spec::Box(_))
-        | Some(space_spec::Spec::Discrete(_))
-        | Some(space_spec::Spec::MultiBinary(_))
-        | Some(space_spec::Spec::MultiDiscrete(_)) => {
+        Some(SpaceKind::Box(_))
+        | Some(SpaceKind::Discrete(_))
+        | Some(SpaceKind::MultiBinary(_))
+        | Some(SpaceKind::MultiDiscrete(_)) => {
             let items = PyList::new(py, items)?;
             if backend.prefers_numpy(py)? {
                 let numpy = py.import("numpy")?;

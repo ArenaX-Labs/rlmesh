@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use half::f16;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 use pyo3_stub_gen::inventory::submit;
@@ -9,16 +8,16 @@ use rlmesh::{
     ModelObservation, ModelWorker,
 };
 use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
-use rlmesh_spaces::v1::{
-    DType, SpaceValue,
-    spaces::{SpaceSpec, space_spec},
+use rlmesh_spaces::{
+    SpaceValue,
+    spaces::{SpaceKind, SpaceSpec},
 };
 use std::sync::Arc;
 
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_neutral, py_any_to_space_value_with_backend,
-    space_value_to_py_neutral,
+    ValueBackend, batched_space_values_to_py_neutral, encode_i64_sequence_bytes,
+    py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
 use crate::types::errors::to_py_err;
@@ -330,36 +329,22 @@ fn neutral_observation<'py>(
 
 fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => Ok(value.data.clone()),
-        (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => {
+            Ok(value.to_contiguous_bytes().into_owned())
+        }
+        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.to_le_bytes().to_vec())
         }
-        (Some(space_spec::Spec::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
+        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
             Ok(values.iter().map(|value| u8::from(*value)).collect())
         }
-        (Some(space_spec::Spec::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
-            encode_i64_values(values, space.dtype)
+        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
+            encode_i64_sequence_bytes(values, space.dtype)
         }
         _ => Err(pyo3::exceptions::PyTypeError::new_err(
             "model worker only supports array-like action spaces",
         )),
     }
-}
-
-fn encode_i64_values(values: &[i64], dtype: DType) -> PyResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    for value in values {
-        match dtype {
-            DType::Bool => bytes.push(u8::from(*value != 0)),
-            DType::Uint8 => bytes.push(*value as u8),
-            DType::Int32 => bytes.extend((*value as i32).to_le_bytes()),
-            DType::Int64 => bytes.extend(value.to_le_bytes()),
-            DType::Float32 | DType::Unspecified => bytes.extend((*value as f32).to_le_bytes()),
-            DType::Float64 => bytes.extend((*value as f64).to_le_bytes()),
-            DType::Float16 => bytes.extend(f16::from_f32(*value as f32).to_le_bytes()),
-        }
-    }
-    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -369,10 +354,10 @@ mod tests {
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use rlmesh::spaces::BinaryPayload;
     use rlmesh_grpc::wire::encode_batched_partial_values;
-    use rlmesh_spaces::v1::SpaceValue;
-    use rlmesh_spaces::v1::spaces::{DictSpaceBuilder, TextBuilder};
+    use rlmesh_spaces::SpaceValue;
+    use rlmesh_spaces::spaces::{DictSpaceBuilder, TextBuilder};
 
-    fn instruction_space() -> rlmesh_spaces::v1::SpaceSpec {
+    fn instruction_space() -> rlmesh_spaces::SpaceSpec {
         DictSpaceBuilder::new()
             .insert("instruction", TextBuilder::new(32).build().unwrap())
             .build()

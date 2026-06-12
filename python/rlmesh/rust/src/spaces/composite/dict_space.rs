@@ -2,7 +2,7 @@ use crate::spaces::space::{make_space, parse_space};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::spaces::*;
 
 pub(crate) fn make_dict<'py>(
     py: Python<'py>,
@@ -10,7 +10,7 @@ pub(crate) fn make_dict<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     let dict_spec = match &space.spec {
-        Some(space_spec::Spec::Dict(d)) => d,
+        Some(SpaceKind::Dict(d)) => d,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "missing dict detail",

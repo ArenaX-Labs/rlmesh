@@ -1,8 +1,8 @@
 # Models
 
 Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint.
-The backend adapter controls how observations are decoded before `predict_fn` runs and how returned
-actions are encoded.
+The framework backend controls how observations are decoded before `predict_fn` runs and how
+returned actions are encoded.
 
 ## Base Model
 
@@ -22,4 +22,4 @@ Concrete backend model classes inherit `ModelBase` and only change value convers
 | NumPy model  | `rlmesh.numpy.Model` | NumPy arrays, primitives, and containers  | NumPy arrays and primitives  |
 | Torch model  | `rlmesh.torch.Model` | Torch tensors, primitives, and containers | Torch tensors and primitives |
 
-See {doc}`numpy` and {doc}`torch` for adapter helpers.
+See {doc}`numpy`, {doc}`torch`, and {doc}`jax` for backend helpers.

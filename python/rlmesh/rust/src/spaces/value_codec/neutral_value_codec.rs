@@ -1,10 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
-use rlmesh_spaces::v1::SpaceValue;
-use rlmesh_spaces::v1::spaces::{SpaceSpec, space_spec};
+use rlmesh_spaces::SpaceValue;
+use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 
 use super::array_codec::encode_i64_sequence_bytes;
-use crate::spaces::tensor::make_tensor;
+use crate::spaces::tensor::{make_tensor, wrap_native_tensor};
 use crate::spaces::utils::dtype_name;
 
 pub(crate) fn space_value_to_py_neutral<'py>(
@@ -13,27 +13,27 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
-            tensor_from_array_bytes(py, value.data.clone(), value.shape.clone(), value.dtype)
-        }
-        (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
+        // Hand the native tensor over directly: shares the (aligned) wire
+        // storage instead of copying into a fresh unaligned buffer.
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => wrap_native_tensor(py, value.clone()),
+        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }
-        (Some(space_spec::Spec::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
+        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
             let bytes = values
                 .iter()
                 .map(|value| u8::from(*value))
                 .collect::<Vec<_>>();
             tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
         }
-        (Some(space_spec::Spec::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
+        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
             let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
             tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
         }
-        (Some(space_spec::Spec::Text(_)), SpaceValue::Text(value)) => {
+        (Some(SpaceKind::Text(_)), SpaceValue::Text(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
         }
-        (Some(space_spec::Spec::Dict(spec)), SpaceValue::Dict(values)) => {
+        (Some(SpaceKind::Dict(spec)), SpaceValue::Dict(values)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_value = values.get(key).ok_or_else(|| {
@@ -48,7 +48,7 @@ pub(crate) fn space_value_to_py_neutral<'py>(
             }
             Ok(dict.into_any())
         }
-        (Some(space_spec::Spec::Tuple(spec)), SpaceValue::Tuple(values)) => {
+        (Some(SpaceKind::Tuple(spec)), SpaceValue::Tuple(values)) => {
             if values.len() != spec.spaces.len() {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "tuple arity mismatch: expected {}, got {}",
@@ -77,11 +77,11 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     match space.spec.as_ref() {
-        Some(space_spec::Spec::Box(_)) => {
+        Some(SpaceKind::Box(_)) => {
             let mut bytes = Vec::new();
             for value in values {
                 match value {
-                    SpaceValue::Box(value) => bytes.extend_from_slice(&value.data),
+                    SpaceValue::Box(value) => bytes.extend_from_slice(&value.to_contiguous_bytes()),
                     _ => {
                         return Err(pyo3::exceptions::PyTypeError::new_err(
                             "batched value kind mismatch for Box space",
@@ -93,7 +93,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
             shape.extend(space.shape.iter().map(|dim| *dim as usize));
             tensor_from_shape(py, bytes, shape, dtype_name(space.dtype))
         }
-        Some(space_spec::Spec::Discrete(_)) => {
+        Some(SpaceKind::Discrete(_)) => {
             let items = values
                 .iter()
                 .map(|value| match value {
@@ -105,7 +105,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
                 .collect::<PyResult<Vec<_>>>()?;
             Ok(PyList::new(py, items)?.into_any())
         }
-        Some(space_spec::Spec::MultiBinary(_)) => {
+        Some(SpaceKind::MultiBinary(_)) => {
             let mut bytes = Vec::new();
             for value in values {
                 match value {
@@ -123,7 +123,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
             shape.extend(space.shape.iter().map(|dim| *dim as usize));
             tensor_from_shape(py, bytes, shape, dtype_name(space.dtype))
         }
-        Some(space_spec::Spec::MultiDiscrete(_)) => {
+        Some(SpaceKind::MultiDiscrete(_)) => {
             let mut bytes = Vec::new();
             for value in values {
                 match value {
@@ -141,7 +141,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
             shape.extend(space.shape.iter().map(|dim| *dim as usize));
             tensor_from_shape(py, bytes, shape, dtype_name(space.dtype))
         }
-        Some(space_spec::Spec::Dict(spec)) => {
+        Some(SpaceKind::Dict(spec)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
                 let child_values = values
@@ -164,7 +164,7 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
             }
             Ok(dict.into_any())
         }
-        Some(space_spec::Spec::Tuple(spec)) => {
+        Some(SpaceKind::Tuple(spec)) => {
             let mut columns = vec![Vec::with_capacity(values.len()); spec.spaces.len()];
             for value in values {
                 let items = match value {

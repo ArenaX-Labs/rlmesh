@@ -2,7 +2,7 @@ use crate::spaces::space::{make_space, parse_space};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
-use rlmesh_spaces::v1::spaces::*;
+use rlmesh_spaces::spaces::*;
 
 pub(crate) fn make_tuple<'py>(
     py: Python<'py>,
@@ -10,7 +10,7 @@ pub(crate) fn make_tuple<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     let tuple_spec = match &space.spec {
-        Some(space_spec::Spec::Tuple(t)) => t,
+        Some(SpaceKind::Tuple(t)) => t,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "missing tuple detail",

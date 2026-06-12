@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+#MISE description="Run framework tests against declared dependency floors (py3.10, numpy 1.22, torch 1.11, jax 0.4.24)"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--rebuild" help="Rebuild the cp310 wheel even when one exists in dist/"
+#USAGE flag "--perf" help="Also run the tensor-conversion benchmarks and compare against the local perf baseline (warn-only)"
+
+# Executes the floors documented in docs/compatibility.md: the framework
+# integration suites run on Python 3.10 against the oldest supported
+# numpy/torch/jax, using a locally built cp310 wheel.
+#
+# CI-ready: this task is not wired into CI yet. When wanted, add a separate
+# .github/workflows/floors.yml so PR latency is unaffected:
+#
+#   name: Dependency Floors
+#   on:
+#     workflow_dispatch:
+#     schedule:
+#       - cron: "17 6 * * 1"
+#   jobs:
+#     floors:
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: actions/checkout@v6
+#         - name: Scope mise to repository config
+#           run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
+#         - uses: jdx/mise-action@v4.1.0   # same version/cache_key as ci.yml
+#         - uses: Swatinem/rust-cache@v2
+#           with: { workspaces: ". -> target" }
+#         - name: Floor-matrix tests
+#           run: mise run --skip-tools test:python:floors
+
+set -euo pipefail
+
+repo_root="$PWD"
+dist="$repo_root/python/rlmesh/dist"
+venv="$repo_root/target/floors-venv"
+
+numpy_floor="1.22.4"
+# Declared install floor is torch 1.11 (first cp310 wheels + from_dlpack),
+# but wheels older than 1.13 fail to dlopen on glibc >= 2.41 ("cannot
+# enable executable stack"), so the oldest *executable* floor here is 1.13.
+torch_floor="1.13.1"
+jax_floor="0.4.24"
+ml_dtypes_floor="0.2.0"
+
+if [ "$(uname -s)" != Linux ]; then
+  # torch 1.11 CPU wheels for the floor matrix come from the linux-only
+  # +cpu index; macOS would need a different torch pin.
+  echo "error: test:python:floors currently supports Linux hosts only" >&2
+  exit 1
+fi
+
+# 1. Locate or build the cp310 wheel.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' python/rlmesh/pyproject.toml | head -1)
+wheel=$(compgen -G "$dist/rlmesh-${version}-cp310-cp310-*.whl" | head -1 || true)
+if [ -z "$wheel" ] || [ "${usage_rebuild:-false}" = true ]; then
+  echo "floors: building cp310 wheel for rlmesh ${version}"
+  mise run setup:python:release
+  (cd python/rlmesh && mise exec python@3.10 -- maturin build --release -o dist/ -i python3.10)
+  wheel=$(compgen -G "$dist/rlmesh-${version}-cp310-cp310-*.whl" | head -1)
+fi
+echo "floors: using wheel $wheel"
+
+# 2. Isolated python 3.10 venv. The explicit interpreter path overrides the
+# exported UV_PYTHON, and --no-config keeps uv from discovering the
+# workspace pyproject, whose constraint-dependencies pin modern
+# numpy/torch and would defeat the floor pins.
+mise install python@3.10
+python310="$(mise where python@3.10)/bin/python3.10"
+rm -rf "$venv"
+uv venv --python "$python310" "$venv"
+py="$venv/bin/python"
+
+# 3. torch alone from the CPU index (the PyPI 1.11 wheel bundles CUDA).
+uv pip install --no-config --python "$py" \
+  --index-url https://download.pytorch.org/whl/cpu \
+  "torch==${torch_floor}+cpu"
+
+# 4. Everything else from PyPI. jax <= 0.4.30 does not depend on jaxlib,
+# hence the explicit pin.
+uv pip install --no-config --python "$py" \
+  "numpy==${numpy_floor}" \
+  "jax==${jax_floor}" \
+  "jaxlib==${jax_floor}" \
+  "ml_dtypes==${ml_dtypes_floor}" \
+  "pytest>=8,<9"
+
+# 5. Verify nothing got backtracked upward.
+installed=$("$py" -m pip list --format=freeze 2>/dev/null || uv pip list --no-config --python "$py" --format=freeze)
+echo "$installed" | grep -ix "numpy==${numpy_floor}" >/dev/null \
+  || { echo "error: numpy floor pin did not hold:"; echo "$installed" | grep -i ^numpy; exit 1; }
+echo "$installed" | grep -ix "jax==${jax_floor}" >/dev/null \
+  || { echo "error: jax floor pin did not hold"; exit 1; }
+
+# 6. The wheel itself (dependency-free by design).
+uv pip install --no-config --python "$py" --no-deps "$wheel"
+
+# 7. Run the framework suites with the venv interpreter (not `uv run`,
+# which would re-enter the workspace project and its constraints).
+"$py" -m pytest \
+  python/rlmesh/tests/unit/test_tensor.py \
+  python/rlmesh/tests/unit/test_dlpack.py \
+  python/rlmesh/tests/integration/test_numpy.py \
+  python/rlmesh/tests/integration/test_torch.py \
+  python/rlmesh/tests/integration/test_jax.py \
+  -q -p no:cacheprovider
+
+# 8. Optional: benchmark the floor versions and compare against the modern
+# local baseline (warn-only — version drift is informative, not a gate).
+if [ "${usage_perf:-false}" = true ]; then
+  uv pip install --no-config --python "$py" --no-deps tools/rlmesh_system_fixtures
+  floor_report="target/python-validation/floors-perf.json"
+  mkdir -p target/python-validation
+  "$py" -m rlmesh_system_fixtures.artifacts \
+    --environment floors-py310 --python-version 3.10 --tier basic \
+    --dependency "numpy==${numpy_floor}" --dependency "torch==${torch_floor}+cpu" \
+    --dependency "jax==${jax_floor}" \
+    --artifact tensor-numpy-view --artifact tensor-export-copy \
+    --artifact tensor-numpy-encode --artifact tensor-dlpack-import \
+    --artifact tensor-torch-view --artifact tensor-torch-export-copy \
+    --artifact tensor-jax-view \
+    --samples 5 --warmups 2 --output "$floor_report"
+  baseline="target/python-validation/perf-baseline.json"
+  if [ -f "$baseline" ]; then
+    # Warn-only cross-version drift table. Joined by measurement name (the
+    # environment labels differ between the modern baseline and this run).
+    "$py" - "$baseline" "$floor_report" <<'PY'
+import json
+import sys
+
+baseline_path, floor_path = sys.argv[1], sys.argv[2]
+baseline = {
+    measurement["name"]: measurement
+    for measurement in json.load(open(baseline_path))["measurements"]
+}
+floor = json.load(open(floor_path))["measurements"]
+
+print(f"{'measurement':44} {'floor_ms':>10} {'modern_ms':>10} {'ratio':>7}")
+for measurement in sorted(floor, key=lambda m: m["name"]):
+    name = measurement["name"]
+    reference = baseline.get(name)
+    if reference is None:
+        print(f"{name:44} {measurement['median_ms']:>10.4f} {'-':>10} {'new':>7}")
+        continue
+    ratio = measurement["median_ms"] / reference["median_ms"]
+    flag = "  <-- drift" if ratio > 1.5 and measurement["median_ms"] - reference["median_ms"] > 0.05 else ""
+    print(
+        f"{name:44} {measurement['median_ms']:>10.4f} "
+        f"{reference['median_ms']:>10.4f} {ratio:>6.2f}x{flag}"
+    )
+PY
+  else
+    echo "floors: no perf baseline at $baseline; run 'mise run perf:baseline' first"
+  fi
+fi
