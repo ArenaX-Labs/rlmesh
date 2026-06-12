@@ -18,7 +18,9 @@ environment/model interactions.
 Preview APIs are intended to become stable but may still change with migration notes. Experimental
 APIs may change or disappear.
 
-Torch and JAX backends and sandbox helpers are experimental in this beta.
+Torch and JAX backends and sandbox helpers are experimental in this beta. The `MultiBinary`,
+`MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for
+the per-space stability labels, which track the API surface policy in `api_metadata.json`.
 
 Beta caveat: dtype values added during the beta (`int8/16`, `uint16/32/64`, `bfloat16`) are not
 negotiated — a peer from an older beta fails with a decode error naming the unknown dtype when it

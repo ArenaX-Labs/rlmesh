@@ -12,17 +12,19 @@ wrappers can stay in place.
 
 ## Spaces
 
-RLMesh currently supports these Gymnasium spaces.
+RLMesh currently supports these Gymnasium spaces. The **Stability** column matches the API surface
+policy in `api_metadata.json`: `Stable` spaces follow the compatibility guarantees in
+{doc}`compatibility`, while `Experimental` spaces may still change before the stable release.
 
 ### Fundamental Spaces
 
-| Gymnasium space | RLMesh space    | Notes                                                                     |
-| --------------- | --------------- | ------------------------------------------------------------------------- |
-| `Box`           | `Box`           | Uniform and array bounds are accepted.                                    |
-| `Discrete`      | `Discrete`      | `start` is preserved.                                                     |
-| `MultiBinary`   | `MultiBinary`   | Integer and shaped forms are accepted.                                    |
-| `MultiDiscrete` | `MultiDiscrete` | One-dimensional `nvec` is supported.                                      |
-| `Text`          | `Text`          | Custom charsets are preserved; default charsets are treated as unbounded. |
+| Gymnasium space | RLMesh space    | Stability    | Notes                                                                     |
+| --------------- | --------------- | ------------ | ------------------------------------------------------------------------- |
+| `Box`           | `Box`           | Stable       | Uniform and array bounds are accepted.                                    |
+| `Discrete`      | `Discrete`      | Stable       | `start` is preserved.                                                     |
+| `MultiBinary`   | `MultiBinary`   | Experimental | Integer and shaped forms are accepted.                                    |
+| `MultiDiscrete` | `MultiDiscrete` | Experimental | One-dimensional `nvec` is supported.                                      |
+| `Text`          | `Text`          | Experimental | Custom charsets are preserved; default charsets are treated as unbounded. |
 
 For `Text`, RLMesh still preserves `min_length` and `max_length`. Only the default Gymnasium charset
 is treated as unrestricted, so punctuation and whitespace are not rejected just because the source
@@ -30,10 +32,10 @@ space used Gymnasium's default alphanumeric charset.
 
 ### Composite Spaces
 
-| Gymnasium space | RLMesh space | Notes                            |
-| --------------- | ------------ | -------------------------------- |
-| `Tuple`         | `Tuple`      | Supported when child spaces are. |
-| `Dict`          | `Dict`       | Supported when child spaces are. |
+| Gymnasium space | RLMesh space | Stability    | Notes                            |
+| --------------- | ------------ | ------------ | -------------------------------- |
+| `Tuple`         | `Tuple`      | Experimental | Supported when child spaces are. |
+| `Dict`          | `Dict`       | Stable       | Supported when child spaces are. |
 
 Not supported in this beta:
 
