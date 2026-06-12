@@ -7,8 +7,8 @@ use rlmesh_grpc::env::{
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values,
-    meta_map_from_struct, meta_map_to_struct, render_result_to_proto, value_bytes,
+    bytes_value, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto, render_result_to_proto, value_bytes,
 };
 
 use super::Env;
@@ -55,7 +55,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .inner
             .reset(ResetRequest {
                 seeds: req.seeds,
-                options: req.options.map(meta_map_from_struct),
+                options: req.options.map(meta_map_from_proto),
                 timeout_ms: req.timeout_ms,
             })
             .await
@@ -69,7 +69,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
 
         Ok(ProtoResetResponse {
             observation: Some(bytes_value(observations)),
-            infos: result.info.as_ref().map(meta_map_to_struct),
+            infos: result.info.as_ref().map(meta_map_to_proto),
             episode_ids: result.episode_ids,
         })
     }
@@ -109,7 +109,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             rewards: result.rewards,
             terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
             truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
-            infos: result.info.as_ref().map(meta_map_to_struct),
+            infos: result.info.as_ref().map(meta_map_to_proto),
             completed_episodes: result
                 .completed_episodes
                 .iter()
@@ -178,7 +178,7 @@ fn public_episode_metadata_to_proto(
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
         duration_ms: value.duration_ms,
-        final_info: value.final_info.as_ref().map(meta_map_to_struct),
+        final_info: value.final_info.as_ref().map(meta_map_to_proto),
     })
 }
 
@@ -200,7 +200,7 @@ pub(super) fn proto_episode_metadata_to_public(
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
         duration_ms: value.duration_ms,
-        final_info: value.final_info.map(meta_map_from_struct),
+        final_info: value.final_info.map(meta_map_from_proto),
     })
 }
 

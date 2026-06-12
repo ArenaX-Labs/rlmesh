@@ -4,7 +4,7 @@ use rlmesh_proto::env::v1::{
 use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
-use crate::wire::spaces::{meta_map_from_struct, meta_map_to_struct};
+use crate::wire::spaces::{meta_map_from_proto, meta_map_to_proto};
 
 use super::payload::{decode_value, encode_value};
 
@@ -13,7 +13,7 @@ pub fn reset_request_to_proto(
 ) -> Result<ResetRequest, ProtocolError> {
     Ok(ResetRequest {
         seeds: request.seed.into_iter().collect(),
-        options: request.options.as_ref().map(meta_map_to_struct),
+        options: request.options.as_ref().map(meta_map_to_proto),
         timeout_ms: request.timeout_ms,
     })
 }
@@ -24,7 +24,7 @@ pub fn reset_result_from_proto(
 ) -> Result<native::ResetResult, ProtocolError> {
     Ok(native::ResetResult {
         observation: decode_value(response.observation.as_ref(), observation_space)?,
-        info: response.infos.map(meta_map_from_struct),
+        info: response.infos.map(meta_map_from_proto),
         episode_id: response.episode_ids.into_iter().next(),
     })
 }
@@ -57,7 +57,7 @@ pub fn step_result_from_proto(
             .unwrap_or_default()
             != 0,
         truncated: response.truncated_mask.first().copied().unwrap_or_default() != 0,
-        info: response.infos.map(meta_map_from_struct),
+        info: response.infos.map(meta_map_from_proto),
     })
 }
 
@@ -96,7 +96,7 @@ pub fn reset_result_to_proto(
             .as_ref()
             .map(|value| encode_value(value, observation_space))
             .transpose()?,
-        infos: result.info.as_ref().map(meta_map_to_struct),
+        infos: result.info.as_ref().map(meta_map_to_proto),
         episode_ids: result.episode_id.iter().cloned().collect(),
     })
 }
@@ -114,7 +114,7 @@ pub fn step_result_to_proto(
         rewards: vec![result.reward],
         terminated_mask: vec![u8::from(result.terminated)],
         truncated_mask: vec![u8::from(result.truncated)],
-        infos: result.info.as_ref().map(meta_map_to_struct),
+        infos: result.info.as_ref().map(meta_map_to_proto),
         completed_episodes: vec![],
         episode_ids: vec![],
     })

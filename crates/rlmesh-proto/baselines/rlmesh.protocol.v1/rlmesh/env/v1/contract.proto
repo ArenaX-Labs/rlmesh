@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package rlmesh.env.v1;
 
-import "google/protobuf/struct.proto";
+import "rlmesh/spaces/v1/meta.proto";
 import "rlmesh/spaces/v1/spaces.proto";
 
 // RLMesh-native environment contract exchanged during handshake and model
@@ -11,7 +11,7 @@ message EnvContract {
   string id = 1;
   rlmesh.spaces.v1.SpaceSpec action_space = 2;
   rlmesh.spaces.v1.SpaceSpec observation_space = 3;
-  google.protobuf.Struct metadata = 4;
+  rlmesh.spaces.v1.MetaMap metadata = 4;
   string render_mode = 5;
   uint32 num_envs = 6;
 }

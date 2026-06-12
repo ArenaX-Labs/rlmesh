@@ -1,8 +1,7 @@
 use rlmesh_grpc::env::{ResetRequest as ProtoResetRequest, StepRequest as ProtoStepRequest};
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values,
-    meta_map_from_struct, meta_map_to_struct, render_request_to_proto, render_result_from_proto,
-    value_bytes,
+    bytes_value, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto, render_request_to_proto, render_result_from_proto, value_bytes,
 };
 
 use super::types::{
@@ -134,7 +133,7 @@ impl RemoteEnv {
             .inner
             .reset(ProtoResetRequest {
                 seeds: req.seeds,
-                options: req.options.as_ref().map(meta_map_to_struct),
+                options: req.options.as_ref().map(meta_map_to_proto),
                 timeout_ms: req.timeout_ms,
             })
             .await
@@ -150,7 +149,7 @@ impl RemoteEnv {
 
         Ok(ResetResult {
             observations,
-            info: response.infos.map(meta_map_from_struct),
+            info: response.infos.map(meta_map_from_proto),
             episode_ids: response.episode_ids,
         })
     }
@@ -219,7 +218,7 @@ impl RemoteEnv {
             rewards: response.rewards,
             terminated,
             truncated,
-            info: response.infos.map(meta_map_from_struct),
+            info: response.infos.map(meta_map_from_proto),
             completed_episodes,
             episode_ids: response.episode_ids,
         })

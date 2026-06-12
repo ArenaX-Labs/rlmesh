@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use prost::Message;
-use prost_types::{Struct, Value, value};
+use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
+use rlmesh_proto::spaces::v1::{MetaMap, MetaValue};
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -435,7 +436,7 @@ async fn handle_env_request<E: Environment>(
                         .collect();
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
-                    let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
+                    let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::debug!(
                         obs_bytes,
                         info_bytes,
@@ -517,7 +518,7 @@ async fn handle_env_request<E: Environment>(
                     ok.completed_episodes = completed_episodes;
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
-                    let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
+                    let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::trace!(
                         obs_bytes,
                         info_bytes,
@@ -614,11 +615,11 @@ fn join_response_payload_bytes(response: &JoinResponse) -> usize {
     match response.kind.as_ref() {
         Some(join_response::Kind::Reset(ok)) => {
             space_value_len(ok.observation.as_ref())
-                + ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0)
+                + ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0)
         }
         Some(join_response::Kind::Step(ok)) => {
             space_value_len(ok.observation.as_ref())
-                + ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0)
+                + ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0)
         }
         Some(join_response::Kind::Render(ok)) => ok.png_frame.as_ref().map(Vec::len).unwrap_or(0),
         Some(join_response::Kind::Error(error)) => error.message.len() + error.debug_info.len(),
@@ -634,7 +635,7 @@ fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> us
         .unwrap_or(0)
 }
 
-fn decode_info_struct(info: Option<&Struct>) -> Option<Struct> {
+fn decode_info_struct(info: Option<&MetaMap>) -> Option<MetaMap> {
     info.cloned()
 }
 
@@ -653,13 +654,13 @@ fn operation_telemetry(operation: &str, endpoint_total: Duration) -> OperationTe
 }
 
 fn extract_env_final_info(
-    info: Option<&Struct>,
+    info: Option<&MetaMap>,
     env_idx: usize,
     num_envs: usize,
-) -> Option<Struct> {
+) -> Option<MetaMap> {
     let info = info?;
-    let final_info = info.fields.get("final_info")?;
-    let is_present = match info.fields.get("_final_info") {
+    let final_info = info.entries.get("final_info")?;
+    let is_present = match info.entries.get("_final_info") {
         Some(mask) => value_bool_at(mask, env_idx).unwrap_or(false),
         None => num_envs == 1,
     };
@@ -669,11 +670,11 @@ fn extract_env_final_info(
     }
 
     match &final_info.kind {
-        Some(value::Kind::StructValue(struct_value)) => Some(struct_value.clone()),
-        Some(value::Kind::ListValue(list_value)) => {
-            let entry = list_value.values.get(env_idx)?;
+        Some(MetaKind::Map(map)) => Some(map.clone()),
+        Some(MetaKind::List(list)) => {
+            let entry = list.items.get(env_idx)?;
             match &entry.kind {
-                Some(value::Kind::StructValue(struct_value)) => Some(struct_value.clone()),
+                Some(MetaKind::Map(map)) => Some(map.clone()),
                 _ => None,
             }
         }
@@ -681,11 +682,11 @@ fn extract_env_final_info(
     }
 }
 
-fn value_bool_at(value: &Value, env_idx: usize) -> Option<bool> {
+fn value_bool_at(value: &MetaValue, env_idx: usize) -> Option<bool> {
     match &value.kind {
-        Some(value::Kind::ListValue(list_value)) => {
-            let entry = list_value.values.get(env_idx)?;
-            if let Some(value::Kind::BoolValue(flag)) = &entry.kind {
+        Some(MetaKind::List(list)) => {
+            let entry = list.items.get(env_idx)?;
+            if let Some(MetaKind::Bool(flag)) = &entry.kind {
                 Some(*flag)
             } else {
                 None

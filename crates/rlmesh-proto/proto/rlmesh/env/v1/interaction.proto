@@ -2,8 +2,8 @@ syntax = "proto3";
 
 package rlmesh.env.v1;
 
-import "google/protobuf/struct.proto";
 import "rlmesh/core/v1/telemetry.proto";
+import "rlmesh/spaces/v1/meta.proto";
 import "rlmesh/spaces/v1/value.proto";
 
 message EpisodeMetadata {
@@ -17,12 +17,12 @@ message EpisodeMetadata {
   int64 start_timestamp_ns = 8;
   int64 end_timestamp_ns = 9;
   int64 duration_ms = 10;
-  google.protobuf.Struct final_info = 11;
+  rlmesh.spaces.v1.MetaMap final_info = 11;
 }
 
 message ResetRequest {
   repeated int64 seeds = 1;
-  google.protobuf.Struct options = 2;
+  rlmesh.spaces.v1.MetaMap options = 2;
   int64 timeout_ms = 3;
 }
 
@@ -53,7 +53,7 @@ message JoinRequest {
 
 message ResetResponse {
   rlmesh.spaces.v1.SpaceValue observation = 1;
-  google.protobuf.Struct infos = 2;
+  rlmesh.spaces.v1.MetaMap infos = 2;
   repeated string episode_ids = 3;
 }
 
@@ -62,7 +62,7 @@ message StepResponse {
   repeated double rewards = 2;
   bytes terminated_mask = 3;
   bytes truncated_mask = 4;
-  google.protobuf.Struct infos = 5;
+  rlmesh.spaces.v1.MetaMap infos = 5;
   repeated EpisodeMetadata completed_episodes = 6;
   repeated string episode_ids = 7;
 }

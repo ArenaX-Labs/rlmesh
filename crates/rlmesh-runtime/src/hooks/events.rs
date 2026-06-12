@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use prost_types::Struct;
 use rlmesh_proto::common::v1::MessageBytes;
+use rlmesh_proto::spaces::v1::MetaMap;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,7 +99,7 @@ pub struct EpisodeCompletedEvent {
     pub terminated: bool,
     pub truncated: bool,
     pub duration_ms: i64,
-    pub final_info: Option<Struct>,
+    pub final_info: Option<MetaMap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

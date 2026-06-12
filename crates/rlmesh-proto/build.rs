@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spec.join("rlmesh/env/v1/interaction.proto"),
                 spec.join("rlmesh/env/v1/service.proto"),
                 // Spaces
+                spec.join("rlmesh/spaces/v1/meta.proto"),
                 spec.join("rlmesh/spaces/v1/spaces.proto"),
                 spec.join("rlmesh/spaces/v1/types.proto"),
                 spec.join("rlmesh/spaces/v1/value.proto"),

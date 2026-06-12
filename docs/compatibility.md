@@ -27,6 +27,17 @@ negotiated — a peer from an older beta fails with a decode error naming the un
 meets an environment that uses them. Run both ends on the same beta release. Edition-gated dtype
 negotiation is planned for the workflow-edition rollout before GA.
 
+Beta caveat: the `rlmesh.protocol.v1` wire format changed within the beta and is not
+backward-compatible across beta releases. Info/option channels (`infos`, `final_info`, `options`,
+and `EnvContract.metadata`) moved off `google.protobuf.Struct` to a self-describing `MetaMap` that
+preserves integer/float/bytes types exactly at any magnitude; composite (Dict/Tuple) space values
+now use a recursive, raw-bytes `SpaceValueNode` encoding instead of base64-in-`Struct`; and
+`EpisodeMetadata.seed` is now an explicit-presence `optional` field that is left unset for unseeded
+episodes rather than reporting a fabricated `0`. The protocol generation stays `rlmesh.protocol.v1`
+(the surface is still beta-mutable before the stable release), and the checked-in public baseline
+tracks the current surface — so peers must run the same beta release. The generation seals with the
+stable release, after which any such change requires a new generation.
+
 ## Framework Version Floors
 
 The optional framework backends declare the lowest versions their conversion paths actually require.

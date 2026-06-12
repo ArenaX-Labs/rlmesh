@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use rlmesh_proto::env::v1::EpisodeMetadata;
+use rlmesh_proto::spaces::v1::MetaMap;
 
 /// Sentinel written to the (non-optional) `EpisodeMetadata.seed` proto field
 /// when an episode was started without an explicit seed (the environment seeded
@@ -55,7 +56,7 @@ impl Episode {
         self,
         terminated: bool,
         truncated: bool,
-        final_info: Option<prost_types::Struct>,
+        final_info: Option<MetaMap>,
     ) -> EpisodeMetadata {
         let end_timestamp_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -152,7 +153,7 @@ impl EpisodeTracker {
         env_index: i32,
         terminated: bool,
         truncated: bool,
-        final_info: Option<prost_types::Struct>,
+        final_info: Option<MetaMap>,
     ) -> Option<EpisodeMetadata> {
         let episode = self.active.remove(&env_index)?;
         Some(episode.complete(terminated, truncated, final_info))
