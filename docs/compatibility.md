@@ -25,12 +25,17 @@ Torch and JAX backends and sandbox helpers are experimental in this beta.
 The optional framework backends declare the lowest versions their conversion paths actually require.
 Each floor has a concrete reason:
 
-| Package | Floor      | Why                                                                                     |
-| ------- | ---------- | --------------------------------------------------------------------------------------- |
-| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels.                     |
-| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.                                 |
-| torch   | `>=1.11`   | First release with full `cp310` wheels and top-level `torch.from_dlpack`.               |
-| jax     | `>=0.4.24` | First release with DLPack `bool` support; `jaxlib` below `0.4.18` is no longer on PyPI. |
+| Package | Floor      | Why                                                                                      |
+| ------- | ---------- | ---------------------------------------------------------------------------------------- |
+| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels.                      |
+| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.                                  |
+| torch   | `>=1.11`   | First release with full `cp310` wheels and top-level `torch.from_dlpack`. [^torch-glibc] |
+| jax     | `>=0.4.24` | First release with DLPack `bool` support; `jaxlib` below `0.4.18` is no longer on PyPI.  |
+
+[^torch-glibc]:
+    Torch wheels older than 1.13 fail to load on glibc 2.41+ hosts ("cannot enable executable
+    stack"), so the floor harness exercises 1.13.1 there; 1.11 remains the declared install floor
+    for older systems.
 
 The floors are executed — not just declared — by `mise run test:python:floors`, which builds a
 `cp310` wheel and runs the framework test suites against exactly these versions. Versions below a

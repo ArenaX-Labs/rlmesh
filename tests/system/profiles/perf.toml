@@ -1,0 +1,71 @@
+[profile]
+description = "Tensor conversion performance artifacts across the numpy/torch/jax backends."
+environments = ["perf-numpy-py311", "perf-torch-py311", "perf-jax-py311"]
+
+[environments.perf-numpy-py311]
+tier = "basic"
+python = "3.11"
+dependencies = ["numpy"]
+scenarios = [
+  "perf-tensor-numpy-view",
+  "perf-tensor-export-copy",
+  "perf-tensor-numpy-encode",
+  "perf-tensor-dlpack-import",
+]
+warmups = 2
+samples = 5
+timeout_seconds = 300
+
+[environments.perf-torch-py311]
+tier = "torch"
+python = "3.11"
+dependencies = ["numpy", "torch"]
+dependency_args = ["--torch-backend", "cpu"]
+scenarios = ["perf-tensor-torch-view", "perf-tensor-torch-export-copy"]
+warmups = 2
+samples = 5
+timeout_seconds = 420
+
+[environments.perf-jax-py311]
+tier = "jax"
+python = "3.11"
+dependencies = ["numpy", "jax"]
+scenarios = ["perf-tensor-jax-view"]
+warmups = 2
+samples = 5
+timeout_seconds = 420
+
+[scenarios.perf-tensor-numpy-view]
+kind = "artifact"
+description = "NumPy zero-copy tensor view timing."
+artifact = "tensor-numpy-view"
+
+[scenarios.perf-tensor-export-copy]
+kind = "artifact"
+description = "memoryview byte export copy timing."
+artifact = "tensor-export-copy"
+
+[scenarios.perf-tensor-numpy-encode]
+kind = "artifact"
+description = "NumPy array -> Tensor encode copy timing."
+artifact = "tensor-numpy-encode"
+
+[scenarios.perf-tensor-dlpack-import]
+kind = "artifact"
+description = "Tensor.from_dlpack copy-import timing from a NumPy producer."
+artifact = "tensor-dlpack-import"
+
+[scenarios.perf-tensor-torch-view]
+kind = "artifact"
+description = "Torch DLPack zero-copy tensor view timing."
+artifact = "tensor-torch-view"
+
+[scenarios.perf-tensor-torch-export-copy]
+kind = "artifact"
+description = "Torch tensor roundtrip (export + view) timing."
+artifact = "tensor-torch-export-copy"
+
+[scenarios.perf-tensor-jax-view]
+kind = "artifact"
+description = "JAX DLPack import timing (shared for aligned buffers)."
+artifact = "tensor-jax-view"

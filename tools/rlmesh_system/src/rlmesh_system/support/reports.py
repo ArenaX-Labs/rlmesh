@@ -161,6 +161,11 @@ def compare_measurement(
 def thresholds_for(name: str) -> tuple[float, float, float | None]:
     if name.startswith(("tensor.numpy.asarray", "tensor.torch.as_tensor")):
         return 0.15, 0.05, None
+    if name.startswith("tensor.jax.asarray"):
+        # XLA dispatch adds noise on top of the shared-buffer import.
+        return 0.25, 0.10, None
+    if name.startswith(("tensor.from_dlpack", "tensor.numpy.from_array")):
+        return 0.20, 0.25, 0.15
     if name.startswith("remote.image"):
         return 0.20, 0.25, 0.15
     if name.startswith(("remote.mujoco", "remote.sai-mujoco")):

@@ -2,6 +2,7 @@
 #MISE description="Run framework tests against declared dependency floors (py3.10, numpy 1.22, torch 1.11, jax 0.4.24)"
 #MISE dir="{{ config_root }}"
 #USAGE flag "--rebuild" help="Rebuild the cp310 wheel even when one exists in dist/"
+#USAGE flag "--perf" help="Also run the tensor-conversion benchmarks and compare against the local perf baseline (warn-only)"
 
 # Executes the floors documented in docs/compatibility.md: the framework
 # integration suites run on Python 3.10 against the oldest supported
@@ -35,7 +36,10 @@ dist="$repo_root/python/rlmesh/dist"
 venv="$repo_root/target/floors-venv"
 
 numpy_floor="1.22.4"
-torch_floor="1.11.0"
+# Declared install floor is torch 1.11 (first cp310 wheels + from_dlpack),
+# but wheels older than 1.13 fail to dlopen on glibc >= 2.41 ("cannot
+# enable executable stack"), so the oldest *executable* floor here is 1.13.
+torch_floor="1.13.1"
 jax_floor="0.4.24"
 ml_dtypes_floor="0.2.0"
 
@@ -100,3 +104,52 @@ uv pip install --no-config --python "$py" --no-deps "$wheel"
   python/rlmesh/tests/integration/test_torch.py \
   python/rlmesh/tests/integration/test_jax.py \
   -q -p no:cacheprovider
+
+# 8. Optional: benchmark the floor versions and compare against the modern
+# local baseline (warn-only — version drift is informative, not a gate).
+if [ "${usage_perf:-false}" = true ]; then
+  uv pip install --no-config --python "$py" --no-deps tools/rlmesh_system_fixtures
+  floor_report="target/python-validation/floors-perf.json"
+  mkdir -p target/python-validation
+  "$py" -m rlmesh_system_fixtures.artifacts \
+    --environment floors-py310 --python-version 3.10 --tier basic \
+    --dependency "numpy==${numpy_floor}" --dependency "torch==${torch_floor}+cpu" \
+    --dependency "jax==${jax_floor}" \
+    --artifact tensor-numpy-view --artifact tensor-export-copy \
+    --artifact tensor-numpy-encode --artifact tensor-dlpack-import \
+    --artifact tensor-torch-view --artifact tensor-torch-export-copy \
+    --artifact tensor-jax-view \
+    --samples 5 --warmups 2 --output "$floor_report"
+  baseline="target/python-validation/perf-baseline.json"
+  if [ -f "$baseline" ]; then
+    # Warn-only cross-version drift table. Joined by measurement name (the
+    # environment labels differ between the modern baseline and this run).
+    "$py" - "$baseline" "$floor_report" <<'PY'
+import json
+import sys
+
+baseline_path, floor_path = sys.argv[1], sys.argv[2]
+baseline = {
+    measurement["name"]: measurement
+    for measurement in json.load(open(baseline_path))["measurements"]
+}
+floor = json.load(open(floor_path))["measurements"]
+
+print(f"{'measurement':44} {'floor_ms':>10} {'modern_ms':>10} {'ratio':>7}")
+for measurement in sorted(floor, key=lambda m: m["name"]):
+    name = measurement["name"]
+    reference = baseline.get(name)
+    if reference is None:
+        print(f"{name:44} {measurement['median_ms']:>10.4f} {'-':>10} {'new':>7}")
+        continue
+    ratio = measurement["median_ms"] / reference["median_ms"]
+    flag = "  <-- drift" if ratio > 1.5 and measurement["median_ms"] - reference["median_ms"] > 0.05 else ""
+    print(
+        f"{name:44} {measurement['median_ms']:>10.4f} "
+        f"{reference['median_ms']:>10.4f} {ratio:>6.2f}x{flag}"
+    )
+PY
+  else
+    echo "floors: no perf baseline at $baseline; run 'mise run perf:baseline' first"
+  fi
+fi

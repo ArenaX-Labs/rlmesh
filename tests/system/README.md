@@ -60,3 +60,33 @@ env = { gym = "Pendulum-v1", packages = ["gymnasium"] }
 
 IsaacSim and longer soak hooks are intentionally not part of this profile set yet; add them later as
 explicit profiles when the simulator launch contract is ready.
+
+## Performance Drift
+
+The `perf` profile times the tensor conversion paths (NumPy/Torch/JAX views, encode/import copies)
+at 1 KiB / 1 MiB / 8 MiB in clean installed-wheel venvs:
+
+```bash
+mise run perf:baseline   # run the perf profile and store the local baseline
+mise run perf:check      # re-run and fail on drift against that baseline
+```
+
+Baselines are machine-specific and live untracked at `target/python-validation/perf-baseline.json`.
+Capture a fresh baseline on a quiet machine before a refactor; run `perf:check` after. Thresholds
+are warn-first (see `thresholds_for` in `rlmesh_system.support.reports`): views gate at ~15-25%
+relative drift with small absolute floors, copy paths also watch MiB/s throughput.
+
+Version drift: `mise run test:python:floors --perf` runs the same benchmarks inside the
+dependency-floor environment (python 3.10, numpy 1.22, torch 1.11, jax 0.4.24) and compares against
+the local baseline warn-only, so a framework version that suddenly costs milliseconds shows up in
+the same report format.
+
+Expected shape of results (what "healthy" looks like):
+
+- `tensor.numpy.asarray` and `tensor.torch.as_tensor` are zero-copy views: median times stay flat as
+  size grows 8000x; reported throughput therefore _rises_ with size. If view times start scaling
+  with size, a copy snuck in.
+- `tensor.jax.asarray` imports over DLPack; XLA shares RLMesh's 64-byte aligned buffers, so it
+  should track the view costs plus jax dispatch overhead, not the copy costs.
+- `tensor.export.bytes`, `tensor.numpy.from_array`, `tensor.from_dlpack`, and `tensor.torch.export`
+  are copies: times scale linearly with size and throughput plateaus at memory bandwidth.
