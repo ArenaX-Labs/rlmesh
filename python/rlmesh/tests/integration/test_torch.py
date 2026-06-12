@@ -41,7 +41,7 @@ def test_torch_tensor_roundtrip_and_rejects_unknown_dtype() -> None:
     )
 
     with pytest.raises(ValueError, match="unsupported tensor dtype"):
-        rlmesh_torch._torch_dtype("int16")
+        rlmesh_torch._torch_dtype("complex64")
 
 
 def test_torch_space_from_spec_samples_and_contains_torch_values() -> None:

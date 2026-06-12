@@ -55,13 +55,20 @@ gym = ["gym>=0.22.0"]
 # truly stable, which also coincides with the DLPack backend release, making it a
 # solid floor version to pick.
 numpy = ["numpy>=1.22"]
+
+# torch 1.11 is the first release with full Python 3.10 wheel coverage and the
+# first to expose top-level torch.from_dlpack, which rlmesh.torch relies on.
 torch = ["torch>=1.11"]
 
-# JAX support for Python 3.10+ begins with jaxlib 0.1.75 (jax 0.2.26), however,
-# the earliest version of jaxlib that is published on PyPI is 0.4.18. Therefore,
-# we are using 0.4.18 as a minimum supported floor. Versions lower should work,
-# but are not officially supported.
-jax = ["jax", "jaxlib>=0.1.75"]
+# jnp.from_dlpack needs bool DLPack support, which jax added in 0.4.24
+# (Feb 2024). That is also close to the practical install floor: jaxlib
+# releases below 0.4.18 have been removed from PyPI. jax does not declare
+# jaxlib as a dependency until 0.4.31, so both must be pinned explicitly.
+jax = ["jax>=0.4.24", "jaxlib>=0.4.24"]
+
+# NumPy has no native bfloat16 dtype; ml_dtypes supplies one for
+# rlmesh.numpy.asarray on bfloat16 tensors.
+bfloat16 = ["ml_dtypes"]
 
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import warnings
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._frameworks import FrameworkBridge
@@ -59,19 +60,21 @@ def as_tensor(
         copy: If ``True``, copy tensor data before creating the Torch tensor.
 
     Returns:
-        Torch tensor view or copy.
+        Torch tensor sharing the RLMesh tensor's memory via DLPack, or an
+        independent copy when ``copy=True``.
     """
     ensure_available()
     import torch
+    import torch.utils.dlpack
 
     if not isinstance(tensor, Tensor):
         return torch.tensor(tensor) if copy else torch.as_tensor(tensor)
 
-    dtype = cast(torch.dtype, _torch_dtype(tensor.dtype))
-    buffer: object = bytearray(tensor.buffer) if copy else tensor
-    view = torch.frombuffer(buffer, dtype=dtype)
-    shape = tuple(tensor.shape)
-    return view.reshape(shape if shape else ())
+    if copy:
+        return _frombuffer_view(tensor, writable_copy=True)
+    if tensor.dtype == "bool" and not _bool_dlpack_supported():
+        return _frombuffer_view(tensor, writable_copy=False)
+    return torch.utils.dlpack.from_dlpack(tensor)
 
 
 def from_tensor(tensor: object) -> Tensor | bool | int | float:
@@ -91,16 +94,46 @@ def from_tensor(tensor: object) -> Tensor | bool | int | float:
     cpu_tensor = tensor.detach().cpu().contiguous()
     if cpu_tensor.ndim == 0:
         return cpu_tensor.item()
-    try:
-        array = cpu_tensor.numpy()
-    except RuntimeError as exc:
-        if "Numpy is not available" not in str(exc):
-            raise
-        raise ImportError(
-            "rlmesh.torch.from_tensor requires numpy for Torch tensor export. "
-            "Install rlmesh[torch]."
-        ) from exc
-    return Tensor(array, list(array.shape), str(array.dtype))
+    if cpu_tensor.dtype == torch.bool and not _bool_dlpack_supported():
+        raw = Tensor.from_dlpack(cpu_tensor.to(torch.uint8))
+        return Tensor(raw, list(raw.shape), "bool")
+    return Tensor.from_dlpack(cpu_tensor)
+
+
+def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
+    """Buffer-protocol fallback used for copies and pre-2.2 bool tensors."""
+    import torch
+
+    dtype = cast("torch.dtype", _torch_dtype(tensor.dtype))
+    buffer: object = bytearray(tensor.tobytes()) if writable_copy else tensor
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The given buffer is not writable.*",
+            category=UserWarning,
+        )
+        view = torch.frombuffer(buffer, dtype=dtype)
+    shape = tuple(tensor.shape)
+    return view.reshape(shape if shape else ())
+
+
+_bool_dlpack: bool | None = None
+
+
+def _bool_dlpack_supported() -> bool:
+    """Whether torch's DLPack path handles bool tensors (torch >= 2.2)."""
+    global _bool_dlpack
+    if _bool_dlpack is None:
+        import torch.utils.dlpack
+
+        try:
+            _ = cast(
+                object, torch.utils.dlpack.from_dlpack(Tensor(b"\x00", [1], "bool"))
+            )
+            _bool_dlpack = True
+        except (RuntimeError, TypeError, BufferError, ValueError):
+            _bool_dlpack = False
+    return _bool_dlpack
 
 
 def _torch_dtype(dtype: str) -> object:
@@ -109,16 +142,26 @@ def _torch_dtype(dtype: str) -> object:
     mapping: dict[str, object] = {
         "bool": torch.bool,
         "uint8": torch.uint8,
+        "int8": torch.int8,
+        "int16": torch.int16,
         "int32": torch.int32,
         "int64": torch.int64,
         "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
         "float32": torch.float32,
         "float64": torch.float64,
     }
-    try:
+    if dtype in mapping:
         return mapping[dtype]
-    except KeyError as exc:
-        raise ValueError(f"unsupported tensor dtype {dtype!r}") from exc
+    if dtype in ("uint16", "uint32", "uint64"):
+        torch_dtype = getattr(torch, dtype, None)
+        if torch_dtype is None:
+            raise ValueError(
+                f"dtype {dtype!r} requires torch >= 2.3 "
+                f"(running torch {torch.__version__})"
+            )
+        return torch_dtype
+    raise ValueError(f"unsupported tensor dtype {dtype!r}")
 
 
 def _encode_leaf(value: object) -> object:

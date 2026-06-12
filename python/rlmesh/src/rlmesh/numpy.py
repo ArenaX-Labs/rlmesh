@@ -56,14 +56,34 @@ def asarray(tensor: Tensor) -> NumpyArray:
         tensor: RLMesh tensor value to view.
 
     Returns:
-        Read-only array view over the tensor buffer.
+        Read-only, zero-copy array view over the tensor buffer. ``bfloat16``
+        tensors are copied, since the buffer protocol cannot describe them,
+        and require the ``ml_dtypes`` package (``rlmesh[bfloat16]``).
     """
     ensure_available()
     import numpy as np
 
-    array = np.frombuffer(tensor.buffer, dtype=np.dtype(tensor.dtype))
     shape = tuple(tensor.shape)
+    if tensor.dtype == "bfloat16":
+        array = np.frombuffer(tensor.tobytes(), dtype=_bfloat16_dtype())
+    else:
+        try:
+            array = np.frombuffer(tensor.buffer, dtype=np.dtype(tensor.dtype))
+        except (BufferError, ValueError):
+            # Non-contiguous tensors cannot serve a flat buffer request.
+            array = np.frombuffer(tensor.copy().buffer, dtype=np.dtype(tensor.dtype))
     return cast(NumpyArray, np.reshape(array, shape if shape else ()))
+
+
+def _bfloat16_dtype() -> Any:
+    try:
+        import ml_dtypes
+    except ImportError as exc:
+        raise ImportError(
+            "bfloat16 tensors require ml_dtypes for NumPy conversion. "
+            "Install rlmesh[bfloat16]."
+        ) from exc
+    return ml_dtypes.bfloat16
 
 
 def from_array(array: object) -> Tensor | PrimitiveValue:

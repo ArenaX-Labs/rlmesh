@@ -1142,6 +1142,9 @@ version = "0.1.0b2"
 source = { editable = "python/rlmesh" }
 
 [package.optional-dependencies]
+bfloat16 = [
+    { name = "ml-dtypes" },
+]
 gym = [
     { name = "gym" },
 ]
@@ -1167,12 +1170,13 @@ torch = [
 requires-dist = [
     { name = "gym", marker = "extra == 'gym'", specifier = ">=0.22.0" },
     { name = "gymnasium", marker = "extra == 'gymnasium'", specifier = ">=0.26.1" },
-    { name = "jax", marker = "extra == 'jax'" },
-    { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.1.75" },
+    { name = "jax", marker = "extra == 'jax'", specifier = ">=0.4.24" },
+    { name = "jaxlib", marker = "extra == 'jax'", specifier = ">=0.4.24" },
+    { name = "ml-dtypes", marker = "extra == 'bfloat16'" },
     { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.22" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=1.11", index = "https://download.pytorch.org/whl/cpu" },
 ]
-provides-extras = ["gymnasium", "gym", "numpy", "torch", "jax"]
+provides-extras = ["gymnasium", "gym", "numpy", "torch", "jax", "bfloat16"]
 
 [[package]]
 name = "rlmesh-api-surface"
@@ -1213,7 +1217,7 @@ dependencies = [
 dev = [
     { name = "basedpyright" },
     { name = "pytest" },
-    { name = "rlmesh", extra = ["gymnasium", "numpy", "torch"] },
+    { name = "rlmesh", extra = ["bfloat16", "gymnasium", "numpy", "torch"] },
     { name = "rlmesh-api-surface" },
     { name = "rlmesh-system" },
     { name = "rlmesh-system-fixtures" },
@@ -1238,7 +1242,7 @@ requires-dist = [{ name = "rlmesh", editable = "python/rlmesh" }]
 dev = [
     { name = "basedpyright", specifier = "==1.36.1" },
     { name = "pytest", specifier = "==8.4.2" },
-    { name = "rlmesh", extras = ["gymnasium", "numpy", "torch"], editable = "python/rlmesh" },
+    { name = "rlmesh", extras = ["gymnasium", "numpy", "torch", "bfloat16"], editable = "python/rlmesh" },
     { name = "rlmesh-api-surface", editable = "tools/rlmesh_api_surface" },
     { name = "rlmesh-system", editable = "tools/rlmesh_system" },
     { name = "rlmesh-system-fixtures", editable = "tools/rlmesh_system_fixtures" },
