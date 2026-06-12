@@ -33,6 +33,20 @@ def test_space_spec_debug_shape_is_private() -> None:
     assert repr(space) == "Discrete(kind='discrete', shape=[], dtype='int64')"
 
 
+def test_native_space_seed_accepts_no_argument() -> None:
+    from rlmesh import spaces
+
+    # The native _rlmesh.Space is public via spec.to_space(); seed() must accept
+    # a missing argument for gym parity (PyO3 0.23+ requires an explicit
+    # signature default for trailing Option params).
+    native = spaces.Discrete(3).spec.to_space()
+
+    first = native.seed()
+    assert isinstance(first, int)
+    explicit = native.seed(123)
+    assert explicit == 123
+
+
 def test_space_family_uses_typed_wrapper_properties() -> None:
     from rlmesh import spaces
 

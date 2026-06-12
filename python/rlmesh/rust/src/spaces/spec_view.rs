@@ -226,6 +226,7 @@ impl PySpace {
         dtype_name(self.spec.dtype)
     }
 
+    #[pyo3(signature = (seed=None))]
     fn seed(&self, seed: Option<u64>) -> Option<u64> {
         let seed = seed.unwrap_or_else(rand::random);
         // Recover from a poisoned mutex: a prior sample() that raised a Python
