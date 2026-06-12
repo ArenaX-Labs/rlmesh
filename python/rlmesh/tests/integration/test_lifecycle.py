@@ -44,6 +44,18 @@ class TinySpecEnv(TinyEnv):
         self.spec = SimpleNamespace(id="TinySpecEnv-v0")
 
 
+class SlowStepEnv(TinyEnv):
+    """Env whose step() blocks long enough to trip a short client timeout."""
+
+    def __init__(self, step_delay: float) -> None:
+        super().__init__()
+        self._step_delay = step_delay
+
+    def step(self, action: object):
+        time.sleep(self._step_delay)
+        return super().step(action)
+
+
 class RenderingEnv(TinyEnv):
     """Env that renders a fixed-shape rgb_array frame."""
 
@@ -476,6 +488,61 @@ def test_remote_render_preserves_source_channel_count(
             assert array.dtype == np.uint8
         finally:
             remote.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_step_respects_per_call_timeout() -> None:
+    """Review finding #5: a hung RPC must be bounded by a per-call timeout.
+
+    The native client now accepts timeout_seconds; a step against a slow server
+    raises TimeoutError instead of blocking forever.
+    """
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = SlowStepEnv(step_delay=3.0)
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            with pytest.raises(TimeoutError):
+                client.step(0, timeout_seconds=0.2)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_constructor_default_timeout_applies() -> None:
+    """A client-wide request_timeout_seconds bounds calls without a per-call arg."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = SlowStepEnv(step_delay=3.0)
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address, request_timeout_seconds=0.2)
+        try:
+            client.reset()
+            with pytest.raises(TimeoutError):
+                client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_rejects_invalid_timeout() -> None:
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        with pytest.raises(ValueError):
+            PyEnvClient(server.address, request_timeout_seconds=float("nan"))
     finally:
         server.shutdown()
 

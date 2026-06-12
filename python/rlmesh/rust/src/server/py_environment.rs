@@ -28,6 +28,7 @@ use crate::spaces::{
     py_any_to_space_value_with_backend, space_value_to_py_with_backend,
 };
 use crate::telemetry::ProfileCollector;
+use crate::types::value_size::space_value_size as native_value_size;
 
 /// A Rust wrapper around a Python gymnasium environment.
 ///
@@ -996,20 +997,6 @@ impl RLMeshEnv for PyVectorEnv {
 
     async fn close(&mut self, req: CloseRequest) -> Result<EnvCloseResult, EnvRuntimeError> {
         self.0.close_vector(req).await
-    }
-}
-
-fn native_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
-    match value {
-        rlmesh_spaces::SpaceValue::Box(value) => value.nbytes(),
-        rlmesh_spaces::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
-        rlmesh_spaces::SpaceValue::MultiBinary(values) => values.len(),
-        rlmesh_spaces::SpaceValue::MultiDiscrete(values) => {
-            values.len() * std::mem::size_of::<i64>()
-        }
-        rlmesh_spaces::SpaceValue::Text(value) => value.len(),
-        rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(native_value_size).sum(),
-        rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(native_value_size).sum(),
     }
 }
 
