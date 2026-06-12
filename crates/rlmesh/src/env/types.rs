@@ -7,8 +7,9 @@ pub use spaces::{CloseRequest, RenderRequest, RenderResult};
 pub struct EpisodeMetadata {
     /// Unique identifier for the episode.
     pub episode_id: String,
-    /// Seed the episode was reset with.
-    pub seed: i64,
+    /// Seed the episode was reset with, or `None` when the episode was reset
+    /// without an explicit seed (the environment seeded itself from entropy).
+    pub seed: Option<i64>,
     /// Index of the sub-environment that produced the episode.
     pub env_index: i32,
     /// Number of steps the episode ran.

@@ -7,16 +7,6 @@ use uuid::Uuid;
 use rlmesh_proto::env::v1::EpisodeMetadata;
 use rlmesh_proto::spaces::v1::MetaMap;
 
-/// Sentinel written to the (non-optional) `EpisodeMetadata.seed` proto field
-/// when an episode was started without an explicit seed (the environment seeded
-/// itself from entropy). The proto field is a plain `int64` with no optionality,
-/// and Gymnasium seeds are always non-negative, so a negative sentinel cleanly
-/// distinguishes "unseeded" from any genuine seed without a proto change.
-///
-/// Consumers reading `EpisodeMetadata.seed` should treat `< 0` as "no seed
-/// recorded" rather than a literal seed value.
-pub const UNSEEDED_SENTINEL: i64 = -1;
-
 /// Single episode state (internal).
 struct Episode {
     id: String,
@@ -67,7 +57,7 @@ impl Episode {
 
         EpisodeMetadata {
             episode_id: self.id,
-            seed: self.seed.unwrap_or(UNSEEDED_SENTINEL),
+            seed: self.seed,
             env_index: self.env_index,
             step_count: self.step_count,
             cumulative_reward: self.cumulative_reward,
@@ -215,7 +205,7 @@ mod tests {
         // Complete episode
         let metadata = tracker.complete_episode(0, true, false, None).unwrap();
         assert_eq!(metadata.episode_id, ep_id);
-        assert_eq!(metadata.seed, 42);
+        assert_eq!(metadata.seed, Some(42));
         assert_eq!(metadata.env_index, 0);
         assert_eq!(metadata.step_count, 2);
         assert_eq!(metadata.cumulative_reward, 3.5);
@@ -324,21 +314,20 @@ mod tests {
     }
 
     #[test]
-    fn unseeded_episode_records_sentinel_not_fabricated_zero() {
+    fn unseeded_episode_leaves_seed_unset_not_fabricated_zero() {
         let mut tracker = EpisodeTracker::new();
 
         // Reset without an explicit seed (the env seeded itself from entropy).
         tracker.start_episode(0, None);
         let meta = tracker.complete_episode(0, true, false, None).unwrap();
 
-        // The seed must be the documented "unseeded" sentinel, never a
-        // fabricated 0 that downstream consumers would mistake for a real seed.
-        assert_eq!(meta.seed, UNSEEDED_SENTINEL);
-        assert_ne!(meta.seed, 0);
+        // The seed must be absent, never a fabricated 0 that downstream
+        // consumers would mistake for a real seed.
+        assert_eq!(meta.seed, None);
 
-        // An explicit seed of 0 is still recorded faithfully as 0.
+        // An explicit seed of 0 is still recorded faithfully as Some(0).
         tracker.start_episode(1, Some(0));
         let meta = tracker.complete_episode(1, true, false, None).unwrap();
-        assert_eq!(meta.seed, 0);
+        assert_eq!(meta.seed, Some(0));
     }
 }

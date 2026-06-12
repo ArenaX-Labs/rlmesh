@@ -560,9 +560,9 @@ mod tests {
         final_episodes.sort_by_key(|episode| episode.env_index);
         assert_eq!(final_episodes.len(), 2);
         assert_eq!(final_episodes[0].env_index, 0);
-        assert_eq!(final_episodes[0].seed, 11);
+        assert_eq!(final_episodes[0].seed, Some(11));
         assert_eq!(final_episodes[1].env_index, 1);
-        assert_eq!(final_episodes[1].seed, 22);
+        assert_eq!(final_episodes[1].seed, Some(22));
         assert_eq!(closes.load(Ordering::SeqCst), 0);
 
         let mut second_client = RemoteEnv::connect(&address).await.unwrap();

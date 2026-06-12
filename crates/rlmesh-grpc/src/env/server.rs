@@ -1315,7 +1315,7 @@ mod tests {
             .complete_episode(0, true, false, None)
             .expect("lane 0 must have an active autoreset episode");
         assert_eq!(lane0_meta.step_count, 1, "post-autoreset step was tracked");
-        // The autoreset episode is unseeded.
-        assert_eq!(lane0_meta.seed, super::super::episode::UNSEEDED_SENTINEL);
+        // The autoreset episode is unseeded: the seed field is left unset.
+        assert_eq!(lane0_meta.seed, None);
     }
 }
