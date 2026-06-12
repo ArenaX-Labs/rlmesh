@@ -169,18 +169,16 @@ impl<E: Environment> GrpcEnvServer<E> {
     /// `authorization` metadata does not match it. Mirrors the model service's
     /// bearer-token check. A no-op when no token is configured.
     fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
-        if self.token.is_empty() {
-            return Ok(());
-        }
         let provided = request
             .metadata()
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        if provided != self.token {
-            return Err(Status::unauthenticated("invalid env token"));
+        if crate::helpers::bearer_token_matches(&self.token, provided) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated("invalid env token"))
         }
-        Ok(())
     }
 }
 

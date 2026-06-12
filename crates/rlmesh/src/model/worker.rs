@@ -13,80 +13,59 @@ impl<H> ModelWorker<H> {
 }
 
 impl<H: ModelHandler + 'static> ModelWorker<H> {
-    pub fn run_local(self, env_address: &str, token: &str) -> Result<()> {
-        self.run_local_to(ConnectAddress::parse(env_address)?, token)
+    pub fn run_local(self, env_address: &str) -> Result<()> {
+        self.run_local_to(ConnectAddress::parse(env_address)?)
     }
 
-    pub fn run_local_for_episodes(
-        self,
-        env_address: &str,
-        token: &str,
-        max_episodes: u64,
-    ) -> Result<()> {
-        self.run_local_to_with_max_episodes(
-            ConnectAddress::parse(env_address)?,
-            token,
-            Some(max_episodes),
-        )
+    pub fn run_local_for_episodes(self, env_address: &str, max_episodes: u64) -> Result<()> {
+        self.run_local_to_with_max_episodes(ConnectAddress::parse(env_address)?, Some(max_episodes))
     }
 
-    pub fn run_local_to(self, env_address: ConnectAddress, token: &str) -> Result<()> {
-        self.run_local_to_with_max_episodes(env_address, token, None)
+    pub fn run_local_to(self, env_address: ConnectAddress) -> Result<()> {
+        self.run_local_to_with_max_episodes(env_address, None)
     }
 
     fn run_local_to_with_max_episodes(
         self,
         env_address: ConnectAddress,
-        token: &str,
         max_episodes: Option<u64>,
     ) -> Result<()> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;
-        runtime.block_on(self.run_local_to_async_with_max_episodes(
-            env_address,
-            token,
-            max_episodes,
-        ))
+        runtime.block_on(self.run_local_to_async_with_max_episodes(env_address, max_episodes))
     }
 
-    pub async fn run_local_async(self, env_address: &str, token: &str) -> Result<()> {
-        self.run_local_to_async(ConnectAddress::parse(env_address)?, token)
+    pub async fn run_local_async(self, env_address: &str) -> Result<()> {
+        self.run_local_to_async(ConnectAddress::parse(env_address)?)
             .await
     }
 
-    pub async fn run_local_to_async(self, env_address: ConnectAddress, token: &str) -> Result<()> {
-        self.run_local_to_async_with_max_episodes(env_address, token, None)
+    pub async fn run_local_to_async(self, env_address: ConnectAddress) -> Result<()> {
+        self.run_local_to_async_with_max_episodes(env_address, None)
             .await
     }
 
     pub async fn run_local_async_for_episodes(
         self,
         env_address: &str,
-        token: &str,
         max_episodes: u64,
     ) -> Result<()> {
-        self.run_local_to_async_for_episodes(
-            ConnectAddress::parse(env_address)?,
-            token,
-            max_episodes,
-        )
-        .await
+        self.run_local_to_async_for_episodes(ConnectAddress::parse(env_address)?, max_episodes)
+            .await
     }
 
     pub async fn run_local_to_async_for_episodes(
         self,
         env_address: ConnectAddress,
-        token: &str,
         max_episodes: u64,
     ) -> Result<()> {
-        self.run_local_to_async_with_max_episodes(env_address, token, Some(max_episodes))
+        self.run_local_to_async_with_max_episodes(env_address, Some(max_episodes))
             .await
     }
 
     async fn run_local_to_async_with_max_episodes(
         mut self,
         env_address: ConnectAddress,
-        _token: &str,
         max_episodes: Option<u64>,
     ) -> Result<()> {
         let result = local::run_local_to_async_with_max_episodes(

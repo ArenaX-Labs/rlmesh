@@ -47,6 +47,8 @@ where
     let handler = Arc::new(Mutex::new(handler));
     let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+    let drain_timeout = options.drain_timeout;
+    let close_timeout = options.close_timeout;
     let service = model_service(
         Arc::clone(&handler),
         token.to_string(),
@@ -67,7 +69,7 @@ where
                         shutdown.cancelled_owned(),
                     ),
                 shutdown.clone(),
-                options.drain_timeout,
+                drain_timeout,
             )
             .await
             .map_err(|err| Error::Server(err.to_string()))
@@ -95,7 +97,7 @@ where
                             shutdown.cancelled_owned(),
                         ),
                     shutdown.clone(),
-                    options.drain_timeout,
+                    drain_timeout,
                 )
                 .await
                 .map_err(|err| Error::Server(err.to_string()));
@@ -106,7 +108,7 @@ where
             }
         }
     };
-    let close_result = close_model(handler, options.close_timeout).await;
+    let close_result = close_model(handler, close_timeout).await;
     match (serve_result, close_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),
@@ -474,16 +476,20 @@ fn log_join_stream_error(error: &Status) {
 }
 
 impl<H> ServedModelServer<H> {
+    /// Reject the request unless its `authorization` metadata matches the
+    /// configured route token (constant-time compare). An empty configured
+    /// token disables authentication: every request is accepted.
     fn authenticate<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
-        let token = request
+        let provided = request
             .metadata()
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        if token != self.token {
-            return Err(Status::unauthenticated("invalid route token"));
+        if rlmesh_grpc::helpers::bearer_token_matches(&self.token, provided) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated("invalid route token"))
         }
-        Ok(())
     }
 }
 

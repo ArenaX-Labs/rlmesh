@@ -175,7 +175,10 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let token = token.to_string();
+        // The `token` parameter is retained for backward compatibility but no
+        // longer authenticates the local run (run_local does not authenticate
+        // against the env; configure env-side auth on the env server instead).
+        let _ = token;
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),
@@ -188,7 +191,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async(env_address, &token)
+                    .run_local_to_async(env_address)
                     .await
             })
         })
@@ -215,7 +218,9 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let token = token.to_string();
+        // `token` retained for backward compatibility; run_local does not
+        // authenticate against the env (see `run_local`).
+        let _ = token;
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),
@@ -228,7 +233,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async_for_episodes(env_address, &token, max_episodes)
+                    .run_local_to_async_for_episodes(env_address, max_episodes)
                     .await
             })
         })
@@ -253,7 +258,7 @@ impl PyModel {
 
         let address = BindAddress::parse(address).map_err(to_py_err)?;
         let token = token.to_string();
-        let options = options.map(PyServeOptions::to_rust).unwrap_or_default();
+        let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),

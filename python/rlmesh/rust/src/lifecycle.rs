@@ -11,7 +11,7 @@ use rlmesh::ServeOptions;
     frozen,
     from_py_object
 )]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PyServeOptions {
     options: ServeOptions,
 }
@@ -20,12 +20,13 @@ pub struct PyServeOptions {
 #[pymethods]
 impl PyServeOptions {
     #[new]
-    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None))]
+    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None, token=None))]
     fn new(
         allow_remote_shutdown: bool,
         idle_timeout_seconds: Option<f64>,
         drain_timeout_seconds: Option<f64>,
         close_timeout_seconds: Option<f64>,
+        token: Option<String>,
     ) -> PyResult<PyServeOptions> {
         Ok(PyServeOptions {
             options: ServeOptions {
@@ -33,6 +34,7 @@ impl PyServeOptions {
                 idle_timeout: optional_duration("idle_timeout_seconds", idle_timeout_seconds)?,
                 drain_timeout: optional_duration("drain_timeout_seconds", drain_timeout_seconds)?,
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
+                token,
             },
         })
     }
@@ -56,10 +58,15 @@ impl PyServeOptions {
     fn close_timeout_seconds(&self) -> Option<f64> {
         self.options.close_timeout.map(|value| value.as_secs_f64())
     }
+
+    #[getter]
+    fn token(&self) -> Option<String> {
+        self.options.token.clone()
+    }
 }
 
 impl PyServeOptions {
-    pub(crate) fn to_rust(self) -> ServeOptions {
+    pub(crate) fn into_rust(self) -> ServeOptions {
         self.options
     }
 }

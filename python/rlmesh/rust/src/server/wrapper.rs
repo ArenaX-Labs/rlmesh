@@ -173,7 +173,7 @@ impl PyEnvServer {
                 env: py_env,
                 runtime,
                 listener,
-                options: options.map(PyServeOptions::to_rust).unwrap_or_default(),
+                options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
             }))),
             shutdown,
         })
@@ -483,6 +483,8 @@ where
     WireEnvAdapter<E>: Environment + 'static,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+    let drain_timeout = options.drain_timeout;
+    let close_timeout = options.close_timeout;
     let env = Arc::new(Mutex::new(env));
     let grpc_options = rlmesh_grpc::ServeOptions::from(options);
     let service = env_service_from_shared(
@@ -500,7 +502,7 @@ where
                     shutdown.cancelled_owned(),
                 ),
             shutdown.clone(),
-            options.drain_timeout,
+            drain_timeout,
         )
         .await
         .map_err(|err| err.to_string()),
@@ -514,7 +516,7 @@ where
                         shutdown.cancelled_owned(),
                     ),
                 shutdown.clone(),
-                options.drain_timeout,
+                drain_timeout,
             )
             .await;
             let _ = std::fs::remove_file(path);
@@ -522,7 +524,7 @@ where
         }
     };
 
-    let close_result = close_env(env, options.close_timeout).await;
+    let close_result = close_env(env, close_timeout).await;
     match (serve_result, close_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),

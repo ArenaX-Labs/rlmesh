@@ -630,4 +630,66 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[tokio::test]
+    async fn env_serve_options_token_is_enforced_by_the_server() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let addr = BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        let server = tokio::spawn({
+            let addr = addr.clone();
+            async move {
+                EnvServer::new(DummyEnv::new())
+                    .serve_with_options(
+                        addr,
+                        ServeOptions {
+                            allow_remote_shutdown: true,
+                            token: Some("s3cret".to_string()),
+                            ..ServeOptions::default()
+                        },
+                    )
+                    .await
+            }
+        });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+
+        // An unauthenticated facade connect is rejected: the token set through
+        // ServeOptions actually reaches and is enforced by the env service.
+        let connect_error = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(_) => panic!("unauthenticated connect must be rejected when a token is set"),
+                Err(err) if !server.is_finished() => {
+                    let message = err.to_string();
+                    if message.contains("invalid env token") {
+                        break message;
+                    }
+                    // Not yet listening; retry.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("env server did not start: {err}"),
+            }
+        };
+        assert!(connect_error.contains("invalid env token"));
+
+        // A token-bearing client handshakes successfully.
+        let mut authed = rlmesh_grpc::EnvClient::connect_with_token(&address, "s3cret")
+            .await
+            .unwrap();
+        authed.handshake().await.expect("authorized handshake");
+        assert!(authed.shutdown("test shutdown").await.unwrap().accepted);
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }

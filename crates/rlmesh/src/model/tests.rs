@@ -206,7 +206,7 @@ async fn run_local_smoke_uses_in_process_model() {
         predicts: Arc::clone(&predicts),
         closes: Arc::clone(&closes),
     })
-    .run_local_to_async_for_episodes(ConnectAddress::Tcp(env_address), "local-token", 1)
+    .run_local_to_async_for_episodes(ConnectAddress::Tcp(env_address), 1)
     .await
     .unwrap();
 

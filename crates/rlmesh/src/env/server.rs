@@ -33,6 +33,8 @@ impl<E: Env + 'static> EnvServer<E> {
     pub async fn serve_with_options(self, addr: BindAddress, options: ServeOptions) -> Result<()> {
         let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
         let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+        let drain_timeout = options.drain_timeout;
+        let close_timeout = options.close_timeout;
         let grpc_options = rlmesh_grpc::ServeOptions::from(options);
 
         let env = Arc::new(Mutex::new(WireEnvAdapter::new(self.env)));
@@ -55,7 +57,7 @@ impl<E: Env + 'static> EnvServer<E> {
                             shutdown.cancelled_owned(),
                         ),
                     shutdown.clone(),
-                    options.drain_timeout,
+                    drain_timeout,
                 )
                 .await
                 .map_err(|err| Error::Server(err.to_string()))
@@ -83,7 +85,7 @@ impl<E: Env + 'static> EnvServer<E> {
                                 shutdown.cancelled_owned(),
                             ),
                         shutdown.clone(),
-                        options.drain_timeout,
+                        drain_timeout,
                     )
                     .await
                     .map_err(|err| Error::Server(err.to_string()));
@@ -94,7 +96,7 @@ impl<E: Env + 'static> EnvServer<E> {
                 }
             }
         };
-        let close_result = close_env(env, options.close_timeout).await;
+        let close_result = close_env(env, close_timeout).await;
         match (serve_result, close_result) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(err), Ok(())) => Err(err),
