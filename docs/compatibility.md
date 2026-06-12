@@ -20,6 +20,11 @@ APIs may change or disappear.
 
 Torch and JAX backends and sandbox helpers are experimental in this beta.
 
+Beta caveat: dtype values added during the beta (`int8/16`, `uint16/32/64`, `bfloat16`) are not
+negotiated — a peer from an older beta fails with a decode error naming the unknown dtype when it
+meets an environment that uses them. Run both ends on the same beta release. Edition-gated dtype
+negotiation is planned for the workflow-edition rollout before GA.
+
 ## Framework Version Floors
 
 The optional framework backends declare the lowest versions their conversion paths actually require.
