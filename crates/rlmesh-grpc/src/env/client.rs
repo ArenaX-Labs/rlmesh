@@ -291,6 +291,14 @@ impl EnvClient {
     }
 
     /// Close this client session on the remote environment server.
+    /// Close this client's session on the server and tear down the local Join
+    /// stream.
+    ///
+    /// This ends the **session**, not the **server**: the served environment
+    /// detaches the session and remains available for a subsequent client to
+    /// connect and run a new session. It does not stop the server process — use
+    /// [`EnvClient::shutdown`] or the server's idle/drain policy for that. This
+    /// reuse-across-sessions behavior is intentional (review finding #81).
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
 

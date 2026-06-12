@@ -171,6 +171,17 @@ impl RemoteEnv {
         render_result_from_proto(response).map_err(protocol_error_to_error)
     }
 
+    /// Close this client's session and return its final episode metadata.
+    ///
+    /// # Session vs. server lifetime
+    ///
+    /// This detaches the **client session** only; it does **not** shut down the
+    /// served environment. By design the environment is reusable across
+    /// sessions, so a new [`RemoteEnv::connect`] to the same endpoint after
+    /// `close` starts a fresh session against the same (still-running) env. To
+    /// stop the server itself, use [`RemoteEnv::shutdown`] (when the server was
+    /// started with remote shutdown allowed) or the server's own idle-timeout /
+    /// drain policy. This is intentional, not a leak (review finding #81).
     pub async fn close(&mut self) -> Result<CloseResult> {
         let response = self.inner.close().await.map_err(Error::from)?;
         Ok(CloseResult {

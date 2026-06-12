@@ -108,6 +108,11 @@ impl BoundEnvServer {
 
     /// Serve until the server shuts down (idle timeout, remote shutdown, or
     /// drain), then run the environment close hook.
+    ///
+    /// The served environment outlives individual client sessions: a client
+    /// calling `close` detaches its session but leaves the env running for the
+    /// next client to connect (review finding #81). The environment's own close
+    /// hook runs only here, once the *server* stops — not on each client close.
     pub async fn serve(self) -> Result<()> {
         let serve_result = self
             .listener
