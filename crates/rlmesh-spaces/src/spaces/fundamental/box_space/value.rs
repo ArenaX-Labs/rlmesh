@@ -109,16 +109,33 @@ fn box_bounds(
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        Some(BoxBounds::Elementwise(bounds)) => (
-            repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
-            repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
-        ),
+        // Elementwise bounds carry one value per element; the validator
+        // guarantees low.len() == high.len() == numel, so a length mismatch
+        // here means an unvalidated/corrupt spec reached containment. Error
+        // rather than silently cycling or truncating the bounds.
+        Some(BoxBounds::Elementwise(bounds)) => {
+            if bounds.low.len() != numel || bounds.high.len() != numel {
+                return err_space!(
+                    path,
+                    format!(
+                        "Box elementwise bounds length mismatch: expected {numel} \
+                         elements, got low={}, high={}",
+                        bounds.low.len(),
+                        bounds.high.len()
+                    )
+                );
+            }
+            (bounds.low.clone(), bounds.high.clone())
+        }
         Some(BoxBounds::Unbounded(_)) | None => {
             (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
         }
     })
 }
 
+/// Expand per-axis bounds to one value per element. Only [`BoxBounds::Axiswise`]
+/// relies on this; the wire-format decision for that arm is still pending, so it
+/// keeps the historical repeat/truncate/default behavior rather than erroring.
 fn repeat_or_truncate(values: &[f64], len: usize, default: f64) -> Vec<f64> {
     match values.len() {
         0 => vec![default; len],
@@ -267,6 +284,30 @@ mod tests {
             Tensor::from_vec(out_of_bounds, vec![2], DType::Bfloat16).expect("valid tensor"),
         );
         assert!(contains(&space, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_box_contains_rejects_mismatched_elementwise_bounds() {
+        use crate::{BoxSpec, ElementwiseBounds};
+
+        // A hand-built (unvalidated) spec whose elementwise bounds carry fewer
+        // values than the tensor has elements. Containment must reject this
+        // rather than silently cycling the bounds to fit.
+        let space = SpaceSpec {
+            shape: vec![3],
+            dtype: DType::Float32,
+            spec: Some(SpaceKind::Box(BoxSpec {
+                bounds: Some(BoxBounds::Elementwise(ElementwiseBounds {
+                    low: vec![0.0],
+                    high: vec![1.0],
+                })),
+            })),
+        };
+
+        let value = SpaceValue::Box(
+            Tensor::from_vec(vec![0u8; 12], vec![3], DType::Float32).expect("valid tensor"),
+        );
+        assert!(contains(&space, &value).is_err());
     }
 
     #[test]
