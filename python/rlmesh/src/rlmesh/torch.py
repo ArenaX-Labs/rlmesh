@@ -55,6 +55,14 @@ def as_tensor(
 ) -> TorchTensor:
     """Return a Torch tensor view or copy of an RLMesh tensor.
 
+    Warning:
+        Without ``copy=True`` the returned tensor shares memory with the
+        RLMesh tensor, and Torch will let you write through it even though
+        the export is flagged read-only (DLPack consumers may ignore that
+        flag). Mutating the view corrupts the RLMesh tensor for every other
+        view of the same data. Treat shared views as read-only, and pass
+        ``copy=True`` for any tensor you intend to modify.
+
     Args:
         tensor: RLMesh tensor or scalar primitive to convert.
         copy: If ``True``, copy tensor data before creating the Torch tensor.

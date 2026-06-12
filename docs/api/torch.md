@@ -22,6 +22,23 @@ pip install --pre "rlmesh[torch]"
 | `rlmesh.torch.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.torch.RemoteEnv`.       |
 | `rlmesh.torch.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.torch.RemoteVectorEnv`. |
 
+## Memory Sharing and Mutation
+
+`as_tensor(tensor)` and decoded observations are zero-copy: the Torch tensor shares memory with the
+RLMesh tensor over DLPack. RLMesh flags shared exports read-only, but Torch — like most DLPack
+consumers — does not enforce that flag, so writes through a shared view succeed and **corrupt the
+RLMesh tensor for every other view of the same data** (including NumPy views in the same process).
+
+Treat shared views as read-only. Use `as_tensor(tensor, copy=True)` for anything you intend to
+mutate; copies are independent, writable buffers.
+
+Conversion details:
+
+- Decode uses `torch.utils.dlpack.from_dlpack`; `bool` tensors fall back to a buffer copy on Torch
+  older than 2.2 (no bool DLPack support there).
+- `uint16`, `uint32`, and `uint64` dtypes require Torch 2.3 or newer.
+- Encode (`from_tensor`) detaches, moves to CPU, and exports over DLPack; NumPy is not required.
+
 ## Value Helpers
 
 ```{eval-rst}

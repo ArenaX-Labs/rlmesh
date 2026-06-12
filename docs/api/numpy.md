@@ -23,6 +23,16 @@ pip install --pre "rlmesh[numpy]"
 | `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.       |
 | `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`. |
 
+## Conversion Semantics
+
+- `asarray(tensor)` returns a **zero-copy, read-only** view over the tensor bytes (NumPy enforces
+  the read-only flag, unlike Torch). Call `.copy()` on the array if you need a writable buffer.
+- `from_array(array)` always copies. It deliberately uses the buffer protocol rather than DLPack:
+  read-only arrays cannot be exported over legacy DLPack, and decoded RLMesh views are read-only.
+- `bfloat16` tensors have no buffer-protocol format, so `asarray` copies through raw bytes and needs
+  the optional [ml_dtypes](https://github.com/jax-ml/ml_dtypes) package — install
+  `rlmesh[bfloat16]`. Without it, `asarray` raises an `ImportError` naming that extra.
+
 ## Value Helpers
 
 ```{eval-rst}

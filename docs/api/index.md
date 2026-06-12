@@ -17,6 +17,7 @@ Use this when you need exact imports, methods, and adapter behavior.
 
 - {doc}`numpy`: NumPy-backed clients, models, and tensor helpers.
 - {doc}`torch`: experimental Torch-backed clients, models, and tensor helpers.
+- {doc}`jax`: experimental JAX-backed clients, models, and tensor helpers.
 
 ```{toctree}
 :maxdepth: 2
@@ -28,6 +29,7 @@ contracts
 models
 numpy
 torch
+jax
 spaces
 types
 sandbox
