@@ -151,9 +151,9 @@ impl EnvClient {
             workflow_edition: res.selected_workflow_edition,
             supported_workflow_editions: res.supported_workflow_editions,
         };
-        self.state = ClientState::Ready;
-
         self.setup_join_stream().await?;
+
+        self.state = ClientState::Ready;
 
         Ok(handshake)
     }
@@ -424,9 +424,20 @@ fn validate_env_contract(env_contract: &EnvContract) -> Result<(), GrpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_proto::env::v1::{CloseRequest, CloseResponse, StepResponse};
+    use rlmesh_proto::env::v1::env_service_server::{EnvService, EnvServiceServer};
+    use rlmesh_proto::env::v1::{
+        CloseRequest, CloseResponse, HandshakeRequest, HandshakeResponse, ShutdownRequest,
+        ShutdownResponse, StepResponse,
+    };
     use rlmesh_proto::spaces::v1::SpaceSpec;
+    use rlmesh_proto::{
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        supported_workflow_editions,
+    };
+    use tokio::sync::oneshot;
+    use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Endpoint;
+    use tonic::{Request, Response, Status};
 
     #[test]
     fn validate_env_contract_requires_spaces() {
@@ -527,5 +538,91 @@ mod tests {
         let request = request_rx.recv().await.unwrap();
         assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
         assert_eq!(request.request_id, "grpc-req-1");
+    }
+
+    #[derive(Default)]
+    struct RejectJoinService;
+
+    #[async_trait::async_trait]
+    impl EnvService for RejectJoinService {
+        async fn handshake(
+            &self,
+            _request: Request<HandshakeRequest>,
+        ) -> std::result::Result<Response<HandshakeResponse>, Status> {
+            Ok(Response::new(HandshakeResponse {
+                compatible: true,
+                server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+                min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
+                selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+                supported_workflow_editions: supported_workflow_editions(),
+                env_contract: Some(EnvContract {
+                    observation_space: Some(SpaceSpec::default()),
+                    action_space: Some(SpaceSpec::default()),
+                    num_envs: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))
+        }
+
+        type JoinStream = ReceiverStream<std::result::Result<JoinResponse, Status>>;
+
+        async fn join(
+            &self,
+            _request: Request<tonic::Streaming<JoinRequest>>,
+        ) -> std::result::Result<Response<Self::JoinStream>, Status> {
+            Err(Status::unavailable("join unavailable"))
+        }
+
+        async fn shutdown(
+            &self,
+            _request: Request<ShutdownRequest>,
+        ) -> std::result::Result<Response<ShutdownResponse>, Status> {
+            Ok(Response::new(ShutdownResponse {
+                accepted: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_join_failure_leaves_client_connected() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(RejectJoinService))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+        let mut client = loop {
+            match EnvClient::connect(&address).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+
+        let error = client.handshake().await.unwrap_err();
+        assert!(error.to_string().contains("join unavailable"));
+        assert_eq!(client.state(), ClientState::Connected);
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }
