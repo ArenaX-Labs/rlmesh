@@ -26,7 +26,7 @@ pub struct ModelClient {
     token: String,
     state: ClientState,
     request_tx: Option<mpsc::Sender<JoinRequest>>,
-    response_rx: Option<mpsc::Receiver<JoinResponse>>,
+    response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
     request_counter: u64,
     last_telemetry: Option<OperationTelemetry>,
 }
@@ -84,7 +84,7 @@ impl ModelClient {
             .client
             .handshake(request)
             .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner();
 
         if !response.compatible {
@@ -235,7 +235,7 @@ impl ModelClient {
             .client
             .shutdown(request)
             .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner();
 
         if response.accepted {
@@ -256,7 +256,7 @@ impl ModelClient {
             .client
             .join(request)
             .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?;
+            .map_err(crate::error::status_to_grpc_error)?;
 
         self.request_tx = Some(tx);
         self.response_rx = Some(spawn_response_pump(response.into_inner()));
@@ -287,6 +287,19 @@ impl ModelClient {
                 );
                 GrpcError::from(TransportError::ConnectionClosed)
             })?;
+            let response = match response {
+                Ok(response) => response,
+                Err(status) => {
+                    tracing::error!(
+                        request_id = %request_id,
+                        request_kind,
+                        code = ?status.code(),
+                        message = %status.message(),
+                        "model join stream returned an error status"
+                    );
+                    return Err(crate::error::status_to_grpc_error(status));
+                }
+            };
             if response.request_id == request_id {
                 return Ok(response);
             }
@@ -351,19 +364,19 @@ mod tests {
         };
 
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Predict(PredictResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "target".to_string(),
                 kind: Some(join_response::Kind::CloseRoute(CloseRouteResponse {})),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
 

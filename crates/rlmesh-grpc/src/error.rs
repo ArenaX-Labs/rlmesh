@@ -349,3 +349,44 @@ pub enum ClientError {
 
 /// Result type alias for rlmesh-grpc operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod status_mapping_tests {
+    use super::*;
+    use tonic::{Code, Status};
+
+    #[test]
+    fn unavailable_status_maps_to_recoverable_transport_error() {
+        let error = status_to_grpc_error(Status::new(Code::Unavailable, "try later"));
+        assert!(error.is_recoverable(), "Unavailable must be retryable");
+        match error {
+            Error::Transport(TransportError::Unavailable(message)) => {
+                assert_eq!(message, "try later");
+            }
+            other => panic!("expected Unavailable transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unimplemented_status_preserves_code_and_is_not_recoverable() {
+        let error = status_to_grpc_error(Status::new(Code::Unimplemented, "no such method"));
+        assert!(!error.is_recoverable(), "Unimplemented must be permanent");
+        match error {
+            Error::Transport(TransportError::Status { code, message }) => {
+                assert_eq!(code, Code::Unimplemented);
+                assert_eq!(message, "no such method");
+            }
+            other => panic!("expected structured Status error, got {other:?}"),
+        }
+        // It must NOT be misreported as a connect failure.
+        let error = status_to_grpc_error(Status::new(Code::Unimplemented, "x"));
+        assert!(!error.to_string().contains("failed to connect"));
+    }
+
+    #[test]
+    fn deadline_exceeded_status_maps_to_timeout() {
+        let error = status_to_grpc_error(Status::new(Code::DeadlineExceeded, "slow"));
+        assert!(matches!(error, Error::Timeout(_)));
+        assert!(error.is_recoverable());
+    }
+}

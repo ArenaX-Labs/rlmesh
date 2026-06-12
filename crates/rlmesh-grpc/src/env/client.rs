@@ -188,7 +188,7 @@ impl EnvClient {
             .client
             .handshake(self.authorized_request(req)?)
             .await
-            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner())
     }
 
@@ -319,7 +319,7 @@ impl EnvClient {
                 reason: reason.into(),
             })?)
             .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner();
 
         if response.accepted {
@@ -345,7 +345,7 @@ impl EnvClient {
             .client
             .join(self.authorized_request(request_stream)?)
             .await
-            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            .map_err(crate::error::status_to_grpc_error)?;
 
         self.request_tx = Some(tx);
         self.response_rx = Some(spawn_response_pump(response.into_inner()));
