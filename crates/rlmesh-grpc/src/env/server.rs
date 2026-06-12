@@ -391,11 +391,10 @@ async fn handle_env_request<E: Environment>(
             let mut env = env.lock().await;
 
             let num_envs = env.num_envs();
-            let seeds = if reset_req.seeds.is_empty() {
-                vec![0; num_envs]
-            } else {
-                reset_req.seeds.clone()
-            };
+            // Record the seed honestly: an empty seeds vector means the
+            // environment seeds itself from entropy, so the episode has no seed
+            // rather than a fabricated 0.
+            let seeds = reset_req.seeds.clone();
 
             let timeout_ms = reset_req.timeout_ms;
             let result =
@@ -406,7 +405,7 @@ async fn handle_env_request<E: Environment>(
                     let mut tracker = episode_tracker.lock().await;
                     let episode_ids: Vec<String> = (0..num_envs)
                         .map(|env_idx| {
-                            let seed = seeds.get(env_idx).copied().unwrap_or(0);
+                            let seed = seeds.get(env_idx).copied();
                             tracker.start_episode(env_idx as i32, seed)
                         })
                         .collect();

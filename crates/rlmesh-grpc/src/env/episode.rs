@@ -6,10 +6,20 @@ use uuid::Uuid;
 
 use rlmesh_proto::env::v1::EpisodeMetadata;
 
+/// Sentinel written to the (non-optional) `EpisodeMetadata.seed` proto field
+/// when an episode was started without an explicit seed (the environment seeded
+/// itself from entropy). The proto field is a plain `int64` with no optionality,
+/// and Gymnasium seeds are always non-negative, so a negative sentinel cleanly
+/// distinguishes "unseeded" from any genuine seed without a proto change.
+///
+/// Consumers reading `EpisodeMetadata.seed` should treat `< 0` as "no seed
+/// recorded" rather than a literal seed value.
+pub const UNSEEDED_SENTINEL: i64 = -1;
+
 /// Single episode state (internal).
 struct Episode {
     id: String,
-    seed: i64,
+    seed: Option<i64>,
     env_index: i32,
     step_count: i64,
     cumulative_reward: f64,
@@ -18,7 +28,7 @@ struct Episode {
 }
 
 impl Episode {
-    fn new(env_index: i32, seed: i64) -> Self {
+    fn new(env_index: i32, seed: Option<i64>) -> Self {
         let start_time = Instant::now();
         let start_timestamp_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -56,7 +66,7 @@ impl Episode {
 
         EpisodeMetadata {
             episode_id: self.id,
-            seed: self.seed,
+            seed: self.seed.unwrap_or(UNSEEDED_SENTINEL),
             env_index: self.env_index,
             step_count: self.step_count,
             cumulative_reward: self.cumulative_reward,
@@ -85,8 +95,12 @@ impl EpisodeTracker {
 
     /// Start a new episode for the given environment index.
     ///
+    /// `seed` is `None` when the environment was reset without an explicit seed
+    /// (it seeded itself from entropy), so the episode metadata honestly records
+    /// the absence of a seed instead of fabricating one.
+    ///
     /// Returns the episode ID.
-    pub fn start_episode(&mut self, env_index: i32, seed: i64) -> String {
+    pub fn start_episode(&mut self, env_index: i32, seed: Option<i64>) -> String {
         let episode = Episode::new(env_index, seed);
         let episode_id = episode.id.clone();
 
@@ -174,7 +188,7 @@ mod tests {
         let mut tracker = EpisodeTracker::new();
 
         // Start episode
-        let ep_id = tracker.start_episode(0, 42);
+        let ep_id = tracker.start_episode(0, Some(42));
         assert_eq!(active_count(&tracker), 1);
 
         // Record steps
@@ -199,9 +213,9 @@ mod tests {
         let mut tracker = EpisodeTracker::new();
 
         // Start multiple episodes
-        let ep0 = tracker.start_episode(0, 100);
-        let ep1 = tracker.start_episode(1, 200);
-        let _ep2 = tracker.start_episode(2, 300);
+        let ep0 = tracker.start_episode(0, Some(100));
+        let ep1 = tracker.start_episode(1, Some(200));
+        let _ep2 = tracker.start_episode(2, Some(300));
         assert_eq!(active_count(&tracker), 3);
 
         // Record steps for each
@@ -230,9 +244,9 @@ mod tests {
     fn test_complete_all() {
         let mut tracker = EpisodeTracker::new();
 
-        tracker.start_episode(0, 1);
-        tracker.start_episode(1, 2);
-        tracker.start_episode(2, 3);
+        tracker.start_episode(0, Some(1));
+        tracker.start_episode(1, Some(2));
+        tracker.start_episode(2, Some(3));
 
         tracker.record_step(0, 1.0);
         tracker.record_step(1, 2.0);
@@ -246,5 +260,24 @@ mod tests {
             assert!(!meta.terminated);
             assert!(meta.truncated);
         }
+    }
+
+    #[test]
+    fn unseeded_episode_records_sentinel_not_fabricated_zero() {
+        let mut tracker = EpisodeTracker::new();
+
+        // Reset without an explicit seed (the env seeded itself from entropy).
+        tracker.start_episode(0, None);
+        let meta = tracker.complete_episode(0, true, false, None).unwrap();
+
+        // The seed must be the documented "unseeded" sentinel, never a
+        // fabricated 0 that downstream consumers would mistake for a real seed.
+        assert_eq!(meta.seed, UNSEEDED_SENTINEL);
+        assert_ne!(meta.seed, 0);
+
+        // An explicit seed of 0 is still recorded faithfully as 0.
+        tracker.start_episode(1, Some(0));
+        let meta = tracker.complete_episode(1, true, false, None).unwrap();
+        assert_eq!(meta.seed, 0);
     }
 }
