@@ -104,16 +104,15 @@
 //! #[async_trait::async_trait]
 //! impl ModelHandler for MyModel {
 //!     async fn predict(&mut self, _obs: ModelObservation)
-//!         -> rlmesh::Result<rlmesh::spaces::BinaryPayload>
+//!         -> rlmesh::Result<BinaryPayload>
 //!     {
 //!         // Decode `_obs`, run your policy, return the encoded action bytes.
-//!         Ok(rlmesh::spaces::BinaryPayload { data: Vec::new() })
+//!         Ok(BinaryPayload::default())
 //!     }
 //! }
 //!
 //! # async fn run() -> rlmesh::Result<()> {
 //! // Connect in-process to a running env server and run 100 episodes.
-//! use rlmesh::RunLocalOptions;
 //! ModelWorker::new(MyModel)
 //!     .run_local_async(RunLocalOptions::parse("tcp://127.0.0.1:50051")?.for_episodes(100))
 //!     .await
