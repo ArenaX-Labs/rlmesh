@@ -47,7 +47,11 @@ Install local tools, Python development dependencies, and git hooks:
 mise run setup
 ```
 
-More setup and build details live in [docs/local-dev.md](docs/local-dev.md).
+Building the Rust crates requires the Protocol Buffers compiler `protoc`, because the gRPC stubs are
+generated from `.proto` files at build time. `mise` pins a `protoc` for in-repo development;
+downstream crates.io consumers must provide their own (`apt install protobuf-compiler`,
+`brew install protobuf`, or set `PROTOC`). More setup and build details live in
+[docs/local-dev.md](docs/local-dev.md).
 
 ## Checks
 
