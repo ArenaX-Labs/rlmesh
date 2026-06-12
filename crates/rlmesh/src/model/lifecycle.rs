@@ -31,6 +31,37 @@ where
     Ok(())
 }
 
+pub(super) async fn finish_route_lifecycle<H>(
+    handler: &mut H,
+    active_episodes: &mut HashMap<(String, i32), String>,
+    route_key: &str,
+) -> Result<()>
+where
+    H: ModelHandler,
+{
+    let mut episode_ends = active_episodes
+        .iter()
+        .filter_map(|((active_route_key, env_index), episode_id)| {
+            (active_route_key == route_key).then_some(ModelEpisodeEnd {
+                episode_id: episode_id.clone(),
+                env_index: *env_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    episode_ends.sort_by(|left, right| {
+        left.env_index
+            .cmp(&right.env_index)
+            .then_with(|| left.episode_id.cmp(&right.episode_id))
+    });
+
+    for episode_end in episode_ends {
+        active_episodes.remove(&(route_key.to_string(), episode_end.env_index));
+        handler.on_episode_end(episode_end).await?;
+    }
+
+    Ok(())
+}
+
 pub(super) async fn update_lifecycle<H>(
     handler: &mut H,
     active_episodes: &mut HashMap<(String, i32), String>,

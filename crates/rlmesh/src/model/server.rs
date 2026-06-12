@@ -27,7 +27,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use super::handler::ModelHandler;
-use super::lifecycle::update_lifecycle;
+use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::wire::{
     ModelAction, model_action_to_endpoint_response, model_error, model_join_request_operation,
     model_observation_from_endpoint_request, model_operation_telemetry,
@@ -312,6 +312,19 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             let route_key = request.context.as_ref().and_then(route_config_key);
             match route_key {
                 Some(route_key) => {
+                    let drain_result = {
+                        let mut handler = handler.lock().await;
+                        let mut active_episodes = active_episodes.lock().await;
+                        finish_route_lifecycle(&mut *handler, &mut active_episodes, &route_key)
+                            .await
+                    };
+                    if let Err(error) = drain_result {
+                        return JoinResponse {
+                            kind: Some(model_error(error.to_string())),
+                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            request_id,
+                        };
+                    }
                     route_configs.lock().await.remove(&route_key);
                     Some(join_response::Kind::CloseRoute(CloseRouteResponse {}))
                 }
@@ -319,6 +332,18 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             }
         }
         Some(join_request::Kind::Close(_request)) => {
+            let drain_result = {
+                let mut handler = handler.lock().await;
+                let mut active_episodes = active_episodes.lock().await;
+                finish_lifecycle(&mut *handler, &mut active_episodes).await
+            };
+            if let Err(error) = drain_result {
+                return JoinResponse {
+                    kind: Some(model_error(error.to_string())),
+                    telemetry: Some(model_operation_telemetry(operation, started_at)),
+                    request_id,
+                };
+            }
             Some(join_response::Kind::Close(CloseResponse {}))
         }
         None => Some(model_error("empty model request")),

@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    ConfigureRouteRequest, JoinRequest, PredictRequest, join_request, join_response,
+    CloseRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest, PredictRequest,
+    join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -330,6 +331,124 @@ async fn served_model_predict_rejects_route_wider_than_opened_route() {
     .await;
 
     assert!(matches!(response.kind, Some(join_response::Kind::Error(_))));
+}
+
+#[tokio::test]
+async fn served_model_close_route_drains_route_episodes() {
+    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
+    let active_episodes = Arc::new(Mutex::new(HashMap::from([
+        (
+            ("session-1:route-1".to_string(), 0),
+            "episode-route-1".to_string(),
+        ),
+        (
+            ("session-1:route-2".to_string(), 0),
+            "episode-route-2".to_string(),
+        ),
+    ])));
+    let route_configs = Arc::new(Mutex::new(HashMap::from([
+        (
+            "session-1:route-1".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                num_envs: 1,
+            },
+        ),
+        (
+            "session-1:route-2".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                num_envs: 1,
+            },
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::CloseRoute(CloseRouteRequest {
+                context: Some(rlmesh_proto::model::v1::PredictContext {
+                    session_id: "session-1".to_string(),
+                    route_id: "route-1".to_string(),
+                    request_id: "close-route-1".to_string(),
+                    ..Default::default()
+                }),
+                reason: "route complete".to_string(),
+            })),
+            request_id: "close-route-1".to_string(),
+        },
+        Arc::clone(&handler),
+        Arc::clone(&active_episodes),
+        Arc::clone(&route_configs),
+        None,
+    )
+    .await;
+
+    assert!(matches!(
+        response.kind,
+        Some(join_response::Kind::CloseRoute(_))
+    ));
+    assert_eq!(
+        handler.lock().await.episode_ends,
+        vec![ModelEpisodeEnd {
+            episode_id: "episode-route-1".to_string(),
+            env_index: 0,
+        }]
+    );
+    let active_episodes = active_episodes.lock().await;
+    assert!(!active_episodes.contains_key(&("session-1:route-1".to_string(), 0)));
+    assert_eq!(
+        active_episodes.get(&("session-1:route-2".to_string(), 0)),
+        Some(&"episode-route-2".to_string())
+    );
+    drop(active_episodes);
+    let route_configs = route_configs.lock().await;
+    assert!(!route_configs.contains_key("session-1:route-1"));
+    assert!(route_configs.contains_key("session-1:route-2"));
+}
+
+#[tokio::test]
+async fn served_model_close_drains_all_active_episodes() {
+    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
+    let active_episodes = Arc::new(Mutex::new(HashMap::from([
+        (
+            ("session-1:route-1".to_string(), 0),
+            "episode-route-1".to_string(),
+        ),
+        (
+            ("session-1:route-2".to_string(), 1),
+            "episode-route-2".to_string(),
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::Close(CloseRequest {
+                reason: "session complete".to_string(),
+            })),
+            request_id: "close-1".to_string(),
+        },
+        Arc::clone(&handler),
+        Arc::clone(&active_episodes),
+        Arc::new(Mutex::new(HashMap::new())),
+        None,
+    )
+    .await;
+
+    assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
+    assert_eq!(
+        handler.lock().await.episode_ends,
+        vec![
+            ModelEpisodeEnd {
+                episode_id: "episode-route-1".to_string(),
+                env_index: 0,
+            },
+            ModelEpisodeEnd {
+                episode_id: "episode-route-2".to_string(),
+                env_index: 1,
+            },
+        ]
+    );
+    assert!(active_episodes.lock().await.is_empty());
 }
 
 #[tokio::test]
