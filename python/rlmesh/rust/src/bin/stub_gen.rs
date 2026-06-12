@@ -11,6 +11,8 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "EnvironmentException",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
+__version__: builtins.str
+
 class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...

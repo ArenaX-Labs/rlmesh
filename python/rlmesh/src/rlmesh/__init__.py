@@ -15,11 +15,11 @@ try:
     __version__ = package_version("rlmesh")
 except PackageNotFoundError:
     # The distribution metadata is not visible (e.g. a PyInstaller/zipapp
-    # bundle or a vendored site-packages copy without dist-info). The compiled
-    # extension does not expose a version, so report an explicit "unknown"
-    # marker instead of a misleading concrete version that downstream version
-    # gating could trust.
-    __version__ = "0+unknown"
+    # bundle or a vendored site-packages copy without dist-info). Fall back to
+    # the version compiled into the native extension (CARGO_PKG_VERSION); only
+    # if that is somehow absent do we report an explicit "unknown" marker rather
+    # than a misleading concrete version that downstream gating could trust.
+    __version__ = str(getattr(_rlmesh, "__version__", "0+unknown"))
 
 __doc__ = _rlmesh.__doc__
 

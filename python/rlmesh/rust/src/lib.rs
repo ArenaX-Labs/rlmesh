@@ -57,6 +57,11 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
 #[pymodule]
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Expose the crate version so the Python package's metadata fallback can
+    // report a real version even when importlib.metadata can't see the
+    // distribution (PyInstaller/vendored copies).
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     // Register custom exception types
     types::errors::register_exceptions(m)?;
     spaces::register_classes(m)?;
