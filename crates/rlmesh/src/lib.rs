@@ -64,23 +64,25 @@
 //!     fn num_envs(&self) -> usize { 1 }
 //!     fn env_contract(&self) -> &EnvContract { &self.contract }
 //!
+//!     // `Result` here is the two-arg `std::result::Result`: the prelude does
+//!     // not glob in the single-arg `rlmesh::Result` alias that would shadow it.
 //!     async fn reset(&mut self, _req: ResetRequest)
-//!         -> std::result::Result<ResetResult, EnvRuntimeError>
+//!         -> Result<ResetResult, EnvRuntimeError>
 //!     {
 //!         Ok(ResetResult::default())
 //!     }
 //!     async fn step(&mut self, _req: StepRequest)
-//!         -> std::result::Result<StepResult, EnvRuntimeError>
+//!         -> Result<StepResult, EnvRuntimeError>
 //!     {
 //!         Ok(StepResult::default())
 //!     }
 //!     async fn render(&mut self, _req: RenderRequest)
-//!         -> std::result::Result<RenderResult, EnvRuntimeError>
+//!         -> Result<RenderResult, EnvRuntimeError>
 //!     {
 //!         Ok(RenderResult::default())
 //!     }
 //!     async fn close(&mut self, _req: CloseRequest)
-//!         -> std::result::Result<CloseResult, EnvRuntimeError>
+//!         -> Result<CloseResult, EnvRuntimeError>
 //!     {
 //!         Ok(CloseResult::default())
 //!     }
