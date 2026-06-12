@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec, validate_space, validate_space_at};
+use crate::spaces::{SpaceKind, SpaceSpec, validate_space, validate_space_at};
 use crate::{DType, DictSpec};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -48,7 +48,7 @@ fn make_dict_space(keys: Vec<String>, spaces: Vec<SpaceSpec>) -> Result<SpaceSpe
     let spec = SpaceSpec {
         shape: vec![],
         dtype: DType::Unspecified,
-        spec: Some(space_spec::Spec::Dict(DictSpec { keys, spaces })),
+        spec: Some(SpaceKind::Dict(DictSpec { keys, spaces })),
     };
 
     validate_space(&spec)?;
@@ -65,7 +65,7 @@ pub(crate) fn validate_dict_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
     }
 
     let d = match &spec.spec {
-        Some(space_spec::Spec::Dict(d)) => d,
+        Some(SpaceKind::Dict(d)) => d,
         _ => return err_space!(path, "Dict", "spec.dict must be set"),
     };
 

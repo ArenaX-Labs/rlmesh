@@ -102,10 +102,10 @@ fn decode_raw_batched_values(
 fn uses_raw_batch_encoding(space: &native::SpaceSpec) -> bool {
     matches!(
         space.spec.as_ref(),
-        Some(native::space_spec::Spec::Box(_))
-            | Some(native::space_spec::Spec::Discrete(_))
-            | Some(native::space_spec::Spec::MultiBinary(_))
-            | Some(native::space_spec::Spec::MultiDiscrete(_))
+        Some(native::SpaceKind::Box(_))
+            | Some(native::SpaceKind::Discrete(_))
+            | Some(native::SpaceKind::MultiBinary(_))
+            | Some(native::SpaceKind::MultiDiscrete(_))
     )
 }
 
@@ -115,7 +115,7 @@ fn raw_value_size(space: &native::SpaceSpec) -> Option<usize> {
     }
 
     let item_count = match space.spec.as_ref() {
-        Some(native::space_spec::Spec::Discrete(_)) => 1,
+        Some(native::SpaceKind::Discrete(_)) => 1,
         _ => {
             if space.shape.is_empty() {
                 return None;

@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec, validate_space, validate_space_at};
+use crate::spaces::{SpaceKind, SpaceSpec, validate_space, validate_space_at};
 use crate::{DType, TupleSpec};
 
 pub struct TupleSpaceBuilder {
@@ -36,7 +36,7 @@ fn make_tuple_space(spaces: Vec<SpaceSpec>) -> Result<SpaceSpec, SpaceError> {
     let spec = SpaceSpec {
         shape: vec![],
         dtype: DType::Unspecified,
-        spec: Some(space_spec::Spec::Tuple(TupleSpec { spaces })),
+        spec: Some(SpaceKind::Tuple(TupleSpec { spaces })),
     };
 
     validate_space(&spec)?;
@@ -52,7 +52,7 @@ pub(crate) fn validate_tuple_at(spec: &SpaceSpec, path: &str) -> Result<(), Spac
     }
 
     let t = match &spec.spec {
-        Some(space_spec::Spec::Tuple(t)) => t,
+        Some(SpaceKind::Tuple(t)) => t,
         _ => return err_space!(path, "Tuple", "spec.tuple must be set"),
     };
 

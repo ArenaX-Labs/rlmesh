@@ -1,15 +1,5 @@
 use crate::dtype::DType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct VectorInt {
-    pub data: Vec<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MatrixInt {
-    pub data: Vec<VectorInt>,
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UniformBounds {
     pub low: f64,
@@ -30,19 +20,16 @@ pub struct ElementwiseBounds {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BoxSpec {
-    pub bounds: Option<box_spec::Bounds>,
+    pub bounds: Option<BoxBounds>,
 }
 
-pub mod box_spec {
-    use crate::{AxiswiseBounds, ElementwiseBounds, UniformBounds};
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub enum Bounds {
-        Unbounded(bool),
-        Uniform(UniformBounds),
-        Axiswise(AxiswiseBounds),
-        Elementwise(ElementwiseBounds),
-    }
+/// Bounds for a Box space (the proto `BoxBounds.bounds` oneof).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BoxBounds {
+    Unbounded(bool),
+    Uniform(UniformBounds),
+    Axiswise(AxiswiseBounds),
+    Elementwise(ElementwiseBounds),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -53,32 +40,26 @@ pub struct DiscreteSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MultiBinarySpec {
-    pub n: Option<multi_binary_spec::N>,
+    pub n: Option<MultiBinaryDims>,
 }
 
-pub mod multi_binary_spec {
-    use crate::VectorInt;
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum N {
-        Size(i64),
-        Dims(VectorInt),
-    }
+/// Size description for a MultiBinary space (the proto `n` oneof).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultiBinaryDims {
+    Size(i64),
+    Dims(Vec<i64>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MultiDiscreteSpec {
-    pub nvec: Option<multi_discrete_spec::Nvec>,
+    pub nvec: Option<MultiDiscreteNvec>,
 }
 
-pub mod multi_discrete_spec {
-    use crate::{MatrixInt, VectorInt};
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    pub enum Nvec {
-        Flat(VectorInt),
-        Shaped(MatrixInt),
-    }
+/// Count layout for a MultiDiscrete space (the proto `nvec` oneof).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultiDiscreteNvec {
+    Flat(Vec<i64>),
+    Shaped(Vec<Vec<i64>>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -103,19 +84,19 @@ pub struct TupleSpec {
 pub struct SpaceSpec {
     pub shape: Vec<i64>,
     pub dtype: DType,
-    pub spec: Option<space_spec::Spec>,
+    pub spec: Option<SpaceKind>,
 }
 
 impl SpaceSpec {
     pub fn space_type(&self) -> SpaceType {
         match self.spec {
-            Some(space_spec::Spec::Box(_)) => SpaceType::Box,
-            Some(space_spec::Spec::Discrete(_)) => SpaceType::Discrete,
-            Some(space_spec::Spec::MultiBinary(_)) => SpaceType::MultiBinary,
-            Some(space_spec::Spec::MultiDiscrete(_)) => SpaceType::MultiDiscrete,
-            Some(space_spec::Spec::Text(_)) => SpaceType::Text,
-            Some(space_spec::Spec::Dict(_)) => SpaceType::Dict,
-            Some(space_spec::Spec::Tuple(_)) => SpaceType::Tuple,
+            Some(SpaceKind::Box(_)) => SpaceType::Box,
+            Some(SpaceKind::Discrete(_)) => SpaceType::Discrete,
+            Some(SpaceKind::MultiBinary(_)) => SpaceType::MultiBinary,
+            Some(SpaceKind::MultiDiscrete(_)) => SpaceType::MultiDiscrete,
+            Some(SpaceKind::Text(_)) => SpaceType::Text,
+            Some(SpaceKind::Dict(_)) => SpaceType::Dict,
+            Some(SpaceKind::Tuple(_)) => SpaceType::Tuple,
             None => SpaceType::Unspecified,
         }
     }
@@ -130,10 +111,6 @@ pub enum SpaceKind {
     Text(TextSpec),
     Dict(DictSpec),
     Tuple(TupleSpec),
-}
-
-pub mod space_spec {
-    pub use crate::SpaceKind as Spec;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

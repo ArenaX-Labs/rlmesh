@@ -1,6 +1,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use rlmesh_spaces::multi_binary_spec;
+use rlmesh_spaces::MultiBinaryDims;
 use rlmesh_spaces::spaces::*;
 
 pub fn make_multibinary<'py>(
@@ -8,8 +8,8 @@ pub fn make_multibinary<'py>(
     spaces: &Bound<'py, PyAny>,
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let multi_binary_spec = match &space.spec {
-        Some(space_spec::Spec::MultiBinary(spec)) => spec,
+    let dims = match &space.spec {
+        Some(SpaceKind::MultiBinary(spec)) => spec,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "spec.multi_binary missing",
@@ -17,11 +17,9 @@ pub fn make_multibinary<'py>(
         }
     };
 
-    let n_value = match &multi_binary_spec.n {
-        Some(multi_binary_spec::N::Size(size)) => (*size).into_pyobject(py)?.unbind().into_any(),
-        Some(multi_binary_spec::N::Dims(dims)) => {
-            dims.data.clone().into_pyobject(py)?.unbind().into_any()
-        }
+    let n_value = match &dims.n {
+        Some(MultiBinaryDims::Size(size)) => (*size).into_pyobject(py)?.unbind().into_any(),
+        Some(MultiBinaryDims::Dims(dims)) => dims.clone().into_pyobject(py)?.unbind().into_any(),
         None => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "MultiBinarySpec.n missing",

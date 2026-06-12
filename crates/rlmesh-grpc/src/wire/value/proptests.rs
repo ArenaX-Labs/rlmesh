@@ -20,9 +20,7 @@ fn box_space(shape: &[i64], dtype: DType) -> native::SpaceSpec {
     native::SpaceSpec {
         shape: shape.to_vec(),
         dtype,
-        spec: Some(native::space_spec::Spec::Box(native::BoxSpec {
-            bounds: None,
-        })),
+        spec: Some(native::SpaceKind::Box(native::BoxSpec { bounds: None })),
     }
 }
 

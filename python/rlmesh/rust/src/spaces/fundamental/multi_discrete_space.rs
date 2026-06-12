@@ -1,7 +1,7 @@
 use crate::spaces::utils::dtype_to_py;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::multi_discrete_spec;
+use rlmesh_spaces::MultiDiscreteNvec;
 use rlmesh_spaces::spaces::*;
 
 pub fn make_multidiscrete<'py>(
@@ -9,8 +9,8 @@ pub fn make_multidiscrete<'py>(
     spaces: &Bound<'py, PyAny>,
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let multi_discrete_spec = match &space.spec {
-        Some(space_spec::Spec::MultiDiscrete(spec)) => spec,
+    let nvec_spec = match &space.spec {
+        Some(SpaceKind::MultiDiscrete(spec)) => spec,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "spec.multi_discrete missing",
@@ -20,12 +20,12 @@ pub fn make_multidiscrete<'py>(
 
     let np = py.import("numpy")?;
     let dtype = dtype_to_py(py, space.dtype)?;
-    let nvec_value = match &multi_discrete_spec.nvec {
-        Some(multi_discrete_spec::Nvec::Flat(vector)) => {
-            np.getattr("array")?.call1((vector.data.clone(), &dtype))?
+    let nvec_value = match &nvec_spec.nvec {
+        Some(MultiDiscreteNvec::Flat(vector)) => {
+            np.getattr("array")?.call1((vector.clone(), &dtype))?
         }
-        Some(multi_discrete_spec::Nvec::Shaped(matrix)) => {
-            let rows: Vec<Vec<i64>> = matrix.data.iter().map(|row| row.data.clone()).collect();
+        Some(MultiDiscreteNvec::Shaped(matrix)) => {
+            let rows: Vec<Vec<i64>> = matrix.clone();
             np.getattr("array")?.call1((rows, &dtype))?
         }
         None => {

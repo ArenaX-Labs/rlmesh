@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, SpaceValue, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 
 pub(crate) fn contains_text(
     space: &SpaceSpec,
@@ -12,7 +12,7 @@ pub(crate) fn contains_text(
     };
 
     let t = match &space.spec {
-        Some(space_spec::Spec::Text(t)) => t,
+        Some(SpaceKind::Text(t)) => t,
         _ => return err_space!(path, "space is not Text"),
     };
 

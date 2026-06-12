@@ -10,7 +10,7 @@ use rlmesh::{
 use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
 use rlmesh_spaces::{
     SpaceValue,
-    spaces::{SpaceSpec, space_spec},
+    spaces::{SpaceKind, SpaceSpec},
 };
 use std::sync::Arc;
 
@@ -329,16 +329,16 @@ fn neutral_observation<'py>(
 
 fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     match (space.spec.as_ref(), value) {
-        (Some(space_spec::Spec::Box(_)), SpaceValue::Box(value)) => {
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => {
             Ok(value.to_contiguous_bytes().into_owned())
         }
-        (Some(space_spec::Spec::Discrete(_)), SpaceValue::Discrete(value)) => {
+        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.to_le_bytes().to_vec())
         }
-        (Some(space_spec::Spec::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
+        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
             Ok(values.iter().map(|value| u8::from(*value)).collect())
         }
-        (Some(space_spec::Spec::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
+        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
             encode_i64_sequence_bytes(values, space.dtype)
         }
         _ => Err(pyo3::exceptions::PyTypeError::new_err(

@@ -39,15 +39,15 @@ pub fn make_space<'py>(py: Python<'py>, space: &SpaceSpec) -> PyResult<Bound<'py
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("spec missing"))?
     {
         // === Fundamental === //
-        space_spec::Spec::Box(_) => make_box(py, &spaces, space),
-        space_spec::Spec::Discrete(_) => make_discrete(py, &spaces, space),
-        space_spec::Spec::MultiBinary(_) => make_multibinary(py, &spaces, space),
-        space_spec::Spec::MultiDiscrete(_) => make_multidiscrete(py, &spaces, space),
-        space_spec::Spec::Text(_) => make_text(py, &spaces, space),
+        SpaceKind::Box(_) => make_box(py, &spaces, space),
+        SpaceKind::Discrete(_) => make_discrete(py, &spaces, space),
+        SpaceKind::MultiBinary(_) => make_multibinary(py, &spaces, space),
+        SpaceKind::MultiDiscrete(_) => make_multidiscrete(py, &spaces, space),
+        SpaceKind::Text(_) => make_text(py, &spaces, space),
 
         // === Composite === //
-        space_spec::Spec::Dict(_) => make_dict(py, &spaces, space),
-        space_spec::Spec::Tuple(_) => make_tuple(py, &spaces, space),
+        SpaceKind::Dict(_) => make_dict(py, &spaces, space),
+        SpaceKind::Tuple(_) => make_tuple(py, &spaces, space),
     }
 }
 
@@ -59,7 +59,7 @@ mod tests {
     use pyo3::Bound;
     use pyo3::Python;
     use pyo3::types::{PyAny, PyAnyMethods, PyDict, PyDictMethods, PyModule};
-    use rlmesh_spaces::spaces::{TextBuilder, space_spec};
+    use rlmesh_spaces::spaces::{SpaceKind, TextBuilder};
 
     fn discrete_space<'py>(py: Python<'py>, n: i64) -> Bound<'py, PyAny> {
         import_gym(py)
@@ -85,7 +85,7 @@ mod tests {
                 .unwrap();
 
             let parsed = parse_space(&spec_obj).unwrap();
-            assert!(matches!(parsed.spec, Some(space_spec::Spec::Discrete(_))));
+            assert!(matches!(parsed.spec, Some(SpaceKind::Discrete(_))));
         });
     }
 
@@ -112,7 +112,7 @@ mod tests {
                 .unwrap();
 
             let parsed = parse_space(&native_like).unwrap();
-            assert!(matches!(parsed.spec, Some(space_spec::Spec::Discrete(_))));
+            assert!(matches!(parsed.spec, Some(SpaceKind::Discrete(_))));
         });
     }
 
@@ -130,7 +130,7 @@ mod tests {
             let native = spec.call_method0("to_space").unwrap();
 
             let parsed = parse_space(&native).unwrap();
-            assert!(matches!(parsed.spec, Some(space_spec::Spec::Discrete(_))));
+            assert!(matches!(parsed.spec, Some(SpaceKind::Discrete(_))));
         });
     }
 
@@ -140,7 +140,7 @@ mod tests {
             let discrete = discrete_space(py, 6);
 
             let parsed = parse_space(&discrete).unwrap();
-            assert!(matches!(parsed.spec, Some(space_spec::Spec::Discrete(_))));
+            assert!(matches!(parsed.spec, Some(SpaceKind::Discrete(_))));
         });
     }
 
@@ -159,7 +159,7 @@ mod tests {
             );
 
             let parsed = parse_space(&text).unwrap();
-            let Some(space_spec::Spec::Text(spec)) = parsed.spec else {
+            let Some(SpaceKind::Text(spec)) = parsed.spec else {
                 panic!("expected Text space");
             };
 
@@ -181,7 +181,7 @@ mod tests {
                 .unwrap();
 
             let parsed = parse_space(&text).unwrap();
-            let Some(space_spec::Spec::Text(spec)) = parsed.spec else {
+            let Some(SpaceKind::Text(spec)) = parsed.spec else {
                 panic!("expected Text space");
             };
 

@@ -1,12 +1,12 @@
 use crate::DType;
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec};
-use crate::{AxiswiseBounds, BoxSpec, ElementwiseBounds, UniformBounds, box_spec};
+use crate::spaces::{SpaceKind, SpaceSpec};
+use crate::{AxiswiseBounds, BoxBounds, BoxSpec, ElementwiseBounds, UniformBounds};
 
 pub struct BoxSpaceBuilder {
     shape: Vec<i64>,
     dtype: DType,
-    bounds: box_spec::Bounds,
+    bounds: BoxBounds,
 }
 
 impl BoxSpaceBuilder {
@@ -14,7 +14,7 @@ impl BoxSpaceBuilder {
         Self {
             shape: shape.into(),
             dtype: DType::Float32,
-            bounds: box_spec::Bounds::Unbounded(true),
+            bounds: BoxBounds::Unbounded(true),
         }
     }
 
@@ -22,7 +22,7 @@ impl BoxSpaceBuilder {
         Self {
             shape: shape.into(),
             dtype: DType::Float32,
-            bounds: box_spec::Bounds::Uniform(UniformBounds { low, high }),
+            bounds: BoxBounds::Uniform(UniformBounds { low, high }),
         }
     }
 
@@ -30,7 +30,7 @@ impl BoxSpaceBuilder {
         Self {
             shape: shape.into(),
             dtype: DType::Float32,
-            bounds: box_spec::Bounds::Axiswise(AxiswiseBounds { low, high }),
+            bounds: BoxBounds::Axiswise(AxiswiseBounds { low, high }),
         }
     }
 
@@ -38,7 +38,7 @@ impl BoxSpaceBuilder {
         Self {
             shape: shape.into(),
             dtype: DType::Float32,
-            bounds: box_spec::Bounds::Elementwise(ElementwiseBounds { low, high }),
+            bounds: BoxBounds::Elementwise(ElementwiseBounds { low, high }),
         }
     }
 
@@ -51,7 +51,7 @@ impl BoxSpaceBuilder {
         let spec = SpaceSpec {
             shape: self.shape,
             dtype: self.dtype,
-            spec: Some(space_spec::Spec::Box(BoxSpec {
+            spec: Some(SpaceKind::Box(BoxSpec {
                 bounds: Some(self.bounds),
             })),
         };
@@ -76,7 +76,7 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
     }
 
     let b = match &space.spec {
-        Some(space_spec::Spec::Box(b)) => b,
+        Some(SpaceKind::Box(b)) => b,
         _ => return err_space!(path, "Box", "spec.box must be set"),
     };
 
@@ -91,9 +91,9 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
         })?;
 
     match &b.bounds {
-        Some(box_spec::Bounds::Unbounded(_)) => Ok(()),
+        Some(BoxBounds::Unbounded(_)) => Ok(()),
 
-        Some(box_spec::Bounds::Uniform(s)) => {
+        Some(BoxBounds::Uniform(s)) => {
             if s.low > s.high {
                 return err_space!(path, "Box", "scalar bounds invalid: low > high");
             }
@@ -101,7 +101,7 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
         }
 
         // per-axis / broadcast: len == rank
-        Some(box_spec::Bounds::Axiswise(v)) => {
+        Some(BoxBounds::Axiswise(v)) => {
             if v.low.len() != v.high.len() {
                 return err_space!(
                     path,
@@ -129,7 +129,7 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
         }
 
         // elementwise / tensor: len == numel
-        Some(box_spec::Bounds::Elementwise(t)) => {
+        Some(BoxBounds::Elementwise(t)) => {
             if t.low.len() != t.high.len() {
                 return err_space!(
                     path,

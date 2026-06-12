@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{DType, TextSpec};
 
 #[macro_export]
@@ -48,7 +48,7 @@ fn make_text_at(
     let spec = SpaceSpec {
         shape: vec![],
         dtype: DType::Uint8,
-        spec: Some(space_spec::Spec::Text(TextSpec {
+        spec: Some(SpaceKind::Text(TextSpec {
             min_length,
             max_length,
             charset,
@@ -68,7 +68,7 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
     }
 
     let t = match &spec.spec {
-        Some(space_spec::Spec::Text(t)) => t,
+        Some(SpaceKind::Text(t)) => t,
         _ => return err_space!(path, "Text", "spec.text must be set"),
     };
 

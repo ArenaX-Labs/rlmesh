@@ -2,8 +2,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 use rand::RngExt;
 use rand::rngs::StdRng;
-use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::{BoxSpec, DType, box_spec, multi_binary_spec, multi_discrete_spec};
+use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+use rlmesh_spaces::{BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec};
 
 pub(super) fn sample_space_value<'py>(
     py: Python<'py>,
@@ -15,19 +15,19 @@ pub(super) fn sample_space_value<'py>(
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("space spec is missing"))?
     {
-        space_spec::Spec::Box(spec) => sample_box(py, space, spec, rng),
-        space_spec::Spec::Discrete(spec) => {
+        SpaceKind::Box(spec) => sample_box(py, space, spec, rng),
+        SpaceKind::Discrete(spec) => {
             let value = rng.random_range(spec.start..(spec.start + spec.n));
             Ok(value.into_pyobject(py)?.into_any())
         }
-        space_spec::Spec::MultiBinary(spec) => {
+        SpaceKind::MultiBinary(spec) => {
             let shape = multi_binary_shape(space, spec);
             sample_boolean_array(py, &shape, rng)
         }
-        space_spec::Spec::MultiDiscrete(spec) => sample_multi_discrete(py, spec, rng),
-        space_spec::Spec::Text(spec) => sample_text(py, spec, rng),
-        space_spec::Spec::Dict(spec) => sample_dict(py, spec, rng),
-        space_spec::Spec::Tuple(spec) => sample_tuple(py, spec, rng),
+        SpaceKind::MultiDiscrete(spec) => sample_multi_discrete(py, spec, rng),
+        SpaceKind::Text(spec) => sample_text(py, spec, rng),
+        SpaceKind::Dict(spec) => sample_dict(py, spec, rng),
+        SpaceKind::Tuple(spec) => sample_tuple(py, spec, rng),
     }
 }
 
@@ -56,18 +56,16 @@ fn sample_box<'py>(
 
 fn box_bounds(spec: &BoxSpec, numel: usize) -> (Vec<f64>, Vec<f64>) {
     match &spec.bounds {
-        Some(box_spec::Bounds::Uniform(bounds)) => {
-            (vec![bounds.low; numel], vec![bounds.high; numel])
-        }
-        Some(box_spec::Bounds::Axiswise(bounds)) => (
+        Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
+        Some(BoxBounds::Axiswise(bounds)) => (
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        Some(box_spec::Bounds::Elementwise(bounds)) => (
+        Some(BoxBounds::Elementwise(bounds)) => (
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        Some(box_spec::Bounds::Unbounded(_)) | None => {
+        Some(BoxBounds::Unbounded(_)) | None => {
             (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
         }
     }
@@ -137,10 +135,8 @@ fn multi_binary_shape(space: &SpaceSpec, spec: &rlmesh_spaces::MultiBinarySpec) 
         return space.shape.iter().map(|dim| *dim as usize).collect();
     }
     match &spec.n {
-        Some(multi_binary_spec::N::Size(size)) => vec![*size as usize],
-        Some(multi_binary_spec::N::Dims(dims)) => {
-            dims.data.iter().map(|dim| *dim as usize).collect()
-        }
+        Some(MultiBinaryDims::Size(size)) => vec![*size as usize],
+        Some(MultiBinaryDims::Dims(dims)) => dims.iter().map(|dim| *dim as usize).collect(),
         None => vec![],
     }
 }
@@ -168,15 +164,13 @@ fn sample_multi_discrete<'py>(
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
     let nvec = match &spec.nvec {
-        Some(multi_discrete_spec::Nvec::Flat(vector)) => vector
-            .data
+        Some(MultiDiscreteNvec::Flat(vector)) => vector
             .iter()
             .map(|value| *value as usize)
             .collect::<Vec<_>>(),
-        Some(multi_discrete_spec::Nvec::Shaped(matrix)) => matrix
-            .data
+        Some(MultiDiscreteNvec::Shaped(matrix)) => matrix
             .iter()
-            .flat_map(|row| row.data.iter().map(|value| *value as usize))
+            .flat_map(|row| row.iter().map(|value| *value as usize))
             .collect::<Vec<_>>(),
         None => vec![],
     };
@@ -190,11 +184,8 @@ fn sample_multi_discrete<'py>(
                 .unbind())
         })
         .collect::<PyResult<Vec<_>>>()?;
-    if let Some(multi_discrete_spec::Nvec::Shaped(matrix)) = &spec.nvec {
-        let shape = [
-            matrix.data.len(),
-            matrix.data.first().map_or(0, |row| row.data.len()),
-        ];
+    if let Some(MultiDiscreteNvec::Shaped(matrix)) = &spec.nvec {
+        let shape = [matrix.len(), matrix.first().map_or(0, |row| row.len())];
         return reshape_values(py, &values, &shape);
     }
     reshape_values(py, &values, &[nvec.len()])

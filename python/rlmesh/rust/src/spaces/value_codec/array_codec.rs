@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rlmesh_spaces::{
     DType, Scalar,
-    spaces::{SpaceSpec, space_spec},
+    spaces::{SpaceKind, SpaceSpec},
 };
 
 pub(crate) fn encode_array_like_value_with_backend(
@@ -38,9 +38,7 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
     let item_count = bytes.len() / item_size;
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(space_spec::Spec::Discrete(_)))
-            || base_shape.is_empty()
-        {
+        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) || base_shape.is_empty() {
             let scalars = decode_scalars(bytes, dtype)?;
             return scalar_to_bound(
                 py,
@@ -136,7 +134,7 @@ fn decode_with_numpy<'py>(
     };
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(space_spec::Spec::Discrete(_))) {
+        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) {
             return raw_array.call_method0("item");
         }
         if base_shape.is_empty() {

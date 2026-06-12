@@ -1,11 +1,11 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec, validate_space};
-use crate::{DType, MatrixInt, MultiDiscreteSpec, VectorInt, multi_discrete_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, validate_space};
+use crate::{DType, MultiDiscreteNvec, MultiDiscreteSpec};
 
 pub struct MultiDiscreteBuilder {
     dtype: DType,
     shape: Vec<i64>,
-    nvec: multi_discrete_spec::Nvec,
+    nvec: MultiDiscreteNvec,
 }
 
 impl MultiDiscreteBuilder {
@@ -16,7 +16,7 @@ impl MultiDiscreteBuilder {
         Self {
             shape: vec![nvec.len() as i64],
             dtype: DType::Int64,
-            nvec: multi_discrete_spec::Nvec::Flat(VectorInt { data: nvec }),
+            nvec: MultiDiscreteNvec::Flat(nvec),
         }
     }
 
@@ -29,12 +29,7 @@ impl MultiDiscreteBuilder {
         Self {
             shape: vec![r as i64, c as i64],
             dtype: DType::Int64,
-            nvec: multi_discrete_spec::Nvec::Shaped(MatrixInt {
-                data: rows
-                    .into_iter()
-                    .map(|row| VectorInt { data: row })
-                    .collect(),
-            }),
+            nvec: MultiDiscreteNvec::Shaped(rows),
         }
     }
 
@@ -47,7 +42,7 @@ impl MultiDiscreteBuilder {
         let spec = SpaceSpec {
             shape: self.shape,
             dtype: self.dtype,
-            spec: Some(space_spec::Spec::MultiDiscrete(MultiDiscreteSpec {
+            spec: Some(SpaceKind::MultiDiscrete(MultiDiscreteSpec {
                 nvec: Some(self.nvec),
             })),
         };
@@ -76,7 +71,7 @@ pub(crate) fn validate_multidiscrete_at(space: &SpaceSpec, path: &str) -> Result
     }
 
     let md = match &space.spec {
-        Some(space_spec::Spec::MultiDiscrete(md)) => md,
+        Some(SpaceKind::MultiDiscrete(md)) => md,
         _ => {
             return err_space!(path, "MultiDiscrete", "spec.multi_discrete must be set");
         }
@@ -89,8 +84,8 @@ pub(crate) fn validate_multidiscrete_at(space: &SpaceSpec, path: &str) -> Result
 
     match nvec {
         // rank-1 nvec
-        multi_discrete_spec::Nvec::Flat(v) => {
-            let values = &v.data;
+        MultiDiscreteNvec::Flat(v) => {
+            let values = v;
 
             if values.is_empty() {
                 return err_space!(path, "MultiDiscrete", "nvec.flat.data must be non-empty");
@@ -117,20 +112,20 @@ pub(crate) fn validate_multidiscrete_at(space: &SpaceSpec, path: &str) -> Result
         }
 
         // rank-2 nvec (matrix)
-        multi_discrete_spec::Nvec::Shaped(mv) => {
-            let rows = &mv.data;
+        MultiDiscreteNvec::Shaped(mv) => {
+            let rows = mv;
             if rows.is_empty() {
                 return err_space!(path, "MultiDiscrete", "nvec.shaped.data must be non-empty");
             }
 
-            let cols = rows[0].data.len();
+            let cols = rows[0].len();
             if cols == 0 {
                 return err_space!(path, "MultiDiscrete", "nvec.shaped rows must be non-empty");
             }
 
             // must be rectangular
             for (ri, r) in rows.iter().enumerate() {
-                if r.data.len() != cols {
+                if r.len() != cols {
                     return err_space!(
                         path,
                         "MultiDiscrete",
@@ -141,7 +136,7 @@ pub(crate) fn validate_multidiscrete_at(space: &SpaceSpec, path: &str) -> Result
 
             // all entries > 0
             for (ri, r) in rows.iter().enumerate() {
-                for (ci, &n) in r.data.iter().enumerate() {
+                for (ci, &n) in r.iter().enumerate() {
                     if n <= 0 {
                         return err_space!(
                             path,

@@ -1,11 +1,11 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec, validate_space};
-use crate::{DType, MultiBinarySpec, VectorInt, multi_binary_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, validate_space};
+use crate::{DType, MultiBinaryDims, MultiBinarySpec};
 
 pub struct MultiBinaryBuilder {
     shape: Vec<i64>,
     dtype: DType,
-    n: multi_binary_spec::N,
+    n: MultiBinaryDims,
 }
 
 impl MultiBinaryBuilder {
@@ -14,7 +14,7 @@ impl MultiBinaryBuilder {
         Self {
             shape: vec![n],
             dtype: DType::Uint8,
-            n: multi_binary_spec::N::Size(n),
+            n: MultiBinaryDims::Size(n),
         }
     }
 
@@ -24,7 +24,7 @@ impl MultiBinaryBuilder {
         Self {
             shape: shape.clone(),
             dtype: DType::Uint8,
-            n: multi_binary_spec::N::Dims(VectorInt { data: shape }),
+            n: MultiBinaryDims::Dims(shape),
         }
     }
 
@@ -37,9 +37,7 @@ impl MultiBinaryBuilder {
         let spec = SpaceSpec {
             shape: self.shape,
             dtype: self.dtype,
-            spec: Some(space_spec::Spec::MultiBinary(MultiBinarySpec {
-                n: Some(self.n),
-            })),
+            spec: Some(SpaceKind::MultiBinary(MultiBinarySpec { n: Some(self.n) })),
         };
 
         validate_space(&spec)?;
@@ -62,7 +60,7 @@ pub(crate) fn validate_multibinary_at(spec: &SpaceSpec, path: &str) -> Result<()
     }
 
     let mb = match &spec.spec {
-        Some(space_spec::Spec::MultiBinary(mb)) => mb,
+        Some(SpaceKind::MultiBinary(mb)) => mb,
         _ => {
             return err_space!(path, "MultiBinary", "spec.multi_binary must be set");
         }
@@ -74,7 +72,7 @@ pub(crate) fn validate_multibinary_at(spec: &SpaceSpec, path: &str) -> Result<()
     };
 
     match n {
-        multi_binary_spec::N::Size(n) => {
+        MultiBinaryDims::Size(n) => {
             if n <= &0 {
                 return err_space!(path, "MultiBinary", "n.size must be > 0");
             }
@@ -88,8 +86,8 @@ pub(crate) fn validate_multibinary_at(spec: &SpaceSpec, path: &str) -> Result<()
             Ok(())
         }
 
-        multi_binary_spec::N::Dims(v) => {
-            let dims = &v.data;
+        MultiBinaryDims::Dims(v) => {
+            let dims = v;
 
             if dims.is_empty() {
                 return err_space!(path, "MultiBinary", "n.dims must be non-empty");

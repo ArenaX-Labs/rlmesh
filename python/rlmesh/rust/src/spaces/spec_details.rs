@@ -1,20 +1,20 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList};
-use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
-use rlmesh_spaces::{BoxSpec, box_spec, multi_binary_spec, multi_discrete_spec};
+use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+use rlmesh_spaces::{BoxBounds, BoxSpec, MultiBinaryDims, MultiDiscreteNvec};
 
 use super::spec_view::PySpaceSpec;
 use crate::spaces::utils::dtype_name;
 
 pub(super) fn space_kind_name(space: &SpaceSpec) -> &'static str {
     match space.spec.as_ref() {
-        Some(space_spec::Spec::Box(_)) => "box",
-        Some(space_spec::Spec::Discrete(_)) => "discrete",
-        Some(space_spec::Spec::MultiBinary(_)) => "multi_binary",
-        Some(space_spec::Spec::MultiDiscrete(_)) => "multi_discrete",
-        Some(space_spec::Spec::Text(_)) => "text",
-        Some(space_spec::Spec::Dict(_)) => "dict",
-        Some(space_spec::Spec::Tuple(_)) => "tuple",
+        Some(SpaceKind::Box(_)) => "box",
+        Some(SpaceKind::Discrete(_)) => "discrete",
+        Some(SpaceKind::MultiBinary(_)) => "multi_binary",
+        Some(SpaceKind::MultiDiscrete(_)) => "multi_discrete",
+        Some(SpaceKind::Text(_)) => "text",
+        Some(SpaceKind::Dict(_)) => "dict",
+        Some(SpaceKind::Tuple(_)) => "tuple",
         None => "unknown",
     }
 }
@@ -61,47 +61,43 @@ fn space_spec_details_impl<'py>(
         .as_ref()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("space spec is missing"))?
     {
-        space_spec::Spec::Box(spec) => add_box_details(&details, spec)?,
-        space_spec::Spec::Discrete(spec) => {
+        SpaceKind::Box(spec) => add_box_details(&details, spec)?,
+        SpaceKind::Discrete(spec) => {
             details.set_item("n", spec.n)?;
             details.set_item("start", spec.start)?;
         }
-        space_spec::Spec::MultiBinary(spec) => match &spec.n {
-            Some(multi_binary_spec::N::Size(size)) => {
+        SpaceKind::MultiBinary(spec) => match &spec.n {
+            Some(MultiBinaryDims::Size(size)) => {
                 details.set_item("size", *size)?;
             }
-            Some(multi_binary_spec::N::Dims(dims)) => {
-                details.set_item("dims", dims.data.clone())?;
+            Some(MultiBinaryDims::Dims(dims)) => {
+                details.set_item("dims", dims.clone())?;
             }
             None => {}
         },
-        space_spec::Spec::MultiDiscrete(spec) => match &spec.nvec {
-            Some(multi_discrete_spec::Nvec::Flat(vector)) => {
-                details.set_item("nvec", vector.data.clone())?;
+        SpaceKind::MultiDiscrete(spec) => match &spec.nvec {
+            Some(MultiDiscreteNvec::Flat(vector)) => {
+                details.set_item("nvec", vector.clone())?;
             }
-            Some(multi_discrete_spec::Nvec::Shaped(matrix)) => {
-                let rows = matrix
-                    .data
-                    .iter()
-                    .map(|row| row.data.clone())
-                    .collect::<Vec<_>>();
+            Some(MultiDiscreteNvec::Shaped(matrix)) => {
+                let rows = matrix.clone();
                 details.set_item("nvec", rows)?;
             }
             None => {}
         },
-        space_spec::Spec::Text(spec) => {
+        SpaceKind::Text(spec) => {
             details.set_item("min_length", spec.min_length)?;
             details.set_item("max_length", spec.max_length)?;
             details.set_item("charset", spec.charset.clone())?;
         }
-        space_spec::Spec::Dict(spec) => {
+        SpaceKind::Dict(spec) => {
             let spaces = PyDict::new(py);
             for (key, child) in spec.keys.iter().zip(spec.spaces.iter()) {
                 spaces.set_item(key, nested_space(py, child, &nested)?)?;
             }
             details.set_item("spaces", spaces)?;
         }
-        space_spec::Spec::Tuple(spec) => {
+        SpaceKind::Tuple(spec) => {
             let spaces = spec
                 .spaces
                 .iter()
@@ -132,20 +128,20 @@ fn nested_space<'py>(
 
 fn add_box_details(details: &Bound<'_, PyDict>, spec: &BoxSpec) -> PyResult<()> {
     match &spec.bounds {
-        Some(box_spec::Bounds::Unbounded(_)) => {
+        Some(BoxBounds::Unbounded(_)) => {
             details.set_item("bounds_kind", "unbounded")?;
         }
-        Some(box_spec::Bounds::Uniform(bounds)) => {
+        Some(BoxBounds::Uniform(bounds)) => {
             details.set_item("bounds_kind", "uniform")?;
             details.set_item("low", bounds.low)?;
             details.set_item("high", bounds.high)?;
         }
-        Some(box_spec::Bounds::Axiswise(bounds)) => {
+        Some(BoxBounds::Axiswise(bounds)) => {
             details.set_item("bounds_kind", "axiswise")?;
             details.set_item("low", bounds.low.clone())?;
             details.set_item("high", bounds.high.clone())?;
         }
-        Some(box_spec::Bounds::Elementwise(bounds)) => {
+        Some(BoxBounds::Elementwise(bounds)) => {
             details.set_item("bounds_kind", "elementwise")?;
             details.set_item("low", bounds.low.clone())?;
             details.set_item("high", bounds.high.clone())?;

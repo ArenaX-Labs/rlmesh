@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, SpaceValue, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 
 pub(crate) fn contains_discrete(
     space: &SpaceSpec,
@@ -12,7 +12,7 @@ pub(crate) fn contains_discrete(
     };
 
     let d = match &space.spec {
-        Some(space_spec::Spec::Discrete(d)) => d,
+        Some(SpaceKind::Discrete(d)) => d,
         _ => return err_space!(path, "space is not Discrete"),
     };
 

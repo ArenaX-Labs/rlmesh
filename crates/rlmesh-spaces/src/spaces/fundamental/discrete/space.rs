@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{DType, DiscreteSpec};
 
 pub struct DiscreteBuilder {
@@ -33,7 +33,7 @@ fn make_discrete_at(n: i64, start: i64, dtype: DType) -> Result<SpaceSpec, Space
     let spec = SpaceSpec {
         shape: vec![],
         dtype,
-        spec: Some(space_spec::Spec::Discrete(DiscreteSpec { n, start })),
+        spec: Some(SpaceKind::Discrete(DiscreteSpec { n, start })),
     };
     crate::spaces::validate_space(&spec)?;
     Ok(spec)
@@ -59,7 +59,7 @@ pub(crate) fn validate_discrete_at(space: &SpaceSpec, path: &str) -> Result<(), 
     }
 
     let d = match &space.spec {
-        Some(space_spec::Spec::Discrete(d)) => d,
+        Some(SpaceKind::Discrete(d)) => d,
         _ => return err_space!(path, "Discrete", "spec.discrete must be set"),
     };
 

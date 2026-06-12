@@ -1,6 +1,6 @@
+use crate::MultiBinaryDims;
 use crate::errors::{SpaceError, err_space};
-use crate::multi_binary_spec;
-use crate::spaces::{SpaceSpec, SpaceValue, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 
 pub(crate) fn contains_multibinary(
     space: &SpaceSpec,
@@ -13,14 +13,14 @@ pub(crate) fn contains_multibinary(
     };
 
     let mb = match &space.spec {
-        Some(space_spec::Spec::MultiBinary(mb)) => mb,
+        Some(SpaceKind::MultiBinary(mb)) => mb,
         _ => return err_space!(path, "space is not MultiBinary"),
     };
 
     // Get expected size from the space
     let expected_size = match &mb.n {
-        Some(multi_binary_spec::N::Size(n)) => *n as usize,
-        Some(multi_binary_spec::N::Dims(dims)) => dims.data.iter().map(|&d| d as usize).product(),
+        Some(MultiBinaryDims::Size(n)) => *n as usize,
+        Some(MultiBinaryDims::Dims(dims)) => dims.iter().map(|&d| d as usize).product(),
         None => return err_space!(path, "MultiBinary.n not set"),
     };
 

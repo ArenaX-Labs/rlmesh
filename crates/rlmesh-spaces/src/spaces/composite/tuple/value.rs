@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, SpaceValue, contains_at, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue, contains_at};
 
 pub(crate) fn contains_tuple(
     space: &SpaceSpec,
@@ -12,7 +12,7 @@ pub(crate) fn contains_tuple(
     };
 
     let t = match &space.spec {
-        Some(space_spec::Spec::Tuple(t)) => t,
+        Some(SpaceKind::Tuple(t)) => t,
         _ => return err_space!(path, "space is not Tuple"),
     };
 

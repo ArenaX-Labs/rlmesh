@@ -1,7 +1,7 @@
-use crate::box_spec;
+use crate::BoxBounds;
 use crate::dtype::DType;
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, SpaceValue, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 use half::{bf16, f16};
 
 pub(crate) fn contains_box(
@@ -99,23 +99,21 @@ fn box_bounds(
     path: &str,
 ) -> Result<(Vec<f64>, Vec<f64>), SpaceError> {
     let spec = match &space.spec {
-        Some(space_spec::Spec::Box(spec)) => spec,
+        Some(SpaceKind::Box(spec)) => spec,
         _ => return err_space!(path, "space is not Box"),
     };
 
     Ok(match &spec.bounds {
-        Some(box_spec::Bounds::Uniform(bounds)) => {
-            (vec![bounds.low; numel], vec![bounds.high; numel])
-        }
-        Some(box_spec::Bounds::Axiswise(bounds)) => (
+        Some(BoxBounds::Uniform(bounds)) => (vec![bounds.low; numel], vec![bounds.high; numel]),
+        Some(BoxBounds::Axiswise(bounds)) => (
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        Some(box_spec::Bounds::Elementwise(bounds)) => (
+        Some(BoxBounds::Elementwise(bounds)) => (
             repeat_or_truncate(bounds.low.as_slice(), numel, f64::NEG_INFINITY),
             repeat_or_truncate(bounds.high.as_slice(), numel, f64::INFINITY),
         ),
-        Some(box_spec::Bounds::Unbounded(_)) | None => {
+        Some(BoxBounds::Unbounded(_)) | None => {
             (vec![f64::NEG_INFINITY; numel], vec![f64::INFINITY; numel])
         }
     })

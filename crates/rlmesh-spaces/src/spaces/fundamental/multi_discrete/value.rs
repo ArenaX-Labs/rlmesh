@@ -1,6 +1,6 @@
+use crate::MultiDiscreteNvec;
 use crate::errors::{SpaceError, err_space};
-use crate::multi_discrete_spec;
-use crate::spaces::{SpaceSpec, SpaceValue, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 
 pub(crate) fn contains_multidiscrete(
     space: &SpaceSpec,
@@ -13,16 +13,14 @@ pub(crate) fn contains_multidiscrete(
     };
 
     let md = match &space.spec {
-        Some(space_spec::Spec::MultiDiscrete(md)) => md,
+        Some(SpaceKind::MultiDiscrete(md)) => md,
         _ => return err_space!(path, "space is not MultiDiscrete"),
     };
 
     // Get nvec from the space
     let nvec: Vec<i64> = match &md.nvec {
-        Some(multi_discrete_spec::Nvec::Flat(v)) => v.data.clone(),
-        Some(multi_discrete_spec::Nvec::Shaped(m)) => {
-            m.data.iter().flat_map(|row| row.data.clone()).collect()
-        }
+        Some(MultiDiscreteNvec::Flat(v)) => v.clone(),
+        Some(MultiDiscreteNvec::Shaped(m)) => m.iter().flat_map(|row| row.clone()).collect(),
         None => return err_space!(path, "MultiDiscrete.nvec not set"),
     };
 

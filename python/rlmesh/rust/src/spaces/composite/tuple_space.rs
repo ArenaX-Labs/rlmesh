@@ -10,7 +10,7 @@ pub(crate) fn make_tuple<'py>(
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     let tuple_spec = match &space.spec {
-        Some(space_spec::Spec::Tuple(t)) => t,
+        Some(SpaceKind::Tuple(t)) => t,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "missing tuple detail",

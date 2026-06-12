@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceSpec, SpaceValue, contains_at, space_spec};
+use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue, contains_at};
 
 pub(crate) fn contains_dict(
     space: &SpaceSpec,
@@ -12,7 +12,7 @@ pub(crate) fn contains_dict(
     };
 
     let d = match &space.spec {
-        Some(space_spec::Spec::Dict(d)) => d,
+        Some(SpaceKind::Dict(d)) => d,
         _ => return err_space!(path, "space is not Dict"),
     };
 

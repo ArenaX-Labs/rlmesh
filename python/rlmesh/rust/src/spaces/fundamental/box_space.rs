@@ -2,7 +2,7 @@ use crate::spaces::utils::*;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use rlmesh_spaces::spaces::*;
-use rlmesh_spaces::{AxiswiseBounds, BoxSpec, UniformBounds, box_spec};
+use rlmesh_spaces::{AxiswiseBounds, BoxBounds, BoxSpec, UniformBounds};
 
 pub fn make_box<'py>(
     py: Python<'py>,
@@ -10,7 +10,7 @@ pub fn make_box<'py>(
     spec: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
     let b = match &spec.spec {
-        Some(space_spec::Spec::Box(b)) => b,
+        Some(SpaceKind::Box(b)) => b,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "missing box detail",
@@ -25,7 +25,7 @@ pub fn make_box<'py>(
     let dtype = dtype_to_py(py, spec.dtype)?;
 
     let (low_obj, high_obj) = match &b.bounds {
-        Some(box_spec::Bounds::Unbounded(_)) => {
+        Some(BoxBounds::Unbounded(_)) => {
             let inf = np.getattr("inf")?;
             let low = np.getattr("full")?.call1((
                 &shape,
@@ -35,17 +35,17 @@ pub fn make_box<'py>(
             let high = np.getattr("full")?.call1((&shape, inf, &dtype))?;
             (low, high)
         }
-        Some(box_spec::Bounds::Uniform(s)) => {
+        Some(BoxBounds::Uniform(s)) => {
             let low = np.getattr("full")?.call1((&shape, s.low, &dtype))?;
             let high = np.getattr("full")?.call1((&shape, s.high, &dtype))?;
             (low, high)
         }
-        Some(box_spec::Bounds::Axiswise(v)) => {
+        Some(BoxBounds::Axiswise(v)) => {
             let low = np.getattr("array")?.call1((v.low.clone(), &dtype))?;
             let high = np.getattr("array")?.call1((v.high.clone(), &dtype))?;
             (low, high)
         }
-        Some(box_spec::Bounds::Elementwise(t)) => {
+        Some(BoxBounds::Elementwise(t)) => {
             let low = np
                 .getattr("array")?
                 .call1((t.low.clone(), &dtype))?
@@ -81,7 +81,7 @@ pub fn parse_box<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
     Ok(SpaceSpec {
         shape,
         dtype,
-        spec: Some(space_spec::Spec::Box(box_spec)),
+        spec: Some(SpaceKind::Box(box_spec)),
     })
 }
 
@@ -97,14 +97,11 @@ fn build_box_bounds<'py>(
     if let (Ok(lo), Ok(hi)) = (low.extract::<f64>(), high.extract::<f64>()) {
         if is_unbounded_scalar(lo, hi) {
             return Ok(BoxSpec {
-                bounds: Some(box_spec::Bounds::Unbounded(true)),
+                bounds: Some(BoxBounds::Unbounded(true)),
             });
         }
         return Ok(BoxSpec {
-            bounds: Some(box_spec::Bounds::Uniform(UniformBounds {
-                low: lo,
-                high: hi,
-            })),
+            bounds: Some(BoxBounds::Uniform(UniformBounds { low: lo, high: hi })),
         });
     }
 
@@ -114,7 +111,7 @@ fn build_box_bounds<'py>(
     if let (Ok(lo_vec), Ok(hi_vec)) = (extract_1d_f64(low), extract_1d_f64(high)) {
         if lo_vec.len() == rank && hi_vec.len() == rank {
             return Ok(BoxSpec {
-                bounds: Some(box_spec::Bounds::Axiswise(AxiswiseBounds {
+                bounds: Some(BoxBounds::Axiswise(AxiswiseBounds {
                     low: lo_vec,
                     high: hi_vec,
                 })),
@@ -130,17 +127,15 @@ fn build_box_bounds<'py>(
                     .all(|x| x.is_infinite() && x.is_sign_positive())
             {
                 return Ok(BoxSpec {
-                    bounds: Some(box_spec::Bounds::Unbounded(true)),
+                    bounds: Some(BoxBounds::Unbounded(true)),
                 });
             }
 
             return Ok(BoxSpec {
-                bounds: Some(box_spec::Bounds::Elementwise(
-                    rlmesh_spaces::ElementwiseBounds {
-                        low: lo_vec,
-                        high: hi_vec,
-                    },
-                )),
+                bounds: Some(BoxBounds::Elementwise(rlmesh_spaces::ElementwiseBounds {
+                    low: lo_vec,
+                    high: hi_vec,
+                })),
             });
         }
     }
@@ -149,11 +144,11 @@ fn build_box_bounds<'py>(
     let hi_max = deep_max_f64(high)?;
     if is_unbounded_scalar(lo_min, hi_max) {
         Ok(BoxSpec {
-            bounds: Some(box_spec::Bounds::Unbounded(true)),
+            bounds: Some(BoxBounds::Unbounded(true)),
         })
     } else {
         Ok(BoxSpec {
-            bounds: Some(box_spec::Bounds::Uniform(UniformBounds {
+            bounds: Some(BoxBounds::Uniform(UniformBounds {
                 low: lo_min,
                 high: hi_max,
             })),
@@ -171,8 +166,8 @@ mod tests {
     use crate::spaces::utils::import_gym;
     use pyo3::Python;
     use pyo3::types::PyAnyMethods;
-    use rlmesh_spaces::spaces::{SpaceSpec, space_spec};
-    use rlmesh_spaces::{BoxSpec, DType, box_spec};
+    use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+    use rlmesh_spaces::{BoxBounds, BoxSpec, DType};
 
     #[test]
     fn make_box_keeps_unbounded_float32_bounds_at_float32() {
@@ -182,8 +177,8 @@ mod tests {
             let spec = SpaceSpec {
                 shape: vec![3],
                 dtype: DType::Float32,
-                spec: Some(space_spec::Spec::Box(BoxSpec {
-                    bounds: Some(box_spec::Bounds::Unbounded(true)),
+                spec: Some(SpaceKind::Box(BoxSpec {
+                    bounds: Some(BoxBounds::Unbounded(true)),
                 })),
             };
 

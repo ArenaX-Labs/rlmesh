@@ -3,7 +3,7 @@ mod fundamental;
 mod space;
 mod value;
 
-pub use crate::{SpaceSpec, SpaceType, space_spec};
+pub use crate::{SpaceKind, SpaceSpec, SpaceType};
 pub use composite::{DictSpaceBuilder, TupleSpaceBuilder};
 pub use fundamental::{
     BoxSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder, TextBuilder,

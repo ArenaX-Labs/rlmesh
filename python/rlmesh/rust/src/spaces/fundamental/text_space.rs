@@ -9,7 +9,7 @@ pub fn make_text<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     const PRINTABLE_ASCII: &str = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\u{0b}\u{0c}";
     let text_spec = match &space.spec {
-        Some(space_spec::Spec::Text(spec)) => spec,
+        Some(SpaceKind::Text(spec)) => spec,
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err("spec.text missing"));
         }

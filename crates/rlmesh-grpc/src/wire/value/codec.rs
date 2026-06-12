@@ -19,28 +19,24 @@ pub(super) fn encode_space_value<'v>(
     space: &native::SpaceSpec,
 ) -> Result<Cow<'v, [u8]>, ProtocolError> {
     match (space.spec.as_ref(), value) {
-        (Some(native::space_spec::Spec::Box(_)), native::SpaceValue::Box(value)) => {
+        (Some(native::SpaceKind::Box(_)), native::SpaceValue::Box(value)) => {
             Ok(value.to_contiguous_bytes())
         }
-        (Some(native::space_spec::Spec::Discrete(_)), native::SpaceValue::Discrete(value)) => {
+        (Some(native::SpaceKind::Discrete(_)), native::SpaceValue::Discrete(value)) => {
             Ok(Cow::Owned(encode_scalar(*value, space.dtype)?))
         }
-        (
-            Some(native::space_spec::Spec::MultiBinary(_)),
-            native::SpaceValue::MultiBinary(values),
-        ) => Ok(Cow::Owned(
-            values.iter().map(|value| u8::from(*value)).collect(),
-        )),
-        (
-            Some(native::space_spec::Spec::MultiDiscrete(_)),
-            native::SpaceValue::MultiDiscrete(values),
-        ) => Ok(Cow::Owned(encode_int_sequence(values, space.dtype)?)),
-        (Some(native::space_spec::Spec::Text(_)), native::SpaceValue::Text(value)) => {
+        (Some(native::SpaceKind::MultiBinary(_)), native::SpaceValue::MultiBinary(values)) => Ok(
+            Cow::Owned(values.iter().map(|value| u8::from(*value)).collect()),
+        ),
+        (Some(native::SpaceKind::MultiDiscrete(_)), native::SpaceValue::MultiDiscrete(values)) => {
+            Ok(Cow::Owned(encode_int_sequence(values, space.dtype)?))
+        }
+        (Some(native::SpaceKind::Text(_)), native::SpaceValue::Text(value)) => {
             Ok(Cow::Owned(encode_proto_value(&Value {
                 kind: Some(value::Kind::StringValue(value.clone())),
             })))
         }
-        (Some(native::space_spec::Spec::Dict(spec)), native::SpaceValue::Dict(values)) => {
+        (Some(native::SpaceKind::Dict(spec)), native::SpaceValue::Dict(values)) => {
             let fields = spec
                 .keys
                 .iter()
@@ -56,7 +52,7 @@ pub(super) fn encode_space_value<'v>(
                 kind: Some(value::Kind::StructValue(Struct { fields })),
             })))
         }
-        (Some(native::space_spec::Spec::Tuple(spec)), native::SpaceValue::Tuple(values)) => {
+        (Some(native::SpaceKind::Tuple(spec)), native::SpaceValue::Tuple(values)) => {
             let values = values
                 .iter()
                 .zip(spec.spaces.iter())
@@ -78,26 +74,27 @@ pub(super) fn decode_space_value(
     space: &native::SpaceSpec,
 ) -> Result<native::SpaceValue, ProtocolError> {
     match space.spec.as_ref() {
-        Some(native::space_spec::Spec::Box(_)) => Ok(native::SpaceValue::Box(
+        Some(native::SpaceKind::Box(_)) => Ok(native::SpaceValue::Box(
             native::Tensor::from_slice(bytes, &space.shape, space.dtype)
                 .map_err(|err| ProtocolError::DecodeError(format!("invalid box payload: {err}")))?,
         )),
-        Some(native::space_spec::Spec::Discrete(_)) => Ok(native::SpaceValue::Discrete(
-            decode_scalar(bytes, space.dtype)?,
-        )),
-        Some(native::space_spec::Spec::MultiBinary(_)) => Ok(native::SpaceValue::MultiBinary(
+        Some(native::SpaceKind::Discrete(_)) => Ok(native::SpaceValue::Discrete(decode_scalar(
+            bytes,
+            space.dtype,
+        )?)),
+        Some(native::SpaceKind::MultiBinary(_)) => Ok(native::SpaceValue::MultiBinary(
             bytes.iter().map(|value| *value != 0).collect(),
         )),
-        Some(native::space_spec::Spec::MultiDiscrete(_)) => Ok(native::SpaceValue::MultiDiscrete(
+        Some(native::SpaceKind::MultiDiscrete(_)) => Ok(native::SpaceValue::MultiDiscrete(
             decode_int_sequence(bytes, space.dtype)?,
         )),
-        Some(native::space_spec::Spec::Text(_)) => match decode_proto_value(bytes)?.kind {
+        Some(native::SpaceKind::Text(_)) => match decode_proto_value(bytes)?.kind {
             Some(value::Kind::StringValue(value)) => Ok(native::SpaceValue::Text(value)),
             _ => Err(ProtocolError::DecodeError(
                 "text transport payload was not a string".to_string(),
             )),
         },
-        Some(native::space_spec::Spec::Dict(spec)) => {
+        Some(native::SpaceKind::Dict(spec)) => {
             let value = decode_proto_value(bytes)?;
             let struct_value = expect_struct_value(&value, "dict")?;
             let mut result = std::collections::BTreeMap::new();
@@ -112,7 +109,7 @@ pub(super) fn decode_space_value(
             }
             Ok(native::SpaceValue::Dict(result))
         }
-        Some(native::space_spec::Spec::Tuple(spec)) => {
+        Some(native::SpaceKind::Tuple(spec)) => {
             let value = decode_proto_value(bytes)?;
             let list = expect_list_value(&value, "tuple")?;
             if list.values.len() != spec.spaces.len() {
@@ -196,7 +193,7 @@ pub(super) fn decode_value_for_space(
     space: &native::SpaceSpec,
 ) -> Result<native::SpaceValue, ProtocolError> {
     match space.spec.as_ref() {
-        Some(native::space_spec::Spec::Box(_)) => {
+        Some(native::SpaceKind::Box(_)) => {
             let data = match value.kind.as_ref() {
                 Some(value::Kind::StringValue(encoded)) => {
                     BASE64.decode(encoded.as_bytes()).map_err(|err| {
@@ -214,7 +211,7 @@ pub(super) fn decode_value_for_space(
                 )?,
             ))
         }
-        Some(native::space_spec::Spec::Discrete(_)) => match value.kind {
+        Some(native::SpaceKind::Discrete(_)) => match value.kind {
             Some(value::Kind::NumberValue(number)) => {
                 Ok(native::SpaceValue::Discrete(number as i64))
             }
@@ -223,7 +220,7 @@ pub(super) fn decode_value_for_space(
                 "discrete payload was not numeric".to_string(),
             )),
         },
-        Some(native::space_spec::Spec::MultiBinary(_)) => Ok(native::SpaceValue::MultiBinary(
+        Some(native::SpaceKind::MultiBinary(_)) => Ok(native::SpaceValue::MultiBinary(
             expect_list_value(value, "multibinary")?
                 .values
                 .iter()
@@ -236,7 +233,7 @@ pub(super) fn decode_value_for_space(
                 })
                 .collect::<Result<_, _>>()?,
         )),
-        Some(native::space_spec::Spec::MultiDiscrete(_)) => Ok(native::SpaceValue::MultiDiscrete(
+        Some(native::SpaceKind::MultiDiscrete(_)) => Ok(native::SpaceValue::MultiDiscrete(
             expect_list_value(value, "multidiscrete")?
                 .values
                 .iter()
@@ -248,7 +245,7 @@ pub(super) fn decode_value_for_space(
                 })
                 .collect::<Result<_, _>>()?,
         )),
-        Some(native::space_spec::Spec::Text(_)) => match &value.kind {
+        Some(native::SpaceKind::Text(_)) => match &value.kind {
             Some(value::Kind::StringValue(text)) => Ok(native::SpaceValue::Text(text.clone())),
             _ => Err(ProtocolError::DecodeError(
                 "text payload was not a string".to_string(),
