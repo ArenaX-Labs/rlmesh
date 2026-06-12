@@ -52,8 +52,14 @@ def main(
         from rlmesh.server import EnvLike as ServedEnv
 
         env = cast(ServedEnv, load_env_from_spec(spec))
-        port = int(os.environ.get("RLMESH_ENV_PORT", "50051"))
-        server = EnvServer(env, host="0.0.0.0", port=port)
+        # Canonical bind contract: RLMESH_ENV_ADDRESS (a full bind address) takes
+        # precedence; RLMESH_ENV_PORT remains a port-only fallback on 0.0.0.0.
+        address = os.environ.get("RLMESH_ENV_ADDRESS")
+        if address:
+            server = EnvServer(env, address)
+        else:
+            port = int(os.environ.get("RLMESH_ENV_PORT", "50051"))
+            server = EnvServer(env, host="0.0.0.0", port=port)
         print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()
         return 0
