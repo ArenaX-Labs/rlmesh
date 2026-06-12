@@ -358,6 +358,19 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     break;
                 }
             }
+
+            // The session is over, however it ended. A graceful Close already
+            // drained the tracker; an abrupt end (client drop/detach/network)
+            // must not leak this session's episodes into the next session's
+            // accounting, so complete anything still active as truncated. The
+            // metadata has no recipient (the stream is gone) and is dropped.
+            let leftover = episode_tracker.lock().await.complete_all("session ended");
+            if !leftover.is_empty() {
+                tracing::info!(
+                    episodes = leftover.len(),
+                    "completed episodes left active by an abruptly-ended session"
+                );
+            }
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))

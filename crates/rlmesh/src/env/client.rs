@@ -100,8 +100,10 @@ impl RemoteEnv {
 
     /// Tear down the session locally without waiting for a Close round-trip.
     ///
-    /// Releases the env's exclusive session slot by dropping the Join stream;
-    /// final episode metadata from the server is forfeited. Prefer
+    /// Drops the Join stream; the server completes this session's in-flight
+    /// episodes as truncated and frees the exclusive session slot once it
+    /// observes the stream end (after any still-draining operation finishes).
+    /// Final episode metadata from the server is forfeited. Prefer
     /// [`RemoteEnv::close`]; use this when close cannot complete (e.g. it
     /// timed out behind a long-draining server operation).
     pub fn detach(&mut self) {

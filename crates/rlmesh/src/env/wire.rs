@@ -578,6 +578,88 @@ mod tests {
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn detached_session_episodes_do_not_bleed_into_the_next_session() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = tokio::spawn(async move {
+            EnvServer::new(DummyEnv::new())
+                .serve_with_options(
+                    BindAddress::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port,
+                    },
+                    ServeOptions {
+                        allow_remote_shutdown: true,
+                        ..ServeOptions::default()
+                    },
+                )
+                .await
+        });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut first = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(client) => break client,
+                Err(err) if !server.is_finished() => {
+                    let _ = err;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("environment server did not start: {err}"),
+            }
+        };
+
+        // Start episodes, then abandon the session without a graceful Close.
+        let _ = first
+            .reset(ResetRequest {
+                seeds: vec![77, 88],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        first.detach();
+        drop(first);
+
+        // The slot frees once the server observes the stream end; retry until
+        // the second session is admitted.
+        let mut second = loop {
+            let mut candidate = RemoteEnv::connect(&address).await.unwrap();
+            match candidate.reset(ResetRequest::default()).await {
+                Ok(_) => break candidate,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        };
+
+        // The detached session's episodes were completed server-side; they
+        // must NOT surface in the new session's step accounting (seeds 77/88
+        // bleeding through as 'interrupted' completions was the bug).
+        let step = second
+            .step(StepRequest {
+                actions: vec![
+                    spaces::SpaceValue::Discrete(0),
+                    spaces::SpaceValue::Discrete(1),
+                ],
+                ..StepRequest::default()
+            })
+            .await
+            .unwrap();
+        for episode in &step.completed_episodes {
+            assert_ne!(episode.seed, Some(77), "stale episode bled across sessions");
+            assert_ne!(episode.seed, Some(88), "stale episode bled across sessions");
+        }
+
+        assert!(second.shutdown("test shutdown").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn served_env_unix_socket_recovers_from_stale_socket_file() {
