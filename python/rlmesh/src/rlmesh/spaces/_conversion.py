@@ -172,8 +172,13 @@ def _box_from_gymnasium(space: Any) -> Box:
     # Annotated Any: numpy's stubs degrade under the 3.10 typecheck floor.
     low: Any = np.asarray(space.low)
     high: Any = np.asarray(space.high)
+    # The uniform fast path collapses the bounds through Python ``float`` — only
+    # safe for non-integer dtypes, since integer bounds beyond 2^53 (notably
+    # int64/uint64) would lose precision. Integer Boxes go through the native
+    # parser, which preserves them as exact dtype-typed bounds.
     if (
-        low.size > 0
+        not np.issubdtype(low.dtype, np.integer)
+        and low.size > 0
         and high.size > 0
         and np.all(low == low.flat[0])
         and np.all(high == high.flat[0])
@@ -205,7 +210,12 @@ def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
     elif bounds_kind == "uniform":
         low = np.full(shape, details["low"], dtype=dtype)
         high = np.full(shape, details["high"], dtype=dtype)
+    elif bounds_kind == "typed_uniform":
+        # A single dtype-typed scalar (decoded exactly) broadcast to the shape.
+        low = np.full(shape, details["low"][0], dtype=dtype)
+        high = np.full(shape, details["high"][0], dtype=dtype)
     else:
+        # "elementwise" / "typed_elementwise": one bound per element, row-major.
         low_flat: Any = np.asarray(details["low"], dtype=dtype)
         high_flat: Any = np.asarray(details["high"], dtype=dtype)
         low = low_flat.reshape(shape)
