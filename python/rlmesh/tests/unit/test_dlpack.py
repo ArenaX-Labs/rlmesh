@@ -280,6 +280,65 @@ def test_from_dlpack_rejects_non_cpu_devices() -> None:
         rlmesh.Tensor.from_dlpack(capsule)
 
 
+def _rss_bytes() -> int:
+    """Resident set size of this process, from /proc/self/statm (Linux)."""
+    import os
+
+    page_size = os.sysconf("SC_PAGE_SIZE")
+    with open("/proc/self/statm", encoding="ascii") as statm:
+        resident_pages = int(statm.read().split()[1])
+    return resident_pages * page_size
+
+
+def test_dlpack_capsule_lifecycle_does_not_leak() -> None:
+    """Stress every capsule lifecycle path and assert RSS stays flat.
+
+    Each export allocates a holder plus a 4 KiB storage refcount; a leak in
+    any of the paths below would grow RSS by hundreds of MiB over the run,
+    far beyond the assertion threshold.
+    """
+    import gc
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("RSS measurement uses /proc/self/statm")
+
+    import rlmesh
+
+    # High rank on purpose: the export holder owns shape/strides vectors, so
+    # a leaked holder costs ~1 KiB here and trips the threshold even when
+    # the (shared) storage itself is not leaked.
+    shape = [1] * 60 + [1024]
+    tensor = rlmesh.Tensor(bytes(4096), shape, "float32")
+
+    def exercise(iterations: int) -> None:
+        for _ in range(iterations):
+            # Export and drop unconsumed, both capsule flavors: the capsule
+            # destructor must free the holder.
+            legacy = tensor.__dlpack__()
+            versioned = tensor.__dlpack__(max_version=(1, 0))
+            del legacy, versioned
+            # Export consumed by our own importer: the consumer must free
+            # the holder via the producer deleter after renaming.
+            imported = rlmesh.Tensor.from_dlpack(tensor.__dlpack__())
+            # A copying export allocates fresh storage that must also die.
+            copied = tensor.__dlpack__(copy=True, max_version=(1, 0))
+            del imported, copied
+
+    exercise(1_000)  # warmup: allocator pools, import caches
+    gc.collect()
+    baseline = _rss_bytes()
+
+    exercise(20_000)
+    gc.collect()
+    growth = _rss_bytes() - baseline
+
+    assert growth < 32 * 1024 * 1024, (
+        f"RSS grew {growth / 1024 / 1024:.1f} MiB across 20k capsule "
+        "lifecycles; a holder or storage leak is likely"
+    )
+
+
 def test_dlpack_capsule_data_pointer_and_strides() -> None:
     """Walk the legacy DLManagedTensor struct via ctypes and check fields."""
     import rlmesh
