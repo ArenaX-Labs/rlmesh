@@ -8,6 +8,7 @@ use crate::hooks::{
 };
 
 use super::StepTimingSample;
+use super::reservoir::DurationReservoir;
 use super::stats::{average_ms, percentile_ms};
 
 #[derive(Debug, Clone)]
@@ -21,13 +22,16 @@ pub(crate) struct TelemetryWindowAccumulator {
     response_bytes: u64,
     total_response_bytes: u64,
     timing_samples: BTreeMap<TimingKey, Vec<Duration>>,
-    total_timing_samples: BTreeMap<TimingKey, Vec<Duration>>,
+    // `total_*` series accumulate over the whole (potentially unbounded)
+    // session, so they are bounded reservoirs rather than raw Vecs to keep
+    // memory constant while preserving representative summary statistics.
+    total_timing_samples: BTreeMap<TimingKey, DurationReservoir>,
     model_wait_samples: Vec<Duration>,
-    total_model_wait_samples: Vec<Duration>,
+    total_model_wait_samples: DurationReservoir,
     env_step_samples: Vec<Duration>,
-    total_env_step_samples: Vec<Duration>,
+    total_env_step_samples: DurationReservoir,
     round_trip_samples: Vec<Duration>,
-    total_round_trip_samples: Vec<Duration>,
+    total_round_trip_samples: DurationReservoir,
     reconnects: u64,
     total_reconnects: u64,
     drops: u64,
@@ -48,11 +52,11 @@ impl Default for TelemetryWindowAccumulator {
             timing_samples: BTreeMap::new(),
             total_timing_samples: BTreeMap::new(),
             model_wait_samples: Vec::new(),
-            total_model_wait_samples: Vec::new(),
+            total_model_wait_samples: DurationReservoir::default(),
             env_step_samples: Vec::new(),
-            total_env_step_samples: Vec::new(),
+            total_env_step_samples: DurationReservoir::default(),
             round_trip_samples: Vec::new(),
-            total_round_trip_samples: Vec::new(),
+            total_round_trip_samples: DurationReservoir::default(),
             reconnects: 0,
             total_reconnects: 0,
             drops: 0,
@@ -84,6 +88,7 @@ impl TelemetryWindowAccumulator {
             .push(sample.model_wait + sample.env_step);
         self.total_round_trip_samples
             .push(sample.model_wait + sample.env_step);
+        // (env_step / model_wait totals pushed above.)
         self.record_timing(
             "model.predict",
             sample.model_component_id,
@@ -227,22 +232,39 @@ impl TelemetryWindowAccumulator {
             response_bytes_per_second: Some(
                 self.total_response_bytes as f64 / elapsed.as_secs_f64(),
             ),
-            timings: timing_summaries(&self.total_timing_samples),
-            env_latency_ms_avg: average_ms(&self.total_env_step_samples),
-            env_latency_ms_p50: percentile_ms(&self.total_env_step_samples, 0.50),
-            env_latency_ms_p95: percentile_ms(&self.total_env_step_samples, 0.95),
-            env_latency_ms_p99: percentile_ms(&self.total_env_step_samples, 0.99),
-            model_latency_ms_avg: average_ms(&self.total_model_wait_samples),
-            model_latency_ms_p50: percentile_ms(&self.total_model_wait_samples, 0.50),
-            model_latency_ms_p95: percentile_ms(&self.total_model_wait_samples, 0.95),
-            model_latency_ms_p99: percentile_ms(&self.total_model_wait_samples, 0.99),
-            round_trip_ms_avg: average_ms(&self.total_round_trip_samples),
-            round_trip_ms_p50: percentile_ms(&self.total_round_trip_samples, 0.50),
-            round_trip_ms_p95: percentile_ms(&self.total_round_trip_samples, 0.95),
-            round_trip_ms_p99: percentile_ms(&self.total_round_trip_samples, 0.99),
+            timings: reservoir_timing_summaries(&self.total_timing_samples),
+            env_latency_ms_avg: average_ms(self.total_env_step_samples.samples()),
+            env_latency_ms_p50: percentile_ms(self.total_env_step_samples.samples(), 0.50),
+            env_latency_ms_p95: percentile_ms(self.total_env_step_samples.samples(), 0.95),
+            env_latency_ms_p99: percentile_ms(self.total_env_step_samples.samples(), 0.99),
+            model_latency_ms_avg: average_ms(self.total_model_wait_samples.samples()),
+            model_latency_ms_p50: percentile_ms(self.total_model_wait_samples.samples(), 0.50),
+            model_latency_ms_p95: percentile_ms(self.total_model_wait_samples.samples(), 0.95),
+            model_latency_ms_p99: percentile_ms(self.total_model_wait_samples.samples(), 0.99),
+            round_trip_ms_avg: average_ms(self.total_round_trip_samples.samples()),
+            round_trip_ms_p50: percentile_ms(self.total_round_trip_samples.samples(), 0.50),
+            round_trip_ms_p95: percentile_ms(self.total_round_trip_samples.samples(), 0.95),
+            round_trip_ms_p99: percentile_ms(self.total_round_trip_samples.samples(), 0.99),
             reconnects: self.total_reconnects,
             drops: self.total_drops,
         })
+    }
+
+    /// Largest retained session-lifetime sample buffer, for memory-bound tests.
+    #[cfg(test)]
+    pub(super) fn max_total_sample_buffer(&self) -> usize {
+        self.total_model_wait_samples
+            .samples()
+            .len()
+            .max(self.total_env_step_samples.samples().len())
+            .max(self.total_round_trip_samples.samples().len())
+            .max(
+                self.total_timing_samples
+                    .values()
+                    .map(|reservoir| reservoir.samples().len())
+                    .max()
+                    .unwrap_or(0),
+            )
     }
 
     fn reset(&mut self) {
@@ -271,6 +293,29 @@ fn timing_summaries(samples: &BTreeMap<TimingKey, Vec<Duration>>) -> Vec<TimingS
             p50_ms: percentile_ms(values, 0.50),
             p95_ms: percentile_ms(values, 0.95),
             p99_ms: percentile_ms(values, 0.99),
+        })
+        .collect()
+}
+
+fn reservoir_timing_summaries(
+    samples: &BTreeMap<TimingKey, DurationReservoir>,
+) -> Vec<TimingSummary> {
+    samples
+        .iter()
+        .map(|(key, reservoir)| {
+            let values = reservoir.samples();
+            TimingSummary {
+                operation: key.operation.clone(),
+                component_id: key.component_id.clone(),
+                name: key.name.clone(),
+                // Report the true number of observed samples, not the bounded
+                // reservoir size, so summary counts stay accurate.
+                sample_count: reservoir.seen(),
+                avg_ms: average_ms(values),
+                p50_ms: percentile_ms(values, 0.50),
+                p95_ms: percentile_ms(values, 0.95),
+                p99_ms: percentile_ms(values, 0.99),
+            }
         })
         .collect()
 }
