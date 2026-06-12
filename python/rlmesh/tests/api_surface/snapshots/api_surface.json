@@ -8,6 +8,7 @@
       "ServeOptions",
       "Tensor",
       "__version__",
+      "serving",
       "spaces",
       "types"
     ],
@@ -309,6 +310,10 @@
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = package_version('rlmesh')",
+        "stability": "Stable"
+      },
+      "serving": {
+        "kind": "module",
         "stability": "Stable"
       },
       "spaces": {
@@ -1705,6 +1710,26 @@
         },
         "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None)",
         "stability": "Stable"
+      }
+    }
+  },
+  "rlmesh.serving": {
+    "exports": ["import_packages", "load_env", "load_env_entrypoint"],
+    "objects": {
+      "import_packages": {
+        "kind": "function",
+        "signature": "import_packages(packages: Sequence[str]) -> None",
+        "stability": "Experimental"
+      },
+      "load_env": {
+        "kind": "function",
+        "signature": "load_env(env_id: str, *, packages: Sequence[str] = (), num_envs: int = 1, vectorization_mode: str | None = None, kwargs: Mapping[str, object] | None = None) -> EnvLike",
+        "stability": "Experimental"
+      },
+      "load_env_entrypoint": {
+        "kind": "function",
+        "signature": "load_env_entrypoint(entrypoint: str, *, packages: Sequence[str] = (), kwargs: Mapping[str, object] | None = None) -> EnvLike",
+        "stability": "Experimental"
       }
     }
   },

@@ -14,12 +14,8 @@ from rlmesh._bootstrap.env import (
     import_packages,
     is_env_lookup_error,
 )
-from rlmesh._bootstrap.env import (
-    load_env_entrypoint as _bootstrap_load_env_entrypoint,
-)
-from rlmesh._bootstrap.env import (
-    load_environment as _bootstrap_load_environment,
-)
+from rlmesh.serving import load_env as _serving_load_env
+from rlmesh.serving import load_env_entrypoint as _serving_load_env_entrypoint
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike
@@ -185,13 +181,13 @@ def load_environment(
     vectorization_mode: str | None = None,
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper for the shared bootstrap env loader."""
-    return _bootstrap_load_environment(
+    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    return _serving_load_env(
         env_id,
-        package_names,
-        num_envs,
-        vectorization_mode,
-        kwargs,
+        packages=package_names,
+        num_envs=num_envs,
+        vectorization_mode=vectorization_mode,
+        kwargs=kwargs,
     )
 
 
@@ -200,8 +196,12 @@ def load_env_entrypoint(
     package_names: list[str],
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper for the shared bootstrap env entrypoint loader."""
-    return _bootstrap_load_env_entrypoint(entrypoint, package_names, kwargs)
+    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    return _serving_load_env_entrypoint(
+        entrypoint,
+        packages=package_names,
+        kwargs=kwargs,
+    )
 
 
 def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
