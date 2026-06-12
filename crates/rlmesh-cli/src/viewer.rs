@@ -34,9 +34,13 @@ struct RenderViewerApp {
 
 impl RenderViewerApp {
     fn new(config: RenderViewerConfig) -> Self {
+        Self::with_receiver(config, spawn_stdin_reader())
+    }
+
+    fn with_receiver(config: RenderViewerConfig, rx: Receiver<ViewerEvent>) -> Self {
         Self {
             title: config.title,
-            rx: spawn_stdin_reader(),
+            rx,
             frame: None,
             texture: TextureSlot::default(),
             status: "Waiting for render frames...".to_string(),
@@ -140,28 +144,36 @@ fn spawn_stdin_reader() -> Receiver<ViewerEvent> {
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = stdin.lock();
-
-        loop {
-            match read_wire_frame(&mut reader) {
-                Ok(Some(event)) => {
-                    if tx.send(event).is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    let _ = tx.send(ViewerEvent::Exit);
-                    break;
-                }
-                Err(err) => {
-                    let _ = tx.send(ViewerEvent::Error(err));
-                    let _ = tx.send(ViewerEvent::Exit);
-                    break;
-                }
-            }
-        }
+        pump_wire_frames(&mut reader, &tx);
     });
 
     rx
+}
+
+/// Read framed viewer events from `reader` and forward them on `tx` until the
+/// stream ends, errors, or the receiver is dropped.
+fn pump_wire_frames(reader: &mut impl Read, tx: &mpsc::Sender<ViewerEvent>) {
+    loop {
+        match read_wire_frame(reader) {
+            Ok(Some(event)) => {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                let _ = tx.send(ViewerEvent::Exit);
+                break;
+            }
+            Err(err) => {
+                // Surface the error and keep the window open so the user can
+                // read it. Do NOT follow with Exit: the UI drains all pending
+                // events in one frame, so an immediate Exit would close the
+                // window before the error status is ever rendered.
+                let _ = tx.send(ViewerEvent::Error(err));
+                break;
+            }
+        }
+    }
 }
 
 fn read_wire_frame(reader: &mut impl Read) -> Result<Option<ViewerEvent>, String> {
@@ -222,6 +234,7 @@ fn fit_to_bounds(width: f32, height: f32, bounds: egui::Vec2) -> egui::Vec2 {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::mpsc;
 
     use image::{DynamicImage, ImageBuffer, ImageFormat, Luma};
 
@@ -248,5 +261,43 @@ mod tests {
         let mut raw = Vec::new();
         image.write_to(&mut Cursor::new(&mut raw), format).unwrap();
         raw
+    }
+
+    // Finding #88: a decode error must emit Error and NOT an immediate Exit, so
+    // the UI (which drains all pending events in one frame) keeps the window open
+    // to display the error instead of closing before it renders.
+    #[test]
+    fn decode_error_emits_error_without_exit() {
+        // Frame header kind=1 (Frame) with a 3-byte payload that is not valid PNG.
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&[1, 3, 0, 0, 0]); // kind=1, len=3
+        stream.extend_from_slice(&[0, 0, 0]); // bogus payload -> decode error
+        let mut reader = Cursor::new(stream);
+
+        let (tx, rx) = mpsc::channel();
+        pump_wire_frames(&mut reader, &tx);
+        drop(tx);
+
+        let events: Vec<ViewerEvent> = rx.into_iter().collect();
+        assert_eq!(events.len(), 1, "expected exactly one event (the error)");
+        assert!(
+            matches!(&events[0], ViewerEvent::Error(_)),
+            "expected an Error event"
+        );
+
+        // Driving the UI with the error must keep the window open.
+        let (tx2, rx2) = mpsc::channel();
+        for event in events {
+            tx2.send(event).unwrap();
+        }
+        drop(tx2);
+        let mut app = RenderViewerApp::with_receiver(
+            RenderViewerConfig {
+                title: "test".to_string(),
+            },
+            rx2,
+        );
+        app.poll_events();
+        assert!(!app.should_close, "decode error must not close the window");
     }
 }
