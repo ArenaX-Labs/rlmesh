@@ -1,3 +1,19 @@
+//! Served model endpoint: the tonic `ModelService` implementation.
+//!
+//! # Why this lives in the facade (vs. EnvService in rlmesh-grpc)
+//!
+//! The symmetric `EnvService` implementation lives one layer down in
+//! `rlmesh-grpc` because it is parameterized over `rlmesh_grpc::env::
+//! Environment`, a trait *defined in that crate*. The model service, by
+//! contrast, is parameterized over the user-facing [`crate::ModelHandler`]
+//! trait (and its [`crate::ModelObservation`] / route / lifecycle types), all
+//! defined here in the facade. Moving this impl into `rlmesh-grpc` would require
+//! either making `rlmesh-grpc` depend on `rlmesh` (a dependency cycle, since the
+//! facade already depends on `rlmesh-grpc`) or relocating the entire
+//! `ModelHandler` family — a public-API-breaking, Python-rippling refactor and
+//! net-new "grpc-level model handler trait" design. Review finding #74 judged
+//! that churn out of scope; the asymmetry is intentional and documented here.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
