@@ -74,7 +74,7 @@ impl ModelRouteContext {
 /// Carries the encoded observation payload plus the routing context and the
 /// env contract / batch size needed to decode it. The convenience accessors
 /// forward to the primary slot of [`route`](ModelObservation::route).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelObservation {
     /// The encoded observation payload, if present.
     pub observation: Option<spaces::BinaryPayload>,
@@ -112,7 +112,7 @@ impl ModelObservation {
 
 /// Notification that an episode has ended, passed to
 /// [`ModelHandler::on_episode_end`](crate::ModelHandler::on_episode_end).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelEpisodeEnd {
     /// Identifier of the episode that ended.
     pub episode_id: String,

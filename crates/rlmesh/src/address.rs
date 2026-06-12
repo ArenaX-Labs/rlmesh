@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use rlmesh_grpc::helpers::{BindTarget, parse_bind_target, parse_env_connect_target};
 
@@ -70,6 +71,16 @@ impl fmt::Display for ConnectAddress {
     }
 }
 
+impl FromStr for ConnectAddress {
+    type Err = Error;
+
+    /// Equivalent to [`ConnectAddress::parse`]; lets you write
+    /// `"tcp://host:port".parse::<ConnectAddress>()`.
+    fn from_str(value: &str) -> Result<Self> {
+        Self::parse(value)
+    }
+}
+
 impl BindAddress {
     /// Parse a bind target such as `port`, `host:port`, `tcp://host:port`, or
     /// `unix:///path/to.sock`.
@@ -99,6 +110,16 @@ impl BindAddress {
 impl fmt::Display for BindAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.display_address().fmt(f)
+    }
+}
+
+impl FromStr for BindAddress {
+    type Err = Error;
+
+    /// Equivalent to [`BindAddress::parse`]; lets you write
+    /// `"tcp://host:port".parse::<BindAddress>()`.
+    fn from_str(value: &str) -> Result<Self> {
+        Self::parse(value)
     }
 }
 
