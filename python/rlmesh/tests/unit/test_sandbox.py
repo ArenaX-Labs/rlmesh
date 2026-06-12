@@ -143,6 +143,67 @@ def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
         )
 
 
+@pytest.mark.parametrize("field", ["packages", "imports"])
+def test_sandbox_rejects_bare_str_packages_imports(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_start_env",
+        lambda *_args, **_kwargs: pytest.fail("sandbox should not start"),
+    )
+
+    with pytest.raises(TypeError, match=rf"{field}= expects a sequence of strings"):
+        SandboxUnderTest("CartPole-v1", **{field: "ale-py"})
+
+
+@pytest.mark.parametrize("field", ["packages", "imports"])
+def test_sandbox_accepts_string_sequence_packages_imports(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    captured: dict[str, object] = {}
+    stopped: list[str] = []
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def close(self) -> None:
+            pass
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_stop_env",
+        lambda *, container_id: stopped.append(container_id),
+    )
+
+    with SandboxUnderTest("CartPole-v1", **{field: ["ale-py"]}):
+        pass
+
+    assert captured[field] == ["ale-py"]
+
+
 def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
     return {
         "requested_source": "gym://CartPole-v1",

@@ -677,8 +677,8 @@ def _start_sandbox(
             source,
             base_image=base_image,
             rlmesh_package=rlmesh_package,
-            packages=list(packages or []),
-            imports=list(imports or []),
+            packages=_string_sequence("packages", packages),
+            imports=_string_sequence("imports", imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
@@ -692,6 +692,23 @@ def _start_sandbox(
         address=started["address"],
         container_id=started["container_id"],
     )
+
+
+def _string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
+    """Normalize a package/import sequence, rejecting a bare ``str``.
+
+    A bare ``str`` satisfies ``Sequence[str]`` but iterating it yields single
+    characters, which would silently forward one-letter package or import names
+    to the sandbox. Require an explicit list/tuple of names instead.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raise TypeError(
+            f"{name}= expects a sequence of strings, not a bare str; "
+            f"pass [{value!r}] for a single entry"
+        )
+    return list(value)
 
 
 def _reject_removed_option(name: str, value: object) -> None:
