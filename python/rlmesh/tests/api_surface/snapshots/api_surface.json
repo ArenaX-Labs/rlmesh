@@ -1716,7 +1716,7 @@
       "MultiBinary",
       "MultiDiscrete",
       "Space",
-      "SpaceAdapter",
+      "SpaceBridge",
       "SpaceSpec",
       "Text",
       "Tuple",
@@ -1995,7 +1995,7 @@
         "signature": "Space(spec: SpaceSpec)",
         "stability": "Stable"
       },
-      "SpaceAdapter": {
+      "SpaceBridge": {
         "kind": "class",
         "members": {
           "input": {
@@ -2007,7 +2007,7 @@
             "signature": "sample(value: object, spec: SpaceSpec) -> OutputT"
           }
         },
-        "signature": "SpaceAdapter(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
+        "signature": "SpaceBridge(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
         "stability": "Stable"
       },
       "SpaceSpec": {
@@ -2137,7 +2137,7 @@
       },
       "space_from_spec": {
         "kind": "function",
-        "signature": "space_from_spec(spec: SpaceSpec, *, adapter: SpaceAdapter[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
+        "signature": "space_from_spec(spec: SpaceSpec, *, bridge: SpaceBridge[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
         "stability": "Stable"
       },
       "to_gymnasium_space": {

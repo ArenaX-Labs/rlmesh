@@ -1,8 +1,8 @@
 # JAX
 
-The JAX adapter is experimental in this beta.
+The JAX backend is experimental in this beta.
 
-## What This Adapter Changes
+## What This Backend Changes
 
 `rlmesh.jax` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
 APIs, but decodes tensor leaves to JAX arrays. Space wrappers returned from JAX clients also sample
@@ -14,7 +14,7 @@ Install it with:
 pip install --pre "rlmesh[jax]"
 ```
 
-| Concrete API                  | Shared behavior                        | Adapter-specific behavior                             |
+| Concrete API                  | Shared behavior                        | Backend-specific behavior                             |
 | ----------------------------- | -------------------------------------- | ----------------------------------------------------- |
 | `rlmesh.jax.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.  |
 | `rlmesh.jax.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use JAX-compatible containers.         |

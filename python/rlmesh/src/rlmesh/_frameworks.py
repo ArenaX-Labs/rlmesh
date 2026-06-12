@@ -37,7 +37,7 @@ SUPPORTED_DTYPES: Final[tuple[str, ...]] = (
 class FrameworkBridge:
     """Tree-walking value conversion for one array framework.
 
-    Implements the internal ``ValueAdapter`` protocol. Tensor leaves decode
+    Implements the internal ``ValueBridge`` protocol. Tensor leaves decode
     through ``decode_leaf``; arbitrary leaves encode through ``encode_leaf``,
     which returns ``UNHANDLED`` to pass a value through unchanged.
     Availability is checked once per ``decode``/``encode`` call.

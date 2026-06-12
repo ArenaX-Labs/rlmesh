@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter
+from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .spaces import Space, SpaceAdapter
+from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_adapter_from_value_adapter
+from .spaces._sample import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -118,21 +118,21 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
-_jax_bridge: ValueAdapter = FrameworkBridge(
+_jax_bridge: ValueBridge = FrameworkBridge(
     name="jax",
     ensure_available=ensure_available,
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
 )
-_jax_space_adapter: SpaceAdapter[JaxValue] = cast(
-    SpaceAdapter[JaxValue],
-    space_adapter_from_value_adapter(_jax_bridge),
+_jax_space_bridge: SpaceBridge[JaxValue] = cast(
+    SpaceBridge[JaxValue],
+    space_bridge_from_value_bridge(_jax_bridge),
 )
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[JaxValue]:
     """Create a JAX-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, adapter=_jax_space_adapter)
+    return _space_from_spec(spec, bridge=_jax_space_bridge)
 
 
 @final
@@ -150,8 +150,8 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _jax_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _jax_space_adapter
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 @final
@@ -166,8 +166,8 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _jax_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _jax_space_adapter
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 @final
@@ -181,7 +181,7 @@ class Model(ModelBase[JaxValue, JaxValue]):
         on_close: Optional callback invoked when the model worker closes.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _jax_bridge
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
 
 
 @final

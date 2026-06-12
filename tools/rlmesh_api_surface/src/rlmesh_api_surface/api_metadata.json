@@ -138,7 +138,7 @@
     },
     "rlmesh.spaces": {
       "title": "rlmesh.spaces",
-      "description": "Named RLMesh-native space wrappers and Gymnasium adapters.",
+      "description": "Named RLMesh-native space wrappers and Gymnasium backends.",
       "stability": "Stable",
       "status": "Stable core spaces; extra wrappers are experimental."
     },

@@ -9,7 +9,7 @@ from typing import Any, cast, final
 from .._rlmesh import dict_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
-from ._base import NewOutputT, Space, SpaceAdapter
+from ._base import NewOutputT, Space, SpaceBridge
 from ._utils import EMPTY_SPACE_MAPPING, spec_details
 
 
@@ -43,11 +43,11 @@ class Dict(Space[Value]):
             {key: _space_from_spec(child) for key, child in raw_spaces.items()}
         )
 
-    def _with_adapter(self, adapter: SpaceAdapter[NewOutputT]) -> Space[NewOutputT]:
-        super()._with_adapter(adapter)
+    def _with_bridge(self, bridge: SpaceBridge[NewOutputT]) -> Space[NewOutputT]:
+        super()._with_bridge(bridge)
         self.spaces = MappingProxyType(
             {
-                key: cast(Space[Value], child._with_adapter(adapter))
+                key: cast(Space[Value], child._with_bridge(bridge))
                 for key, child in self.spaces.items()
             }
         )

@@ -86,7 +86,7 @@ Native tensor value used at the dependency-free RLMesh value boundary.
 
 `Tensor` is a validated transport container — immutable element bytes plus shape, dtype, and stride
 metadata — with DLPack and buffer-protocol edges. It is not an ndarray: compute, slicing, and
-broadcasting belong to the frameworks. The NumPy, Torch, and JAX adapters convert tensor leaves to
+broadcasting belong to the frameworks. The NumPy, Torch, and JAX backends convert tensor leaves to
 backend arrays or tensors.
 
 | Attribute or method   | Type         | Meaning                                                       |

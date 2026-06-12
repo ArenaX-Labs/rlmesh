@@ -18,12 +18,12 @@ environment/model interactions.
 Preview APIs are intended to become stable but may still change with migration notes. Experimental
 APIs may change or disappear.
 
-Torch and JAX adapters and sandbox helpers are experimental in this beta.
+Torch and JAX backends and sandbox helpers are experimental in this beta.
 
 ## Framework Version Floors
 
-The optional framework integrations declare the lowest versions their conversion paths actually
-require. Each floor has a concrete reason:
+The optional framework backends declare the lowest versions their conversion paths actually require.
+Each floor has a concrete reason:
 
 | Package | Floor      | Why                                                                                     |
 | ------- | ---------- | --------------------------------------------------------------------------------------- |
@@ -53,7 +53,7 @@ metadata between them and the wire.
   64-bit slot, so `uint64` values above 2^63 wrap on that path (the raw byte encoding used by modern
   clients is exact).
 - **Mutation:** decoded views are read-only by contract. NumPy enforces this; Torch does not (see
-  the Torch adapter page). JAX arrays are immutable by construction.
+  the Torch backend page). JAX arrays are immutable by construction.
 
 ## Artifact Versions
 

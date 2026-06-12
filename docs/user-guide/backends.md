@@ -1,6 +1,6 @@
-# NumPy and Torch Adapters
+# Framework Backends
 
-Adapters control how values are decoded at the Python boundary.
+Framework backends control how values are decoded at the Python boundary.
 
 ## Plain Python
 
@@ -31,11 +31,11 @@ pip install --pre "rlmesh[numpy]"
 ```
 
 The space wrappers returned by `env.observation_space` and `env.action_space` also use the NumPy
-adapter, so `sample()` returns NumPy-compatible values where tensor leaves are involved.
+backend, so `sample()` returns NumPy-compatible values where tensor leaves are involved.
 
 ## Torch
 
-The Torch adapter is experimental in this beta. Tensor leaves decode to Torch tensors.
+The Torch backend is experimental in this beta. Tensor leaves decode to Torch tensors.
 
 ```python
 from rlmesh.torch import RemoteEnv
@@ -54,7 +54,7 @@ and does not need to import Torch unless the environment itself needs it.
 
 ## Models
 
-Adapters also apply to model workers:
+Backends also apply to model workers:
 
 ```python
 from rlmesh.numpy import Model

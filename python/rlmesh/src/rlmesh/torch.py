@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter
+from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .spaces import Space, SpaceAdapter
+from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_adapter_from_value_adapter
+from .spaces._sample import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -180,21 +180,21 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
-_torch_bridge: ValueAdapter = FrameworkBridge(
+_torch_bridge: ValueBridge = FrameworkBridge(
     name="torch",
     ensure_available=ensure_available,
     decode_leaf=as_tensor,
     encode_leaf=_encode_leaf,
 )
-_torch_space_adapter: SpaceAdapter[TorchValue] = cast(
-    SpaceAdapter[TorchValue],
-    space_adapter_from_value_adapter(_torch_bridge),
+_torch_space_bridge: SpaceBridge[TorchValue] = cast(
+    SpaceBridge[TorchValue],
+    space_bridge_from_value_bridge(_torch_bridge),
 )
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[TorchValue]:
     """Create a Torch-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, adapter=_torch_space_adapter)
+    return _space_from_spec(spec, bridge=_torch_space_bridge)
 
 
 @final
@@ -212,8 +212,8 @@ class RemoteEnv(RemoteEnvBase[TorchValue, TorchValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
+    _bridge: ClassVar[ValueBridge] = _torch_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _torch_space_bridge
 
 
 @final
@@ -228,8 +228,8 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
         transport: Explicit transport selector.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _torch_space_adapter
+    _bridge: ClassVar[ValueBridge] = _torch_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _torch_space_bridge
 
 
 @final
@@ -243,7 +243,7 @@ class Model(ModelBase[TorchValue, TorchValue]):
         on_close: Optional callback invoked when the model worker closes.
     """
 
-    _adapter: ClassVar[ValueAdapter] = _torch_bridge
+    _bridge: ClassVar[ValueBridge] = _torch_bridge
 
 
 @final

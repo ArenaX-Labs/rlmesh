@@ -13,7 +13,7 @@ conversion.
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.spaces.SpaceAdapter
+.. autoclass:: rlmesh.spaces.SpaceBridge
    :members:
    :show-inheritance:
 ```

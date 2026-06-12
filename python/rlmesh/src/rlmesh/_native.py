@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar, final
 
-from ._values import ValueAdapter, identity_adapter
+from ._values import ValueBridge, identity_bridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
@@ -13,17 +13,17 @@ from .types import Value
 
 @final
 class RemoteEnv(RemoteEnvBase[Value, Value]):
-    _adapter: ClassVar[ValueAdapter] = identity_adapter
+    _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class RemoteVectorEnv(RemoteVectorEnvBase[Value, Value]):
-    _adapter: ClassVar[ValueAdapter] = identity_adapter
+    _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class Model(ModelBase[Value, Value]):
-    _adapter: ClassVar[ValueAdapter] = identity_adapter
+    _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final

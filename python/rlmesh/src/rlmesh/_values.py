@@ -12,7 +12,7 @@ UNHANDLED: Final = object()
 ValueT = TypeVar("ValueT")
 
 
-class ValueAdapter(Protocol):
+class ValueBridge(Protocol):
     name: str
 
     def ensure_available(self) -> None: ...
@@ -22,7 +22,7 @@ class ValueAdapter(Protocol):
     def encode(self, value: object) -> Value: ...
 
 
-class IdentityAdapter:
+class IdentityBridge:
     name: str = "rlmesh"
 
     def ensure_available(self) -> None:
@@ -79,13 +79,13 @@ def encode_tree(value: object, leaf_encoder: Callable[[object], object]) -> Valu
     return cast(Value, encoded)
 
 
-identity_adapter: ValueAdapter = IdentityAdapter()
+identity_bridge: ValueBridge = IdentityBridge()
 
 __all__ = [
     "UNHANDLED",
-    "IdentityAdapter",
-    "ValueAdapter",
+    "IdentityBridge",
+    "ValueBridge",
     "decode_tree",
     "encode_tree",
-    "identity_adapter",
+    "identity_bridge",
 ]

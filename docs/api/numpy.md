@@ -1,9 +1,9 @@
 # NumPy
 
-The NumPy adapter is the recommended default for examples, notebooks, and model code that already
+The NumPy backend is the recommended default for examples, notebooks, and model code that already
 works with arrays.
 
-## What This Adapter Changes
+## What This Backend Changes
 
 `rlmesh.numpy` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
 APIs, but decodes tensor leaves to NumPy arrays. Space wrappers returned from NumPy clients also
@@ -15,7 +15,7 @@ Install it with:
 pip install --pre "rlmesh[numpy]"
 ```
 
-| Concrete API                    | Shared behavior                        | Adapter-specific behavior                               |
+| Concrete API                    | Shared behavior                        | Backend-specific behavior                               |
 | ------------------------------- | -------------------------------------- | ------------------------------------------------------- |
 | `rlmesh.numpy.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.    |
 | `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.         |

@@ -7,13 +7,13 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueAdapter
+from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .spaces import Space, SpaceAdapter
+from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_adapter_from_value_adapter
+from .spaces._sample import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -121,21 +121,21 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
-_numpy_bridge: ValueAdapter = FrameworkBridge(
+_numpy_bridge: ValueBridge = FrameworkBridge(
     name="numpy",
     ensure_available=ensure_available,
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
 )
-_numpy_space_adapter: SpaceAdapter[NumpyValue] = cast(
-    SpaceAdapter[NumpyValue],
-    space_adapter_from_value_adapter(_numpy_bridge),
+_numpy_space_bridge: SpaceBridge[NumpyValue] = cast(
+    SpaceBridge[NumpyValue],
+    space_bridge_from_value_bridge(_numpy_bridge),
 )
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]:
     """Create a NumPy-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, adapter=_numpy_space_adapter)
+    return _space_from_spec(spec, bridge=_numpy_space_bridge)
 
 
 @final
@@ -162,8 +162,8 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
         >>> env.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -190,8 +190,8 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
         >>> envs.close()
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
-    _space_adapter: ClassVar[SpaceAdapter[Any] | None] = _numpy_space_adapter
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -213,7 +213,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         >>> model.run("127.0.0.1:5555", max_episodes=1)
     """
 
-    _adapter: ClassVar[ValueAdapter] = _numpy_bridge
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
 
 @final

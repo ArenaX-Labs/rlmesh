@@ -11,7 +11,7 @@ OutputT = TypeVar("OutputT")
 NewOutputT = TypeVar("NewOutputT")
 
 
-class SpaceAdapter(Generic[OutputT]):
+class SpaceBridge(Generic[OutputT]):
     """Convert space samples and inputs for a Python backend."""
 
     __slots__: ClassVar[tuple[str, ...]] = ("_input", "_sample")
@@ -38,13 +38,13 @@ class SpaceAdapter(Generic[OutputT]):
 class Space(Generic[OutputT]):
     """Base wrapper for an RLMesh-native space."""
 
-    __slots__: ClassVar[tuple[str, ...]] = ("_adapter", "_native", "_spec")
+    __slots__: ClassVar[tuple[str, ...]] = ("_bridge", "_native", "_spec")
 
     def __init__(self, spec: SpaceSpec) -> None:
         self._spec: SpaceSpec = spec
         self._native: _SpaceHandle | None = None
-        self._adapter: SpaceAdapter[OutputT] = cast(
-            SpaceAdapter[OutputT], _native_space_adapter()
+        self._bridge: SpaceBridge[OutputT] = cast(
+            SpaceBridge[OutputT], _native_space_bridge()
         )
 
     @property
@@ -73,11 +73,11 @@ class Space(Generic[OutputT]):
 
     def sample(self) -> OutputT:
         """Sample a value from this space."""
-        return self._adapter.sample(self._native_space().sample(), self._spec)
+        return self._bridge.sample(self._native_space().sample(), self._spec)
 
     def contains(self, value: object) -> bool:
         """Return whether a value is contained in this space."""
-        return self._native_space().contains(self._adapter.input(value, self._spec))
+        return self._native_space().contains(self._bridge.input(value, self._spec))
 
     def to_gymnasium_space(self) -> object:
         """Convert this wrapper into a Gymnasium space."""
@@ -92,9 +92,9 @@ class Space(Generic[OutputT]):
             self._native = native
         return native
 
-    def _with_adapter(self, adapter: SpaceAdapter[NewOutputT]) -> Space[NewOutputT]:
+    def _with_bridge(self, bridge: SpaceBridge[NewOutputT]) -> Space[NewOutputT]:
         space = cast(Space[NewOutputT], self)
-        space._adapter = adapter
+        space._bridge = bridge
         return space
 
     def __eq__(self, other: object) -> bool:
@@ -116,7 +116,7 @@ class Space(Generic[OutputT]):
         )
 
 
-def _native_space_adapter() -> SpaceAdapter[Any]:
-    from ._sample import NATIVE_SPACE_ADAPTER
+def _native_space_bridge() -> SpaceBridge[Any]:
+    from ._sample import NATIVE_SPACE_BRIDGE
 
-    return NATIVE_SPACE_ADAPTER
+    return NATIVE_SPACE_BRIDGE

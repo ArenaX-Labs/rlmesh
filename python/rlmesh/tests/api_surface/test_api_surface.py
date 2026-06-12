@@ -45,7 +45,7 @@ def test_spaces_namespace_contains_space_family() -> None:
         "MultiBinary",
         "MultiDiscrete",
         "Space",
-        "SpaceAdapter",
+        "SpaceBridge",
         "SpaceSpec",
         "Text",
         "Tuple",

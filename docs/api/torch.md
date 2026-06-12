@@ -1,8 +1,8 @@
 # Torch
 
-The Torch adapter is experimental in this beta.
+The Torch backend is experimental in this beta.
 
-## What This Adapter Changes
+## What This Backend Changes
 
 `rlmesh.torch` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
 APIs, but decodes tensor leaves to Torch tensors. Space wrappers returned from Torch clients also
@@ -14,7 +14,7 @@ Install it with:
 pip install --pre "rlmesh[torch]"
 ```
 
-| Concrete API                    | Shared behavior                        | Adapter-specific behavior                               |
+| Concrete API                    | Shared behavior                        | Backend-specific behavior                               |
 | ------------------------------- | -------------------------------------- | ------------------------------------------------------- |
 | `rlmesh.torch.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use tensors.   |
 | `rlmesh.torch.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use Torch-compatible containers.         |

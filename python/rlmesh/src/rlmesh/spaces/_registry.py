@@ -4,8 +4,8 @@ from typing import Any, cast, overload
 
 from ..specs import SpaceSpec
 from ..types import Value
-from ._base import OutputT, Space, SpaceAdapter
-from ._sample import NATIVE_SPACE_ADAPTER
+from ._base import OutputT, Space, SpaceBridge
+from ._sample import NATIVE_SPACE_BRIDGE
 from .box import Box
 from .dict import Dict
 from .discrete import Discrete
@@ -26,25 +26,25 @@ _SPACE_BY_KIND: dict[str, type[Space[Any]]] = {
 
 
 @overload
-def space_from_spec(spec: SpaceSpec, *, adapter: None = None) -> Space[Value]: ...
+def space_from_spec(spec: SpaceSpec, *, bridge: None = None) -> Space[Value]: ...
 
 
 @overload
 def space_from_spec(
-    spec: SpaceSpec, *, adapter: SpaceAdapter[OutputT]
+    spec: SpaceSpec, *, bridge: SpaceBridge[OutputT]
 ) -> Space[OutputT]: ...
 
 
 def space_from_spec(
     spec: SpaceSpec,
     *,
-    adapter: SpaceAdapter[OutputT] | None = None,
+    bridge: SpaceBridge[OutputT] | None = None,
 ) -> Space[OutputT] | Space[Value]:
     """Create the named RLMesh space wrapper for a native spec.
 
     Args:
         spec: Native space specification.
-        adapter: Optional backend adapter for sample/contains values.
+        bridge: Optional backend bridge for sample/contains values.
 
     Returns:
         Matching RLMesh space wrapper.
@@ -54,6 +54,6 @@ def space_from_spec(
     if cls is None:
         raise ValueError(f"unsupported RLMesh space kind: {kind}")
     space = cast(Any, cls(spec))
-    if adapter is None:
-        return cast(Space[Value], space._with_adapter(NATIVE_SPACE_ADAPTER))
-    return cast(Space[OutputT], space._with_adapter(adapter))
+    if bridge is None:
+        return cast(Space[Value], space._with_bridge(NATIVE_SPACE_BRIDGE))
+    return cast(Space[OutputT], space._with_bridge(bridge))
