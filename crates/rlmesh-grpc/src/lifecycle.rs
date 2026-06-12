@@ -68,9 +68,6 @@ pub async fn wait_for_idle_shutdown(
     activity_rx: &mut mpsc::UnboundedReceiver<()>,
     idle_timeout: Duration,
 ) {
-    if activity_rx.recv().await.is_none() {
-        return;
-    }
     loop {
         match tokio::time::timeout(idle_timeout, activity_rx.recv()).await {
             Ok(Some(())) => {}
@@ -154,8 +151,7 @@ mod tests {
     #[tokio::test]
     async fn idle_shutdown_triggers_after_quiet_window() {
         let shutdown = ShutdownTrigger::new();
-        let tx = start_idle_shutdown(Some(Duration::from_millis(10)), shutdown.clone()).unwrap();
-        tx.send(()).unwrap();
+        let _tx = start_idle_shutdown(Some(Duration::from_millis(10)), shutdown.clone()).unwrap();
 
         tokio::time::timeout(Duration::from_millis(250), shutdown.cancelled())
             .await

@@ -596,7 +596,7 @@ async fn served_lifecycle_tracks_episode_boundaries_per_env_index() {
 }
 
 #[tokio::test]
-async fn idle_shutdown_waits_for_first_request_then_idle_window() {
+async fn idle_shutdown_arms_immediately_and_activity_extends_window() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let shutdown = tokio::spawn(async move {
         rlmesh_grpc::lifecycle::wait_for_idle_shutdown(&mut rx, Duration::from_millis(25)).await;
@@ -606,9 +606,7 @@ async fn idle_shutdown_waits_for_first_request_then_idle_window() {
     assert!(!shutdown.is_finished());
 
     tx.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    tx.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!shutdown.is_finished());
 
     tokio::time::timeout(Duration::from_millis(100), shutdown)
