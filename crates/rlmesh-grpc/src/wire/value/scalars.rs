@@ -1,6 +1,6 @@
-use half::{bf16, f16};
 use prost_types::{Value, value};
 use rlmesh_spaces::v1 as native;
+use rlmesh_spaces::v1::Scalar;
 
 use crate::error::ProtocolError;
 
@@ -62,221 +62,46 @@ pub(super) fn encode_scalars(
     values: &[ScalarValue],
     dtype: native::DType,
 ) -> Result<Vec<u8>, ProtocolError> {
-    let mut encoded = Vec::new();
-    for value in values {
-        match (dtype, value) {
-            (native::DType::Bool, ScalarValue::Bool(value)) => encoded.push(u8::from(*value)),
-            (native::DType::Bool, ScalarValue::Int(value)) => encoded.push(u8::from(*value != 0)),
-            (native::DType::Bool, ScalarValue::Float(value)) => {
-                encoded.push(u8::from(*value != 0.0))
-            }
-            (native::DType::Uint8, ScalarValue::Int(value)) => encoded.push(*value as u8),
-            (native::DType::Int32, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as i32).to_le_bytes())
-            }
-            (native::DType::Int64, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&value.to_le_bytes())
-            }
-            (native::DType::Int8, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as i8).to_le_bytes())
-            }
-            (native::DType::Int16, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as i16).to_le_bytes())
-            }
-            (native::DType::Uint16, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as u16).to_le_bytes())
-            }
-            (native::DType::Uint32, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as u32).to_le_bytes())
-            }
-            (native::DType::Uint64, ScalarValue::Int(value)) => {
-                encoded.extend_from_slice(&(*value as u64).to_le_bytes())
-            }
-            (native::DType::Float16, ScalarValue::Float(value)) => {
-                encoded.extend_from_slice(&f16::from_f64(*value).to_le_bytes())
-            }
-            (native::DType::Bfloat16, ScalarValue::Float(value)) => {
-                encoded.extend_from_slice(&bf16::from_f64(*value).to_le_bytes())
-            }
-            (native::DType::Bfloat16, ScalarValue::Bool(value)) => encoded
-                .extend_from_slice(&bf16::from_f32(if *value { 1.0 } else { 0.0 }).to_le_bytes()),
-            (native::DType::Float16, ScalarValue::Bool(value)) => encoded
-                .extend_from_slice(&f16::from_f32(if *value { 1.0 } else { 0.0 }).to_le_bytes()),
-            (native::DType::Float32, ScalarValue::Float(value)) => {
-                encoded.extend_from_slice(&(*value as f32).to_le_bytes())
-            }
-            (native::DType::Float32, ScalarValue::Bool(value)) => {
-                encoded.extend_from_slice(&(if *value { 1.0_f32 } else { 0.0_f32 }).to_le_bytes())
-            }
-            (native::DType::Float64, ScalarValue::Float(value)) => {
-                encoded.extend_from_slice(&value.to_le_bytes())
-            }
-            (native::DType::Float64, ScalarValue::Bool(value)) => {
-                encoded.extend_from_slice(&(if *value { 1.0_f64 } else { 0.0_f64 }).to_le_bytes())
-            }
-            (native::DType::Float16, ScalarValue::Int(value))
-            | (native::DType::Bfloat16, ScalarValue::Int(value))
-            | (native::DType::Float32, ScalarValue::Int(value))
-            | (native::DType::Float64, ScalarValue::Int(value)) => encoded.extend_from_slice(
-                &encode_scalars(&[ScalarValue::Float(*value as f64)], dtype)?,
-            ),
-            (native::DType::Unspecified, _) | (_, ScalarValue::String(_)) => {
-                return Err(ProtocolError::EncodeError(format!(
-                    "unsupported scalar encoding for dtype {dtype:?}"
-                )));
-            }
-            (native::DType::Uint8, ScalarValue::Bool(value)) => encoded.push(u8::from(*value)),
-            (native::DType::Int32, ScalarValue::Bool(value))
-            | (native::DType::Int64, ScalarValue::Bool(value))
-            | (native::DType::Int8, ScalarValue::Bool(value))
-            | (native::DType::Int16, ScalarValue::Bool(value))
-            | (native::DType::Uint16, ScalarValue::Bool(value))
-            | (native::DType::Uint32, ScalarValue::Bool(value))
-            | (native::DType::Uint64, ScalarValue::Bool(value)) => encoded.extend_from_slice(
-                &encode_scalars(&[ScalarValue::Int(i64::from(*value))], dtype)?,
-            ),
-            (native::DType::Uint8, ScalarValue::Float(value)) => encoded.push(*value as u8),
-            (native::DType::Int32, ScalarValue::Float(value))
-            | (native::DType::Int64, ScalarValue::Float(value))
-            | (native::DType::Int8, ScalarValue::Float(value))
-            | (native::DType::Int16, ScalarValue::Float(value))
-            | (native::DType::Uint16, ScalarValue::Float(value))
-            | (native::DType::Uint32, ScalarValue::Float(value))
-            | (native::DType::Uint64, ScalarValue::Float(value)) => encoded
-                .extend_from_slice(&encode_scalars(&[ScalarValue::Int(*value as i64)], dtype)?),
-        }
-    }
-    Ok(encoded)
+    let scalars = values
+        .iter()
+        .map(|value| match value {
+            ScalarValue::Bool(value) => Ok(Scalar::Bool(*value)),
+            ScalarValue::Int(value) => Ok(Scalar::Int(*value)),
+            ScalarValue::Float(value) => Ok(Scalar::Float(*value)),
+            ScalarValue::String(_) => Err(ProtocolError::EncodeError(format!(
+                "unsupported scalar encoding for dtype {dtype:?}"
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    native::encode_scalars(&scalars, dtype).map_err(|_| {
+        ProtocolError::EncodeError(format!("unsupported scalar encoding for dtype {dtype:?}"))
+    })
 }
 
 pub(super) fn decode_scalars(
     bytes: &[u8],
     dtype: native::DType,
 ) -> Result<Vec<ScalarValue>, ProtocolError> {
-    match dtype {
-        native::DType::Bool => Ok(bytes
-            .iter()
-            .map(|value| ScalarValue::Bool(*value != 0))
-            .collect()),
-        native::DType::Uint8 => Ok(bytes
-            .iter()
-            .map(|value| ScalarValue::Int(*value as i64))
-            .collect()),
-        native::DType::Int32 => bytes
-            .chunks_exact(4)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(i32::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as i64))
-            })
-            .collect(),
-        native::DType::Int64 => bytes
-            .chunks_exact(8)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(i64::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                )))
-            })
-            .collect(),
-        native::DType::Float16 => bytes
-            .chunks_exact(2)
-            .map(|chunk| {
-                Ok(ScalarValue::Float(
-                    f16::from_le_bytes(
-                        chunk
-                            .try_into()
-                            .expect("chunks_exact yields fixed-size chunks"),
-                    )
-                    .to_f64(),
-                ))
-            })
-            .collect(),
-        native::DType::Float32 => bytes
-            .chunks_exact(4)
-            .map(|chunk| {
-                Ok(ScalarValue::Float(f32::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as f64))
-            })
-            .collect(),
-        native::DType::Float64 => bytes
-            .chunks_exact(8)
-            .map(|chunk| {
-                Ok(ScalarValue::Float(f64::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                )))
-            })
-            .collect(),
-        native::DType::Int8 => Ok(bytes
-            .iter()
-            .map(|value| ScalarValue::Int(*value as i8 as i64))
-            .collect()),
-        native::DType::Int16 => bytes
-            .chunks_exact(2)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(i16::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as i64))
-            })
-            .collect(),
-        native::DType::Uint16 => bytes
-            .chunks_exact(2)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(u16::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as i64))
-            })
-            .collect(),
-        native::DType::Uint32 => bytes
-            .chunks_exact(4)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(u32::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as i64))
-            })
-            .collect(),
-        // u64 values above i64::MAX wrap; ScalarValue has no unsigned variant.
-        native::DType::Uint64 => bytes
-            .chunks_exact(8)
-            .map(|chunk| {
-                Ok(ScalarValue::Int(u64::from_le_bytes(
-                    chunk
-                        .try_into()
-                        .expect("chunks_exact yields fixed-size chunks"),
-                ) as i64))
-            })
-            .collect(),
-        native::DType::Bfloat16 => bytes
-            .chunks_exact(2)
-            .map(|chunk| {
-                Ok(ScalarValue::Float(
-                    bf16::from_le_bytes(
-                        chunk
-                            .try_into()
-                            .expect("chunks_exact yields fixed-size chunks"),
-                    )
-                    .to_f64(),
-                ))
-            })
-            .collect(),
-        native::DType::Unspecified => Err(ProtocolError::DecodeError(
+    if dtype == native::DType::Unspecified {
+        return Err(ProtocolError::DecodeError(
             "cannot decode scalar bytes with unspecified dtype".to_string(),
-        )),
+        ));
     }
+    // The wire codec has always silently dropped trailing bytes that do not
+    // form a whole element; keep that leniency for compatibility.
+    let whole = bytes.len() - bytes.len() % native::dtype_size(dtype);
+    native::decode_scalars(&bytes[..whole], dtype)
+        .map_err(|err| ProtocolError::DecodeError(err.to_string()))
+        .map(|scalars| {
+            scalars
+                .into_iter()
+                .map(|scalar| match scalar {
+                    Scalar::Bool(value) => ScalarValue::Bool(value),
+                    Scalar::Int(value) => ScalarValue::Int(value),
+                    Scalar::Float(value) => ScalarValue::Float(value),
+                })
+                .collect()
+        })
 }
 
 pub(super) fn decode_proto_array(value: &Value) -> Result<Vec<ScalarValue>, ProtocolError> {
