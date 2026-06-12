@@ -15,8 +15,13 @@ _ARRAY_SAMPLE_KINDS = frozenset({"box", "multi_binary", "multi_discrete"})
 _DTYPE_STRUCT_FORMATS = {
     "bool": "?",
     "uint8": "B",
+    "int8": "b",
+    "int16": "h",
     "int32": "i",
     "int64": "q",
+    "uint16": "H",
+    "uint32": "I",
+    "uint64": "Q",
     "float16": "e",
     "float32": "f",
     "float64": "d",
@@ -84,11 +89,28 @@ NATIVE_SPACE_ADAPTER: SpaceAdapter[Value] = cast(
 def _tensor_from_sample(value: object, spec: SpaceSpec) -> Tensor:
     values = _flatten_sample(value)
     dtype = spec.dtype
-    fmt = _DTYPE_STRUCT_FORMATS.get(dtype)
-    if fmt is None:
-        raise ValueError(f"unsupported tensor dtype {dtype!r}")
-    buffer = struct.pack(f"<{len(values)}{fmt}", *values)
+    if dtype == "bfloat16":
+        buffer = _pack_bfloat16(values)
+    else:
+        fmt = _DTYPE_STRUCT_FORMATS.get(dtype)
+        if fmt is None:
+            raise ValueError(f"unsupported tensor dtype {dtype!r}")
+        buffer = struct.pack(f"<{len(values)}{fmt}", *values)
     return Tensor(buffer, spec.shape, dtype)
+
+
+def _pack_bfloat16(values: Sequence[object]) -> bytes:
+    """Pack floats as bfloat16; the struct module has no bfloat16 code.
+
+    A bfloat16 is the top 16 bits of a float32, here with round-to-nearest-
+    even applied to the dropped half.
+    """
+    out = bytearray()
+    for value in values:
+        (bits,) = struct.unpack("<I", struct.pack("<f", float(cast(float, value))))
+        bits += 0x7FFF + ((bits >> 16) & 1)
+        out += struct.pack("<H", (bits >> 16) & 0xFFFF)
+    return bytes(out)
 
 
 def _flatten_sample(value: object) -> list[object]:
