@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::Write;
-use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
 use std::thread;
@@ -69,21 +68,27 @@ impl DockerBackend {
         spec: &EffectiveSandboxSpec,
         artifact: &BuildArtifact,
     ) -> Result<StartedContainer> {
-        let host_port = reserve_host_port()?;
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
         let output = Command::new("docker")
-            .args(docker_run_args(
-                &container_name,
-                host_port,
-                &artifact.image_id,
-            ))
+            .args(docker_run_args(&container_name, &artifact.image_id))
             .output()
             .context("failed to start docker container")?;
         if !output.status.success() {
+            // `docker run` can leave a created (but not started) container behind
+            // when startup fails after the container is created (e.g. a port
+            // collision). Remove it by name so we do not leak it.
+            let _ = self.remove_container(&container_name);
             bail!("docker run failed:\n{}", command_output(&output));
         }
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let host_port = match resolve_published_port(&container_id) {
+            Ok(port) => port,
+            Err(err) => {
+                let _ = self.stop_container(&container_id);
+                return Err(err);
+            }
+        };
         let address = format!("tcp://127.0.0.1:{host_port}");
         if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)) {
             let report = self.startup_failure_report(&container_id, &container_name, &err);
@@ -432,13 +437,6 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-fn reserve_host_port() -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").context("failed to reserve a local port")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -474,7 +472,7 @@ fn format_startup_failure_report(
     )
 }
 
-fn docker_run_args(container_name: &str, host_port: u16, image_id: &str) -> Vec<String> {
+fn docker_run_args(container_name: &str, image_id: &str) -> Vec<String> {
     vec![
         "run".to_string(),
         "-d".to_string(),
@@ -484,10 +482,39 @@ fn docker_run_args(container_name: &str, host_port: u16, image_id: &str) -> Vec<
         "no-new-privileges".to_string(),
         "--name".to_string(),
         container_name.to_string(),
+        // Let docker pick a free host port (binding it atomically) instead of
+        // reserving one ourselves and racing between releasing it and `docker
+        // run`. The assigned port is read back via `docker port`.
         "-p".to_string(),
-        format!("127.0.0.1:{host_port}:{DEFAULT_CONTAINER_PORT}"),
+        format!("127.0.0.1:0:{DEFAULT_CONTAINER_PORT}"),
         image_id.to_string(),
     ]
+}
+
+/// Read back the host port docker published for the container's gRPC port.
+fn resolve_published_port(container_id: &str) -> Result<u16> {
+    let output = Command::new("docker")
+        .args(["port", container_id, &DEFAULT_CONTAINER_PORT.to_string()])
+        .output()
+        .context("failed to read published docker port")?;
+    if !output.status.success() {
+        bail!(
+            "docker port failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_published_port(&stdout).ok_or_else(|| {
+        anyhow!("could not parse published port from docker port output: {stdout:?}")
+    })
+}
+
+/// Parse the host port from `docker port` output lines like
+/// `127.0.0.1:49153` or `0.0.0.0:49153` (one mapping per line).
+fn parse_published_port(raw: &str) -> Option<u16> {
+    raw.lines()
+        .filter_map(|line| line.trim().rsplit_once(':'))
+        .find_map(|(_, port)| port.trim().parse::<u16>().ok())
 }
 
 fn inspect_container_state(container_id: &str) -> Result<Option<ContainerState>> {
@@ -575,7 +602,7 @@ mod tests {
 
     use super::{
         BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        parse_container_state, render_dockerfile, shell_quote, tail_text,
+        parse_container_state, parse_published_port, render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -619,7 +646,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", 49152, "sha256:abc");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -627,7 +654,30 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--cap-drop"));
         assert!(args.iter().any(|arg| arg == "no-new-privileges"));
         assert!(args.iter().any(|arg| arg == "rlmesh-sandbox-test"));
-        assert!(args.iter().any(|arg| arg == "127.0.0.1:49152:50051"));
+    }
+
+    #[test]
+    fn docker_run_args_publish_ephemeral_host_port() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc");
+
+        // Docker assigns the host port atomically; we must not bake a fixed one in.
+        assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
+        assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:4")));
+    }
+
+    #[test]
+    fn parse_published_port_reads_host_port() {
+        assert_eq!(parse_published_port("127.0.0.1:49153\n"), Some(49153));
+        assert_eq!(parse_published_port("0.0.0.0:50000"), Some(50000));
+        // IPv6 mappings appear with bracketed hosts; last colon-separated field is the port.
+        assert_eq!(parse_published_port("[::]:51000\n"), Some(51000));
+        // First parseable mapping wins when docker lists several bindings.
+        assert_eq!(
+            parse_published_port("0.0.0.0:49153\n[::]:49153\n"),
+            Some(49153)
+        );
+        assert_eq!(parse_published_port(""), None);
+        assert_eq!(parse_published_port("garbage"), None);
     }
 
     #[test]
