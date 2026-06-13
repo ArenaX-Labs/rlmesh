@@ -63,7 +63,7 @@
     }
   },
   "expect": {
-    "describe": "observation:\n  'state' <- concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)), pad to 16\n  'instruction' <- text 'instruction'\naction:\n  'action/delta_eef_pos' <- model[0:3]\n  'action/delta_eef_rot' <- model[3:9] (rot6d->axis_angle)\n  'action/gripper' <- model[9:10]\n  clip to (-1.0, 1.0)",
+    "describe": "observation:\n  \"state\" <- concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)), pad to 16\n  \"instruction\" <- text \"instruction\"\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to (-1.0, 1.0)",
     "ok": true
   },
   "kind": "resolve",

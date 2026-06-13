@@ -5,8 +5,8 @@ mod image;
 mod state;
 mod text;
 
+use super::fmt::{quoted, quoted_range};
 use super::plans::{ObsPlan, ResolvedAdapter};
-use super::pyfmt::{py_repr, py_repr_range};
 
 pub use action::describe_segment;
 
@@ -17,7 +17,7 @@ pub fn describe_obs_plan(plan: &ObsPlan) -> String {
         ObsPlan::State(state) => state::describe_state(state),
         ObsPlan::Text(text) => text::describe_text(text),
         ObsPlan::Custom(custom) => {
-            format!("{} <- custom transform", py_repr(&custom.model_key))
+            format!("{} <- custom transform", quoted(&custom.model_key))
         }
     }
 }
@@ -32,7 +32,7 @@ pub(super) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
         lines.push(format!("  {}", describe_segment(segment)));
     }
     if let Some(clip) = adapter.action_plan.clip {
-        lines.push(format!("  clip to {}", py_repr_range(clip)));
+        lines.push(format!("  clip to {}", quoted_range(clip)));
     }
     lines.join("\n")
 }

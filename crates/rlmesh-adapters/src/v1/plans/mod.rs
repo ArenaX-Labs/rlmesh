@@ -35,8 +35,9 @@ pub struct ResolvedAdapter {
 impl ResolvedAdapter {
     /// Human-readable summary of the resolved transformations.
     ///
-    /// Byte-identical to the reference implementation's `describe()`; the
-    /// conformance vectors pin the exact text.
+    /// A *reference snapshot*: the conformance vectors pin the exact text so
+    /// implementations stay consistent, but the wording is not a stable
+    /// cross-language contract.
     pub fn describe(&self) -> String {
         describe::describe_adapter(self)
     }

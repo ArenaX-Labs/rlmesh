@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use super::super::fmt::{quoted, quoted_encoding, quoted_keys};
 use super::super::plans::{ActionPlan, ActionSegment};
-use super::super::pyfmt::{py_repr, py_repr_encoding, py_repr_sorted_keys};
 use super::super::spec::{ActionComponent, ActionLayout};
 use super::{Result, err};
 
@@ -19,11 +19,11 @@ fn check_action_dims(model: &ActionComponent, env: &ActionComponent) -> Result<(
         if model.dim != model_encoding.dims() || env.dim != env_encoding.dims() {
             return Err(err(format!(
                 "action role {}: dims {}->{} do not match encodings {}->{}",
-                py_repr(&model.role),
+                quoted(&model.role),
                 model.dim,
                 env.dim,
-                py_repr_encoding(model.encoding),
-                py_repr_encoding(env.encoding)
+                quoted_encoding(model.encoding),
+                quoted_encoding(env.encoding)
             )));
         }
         return Ok(());
@@ -32,15 +32,15 @@ fn check_action_dims(model: &ActionComponent, env: &ActionComponent) -> Result<(
         return Err(err(format!(
             "action role {}: cannot convert encoding {} to {}; both sides must \
              declare a rotation encoding",
-            py_repr(&model.role),
-            py_repr_encoding(model.encoding),
-            py_repr_encoding(env.encoding)
+            quoted(&model.role),
+            quoted_encoding(model.encoding),
+            quoted_encoding(env.encoding)
         )));
     }
     if model.dim != env.dim {
         return Err(err(format!(
             "action role {}: model outputs {} dims but the env expects {}",
-            py_repr(&model.role),
+            quoted(&model.role),
             model.dim,
             env.dim
         )));
@@ -55,7 +55,7 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
         if offsets.contains_key(&component.role) {
             return Err(err(format!(
                 "duplicate model action role {}",
-                py_repr(&component.role)
+                quoted(&component.role)
             )));
         }
         offsets.insert(component.role.clone(), (cursor, component));
@@ -68,8 +68,8 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
         let Some(&(start, model_component)) = offsets.get(&env_component.role) else {
             return Err(err(format!(
                 "env action needs role {} but the model only outputs {}",
-                py_repr(&env_component.role),
-                py_repr_sorted_keys(&offsets)
+                quoted(&env_component.role),
+                quoted_keys(&offsets)
             )));
         };
         check_action_dims(model_component, env_component)?;

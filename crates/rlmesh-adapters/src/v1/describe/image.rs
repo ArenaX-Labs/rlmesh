@@ -1,7 +1,7 @@
 //! Summarize a resolved image plan.
 
+use super::super::fmt::quoted;
 use super::super::plans::ImagePlan;
-use super::super::pyfmt::py_repr;
 use super::super::spec::ImageLayout;
 
 pub(super) fn describe_image(plan: &ImagePlan) -> String {
@@ -27,8 +27,8 @@ pub(super) fn describe_image(plan: &ImagePlan) -> String {
     }
     format!(
         "{} <- image {} ({})",
-        py_repr(&plan.model_key),
-        py_repr(&plan.env_key),
+        quoted(&plan.model_key),
+        quoted(&plan.env_key),
         steps.join(", ")
     )
 }

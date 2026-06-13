@@ -2,8 +2,8 @@
 
 use std::fmt::Write as _;
 
+use super::super::fmt::{quoted, quoted_range};
 use super::super::plans::StatePlan;
-use super::super::pyfmt::py_repr;
 
 pub(super) fn describe_state(plan: &StatePlan) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -30,6 +30,14 @@ pub(super) fn describe_state(plan: &StatePlan) -> String {
         } else if let Some(dim) = piece.dim {
             let _ = write!(note, "[:{dim}]");
         }
+        if let (Some(src), Some(dst)) = (piece.src_range, piece.dst_range) {
+            let _ = write!(
+                note,
+                " (range {}->{})",
+                quoted_range(src),
+                quoted_range(dst)
+            );
+        }
         parts.push(note);
     }
     let suffix = match plan.pad_to {
@@ -38,7 +46,7 @@ pub(super) fn describe_state(plan: &StatePlan) -> String {
     };
     format!(
         "{} <- concat({}){}",
-        py_repr(&plan.model_key),
+        quoted(&plan.model_key),
         parts.join(", "),
         suffix
     )

@@ -6,10 +6,10 @@
 mod apply;
 mod describe;
 mod error;
+mod fmt;
 mod join;
 mod keys;
 mod plans;
-mod pyfmt;
 mod resolver;
 pub mod roles;
 mod space_view;

@@ -9,9 +9,9 @@ mod text;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::error::AdapterResolutionError;
+use super::fmt::quoted;
 use super::join::join;
 use super::plans::{ObsPlan, ResolvedAdapter};
-use super::pyfmt::py_repr;
 use super::space_view::SpaceView;
 use super::spec::{EnvAnnotations, EnvFeature, ModelInput, ModelIoSpec};
 
@@ -28,7 +28,7 @@ fn index_by_role<'spec, T>(
     let mut by_role: BTreeMap<String, T> = BTreeMap::new();
     for (role, feature) in features {
         if by_role.contains_key(role) {
-            return Err(err(format!("duplicate {label} role {}", py_repr(role))));
+            return Err(err(format!("duplicate {label} role {}", quoted(role))));
         }
         by_role.insert(role.clone(), feature);
     }
@@ -85,7 +85,7 @@ pub fn resolve(
             ModelInput::Custom(input) => input.key.as_str(),
         };
         if !seen_keys.insert(key) {
-            return Err(err(format!("duplicate model input key {}", py_repr(key))));
+            return Err(err(format!("duplicate model input key {}", quoted(key))));
         }
         obs_plans.push(match model_input {
             ModelInput::Image(input) => ObsPlan::Image(image::plan_image(input, &images_by_role)?),

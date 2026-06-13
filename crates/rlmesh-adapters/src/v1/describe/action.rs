@@ -2,14 +2,14 @@
 
 use std::fmt::Write as _;
 
+use super::super::fmt::{quoted, quoted_range};
 use super::super::plans::ActionSegment;
-use super::super::pyfmt::{py_repr, py_repr_range};
 
 /// Summarize how one env action component is derived from the model output.
 pub fn describe_segment(segment: &ActionSegment) -> String {
     let mut note = format!(
         "{} <- model[{}:{}]",
-        py_repr(&segment.role),
+        quoted(&segment.role),
         segment.start,
         segment.stop
     );
@@ -26,8 +26,8 @@ pub fn describe_segment(segment: &ActionSegment) -> String {
         let _ = write!(
             note,
             " (range {}->{})",
-            py_repr_range(src_range),
-            py_repr_range(dst_range)
+            quoted_range(src_range),
+            quoted_range(dst_range)
         );
     }
     if segment.binarize {

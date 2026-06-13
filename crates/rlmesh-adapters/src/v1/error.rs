@@ -3,8 +3,11 @@
 /// A model input or action component has no usable counterpart in the env
 /// spec (or a spec declares something definitionally impossible).
 ///
-/// Messages are part of the cross-implementation contract: the conformance
-/// vectors pin substrings, so they must match the reference implementation.
+/// The message is a human-readable *reference snapshot*: the conformance
+/// vectors pin substrings so implementations stay consistent, but it is not a
+/// stable cross-language contract. Structural callers (and other-language
+/// bindings) should categorize on the error rather than parse this text;
+/// join-time failures already carry the typed [`JoinError`](super::JoinError).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct AdapterResolutionError {

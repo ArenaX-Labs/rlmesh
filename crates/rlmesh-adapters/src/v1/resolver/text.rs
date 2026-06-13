@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use super::super::fmt::{quoted, quoted_keys};
 use super::super::plans::TextPlan;
-use super::super::pyfmt::{py_repr, py_repr_sorted_keys};
 use super::super::spec::{EnvText, TextInput};
 use super::{Result, err};
 
@@ -16,9 +16,9 @@ pub(super) fn plan_text(
         return Err(err(format!(
             "model input {} needs text role {} but the env offers {} and no \
              default is set",
-            py_repr(&model_input.key),
-            py_repr(&model_input.role),
-            py_repr_sorted_keys(texts_by_role)
+            quoted(&model_input.key),
+            quoted(&model_input.role),
+            quoted_keys(texts_by_role)
         )));
     }
     Ok(TextPlan {

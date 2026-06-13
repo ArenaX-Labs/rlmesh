@@ -1,7 +1,7 @@
 //! Admit a custom input as a host-language hole, gating entrypoint trust.
 
+use super::super::fmt::quoted;
 use super::super::plans::CustomPlan;
-use super::super::pyfmt::py_repr;
 use super::super::spec::CustomInput;
 use super::{Result, err};
 
@@ -13,8 +13,8 @@ pub(super) fn plan_custom(
         return Err(err(format!(
             "custom input {} references entrypoint {}; pass \
              resolve(..., trust_entrypoints=True) to allow importing it",
-            py_repr(&model_input.key),
-            py_repr(&model_input.transform)
+            quoted(&model_input.key),
+            quoted(&model_input.transform)
         )));
     }
     Ok(CustomPlan {

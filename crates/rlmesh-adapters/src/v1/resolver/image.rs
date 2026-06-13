@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use super::super::fmt::{quoted, quoted_keys};
 use super::super::plans::ImagePlan;
-use super::super::pyfmt::{py_repr, py_repr_sorted_keys};
 use super::super::spec::{EnvImage, ImageInput};
 use super::{Result, err};
 
@@ -18,17 +18,17 @@ pub(super) fn plan_image(
     let Some(env_image) = env_image else {
         return Err(err(format!(
             "model input {} wants an image with role {} but the env offers {}",
-            py_repr(&model_input.key),
-            py_repr(&model_input.role),
-            py_repr_sorted_keys(images_by_role)
+            quoted(&model_input.key),
+            quoted(&model_input.role),
+            quoted_keys(images_by_role)
         )));
     };
     if model_input.resample != "bilinear" && model_input.resample != "bilinear_aa" {
         return Err(err(format!(
             "model input {}: unsupported resample {}; expected 'bilinear' or \
              'bilinear_aa'",
-            py_repr(&model_input.key),
-            py_repr(&model_input.resample)
+            quoted(&model_input.key),
+            quoted(&model_input.resample)
         )));
     }
     // When the model declares only one target axis, fill the other from the

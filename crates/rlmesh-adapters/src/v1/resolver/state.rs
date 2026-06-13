@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use super::super::fmt::{quoted, quoted_encoding, quoted_keys};
 use super::super::plans::{StatePiece, StatePlan};
-use super::super::pyfmt::{py_repr, py_repr_encoding, py_repr_sorted_keys};
 use super::super::spec::{EnvState, StateComponent, StateInput};
 use super::{Result, err};
 
@@ -21,8 +21,8 @@ fn zero_fill_width(component: &StateComponent, model_key: &str) -> Result<u32> {
     Err(err(format!(
         "model input {}: optional state role {} needs dim, index, or encoding \
          to size its zero fill",
-        py_repr(model_key),
-        py_repr(&component.role)
+        quoted(model_key),
+        quoted(&component.role)
     )))
 }
 
@@ -48,9 +48,9 @@ pub(super) fn plan_state(
             }
             return Err(err(format!(
                 "model input {} needs state role {} but the env offers {}",
-                py_repr(&model_input.key),
-                py_repr(&component.role),
-                py_repr_sorted_keys(states_by_role)
+                quoted(&model_input.key),
+                quoted(&component.role),
+                quoted_keys(states_by_role)
             )));
         };
         if component.encoding != env_state.encoding
@@ -59,9 +59,9 @@ pub(super) fn plan_state(
             return Err(err(format!(
                 "state role {}: cannot convert encoding {} to {}; both sides \
                  must declare a rotation encoding",
-                py_repr(&component.role),
-                py_repr_encoding(env_state.encoding),
-                py_repr_encoding(component.encoding)
+                quoted(&component.role),
+                quoted_encoding(env_state.encoding),
+                quoted_encoding(component.encoding)
             )));
         }
         if let (Some(component_encoding), Some(env_encoding)) =
@@ -73,9 +73,9 @@ pub(super) fn plan_state(
             return Err(err(format!(
                 "state role {}: env feature {} declares {env_dim} dims but \
                  encoding {} has {}",
-                py_repr(&component.role),
-                py_repr(&env_state.key),
-                py_repr_encoding(Some(env_encoding)),
+                quoted(&component.role),
+                quoted(&env_state.key),
+                quoted_encoding(Some(env_encoding)),
                 env_encoding.dims()
             )));
         }
@@ -98,8 +98,8 @@ pub(super) fn plan_state(
                     return Err(err(format!(
                         "state role {}: index {index} is out of range for the \
                          width-{width} source feature {}",
-                        py_repr(&component.role),
-                        py_repr(&env_state.key)
+                        quoted(&component.role),
+                        quoted(&env_state.key)
                     )));
                 }
             } else if let Some(dim) = component.dim
@@ -108,8 +108,8 @@ pub(super) fn plan_state(
                 return Err(err(format!(
                     "state role {}: requested {dim} dims but the source feature \
                      {} has width {width}",
-                    py_repr(&component.role),
-                    py_repr(&env_state.key)
+                    quoted(&component.role),
+                    quoted(&env_state.key)
                 )));
             }
         }
