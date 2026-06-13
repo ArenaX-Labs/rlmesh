@@ -154,6 +154,24 @@ def test_entrypoint_runs_prepare_then_make(authored_module: str) -> None:
     env.close()  # type: ignore[attr-defined]
 
 
+def test_required_init_arg_raises_recipe_aware_error() -> None:
+    # cls() is called with no args during construction; a required-arg __init__ would
+    # otherwise fail with a confusing native TypeError.
+    from rlmesh.recipes._authoring import construct_authored
+
+    class NeedsArg(EnvRecipe):
+        name = "x/needs-arg"
+
+        def __init__(self, handle: object) -> None:
+            self._handle = handle
+
+        def make(self, **kwargs: object) -> object:
+            return self._handle
+
+    with pytest.raises(TypeError, match="make\\(self, \\*\\*kwargs\\)"):
+        construct_authored(NeedsArg)
+
+
 def test_make_envrecipe_constructs_locally(authored_module: str) -> None:
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
     env = rlmesh.make(cart)

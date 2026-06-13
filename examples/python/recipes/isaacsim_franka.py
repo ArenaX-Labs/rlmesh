@@ -39,6 +39,11 @@ class IsaacFrankaStack(rlmesh.EnvRecipe):
         # headless simulator. Heavy and GPU-only, so it never runs at authoring time.
         from isaaclab.app import AppLauncher
 
+        # Storing the handle on self is safe HERE only because the Kit SimulationApp
+        # is a process-global singleton -- it stays alive even though this recipe
+        # instance is discarded the moment make() returns. Do NOT copy this pattern
+        # for a resource you must own and tear down (a render context, a subprocess,
+        # a socket): create those inside make() and let the returned env close them.
         self._app = AppLauncher(headless=True).app
 
     def make(self, task="Isaac-Stack-Cube-Franka-v0", sim_envs=1, **kwargs):

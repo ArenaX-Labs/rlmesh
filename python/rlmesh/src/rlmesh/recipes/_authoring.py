@@ -19,6 +19,7 @@ that machine. **Every module defining an ``EnvRecipe`` subclass must start with*
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, ClassVar, TypeGuard
 
 from ._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
@@ -69,10 +70,21 @@ class EnvRecipe:
     setup: ClassVar[Setup] = Setup()
 
     def prepare(self) -> None:
-        """Optional construct-time CODE hook, run in the container before ``make()``.
+        """Optional construct-time CODE hook, run once before ``make()`` on this instance.
 
-        Use it for construction-time work that is code, not data -- downloading a
-        checkpoint, warming a cache. The default is a no-op.
+        Use it for side effects whose result lives *durably* somewhere other than this
+        instance: a file on disk (a downloaded checkpoint), a warmed cache, or a
+        process-global singleton (e.g. an Isaac ``SimulationApp``). Share state with
+        ``make()`` through instance attributes -- ``self._x`` set here is read in
+        ``make()`` (same instance, same synchronous construction). The default is a no-op.
+
+        The recipe instance is discarded the moment ``make()`` returns. Only what the
+        returned env references (or a process-global) survives into ``reset``/``step``/
+        ``close``. Do NOT leave the sole reference to a per-env resource (open file,
+        subprocess, render/GPU context, socket, license) on ``self`` -- create it in
+        ``make()`` and let the returned env own it and release it in ``env.close()``.
+        There is no recipe teardown hook. ``prepare()`` runs once per *construction*, not
+        per process, so guard a process-global launch against double-construction.
         """
 
     def make(self, **kwargs: object) -> EnvLike:
@@ -88,7 +100,7 @@ class EnvRecipe:
     @classmethod
     def _rlmesh_construct(cls, **kwargs: object) -> EnvLike:
         """The lifecycle the projected recipe entrypoint runs: prepare then make."""
-        instance = cls()
+        instance = _instantiate(cls)
         instance.prepare()
         return instance.make(**kwargs)
 
@@ -155,6 +167,32 @@ def as_authored_recipe(source: object) -> Recipe | None:
     return None
 
 
+def _instantiate(cls: type[EnvRecipe]) -> EnvRecipe:
+    """Construct ``cls()`` with a recipe-aware error if it requires constructor args.
+
+    The lifecycle always instantiates with no arguments, so a required-arg ``__init__``
+    fails with a confusing native ``TypeError``; per-construction parameters belong in
+    ``make(self, **kwargs)``, not ``__init__``.
+    """
+    try:
+        signature = inspect.signature(cls)
+    except (TypeError, ValueError):
+        return cls()  # un-introspectable: let cls() raise on its own terms
+    required = [
+        name
+        for name, p in signature.parameters.items()
+        if p.default is p.empty
+        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+    ]
+    if required:
+        raise TypeError(
+            f"{cls.__qualname__} is instantiated with no arguments, but its __init__ "
+            f"requires {required}. Put per-construction parameters in "
+            "make(self, **kwargs) (baked into the recipe), not __init__."
+        )
+    return cls()
+
+
 def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     """Construct an ``EnvRecipe`` IN-PROCESS, without re-importing by entrypoint.
 
@@ -168,7 +206,7 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     from ._build import apply_setup
 
     apply_setup(cls.setup)
-    instance = cls()
+    instance = _instantiate(cls)
     instance.prepare()
     env = instance.make(**kwargs)
     if not looks_like_env(env):

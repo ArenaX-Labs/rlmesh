@@ -121,6 +121,14 @@ attributes and records the entrypoint string -- it never instantiates the class 
 dependencies, so this works on a machine that cannot run the env. Validate a recipe without
 importing anything with `LiberoObject.check()`.
 
+`prepare()` and `make()` run once each, in order, on the same instance, so share state through
+instance attributes (`self._x` set in `prepare()` is read in `make()`). But **the recipe instance is
+discarded the moment `make()` returns** -- only what the returned env references (or a
+process-global singleton) survives into `reset`/`step`/`close`. If `prepare()` opens a resource the
+env needs at runtime (a file, subprocess, render context, socket), the env must own it: create it in
+`make()` and release it in `env.close()`. There is no recipe teardown hook, and `__init__` is called
+with no arguments -- per-construction parameters go in `make(self, **kwargs)`.
+
 `register` also works as a decorator -- `@rlmesh.register` above the class registers it on import
 and returns the class unchanged:
 
