@@ -1,0 +1,44 @@
+{
+  "name": "safety/point-goal",
+  "make": {
+    "kind": "gym",
+    "env_id": "SafetyPointGoal1-v0",
+    "kwargs": {}
+  },
+  "build": {
+    "base": null,
+    "from_recipe": null,
+    "system": [],
+    "system_runtime": [],
+    "pip": [
+      {
+        "packages": ["safety-gymnasium==1.0.0"],
+        "index_url": null,
+        "extra_index_urls": [],
+        "no_deps": false,
+        "pre": false,
+        "requirements": null
+      }
+    ],
+    "project": null,
+    "fetch": [],
+    "env": {},
+    "pythonpath": [],
+    "gpu": false,
+    "installer": "pip",
+    "run_as": null,
+    "toolchain": null,
+    "commands": [],
+    "dockerfile": null
+  },
+  "setup": {
+    "env": {},
+    "files": []
+  },
+  "requires": {
+    "imports": ["safety_gymnasium"]
+  },
+  "summary": "Safety Gymnasium point goal",
+  "annotations": null,
+  "recipe_version": 1
+}

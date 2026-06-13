@@ -1,6 +1,7 @@
 mod docker;
 mod error;
 mod hf;
+pub mod recipe;
 mod source;
 
 use std::collections::BTreeMap;
