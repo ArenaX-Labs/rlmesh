@@ -13,6 +13,12 @@ from .serialization import check_non_negative
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
+# Upper bound on frame-stacking depth. A spec can arrive from an untrusted
+# published contract; without a ceiling, a huge ``stack`` would make the
+# host adapter buffer that many frames and exhaust memory. Frame history in
+# practice is a handful of frames, so this is generous.
+_MAX_STACK = 64
+
 
 @dataclass(frozen=True)
 class ImageInput:
@@ -67,6 +73,10 @@ class ImageInput:
         check_non_negative(self.lead_dims, "ImageInput.lead_dims")
         if self.stack < 1:
             raise ValueError(f"ImageInput.stack must be >= 1, got {self.stack}")
+        if self.stack > _MAX_STACK:
+            raise ValueError(
+                f"ImageInput.stack must be <= {_MAX_STACK}, got {self.stack}"
+            )
 
 
 @dataclass(frozen=True)

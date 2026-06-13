@@ -1207,6 +1207,9 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
     assert model_input_to_dict(adapt.ImageInput("img", stack=4))["stack"] == 4
     with pytest.raises(ValueError, match="stack must be >= 1"):
         adapt.ImageInput("img", stack=0)
+    # An untrusted spec cannot demand an unbounded buffer.
+    with pytest.raises(ValueError, match="stack must be <="):
+        adapt.ImageInput("img", stack=10_000)
 
 
 def test_euler_xyz_encoding_converts_end_to_end() -> None:

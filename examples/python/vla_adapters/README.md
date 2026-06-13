@@ -100,7 +100,7 @@ tags from the handshake (via `resolve_from_contract`) and need no registry entry
 
 ## When the built-in vocabulary is not enough
 
-If a checkpoint needs feature engineering the declarative spec cannot express, add a `CustomInput`
-to its spec with an in-process callable (or a `module:callable` entrypoint string, which `resolve`
-only imports when called with `trust_entrypoints=True`). Specs are data — nothing in them is ever
-eval'd.
+If a checkpoint needs feature engineering the declarative spec cannot express, add an
+`InlineCustomInput` (an in-process callable) or an `EntrypointCustomInput` (a `module:callable`
+string, which `resolve` only imports when called with `trust_entrypoints=True`) to its spec. Specs
+are data — nothing in them is ever eval'd.

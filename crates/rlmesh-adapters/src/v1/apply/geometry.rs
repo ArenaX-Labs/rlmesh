@@ -216,7 +216,11 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
             let (roll, yaw) = if cos_pitch > EPS {
                 (m(2, 1).atan2(m(2, 2)), m(1, 0).atan2(m(0, 0)))
             } else {
-                (m(0, 1).atan2(m(1, 1)), 0.0)
+                // With yaw pinned to 0, the combined roll+/-yaw angle is read
+                // off the top-left 2x2. Its sign tracks sin(pitch): +pi/2 gives
+                // sin(roll-yaw), -pi/2 gives -sin(roll+yaw), so scale m[0][1] by
+                // sin_pitch to recover an angle that reconstructs the matrix.
+                ((sin_pitch * m(0, 1)).atan2(m(1, 1)), 0.0)
             };
             vec![roll as f32, pitch as f32, yaw as f32]
         }
@@ -316,5 +320,24 @@ mod tests {
         let roll = convert_rotation(&[half_pi, 0.0, 0.0], EulerXyz, AxisAngle).expect("roll");
         assert!(roll[1].abs() < 1e-4 && roll[2].abs() < 1e-4);
         assert!((roll[0] - half_pi).abs() < 1e-4, "{roll:?}");
+    }
+
+    #[test]
+    fn euler_xyz_recovers_at_gimbal_lock() {
+        use RotationEncoding::{EulerXyz, QuatXyzw};
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        // At pitch = +/-pi/2, roll and yaw couple, so the recovered euler need
+        // not match componentwise -- but it must encode the *same* rotation.
+        // (Pre-fix, the -pi/2 case flipped the combined angle's sign.)
+        for pitch in [half_pi, -half_pi] {
+            let euler = vec![0.3_f32, pitch, 1.1];
+            let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("to quat");
+            let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("from quat");
+            let requat = convert_rotation(&back, EulerXyz, QuatXyzw).expect("re-quat");
+            // q and -q are the same rotation.
+            let agree = quat.iter().zip(&requat).all(|(a, b)| (a - b).abs() < 1e-4)
+                || quat.iter().zip(&requat).all(|(a, b)| (a + b).abs() < 1e-4);
+            assert!(agree, "gimbal pitch {pitch}: {quat:?} vs {requat:?}");
+        }
     }
 }
