@@ -21,9 +21,15 @@ pub enum EnvFeature {
     Text(EnvText),
 }
 
-/// Declarative description of an environment's observation and action.
+/// An environment's resolved observation features plus its action layout.
+///
+/// This is the internal, fully-keyed form the resolver consumes: every
+/// feature carries its observation key and derived width/range. It is
+/// produced by [`join`](super::super::join::join) from the sparse
+/// [`EnvAnnotations`](super::env_annotations::EnvAnnotations) layered over a
+/// gymnasium space — it is not authored or serialized directly by users.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EnvIoSpec {
+pub struct EnvFeatures {
     pub observation: Vec<EnvFeature>,
     pub action: ActionLayout,
 }

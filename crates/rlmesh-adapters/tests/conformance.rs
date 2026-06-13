@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rlmesh_adapters::v1::{ArrayData, Dtype, EnvIoSpec, ModelIoSpec, NoCustoms, Value, resolve};
+use rlmesh_adapters::v1::{ArrayData, Dtype, EnvFeatures, ModelIoSpec, NoCustoms, Value, resolve};
 use serde_json::{Value as Json, json};
 
 fn cases_dir() -> PathBuf {
@@ -21,8 +21,8 @@ fn update_mode() -> bool {
     std::env::var("UPDATE_VECTORS").is_ok_and(|value| value == "1")
 }
 
-fn parse_specs(case: &Json) -> (EnvIoSpec, ModelIoSpec) {
-    let env_spec: EnvIoSpec =
+fn parse_specs(case: &Json) -> (EnvFeatures, ModelIoSpec) {
+    let env_spec: EnvFeatures =
         serde_json::from_value(case["env_spec"].clone()).expect("env_spec parses");
     let model_spec: ModelIoSpec =
         serde_json::from_value(case["model_spec"].clone()).expect("model_spec parses");
@@ -231,7 +231,7 @@ fn updated_case(name: &str, case: &Json) -> Json {
         "serialization" => {
             let doc = &case["doc"];
             out["doc"] = if case["side"] == "env" {
-                let spec: EnvIoSpec = serde_json::from_value(doc.clone())
+                let spec: EnvFeatures = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {
@@ -297,7 +297,7 @@ fn verify_case(name: &str, case: &Json) {
         "serialization" => {
             let doc = &case["doc"];
             let round_tripped = if case["side"] == "env" {
-                let spec: EnvIoSpec = serde_json::from_value(doc.clone())
+                let spec: EnvFeatures = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {

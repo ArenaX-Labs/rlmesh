@@ -7,7 +7,7 @@ mod model;
 mod rotations;
 
 pub use action::{ActionComponent, ActionLayout};
-pub use env::{EnvFeature, EnvImage, EnvIoSpec, EnvState, EnvText};
+pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText};
 pub use layouts::ImageLayout;
 pub use model::{
     CustomInput, ImageInput, ModelInput, ModelIoSpec, StateComponent, StateContainer, StateInput,

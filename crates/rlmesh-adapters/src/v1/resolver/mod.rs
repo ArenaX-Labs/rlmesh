@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::error::AdapterResolutionError;
 use super::plans::{ObsPlan, ResolvedAdapter};
 use super::pyfmt::py_repr;
-use super::spec::{EnvFeature, EnvIoSpec, ModelInput, ModelIoSpec};
+use super::spec::{EnvFeature, EnvFeatures, ModelInput, ModelIoSpec};
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
 
@@ -35,7 +35,7 @@ fn index_by_role<'spec, T>(
 
 /// Derive a [`ResolvedAdapter`] for an env/model pair from their specs.
 pub fn resolve(
-    env_spec: &EnvIoSpec,
+    env_spec: &EnvFeatures,
     model_spec: &ModelIoSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
