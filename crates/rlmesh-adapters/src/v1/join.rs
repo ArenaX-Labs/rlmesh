@@ -192,7 +192,7 @@ fn derive_state_range(
 ///
 /// A space stores its bounds at the dtype's precision, so a float32
 /// gymnasium `Box(_, 0.08, _)` projects to `0.0799999982`; an exact compare
-/// against an tag's `0.08` would reject ranges that are equal in
+/// against a tag's `0.08` would reject ranges that are equal in
 /// intent. The tolerance (~8x float32 epsilon, with an absolute floor) still
 /// rejects genuine disagreements.
 fn ranges_agree(a: (f64, f64), b: (f64, f64)) -> bool {

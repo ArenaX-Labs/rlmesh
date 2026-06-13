@@ -1,6 +1,6 @@
 """Complete overwrite for the pairings below.
 
-Nothing below calls ``resolve()`` or reads an tag. The math is
+Nothing below calls ``resolve()`` or reads a tag. The math is
 stubbed; the point is the shape of the mechanism: when a single pairing
 needs logic no spec can express, drop in a from-scratch
 :class:`rlmesh.adapters.AdapterBase` and the harness uses it verbatim.

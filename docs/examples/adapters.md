@@ -6,7 +6,7 @@ or simulator.
 
 ## Smallest serve-and-run loop
 
-One process serves an tagged environment and runs an adapted model against it:
+One process serves a tagged environment and runs an adapted model against it:
 
 ```bash
 uv run python examples/python/adapters_quickstart/serve_and_run.py

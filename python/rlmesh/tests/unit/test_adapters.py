@@ -86,7 +86,7 @@ def ref_r6d_to_rotvec(r6d):
 
 
 class Env(NamedTuple):
-    """An tagged environment: tags plus the gymnasium spaces."""
+    """A tagged environment: tags plus the gymnasium spaces."""
 
     tags: adapt.EnvTags
     obs_space: gym.spaces.Space[Any]

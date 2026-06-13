@@ -9,7 +9,7 @@ asymmetry with the model side: models fully specify their payload
 (:class:`~rlmesh.adapters.ModelSpec`), environments only tag.
 
 The observation tags are keyed by their observation path (dotted
-paths traverse nested ``Dict`` spaces), so an tag carries no key of
+paths traverse nested ``Dict`` spaces), so a tag carries no key of
 its own: the mapping key *is* the path.
 """
 

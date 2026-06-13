@@ -6,6 +6,15 @@ environments *tag* their observation and action spaces once with
 once with :class:`ModelSpec`, and :func:`resolve` derives the concrete
 preprocessing/postprocessing for any pair by matching semantic roles::
 
+    env tags ──┐                              ┌── model spec
+    (roles +   │   resolve() matches by role  │   (full payload +
+     a few     ├──────────────► IOAdapter ◄───┤    action layout)
+     facts)    │   widths/dtypes from spaces  │
+    obs/action │                              │
+      spaces ──┘                              └── transform_obs / transform_action
+
+::
+
     import rlmesh.adapters as adapt
 
     adapter = adapt.resolve(tags, obs_space, action_space, model_spec)

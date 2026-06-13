@@ -1,6 +1,6 @@
 """End-to-end live path for rlmesh.adapters.
 
-Serves an tagged env, then runs an adapted ``Model(spec=...)`` against it:
+Serves a tagged env, then runs an adapted ``Model(spec=...)`` against it:
 the adapter is resolved from the env's published tags in the contract,
 the prediction function works in the model's own format, and the env receives
 actions in its format. This exercises tag -> serve -> resolve_from_contract
