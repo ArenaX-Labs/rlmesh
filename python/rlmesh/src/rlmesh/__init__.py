@@ -10,7 +10,7 @@ from . import spaces as spaces
 from . import types as types
 from ._native import Model, RemoteEnv, RemoteVectorEnv
 from ._rlmesh import ServeOptions, Tensor
-from .recipes import Recipe, make, register
+from .recipes import make
 from .server import EnvServer
 
 try:
@@ -23,7 +23,6 @@ __doc__ = _rlmesh.__doc__
 __all__ = [
     "EnvServer",
     "Model",
-    "Recipe",
     "RemoteEnv",
     "RemoteVectorEnv",
     "ServeOptions",
@@ -31,7 +30,6 @@ __all__ = [
     "__version__",
     "make",
     "recipes",
-    "register",
     "serving",
     "spaces",
     "types",
