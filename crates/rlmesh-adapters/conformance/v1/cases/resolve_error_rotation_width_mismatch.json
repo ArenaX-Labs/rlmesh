@@ -1,5 +1,10 @@
 {
-  "env_spec": {
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_annotations": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -26,19 +31,17 @@
         }
       ]
     },
-    "observation": [
-      {
-        "dim": 5,
+    "observation": {
+      "eef_quat": {
         "encoding": "quat_xyzw",
-        "key": "eef_quat",
         "range": null,
         "role": "proprio/eef_rot",
         "type": "state"
       }
-    ]
+    }
   },
   "expect": {
-    "error_contains": "declares 5 dims"
+    "error_contains": "encoding quat_xyzw (4 dims) but the space width is 5"
   },
   "kind": "resolve",
   "model_spec": {
@@ -87,5 +90,17 @@
         "type": "state"
       }
     ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [5]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef_quat"],
+    "kind": "dict"
   }
 }

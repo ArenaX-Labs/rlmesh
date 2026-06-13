@@ -1,5 +1,10 @@
 {
-  "env_spec": {
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_annotations": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -26,44 +31,36 @@
         }
       ]
     },
-    "observation": [
-      {
-        "key": "cam",
+    "observation": {
+      "cam": {
         "layout": "hwc",
         "role": "image/primary",
         "type": "image",
         "upside_down": false
       },
-      {
-        "dim": 3,
+      "eef_pos": {
         "encoding": null,
-        "key": "eef_pos",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
       },
-      {
-        "dim": null,
+      "eef_quat": {
         "encoding": "quat_xyzw",
-        "key": "eef_quat",
         "range": null,
         "role": "proprio/eef_rot",
         "type": "state"
       },
-      {
-        "dim": 2,
+      "gripper": {
         "encoding": null,
-        "key": "gripper",
         "range": null,
         "role": "proprio/gripper",
         "type": "state"
       },
-      {
-        "key": "instruction",
+      "instruction": {
         "role": "text/instruction",
         "type": "text"
       }
-    ]
+    }
   },
   "expect": {
     "error_contains": "zero fill"
@@ -115,5 +112,36 @@
         "type": "state"
       }
     ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [2]
+      },
+      {
+        "dtype": "unspecified",
+        "kind": "text"
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam", "eef_pos", "eef_quat", "gripper", "instruction"],
+    "kind": "dict"
   }
 }

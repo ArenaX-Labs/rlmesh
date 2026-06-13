@@ -31,9 +31,14 @@ pub(super) fn plan_image(
             py_repr(&model_input.resample)
         )));
     }
+    // When the model declares only one target axis, fill the other from the
+    // env's native resolution (derived into the env image by `join`) rather
+    // than silently skipping the resize.
     let size = match (model_input.height, model_input.width) {
         (Some(height), Some(width)) => Some((height, width)),
-        _ => None,
+        (Some(height), None) => Some((height, env_image.width)),
+        (None, Some(width)) => Some((env_image.height, width)),
+        (None, None) => None,
     };
     Ok(ImagePlan {
         model_key: model_input.key.clone(),

@@ -1,5 +1,10 @@
 {
-  "env_spec": {
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_annotations": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -26,32 +31,26 @@
         }
       ]
     },
-    "observation": [
-      {
-        "dim": 3,
+    "observation": {
+      "agent.eef_pos": {
         "encoding": null,
-        "key": "agent.eef_pos",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
       },
-      {
-        "dim": null,
+      "agent.eef_quat": {
         "encoding": "quat_wxyz",
-        "key": "agent.eef_quat",
         "range": null,
         "role": "proprio/eef_rot",
         "type": "state"
       },
-      {
-        "dim": 2,
+      "agent.gripper": {
         "encoding": null,
-        "key": "agent.gripper",
         "range": null,
         "role": "proprio/gripper",
         "type": "state"
       }
-    ]
+    }
   },
   "expect": {
     "action": {
@@ -193,5 +192,34 @@
       }
     },
     "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "children": [
+          {
+            "dtype": "float32",
+            "kind": "box",
+            "shape": [3]
+          },
+          {
+            "dtype": "float32",
+            "kind": "box",
+            "shape": [4]
+          },
+          {
+            "dtype": "float32",
+            "kind": "box",
+            "shape": [2]
+          }
+        ],
+        "dtype": "unspecified",
+        "keys": ["eef_pos", "eef_quat", "gripper"],
+        "kind": "dict"
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["agent"],
+    "kind": "dict"
   }
 }

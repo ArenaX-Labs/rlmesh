@@ -1,5 +1,10 @@
 {
-  "env_spec": {
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_annotations": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -26,15 +31,14 @@
         }
       ]
     },
-    "observation": [
-      {
-        "key": "cam",
+    "observation": {
+      "cam": {
         "layout": "hwc",
         "role": "image/primary",
         "type": "image",
         "upside_down": false
       }
-    ]
+    }
   },
   "expect": {
     "action": {
@@ -131,5 +135,17 @@
       }
     },
     "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [3, 4, 3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam"],
+    "kind": "dict"
   }
 }

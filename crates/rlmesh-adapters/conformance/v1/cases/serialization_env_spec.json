@@ -26,44 +26,36 @@
         }
       ]
     },
-    "observation": [
-      {
-        "key": "cam",
+    "observation": {
+      "cam": {
         "layout": "hwc",
         "role": "image/primary",
         "type": "image",
         "upside_down": false
       },
-      {
-        "dim": 3,
+      "eef_pos": {
         "encoding": null,
-        "key": "eef_pos",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
       },
-      {
-        "dim": null,
+      "eef_quat": {
         "encoding": "quat_xyzw",
-        "key": "eef_quat",
         "range": null,
         "role": "proprio/eef_rot",
         "type": "state"
       },
-      {
-        "dim": 2,
+      "gripper": {
         "encoding": null,
-        "key": "gripper",
         "range": null,
         "role": "proprio/gripper",
         "type": "state"
       },
-      {
-        "key": "instruction",
+      "instruction": {
         "role": "text/instruction",
         "type": "text"
       }
-    ]
+    }
   },
   "kind": "serialization",
   "side": "env"

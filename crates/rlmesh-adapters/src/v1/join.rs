@@ -10,7 +10,7 @@
 use super::space_view::{SpaceView, SpaceViewKind};
 use super::spec::{
     ActionLayout, EnvAnnotations, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText,
-    ObsAnnotation,
+    ImageLayout, ObsAnnotation,
 };
 
 /// A validation failure while joining annotations against a space.
@@ -106,11 +106,14 @@ fn join_feature(path: &str, annotation: &ObsAnnotation, leaf: &SpaceView) -> Res
                     actual: describe_space(leaf),
                 });
             }
+            let (height, width) = image_hw(&leaf.shape, image.layout);
             Ok(EnvFeature::Image(EnvImage {
                 key: path.to_owned(),
                 role: image.role.clone(),
                 layout: image.layout,
                 upside_down: image.upside_down,
+                height,
+                width,
             }))
         }
         ObsAnnotation::State(state) => {
@@ -239,6 +242,21 @@ fn is_numeric(view: &SpaceView) -> bool {
 
 fn width_of(view: &SpaceView) -> u32 {
     u32::try_from(view.numel()).unwrap_or(u32::MAX)
+}
+
+/// Pixel `(height, width)` of a 3-D image shape under its layout.
+fn image_hw(shape: &[i64], layout: ImageLayout) -> (u32, u32) {
+    let dim = |index: usize| {
+        shape
+            .get(index)
+            .copied()
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0)
+    };
+    match layout {
+        ImageLayout::Hwc => (dim(0), dim(1)),
+        ImageLayout::Chw => (dim(1), dim(2)),
+    }
 }
 
 fn describe_space(view: &SpaceView) -> String {

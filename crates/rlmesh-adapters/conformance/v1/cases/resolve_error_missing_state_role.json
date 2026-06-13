@@ -1,5 +1,10 @@
 {
-  "env_spec": {
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_annotations": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [
@@ -26,16 +31,14 @@
         }
       ]
     },
-    "observation": [
-      {
-        "dim": 3,
+    "observation": {
+      "eef_pos": {
         "encoding": null,
-        "key": "eef_pos",
         "range": null,
         "role": "proprio/eef_pos",
         "type": "state"
       }
-    ]
+    }
   },
   "expect": {
     "error_contains": "needs state role"
@@ -87,5 +90,17 @@
         "type": "state"
       }
     ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef_pos"],
+    "kind": "dict"
   }
 }

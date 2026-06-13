@@ -10,7 +10,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rlmesh_adapters::v1::{ArrayData, Dtype, EnvFeatures, ModelIoSpec, NoCustoms, Value, resolve};
+use rlmesh_adapters::v1::{
+    ArrayData, Dtype, EnvAnnotations, ModelIoSpec, NoCustoms, SpaceView, Value, resolve,
+};
 use serde_json::{Value as Json, json};
 
 fn cases_dir() -> PathBuf {
@@ -21,12 +23,16 @@ fn update_mode() -> bool {
     std::env::var("UPDATE_VECTORS").is_ok_and(|value| value == "1")
 }
 
-fn parse_specs(case: &Json) -> (EnvFeatures, ModelIoSpec) {
-    let env_spec: EnvFeatures =
-        serde_json::from_value(case["env_spec"].clone()).expect("env_spec parses");
+fn parse_inputs(case: &Json) -> (EnvAnnotations, SpaceView, SpaceView, ModelIoSpec) {
+    let annotations: EnvAnnotations =
+        serde_json::from_value(case["env_annotations"].clone()).expect("env_annotations parses");
+    let observation_space: SpaceView = serde_json::from_value(case["observation_space"].clone())
+        .expect("observation_space parses");
+    let action_space: SpaceView =
+        serde_json::from_value(case["action_space"].clone()).expect("action_space parses");
     let model_spec: ModelIoSpec =
         serde_json::from_value(case["model_spec"].clone()).expect("model_spec parses");
-    (env_spec, model_spec)
+    (annotations, observation_space, action_space, model_spec)
 }
 
 /// Decode the conformance value encoding into an engine [`Value`].
@@ -231,7 +237,7 @@ fn updated_case(name: &str, case: &Json) -> Json {
         "serialization" => {
             let doc = &case["doc"];
             out["doc"] = if case["side"] == "env" {
-                let spec: EnvFeatures = serde_json::from_value(doc.clone())
+                let spec: EnvAnnotations = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {
@@ -241,32 +247,37 @@ fn updated_case(name: &str, case: &Json) -> Json {
             };
         }
         "resolve" => {
-            let (env_spec, model_spec) = parse_specs(case);
+            let (annotations, obs_space, action_space, model_spec) = parse_inputs(case);
             if !preserve_inputs {
-                out["env_spec"] = serde_json::to_value(&env_spec).expect("serializes");
+                out["env_annotations"] = serde_json::to_value(&annotations).expect("serializes");
+                out["observation_space"] = serde_json::to_value(&obs_space).expect("serializes");
+                out["action_space"] = serde_json::to_value(&action_space).expect("serializes");
                 out["model_spec"] = serde_json::to_value(&model_spec).expect("serializes");
             }
-            out["expect"] = match resolve(&env_spec, &model_spec, false) {
-                Ok(adapter) => json!({"ok": true, "describe": adapter.describe()}),
-                Err(error) => {
-                    // Keep a hand-curated substring when it still matches;
-                    // otherwise pin the full current message.
-                    let existing = case["expect"]["error_contains"].as_str();
-                    let pinned = match existing {
-                        Some(sub) if error.message.contains(sub) => sub.to_owned(),
-                        _ => error.message.clone(),
-                    };
-                    json!({"error_contains": pinned})
-                }
-            };
+            out["expect"] =
+                match resolve(&annotations, &obs_space, &action_space, &model_spec, false) {
+                    Ok(adapter) => json!({"ok": true, "describe": adapter.describe()}),
+                    Err(error) => {
+                        // Keep a hand-curated substring when it still matches;
+                        // otherwise pin the full current message.
+                        let existing = case["expect"]["error_contains"].as_str();
+                        let pinned = match existing {
+                            Some(sub) if error.message.contains(sub) => sub.to_owned(),
+                            _ => error.message.clone(),
+                        };
+                        json!({"error_contains": pinned})
+                    }
+                };
         }
         "apply" => {
-            let (env_spec, model_spec) = parse_specs(case);
+            let (annotations, obs_space, action_space, model_spec) = parse_inputs(case);
             if !preserve_inputs {
-                out["env_spec"] = serde_json::to_value(&env_spec).expect("serializes");
+                out["env_annotations"] = serde_json::to_value(&annotations).expect("serializes");
+                out["observation_space"] = serde_json::to_value(&obs_space).expect("serializes");
+                out["action_space"] = serde_json::to_value(&action_space).expect("serializes");
                 out["model_spec"] = serde_json::to_value(&model_spec).expect("serializes");
             }
-            let adapter = resolve(&env_spec, &model_spec, false)
+            let adapter = resolve(&annotations, &obs_space, &action_space, &model_spec, false)
                 .unwrap_or_else(|e| panic!("{name}: resolve failed: {e}"));
             let Value::Map(raw_obs) = dec(&case["observation"]) else {
                 panic!("{name}: observation must decode to a map");
@@ -297,7 +308,7 @@ fn verify_case(name: &str, case: &Json) {
         "serialization" => {
             let doc = &case["doc"];
             let round_tripped = if case["side"] == "env" {
-                let spec: EnvFeatures = serde_json::from_value(doc.clone())
+                let spec: EnvAnnotations = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {
@@ -308,9 +319,9 @@ fn verify_case(name: &str, case: &Json) {
             assert_eq!(&round_tripped, doc, "{name}: round trip mismatch");
         }
         "resolve" => {
-            let (env_spec, model_spec) = parse_specs(case);
+            let (annotations, obs_space, action_space, model_spec) = parse_inputs(case);
             let expect = &case["expect"];
-            match resolve(&env_spec, &model_spec, false) {
+            match resolve(&annotations, &obs_space, &action_space, &model_spec, false) {
                 Ok(adapter) => {
                     let expected = expect["describe"]
                         .as_str()
@@ -331,8 +342,8 @@ fn verify_case(name: &str, case: &Json) {
             }
         }
         "apply" => {
-            let (env_spec, model_spec) = parse_specs(case);
-            let adapter = resolve(&env_spec, &model_spec, false)
+            let (annotations, obs_space, action_space, model_spec) = parse_inputs(case);
+            let adapter = resolve(&annotations, &obs_space, &action_space, &model_spec, false)
                 .unwrap_or_else(|e| panic!("{name}: resolve failed: {e}"));
             let atol = case["expect"]["atol"].as_f64().expect("atol");
 

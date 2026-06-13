@@ -77,6 +77,40 @@ pub(super) fn plan_state(
                 env_encoding.dims()
             )));
         }
+        // Bounds-check the requested slice against the source width. The
+        // width is the env feature's, unless a rotation conversion reshapes it
+        // first (in which case the converted width applies). Without this an
+        // out-of-range index or dim silently yields fewer values.
+        let converts = matches!(
+            (env_state.encoding, component.encoding),
+            (Some(src), Some(dst)) if src != dst
+        );
+        let source_width = if converts {
+            component.encoding.map(|encoding| encoding.dims())
+        } else {
+            env_state.dim
+        };
+        if let Some(width) = source_width {
+            if let Some(index) = component.index {
+                if index >= width {
+                    return Err(err(format!(
+                        "state role {}: index {index} is out of range for the \
+                         width-{width} source feature {}",
+                        py_repr(&component.role),
+                        py_repr(&env_state.key)
+                    )));
+                }
+            } else if let Some(dim) = component.dim
+                && dim > width
+            {
+                return Err(err(format!(
+                    "state role {}: requested {dim} dims but the source feature \
+                     {} has width {width}",
+                    py_repr(&component.role),
+                    py_repr(&env_state.key)
+                )));
+            }
+        }
         pieces.push(StatePiece {
             env_key: env_state.key.clone(),
             src_encoding: env_state.encoding,
