@@ -7,22 +7,29 @@
 //! 5A): the neutral conformance surface a non-Python deriver (a future capi
 //! consumer) must reproduce, guarded by golden-file tests.
 //!
-//! Scope note: this slice derives the flat-gym subset plus apt packages, indexed
-//! pip steps, env/pythonpath/gpu, a `run_as` user drop, raw commands, and the
-//! verbatim-Dockerfile trapdoor. Build steps that require staging a host tree
-//! into the build context (`project`, `fetch`) return [`DeriveError::Unsupported`]
-//! rather than silently dropping an instruction; they land with the build-context
-//! staging work.
+//! The deriver covers the full build vocabulary: base (+python symlink for a
+//! non-python base), env/pythonpath/gpu, apt (`system` united with
+//! `system_runtime`), the author's `project` tree (`COPY` + editable install),
+//! third-party `fetch` (pinned git clone / checksummed url download), pip or uv
+//! install steps, a `run_as` user drop, raw `commands`, and the verbatim-
+//! Dockerfile trapdoor. `from_recipe` is inlined by the registry layer before the
+//! deriver runs. `ProjectInstall` requires its source tree to be staged into the
+//! build context under [`PROJECT_CONTEXT_DIR`] by the caller.
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::DEFAULT_BASE_IMAGE;
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
 const ENTRYPOINT: &str = "ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]";
+
+/// The build-context subdirectory a `ProjectInstall` source tree is staged into;
+/// the deriver `COPY`s from here and `write_build_context` populates it.
+pub const PROJECT_CONTEXT_DIR: &str = "project";
+const DEFAULT_PROJECT_DEST: &str = "/opt/rlmesh/project";
 
 /// An error produced while deriving a Dockerfile from a recipe.
 #[derive(Debug, thiserror::Error)]
@@ -36,10 +43,13 @@ pub enum DeriveError {
     /// A build field is not yet supported by this slice's deriver.
     #[error("recipe build field not yet supported by the deriver: {0}")]
     Unsupported(String),
+    /// A build field is missing a value the deriver requires.
+    #[error("recipe build field {0} is missing a required value")]
+    MissingField(String),
 }
 
 /// The named factory (phase 3), tagged by `kind` in the wire format.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Make {
     /// A `gymnasium.make` factory.
@@ -78,7 +88,7 @@ pub enum Make {
 }
 
 /// One `pip install` step with its own index URLs (phase 1).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PipInstall {
     /// The packages to install.
@@ -96,7 +106,7 @@ pub struct PipInstall {
 }
 
 /// A third-party build-time acquisition (git clone or url download).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Fetch {
     /// `"git"` or `"url"`.
@@ -119,7 +129,7 @@ pub struct Fetch {
 }
 
 /// Install the recipe author's own package source tree (phase 1).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectInstall {
     /// The host path relative to the context root.
@@ -144,7 +154,7 @@ impl Default for ProjectInstall {
 }
 
 /// Phase 1 -- the typed Dockerfile.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Build {
     /// `FROM` image (None -> [`DEFAULT_BASE_IMAGE`]).
@@ -202,7 +212,7 @@ impl Default for Build {
 }
 
 /// A construct-time file write (phase 2).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FileWrite {
     /// The destination path.
@@ -214,7 +224,7 @@ pub struct FileWrite {
 }
 
 /// Construct-time DATA: env updates + file writes (phase 2).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Setup {
     /// `os.environ` updates applied before `requires.imports`.
@@ -224,7 +234,7 @@ pub struct Setup {
 }
 
 /// Registration imports (gym/hf only).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Requires {
     /// Registration side-effect imports.
@@ -236,7 +246,7 @@ fn default_recipe_version() -> u32 {
 }
 
 /// An inert environment recipe.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recipe {
     /// The `namespace/name` identifier.
     pub name: String,
@@ -308,23 +318,18 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
         return Ok(out);
     }
 
-    // Build steps that require staging a host tree into the build context are not
-    // yet derived; reject loudly rather than drop the instruction.
-    if build.project.is_some() {
-        return Err(DeriveError::Unsupported("project".to_string()));
-    }
-    if !build.fetch.is_empty() {
-        return Err(DeriveError::Unsupported("fetch".to_string()));
-    }
+    // `from_recipe` is inlined into the child by the registry layer before the
+    // wire, so the deriver should never see it.
     if build.from_recipe.is_some() {
         return Err(DeriveError::Unsupported("from_recipe".to_string()));
     }
-    if build.installer != "pip" {
+    if build.installer != "pip" && build.installer != "uv" {
         return Err(DeriveError::Unsupported(format!(
             "installer={}",
             build.installer
         )));
     }
+    let verb = install_verb(&build.installer);
 
     let base = build.base.as_deref().unwrap_or(DEFAULT_BASE_IMAGE);
     validate_token("build.base", base)?;
@@ -368,8 +373,26 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
         ));
     }
 
-    // pip: the stock preamble (pip upgrade + rlmesh + gymnasium) then each step.
-    out.push_str(&format!("RUN {}\n\n", render_pip_chain(&build.pip)?));
+    // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink it.
+    if base_is_non_python(base) {
+        out.push_str("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python\n\n");
+    }
+
+    // project: COPY the author's staged tree then install it (editable by default).
+    if let Some(project) = &build.project {
+        out.push_str(&render_project(project, verb)?);
+    }
+
+    // fetch: third-party git clones / url downloads, each a pinned RUN.
+    for fetch in &build.fetch {
+        out.push_str(&render_fetch(fetch, verb)?);
+    }
+
+    // pip: the stock preamble (bootstrap + rlmesh + gymnasium) then each step.
+    out.push_str(&format!(
+        "RUN {}\n\n",
+        render_pip_chain(&build.pip, &build.installer)?
+    ));
 
     // commands: raw escape-hatch RUNs, appended last (Installed-only upstream).
     for command in &build.commands {
@@ -394,6 +417,20 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
     Ok(out)
 }
 
+/// Whether a base image lacks a `python` on PATH and needs the `python3` symlink.
+fn base_is_non_python(base: &str) -> bool {
+    let image = base.rsplit('/').next().unwrap_or(base);
+    !image.contains("python")
+}
+
+/// The per-package install command prefix for the chosen installer.
+fn install_verb(installer: &str) -> &'static str {
+    match installer {
+        "uv" => "uv pip install --system --no-cache-dir",
+        _ => "python -m pip install --no-cache-dir",
+    }
+}
+
 /// Union two apt lists preserving first-occurrence order.
 fn union_preserving_order(first: &[String], second: &[String]) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
@@ -406,22 +443,103 @@ fn union_preserving_order(first: &[String], second: &[String]) -> Vec<String> {
     out
 }
 
-/// Render the single pip `RUN` chain: stock preamble then each [`PipInstall`].
-fn render_pip_chain(steps: &[PipInstall]) -> Result<String, DeriveError> {
-    let mut parts = vec![
-        "python -m pip install --no-cache-dir --upgrade pip".to_string(),
-        "python -m pip install --no-cache-dir rlmesh".to_string(),
-        "python -m pip install --no-cache-dir gymnasium".to_string(),
-    ];
+/// Render the `COPY` + install for a [`ProjectInstall`] (the author's own tree).
+fn render_project(project: &ProjectInstall, verb: &str) -> Result<String, DeriveError> {
+    let dest = if project.dest.is_empty() {
+        DEFAULT_PROJECT_DEST
+    } else {
+        validate_token("project.dest", &project.dest)?;
+        &project.dest
+    };
+    let editable = if project.editable { " -e" } else { "" };
+    Ok(format!(
+        "COPY {PROJECT_CONTEXT_DIR} {dest}\nRUN {verb}{editable} {}\n\n",
+        shell_quote(dest)
+    ))
+}
+
+/// Render one third-party [`Fetch`] as a single pinned `RUN`.
+fn render_fetch(fetch: &Fetch, verb: &str) -> Result<String, DeriveError> {
+    match fetch.kind.as_str() {
+        "git" => {
+            let repo = fetch
+                .repo
+                .as_deref()
+                .ok_or_else(|| DeriveError::MissingField("fetch.repo".to_string()))?;
+            let dest = nonempty(&fetch.dest, "fetch.dest")?;
+            validate_token("fetch.repo", repo)?;
+            validate_token("fetch.dest", dest)?;
+            let (repo_q, dest_q) = (shell_quote(repo), shell_quote(dest));
+            let mut chain = format!("git clone --depth=1 {repo_q} {dest_q}");
+            if let Some(git_ref) = &fetch.ref_ {
+                validate_token("fetch.ref", git_ref)?;
+                let ref_q = shell_quote(git_ref);
+                chain.push_str(&format!(
+                    " && git -C {dest_q} fetch --depth=1 origin {ref_q} && git -C {dest_q} checkout {ref_q}"
+                ));
+            }
+            if let Some(req) = &fetch.pip_requirements {
+                validate_token("fetch.pip_requirements", req)?;
+                chain.push_str(&format!(" && {verb} -r {dest_q}/{req}"));
+            }
+            if fetch.pip_install {
+                chain.push_str(&format!(" && {verb} -e {dest_q}"));
+            }
+            chain.push_str(&format!(" && rm -rf {dest_q}/.git"));
+            Ok(format!("RUN {chain}\n\n"))
+        }
+        "url" => {
+            let url = fetch
+                .url
+                .as_deref()
+                .ok_or_else(|| DeriveError::MissingField("fetch.url".to_string()))?;
+            let dest = nonempty(&fetch.dest, "fetch.dest")?;
+            validate_token("fetch.url", url)?;
+            validate_token("fetch.dest", dest)?;
+            let (url_q, dest_q) = (shell_quote(url), shell_quote(dest));
+            let mut chain = format!("curl -fsSL {url_q} -o {dest_q}");
+            if let Some(sha256) = &fetch.sha256 {
+                validate_token("fetch.sha256", sha256)?;
+                chain.push_str(&format!(
+                    " && echo {} | sha256sum -c -",
+                    shell_quote(&format!("{sha256}  {dest}"))
+                ));
+            }
+            Ok(format!("RUN {chain}\n\n"))
+        }
+        other => Err(DeriveError::Unsupported(format!("fetch.kind={other}"))),
+    }
+}
+
+fn nonempty<'a>(value: &'a str, field: &str) -> Result<&'a str, DeriveError> {
+    if value.is_empty() {
+        Err(DeriveError::MissingField(field.to_string()))
+    } else {
+        Ok(value)
+    }
+}
+
+/// Render the single pip `RUN` chain: installer preamble then each [`PipInstall`].
+fn render_pip_chain(steps: &[PipInstall], installer: &str) -> Result<String, DeriveError> {
+    let verb = install_verb(installer);
+    let mut parts = Vec::new();
+    if installer == "uv" {
+        // Bootstrap uv itself with pip, then install everything through uv.
+        parts.push("python -m pip install --no-cache-dir uv".to_string());
+    } else {
+        parts.push("python -m pip install --no-cache-dir --upgrade pip".to_string());
+    }
+    parts.push(format!("{verb} rlmesh"));
+    parts.push(format!("{verb} gymnasium"));
     for step in steps {
-        parts.push(render_pip_step(step)?);
+        parts.push(render_pip_step(step, verb)?);
     }
     Ok(parts.join(" && "))
 }
 
-/// Render one `python -m pip install` line with its own index/flag arguments.
-fn render_pip_step(step: &PipInstall) -> Result<String, DeriveError> {
-    let mut line = String::from("python -m pip install --no-cache-dir");
+/// Render one install line with its own index/flag arguments.
+fn render_pip_step(step: &PipInstall, verb: &str) -> Result<String, DeriveError> {
+    let mut line = verb.to_string();
     if let Some(index_url) = &step.index_url {
         validate_token("pip.index_url", index_url)?;
         line.push_str(&format!(" --index-url {}", shell_quote(index_url)));
@@ -454,6 +572,8 @@ mod tests {
 
     const GYM_RECIPE_JSON: &str = include_str!("../tests/golden/safety_gymnasium.recipe.json");
     const GYM_GOLDEN: &str = include_str!("../tests/golden/safety_gymnasium.dockerfile");
+    const LIBERO_RECIPE_JSON: &str = include_str!("../tests/golden/libero.recipe.json");
+    const LIBERO_GOLDEN: &str = include_str!("../tests/golden/libero.dockerfile");
 
     fn gym_recipe() -> Recipe {
         Recipe::from_json(GYM_RECIPE_JSON).expect("fixture parses")
@@ -558,31 +678,103 @@ mod tests {
     }
 
     #[test]
-    fn rejects_project_and_fetch_loudly() {
-        let project =
-            Recipe::from_json(r#"{"name":"a","build":{"project":{"src":"."}}}"#).expect("parses");
-        assert!(matches!(
-            derive_dockerfile(&project),
-            Err(DeriveError::Unsupported(_))
-        ));
-
-        let fetch = Recipe::from_json(
-            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://x/r.git"}]}}"#,
+    fn renders_project_copy_and_editable_install() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"project":{"src":".","dest":"/opt/robot_env"}}}"#,
         )
         .expect("parses");
-        assert!(matches!(
-            derive_dockerfile(&fetch),
-            Err(DeriveError::Unsupported(_))
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains("COPY project /opt/robot_env"));
+        assert!(derived.contains("RUN python -m pip install --no-cache-dir -e '/opt/robot_env'"));
+    }
+
+    #[test]
+    fn renders_project_default_dest_and_non_editable() {
+        let recipe = Recipe::from_json(r#"{"name":"a","build":{"project":{"editable":false}}}"#)
+            .expect("parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains("COPY project /opt/rlmesh/project"));
+        assert!(derived.contains("RUN python -m pip install --no-cache-dir '/opt/rlmesh/project'"));
+        assert!(!derived.contains(" -e '/opt/rlmesh/project'"));
+    }
+
+    #[test]
+    fn renders_git_fetch_pinned_with_install() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://github.com/x/LIBERO.git","ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dest":"/opt/LIBERO","pip_install":true}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains(
+            "RUN git clone --depth=1 'https://github.com/x/LIBERO.git' '/opt/LIBERO' && git -C '/opt/LIBERO' fetch --depth=1 origin 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && git -C '/opt/LIBERO' checkout 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && python -m pip install --no-cache-dir -e '/opt/LIBERO' && rm -rf '/opt/LIBERO'/.git"
         ));
     }
 
     #[test]
-    fn rejects_uv_installer_for_now() {
-        let recipe =
-            Recipe::from_json(r#"{"name":"a","build":{"installer":"uv"}}"#).expect("parses");
+    fn renders_url_fetch_with_sha256_check() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"url","url":"https://x/a.tar.gz","dest":"/opt/a.tar.gz","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains(
+            "RUN curl -fsSL 'https://x/a.tar.gz' -o '/opt/a.tar.gz' && echo '0000000000000000000000000000000000000000000000000000000000000000  /opt/a.tar.gz' | sha256sum -c -"
+        ));
+    }
+
+    #[test]
+    fn fetch_missing_dest_is_a_missing_field_error() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://x/r.git"}]}}"#,
+        )
+        .expect("parses");
         assert!(matches!(
             derive_dockerfile(&recipe),
-            Err(DeriveError::Unsupported(_))
+            Err(DeriveError::MissingField(_))
         ));
+    }
+
+    #[test]
+    fn renders_uv_installer_path() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"installer":"uv","pip":[{"packages":["sapien"]}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains("python -m pip install --no-cache-dir uv"));
+        assert!(derived.contains("uv pip install --system --no-cache-dir rlmesh"));
+        assert!(derived.contains("uv pip install --system --no-cache-dir 'sapien'"));
+    }
+
+    #[test]
+    fn non_python_base_gets_python_symlink() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"base":"nvidia/cuda:12.4.1-runtime-ubuntu22.04"}}"#,
+        )
+        .expect("parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert!(derived.contains("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python"));
+        // The default python base must NOT get the symlink.
+        let py = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
+            .expect("parses");
+        assert!(!derive_dockerfile(&py).expect("derives").contains("ln -sf"));
+    }
+
+    #[test]
+    fn libero_recipe_matches_golden_dockerfile() {
+        let recipe = Recipe::from_json(LIBERO_RECIPE_JSON).expect("fixture parses");
+        let derived = derive_dockerfile(&recipe).expect("derives");
+        assert_eq!(
+            derived, LIBERO_GOLDEN,
+            "derived LIBERO Dockerfile drifted from the checked-in golden"
+        );
+    }
+
+    #[test]
+    fn round_trips_through_serde() {
+        let recipe = gym_recipe();
+        let json = serde_json::to_string(&recipe).expect("serializes");
+        let back = Recipe::from_json(&json).expect("parses");
+        assert_eq!(recipe, back);
     }
 }
