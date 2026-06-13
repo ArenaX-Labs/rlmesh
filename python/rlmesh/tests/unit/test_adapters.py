@@ -12,6 +12,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 import gymnasium as gym
@@ -1033,3 +1034,68 @@ def test_describe_mentions_each_model_key():
     assert '"state"' in text
     assert "quat_xyzw->rot6d" in text
     assert "rot6d->axis_angle" in text
+
+
+# ---------------------------------------------------------------------------
+# annotate verb + Model(spec=) entry-point guards
+# ---------------------------------------------------------------------------
+
+
+def _fake_env(obs_space: gym.spaces.Space[Any]) -> Any:
+    return SimpleNamespace(
+        observation_space=obs_space, action_space=ACTION7, metadata={"render_fps": 30}
+    )
+
+
+def test_annotate_publishes_and_validates() -> None:
+    env = _fake_env(gym.spaces.Dict({"robot0_eef_pos": box(3)}))
+    annotations = adapt.EnvAnnotations(
+        observation={"robot0_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS)},
+        action=LIBERO_ACTION,
+    )
+    returned = adapt.annotate(env, annotations)
+    assert returned is env
+    assert env.metadata["render_fps"] == 30  # existing metadata preserved
+    assert adapt.EnvAnnotations.from_metadata(env.metadata) == annotations
+
+
+def test_annotate_rejects_mismatched_annotations() -> None:
+    # The space is 3-wide but quat_xyzw requires 4 -> join fails fast.
+    env = _fake_env(gym.spaces.Dict({"robot0_eef_quat": box(3)}))
+    bad = adapt.EnvAnnotations(
+        observation={
+            "robot0_eef_quat": adapt.StateAnnotation(
+                role=adapt.EEF_ROT, encoding="quat_xyzw"
+            )
+        },
+        action=LIBERO_ACTION,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="quat_xyzw"):
+        adapt.annotate(env, bad)
+    assert adapt.ENV_METADATA_KEY not in env.metadata  # nothing published on failure
+
+
+def test_annotate_without_validation_skips_the_check() -> None:
+    env = _fake_env(gym.spaces.Dict({"robot0_eef_quat": box(3)}))
+    bad = adapt.EnvAnnotations(
+        observation={
+            "robot0_eef_quat": adapt.StateAnnotation(
+                role=adapt.EEF_ROT, encoding="quat_xyzw"
+            )
+        },
+        action=LIBERO_ACTION,
+    )
+    adapt.annotate(env, bad, validate=False)
+    assert adapt.EnvAnnotations.from_metadata(env.metadata) == bad
+
+
+def test_model_spec_run_requires_an_env_object() -> None:
+    from rlmesh.numpy import Model
+
+    def predict(payload: dict[str, Any]) -> Any:
+        return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
+
+    model = Model(predict, spec=SMOLVLA)
+    # A bare address carries no contract to resolve the adapter from.
+    with pytest.raises(TypeError, match="env_contract"):
+        model.run("127.0.0.1:5555", max_episodes=1)
