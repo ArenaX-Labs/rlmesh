@@ -169,7 +169,6 @@ def _rlmesh_text_charset_from_gymnasium(space: Any) -> str | None:
 def _box_from_gymnasium(space: Any) -> Box:
     import numpy as np
 
-    # Annotated Any: numpy's stubs degrade under the 3.10 typecheck floor.
     low: Any = np.asarray(space.low)
     high: Any = np.asarray(space.high)
     # The uniform fast path collapses the bounds through Python ``float`` — only

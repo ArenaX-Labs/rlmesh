@@ -583,7 +583,6 @@ mod tests {
 
     #[test]
     fn meta_int_beyond_two_pow_53_survives_exactly() {
-        // The old Struct path rode Int through f64 and corrupted |v| > 2^53.
         let value = native::MetaValue::Int((1i64 << 53) + 1);
         assert_eq!(meta_roundtrip(value.clone()), value);
 
@@ -595,7 +594,6 @@ mod tests {
 
     #[test]
     fn meta_whole_number_float_stays_float() {
-        // The old decode reclassified any whole-number Float as Int.
         let value = native::MetaValue::Float(2.0);
         assert_eq!(meta_roundtrip(value.clone()), value);
         assert!(matches!(

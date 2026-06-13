@@ -176,9 +176,8 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        // The `token` parameter is retained for backward compatibility but no
-        // longer authenticates the local run (run_local does not authenticate
-        // against the env; configure env-side auth on the env server instead).
+        // `token` is retained for backward compatibility; env auth is configured
+        // on the environment server.
         let _ = token;
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {

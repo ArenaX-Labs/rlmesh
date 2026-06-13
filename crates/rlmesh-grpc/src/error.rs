@@ -60,7 +60,7 @@ impl Error {
 }
 
 /// Map a `tonic::Status` from an established connection into a structured
-/// [`Error`], preserving the gRPC status code so callers can distinguish a
+/// [`enum@Error`], preserving the gRPC status code so callers can distinguish a
 /// retryable condition (e.g. `Unavailable`) from a permanent one (e.g.
 /// `Unimplemented`) instead of seeing every failure as `failed to connect`.
 pub fn status_to_grpc_error(status: tonic::Status) -> Error {

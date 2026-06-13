@@ -82,10 +82,6 @@ mod tests {
 
     #[test]
     fn test_discrete_range_starting_at_i64_min_rejects_far_values() {
-        // Bug 4: start = i64::MIN, n = 4 -> valid range [i64::MIN, i64::MIN+3].
-        // contains(0) computes 0.wrapping_sub(i64::MIN) == i64::MIN, which as a
-        // *signed* offset is negative and < n, wrongly accepting 0. The unsigned
-        // comparison (offset == 2^63) correctly rejects it.
         let space = DiscreteBuilder::new(4).start(i64::MIN).build().unwrap();
 
         // The four in-range values are accepted.

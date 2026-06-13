@@ -243,9 +243,13 @@
           "idle_timeout_seconds": {
             "kind": "property",
             "signature": "property idle_timeout_seconds: Optional[float]"
+          },
+          "token": {
+            "kind": "property",
+            "signature": "property token: Optional[str]"
           }
         },
-        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None) -> ServeOptions",
+        "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, token: Optional[str] = None) -> ServeOptions",
         "stability": "Stable"
       },
       "Tensor": {

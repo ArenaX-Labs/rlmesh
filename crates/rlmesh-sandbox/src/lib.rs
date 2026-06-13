@@ -339,18 +339,11 @@ pub fn stop_container(container_id: &str) -> std::result::Result<(), SandboxErro
         .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 
-/// Best-effort reap of *orphaned* rlmesh-owned sandbox containers left behind
-/// by hard process kills (SIGKILL/OOM). Containers are identified by the
-/// `rlmesh.sandbox` label that [`start_env`] stamps on every container it
-/// starts, and ownership is recorded via an `rlmesh.sandbox.owner-pid` label.
+/// Best-effort reap of orphaned rlmesh-owned sandbox containers.
 ///
-/// Only containers whose owner process is no longer alive are reaped, so this
-/// is safe to call while *other* live rlmesh processes hold running sessions:
-/// a process B reaping after an earlier crash will not tear down the container
-/// of a process A whose session is still active. Containers owned by the
-/// current process are excluded defensively, and legacy containers without an
-/// owner-pid label are reaped only when they are not running. Returns the ids
-/// that were removed.
+/// Only containers whose owner process has exited are removed, so this is safe
+/// to call while other live rlmesh processes hold running sessions. Returns the
+/// ids that were removed.
 pub fn reap_orphaned_containers() -> std::result::Result<Vec<String>, SandboxError> {
     docker::DockerBackend
         .reap_orphaned_containers()
@@ -556,9 +549,7 @@ fn parse_version_prefix(value: &str) -> Option<(u32, u32)> {
     Some((major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// Determine the libc by token, not substring: musl is signalled by an
-/// `alpine` or `musl` token delimited by `:`, `-`, `/`, or `.`, so a glibc
-/// image whose name merely contains the letters `musl` is not misclassified.
+/// Determine libc from delimited image-name tokens.
 fn parse_image_libc(base_image: &str) -> Libc {
     let is_musl = base_image
         .split([':', '-', '/', '.', '_'])

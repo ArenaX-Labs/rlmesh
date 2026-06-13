@@ -126,11 +126,8 @@ impl FromStr for BindAddress {
 /// Remove a leftover Unix-domain socket file before binding.
 ///
 /// `bind(2)` returns `EADDRINUSE` whenever the socket path already exists on
-/// disk, regardless of whether anything is listening, so a clean shutdown that
-/// leaves the socket file behind would otherwise make every subsequent serve on
-/// the same path fail. We only unlink a path that is actually a socket, so we
-/// never clobber an unrelated regular file (the bind will then surface a clear
-/// error instead).
+/// disk, regardless of whether anything is listening. Only socket files are
+/// unlinked; unrelated regular files are left for `bind` to reject.
 #[cfg(unix)]
 pub(crate) fn remove_stale_socket(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::FileTypeExt;

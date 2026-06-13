@@ -1,18 +1,8 @@
 //! Served model endpoint: the tonic `ModelService` implementation.
 //!
-//! # Why this lives in the facade (vs. EnvService in rlmesh-grpc)
-//!
-//! The symmetric `EnvService` implementation lives one layer down in
-//! `rlmesh-grpc` because it is parameterized over `rlmesh_grpc::env::
-//! Environment`, a trait *defined in that crate*. The model service, by
-//! contrast, is parameterized over the user-facing [`crate::ModelHandler`]
-//! trait (and its [`crate::ModelObservation`] / route / lifecycle types), all
-//! defined here in the facade. Moving this impl into `rlmesh-grpc` would require
-//! either making `rlmesh-grpc` depend on `rlmesh` (a dependency cycle, since the
-//! facade already depends on `rlmesh-grpc`) or relocating the entire
-//! `ModelHandler` family — a public-API-breaking, Python-rippling refactor and
-//! net-new "grpc-level model handler trait" design. Review finding #74 judged
-//! that churn out of scope; the asymmetry is intentional and documented here.
+//! This implementation stays in the facade because it is parameterized over the
+//! public [`crate::ModelHandler`] family. Moving it into `rlmesh-grpc` would
+//! introduce a dependency cycle or force a new lower-level model trait.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -110,9 +100,6 @@ where
 
     let listener = BoundListener::bind(address).await?;
     let local_addr = listener.local_addr()?;
-    // Always-on standard gRPC health service (`grpc.health.v1`). The listener
-    // is already bound (bind-first), so the overall server health is marked
-    // SERVING immediately (review finding #57).
     let (_health_reporter, health_service) = rlmesh_grpc::health::serving_health_service().await;
     let router = tonic::transport::Server::builder()
         .add_service(health_service)
@@ -241,51 +228,12 @@ where
     type JoinStream =
         tokio_stream::wrappers::ReceiverStream<std::result::Result<JoinResponse, Status>>;
 
-    /// Handle a Join bidi stream.
+    /// Handle a pipelined Join stream.
     ///
-    /// # Concurrency contract (pipelined predict)
-    ///
-    /// Requests on the stream are **pipelined**: the read loop spawns a task per
-    /// request rather than awaiting each to completion before reading the next,
-    /// so decode/validation, the handler critical section, encode, and the
-    /// response pump overlap across requests. Responses are tagged with their
-    /// originating `request_id` and emitted in **completion order**, which may
-    /// differ from arrival order (a slow request no longer head-of-line-blocks a
-    /// fast one). The matching [`crate::model`] client demuxes responses by
-    /// `request_id`. The capability `model.concurrent_predict.v1` advertises this
-    /// behavior at handshake.
-    ///
-    /// ## What is serialized, and why
-    ///
-    /// The user handler is an `Arc<Mutex<H>>` with `&mut self` hooks, so every
-    /// handler/lifecycle critical section still runs one at a time (option (a):
-    /// we keep the mutex rather than break the public `ModelHandler` trait to
-    /// `&self`). The win is real even so: decode/encode and the stream pump no
-    /// longer block behind the handler.
-    ///
-    /// ## Ordering guarantees
-    ///
-    /// - **Per-route order is preserved.** Each request is assigned, in arrival
-    ///   order, a slot on a per-route chain of completion signals; a request's
-    ///   handler critical section waits for the previous same-route request to
-    ///   finish before acquiring the handler lock. So for a given route,
-    ///   `ConfigureRoute` → `Predict` → … → `CloseRoute` run their lifecycle
-    ///   updates and predicts in exactly the order the client sent them. This
-    ///   keeps `active_episodes` / `update_lifecycle` correct and prevents a
-    ///   `CloseRoute` from overtaking an in-flight `Predict` for the same route
-    ///   and dropping its episode accounting.
-    /// - **Different routes interleave.** Critical sections for distinct routes
-    ///   may run in either order (still one at a time under the mutex); per-route
-    ///   episode accounting is independent, so this is safe and is what yields
-    ///   out-of-order completion.
-    /// - **`Close` is a barrier.** A whole-session `Close` drains *all* routes'
-    ///   episodes, so it waits for every outstanding request on the stream to
-    ///   finish before draining, then ends the stream. It can never overtake an
-    ///   in-flight predict on any route.
-    ///
-    /// Idle-shutdown `IdleActivity::Started`/`Finished` is emitted as a balanced
-    /// pair around each request's processing (inside the per-request task), so
-    /// the active count tracks genuinely in-flight work even while pipelined.
+    /// Responses may complete out of arrival order, but each route is serialized
+    /// through a per-route chain so lifecycle updates cannot overtake earlier
+    /// requests on the same route. A whole-session `Close` waits for all in-flight
+    /// route work before draining final episode accounting.
     async fn join(
         &self,
         request: Request<Streaming<JoinRequest>>,

@@ -247,9 +247,6 @@ async fn default_cancellation_reason_does_not_claim_sibling_failure() {
 
 #[tokio::test]
 async fn observation_emitted_always_carries_transformed_payload() {
-    // Two-step episode so there is at least one non-terminal step observation
-    // that is transformed and sent to the model (previously the raw,
-    // pre-transform bytes leaked to observation_emitted here).
     let env = TestEnv {
         terminal_after: 2,
         ..Default::default()

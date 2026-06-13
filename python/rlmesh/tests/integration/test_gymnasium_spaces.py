@@ -199,15 +199,12 @@ def test_gymnasium_uint64_box_roundtrips_full_range_exactly() -> None:
 
 
 def test_gymnasium_shape_2_1_box_is_not_misclassified() -> None:
-    # A (2,1) Box has numel == rank == 2; the retired Axiswise classification
-    # used to mistake its elementwise bounds for per-axis bounds and produce a
-    # spec that raised on reconstruction. It must now round-trip cleanly.
     gymnasium = pytest.importorskip("gymnasium")
     from rlmesh import spaces
 
     source = gymnasium.spaces.Box(
-        low=np.array([[0.0], [1.0]]),
-        high=np.array([[1.0], [2.0]]),
+        low=np.array([[0.0], [1.0]], dtype=np.float32),
+        high=np.array([[1.0], [2.0]], dtype=np.float32),
         shape=(2, 1),
         dtype=np.float32,
     )

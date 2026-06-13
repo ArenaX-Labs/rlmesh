@@ -1004,9 +1004,6 @@ async fn pipelined_requests_complete_out_of_order() {
 async fn pipelined_predicts_preserve_per_route_order() {
     let route_events = Arc::new(Mutex::new(Vec::new()));
     let handler = OrderingHandler {
-        // A non-trivial delay on the first (reset) predict of each route makes a
-        // reordering bug observable: without per-route gating, the second
-        // predict could enter the handler before the first.
         slow_delay: Duration::from_millis(150),
         predict_order: Arc::new(Mutex::new(Vec::new())),
         route_events: Arc::clone(&route_events),

@@ -44,8 +44,8 @@ pub struct EnvironmentError {
 /// A failure originating from a user-implemented model handler.
 ///
 /// This is distinct from the transport/internal variants: it represents the
-/// model *declining* a request (e.g. an invalid observation), not a bug in
-/// rlmesh itself, so the runtime can report and retry it appropriately.
+/// model *declining* a request (e.g. an invalid observation), so the runtime
+/// can report and retry it appropriately.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {
     /// Human-readable description of why the handler declined.

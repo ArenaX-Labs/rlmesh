@@ -165,12 +165,7 @@ fn nested_image_box_roundtrips_byte_exact_without_base64_inflation() {
     assert!(raw.len() > 100_000, "image leaf must exceed 100KB");
     let value = SpaceValue::Dict(
         [
-            (
-                "choice".to_string(),
-                // 2^53 + 1 is inexact as an f64; the old composite encoding rode
-                // Discrete through NumberValue and would corrupt it.
-                SpaceValue::Discrete(big_discrete - 1),
-            ),
+            ("choice".to_string(), SpaceValue::Discrete(big_discrete - 1)),
             (
                 "image".to_string(),
                 SpaceValue::Box(
@@ -311,8 +306,6 @@ fn strided_box_view_encodes_contiguously() {
 
 #[test]
 fn nested_discrete_survives_beyond_two_pow_53_exactly() {
-    // D1: a Discrete value of 2^53 + 1 nested in a Dict must survive byte-exact.
-    // The old composite encoding rode it through f64 and decoded back to 2^53.
     let big = (1i64 << 53) + 1;
     let space = DictSpaceBuilder::new()
         .insert("choice", DiscreteBuilder::new(big + 1).build().unwrap())

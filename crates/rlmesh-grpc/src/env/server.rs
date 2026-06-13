@@ -32,23 +32,12 @@ use rlmesh_proto::{
 
 use super::{env_error_to_proto, is_protocol_generation_compatible};
 
-/// Run an environment operation under a deadline without ever dropping the
-/// in-flight future.
+/// Run an environment operation under a deadline, then drain it before the next
+/// request may access the same environment.
 ///
-/// The wrapped environment is typically a non-thread-safe (e.g. Python) object
-/// accessed under a single mutex. A naive `tokio::time::timeout` would, on
-/// expiry, *drop* the operation future and release the env mutex — but for a
-/// `spawn_blocking`-backed Python step that does not cancel the underlying work,
-/// so the next request could re-lock the env and run concurrently against an
-/// object still mutating from the orphaned op (state corruption; segfault for
-/// C-backed envs).
-///
-/// Instead, on deadline expiry we keep polling the same operation future to
-/// completion before returning. Because the caller holds the env mutex across
-/// this entire call, the next request cannot begin until the orphaned op has
-/// actually finished, guaranteeing no overlapping access. The client still sees
-/// a `Timeout` error, but the env is left in a consistent state and the real
-/// operation result/error is no longer silently discarded — it is logged.
+/// Python-backed environments are not generally cancellable. On timeout this
+/// keeps polling the operation to completion while the caller still holds the
+/// environment mutex, preventing overlapping access to the wrapped environment.
 async fn run_env_op_with_deadline<F, T>(
     op: F,
     timeout_ms: i64,
@@ -497,16 +486,8 @@ async fn handle_env_request<E: Environment>(
                             .map(|&b| b != 0)
                             .unwrap_or(false);
 
-                        // On termination/truncation the lane's episode completes
-                        // exactly once. Per the sealed 2026.06 edition contract
-                        // (docs/editions/2026.06.md "Episode accounting") the
-                        // edition does NOT restart a sub-environment on
-                        // termination: a terminated lane's `episode_ids` entry is
-                        // empty until the next explicit `Reset`. Auto-starting a
-                        // replacement episode here (the former `num_envs > 1`
-                        // heuristic) delivered phantom 0-step truncated episodes
-                        // for non-autoresetting vector envs (e.g. gymnasium
-                        // AutoresetMode::DISABLED), so we do not start one.
+                        // 2026.06: a terminated lane stays inactive until the
+                        // next explicit reset.
                         if (terminated || truncated)
                             && let Some(metadata) = tracker.complete_episode(
                                 env_idx as i32,
@@ -927,11 +908,6 @@ mod tests {
         }
         async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
             use std::sync::atomic::Ordering;
-            // Model a non-cancellable env op (like Python's spawn_blocking): the
-            // actual mutation runs on a detached task that keeps executing even
-            // if this future is dropped, and we await its handle. Dropping the
-            // future therefore does NOT stop the work — exactly the property
-            // that makes the timeout-drop bug observable.
             let in_op = self.in_op.clone();
             let overlap = self.overlap_detected.clone();
             let completed = self.completed_steps.clone();
@@ -977,12 +953,7 @@ mod tests {
             request_id: id.to_string(),
         };
 
-        // First step times out at 50ms, but the env op needs 200ms. The second
-        // step is dispatched concurrently shortly after the first one's deadline
-        // would fire, modelling the stream loop immediately serving the next
-        // request. Without the drain fix the first handler would return early,
-        // release the env mutex, and let the second step run concurrently
-        // against the env while the orphaned op is still in flight.
+        // Dispatch the second step while the first is still draining.
         let first = {
             let env = env.clone();
             let tracker = tracker.clone();
@@ -1276,12 +1247,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminated_lane_starts_no_phantom_episode_until_reset() {
-        // Sealed 2026.06 contract (docs/editions/2026.06.md "Episode
-        // accounting"): the edition does not restart a sub-environment on
-        // termination; a terminated lane's `episode_ids` entry is empty until the
-        // next explicit `Reset`. The server must NOT auto-start a replacement
-        // episode (the old `num_envs > 1` heuristic), which surfaced phantom
-        // 0-step truncated episodes for non-autoresetting vector envs.
+        // 2026.06: terminated lanes stay inactive until explicit reset.
         use std::sync::Arc;
         use tokio::sync::Mutex;
 

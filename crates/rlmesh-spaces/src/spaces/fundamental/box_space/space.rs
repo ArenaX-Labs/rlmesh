@@ -407,7 +407,6 @@ mod tests {
 
     #[test]
     fn test_int_builder_rejects_out_of_dtype_range_bounds() {
-        // Bug 3: int_scalar(0, 300).dtype(Int8) must fail, not wrap 300 -> 44.
         let err = BoxSpaceBuilder::int_scalar(0, 300, vec![1])
             .dtype(DType::Int8)
             .build();

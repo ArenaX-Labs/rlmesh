@@ -71,16 +71,11 @@ impl Episode {
     }
 }
 
-/// Maximum number of interrupted-but-undrained episodes the tracker buffers.
+/// Maximum interrupted episodes retained between drains.
 ///
-/// The buffer is drained on the next `Step` (folded into `completed_episodes`)
-/// or on `Close`/session-end (`complete_all`). A client that loops `Reset`
-/// without ever stepping would otherwise grow this buffer without bound
-/// (`num_envs` entries per reset), leaking server memory and eventually folding
-/// a backlog larger than the gRPC message limit into one `Step` response. We cap
-/// it and evict oldest-first, matching the bounded completed-episode buffer that
-/// existed before the `interrupted` rework. Chosen to comfortably cover normal
-/// vector widths between drains while bounding worst-case memory.
+/// Reset-only clients can produce interrupted episodes faster than they are
+/// reported. The cap bounds memory and response size while retaining recent
+/// interruptions.
 const MAX_INTERRUPTED_EPISODES: usize = 100;
 
 /// Manages episode tracking for all environments.
@@ -308,10 +303,6 @@ mod tests {
     fn interrupted_buffer_is_bounded_under_repeated_reset_without_step() {
         let mut tracker = EpisodeTracker::new();
 
-        // Model a client looping Reset (each reset replaces a lane's episode,
-        // pushing the old one into `interrupted`) without ever stepping/draining.
-        // Use a single lane and many resets so the cap is exercised by a wide
-        // margin.
         let resets = MAX_INTERRUPTED_EPISODES * 5;
         for _ in 0..resets {
             tracker.start_episode(0, None);

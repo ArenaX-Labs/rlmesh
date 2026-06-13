@@ -271,37 +271,27 @@ mod tests {
         raw
     }
 
-    // Finding #117: a Clear header (kind==0) with a nonzero declared length must
-    // consume the payload so the following header is not misread.
     #[test]
     fn read_wire_frame_consumes_clear_payload() {
-        // Clear header with len=4 + 4 payload bytes, then a Clear header with len=0.
         let mut stream = Vec::new();
         stream.extend_from_slice(&[0, 4, 0, 0, 0]); // kind=0, len=4
         stream.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // payload
         stream.extend_from_slice(&[0, 0, 0, 0, 0]); // kind=0, len=0
         let mut reader = Cursor::new(stream);
 
-        // First frame: Clear, payload skipped.
         assert!(matches!(
             read_wire_frame(&mut reader).unwrap(),
             Some(ViewerEvent::Clear)
         ));
-        // Second frame must parse cleanly as Clear (stream stayed in sync).
         assert!(matches!(
             read_wire_frame(&mut reader).unwrap(),
             Some(ViewerEvent::Clear)
         ));
-        // Then clean EOF.
         assert!(read_wire_frame(&mut reader).unwrap().is_none());
     }
 
-    // Finding #88: a decode error must emit Error and NOT an immediate Exit, so
-    // the UI (which drains all pending events in one frame) keeps the window open
-    // to display the error instead of closing before it renders.
     #[test]
     fn decode_error_emits_error_without_exit() {
-        // Frame header kind=1 (Frame) with a 3-byte payload that is not valid PNG.
         let mut stream = Vec::new();
         stream.extend_from_slice(&[1, 3, 0, 0, 0]); // kind=1, len=3
         stream.extend_from_slice(&[0, 0, 0]); // bogus payload -> decode error
@@ -318,7 +308,6 @@ mod tests {
             "expected an Error event"
         );
 
-        // Driving the UI with the error must keep the window open.
         let (tx2, rx2) = mpsc::channel();
         for event in events {
             tx2.send(event).unwrap();

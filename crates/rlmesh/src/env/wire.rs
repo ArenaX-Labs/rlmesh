@@ -634,9 +634,6 @@ mod tests {
             }
         };
 
-        // The detached session's episodes were completed server-side; they
-        // must NOT surface in the new session's step accounting (seeds 77/88
-        // bleeding through as 'interrupted' completions was the bug).
         let step = second
             .step(StepRequest {
                 actions: vec![

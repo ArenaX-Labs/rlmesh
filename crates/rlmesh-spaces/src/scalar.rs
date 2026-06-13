@@ -496,8 +496,6 @@ mod tests {
 
     #[test]
     fn test_cmp_typed_mixed_float_int_is_exact_no_truncation() {
-        // Bug 1: a Float bound against an Int value must compare exactly.
-        // 0.5 vs 0 (Int64): 0 < 0.5.
         assert_eq!(
             Scalar::Int(0).cmp_typed(Scalar::Float(0.5), DType::Int64),
             Some(Ordering::Less)

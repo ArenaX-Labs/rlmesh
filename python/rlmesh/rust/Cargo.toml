@@ -23,23 +23,15 @@ crate-type = ["cdylib", "rlib"]
 name = "stub_gen"
 path = "src/bin/stub_gen.rs"
 doc = false
-# The stub generator is the only consumer of pyo3-stub-gen, so it is the only
-# target that needs the (dev-only) feature that links it in (review finding
-# #115).
+# The stub generator is the only target that needs `stub-gen`.
 required-features = ["stub-gen"]
 
 [features]
 default = []
 abi3-py311 = ["pyo3/abi3-py311"]
-# Bundles the egui/eframe render viewer (rlmesh-cli) into the extension. Off by
-# default so release wheels stay lean and headless; enable for builds that ship
-# the local render viewer (review finding #113).
+# Bundles the egui/eframe render viewer into the extension.
 viewer = ["dep:rlmesh-cli"]
-# Links the pyo3-stub-gen framework (and its rustpython-parser/unicode_names2
-# Unicode tables) into the build so the stub_gen bin can emit `_rlmesh.pyi`. Off
-# by default so release wheels neither ship that machinery nor carry its
-# third-party license obligation; only the dev-time stub generation enables it
-# (review finding #115).
+# Links pyo3-stub-gen for dev-time `_rlmesh.pyi` generation.
 stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]

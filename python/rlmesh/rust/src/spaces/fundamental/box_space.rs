@@ -410,8 +410,6 @@ mod tests {
     #[test]
     fn parse_box_shape_2_1_is_elementwise_not_misclassified() {
         Python::attach(|py| {
-            // Historically a (2,1) Box (numel == rank == 2) was misclassified as
-            // per-axis bounds; with Axiswise gone it is plain elementwise.
             let space = gym_box(
                 py,
                 pyo3::ffi::c_str!(
@@ -428,7 +426,6 @@ mod tests {
             assert_eq!(bounds.low, vec![0.0, 1.0]);
             assert_eq!(bounds.high, vec![1.0, 2.0]);
 
-            // And it reconstructs without raising (the old Axiswise path did).
             let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();
             make_box(py, &spaces, &parsed).unwrap();
         });

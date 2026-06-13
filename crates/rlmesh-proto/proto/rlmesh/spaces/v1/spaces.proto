@@ -8,10 +8,8 @@ import "rlmesh/spaces/v1/types.proto";
 // ======= Fundamental Spaces ======= //
 // ================================== //
 message BoxSpec {
-  // Field 3 (`axiswise`) is permanently retired: per-axis bounds had no
-  // well-defined broadcast rule, so they are expanded to `elementwise` at
-  // parse time instead. The number and name are reserved so they can never
-  // be reused with different semantics.
+  // Field 3 (`axiswise`) is reserved. Bounds use `elementwise` when per-element
+  // values are needed.
   reserved 3;
   reserved "axiswise";
 

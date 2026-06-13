@@ -15,17 +15,11 @@ const DEFAULT_CONTAINER_PORT: u16 = 50051;
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
 
-/// Label stamped on every container rlmesh starts, so orphaned containers
-/// (e.g. left behind when the owning process is SIGKILLed) can be enumerated
-/// and reaped without relying on fragile name-prefix matching.
+/// Label stamped on every container rlmesh starts.
 const OWNER_LABEL: &str = "rlmesh.sandbox=1";
 const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
 
-/// Label key recording the OS process id of the rlmesh process that started a
-/// container. The reaper reads this back (via `docker ps --format`) to decide
-/// whether a labeled container is an orphan: a container is only reaped when
-/// its owner process is no longer alive, so a live process's running container
-/// is never torn down by another process's reap sweep.
+/// Label key recording the OS process id that owns a container.
 const OWNER_PID_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid";
 const OWNER_PID_NS_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid-ns";
 
@@ -145,22 +139,10 @@ impl DockerBackend {
         self.remove_container(container_id)
     }
 
-    /// Best-effort reap of *orphaned* rlmesh-owned containers, identified by the
-    /// `rlmesh.sandbox` label. Returns the ids that were successfully removed.
+    /// Best-effort reap of orphaned rlmesh-owned containers.
     ///
-    /// An orphan is a container left behind when its owning process is
-    /// hard-killed (SIGKILL/OOM) before it can call [`stop_container`].
-    /// Ownership is recorded at creation via the
-    /// `rlmesh.sandbox.owner-pid=<pid>` label; a container is reaped only when
-    /// that owner process is no longer alive (see [`is_orphan`]). This means a
-    /// reap sweep run by one process never tears down a *running* container
-    /// that another live process is still using mid-session.
-    ///
-    /// Containers owned by the *current* process are excluded defensively, and
-    /// legacy containers without an owner-pid label are reaped only when they
-    /// are not running. Failures to inspect or remove individual containers are
-    /// skipped rather than aborting the whole sweep, so a single stuck
-    /// container cannot block the reaper.
+    /// Only containers whose recorded owner process is gone are removed; current
+    /// process containers are excluded and individual Docker failures are skipped.
     pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
         let candidates = list_owned_containers()?;
         let self_pid = std::process::id();
@@ -1053,9 +1035,6 @@ mod tests {
 
     #[test]
     fn parse_owned_containers_handles_legacy_unlabeled_pid() {
-        // `docker ps --format` renders an absent label as an empty field; with
-        // the `|` delimiter the empty owner-pid column is preserved so the
-        // status is not misread. A non-numeric pid field must parse to None.
         let parsed = parse_owned_containers("abc123|||running\nxyz789|notapid||exited\n");
         assert_eq!(
             parsed,
@@ -1080,8 +1059,6 @@ mod tests {
 
     #[test]
     fn is_orphan_spares_containers_owned_by_a_live_process() {
-        // The core bug: a running container owned by a still-alive process must
-        // NOT be reaped, regardless of state.
         assert!(!is_orphan("running", Some(4242), OwnerPidLiveness::Alive));
         assert!(!is_orphan("exited", Some(4242), OwnerPidLiveness::Alive));
     }

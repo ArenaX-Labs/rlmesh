@@ -170,7 +170,7 @@ pub enum MetricKind {
 
 /// Aggregated non-duration operation metric (byte counts and generic numbers
 /// carried by `OperationTelemetry`). Duration metrics are reported via
-/// [`TimingSummary`]; these were previously dropped at the accumulator.
+/// [`TimingSummary`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricSummary {
     pub operation: String,

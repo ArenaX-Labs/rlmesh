@@ -83,10 +83,7 @@ where
             return Err(GrpcError::Cancelled("connect cancelled".to_string()));
         }
 
-        // Clip the in-flight attempt to whatever time remains; the endpoint's
-        // own (fixed) connect timeout can outlast the caller's budget against a
-        // SYN-blackholing address, so without this the deadline is only honored
-        // between attempts.
+        // Clip each attempt to the caller's remaining budget.
         let attempt_result = match deadline {
             Some(deadline) => {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

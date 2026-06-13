@@ -129,9 +129,7 @@ fn decode_typed_many(bytes: &[u8], dtype: DType, numel: usize, default: f64) -> 
 }
 
 /// Validated elementwise bounds always carry one value per element; anything
-/// else falls back to the unbounded default for sampling purposes. (The old
-/// cycle/truncate expansion was the AxiswiseBounds ambiguity removed by the
-/// wire redesign — sampling must not resurrect it.)
+/// else falls back to the unbounded default for sampling purposes.
 fn elementwise_or_default(values: &[f64], len: usize, default: f64) -> Vec<f64> {
     if values.len() == len {
         values.to_vec()
@@ -287,8 +285,6 @@ fn sample_multi_discrete<'py>(
     let scalars = nvec
         .iter()
         .map(|n| {
-            // A non-positive dimension would invert the random_range bounds
-            // and panic (a negative i64 previously wrapped through `as usize`).
             if *n <= 0 {
                 return Err(pyo3::exceptions::PyValueError::new_err(
                     "cannot sample MultiDiscrete space with a non-positive dimension",
@@ -370,10 +366,6 @@ mod tests {
 
     #[test]
     fn test_uint64_max_bound_decodes_to_positive_for_sampling() {
-        // Bug 2: a Uint64 bound of u64::MAX decodes as Scalar::Int(-1). Without
-        // the dtype-aware to_f64 it reached the sampler as -1.0, so the low/high
-        // bounds inverted (0 > -1) and sampling raised 'low greater than high'.
-        // u64::MAX as i64 == -1.
         let spec = typed_uniform_spec(0, -1, DType::Uint64);
         let (low, high) = box_bounds(&spec, 1, DType::Uint64);
         assert_eq!(low, vec![0.0]);

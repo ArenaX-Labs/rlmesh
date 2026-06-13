@@ -1,9 +1,8 @@
 """Public helpers for loading environments to serve through RLMesh.
 
-This module exposes the previously private ``rlmesh._cli.serve_env`` loaders
-as a small, stable surface. Use :func:`load_env` (or :func:`load_env_entrypoint`)
-to construct an environment by Gymnasium id or ``module:callable`` entrypoint,
-then hand it to :class:`rlmesh.EnvServer` to serve it.
+Use :func:`load_env` (or :func:`load_env_entrypoint`) to construct an
+environment by Gymnasium id or ``module:callable`` entrypoint, then hand it to
+:class:`rlmesh.EnvServer` to serve it.
 
 Examples:
     >>> import rlmesh

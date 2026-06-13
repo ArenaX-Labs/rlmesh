@@ -30,8 +30,8 @@
 //! Fallible operations return [`Result`] (alias for `Result<T, `[`Error`]`>`).
 //! [`Error`] separates transport/server faults from two domain failures:
 //! [`Error::Environment`] (carrying an [`ErrorCode`]) and [`Error::Model`] (a
-//! failure your [`ModelHandler`] raised, distinct from an RLMesh bug). Both
-//! carry an `is_recoverable` flag surfaced by [`Error::is_recoverable`].
+//! failure your [`ModelHandler`] raised). Both carry an `is_recoverable` flag
+//! surfaced by [`Error::is_recoverable`].
 //!
 //! # Example: serve an environment
 //!

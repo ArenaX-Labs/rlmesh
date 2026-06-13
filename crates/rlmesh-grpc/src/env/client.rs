@@ -124,9 +124,8 @@ impl EnvClient {
     /// Connect to an EnvService server, retrying until the server accepts the
     /// connection (or the deadline/cancellation in `options` fires).
     ///
-    /// This replaces hand-rolled poll-connect loops used to race a
-    /// just-launched server. It retries only the transport connect; perform the
-    /// handshake explicitly on the returned client.
+    /// Only the transport connect is retried; perform the handshake explicitly
+    /// on the returned client.
     pub async fn connect_with_retry(
         addr: &str,
         token: &str,
@@ -298,15 +297,13 @@ impl EnvClient {
         }
     }
 
-    /// Close this client session on the remote environment server.
     /// Close this client's session on the server and tear down the local Join
     /// stream.
     ///
     /// This ends the **session**, not the **server**: the served environment
     /// detaches the session and remains available for a subsequent client to
     /// connect and run a new session. It does not stop the server process — use
-    /// [`EnvClient::shutdown`] or the server's idle/drain policy for that. This
-    /// reuse-across-sessions behavior is intentional (review finding #81).
+    /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
 
@@ -819,9 +816,6 @@ mod tests {
             .expect("A reset");
         assert!(client_a.request_tx.is_some());
 
-        // Idle client B handshakes but never runs an op, then calls close() in a
-        // finally-style teardown. Pre-fix this opened a second Join and earned a
-        // FailedPrecondition; now it must be a local-only no-op.
         let mut client_b = EnvClient::connect_with_retry(&address, "", &connect_options)
             .await
             .expect("test server did not start");
@@ -978,7 +972,6 @@ mod tests {
 
         let address = format!("tcp://{addr}");
 
-        // A client without the token is rejected at handshake.
         let connect_options =
             crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
                 .backoff(std::time::Duration::from_millis(10));

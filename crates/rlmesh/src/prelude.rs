@@ -1,7 +1,7 @@
 //! Common imports for RLMesh users.
 //!
 //! This prelude brings in the traits, servers, request/result types, errors,
-//! options, address types, and [`BinaryPayload`](crate::spaces::BinaryPayload)
+//! options, address types, and [`BinaryPayload`]
 //! used by environment and model implementations. It leaves the full space
 //! system under [`crate::spaces`].
 //!

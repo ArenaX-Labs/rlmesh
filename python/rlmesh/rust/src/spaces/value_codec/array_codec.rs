@@ -357,8 +357,6 @@ mod tests {
                 .build()
                 .unwrap();
 
-            // A float32 tensor whose bytes would otherwise be reinterpreted as
-            // int32 and pass bound checks.
             let tensor = Tensor::from_slice(
                 &1.0f32.to_le_bytes().repeat(3),
                 &[3],
