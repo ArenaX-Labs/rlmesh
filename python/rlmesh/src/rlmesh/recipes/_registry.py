@@ -13,7 +13,10 @@ Anti-shadowing: re-registering an already-registered name is rejected unless
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 
+from ._authoring import EnvRecipe, as_authored_recipe
+from ._gym_sugar import factory_sugar_to_recipe, gym_sugar_to_recipe
 from ._schema import Build, Recipe
 
 __all__ = [
@@ -34,20 +37,76 @@ class RecipeNotFoundError(LookupError):
 _REGISTRY: dict[str, Recipe] = {}
 
 
-def register(recipe: Recipe, *, overwrite: bool = False) -> Recipe:
-    """Register a recipe under its ``name`` in the process-local registry.
+def register(
+    source: str | Recipe | type[EnvRecipe],
+    *,
+    gym: str | None = None,
+    factory: str | None = None,
+    packages: Sequence[str] = (),
+    imports: Sequence[str] = (),
+    overwrite: bool = False,
+) -> Recipe:
+    """Register a recipe so it can be built by name.
+
+    Two forms:
+
+    * **Object** -- ``register(recipe)`` or ``register(MyEnvRecipe)``: register a
+      :class:`Recipe` or project + register an ``EnvRecipe`` subclass.
+    * **Flat naming sugar** -- ``register("namespace/name", gym=..., packages=[...])``
+      or ``register("namespace/name", factory="mod:fn", packages=[...])``: the name
+      is the first argument; pass exactly one of ``gym=`` (a gym id) or ``factory=``
+      (a ``module:callable``). The sugar builds the validated recipe dataclasses.
 
     Args:
-        recipe: The recipe to register.
+        source: A name (with ``gym=``/``factory=``), a ``Recipe``, or an ``EnvRecipe``.
+        gym: A gym id, for the flat form. Mutually exclusive with ``factory``.
+        factory: A ``module:callable`` factory, for the flat form.
+        packages: Pip packages the env needs (flat form).
+        imports: Module names imported for gym registration (flat form, gym only).
         overwrite: Allow replacing an existing registration with the same name.
 
     Returns:
-        The registered recipe (so ``register`` can wrap a literal at module load).
+        The registered recipe.
 
     Raises:
-        ValueError: If ``recipe.name`` is already registered and ``overwrite`` is
-            ``False`` (anti-shadowing).
+        ValueError: If the name is already registered and ``overwrite`` is ``False``.
     """
+    authored = as_authored_recipe(source)
+    if authored is not None:
+        if gym or factory or packages or imports:
+            raise TypeError(
+                "register(Recipe | EnvRecipe) takes no gym=/factory=/packages=/"
+                "imports=; those are for the flat register(name, ...) form"
+            )
+        recipe = authored
+    elif isinstance(source, str):
+        recipe = _flat_recipe(source, gym, factory, packages, imports)
+    else:
+        raise TypeError(
+            "register() first argument must be a name string, a Recipe, or an "
+            f"EnvRecipe subclass, got {type(source).__name__}"
+        )
+    return _store(recipe, overwrite=overwrite)
+
+
+def _flat_recipe(
+    name: str,
+    gym: str | None,
+    factory: str | None,
+    packages: Sequence[str],
+    imports: Sequence[str],
+) -> Recipe:
+    if (gym is None) == (factory is None):
+        raise TypeError(
+            f"register({name!r}, ...) needs exactly one of gym= or factory="
+        )
+    if gym is not None:
+        return gym_sugar_to_recipe(name, gym, packages=packages, imports=imports)
+    assert factory is not None
+    return factory_sugar_to_recipe(name, factory, packages=packages, imports=imports)
+
+
+def _store(recipe: Recipe, *, overwrite: bool) -> Recipe:
     existing = _REGISTRY.get(recipe.name)
     if existing is not None and not overwrite and existing != recipe:
         raise ValueError(

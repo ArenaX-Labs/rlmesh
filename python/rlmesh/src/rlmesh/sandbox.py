@@ -24,7 +24,7 @@ from .specs import EnvContract, SpaceSpec
 from .types import Metadata
 
 if TYPE_CHECKING:
-    from .recipes import Recipe
+    from .recipes import EnvRecipe, Recipe
 
 ResetInfo: TypeAlias = dict[str, object]
 StepInfo: TypeAlias = dict[str, object]
@@ -200,14 +200,14 @@ class SandboxSessionBase(Generic[RemoteT]):
     """
 
     _remote_env_cls: ClassVar[Callable[..., object]] = _missing_remote_env_cls
-    _source: str | Recipe
+    _source: str | Recipe | type[EnvRecipe]
     _closed: bool
     sandbox: SandboxInfo
     _remote_env: RemoteT
 
     def __init__(
         self,
-        source: str | Recipe,
+        source: str | Recipe | type[EnvRecipe],
         *,
         base_image: str | None = None,
         rlmesh_package: str | PathLike[str] | None = None,
@@ -276,7 +276,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         )
 
     @property
-    def source(self) -> str | Recipe:
+    def source(self) -> str | Recipe | type[EnvRecipe]:
         """Original sandbox source (string or ``Recipe``) requested by the caller."""
         return self._source
 
@@ -359,7 +359,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
 
     def __init__(
         self,
-        source: str | Recipe,
+        source: str | Recipe | type[EnvRecipe],
         *,
         base_image: str | None = None,
         rlmesh_package: str | PathLike[str] | None = None,
@@ -494,7 +494,7 @@ class SandboxVectorEnvBase(
 
     def __init__(
         self,
-        source: str | Recipe,
+        source: str | Recipe | type[EnvRecipe],
         num_envs: int,
         *,
         vectorization_mode: str = "sync",
@@ -620,29 +620,38 @@ class SandboxVectorEnvBase(
 
 
 def _resolve_recipe_source(
-    source: str | Recipe,
+    source: str | Recipe | type[EnvRecipe],
 ) -> tuple[str, str | None, str | None, str | None]:
     """Resolve a sandbox source into (display, recipe_json, provenance, context_root).
 
-    A ``Recipe`` becomes a ``Remote`` recipe document; a registered recipe name
-    becomes an ``Installed`` document (pip-install-is-consent); anything else is
+    An ``EnvRecipe`` subclass or an in-process ``Recipe`` is ``Installed`` -- it
+    came from your installed/loaded code (pip-install-is-consent), so its build
+    (including ``ProjectInstall``) is trusted. A registered name is ``Installed``
+    too. ``Remote`` is reserved for a document handed in from an untrusted external
+    source (the future catalog/wire path). A plain id/name that is not a recipe is
     an ordinary gym/hf source string, unchanged. When the recipe stages a project
     tree, ``context_root`` defaults to the current directory.
     """
     import os
 
-    from rlmesh.recipes import Recipe as _Recipe
     from rlmesh.recipes import RecipeNotFoundError, resolve, resolve_from_recipe
+    from rlmesh.recipes._authoring import as_authored_recipe
 
-    if isinstance(source, _Recipe):
-        recipe = source
-        provenance = "remote"
-    else:
+    authored = as_authored_recipe(source)
+    if authored is not None:
+        recipe = authored
+        provenance = "installed"
+    elif isinstance(source, str):
         try:
             recipe = resolve(source)
         except RecipeNotFoundError:
             return source, None, None, None
         provenance = "installed"
+    else:
+        raise TypeError(
+            f"sandbox source must be a str, Recipe, or EnvRecipe, got "
+            f"{type(source).__name__}"
+        )
     # Inline any `from_recipe` base build before the wire so a task family shares
     # one image.
     recipe = resolve_from_recipe(recipe)
@@ -651,7 +660,7 @@ def _resolve_recipe_source(
 
 
 def _start_sandbox(
-    source: str | Recipe,
+    source: str | Recipe | type[EnvRecipe],
     *,
     base_image: str | None,
     rlmesh_package: str | None,

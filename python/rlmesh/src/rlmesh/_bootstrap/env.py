@@ -90,14 +90,31 @@ def load_recipe_env(spec: Mapping[str, object]) -> object:
     return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
 
 
+class RecipeConstructionError(RuntimeError):
+    """Raised when a recipe's factory entrypoint cannot be loaded.
+
+    Wraps the import/attribute/not-callable boundary of resolving a
+    ``module:callable`` factory, naming the entrypoint and pointing at
+    ``rlmesh.recipes.check``. Errors raised *inside* a successfully-loaded factory
+    are not wrapped.
+    """
+
+
 def load_env_entrypoint(
     entrypoint: str,
     package_names: Sequence[str] = (),
     kwargs: Mapping[str, object] | None = None,
 ) -> EnvLike:
     """Load an environment from a ``module:callable`` factory entrypoint."""
-    import_packages(package_names)
-    factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    try:
+        import_packages(package_names)
+        factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise RecipeConstructionError(
+            f"could not load env entrypoint {entrypoint!r}: {exc}. Run "
+            "rlmesh.recipes.check(recipe) to validate the entrypoint shape without "
+            "importing dependencies."
+        ) from exc
     env = factory(**dict(kwargs or {}))
     if not looks_like_env(env):
         raise TypeError(
@@ -497,6 +514,7 @@ def _mapping_to_kwargs(value: object, label: str) -> dict[str, object]:
 
 
 __all__ = [
+    "RecipeConstructionError",
     "expect_mapping",
     "import_gym_modules",
     "import_packages",

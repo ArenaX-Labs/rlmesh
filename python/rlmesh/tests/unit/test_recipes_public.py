@@ -99,7 +99,9 @@ def test_resolve_recipe_source_for_literal_recipe() -> None:
     display, recipe_json, provenance, _ = _resolve_recipe_source(recipe)
     assert display == "acme/env"
     assert recipe_json == recipe.to_json()
-    assert provenance == "remote"
+    # An in-process literal Recipe is Installed (it came from your code); Remote is
+    # reserved for an untrusted external document.
+    assert provenance == "installed"
 
 
 def test_resolve_recipe_source_passes_through_gym_id() -> None:
@@ -212,3 +214,60 @@ def test_make_safety_gym_one_liner_shape() -> None:
     )
     recipes.register(recipe)
     assert recipes.resolve("safety/point-goal") == recipe
+
+
+# ----- flat register / make sugar (Part E) -----
+
+
+def test_register_flat_gym_sugar() -> None:
+    recipe = rlmesh.register(
+        "atari/breakout", gym="ALE/Breakout-v5", packages=["ale-py"], imports=["ale_py"]
+    )
+    assert recipe.make == GymMake(env_id="ALE/Breakout-v5")
+    assert recipe.build.pip == (PipInstall(packages=["ale-py"]),)
+    assert recipe.requires.imports == ("ale_py",)
+    assert recipes.resolve("atari/breakout") == recipe
+
+
+def test_register_flat_factory_sugar() -> None:
+    from rlmesh.recipes import PyMake
+
+    recipe = rlmesh.register(
+        "safety/pg", factory="safety_env:make", packages=["safety-gymnasium==1.0.0"]
+    )
+    assert recipe.make == PyMake(entrypoint="safety_env:make")
+    assert recipe.build.pip == (PipInstall(packages=["safety-gymnasium==1.0.0"]),)
+
+
+def test_register_needs_exactly_one_of_gym_or_factory() -> None:
+    with pytest.raises(TypeError, match="exactly one of gym= or factory="):
+        rlmesh.register("x/y")
+    with pytest.raises(TypeError, match="exactly one of gym= or factory="):
+        rlmesh.register("x/y", gym="E-v0", factory="m:f")
+
+
+def test_register_object_form_rejects_sugar() -> None:
+    recipe = Recipe(name="a/b", make=GymMake("E-v0"))
+    with pytest.raises(TypeError, match="takes no gym"):
+        rlmesh.register(recipe, gym="E-v0")
+
+
+def test_register_factory_rejects_imports() -> None:
+    with pytest.raises(TypeError, match="gym-only"):
+        rlmesh.register("x/y", factory="m:f", imports=["x"])
+
+
+def test_register_gym_rejects_pip_shaped_imports() -> None:
+    with pytest.raises(TypeError, match="looks like a package"):
+        rlmesh.register("x/y", gym="E-v0", imports=["ale-py==1.0"])
+    with pytest.raises(TypeError, match="looks like a package"):
+        rlmesh.register("x/y", gym="E-v0", packages=["ale-py"], imports=["ale-py"])
+
+
+def test_make_gym_id_forwards_imports() -> None:
+    # imports= registers the env on import; CartPole needs none, but the path runs.
+    env = rlmesh.make("CartPole-v1", imports=[])
+    try:
+        assert env.reset(seed=0)[0] is not None
+    finally:
+        env.close()

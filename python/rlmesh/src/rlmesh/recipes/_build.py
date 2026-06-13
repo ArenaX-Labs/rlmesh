@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 __all__ = ["build"]
 
 
-def _apply_setup(setup: Setup) -> None:
+def apply_setup(setup: Setup) -> None:
     """Apply construct-time setup data (phase 2).
 
     ``setup.env`` mutates ``os.environ`` best-effort -- it is intentionally not
@@ -82,7 +82,7 @@ def build(
             "do not construct it"
         )
 
-    _apply_setup(recipe.setup)
+    apply_setup(recipe.setup)
 
     if isinstance(make, GymMake):
         # Registration side effects -- gym only.

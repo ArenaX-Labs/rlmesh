@@ -12,9 +12,8 @@ from rlmesh.recipes import (
     ProjectInstall,
     PyMake,
     Recipe,
-    scaffold_from_pyproject,
-    scaffold_recipe,
 )
+from rlmesh.recipes.scaffold import scaffold_from_pyproject, scaffold_recipe
 
 
 @pytest.fixture(autouse=True)

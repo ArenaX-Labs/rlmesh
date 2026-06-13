@@ -10,7 +10,7 @@ from . import spaces as spaces
 from . import types as types
 from ._native import Model, RemoteEnv, RemoteVectorEnv
 from ._rlmesh import ServeOptions, Tensor
-from .recipes import make, register
+from .recipes import EnvRecipe, Recipe, make, register
 from .server import EnvServer
 
 try:
@@ -21,8 +21,10 @@ except PackageNotFoundError:
 __doc__ = _rlmesh.__doc__
 
 __all__ = [
+    "EnvRecipe",
     "EnvServer",
     "Model",
+    "Recipe",
     "RemoteEnv",
     "RemoteVectorEnv",
     "ServeOptions",

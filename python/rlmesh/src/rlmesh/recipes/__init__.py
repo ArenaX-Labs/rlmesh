@@ -2,17 +2,26 @@
 
 A recipe declares how to *construct* an environment (build a Dockerfile, set up
 construct-time data, and name a factory) -- distinct from an adapter, which only
-describes IO. See ``rlmesh.recipes._schema`` for the three-phase schema.
+describes IO. The headline authoring surface is :class:`EnvRecipe` (subclass it);
+:class:`Recipe` and the ``Build``/``Make`` dataclasses are the inert form your
+recipe lowers to. See ``rlmesh.recipes._schema`` for the three-phase schema.
 
-The authoring tiers:
+Tiers:
 
-* Tier 0 -- a bare string id, never leaves ``rlmesh.make("CartPole-v1")``.
-* Tier 1 -- ``rlmesh.recipes.*`` typed recipes, opened when a string is not enough.
+* Top level (``rlmesh.X``): ``make``, ``register``, ``EnvRecipe``, ``Recipe``.
+* This module (``rlmesh.recipes.X``): the build vocabulary you opt into for heavy
+  envs -- ``Build``, ``PipInstall``, ``Fetch``, ``ProjectInstall``, ``Setup``,
+  ``GymMake``/``PyMake``/``HfMake`` -- plus ``register``/``resolve``/``check``.
+* ``rlmesh.recipes.scaffold``: one-shot migration tooling.
 """
 
 from __future__ import annotations
 
+from rlmesh._bootstrap.env import RecipeConstructionError
+
+from ._authoring import EnvRecipe
 from ._build import build
+from ._check import check
 from ._launch import (
     SandboxLaunchArgs,
     UnsupportedRecipeError,
@@ -28,7 +37,6 @@ from ._registry import (
     resolve_from_recipe,
     unregister,
 )
-from ._scaffold import ScaffoldResult, scaffold_from_pyproject, scaffold_recipe
 from ._schema import (
     Build,
     Fetch,
@@ -47,6 +55,7 @@ from ._schema import (
 
 __all__ = [
     "Build",
+    "EnvRecipe",
     "Fetch",
     "FileWrite",
     "GymMake",
@@ -56,14 +65,15 @@ __all__ = [
     "ProjectInstall",
     "PyMake",
     "Recipe",
+    "RecipeConstructionError",
     "RecipeNotFoundError",
     "RecipeValidationError",
     "Requires",
     "SandboxLaunchArgs",
-    "ScaffoldResult",
     "Setup",
     "UnsupportedRecipeError",
     "build",
+    "check",
     "clear_registry",
     "make",
     "recipe_to_sandbox_args",
@@ -71,7 +81,5 @@ __all__ = [
     "registered_names",
     "resolve",
     "resolve_from_recipe",
-    "scaffold_from_pyproject",
-    "scaffold_recipe",
     "unregister",
 ]
