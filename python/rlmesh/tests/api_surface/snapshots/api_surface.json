@@ -972,7 +972,7 @@
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
           }
         },
-        "signature": "Model(predict_fn: PredictFn[NumpyValue, NumpyValue], *, spec: ModelSpec | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False)",
+        "signature": "Model(predict_fn: Callable[..., Any], *, spec: ModelSpec | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False)",
         "stability": "Stable"
       },
       "NumpyValue": {

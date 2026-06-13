@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final, overload
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
@@ -238,9 +238,32 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
+    @overload
     def __init__(
         self,
         predict_fn: PredictFn[NumpyValue, NumpyValue],
+        *,
+        spec: None = None,
+        on_reset: LifecycleCallback | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+    ) -> None: ...
+
+    @overload
+    def __init__(
+        self,
+        predict_fn: Callable[[dict[str, Any]], Any],
+        *,
+        spec: ModelSpec,
+        on_reset: LifecycleCallback | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+        trust_entrypoints: bool = False,
+    ) -> None: ...
+
+    def __init__(
+        self,
+        predict_fn: Callable[..., Any],
         *,
         spec: ModelSpec | None = None,
         on_reset: LifecycleCallback | None = None,
@@ -248,16 +271,38 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
     ) -> None:
-        super().__init__(
-            predict_fn,
-            on_reset=on_reset,
-            on_episode_end=on_episode_end,
-            on_close=on_close,
-        )
         self._spec = spec
         self._raw_predict = predict_fn
         self._user_on_reset = on_reset
         self._trust_entrypoints = trust_entrypoints
+        if spec is None:
+            # Plain model: the prediction function works in the env's value
+            # format and the worker is built eagerly, as without a spec.
+            super().__init__(
+                cast("PredictFn[NumpyValue, NumpyValue]", predict_fn),
+                on_reset=on_reset,
+                on_episode_end=on_episode_end,
+                on_close=on_close,
+            )
+            return
+
+        # Adapted model: the real worker is installed in run(env), once the
+        # adapter is resolved from the env contract. The placeholder makes
+        # any other entry point fail loudly instead of running the model's
+        # prediction function on un-adapted observations.
+        def _unwired(_observation: NumpyValue) -> NumpyValue:
+            raise RuntimeError(
+                "Model(spec=...) resolves its adapter from the env contract; "
+                "run it with .run(env) passing an environment object, not a "
+                "bare address or serve()/run_local()"
+            )
+
+        super().__init__(
+            _unwired,
+            on_reset=on_reset,
+            on_episode_end=on_episode_end,
+            on_close=on_close,
+        )
 
     def run(
         self,
