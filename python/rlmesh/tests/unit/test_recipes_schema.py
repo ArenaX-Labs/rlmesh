@@ -120,6 +120,21 @@ def test_kwargs_reject_numpy_scalar() -> None:
         GymMake(env_id="E-v0", kwargs={"x": np.float64(1.0)})
 
 
+def test_kwargs_reject_non_finite_floats() -> None:
+    # NaN/Infinity survive construction and json.dumps emits the NaN/Infinity tokens,
+    # which Python's json.loads accepts but the Rust serde_json boundary rejects -- a
+    # check()-passes-then-fails-at-launch trap. Reject them at construction.
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(RecipeValidationError, match="non-finite"):
+            GymMake(env_id="E-v0", kwargs={"x": bad})
+    # A nested non-finite float is caught too.
+    with pytest.raises(RecipeValidationError, match="non-finite"):
+        GymMake(env_id="E-v0", kwargs={"nested": [float("nan")]})
+    # An ordinary finite float still round-trips.
+    recipe = Recipe(name="a", make=GymMake("E-v0", kwargs={"x": 1.5}))
+    assert Recipe.from_json(recipe.to_json()) == recipe
+
+
 def test_kwargs_reject_non_str_keys() -> None:
     with pytest.raises(RecipeValidationError, match="keys must be str"):
         GymMake(env_id="E-v0", kwargs={1: "v"})  # type: ignore[dict-item]

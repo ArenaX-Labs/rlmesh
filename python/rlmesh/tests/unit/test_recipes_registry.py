@@ -269,3 +269,36 @@ def test_from_recipe_detects_cycles() -> None:
     register(Recipe(name="a/two", build=Build(from_recipe="a/one")))
     with pytest.raises(ValueError, match="cycle"):
         resolve_from_recipe(resolve("a/one"))
+
+
+# ----- from_recipe_origin (terminal-base origin for chained recipes) -----
+
+
+def test_from_recipe_origin_none_when_no_from_recipe() -> None:
+    from rlmesh.recipes._registry import from_recipe_origin
+
+    assert from_recipe_origin(_gym_recipe()) is None
+
+
+def test_from_recipe_origin_walks_chain_to_terminal_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # task -> base_b -> base_a: the terminal base (base_a, build.from_recipe is None)
+    # owns the build, so its origin is returned -- not the immediate base's.
+    from rlmesh.recipes import _registry
+
+    register(Recipe(name="acme/base-a", build=_base_build()))
+    register(Recipe(name="acme/base-b", build=Build(from_recipe="acme/base-a")))
+    register(Recipe(name="acme/task", build=Build(from_recipe="acme/base-b")))
+    origins = {"acme/base-a": "/dir/A", "acme/base-b": "/dir/B"}
+    monkeypatch.setattr(_registry, "recipe_origin_dir", lambda name: origins.get(name))
+    assert _registry.from_recipe_origin(resolve("acme/task")) == "/dir/A"
+
+
+def test_from_recipe_origin_best_effort_on_missing_base() -> None:
+    # An unresolved base returns None (resolve_from_recipe raises the canonical error
+    # elsewhere); from_recipe_origin must not blow up.
+    from rlmesh.recipes._registry import from_recipe_origin
+
+    child = Recipe(name="acme/orphan", build=Build(from_recipe="acme/missing"))
+    assert from_recipe_origin(child) is None

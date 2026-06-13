@@ -27,6 +27,7 @@ __all__ = [
     "RecipeNotFoundError",
     "class_origin_dir",
     "clear_registry",
+    "from_recipe_origin",
     "pprint_registry",
     "recipe_origin_dir",
     "register",
@@ -211,6 +212,40 @@ def recipe_origin_dir(name: str) -> str | None:
     the launching process's current directory.
     """
     return _ORIGINS.get(name)
+
+
+def from_recipe_origin(recipe: Recipe) -> str | None:
+    """Return the origin of the *terminal* ``from_recipe`` base, or None.
+
+    ``resolve_from_recipe`` recurses through a chain of ``from_recipe`` references
+    and inlines the TERMINAL base's build (the first ancestor whose
+    ``build.from_recipe`` is None) -- and ``from_recipe`` is exclusive with other
+    build fields, so that terminal base owns any ProjectInstall, with ``src``
+    relative to *its* source tree. Walk the chain from ``recipe.build.from_recipe``
+    until the terminal base and return ``recipe_origin_dir(terminal_name)`` so the
+    sandbox stages from the right tree, not the immediate base's / cwd.
+
+    Best-effort: returns ``None`` when ``recipe.build.from_recipe`` is None, when a
+    referenced base is not registered (let ``resolve_from_recipe`` raise the
+    canonical error), or when the terminal base has no recorded origin. Cycles are
+    guarded with a seen-set (``resolve_from_recipe`` raises the canonical cycle
+    error elsewhere).
+    """
+    name = recipe.build.from_recipe
+    if name is None:
+        return None
+    seen: set[str] = set()
+    while name not in seen:
+        seen.add(name)
+        try:
+            base = resolve(name)
+        except RecipeNotFoundError:
+            return None
+        next_name = base.build.from_recipe
+        if next_name is None:
+            return recipe_origin_dir(name)
+        name = next_name
+    return None
 
 
 def resolve(name: str) -> Recipe:

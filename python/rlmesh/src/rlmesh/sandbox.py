@@ -654,7 +654,11 @@ def _resolve_recipe_source(
         resolve_from_recipe,
     )
     from rlmesh.recipes._authoring import as_authored_recipe, is_env_recipe
-    from rlmesh.recipes._registry import class_origin_dir, recipe_origin_dir
+    from rlmesh.recipes._registry import (
+        class_origin_dir,
+        from_recipe_origin,
+        recipe_origin_dir,
+    )
 
     # ``origin`` is the filesystem directory of the code that *defined* the recipe,
     # used to stage a ProjectInstall from the package's own source tree rather than
@@ -681,11 +685,13 @@ def _resolve_recipe_source(
             f"sandbox source must be a str, Recipe, or EnvRecipe, got "
             f"{type(source).__name__}"
         )
-    # Capture the from_recipe base name BEFORE inlining: from_recipe is exclusive
+    # Capture the from_recipe base origin BEFORE inlining: from_recipe is exclusive
     # with other build fields, so when it is set the inlined ProjectInstall always
-    # comes from the BASE, and its `src` is relative to the base's source tree --
-    # not the child's. We use this below to stage from the base's origin.
-    base_name = recipe.build.from_recipe
+    # comes from the TERMINAL base (the first ancestor whose build.from_recipe is
+    # None), and its `src` is relative to that base's source tree -- not the child's
+    # or an intermediate base's. from_recipe_origin walks the chain to that terminal
+    # base; we use it below to stage from the right tree.
+    from_recipe_base_origin = from_recipe_origin(recipe)
     # Inline any `from_recipe` base build before the wire so a task family shares
     # one image.
     recipe = resolve_from_recipe(recipe)
@@ -722,15 +728,14 @@ def _resolve_recipe_source(
     if recipe.build.project is None:
         context_root = None
     else:
-        # When the build came from a `from_recipe` base, the inlined project.src is
-        # relative to the BASE's source tree, not the child's -- so prefer the base's
-        # recorded origin. (from_recipe is exclusive with other build fields, so the
-        # ProjectInstall is always the base's.) Fall back to the child's origin only
-        # when the base has no recorded origin.
-        if base_name is not None:
-            base_origin = recipe_origin_dir(base_name)
-            if base_origin is not None:
-                origin = base_origin
+        # When the build came from a `from_recipe` chain, the inlined project.src is
+        # relative to the TERMINAL base's source tree, not the child's or an
+        # intermediate base's -- so prefer that terminal base's recorded origin.
+        # (from_recipe is exclusive with other build fields, so the ProjectInstall is
+        # always the terminal base's.) Fall back to the child's origin only when the
+        # terminal base has no recorded origin.
+        if from_recipe_base_origin is not None:
+            origin = from_recipe_base_origin
         # Stage a ProjectInstall from the recipe's defining package when we know it,
         # falling back to the caller's cwd otherwise (e.g. a plain in-process Recipe
         # instance assembled at the call site has no determinable origin -- the cwd

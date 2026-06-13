@@ -23,6 +23,7 @@ keys, a ``kind``-tagged ``make`` union).
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -165,6 +166,16 @@ def _clean_json(value: object, path: str) -> object:
     ``from_json(to_json(recipe)) == recipe`` holds regardless of the container
     types the author passed in.
     """
+    if type(value) is float and not math.isfinite(value):
+        # float('nan')/float('inf') survive construction and json.dumps emits them as
+        # the NaN/Infinity tokens, which Python's json.loads accepts but the Rust
+        # serde_json boundary REJECTS -- a check()-passes-then-fails-at-launch trap.
+        # Reject at construction (`is float` so bool/int are unaffected; numpy scalars
+        # already fall through to the non-JSON rejection below).
+        raise RecipeValidationError(
+            f"{path}: non-finite floats (NaN/Infinity) are not valid JSON; "
+            f"got {value!r}"
+        )
     if value is None or type(value) in _JSON_SCALARS:
         return value
     if isinstance(value, Mapping):
@@ -676,7 +687,10 @@ class Recipe:
         """Serialize to the canonical JSON wire format consumed by the Rust core."""
         import json
 
-        return json.dumps(self.to_dict())
+        # allow_nan=False is defense-in-depth: _clean_json already rejects non-finite
+        # floats at construction, so the wire can never carry the NaN/Infinity tokens
+        # that the Rust serde_json boundary rejects, even if some path bypasses it.
+        return json.dumps(self.to_dict(), allow_nan=False)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> Recipe:

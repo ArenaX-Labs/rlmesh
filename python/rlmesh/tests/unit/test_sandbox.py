@@ -366,6 +366,50 @@ def test_resolve_recipe_source_from_recipe_uses_base_origin(
     assert context_root == "/dir/A"
 
 
+def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A chained task -> base_b -> base_a inlines the TERMINAL base's build (base_a,
+    # the first whose build.from_recipe is None). base_a owns the ProjectInstall, so
+    # the staged context_root must be base_a's origin (dir A) -- not base_b's (dir B)
+    # or the task's (dir C / cwd). The immediate base (base_b) carries no build of
+    # its own here.
+    from rlmesh import recipes
+    from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    base_a = Recipe(
+        name="acme/base-a",
+        make=PyMake(entrypoint="acme_env:make"),
+        build=Build(project=ProjectInstall(src=".")),
+    )
+    base_b = Recipe(name="acme/base-b", build=Build(from_recipe="acme/base-a"))
+    task = Recipe(
+        name="acme/task",
+        make=GymMake(env_id="CartPole-v1"),
+        build=Build(from_recipe="acme/base-b"),
+    )
+    recipes.register(base_a)
+    recipes.register(base_b)
+    recipes.register(task)
+    # Distinct recorded origins so we can prove the terminal base's origin (dir A)
+    # wins over the intermediate base (dir B) and the task (dir C / cwd).
+    origins = {"acme/base-a": "/dir/A", "acme/base-b": "/dir/B", "acme/task": "/dir/C"}
+    monkeypatch.setattr(
+        "rlmesh.recipes._registry.recipe_origin_dir",
+        lambda name: origins.get(name),
+    )
+    try:
+        _, _, provenance, context_root = _resolve_recipe_source("acme/task", {})
+    finally:
+        recipes.unregister("acme/base-a")
+        recipes.unregister("acme/base-b")
+        recipes.unregister("acme/task")
+
+    assert provenance == "installed"
+    assert context_root == "/dir/A"
+
+
 def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
     # An authored EnvRecipe with a ProjectInstall stages from its defining module's
     # directory, not the launching process's cwd.

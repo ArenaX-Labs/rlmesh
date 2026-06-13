@@ -9,12 +9,12 @@ ENV PYTHONPATH=/opt/LIBERO
 
 WORKDIR /opt/rlmesh
 
-RUN apt-get update && apt-get install -y --no-install-recommends 'cmake' 'g++' 'libegl1-mesa-dev' 'libgl1' 'libglib2.0-0' && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends 'cmake' 'g++' 'libegl1-mesa-dev' 'libgl1' 'libglib2.0-0' 'git' && rm -rf /var/lib/apt/lists/*
 
 COPY project /opt/robot_env
 RUN python -m pip install --no-cache-dir -e '/opt/robot_env'
 
-RUN git init '/opt/LIBERO' && git -C '/opt/LIBERO' remote add origin 'https://github.com/Lifelong-Robot-Learning/LIBERO.git' && git -C '/opt/LIBERO' fetch --depth=1 origin 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' && git -C '/opt/LIBERO' checkout FETCH_HEAD && python -m pip install --no-cache-dir -r '/opt/LIBERO'/requirements.txt && python -m pip install --no-cache-dir -e '/opt/LIBERO' && rm -rf '/opt/LIBERO'/.git
+RUN git init '/opt/LIBERO' && git -C '/opt/LIBERO' remote add origin 'https://github.com/Lifelong-Robot-Learning/LIBERO.git' && git -C '/opt/LIBERO' fetch --depth=1 origin 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' && git -C '/opt/LIBERO' checkout FETCH_HEAD && python -m pip install --no-cache-dir -r '/opt/LIBERO/requirements.txt' && python -m pip install --no-cache-dir -e '/opt/LIBERO' && rm -rf '/opt/LIBERO'/.git
 
 RUN python -m pip install --no-cache-dir --upgrade pip && python -m pip install --no-cache-dir 'rlmesh' && python -m pip install --no-cache-dir gymnasium && python -m pip install --no-cache-dir --index-url 'https://download.pytorch.org/whl/cu124' 'torch' 'torchvision' && python -m pip install --no-cache-dir 'robosuite==1.4.1'
 
