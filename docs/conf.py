@@ -84,7 +84,7 @@ def _install_native_docs_stub() -> None:
     # runtime via register_constants(); mirrored here so rlmesh.adapters imports
     # during documentation builds (which use this stub, not the extension).
     adapter_constants: dict[str, str] = {
-        "ENV_METADATA_KEY": "rlmesh.adapters.v1.env_annotations",
+        "ENV_METADATA_KEY": "rlmesh.adapters.v1.env_tags",
         "MODEL_METADATA_KEY": "rlmesh.adapters.v1.model_spec",
         "IMAGE_PRIMARY": "image/primary",
         "IMAGE_SECONDARY": "image/secondary",

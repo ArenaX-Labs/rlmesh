@@ -2,7 +2,7 @@
 //!
 //! `rlmesh-adapters` resolves IO plans from the *structure* of an env's
 //! observation/action spaces (keys, widths, dtypes, bounds) plus the
-//! semantic annotations layered on top. It does not depend on the proto wire
+//! semantic tags layered on top. It does not depend on the proto wire
 //! form of spaces; [`join`](super::join) and the conformance vectors consume
 //! this view, derived from [`rlmesh_spaces::SpaceSpec`] via [`From`].
 //!

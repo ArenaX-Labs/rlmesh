@@ -1,7 +1,7 @@
 # Adapters quickstart
 
-The smallest end-to-end `rlmesh.adapters` example: an environment annotates its spaces, a model
-declares its format, and they are paired automatically — no per-environment glue in the model.
+The smallest end-to-end `rlmesh.adapters` example: an environment tags its spaces, a model declares
+its format, and they are paired automatically — no per-environment glue in the model.
 
 ```sh
 cd examples/python/adapters_quickstart
@@ -11,8 +11,8 @@ uv run serve_and_run.py
 It runs one process:
 
 1. `CubePickEnv` exposes a wrist camera, end-effector pose, and gripper, plus a 7-dim delta action.
-2. `EnvServer(env, annotations=ENV_ANNOTATIONS)` serves it and publishes the annotations in the
-   contract (validated against the env's spaces first).
+2. `EnvServer(env, tags=ENV_TAGS)` serves it and publishes the tags in the contract (validated
+   against the env's spaces first).
 3. `MODEL_SPEC` declares a checkpoint that wants a 224x224 image, a flat `rot6d` proprio list, and a
    10-dim `rot6d` action — conventions that do not match the env.
 4. `Model(predict, spec=MODEL_SPEC).run(client)` resolves the adapter from the env's contract and

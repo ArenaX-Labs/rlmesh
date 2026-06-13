@@ -26,8 +26,8 @@ pub use plans::{
 pub use resolver::resolve;
 pub use space_view::{SpaceView, SpaceViewKind};
 pub use spec::{
-    ActionComponent, ActionLayout, CustomInput, EnvAnnotations, EnvFeature, EnvFeatures, EnvImage,
-    EnvState, EnvText, ImageAnnotation, ImageInput, ImageLayout, ModelInput, ModelSpec,
-    ObsAnnotation, RotationEncoding, StateAnnotation, StateComponent, StateContainer, StateInput,
-    TextAnnotation, TextContainer, TextInput,
+    ActionComponent, ActionLayout, CustomInput, EnvFeature, EnvFeatures, EnvImage, EnvState,
+    EnvTags, EnvText, ImageInput, ImageLayout, ImageTag, ModelInput, ModelSpec, ObsTag,
+    RotationEncoding, StateComponent, StateContainer, StateInput, StateTag, TextContainer,
+    TextInput, TextTag,
 };

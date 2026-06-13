@@ -2,10 +2,10 @@
 
 This file is written from the environment's point of view and knows nothing
 about any model. In a real deployment the env server would publish these
-annotations in its contract metadata (``rlmesh.EnvServer(env, annotations=...)``
-or ``rlmesh.adapters.annotate(env, ...)``) so clients never need a local copy.
+tags in its contract metadata (``rlmesh.EnvServer(env, tags=...)``
+or ``rlmesh.adapters.tag(env, ...)``) so clients never need a local copy.
 
-The env *annotates* its spaces: it names the semantic role of each
+The env *tags* its spaces: it names the semantic role of each
 observation entry and the action components, plus the few facts the spaces
 cannot carry (image layout, rotation encoding, ranges). Widths, dtypes and
 keys come from the gymnasium spaces.
@@ -19,16 +19,14 @@ import gymnasium as gym
 import numpy as np
 import rlmesh.adapters as adapt
 
-ANNOTATIONS = adapt.EnvAnnotations(
+TAGS = adapt.EnvTags(
     observation={
-        "agentview_image": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-        "robot0_eye_in_hand_image": adapt.ImageAnnotation(role=adapt.IMAGE_WRIST),
-        "robot0_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-        "robot0_eef_quat": adapt.StateAnnotation(
-            role=adapt.EEF_ROT, encoding="quat_xyzw"
-        ),
-        "robot0_gripper_qpos": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-        "instruction": adapt.TextAnnotation(),
+        "agentview_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+        "robot0_eye_in_hand_image": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+        "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+        "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+        "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
+        "instruction": adapt.TextTag(),
     },
     action=adapt.ActionLayout(
         components=(

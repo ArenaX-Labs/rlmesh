@@ -4,7 +4,7 @@
     "kind": "box",
     "shape": [7]
   },
-  "env_annotations": {
+  "env_tags": {
     "action": {
       "clip": [-1.0, 1.0],
       "components": [

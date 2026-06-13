@@ -1,16 +1,16 @@
 """Declarative spec dataclasses and their vocabulary types, by side.
 
-The env side annotates (:class:`EnvAnnotations` + the ``*Annotation`` types);
+The env side tags (:class:`EnvTags` + the ``*Tag`` types);
 the model side fully specifies (:class:`ModelSpec` + the ``*Input`` types).
 """
 
 from .action import ActionComponent, ActionLayout
-from .env_annotations import (
-    EnvAnnotations,
-    ImageAnnotation,
-    ObsAnnotation,
-    StateAnnotation,
-    TextAnnotation,
+from .env_tags import (
+    EnvTags,
+    ImageTag,
+    ObsTag,
+    StateTag,
+    TextTag,
 )
 from .layouts import ImageLayout
 from .model import ModelSpec
@@ -30,18 +30,18 @@ __all__ = [
     "ActionComponent",
     "ActionLayout",
     "CustomInput",
-    "EnvAnnotations",
-    "ImageAnnotation",
+    "EnvTags",
     "ImageInput",
     "ImageLayout",
+    "ImageTag",
     "ModelInput",
     "ModelSpec",
-    "ObsAnnotation",
+    "ObsTag",
     "ObsTransform",
     "RotationEncoding",
-    "StateAnnotation",
     "StateComponent",
     "StateInput",
-    "TextAnnotation",
+    "StateTag",
     "TextInput",
+    "TextTag",
 ]

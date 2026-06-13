@@ -1,8 +1,8 @@
-"""Resolve env annotations and a model spec into a concrete adapter.
+"""Resolve env tags and a model spec into a concrete adapter.
 
 Resolution and plan application run in the native ``rlmesh-adapters`` core
 (the same implementation behind every language binding); this module
-serializes the annotations and spec across the boundary, hands the
+serializes the tags and spec across the boundary, hands the
 gymnasium observation/action spaces to the native projector, and keeps the
 host-language concerns where they belong: entrypoint trust gating, custom
 callables, and the error type.
@@ -18,7 +18,7 @@ from .._rlmesh import adapters_resolve
 from .adapter import IOAdapter
 from .constants import ENV_METADATA_KEY
 from .errors import AdapterResolutionError
-from .specs import CustomInput, EnvAnnotations, ModelSpec, ObsTransform
+from .specs import CustomInput, EnvTags, ModelSpec, ObsTransform
 from .specs.action_serialization import action_layout_to_dict
 from .specs.model_serialization import model_input_to_dict
 
@@ -67,7 +67,7 @@ def _model_wire(
 
 
 def resolve(
-    env_annotations: EnvAnnotations,
+    env_tags: EnvTags,
     observation_space: object,
     action_space: object,
     model_spec: ModelSpec,
@@ -77,7 +77,7 @@ def resolve(
     """Derive an :class:`IOAdapter` for an env/model pair.
 
     Args:
-        env_annotations: The environment's observation/action annotations.
+        env_tags: The environment's observation/action tags.
         observation_space: The environment's gymnasium observation space
             (or any space object RLMesh can parse, e.g. an ``rlmesh.spaces``
             space or a native ``SpaceSpec``).
@@ -92,12 +92,12 @@ def resolve(
 
     Raises:
         AdapterResolutionError: If a model input or action component has no
-            usable counterpart in the env annotations and spaces.
+            usable counterpart in the env tags and spaces.
     """
     wire, customs = _model_wire(model_spec, trust_entrypoints=trust_entrypoints)
     try:
         plan = adapters_resolve(
-            json.dumps(env_annotations.to_dict()),
+            json.dumps(env_tags.to_dict()),
             observation_space,
             action_space,
             json.dumps(wire),
@@ -115,9 +115,9 @@ def resolve_from_contract(
 ) -> IOAdapter:
     """Derive an :class:`IOAdapter` from an env contract and a model spec.
 
-    Reads the env's annotations from its contract metadata (published under
+    Reads the env's tags from its contract metadata (published under
     :data:`ENV_METADATA_KEY` by a server set up with
-    :func:`rlmesh.adapters.annotate`) and its observation/action spaces from
+    :func:`rlmesh.adapters.tag`) and its observation/action spaces from
     the contract, then resolves as in :func:`resolve`.
 
     Args:
@@ -126,18 +126,18 @@ def resolve_from_contract(
         trust_entrypoints: See :func:`resolve`.
 
     Raises:
-        AdapterResolutionError: If the contract carries no annotations, or
+        AdapterResolutionError: If the contract carries no tags, or
             resolution fails.
     """
     metadata = cast("dict[str, Any] | None", contract.metadata) or {}
-    annotations = EnvAnnotations.from_metadata(metadata)
-    if annotations is None:
+    tags = EnvTags.from_metadata(metadata)
+    if tags is None:
         raise AdapterResolutionError(
-            "env contract carries no adapter annotations under "
-            f"{ENV_METADATA_KEY!r}; serve the env with rlmesh.adapters.annotate(...)"
+            "env contract carries no adapter tags under "
+            f"{ENV_METADATA_KEY!r}; serve the env with rlmesh.adapters.tag(...)"
         )
     return resolve(
-        annotations,
+        tags,
         contract.observation_space,
         contract.action_space,
         model_spec,

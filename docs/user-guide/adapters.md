@@ -11,23 +11,23 @@ its format once; the pairing is derived at runtime. It is experimental in this b
 — nothing here is imported by the core Gymnasium loop, and it needs the NumPy backend
 (`pip install --pre "rlmesh[numpy]"`).
 
-## Annotate the environment
+## Tag the environment
 
-An environment **annotates** its observation and action spaces. Annotations are sparse: they carry
-the semantic role of each entry and the few facts the gymnasium spaces cannot — image axis layout,
-rotation encoding, an explicit value range. Everything else (keys, widths, dtypes, bounds) is read
-from the spaces.
+An environment **tags** its observation and action spaces. Tags are sparse: they carry the semantic
+role of each entry and the few facts the gymnasium spaces cannot — image axis layout, rotation
+encoding, an explicit value range. Everything else (keys, widths, dtypes, bounds) is read from the
+spaces.
 
 ```python
 import rlmesh.adapters as adapt
 
-annotations = adapt.EnvAnnotations(
+tags = adapt.EnvTags(
     observation={
-        "wrist_rgb": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-        "ee_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-        "ee_quat": adapt.StateAnnotation(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-        "grip": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextAnnotation(),
+        "wrist_rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+        "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
+        "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+        "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
+        "goal": adapt.TextTag(),
     },
     action=adapt.ActionLayout(
         components=(
@@ -41,9 +41,9 @@ annotations = adapt.EnvAnnotations(
 ```
 
 The observation map is keyed by observation path; dotted keys (`"agent.eef_pos"`) traverse nested
-`Dict` spaces. Roles are an open vocabulary of strings matched verbatim between annotations and
-specs; RLMesh ships well-known conventions (`IMAGE_PRIMARY`, `EEF_POS`, `EEF_ROT`, ...), but any
-agreed string works.
+`Dict` spaces. Roles are an open vocabulary of strings matched verbatim between tags and specs;
+RLMesh ships well-known conventions (`IMAGE_PRIMARY`, `EEF_POS`, `EEF_ROT`, ...), but any agreed
+string works.
 
 ## Specify the model
 
@@ -76,12 +76,12 @@ spec = adapt.ModelSpec(
 
 ## Resolve and apply
 
-{func}`~rlmesh.adapters.resolve` matches the model spec against the annotations and the spaces, and
-returns an {class}`~rlmesh.adapters.IOAdapter`. The adapter preprocesses an observation into the
-model's input format and postprocesses the model's action back into the environment's format.
+{func}`~rlmesh.adapters.resolve` matches the model spec against the tags and the spaces, and returns
+an {class}`~rlmesh.adapters.IOAdapter`. The adapter preprocesses an observation into the model's
+input format and postprocesses the model's action back into the environment's format.
 
 ```python
-adapter = adapt.resolve(annotations, env.observation_space, env.action_space, spec)
+adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
 print(adapter.describe())          # the exact transformations chosen
 payload = adapter.transform_obs(obs)      # env observation -> model input
 action = adapter.transform_action(output) # model output    -> env action
@@ -93,22 +93,22 @@ applied to the rotation, the instruction key is remapped (`goal -> task`), and o
 action. Resolution fails with an {exc}`~rlmesh.adapters.AdapterResolutionError` if a model input or
 action component has no usable counterpart.
 
-Specs are data: nothing in an annotation or spec is ever evaluated as code.
+Specs are data: nothing in an tag or spec is ever evaluated as code.
 
 ## Run a model with no glue
 
-The ergonomic path publishes the annotations on the served environment and lets the model resolve
-the adapter from the contract. Serve the environment with its annotations:
+The ergonomic path publishes the tags on the served environment and lets the model resolve the
+adapter from the contract. Serve the environment with its tags:
 
 ```python
-server = rlmesh.EnvServer(env, "127.0.0.1:5555", annotations=annotations)
+server = rlmesh.EnvServer(env, "127.0.0.1:5555", tags=tags)
 server.serve()
 ```
 
-`EnvServer(annotations=...)` validates the annotations against the environment's spaces up front and
-merges them into the contract metadata (the {func}`~rlmesh.adapters.annotate` verb does the same for
-an environment object you serve yourself). A model then resolves from the handshake alone — pass
-`spec=` to {class}`rlmesh.numpy.Model` and run it against the environment:
+`EnvServer(tags=...)` validates the tags against the environment's spaces up front and merges them
+into the contract metadata (the {func}`~rlmesh.adapters.tag` verb does the same for an environment
+object you serve yourself). A model then resolves from the handshake alone — pass `spec=` to
+{class}`rlmesh.numpy.Model` and run it against the environment:
 
 ```python
 from rlmesh.numpy import Model, RemoteEnv

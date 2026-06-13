@@ -1,9 +1,9 @@
 """End-to-end live path for rlmesh.adapters.
 
-Serves an annotated env, then runs an adapted ``Model(spec=...)`` against it:
-the adapter is resolved from the env's published annotations in the contract,
+Serves an tagged env, then runs an adapted ``Model(spec=...)`` against it:
+the adapter is resolved from the env's published tags in the contract,
 the prediction function works in the model's own format, and the env receives
-actions in its format. This exercises annotate -> serve -> resolve_from_contract
+actions in its format. This exercises tag -> serve -> resolve_from_contract
 -> Model(spec=).run() and the on_reset chaining, over a real transport.
 """
 
@@ -22,14 +22,14 @@ if TYPE_CHECKING:
     NumpyArray = np.ndarray[Any, Any]
 
 
-def _annotations() -> adapt.EnvAnnotations:
-    return adapt.EnvAnnotations(
+def _tags() -> adapt.EnvTags:
+    return adapt.EnvTags(
         observation={
-            "cam": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-            "eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-            "eef_quat": adapt.StateAnnotation(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-            "gripper": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-            "instruction": adapt.TextAnnotation(),
+            "cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+            "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+            "gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
+            "instruction": adapt.TextTag(),
         },
         action=adapt.ActionLayout(
             components=(
@@ -126,10 +126,10 @@ class TinyArmEnv:
         return None
 
 
-def test_adapted_model_runs_against_annotated_server() -> None:
+def test_adapted_model_runs_against_tagged_server() -> None:
     pytest.importorskip("numpy")
 
-    annotations = _annotations()
+    tags = _tags()
     spec = _model_spec()
     env_obj = TinyArmEnv()
 
@@ -144,16 +144,14 @@ def test_adapted_model_runs_against_annotated_server() -> None:
     def on_reset() -> None:
         seen["resets"] = cast(int, seen["resets"]) + 1
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", annotations=annotations)
+    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
     server.start()
     try:
         client = RemoteEnv(server.address)
-        # The annotations published via EnvServer(annotations=) survive the
+        # The tags published via EnvServer(tags=) survive the
         # round-trip through the contract metadata.
-        recovered = adapt.EnvAnnotations.from_metadata(
-            client.env_contract.metadata or {}
-        )
-        assert recovered == annotations
+        recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
+        assert recovered == tags
 
         Model(predict, spec=spec, on_reset=on_reset).run(client, max_episodes=1)
         client.close()
@@ -169,11 +167,11 @@ def test_adapted_model_runs_against_annotated_server() -> None:
 
 
 def test_resolve_from_contract_describes_the_pairing() -> None:
-    annotations = _annotations()
+    tags = _tags()
     spec = _model_spec()
     env_obj = TinyArmEnv()
 
-    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", annotations=annotations)
+    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
     server.start()
     try:
         client = RemoteEnv(server.address)

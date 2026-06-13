@@ -1,27 +1,27 @@
 """Generalized env-to-model IO adapters (experimental).
 
 Instead of writing one bespoke adapter per environment/model pair,
-environments *annotate* their observation and action spaces once with
-:class:`EnvAnnotations`, models describe their expected inputs and outputs
+environments *tag* their observation and action spaces once with
+:class:`EnvTags`, models describe their expected inputs and outputs
 once with :class:`ModelSpec`, and :func:`resolve` derives the concrete
 preprocessing/postprocessing for any pair by matching semantic roles::
 
     import rlmesh.adapters as adapt
 
-    adapter = adapt.resolve(annotations, obs_space, action_space, model_spec)
+    adapter = adapt.resolve(tags, obs_space, action_space, model_spec)
     payload = adapter.transform_obs(raw_obs)  # env obs -> model input
     action = adapter.transform_action(output)  # model output -> env action
 
     model = rlmesh.numpy.Model(adapter.wrap_predict(predict_fn))
 
-The asymmetry is deliberate: an environment only *annotates* (roles plus the
+The asymmetry is deliberate: an environment only *tags* (roles plus the
 few facts spaces cannot carry -- image layout, rotation encoding, an
 explicit range); keys, widths, dtypes and bounds are read from the
 gymnasium spaces by the native ``join`` step. A model *fully specifies* its
 payload.
 
-Annotations travel through contract metadata so an adapter can be resolved
-from a handshake alone: :func:`annotate` publishes them under
+Tags travel through contract metadata so an adapter can be resolved
+from a handshake alone: :func:`tag` publishes them under
 :data:`ENV_METADATA_KEY`, and :func:`resolve_from_contract` recovers them
 from a remote env's contract. A remotely published model spec must be fully
 declarative; custom inputs holding in-process callables are local-only.
@@ -45,7 +45,6 @@ bytes (PNG/JPEG) in observations are decoded natively -- no Pillow.
 """
 
 from .adapter import AdapterBase, IOAdapter
-from .annotate import annotate
 from .constants import (
     ACTION_DELTA_POS,
     ACTION_DELTA_POS_2,
@@ -75,21 +74,22 @@ from .specs import (
     ActionComponent,
     ActionLayout,
     CustomInput,
-    EnvAnnotations,
-    ImageAnnotation,
+    EnvTags,
     ImageInput,
     ImageLayout,
+    ImageTag,
     ModelInput,
     ModelSpec,
-    ObsAnnotation,
+    ObsTag,
     ObsTransform,
     RotationEncoding,
-    StateAnnotation,
     StateComponent,
     StateInput,
-    TextAnnotation,
+    StateTag,
     TextInput,
+    TextTag,
 )
+from .tag import tag
 
 __all__ = [
     "ACTION_DELTA_POS",
@@ -118,22 +118,22 @@ __all__ = [
     "AdapterBase",
     "AdapterResolutionError",
     "CustomInput",
-    "EnvAnnotations",
+    "EnvTags",
     "IOAdapter",
-    "ImageAnnotation",
     "ImageInput",
     "ImageLayout",
+    "ImageTag",
     "ModelInput",
     "ModelSpec",
-    "ObsAnnotation",
+    "ObsTag",
     "ObsTransform",
     "RotationEncoding",
-    "StateAnnotation",
     "StateComponent",
     "StateInput",
-    "TextAnnotation",
+    "StateTag",
     "TextInput",
-    "annotate",
+    "TextTag",
     "resolve",
     "resolve_from_contract",
+    "tag",
 ]

@@ -45,7 +45,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, annotations: EnvAnnotations | None = None)",
+        "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "stability": "Stable"
       },
       "Model": {
@@ -1712,7 +1712,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, annotations: EnvAnnotations | None = None)",
+        "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "stability": "Stable"
       }
     }

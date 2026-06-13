@@ -4,9 +4,9 @@ The reference helpers in this module are verbatim ports of the bespoke
 per-pair adapters (SmolVLA/OpenVLA/X-VLA/GR00T x LIBERO); the resolved
 generic adapters must reproduce their outputs.
 
-Environments are described the rework way: sparse :class:`EnvAnnotations`
+Environments are described the rework way: sparse :class:`EnvTags`
 over the observation/action *spaces*. Widths, dtypes and keys come from the
-gymnasium spaces; the annotations carry only roles and the few facts spaces
+gymnasium spaces; the tags carry only roles and the few facts spaces
 cannot express (image layout, rotation encoding, explicit ranges).
 """
 
@@ -81,22 +81,20 @@ def ref_r6d_to_rotvec(r6d):
 
 
 # ---------------------------------------------------------------------------
-# Space + annotation helpers.
+# Space + tag helpers.
 # ---------------------------------------------------------------------------
 
 
 class Env(NamedTuple):
-    """An annotated environment: annotations plus the gymnasium spaces."""
+    """An tagged environment: tags plus the gymnasium spaces."""
 
-    annotations: adapt.EnvAnnotations
+    tags: adapt.EnvTags
     obs_space: gym.spaces.Space[Any]
     action_space: gym.spaces.Space[Any]
 
 
 def resolve(env: Env, model: adapt.ModelSpec, **kwargs: Any) -> adapt.IOAdapter:
-    return adapt.resolve(
-        env.annotations, env.obs_space, env.action_space, model, **kwargs
-    )
+    return adapt.resolve(env.tags, env.obs_space, env.action_space, model, **kwargs)
 
 
 def box(
@@ -131,16 +129,14 @@ LIBERO_ACTION = adapt.ActionLayout(
 )
 
 LIBERO_ENV = Env(
-    annotations=adapt.EnvAnnotations(
+    tags=adapt.EnvTags(
         observation={
-            "agentview_image": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-            "robot0_eye_in_hand_image": adapt.ImageAnnotation(role=adapt.IMAGE_WRIST),
-            "robot0_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-            "robot0_eef_quat": adapt.StateAnnotation(
-                role=adapt.EEF_ROT, encoding="quat_xyzw"
-            ),
-            "robot0_gripper_qpos": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-            "instruction": adapt.TextAnnotation(),
+            "agentview_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "robot0_eye_in_hand_image": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+            "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+            "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
+            "instruction": adapt.TextTag(),
         },
         action=LIBERO_ACTION,
     ),
@@ -352,21 +348,19 @@ def test_xvla_action_matches_bespoke_adapter():
 # ---------------------------------------------------------------------------
 
 BIMANUAL_ENV = Env(
-    annotations=adapt.EnvAnnotations(
+    tags=adapt.EnvTags(
         observation={
-            "agentview_image": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-            "robot0_eye_in_hand_image": adapt.ImageAnnotation(role=adapt.IMAGE_WRIST),
-            "robot0_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-            "robot0_eef_quat": adapt.StateAnnotation(
-                role=adapt.EEF_ROT, encoding="quat_xyzw"
-            ),
-            "robot0_gripper_qpos": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-            "robot1_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS_2),
-            "robot1_eef_quat": adapt.StateAnnotation(
+            "agentview_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "robot0_eye_in_hand_image": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+            "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+            "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
+            "robot1_eef_pos": adapt.StateTag(role=adapt.EEF_POS_2),
+            "robot1_eef_quat": adapt.StateTag(
                 role=adapt.EEF_ROT_2, encoding="quat_xyzw"
             ),
-            "robot1_gripper_qpos": adapt.StateAnnotation(role=adapt.GRIPPER_POS_2),
-            "instruction": adapt.TextAnnotation(),
+            "robot1_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS_2),
+            "instruction": adapt.TextTag(),
         },
         action=adapt.ActionLayout(
             components=(
@@ -570,7 +564,7 @@ GR00T = adapt.ModelSpec(
             reshape=(1, 1, 1),
         ),
         adapt.TextInput(
-            "annotation.human.action.task_description",
+            "tag.human.action.task_description",
             container="list",
             default="",
         ),
@@ -603,7 +597,7 @@ def test_gr00t_obs_matches_bespoke_adapter():
     assert payload["state.x"][0, 0, 0] == pytest.approx(pos[0])
     assert payload["state.roll"][0, 0, 0] == pytest.approx(axisangle[0])
     assert payload["state.gripper"][0, 0, 0] == pytest.approx(0.03)
-    assert payload["annotation.human.action.task_description"] == ["pick up the bowl"]
+    assert payload["tag.human.action.task_description"] == ["pick up the bowl"]
 
 
 def test_gr00t_default_instruction_when_missing():
@@ -611,7 +605,7 @@ def test_gr00t_default_instruction_when_missing():
     del obs["instruction"]
     adapter = resolve(LIBERO_ENV, GR00T)
     payload = adapter.transform_obs(obs)
-    assert payload["annotation.human.action.task_description"] == [""]
+    assert payload["tag.human.action.task_description"] == [""]
 
 
 def test_gr00t_action_gripper_sign_matches_bespoke_adapter():
@@ -633,10 +627,10 @@ def test_gr00t_action_gripper_sign_matches_bespoke_adapter():
 def image_env(height: int, width: int, *, role: str = adapt.IMAGE_PRIMARY) -> Env:
     """A minimal single-image env (plus instruction) over a given image size."""
     return Env(
-        annotations=adapt.EnvAnnotations(
+        tags=adapt.EnvTags(
             observation={
-                "rgb": adapt.ImageAnnotation(role=role),
-                "instruction": adapt.TextAnnotation(),
+                "rgb": adapt.ImageTag(role=role),
+                "instruction": adapt.TextTag(),
             },
             action=LIBERO_ACTION,
         ),
@@ -778,8 +772,8 @@ def test_single_env_image_fallback_match():
 def single_state_env(key: str, obs_space: gym.spaces.Space[Any]) -> Env:
     """An env with one EEF_POS state under ``key`` and the given obs space."""
     return Env(
-        annotations=adapt.EnvAnnotations(
-            observation={key: adapt.StateAnnotation(role=adapt.EEF_POS)},
+        tags=adapt.EnvTags(
+            observation={key: adapt.StateTag(role=adapt.EEF_POS)},
             action=LIBERO_ACTION,
         ),
         obs_space=obs_space,
@@ -865,9 +859,9 @@ def test_unreferenced_unencodable_obs_key_is_ignored():
 # ---------------------------------------------------------------------------
 
 
-def test_env_annotations_json_round_trip():
-    annotations = LIBERO_ENV.annotations
-    assert adapt.EnvAnnotations.from_json(annotations.to_json()) == annotations
+def test_env_tags_json_round_trip():
+    tags = LIBERO_ENV.tags
+    assert adapt.EnvTags.from_json(tags.to_json()) == tags
 
 
 def test_model_spec_json_round_trip():
@@ -875,11 +869,11 @@ def test_model_spec_json_round_trip():
         assert adapt.ModelSpec.from_json(spec.to_json()) == spec
 
 
-def test_env_annotations_metadata_round_trip():
-    annotations = LIBERO_ENV.annotations
-    metadata = {"render_fps": 20, **annotations.to_metadata()}
-    assert adapt.EnvAnnotations.from_metadata(metadata) == annotations
-    assert adapt.EnvAnnotations.from_metadata({"render_fps": 20}) is None
+def test_env_tags_metadata_round_trip():
+    tags = LIBERO_ENV.tags
+    metadata = {"render_fps": 20, **tags.to_metadata()}
+    assert adapt.EnvTags.from_metadata(metadata) == tags
+    assert adapt.EnvTags.from_metadata({"render_fps": 20}) is None
 
 
 def test_model_spec_metadata_round_trip():
@@ -889,13 +883,13 @@ def test_model_spec_metadata_round_trip():
 
 
 def test_metadata_keys_are_side_specific():
-    annotations = LIBERO_ENV.annotations
+    tags = LIBERO_ENV.tags
     assert adapt.ENV_METADATA_KEY != adapt.MODEL_METADATA_KEY
-    merged = {**annotations.to_metadata(), **SMOLVLA.to_metadata()}
-    assert adapt.EnvAnnotations.from_metadata(merged) == annotations
+    merged = {**tags.to_metadata(), **SMOLVLA.to_metadata()}
+    assert adapt.EnvTags.from_metadata(merged) == tags
     assert adapt.ModelSpec.from_metadata(merged) == SMOLVLA
-    assert adapt.EnvAnnotations.from_metadata(SMOLVLA.to_metadata()) is None
-    assert adapt.ModelSpec.from_metadata(annotations.to_metadata()) is None
+    assert adapt.EnvTags.from_metadata(SMOLVLA.to_metadata()) is None
+    assert adapt.ModelSpec.from_metadata(tags.to_metadata()) is None
 
 
 def test_custom_callable_spec_is_not_publishable():
@@ -943,17 +937,17 @@ def test_missing_state_role_is_an_error():
 
 
 def test_env_rotation_width_law_is_enforced():
-    """An env annotating quat_xyzw on a non-4-wide state is rejected at join,
+    """An env tagging quat_xyzw on a non-4-wide state is rejected at join,
     regardless of what the model wants -- the rotation-width law is
     unconditional."""
     env = Env(
-        annotations=adapt.EnvAnnotations(
+        tags=adapt.EnvTags(
             observation={
-                "agentview_image": adapt.ImageAnnotation(),
-                "robot0_eef_quat": adapt.StateAnnotation(
+                "agentview_image": adapt.ImageTag(),
+                "robot0_eef_quat": adapt.StateTag(
                     role=adapt.EEF_ROT, encoding="quat_xyzw"
                 ),
-                "instruction": adapt.TextAnnotation(),
+                "instruction": adapt.TextTag(),
             },
             action=LIBERO_ACTION,
         ),
@@ -1037,7 +1031,7 @@ def test_describe_mentions_each_model_key():
 
 
 # ---------------------------------------------------------------------------
-# annotate verb + Model(spec=) entry-point guards
+# tag verb + Model(spec=) entry-point guards
 # ---------------------------------------------------------------------------
 
 
@@ -1047,46 +1041,42 @@ def _fake_env(obs_space: gym.spaces.Space[Any]) -> Any:
     )
 
 
-def test_annotate_publishes_and_validates() -> None:
+def test_tag_publishes_and_validates() -> None:
     env = _fake_env(gym.spaces.Dict({"robot0_eef_pos": box(3)}))
-    annotations = adapt.EnvAnnotations(
-        observation={"robot0_eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS)},
+    tags = adapt.EnvTags(
+        observation={"robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS)},
         action=LIBERO_ACTION,
     )
-    returned = adapt.annotate(env, annotations)
+    returned = adapt.tag(env, tags)
     assert returned is env
     assert env.metadata["render_fps"] == 30  # existing metadata preserved
-    assert adapt.EnvAnnotations.from_metadata(env.metadata) == annotations
+    assert adapt.EnvTags.from_metadata(env.metadata) == tags
 
 
-def test_annotate_rejects_mismatched_annotations() -> None:
+def test_tag_rejects_mismatched_tags() -> None:
     # The space is 3-wide but quat_xyzw requires 4 -> join fails fast.
     env = _fake_env(gym.spaces.Dict({"robot0_eef_quat": box(3)}))
-    bad = adapt.EnvAnnotations(
+    bad = adapt.EnvTags(
         observation={
-            "robot0_eef_quat": adapt.StateAnnotation(
-                role=adapt.EEF_ROT, encoding="quat_xyzw"
-            )
+            "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")
         },
         action=LIBERO_ACTION,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="quat_xyzw"):
-        adapt.annotate(env, bad)
+        adapt.tag(env, bad)
     assert adapt.ENV_METADATA_KEY not in env.metadata  # nothing published on failure
 
 
-def test_annotate_without_validation_skips_the_check() -> None:
+def test_tag_without_validation_skips_the_check() -> None:
     env = _fake_env(gym.spaces.Dict({"robot0_eef_quat": box(3)}))
-    bad = adapt.EnvAnnotations(
+    bad = adapt.EnvTags(
         observation={
-            "robot0_eef_quat": adapt.StateAnnotation(
-                role=adapt.EEF_ROT, encoding="quat_xyzw"
-            )
+            "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")
         },
         action=LIBERO_ACTION,
     )
-    adapt.annotate(env, bad, validate=False)
-    assert adapt.EnvAnnotations.from_metadata(env.metadata) == bad
+    adapt.tag(env, bad, validate=False)
+    assert adapt.EnvTags.from_metadata(env.metadata) == bad
 
 
 def test_model_spec_run_requires_an_env_object() -> None:

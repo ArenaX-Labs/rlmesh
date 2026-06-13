@@ -104,13 +104,13 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
 
 
 def make_adapter(
-    annotations: adapt.EnvAnnotations,
+    tags: adapt.EnvTags,
     observation_space: gym.spaces.Space[Any],
     action_space: gym.spaces.Space[Any],
 ) -> ChunkEnsembleAdapter:
     """Build this model's adapter for an env: resolve, then add state."""
     return ChunkEnsembleAdapter(
-        adapt.resolve(annotations, observation_space, action_space, SPEC)
+        adapt.resolve(tags, observation_space, action_space, SPEC)
     )
 
 

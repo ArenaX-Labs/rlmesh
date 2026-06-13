@@ -1,10 +1,10 @@
-//! The sparse env-side annotations users author over a gymnasium space.
+//! The sparse env-side tags users author over a gymnasium space.
 //!
-//! Annotations carry only *semantics* — the role each observation entry plays
+//! Tags carry only *semantics* — the role each observation entry plays
 //! and how to interpret it (image layout, rotation encoding, value range).
 //! All *structure* (keys' widths, dtypes, bounds) lives in the gymnasium
 //! space and is derived by [`join`](super::super::join::join), which validates
-//! the annotations against the space and produces the internal
+//! the tags against the space and produces the internal
 //! [`EnvFeatures`](super::env::EnvFeatures) the resolver consumes.
 
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ use super::rotations::RotationEncoding;
 /// the space, so only the layout (genuinely underdetermined by shape) and the
 /// upside-down flag are carried.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ImageAnnotation {
+pub struct ImageTag {
     pub role: String,
     #[serde(default)]
     pub layout: ImageLayout,
@@ -32,7 +32,7 @@ pub struct ImageAnnotation {
 /// then checked against the space) and `range` overrides infinite space
 /// bounds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StateAnnotation {
+pub struct StateTag {
     pub role: String,
     #[serde(default)]
     pub encoding: Option<RotationEncoding>,
@@ -42,39 +42,39 @@ pub struct StateAnnotation {
 
 /// A text entry's semantics (typically the task instruction).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TextAnnotation {
+pub struct TextTag {
     pub role: String,
 }
 
-/// One observation annotation, tagged by the kind of space leaf it describes.
+/// One observation tag, tagged by the kind of space leaf it describes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum ObsAnnotation {
-    Image(ImageAnnotation),
-    State(StateAnnotation),
-    Text(TextAnnotation),
+pub enum ObsTag {
+    Image(ImageTag),
+    State(StateTag),
+    Text(TextTag),
 }
 
-impl ObsAnnotation {
-    /// The semantic role this annotation assigns.
+impl ObsTag {
+    /// The semantic role this tag assigns.
     pub fn role(&self) -> &str {
         match self {
-            ObsAnnotation::Image(image) => &image.role,
-            ObsAnnotation::State(state) => &state.role,
-            ObsAnnotation::Text(text) => &text.role,
+            ObsTag::Image(image) => &image.role,
+            ObsTag::State(state) => &state.role,
+            ObsTag::Text(text) => &text.role,
         }
     }
 }
 
-/// The env-side annotations: a sparse map from observation key-path to its
+/// The env-side tags: a sparse map from observation key-path to its
 /// semantics, plus the action layout.
 ///
 /// Observation keys are space key-paths: a dotted path traverses nested
 /// `Dict` spaces (`"robot.eef_pos"`), and the reserved key `"."` denotes a
-/// flat/root observation (valid only when it is the sole entry). Unannotated
+/// flat/root observation (valid only when it is the sole entry). Untagged
 /// space keys are allowed; they simply carry no semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EnvAnnotations {
-    pub observation: BTreeMap<String, ObsAnnotation>,
+pub struct EnvTags {
+    pub observation: BTreeMap<String, ObsTag>,
     pub action: ActionLayout,
 }

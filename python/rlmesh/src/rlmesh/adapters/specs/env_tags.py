@@ -1,15 +1,15 @@
-"""The environment-side IO annotations: sparse semantics over the env spaces.
+"""The environment-side IO tags: sparse semantics over the env spaces.
 
-An environment annotates its observation entries and action layout with
+An environment tags its observation entries and action layout with
 *semantic roles* and the few facts the spaces cannot express (image axis
 layout, rotation encoding, an explicit value range). Everything else --
 keys, widths, dtypes, bounds -- is read from the gymnasium observation and
 action spaces at resolve time by the native ``join`` step. This is the
 asymmetry with the model side: models fully specify their payload
-(:class:`~rlmesh.adapters.ModelSpec`), environments only annotate.
+(:class:`~rlmesh.adapters.ModelSpec`), environments only tag.
 
-The observation annotations are keyed by their observation path (dotted
-paths traverse nested ``Dict`` spaces), so an annotation carries no key of
+The observation tags are keyed by their observation path (dotted
+paths traverse nested ``Dict`` spaces), so an tag carries no key of
 its own: the mapping key *is* the path.
 """
 
@@ -37,7 +37,7 @@ from .serialization import (
 
 
 @dataclass(frozen=True)
-class ImageAnnotation:
+class ImageTag:
     """A camera image entry in an environment observation.
 
     Attributes:
@@ -53,7 +53,7 @@ class ImageAnnotation:
 
 
 @dataclass(frozen=True)
-class StateAnnotation:
+class StateTag:
     """A numeric proprioception entry in an environment observation.
 
     Attributes:
@@ -69,7 +69,7 @@ class StateAnnotation:
 
 
 @dataclass(frozen=True)
-class TextAnnotation:
+class TextTag:
     """A text entry (typically the task instruction) in an observation.
 
     Attributes:
@@ -79,89 +79,88 @@ class TextAnnotation:
     role: str = INSTRUCTION
 
 
-ObsAnnotation: TypeAlias = ImageAnnotation | StateAnnotation | TextAnnotation
+ObsTag: TypeAlias = ImageTag | StateTag | TextTag
 
 
-def obs_annotation_to_dict(annotation: ObsAnnotation) -> dict[str, Any]:
-    """Return the JSON-compatible dict form of an observation annotation."""
-    if isinstance(annotation, ImageAnnotation):
+def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
+    """Return the JSON-compatible dict form of an observation tag."""
+    if isinstance(tag, ImageTag):
         return {
             "type": "image",
-            "role": annotation.role,
-            "layout": annotation.layout,
-            "upside_down": annotation.upside_down,
+            "role": tag.role,
+            "layout": tag.layout,
+            "upside_down": tag.upside_down,
         }
-    if isinstance(annotation, StateAnnotation):
+    if isinstance(tag, StateTag):
         return {
             "type": "state",
-            "role": annotation.role,
-            "encoding": annotation.encoding,
-            "range": list(annotation.range) if annotation.range else None,
+            "role": tag.role,
+            "encoding": tag.encoding,
+            "range": list(tag.range) if tag.range else None,
         }
-    return {"type": "text", "role": annotation.role}
+    return {"type": "text", "role": tag.role}
 
 
-def obs_annotation_from_dict(item: object) -> ObsAnnotation:
-    """Build an observation annotation from :func:`obs_annotation_to_dict`."""
-    data = as_mapping(item, "observation annotation")
+def obs_tag_from_dict(item: object) -> ObsTag:
+    """Build an observation tag from :func:`obs_tag_to_dict`."""
+    data = as_mapping(item, "observation tag")
     kind = data.get("type")
     if kind == "image":
-        return ImageAnnotation(
-            role=require_str(data, "role", "image annotation"),
-            layout=opt_layout(data.get("layout"), "image annotation"),
+        return ImageTag(
+            role=require_str(data, "role", "image tag"),
+            layout=opt_layout(data.get("layout"), "image tag"),
             upside_down=bool(data.get("upside_down", False)),
         )
     if kind == "state":
-        return StateAnnotation(
-            role=require_str(data, "role", "state annotation"),
-            encoding=opt_encoding(data.get("encoding"), "state annotation"),
-            range=opt_range(data.get("range"), "state annotation"),
+        return StateTag(
+            role=require_str(data, "role", "state tag"),
+            encoding=opt_encoding(data.get("encoding"), "state tag"),
+            range=opt_range(data.get("range"), "state tag"),
         )
     if kind == "text":
-        return TextAnnotation(role=require_str(data, "role", "text annotation"))
-    raise ValueError(f"unknown observation annotation type {kind!r}")
+        return TextTag(role=require_str(data, "role", "text tag"))
+    raise ValueError(f"unknown observation tag type {kind!r}")
 
 
 @dataclass(frozen=True)
-class EnvAnnotations:
-    """Declarative annotations of an environment's observation and action.
+class EnvTags:
+    """Declarative tags of an environment's observation and action.
 
     Attributes:
-        observation: Observation annotations keyed by observation path
+        observation: Observation tags keyed by observation path
             (dotted paths traverse nested ``Dict`` spaces).
         action: Layout of the action vector accepted by ``step``.
     """
 
-    observation: Mapping[str, ObsAnnotation]
+    observation: Mapping[str, ObsTag]
     action: ActionLayout
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-compatible dict form of these annotations."""
+        """Return a JSON-compatible dict form of these tags."""
         return {
             "observation": {
-                key: obs_annotation_to_dict(annotation)
-                for key, annotation in self.observation.items()
+                key: obs_tag_to_dict(tag) for key, tag in self.observation.items()
             },
             "action": action_layout_to_dict(self.action),
         }
 
     def to_json(self) -> str:
-        """Return these annotations serialized as a JSON string."""
+        """Return these tags serialized as a JSON string."""
         return json.dumps(self.to_dict(), sort_keys=True)
 
     def to_metadata(self) -> dict[str, Any]:
-        """Return a metadata mapping fragment carrying these annotations.
+        """Return a metadata mapping fragment carrying these tags.
 
         Merge the result into env contract metadata so remote clients can
-        recover the annotations via :meth:`from_metadata`.
+        recover the tags via :meth:`from_metadata`.
         """
         return {ENV_METADATA_KEY: self.to_dict()}
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> EnvAnnotations:
-        """Build annotations from :meth:`to_dict` output."""
+    def from_dict(cls, data: Mapping[str, Any]) -> EnvTags:
+        """Build tags from :meth:`to_dict` output."""
         observation = {
-            key: obs_annotation_from_dict(value)
+            key: obs_tag_from_dict(value)
             for key, value in require_mapping(data, "observation").items()
         }
         return cls(
@@ -170,13 +169,13 @@ class EnvAnnotations:
         )
 
     @classmethod
-    def from_json(cls, payload: str) -> EnvAnnotations:
-        """Build annotations from :meth:`to_json` output."""
+    def from_json(cls, payload: str) -> EnvTags:
+        """Build tags from :meth:`to_json` output."""
         return cls.from_dict(load_json_mapping(payload))
 
     @classmethod
-    def from_metadata(cls, metadata: Mapping[str, Any]) -> EnvAnnotations | None:
-        """Extract annotations from env contract metadata, if present."""
+    def from_metadata(cls, metadata: Mapping[str, Any]) -> EnvTags | None:
+        """Extract tags from env contract metadata, if present."""
         payload = metadata.get(ENV_METADATA_KEY)
         if payload is None:
             return None
@@ -186,11 +185,11 @@ class EnvAnnotations:
 
 
 __all__ = [
-    "EnvAnnotations",
-    "ImageAnnotation",
-    "ObsAnnotation",
-    "StateAnnotation",
-    "TextAnnotation",
-    "obs_annotation_from_dict",
-    "obs_annotation_to_dict",
+    "EnvTags",
+    "ImageTag",
+    "ObsTag",
+    "StateTag",
+    "TextTag",
+    "obs_tag_from_dict",
+    "obs_tag_to_dict",
 ]

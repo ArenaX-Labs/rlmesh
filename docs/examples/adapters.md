@@ -1,21 +1,21 @@
 # Adapters Example
 
-These examples show {doc}`../user-guide/adapters`: an environment annotates its spaces, a model
-declares its format, and the pairing is derived at runtime. Both need the NumPy backend and run with
-no GPU or simulator.
+These examples show {doc}`../user-guide/adapters`: an environment tags its spaces, a model declares
+its format, and the pairing is derived at runtime. Both need the NumPy backend and run with no GPU
+or simulator.
 
 ## Smallest serve-and-run loop
 
-One process serves an annotated environment and runs an adapted model against it:
+One process serves an tagged environment and runs an adapted model against it:
 
 ```bash
 uv run python examples/python/adapters_quickstart/serve_and_run.py
 ```
 
-The environment is served with its annotations published in the contract:
+The environment is served with its tags published in the contract:
 
 ```python
-server = rlmesh.EnvServer(env, "127.0.0.1:0", annotations=ENV_ANNOTATIONS)
+server = rlmesh.EnvServer(env, "127.0.0.1:0", tags=ENV_TAGS)
 server.start()
 ```
 
@@ -47,7 +47,7 @@ uv run eval.py --model xvla --env libero          # a single pairing
 vla_adapters/
 ├── eval.py            # generic harness: --model X --env Y, any pairing
 ├── models/            # one ModelSpec per checkpoint (smolvla, xvla, act)
-├── envs/              # one EnvAnnotations + spaces per environment (libero, simpler-bridge)
+├── envs/              # one EnvTags + spaces per environment (libero, simpler-bridge)
 └── overrides/         # complete adapter overwrites for special pairings
 ```
 

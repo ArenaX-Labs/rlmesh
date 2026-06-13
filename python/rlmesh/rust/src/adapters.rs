@@ -1,7 +1,7 @@
 //! Bindings for the `rlmesh-adapters` core: spec resolution and plan
 //! application.
 //!
-//! The env side is given as sparse annotations (JSON) over the env's
+//! The env side is given as sparse tags (JSON) over the env's
 //! observation/action spaces (gymnasium space objects, parsed here into the
 //! adapters [`SpaceView`]); the model side is its declared spec (JSON).
 //! [`adapters_resolve`] joins and resolves them into a plan handle.
@@ -31,8 +31,8 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    EnvAnnotations, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
-    resolve, roles,
+    EnvTags, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve,
+    roles,
 };
 use rlmesh_spaces::{DType, Tensor};
 
@@ -343,7 +343,7 @@ impl PyAdapterPlan {
     }
 }
 
-/// Resolve env annotations + spaces and a model spec into a plan handle.
+/// Resolve env tags + spaces and a model spec into a plan handle.
 ///
 /// `observation_space`/`action_space` are gymnasium space objects; they are
 /// parsed and projected into the adapters `SpaceView`. Custom-input
@@ -356,54 +356,53 @@ impl PyAdapterPlan {
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_resolve(env_annotations_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
+def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 "#
     )
 )]
 #[pyfunction]
 pub fn adapters_resolve(
-    env_annotations_json: &str,
+    env_tags_json: &str,
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
     model_spec_json: &str,
 ) -> PyResult<PyAdapterPlan> {
-    let annotations: EnvAnnotations = serde_json::from_str(env_annotations_json)
-        .map_err(|err| PyValueError::new_err(format!("invalid env annotations: {err}")))?;
+    let tags: EnvTags = serde_json::from_str(env_tags_json)
+        .map_err(|err| PyValueError::new_err(format!("invalid env tags: {err}")))?;
     let model_spec: ModelSpec = serde_json::from_str(model_spec_json)
         .map_err(|err| PyValueError::new_err(format!("invalid model spec: {err}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
-    let adapter = resolve(&annotations, &obs_view, &action_view, &model_spec, true)
+    let adapter = resolve(&tags, &obs_view, &action_view, &model_spec, true)
         .map_err(|err| PyValueError::new_err(err.message))?;
     Ok(PyAdapterPlan { adapter })
 }
 
-/// Validate env annotations against the env's observation/action spaces.
+/// Validate env tags against the env's observation/action spaces.
 ///
 /// Runs only the native `join` step that [`adapters_resolve`] performs
-/// internally -- no model side. This surfaces annotation/space mismatches at
-/// authoring time (e.g. from `rlmesh.adapters.annotate`) before any model is
+/// internally -- no model side. This surfaces tag/space mismatches at
+/// authoring time (e.g. from `rlmesh.adapters.tag`) before any model is
 /// paired against the env.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_join_check(env_annotations_json: str, observation_space: object, action_space: object) -> None: ...
+def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> None: ...
 "#
     )
 )]
 #[pyfunction]
 pub fn adapters_join_check(
-    env_annotations_json: &str,
+    env_tags_json: &str,
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    let annotations: EnvAnnotations = serde_json::from_str(env_annotations_json)
-        .map_err(|err| PyValueError::new_err(format!("invalid env annotations: {err}")))?;
+    let tags: EnvTags = serde_json::from_str(env_tags_json)
+        .map_err(|err| PyValueError::new_err(format!("invalid env tags: {err}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
-    join(&annotations, &obs_view, &action_view)
-        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    join(&tags, &obs_view, &action_view).map_err(|err| PyValueError::new_err(err.to_string()))?;
     Ok(())
 }

@@ -1,14 +1,14 @@
-# VLA adapters: annotate each env, spec each model
+# VLA adapters: tag each env, spec each model
 
 This example shows how a project using `rlmesh.adapters` is laid out so that models and environments
 can be added independently. There are no per-pair adapters: every (model, env) combination is
-derived at runtime by `rlmesh.adapters.resolve`, which matches an env's **annotations** against a
-model's **spec** by semantic role.
+derived at runtime by `rlmesh.adapters.resolve`, which matches an env's **tags** against a model's
+**spec** by semantic role.
 
-The split is deliberate. An environment only _annotates_ its observation and action **spaces** — it
-names the role of each entry plus the few facts spaces cannot carry (image layout, rotation
-encoding, explicit ranges). Widths, dtypes and keys come from the gymnasium spaces. A model _fully
-specifies_ its payload.
+The split is deliberate. An environment only _tags_ its observation and action **spaces** — it names
+the role of each entry plus the few facts spaces cannot carry (image layout, rotation encoding,
+explicit ranges). Widths, dtypes and keys come from the gymnasium spaces. A model _fully specifies_
+its payload.
 
 ```
 vla_adapters/
@@ -69,10 +69,10 @@ X-VLA's spec never hardcodes zero padding for dims 11-20: it declares them as se
 and the padding/dropping above is _derived_ from the env at resolve time. A bimanual env declaring
 the `_2` roles would consume those same dims for real, with no model change.
 
-Against a live endpoint, pass `--address`. Serve the env with its annotations published
-(`rlmesh.EnvServer(env, annotations=ANNOTATIONS)`); the harness then resolves the adapter straight
-from the handshake — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is
-built from the contract:
+Against a live endpoint, pass `--address`. Serve the env with its tags published
+(`rlmesh.EnvServer(env, tags=TAGS)`); the harness then resolves the adapter straight from the
+handshake — for a plain pairing it just hands `Model(spec=...)` the env and the adapter is built
+from the contract:
 
 ```sh
 uv run eval.py --model smolvla --env libero --address 127.0.0.1:5555
@@ -90,14 +90,13 @@ It can now be evaluated on every registered env. A different fine-tune of the sa
 
 ## Adding an environment
 
-1. Create `envs/<name>.py` declaring `ANNOTATIONS` (an `EnvAnnotations`: obs paths with semantic
-   roles and encodings, plus the action layout), the `OBSERVATION_SPACE`/`ACTION_SPACE` gymnasium
-   spaces, and a `sample_obs()` for dry runs.
+1. Create `envs/<name>.py` declaring `TAGS` (an `EnvTags`: obs paths with semantic roles and
+   encodings, plus the action layout), the `OBSERVATION_SPACE`/`ACTION_SPACE` gymnasium spaces, and
+   a `sample_obs()` for dry runs.
 2. Register it with one line in `envs/__init__.py`.
 
-Better still, serve the env with `rlmesh.EnvServer(env, annotations=ANNOTATIONS)` so remote clients
-discover the annotations from the handshake (via `resolve_from_contract`) and need no registry entry
-at all.
+Better still, serve the env with `rlmesh.EnvServer(env, tags=TAGS)` so remote clients discover the
+tags from the handshake (via `resolve_from_contract`) and need no registry entry at all.
 
 ## When the built-in vocabulary is not enough
 

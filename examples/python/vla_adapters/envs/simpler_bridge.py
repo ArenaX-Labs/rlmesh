@@ -3,7 +3,7 @@
 Compared to LIBERO this env has a single camera, nested observation keys
 (``agent.eef_pos``), a wxyz quaternion, and a different instruction key.
 None of that needs model-side code: the resolver reads it from the
-annotations and the spaces.
+tags and the spaces.
 """
 
 from __future__ import annotations
@@ -14,17 +14,15 @@ import gymnasium as gym
 import numpy as np
 import rlmesh.adapters as adapt
 
-ANNOTATIONS = adapt.EnvAnnotations(
+TAGS = adapt.EnvTags(
     observation={
-        "rgb": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-        "agent.eef_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-        "agent.eef_quat": adapt.StateAnnotation(
-            role=adapt.EEF_ROT, encoding="quat_wxyz"
-        ),
-        "agent.gripper_width": adapt.StateAnnotation(
+        "rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+        "agent.eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+        "agent.eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_wxyz"),
+        "agent.gripper_width": adapt.StateTag(
             role=adapt.GRIPPER_POS, range=(0.0, 0.08)
         ),
-        "task_instruction": adapt.TextAnnotation(),
+        "task_instruction": adapt.TextTag(),
     },
     action=adapt.ActionLayout(
         components=(

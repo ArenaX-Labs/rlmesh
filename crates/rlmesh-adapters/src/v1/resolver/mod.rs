@@ -13,7 +13,7 @@ use super::fmt::quoted;
 use super::join::join;
 use super::plans::{ObsPlan, ResolvedAdapter};
 use super::space_view::SpaceView;
-use super::spec::{EnvAnnotations, EnvFeature, ModelInput, ModelSpec};
+use super::spec::{EnvFeature, EnvTags, ModelInput, ModelSpec};
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
 
@@ -40,19 +40,19 @@ fn index_by_role<'spec, T>(
 
 /// Derive a [`ResolvedAdapter`] for an env/model pair.
 ///
-/// The env side is given as sparse [`EnvAnnotations`] over its observation and
+/// The env side is given as sparse [`EnvTags`] over its observation and
 /// action spaces; [`join`] derives the keyed env features (with widths and
 /// ranges) those plus the spaces imply, then each model input is matched to an
 /// env feature by role.
 pub fn resolve(
-    env_annotations: &EnvAnnotations,
+    env_tags: &EnvTags,
     observation_space: &SpaceView,
     action_space: &SpaceView,
     model_spec: &ModelSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
-    let env_spec = join(env_annotations, observation_space, action_space)
-        .map_err(|error| err(ErrorCode::InvalidAnnotation, error.to_string()))?;
+    let env_spec = join(env_tags, observation_space, action_space)
+        .map_err(|error| err(ErrorCode::InvalidTag, error.to_string()))?;
     let images = env_spec
         .observation
         .iter()

@@ -11,11 +11,11 @@ import rlmesh.adapters as adapt
 
 from . import act, smolvla, xvla
 
-# An escape-hatch adapter factory: given an env's annotations and spaces,
+# An escape-hatch adapter factory: given an env's tags and spaces,
 # return a custom adapter (for models whose deployment needs stateful logic
 # specs cannot express).
 MakeAdapter = Callable[
-    [adapt.EnvAnnotations, "gym.spaces.Space[Any]", "gym.spaces.Space[Any]"],
+    [adapt.EnvTags, "gym.spaces.Space[Any]", "gym.spaces.Space[Any]"],
     adapt.AdapterBase[Any],
 ]
 
@@ -25,7 +25,7 @@ class ModelEntry:
     """Everything the eval harness needs to know about one checkpoint.
 
     ``make_adapter`` is the custom-adapter escape hatch: when set, the
-    harness calls it with the env's annotations and spaces instead of
+    harness calls it with the env's tags and spaces instead of
     ``resolve()`` -- for models whose deployment needs stateful logic specs
     cannot express.
     """

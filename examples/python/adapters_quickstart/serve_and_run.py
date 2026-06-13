@@ -1,9 +1,9 @@
-"""Adapters quickstart: annotate an env, then run a model against it.
+"""Adapters quickstart: tag an env, then run a model against it.
 
 One process, end to end:
 
-1. an environment annotates its observation/action spaces with semantic roles,
-2. it is served with those annotations published in its contract,
+1. an environment tags its observation/action spaces with semantic roles,
+2. it is served with those tags published in its contract,
 3. a model declares its own input/output format once, and
 4. ``Model(spec=...).run(env)`` resolves the adapter from the env's contract and
    runs -- the prediction function works purely in the model's format, with no
@@ -75,14 +75,14 @@ class CubePickEnv:
         return None
 
 
-# The env's annotations: roles plus the facts the spaces cannot carry.
-ENV_ANNOTATIONS = adapt.EnvAnnotations(
+# The env's tags: roles plus the facts the spaces cannot carry.
+ENV_TAGS = adapt.EnvTags(
     observation={
-        "wrist_rgb": adapt.ImageAnnotation(role=adapt.IMAGE_PRIMARY),
-        "ee_pos": adapt.StateAnnotation(role=adapt.EEF_POS),
-        "ee_quat": adapt.StateAnnotation(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-        "grip": adapt.StateAnnotation(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextAnnotation(),
+        "wrist_rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+        "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
+        "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
+        "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
+        "goal": adapt.TextTag(),
     },
     action=adapt.ActionLayout(
         components=(
@@ -133,9 +133,9 @@ def predict(payload: dict[str, Any]) -> Any:
 
 def main() -> None:
     env = CubePickEnv()
-    # Publish the annotations in the served contract (validated against the
+    # Publish the tags in the served contract (validated against the
     # env's spaces up front).
-    server = rlmesh.EnvServer(env, "127.0.0.1:0", annotations=ENV_ANNOTATIONS)
+    server = rlmesh.EnvServer(env, "127.0.0.1:0", tags=ENV_TAGS)
     server.start()
     try:
         client = RemoteEnv(server.address)
@@ -145,7 +145,7 @@ def main() -> None:
         print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).describe())
         print("\nRunning one episode:")
 
-        # No glue: the adapter is resolved from the env's published annotations.
+        # No glue: the adapter is resolved from the env's published tags.
         Model(predict, spec=MODEL_SPEC).run(client, max_episodes=1)
 
         client.close()

@@ -1,24 +1,24 @@
-//! Derive the internal [`EnvFeatures`] from sparse [`EnvAnnotations`] layered
+//! Derive the internal [`EnvFeatures`] from sparse [`EnvTags`] layered
 //! over a gymnasium space.
 //!
 //! `join` is the single place env semantics meet env structure. It runs at two
 //! seams with identical rules: at authoring time (when an env publishes
-//! annotations, so mistakes fail fast) and worker-side at resolve time (from
+//! tags, so mistakes fail fast) and worker-side at resolve time (from
 //! the untrusted handshake contract). Every failure names which side
-//! disagreed — the annotation or the space.
+//! disagreed — the tag or the space.
 
 use super::space_view::{SpaceView, SpaceViewKind};
 use super::spec::{
-    ActionLayout, EnvAnnotations, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText,
-    ImageLayout, ObsAnnotation,
+    ActionLayout, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, ImageLayout,
+    ObsTag,
 };
 
-/// A validation failure while joining annotations against a space.
+/// A validation failure while joining tags against a space.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum JoinError {
     #[error("observation key {key:?} does not resolve to a leaf of the observation space")]
     KeyNotInSpace { key: String },
-    #[error("observation {key:?} is annotated as {expected} but the space is {actual}")]
+    #[error("observation {key:?} is tagged as {expected} but the space is {actual}")]
     ClassMismatch {
         key: String,
         expected: &'static str,
@@ -34,12 +34,12 @@ pub enum JoinError {
         width: u32,
     },
     #[error(
-        "state {key:?} annotation range {annotation:?} disagrees with the space's finite bounds \
+        "state {key:?} tag range {tag:?} disagrees with the space's finite bounds \
          {space:?}"
     )]
     RangeDisagreement {
         key: String,
-        annotation: (f64, f64),
+        tag: (f64, f64),
         space: (f64, f64),
     },
     #[error("the action space must be a flat Box but it is {actual}")]
@@ -64,22 +64,22 @@ pub enum JoinError {
 
 type Result<T> = std::result::Result<T, JoinError>;
 
-/// Join sparse annotations against the observation and action spaces.
+/// Join sparse tags against the observation and action spaces.
 pub fn join(
-    annotations: &EnvAnnotations,
+    tags: &EnvTags,
     obs_space: &SpaceView,
     action_space: &SpaceView,
 ) -> Result<EnvFeatures> {
-    let mut observation = Vec::with_capacity(annotations.observation.len());
-    for (path, annotation) in &annotations.observation {
+    let mut observation = Vec::with_capacity(tags.observation.len());
+    for (path, tag) in &tags.observation {
         let leaf = resolve_leaf(obs_space, path)
             .ok_or_else(|| JoinError::KeyNotInSpace { key: path.clone() })?;
-        observation.push(join_feature(path, annotation, leaf)?);
+        observation.push(join_feature(path, tag, leaf)?);
     }
-    validate_action(&annotations.action, action_space)?;
+    validate_action(&tags.action, action_space)?;
     Ok(EnvFeatures {
         observation,
-        action: annotations.action.clone(),
+        action: tags.action.clone(),
     })
 }
 
@@ -96,9 +96,9 @@ fn resolve_leaf<'view>(space: &'view SpaceView, path: &str) -> Option<&'view Spa
     Some(node)
 }
 
-fn join_feature(path: &str, annotation: &ObsAnnotation, leaf: &SpaceView) -> Result<EnvFeature> {
-    match annotation {
-        ObsAnnotation::Image(image) => {
+fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<EnvFeature> {
+    match tag {
+        ObsTag::Image(image) => {
             if leaf.kind != SpaceViewKind::Box || leaf.shape.len() != 3 {
                 return Err(JoinError::ClassMismatch {
                     key: path.to_owned(),
@@ -116,7 +116,7 @@ fn join_feature(path: &str, annotation: &ObsAnnotation, leaf: &SpaceView) -> Res
                 width,
             }))
         }
-        ObsAnnotation::State(state) => {
+        ObsTag::State(state) => {
             if !is_numeric(leaf) {
                 return Err(JoinError::ClassMismatch {
                     key: path.to_owned(),
@@ -144,7 +144,7 @@ fn join_feature(path: &str, annotation: &ObsAnnotation, leaf: &SpaceView) -> Res
                 range,
             }))
         }
-        ObsAnnotation::Text(text) => {
+        ObsTag::Text(text) => {
             if leaf.kind != SpaceViewKind::Text {
                 return Err(JoinError::ClassMismatch {
                     key: path.to_owned(),
@@ -161,30 +161,30 @@ fn join_feature(path: &str, annotation: &ObsAnnotation, leaf: &SpaceView) -> Res
 }
 
 /// Derive a state's value range: from the space's finite bounds when uniform,
-/// overridden by an explicit annotation only where the space is unbounded. A
-/// finite space range that disagrees with an explicit annotation is an error.
+/// overridden by an explicit tag only where the space is unbounded. A
+/// finite space range that disagrees with an explicit tag is an error.
 fn derive_state_range(
     leaf: &SpaceView,
-    annotation: Option<(f64, f64)>,
+    tag: Option<(f64, f64)>,
     key: &str,
 ) -> Result<Option<(f64, f64)>> {
-    match (uniform_finite_range(leaf), annotation) {
-        (Some(space), Some(annotation)) => {
-            if ranges_agree(space, annotation) {
-                // The explicit annotation is the author's stated intent; keep
+    match (uniform_finite_range(leaf), tag) {
+        (Some(space), Some(tag)) => {
+            if ranges_agree(space, tag) {
+                // The explicit tag is the author's stated intent; keep
                 // it exactly (the space's bounds may be the same value at a
                 // narrower precision).
-                Ok(Some(annotation))
+                Ok(Some(tag))
             } else {
                 Err(JoinError::RangeDisagreement {
                     key: key.to_owned(),
-                    annotation,
+                    tag,
                     space,
                 })
             }
         }
         (Some(space), None) => Ok(Some(space)),
-        (None, annotation) => Ok(annotation),
+        (None, tag) => Ok(tag),
     }
 }
 
@@ -192,7 +192,7 @@ fn derive_state_range(
 ///
 /// A space stores its bounds at the dtype's precision, so a float32
 /// gymnasium `Box(_, 0.08, _)` projects to `0.0799999982`; an exact compare
-/// against an annotation's `0.08` would reject ranges that are equal in
+/// against an tag's `0.08` would reject ranges that are equal in
 /// intent. The tolerance (~8x float32 epsilon, with an absolute floor) still
 /// rejects genuine disagreements.
 fn ranges_agree(a: (f64, f64), b: (f64, f64)) -> bool {
@@ -298,7 +298,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::super::spec::RotationEncoding;
-    use super::super::spec::{ActionComponent, ImageAnnotation, StateAnnotation, TextAnnotation};
+    use super::super::spec::{ActionComponent, ImageTag, StateTag, TextTag};
     use super::*;
 
     fn box_view(shape: Vec<i64>, low: Option<Vec<f64>>, high: Option<Vec<f64>>) -> SpaceView {
@@ -371,7 +371,7 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "camera".to_owned(),
-            ObsAnnotation::Image(ImageAnnotation {
+            ObsTag::Image(ImageTag {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
@@ -379,7 +379,7 @@ mod tests {
         );
         observation.insert(
             "eef_pos".to_owned(),
-            ObsAnnotation::State(StateAnnotation {
+            ObsTag::State(StateTag {
                 role: "proprio/eef_pos".to_owned(),
                 encoding: None,
                 range: None,
@@ -387,16 +387,16 @@ mod tests {
         );
         observation.insert(
             "instruction".to_owned(),
-            ObsAnnotation::Text(TextAnnotation {
+            ObsTag::Text(TextTag {
                 role: "instruction".to_owned(),
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![component("action/delta_pos", 4, None)]),
         };
 
-        let features = join(&annotations, &obs, &action).expect("join");
+        let features = join(&tags, &obs, &action).expect("join");
         assert_eq!(features.observation.len(), 3);
         // The state's width and range are derived from the space.
         let state = features
@@ -417,17 +417,17 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "missing".to_owned(),
-            ObsAnnotation::Text(TextAnnotation {
+            ObsTag::Text(TextTag {
                 role: "instruction".to_owned(),
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
         assert!(matches!(
-            join(&annotations, &obs, &action),
+            join(&tags, &obs, &action),
             Err(JoinError::KeyNotInSpace { key }) if key == "missing"
         ));
     }
@@ -438,19 +438,19 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "camera".to_owned(),
-            ObsAnnotation::Image(ImageAnnotation {
+            ObsTag::Image(ImageTag {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
         assert!(matches!(
-            join(&annotations, &obs, &action),
+            join(&tags, &obs, &action),
             Err(JoinError::ClassMismatch { key, .. }) if key == "camera"
         ));
     }
@@ -462,19 +462,19 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "rot".to_owned(),
-            ObsAnnotation::State(StateAnnotation {
+            ObsTag::State(StateTag {
                 role: "proprio/eef_rot".to_owned(),
                 encoding: Some(RotationEncoding::QuatXyzw),
                 range: None,
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
         assert!(matches!(
-            join(&annotations, &obs, &action),
+            join(&tags, &obs, &action),
             Err(JoinError::EncodingWidthMismatch {
                 width: 3,
                 dims: 4,
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn rejects_finite_range_disagreement_but_allows_unbounded_override() {
-        // Finite space bounds [0, 1] disagree with annotation [0, 2] -> error.
+        // Finite space bounds [0, 1] disagree with tag [0, 2] -> error.
         let obs = dict_view(vec![(
             "g",
             box_view(vec![1], Some(vec![0.0]), Some(vec![1.0])),
@@ -493,38 +493,38 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "g".to_owned(),
-            ObsAnnotation::State(StateAnnotation {
+            ObsTag::State(StateTag {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 2.0)),
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
         assert!(matches!(
-            join(&annotations, &obs, &action),
+            join(&tags, &obs, &action),
             Err(JoinError::RangeDisagreement { .. })
         ));
 
-        // An unbounded space lets the annotation supply the range.
+        // An unbounded space lets the tag supply the range.
         let obs = dict_view(vec![("g", box_view(vec![1], None, None))]);
         let mut observation = BTreeMap::new();
         observation.insert(
             "g".to_owned(),
-            ObsAnnotation::State(StateAnnotation {
+            ObsTag::State(StateTag {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 2.0)),
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
-        let features = join(&annotations, &obs, &action).expect("join");
+        let features = join(&tags, &obs, &action).expect("join");
         let EnvFeature::State(state) = &features.observation[0] else {
             panic!("expected state");
         };
@@ -532,10 +532,10 @@ mod tests {
     }
 
     #[test]
-    fn finite_bounds_agree_with_annotation_up_to_float32_rounding() {
+    fn finite_bounds_agree_with_tag_up_to_float32_rounding() {
         // A float32 gymnasium Box(0, 0.08) projects its high bound to the
-        // nearest float32, 0.0799999982; the annotation declares 0.08. These
-        // must agree (rounding, not disagreement), and the exact annotation
+        // nearest float32, 0.0799999982; the tag declares 0.08. These
+        // must agree (rounding, not disagreement), and the exact tag
         // value is kept.
         let f32_high = f64::from(0.08_f32);
         assert_ne!(f32_high, 0.08);
@@ -546,18 +546,18 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "g".to_owned(),
-            ObsAnnotation::State(StateAnnotation {
+            ObsTag::State(StateTag {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 0.08)),
             }),
         );
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation,
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
-        let features = join(&annotations, &obs, &action).expect("join");
+        let features = join(&tags, &obs, &action).expect("join");
         let EnvFeature::State(state) = &features.observation[0] else {
             panic!("expected state");
         };
@@ -568,12 +568,12 @@ mod tests {
     fn rejects_action_width_mismatch() {
         let obs = dict_view(vec![]);
         let action = box_view(vec![7], None, None);
-        let annotations = EnvAnnotations {
+        let tags = EnvTags {
             observation: BTreeMap::new(),
             action: action_layout(vec![component("action/delta_pos", 3, None)]),
         };
         assert!(matches!(
-            join(&annotations, &obs, &action),
+            join(&tags, &obs, &action),
             Err(JoinError::ActionWidthMismatch {
                 action_width: 7,
                 component_sum: 3,

@@ -75,7 +75,7 @@ def build_adapter(
 
     1. a pair-level override (complete overwrite for one special pairing),
     2. the model's custom adapter factory (model-wide, all envs),
-    3. plain spec resolution from the env's annotations and spaces.
+    3. plain spec resolution from the env's tags and spaces.
     """
     override = OVERRIDES.get((model_name, env_name))
     if override is not None:
@@ -83,10 +83,10 @@ def build_adapter(
     model_entry = MODELS[model_name]
     if model_entry.make_adapter is not None:
         return model_entry.make_adapter(
-            env.annotations, env.observation_space, env.action_space
+            env.tags, env.observation_space, env.action_space
         )
     return adapt.resolve(
-        env.annotations, env.observation_space, env.action_space, model_entry.spec
+        env.tags, env.observation_space, env.action_space, model_entry.spec
     )
 
 
@@ -109,7 +109,7 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
     """Run episodes against a live env endpoint.
 
     For a plain spec pairing this uses the zero-config path: the env
-    publishes its annotations in the contract, so ``Model(spec=...)``
+    publishes its tags in the contract, so ``Model(spec=...)``
     resolves the adapter from the handshake alone. Escape-hatch pairings
     (a stateful model adapter or a pair override) build the adapter
     explicitly and wrap the predict function.

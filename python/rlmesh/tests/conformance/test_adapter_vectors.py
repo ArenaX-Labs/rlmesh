@@ -4,10 +4,10 @@ The vectors in crates/rlmesh-adapters/conformance/v1/ are the contract
 every adapter implementation (the Rust core, this binding stack, future
 bindings) must pass. See the README next to the vectors.
 
-Each resolve/apply vector carries the env *annotations*, the observation
+Each resolve/apply vector carries the env *tags*, the observation
 and action *spaces* (as the adapters ``SpaceView`` projection), and the
 model spec. We rebuild gymnasium spaces from those views and drive the
-public Python API, exercising the full annotate -> join -> resolve -> apply
+public Python API, exercising the full tag -> join -> resolve -> apply
 path the native core runs.
 """
 
@@ -108,11 +108,11 @@ def assert_value(actual: Any, expected: dict[str, Any], atol: float) -> None:
 
 
 def resolve_case(case: dict[str, Any]) -> adapt.IOAdapter:
-    annotations = adapt.EnvAnnotations.from_dict(case["env_annotations"])
+    tags = adapt.EnvTags.from_dict(case["env_tags"])
     model_spec = adapt.ModelSpec.from_dict(case["model_spec"])
     obs_space = gym_space_from_view(case["observation_space"])
     action_space = gym_space_from_view(case["action_space"])
-    return adapt.resolve(annotations, obs_space, action_space, model_spec)
+    return adapt.resolve(tags, obs_space, action_space, model_spec)
 
 
 def test_vectors_exist() -> None:
@@ -125,7 +125,7 @@ def test_vector(path: Path) -> None:
 
     if case["kind"] == "serialization":
         if case["side"] == "env":
-            assert adapt.EnvAnnotations.from_dict(case["doc"]).to_dict() == case["doc"]
+            assert adapt.EnvTags.from_dict(case["doc"]).to_dict() == case["doc"]
         else:
             assert adapt.ModelSpec.from_dict(case["doc"]).to_dict() == case["doc"]
         return

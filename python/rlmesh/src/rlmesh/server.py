@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from rlmesh._rlmesh import ServeOptions
     from rlmesh.recipes import EnvRecipe, Recipe
 
-    from .adapters import EnvAnnotations
+    from .adapters import EnvTags
 
 EnvLike = BaseEnvLike[Any, Any] | VectorEnvLike[Any, Any, Any]
 
@@ -56,8 +56,8 @@ class EnvServer:
         transport: Explicit transport selector.
         options: Optional serve lifecycle options controlling remote shutdown,
             idle shutdown, drain timeout, and close timeout.
-        annotations: Optional adapter IO annotations
-            (:class:`rlmesh.adapters.EnvAnnotations`) to publish for this env.
+        tags: Optional adapter IO tags
+            (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
             metadata, so a model client can resolve an adapter from the
             contract alone (see :func:`rlmesh.adapters.resolve_from_contract`).
@@ -95,15 +95,15 @@ class EnvServer:
         path: str | None = None,
         transport: Transport | None = None,
         options: ServeOptions | None = None,
-        annotations: EnvAnnotations | None = None,
+        tags: EnvTags | None = None,
     ) -> None:
         env = _coerce_env(env)
-        if annotations is not None:
-            # Imported lazily so the common (un-annotated) serve path does not
+        if tags is not None:
+            # Imported lazily so the common (un-tagged) serve path does not
             # pull in the adapters/numpy stack.
-            from .adapters import annotate
+            from .adapters import tag
 
-            env = annotate(env, annotations)
+            env = tag(env, tags)
         normalized_address = normalize_bind_address(
             address,
             host=host,

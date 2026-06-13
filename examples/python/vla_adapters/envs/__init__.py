@@ -16,7 +16,7 @@ from . import libero, simpler_bridge
 class EnvEntry:
     """Everything the eval harness needs to know about one environment."""
 
-    annotations: adapt.EnvAnnotations
+    tags: adapt.EnvTags
     observation_space: gym.spaces.Space[Any]
     action_space: gym.spaces.Space[Any]
     sample_obs: Callable[[], dict[str, Any]]
@@ -24,13 +24,13 @@ class EnvEntry:
 
 ENVS: dict[str, EnvEntry] = {
     "libero": EnvEntry(
-        libero.ANNOTATIONS,
+        libero.TAGS,
         libero.OBSERVATION_SPACE,
         libero.ACTION_SPACE,
         libero.sample_obs,
     ),
     "simpler-bridge": EnvEntry(
-        simpler_bridge.ANNOTATIONS,
+        simpler_bridge.TAGS,
         simpler_bridge.OBSERVATION_SPACE,
         simpler_bridge.ACTION_SPACE,
         simpler_bridge.sample_obs,

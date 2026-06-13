@@ -26,7 +26,7 @@ pub enum EnvFeature {
 /// This is the internal, fully-keyed form the resolver consumes: every
 /// feature carries its observation key and derived width/range. It is
 /// produced by [`join`](super::super::join::join) from the sparse
-/// [`EnvAnnotations`](super::env_annotations::EnvAnnotations) layered over a
+/// [`EnvTags`](super::env_tags::EnvTags) layered over a
 /// gymnasium space — it is not authored or serialized directly by users.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnvFeatures {

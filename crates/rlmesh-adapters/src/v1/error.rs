@@ -8,8 +8,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ErrorCode {
-    /// The env annotations could not be joined against the spaces.
-    InvalidAnnotation,
+    /// The env tags could not be joined against the spaces.
+    InvalidTag,
     /// Two features, inputs, or action components claim the same role or key.
     Duplicate,
     /// A model input or action component found no env counterpart by role.
