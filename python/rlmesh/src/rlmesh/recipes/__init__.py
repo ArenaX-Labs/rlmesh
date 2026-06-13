@@ -25,6 +25,7 @@ from ._registry import (
     register,
     registered_names,
     resolve,
+    resolve_from_recipe,
     unregister,
 )
 from ._schema import (
@@ -67,5 +68,6 @@ __all__ = [
     "register",
     "registered_names",
     "resolve",
+    "resolve_from_recipe",
     "unregister",
 ]

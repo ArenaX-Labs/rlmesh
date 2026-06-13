@@ -207,7 +207,13 @@ impl EffectiveSandboxSpec {
         // rebuild.
         let build_hash = build_hash(&BuildHashInput {
             schema_version: BOOTSTRAP_SCHEMA_VERSION,
-            source: &resolved_source,
+            // A recipe's image is keyed by its build phase, not its task identity,
+            // so a from_recipe family shares one image.
+            source: if recipe.is_some() {
+                None
+            } else {
+                Some(&resolved_source)
+            },
             base_image: &base_image,
             rlmesh_package: &rlmesh_package,
             packages: &packages,
@@ -238,6 +244,16 @@ impl EffectiveSandboxSpec {
         self.resolved_source.slug()
     }
 
+    /// The image-tag slug. For a recipe source this is a constant, so the image
+    /// is keyed purely by `build_hash` (the build phase) and a from_recipe family
+    /// shares one image; gym/hf keep their per-source slug.
+    pub(crate) fn image_slug(&self) -> String {
+        match &self.resolved_source {
+            source::ResolvedEnvironmentSourceRef::Recipe(_) => "recipe".to_string(),
+            _ => self.resolved_source.slug(),
+        }
+    }
+
     pub(crate) fn requested_display(&self) -> String {
         self.requested_source.requested_display()
     }
@@ -250,7 +266,11 @@ impl EffectiveSandboxSpec {
 #[derive(Serialize)]
 struct BuildHashInput<'a> {
     schema_version: u32,
-    source: &'a source::ResolvedEnvironmentSourceRef,
+    /// The resolved source identity for gym/hf. `None` for a recipe source: a
+    /// recipe's image is determined by its build phase alone (the per-task name,
+    /// make, and setup ride the runtime bootstrap), so an N-task family with one
+    /// inlined `from_recipe` build shares a single image/build_hash.
+    source: Option<&'a source::ResolvedEnvironmentSourceRef>,
     base_image: &'a str,
     rlmesh_package: &'a ResolvedRlmeshPackage,
     packages: &'a [String],
@@ -1274,6 +1294,37 @@ mod tests {
             ..recipe::Build::default()
         };
         assert!(validate_recipe_build(&build, RecipeProvenance::Remote, true).is_ok());
+    }
+
+    #[test]
+    fn from_recipe_family_shares_build_hash_and_image_slug() {
+        let shared_build = serde_json::json!({"base":"nvidia/cuda:12.4.1-runtime-ubuntu22.04","system":["cmake"],"gpu":true});
+        let resolve_scene = |name: &str, entrypoint: &str, build: serde_json::Value| {
+            let document = serde_json::json!({
+                "name": name,
+                "make": {"kind": "py", "entrypoint": entrypoint},
+                "build": build,
+            });
+            EffectiveSandboxSpec::resolve(
+                recipe_source(document, RecipeProvenance::Installed),
+                SandboxOptions::default(),
+            )
+            .unwrap()
+        };
+
+        let scene1 = resolve_scene("droid/scene1", "robot_env:s1", shared_build.clone());
+        let scene2 = resolve_scene("droid/scene2", "robot_env:s2", shared_build.clone());
+        // Same inlined build -> one image, despite different task names/factories.
+        assert_eq!(scene1.build_hash, scene2.build_hash);
+        assert_eq!(scene1.image_slug(), "recipe");
+
+        // A different build phase -> a different image.
+        let other = resolve_scene(
+            "droid/scene3",
+            "robot_env:s3",
+            serde_json::json!({"gpu": false}),
+        );
+        assert_ne!(scene1.build_hash, other.build_hash);
     }
 
     #[test]

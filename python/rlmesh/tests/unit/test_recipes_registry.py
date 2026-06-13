@@ -10,6 +10,7 @@ from rlmesh.recipes import (
     HfMake,
     PipInstall,
     ProjectInstall,
+    PyMake,
     Recipe,
     RecipeNotFoundError,
     Requires,
@@ -20,6 +21,7 @@ from rlmesh.recipes import (
     register,
     registered_names,
     resolve,
+    resolve_from_recipe,
     unregister,
 )
 
@@ -146,3 +148,81 @@ def test_recipe_to_sandbox_args_rejects_setup() -> None:
     )
     with pytest.raises(UnsupportedRecipeError, match="setup"):
         recipe_to_sandbox_args(recipe)
+
+
+# ----- from_recipe build reuse -----
+
+
+def _base_build() -> Build:
+    return Build(
+        base="nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+        system=["cmake"],
+        pip=[PipInstall(packages=["torch==2.0.0"])],
+        gpu=True,
+    )
+
+
+def test_resolve_from_recipe_inlines_base_build() -> None:
+    register(Recipe(name="droid/base", build=_base_build()))
+    child = Recipe(
+        name="droid/scene1",
+        make=PyMake(entrypoint="robot_env:make"),
+        build=Build(from_recipe="droid/base"),
+        setup=Setup(env={"SCENE": "1"}),
+    )
+    resolved = resolve_from_recipe(child)
+    assert resolved.build == _base_build()
+    # make/setup are preserved; only the build is inlined.
+    assert resolved.make == child.make
+    assert resolved.setup == child.setup
+
+
+def test_from_recipe_family_shares_identical_build() -> None:
+    register(Recipe(name="droid/base", build=_base_build()))
+    scenes = [
+        resolve_from_recipe(
+            Recipe(
+                name=f"droid/scene{i}",
+                make=PyMake(entrypoint=f"robot_env:scene{i}"),
+                build=Build(from_recipe="droid/base"),
+            )
+        )
+        for i in range(1, 4)
+    ]
+    # Every task in the family shares one build (and thus one image/build_hash).
+    assert scenes[0].build == scenes[1].build == scenes[2].build == _base_build()
+    # ...while their factories differ.
+    assert len({repr(s.make) for s in scenes}) == 3
+
+
+def test_recipe_without_from_recipe_is_unchanged() -> None:
+    recipe = Recipe(name="a/plain", make=GymMake(env_id="E-v0"), build=Build(gpu=True))
+    assert resolve_from_recipe(recipe) is recipe
+
+
+def test_from_recipe_rejects_extra_build_fields() -> None:
+    register(Recipe(name="droid/base", build=_base_build()))
+    child = Recipe(
+        name="droid/scene1",
+        make=PyMake(entrypoint="robot_env:make"),
+        build=Build(from_recipe="droid/base", gpu=True),
+    )
+    with pytest.raises(ValueError, match="exclusive with other build fields"):
+        resolve_from_recipe(child)
+
+
+def test_from_recipe_missing_base_raises() -> None:
+    child = Recipe(
+        name="droid/scene1",
+        make=PyMake(entrypoint="robot_env:make"),
+        build=Build(from_recipe="droid/missing"),
+    )
+    with pytest.raises(RecipeNotFoundError):
+        resolve_from_recipe(child)
+
+
+def test_from_recipe_detects_cycles() -> None:
+    register(Recipe(name="a/one", build=Build(from_recipe="a/two")))
+    register(Recipe(name="a/two", build=Build(from_recipe="a/one")))
+    with pytest.raises(ValueError, match="cycle"):
+        resolve_from_recipe(resolve("a/one"))

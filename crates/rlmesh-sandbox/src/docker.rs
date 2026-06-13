@@ -50,7 +50,7 @@ impl DockerBackend {
     pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
         let image_tag = format!(
             "rlmesh-sandbox-{}:{}",
-            spec.slug(),
+            spec.image_slug(),
             &spec.build_hash[..12.min(spec.build_hash.len())]
         );
 

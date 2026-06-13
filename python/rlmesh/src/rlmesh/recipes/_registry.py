@@ -12,7 +12,9 @@ Anti-shadowing: re-registering an already-registered name is rejected unless
 
 from __future__ import annotations
 
-from ._schema import Recipe
+import dataclasses
+
+from ._schema import Build, Recipe
 
 __all__ = [
     "RecipeNotFoundError",
@@ -20,6 +22,7 @@ __all__ = [
     "register",
     "registered_names",
     "resolve",
+    "resolve_from_recipe",
     "unregister",
 ]
 
@@ -67,6 +70,34 @@ def resolve(name: str) -> Recipe:
         raise RecipeNotFoundError(
             f"no recipe registered as {name!r}; registered recipes: {available}"
         ) from None
+
+
+def resolve_from_recipe(recipe: Recipe, _seen: frozenset[str] = frozenset()) -> Recipe:
+    """Inline a ``build.from_recipe`` reference into the recipe's build phase.
+
+    Build reuse for an N-task family: a build-only base recipe holds the build,
+    and each task recipe references it by name via ``build.from_recipe`` while
+    carrying its own ``make``/``setup``. Inlining the base's build into the child
+    before the wire makes every task in the family share one ``build_hash`` (one
+    image). A recipe with no ``from_recipe`` is returned unchanged.
+
+    Raises:
+        ValueError: If ``from_recipe`` is combined with other build fields, or the
+            chain of references is cyclic.
+        RecipeNotFoundError: If the referenced base is not registered.
+    """
+    name = recipe.build.from_recipe
+    if name is None:
+        return recipe
+    if recipe.build != Build(from_recipe=name):
+        raise ValueError(
+            "Build.from_recipe is exclusive with other build fields; the base "
+            "recipe supplies the entire build phase"
+        )
+    if name in _seen:
+        raise ValueError(f"from_recipe reference cycle through {name!r}")
+    base = resolve_from_recipe(resolve(name), _seen | {name})
+    return dataclasses.replace(recipe, build=base.build)
 
 
 def registered_names() -> tuple[str, ...]:

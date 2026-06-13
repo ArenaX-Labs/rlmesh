@@ -632,7 +632,7 @@ def _resolve_recipe_source(
     import os
 
     from rlmesh.recipes import Recipe as _Recipe
-    from rlmesh.recipes import RecipeNotFoundError, resolve
+    from rlmesh.recipes import RecipeNotFoundError, resolve, resolve_from_recipe
 
     if isinstance(source, _Recipe):
         recipe = source
@@ -643,6 +643,9 @@ def _resolve_recipe_source(
         except RecipeNotFoundError:
             return source, None, None, None
         provenance = "installed"
+    # Inline any `from_recipe` base build before the wire so a task family shares
+    # one image.
+    recipe = resolve_from_recipe(recipe)
     context_root = os.getcwd() if recipe.build.project is not None else None
     return recipe.name, recipe.to_json(), provenance, context_root
 
