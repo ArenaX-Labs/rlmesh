@@ -7,6 +7,17 @@ use uuid::Uuid;
 use rlmesh_proto::env::v1::EpisodeMetadata;
 use rlmesh_proto::spaces::v1::MetaMap;
 
+/// Wall-clock nanoseconds since the Unix epoch as an `i64`.
+///
+/// Saturates to `i64::MAX` rather than wrapping if the count ever exceeds the
+/// `i64` range (≈ year 2262), and returns 0 if the clock predates the epoch.
+fn unix_nanos_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 /// Single episode state (internal).
 struct Episode {
     id: String,
@@ -21,10 +32,7 @@ struct Episode {
 impl Episode {
     fn new(env_index: i32, seed: Option<i64>) -> Self {
         let start_time = Instant::now();
-        let start_timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
+        let start_timestamp_ns = unix_nanos_now();
 
         Self {
             id: Uuid::new_v4().to_string(),
@@ -48,10 +56,7 @@ impl Episode {
         truncated: bool,
         final_info: Option<MetaMap>,
     ) -> EpisodeMetadata {
-        let end_timestamp_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
+        let end_timestamp_ns = unix_nanos_now();
 
         let duration_ms = self.start_time.elapsed().as_millis() as i64;
 

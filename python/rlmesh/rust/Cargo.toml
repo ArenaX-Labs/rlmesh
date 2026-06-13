@@ -27,7 +27,7 @@ doc = false
 required-features = ["stub-gen"]
 
 [features]
-default = []
+default = ["viewer"]
 abi3-py311 = ["pyo3/abi3-py311"]
 # Bundles the egui/eframe render viewer into the extension.
 viewer = ["dep:rlmesh-cli"]

@@ -81,7 +81,7 @@ build-backend = "maturin"
 module-name = "rlmesh._rlmesh"
 python-source = "src"
 no-default-features = true
-features = [{ feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
+features = ["viewer", { feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
 exclude = [
   ".pytest_cache/**",
   "dist/**",

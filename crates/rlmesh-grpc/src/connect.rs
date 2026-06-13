@@ -84,19 +84,42 @@ where
         }
 
         // Clip each attempt to the caller's remaining budget.
-        let attempt_result = match deadline {
+        let remaining = match deadline {
             Some(deadline) => {
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
                     return Err(last_error);
                 }
-                match tokio::time::timeout(remaining, attempt()).await {
+                Some(remaining)
+            }
+            None => None,
+        };
+
+        // Race the attempt against cancellation so a hanging attempt aborts
+        // promptly; without a deadline this is the only thing that can interrupt
+        // an attempt that never resolves.
+        let attempt_result = match (&options.cancellation, remaining) {
+            (Some(token), Some(remaining)) => tokio::select! {
+                _ = token.cancelled() => {
+                    return Err(GrpcError::Cancelled("connect cancelled".to_string()));
+                }
+                result = tokio::time::timeout(remaining, attempt()) => match result {
                     // The attempt outran the deadline; surface the last error.
                     Err(_elapsed) => return Err(last_error),
                     Ok(result) => result,
+                },
+            },
+            (Some(token), None) => tokio::select! {
+                _ = token.cancelled() => {
+                    return Err(GrpcError::Cancelled("connect cancelled".to_string()));
                 }
-            }
-            None => attempt().await,
+                result = attempt() => result,
+            },
+            (None, Some(remaining)) => match tokio::time::timeout(remaining, attempt()).await {
+                Err(_elapsed) => return Err(last_error),
+                Ok(result) => result,
+            },
+            (None, None) => attempt().await,
         };
 
         last_error = match attempt_result {
@@ -208,5 +231,34 @@ mod tests {
             })
             .await;
         assert!(matches!(result, Err(GrpcError::Cancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_a_hanging_attempt_without_deadline() {
+        // A never-resolving attempt with no deadline: only the cancellation
+        // token can interrupt it. Cancelling mid-attempt must abort retry_connect
+        // rather than waiting for the (never-arriving) attempt to return.
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let started = tokio::time::Instant::now();
+        let result: Result<(), GrpcError> = retry_connect(
+            &ConnectOptions::default().cancellation(token),
+            // Never resolves; without mid-attempt cancellation this hangs forever.
+            std::future::pending,
+        )
+        .await;
+
+        let error = result.unwrap_err();
+        assert!(matches!(error, GrpcError::Cancelled(_)), "got: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "retry_connect waited {:?}, past cancellation",
+            started.elapsed()
+        );
     }
 }

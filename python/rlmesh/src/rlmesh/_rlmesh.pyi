@@ -25,6 +25,7 @@ __all__ = [
     "discrete_space_spec",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
+    "run_cli",
     "sandbox_start_env",
     "sandbox_stop_env",
     "space_spec_from_gym_space",
@@ -275,6 +276,8 @@ def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> Spa
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
+
+def run_cli(args: list[str]) -> int: ...
 
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False) -> SandboxRunInfo: ...
 

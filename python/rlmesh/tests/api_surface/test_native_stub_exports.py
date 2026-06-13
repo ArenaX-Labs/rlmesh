@@ -22,6 +22,7 @@ EXPECTED_NATIVE_EXPORTS = [
     "discrete_space_spec",
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
+    "run_cli",
     "sandbox_start_env",
     "sandbox_stop_env",
     "space_spec_from_gym_space",

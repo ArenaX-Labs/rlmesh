@@ -31,7 +31,8 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
-// Viewer support is feature-gated so default wheels do not link egui/eframe.
+// Viewer support is feature-gated (on by default) so a lean wheel can opt out
+// of linking egui/eframe via `--no-default-features`.
 #[cfg(feature = "viewer")]
 #[cfg_attr(
     feature = "stub-gen",
