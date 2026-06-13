@@ -1,6 +1,7 @@
 [workspace]
 default-members = [
   "crates/rlmesh",
+  "crates/rlmesh-adapters",
   "crates/rlmesh-cli",
   "crates/rlmesh-grpc",
   "crates/rlmesh-proto",
@@ -27,6 +28,7 @@ publish = true
 [workspace.dependencies]
 # Rust Framework Crates
 rlmesh = { version = "=0.1.0-beta.2", path = "crates/rlmesh" }
+rlmesh-adapters = { version = "=0.1.0-beta.2", path = "crates/rlmesh-adapters" }
 rlmesh-cli = { version = "=0.1.0-beta.2", path = "crates/rlmesh-cli" }
 rlmesh-grpc = { version = "=0.1.0-beta.2", path = "crates/rlmesh-grpc" }
 rlmesh-proto = { version = "=0.1.0-beta.2", path = "crates/rlmesh-proto" }

@@ -3042,6 +3042,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-adapters"
+version = "0.1.0-beta.2"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rlmesh-cli"
 version = "0.1.0-beta.2"
 dependencies = [
