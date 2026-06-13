@@ -16,7 +16,7 @@ mod space_view;
 mod spec;
 
 pub use apply::{ApplyError, CustomTransform, NoCustoms, SkipCustoms, Value, convert_rotation};
-pub use error::AdapterResolutionError;
+pub use error::{AdapterResolutionError, ErrorCode};
 pub use join::{JoinError, join};
 pub use keys::{ENV_METADATA_KEY, MODEL_METADATA_KEY};
 pub use plans::{

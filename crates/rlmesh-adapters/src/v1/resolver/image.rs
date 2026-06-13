@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::super::error::ErrorCode;
 use super::super::fmt::{quoted, quoted_keys};
 use super::super::plans::ImagePlan;
 use super::super::spec::{EnvImage, ImageInput};
@@ -16,20 +17,26 @@ pub(super) fn plan_image(
         env_image = images_by_role.values().next().copied();
     }
     let Some(env_image) = env_image else {
-        return Err(err(format!(
-            "model input {} wants an image with role {} but the env offers {}",
-            quoted(&model_input.key),
-            quoted(&model_input.role),
-            quoted_keys(images_by_role)
-        )));
+        return Err(err(
+            ErrorCode::MissingRole,
+            format!(
+                "model input {} wants an image with role {} but the env offers {}",
+                quoted(&model_input.key),
+                quoted(&model_input.role),
+                quoted_keys(images_by_role)
+            ),
+        ));
     };
     if model_input.resample != "bilinear" && model_input.resample != "bilinear_aa" {
-        return Err(err(format!(
-            "model input {}: unsupported resample {}; expected 'bilinear' or \
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {}: unsupported resample {}; expected 'bilinear' or \
              'bilinear_aa'",
-            quoted(&model_input.key),
-            quoted(&model_input.resample)
-        )));
+                quoted(&model_input.key),
+                quoted(&model_input.resample)
+            ),
+        ));
     }
     // When the model declares only one target axis, fill the other from the
     // env's native resolution (derived into the env image by `join`) rather

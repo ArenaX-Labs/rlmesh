@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::super::error::ErrorCode;
 use super::super::fmt::{quoted, quoted_keys};
 use super::super::plans::TextPlan;
 use super::super::spec::{EnvText, TextInput};
@@ -13,13 +14,16 @@ pub(super) fn plan_text(
 ) -> Result<TextPlan> {
     let env_text = texts_by_role.get(&model_input.role).copied();
     if env_text.is_none() && model_input.default.is_none() {
-        return Err(err(format!(
-            "model input {} needs text role {} but the env offers {} and no \
+        return Err(err(
+            ErrorCode::MissingRole,
+            format!(
+                "model input {} needs text role {} but the env offers {} and no \
              default is set",
-            quoted(&model_input.key),
-            quoted(&model_input.role),
-            quoted_keys(texts_by_role)
-        )));
+                quoted(&model_input.key),
+                quoted(&model_input.role),
+                quoted_keys(texts_by_role)
+            ),
+        ));
     }
     Ok(TextPlan {
         model_key: model_input.key.clone(),

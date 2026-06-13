@@ -8,7 +8,7 @@ mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::error::AdapterResolutionError;
+use super::error::{AdapterResolutionError, ErrorCode};
 use super::fmt::quoted;
 use super::join::join;
 use super::plans::{ObsPlan, ResolvedAdapter};
@@ -17,8 +17,8 @@ use super::spec::{EnvAnnotations, EnvFeature, ModelInput, ModelIoSpec};
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
 
-fn err(message: String) -> AdapterResolutionError {
-    AdapterResolutionError::new(message)
+fn err(code: ErrorCode, message: String) -> AdapterResolutionError {
+    AdapterResolutionError::new(code, message)
 }
 
 fn index_by_role<'spec, T>(
@@ -28,7 +28,10 @@ fn index_by_role<'spec, T>(
     let mut by_role: BTreeMap<String, T> = BTreeMap::new();
     for (role, feature) in features {
         if by_role.contains_key(role) {
-            return Err(err(format!("duplicate {label} role {}", quoted(role))));
+            return Err(err(
+                ErrorCode::Duplicate,
+                format!("duplicate {label} role {}", quoted(role)),
+            ));
         }
         by_role.insert(role.clone(), feature);
     }
@@ -49,7 +52,7 @@ pub fn resolve(
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
     let env_spec = join(env_annotations, observation_space, action_space)
-        .map_err(|error| err(error.to_string()))?;
+        .map_err(|error| err(ErrorCode::InvalidAnnotation, error.to_string()))?;
     let images = env_spec
         .observation
         .iter()
@@ -85,7 +88,10 @@ pub fn resolve(
             ModelInput::Custom(input) => input.key.as_str(),
         };
         if !seen_keys.insert(key) {
-            return Err(err(format!("duplicate model input key {}", quoted(key))));
+            return Err(err(
+                ErrorCode::Duplicate,
+                format!("duplicate model input key {}", quoted(key)),
+            ));
         }
         obs_plans.push(match model_input {
             ModelInput::Image(input) => ObsPlan::Image(image::plan_image(input, &images_by_role)?),

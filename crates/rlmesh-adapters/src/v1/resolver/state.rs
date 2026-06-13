@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::super::error::ErrorCode;
 use super::super::fmt::{quoted, quoted_encoding, quoted_keys};
 use super::super::plans::{StatePiece, StatePlan};
 use super::super::spec::{EnvState, StateComponent, StateInput};
@@ -18,12 +19,15 @@ fn zero_fill_width(component: &StateComponent, model_key: &str) -> Result<u32> {
     if let Some(encoding) = component.encoding {
         return Ok(encoding.dims());
     }
-    Err(err(format!(
-        "model input {}: optional state role {} needs dim, index, or encoding \
+    Err(err(
+        ErrorCode::MissingWidth,
+        format!(
+            "model input {}: optional state role {} needs dim, index, or encoding \
          to size its zero fill",
-        quoted(model_key),
-        quoted(&component.role)
-    )))
+            quoted(model_key),
+            quoted(&component.role)
+        ),
+    ))
 }
 
 pub(super) fn plan_state(
@@ -46,23 +50,29 @@ pub(super) fn plan_state(
                 });
                 continue;
             }
-            return Err(err(format!(
-                "model input {} needs state role {} but the env offers {}",
-                quoted(&model_input.key),
-                quoted(&component.role),
-                quoted_keys(states_by_role)
-            )));
+            return Err(err(
+                ErrorCode::MissingRole,
+                format!(
+                    "model input {} needs state role {} but the env offers {}",
+                    quoted(&model_input.key),
+                    quoted(&component.role),
+                    quoted_keys(states_by_role)
+                ),
+            ));
         };
         if component.encoding != env_state.encoding
             && (component.encoding.is_none() || env_state.encoding.is_none())
         {
-            return Err(err(format!(
-                "state role {}: cannot convert encoding {} to {}; both sides \
+            return Err(err(
+                ErrorCode::EncodingMismatch,
+                format!(
+                    "state role {}: cannot convert encoding {} to {}; both sides \
                  must declare a rotation encoding",
-                quoted(&component.role),
-                quoted_encoding(env_state.encoding),
-                quoted_encoding(component.encoding)
-            )));
+                    quoted(&component.role),
+                    quoted_encoding(env_state.encoding),
+                    quoted_encoding(component.encoding)
+                ),
+            ));
         }
         if let (Some(component_encoding), Some(env_encoding)) =
             (component.encoding, env_state.encoding)
@@ -70,14 +80,17 @@ pub(super) fn plan_state(
             && let Some(env_dim) = env_state.dim
             && env_dim != env_encoding.dims()
         {
-            return Err(err(format!(
-                "state role {}: env feature {} declares {env_dim} dims but \
+            return Err(err(
+                ErrorCode::DimMismatch,
+                format!(
+                    "state role {}: env feature {} declares {env_dim} dims but \
                  encoding {} has {}",
-                quoted(&component.role),
-                quoted(&env_state.key),
-                quoted_encoding(Some(env_encoding)),
-                env_encoding.dims()
-            )));
+                    quoted(&component.role),
+                    quoted(&env_state.key),
+                    quoted_encoding(Some(env_encoding)),
+                    env_encoding.dims()
+                ),
+            ));
         }
         // Bounds-check the requested slice against the source width. The
         // width is the env feature's, unless a rotation conversion reshapes it
@@ -95,22 +108,28 @@ pub(super) fn plan_state(
         if let Some(width) = source_width {
             if let Some(index) = component.index {
                 if index >= width {
-                    return Err(err(format!(
-                        "state role {}: index {index} is out of range for the \
+                    return Err(err(
+                        ErrorCode::SliceOutOfRange,
+                        format!(
+                            "state role {}: index {index} is out of range for the \
                          width-{width} source feature {}",
-                        quoted(&component.role),
-                        quoted(&env_state.key)
-                    )));
+                            quoted(&component.role),
+                            quoted(&env_state.key)
+                        ),
+                    ));
                 }
             } else if let Some(dim) = component.dim
                 && dim > width
             {
-                return Err(err(format!(
-                    "state role {}: requested {dim} dims but the source feature \
+                return Err(err(
+                    ErrorCode::SliceOutOfRange,
+                    format!(
+                        "state role {}: requested {dim} dims but the source feature \
                      {} has width {width}",
-                    quoted(&component.role),
-                    quoted(&env_state.key)
-                )));
+                        quoted(&component.role),
+                        quoted(&env_state.key)
+                    ),
+                ));
             }
         }
         pieces.push(StatePiece {
