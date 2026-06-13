@@ -1,0 +1,123 @@
+{
+  "env_spec": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": [
+      {
+        "key": "cam",
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": true
+      }
+    ]
+  },
+  "expect": {
+    "action": {
+      "data": [
+        0.0, 0.10000000149011612, 0.20000000298023224, 0.30000001192092896, 0.4000000059604645, 0.5,
+        0.6000000238418579
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "video": {
+        "data": [90, 100, 110, 60, 70, 80, 30, 40, 50, 0, 10, 20],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [1, 1, 2, 2, 3]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [
+      0.0, 0.10000000149011612, 0.20000000298023224, 0.30000001192092896, 0.4000000059604645, 0.5,
+      0.6000000238418579
+    ],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [7]
+  },
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "dtype": "uint8",
+        "height": null,
+        "key": "video",
+        "layout": "hwc",
+        "lead_dims": 2,
+        "normalize": false,
+        "resample": "bilinear_aa",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      "cam": {
+        "data": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [2, 2, 3]
+      }
+    },
+    "kind": "map"
+  }
+}

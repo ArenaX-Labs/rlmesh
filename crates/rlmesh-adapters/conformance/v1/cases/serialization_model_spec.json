@@ -1,0 +1,79 @@
+{
+  "doc": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": "rot6d",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": null,
+            "encoding": "rot6d",
+            "index": null,
+            "optional": false,
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": true,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": 16,
+        "reshape": null,
+        "type": "state"
+      },
+      {
+        "container": "str",
+        "default": "do the task",
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  },
+  "kind": "serialization",
+  "side": "model"
+}

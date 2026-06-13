@@ -1,0 +1,135 @@
+{
+  "env_spec": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": [
+      {
+        "key": "cam",
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      }
+    ]
+  },
+  "expect": {
+    "action": {
+      "data": [
+        -0.4000000059604645, -0.18333333730697632, 0.03333333507180214, 0.25, 0.46666666865348816,
+        0.6833333373069763, 1.0
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
+    },
+    "atol": 1.0,
+    "payload": {
+      "image": {
+        "data": [
+          0, 11, 22, 8, 19, 30, 25, 36, 47, 41, 52, 63, 58, 69, 80, 74, 85, 96, 91, 102, 113, 99,
+          110, 121, 33, 44, 55, 41, 52, 63, 58, 69, 80, 74, 85, 96, 91, 102, 113, 107, 118, 114,
+          124, 135, 99, 132, 143, 92, 99, 110, 121, 107, 118, 129, 124, 135, 146, 140, 151, 162,
+          157, 168, 179, 173, 184, 149, 190, 201, 73, 198, 209, 35, 103, 114, 125, 112, 122, 134,
+          128, 139, 150, 144, 156, 166, 161, 172, 183, 178, 188, 153, 194, 205, 77, 202, 213, 39,
+          46, 57, 68, 54, 65, 76, 70, 82, 92, 87, 98, 109, 104, 114, 126, 120, 131, 127, 136, 148,
+          112, 145, 156, 105, 17, 28, 39, 25, 36, 47, 42, 53, 64, 58, 69, 80, 75, 86, 97, 91, 102,
+          113, 108, 119, 130, 116, 127, 138
+        ],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [6, 8, 3]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [
+      -0.4000000059604645, -0.18333333730697632, 0.03333333507180214, 0.25, 0.46666666865348816,
+      0.6833333373069763, 0.8999999761581421
+    ],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [7]
+  },
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "dtype": "uint8",
+        "height": 6,
+        "key": "image",
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear_aa",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 8
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      "cam": {
+        "data": [
+          0, 11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121, 132, 143, 154, 165, 176, 187, 198, 209,
+          220, 231, 242, 6, 17, 28, 39, 50, 61, 72, 83, 94, 105, 116, 127, 138
+        ],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [3, 4, 3]
+      }
+    },
+    "kind": "map"
+  }
+}
