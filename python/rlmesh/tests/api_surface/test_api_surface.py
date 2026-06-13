@@ -14,6 +14,7 @@ def test_root_namespace_is_small() -> None:
         "__version__",
         "make",
         "recipes",
+        "register",
         "serving",
         "spaces",
         "types",

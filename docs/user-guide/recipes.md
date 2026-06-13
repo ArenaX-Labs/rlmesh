@@ -30,12 +30,14 @@ obs, info = env.reset(seed=0)
 
 ## Name a recipe
 
-Register a recipe once, then refer to it by name everywhere:
+`rlmesh.register` and `rlmesh.make` are the pair: register a recipe once, then refer to it by name
+everywhere.
 
 ```python
-from rlmesh.recipes import Build, GymMake, PipInstall, Recipe, Requires, register
+import rlmesh
+from rlmesh.recipes import Build, GymMake, PipInstall, Recipe, Requires
 
-register(Recipe(
+rlmesh.register(Recipe(
     name="safety/point-goal",
     make=GymMake(env_id="SafetyPointGoal1-v0"),
     build=Build(pip=[PipInstall(packages=["safety-gymnasium==1.0.0"])]),

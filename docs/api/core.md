@@ -1,7 +1,7 @@
 # Core Exports
 
 The top-level `rlmesh` package exports `EnvServer`, `RemoteEnv`, `RemoteVectorEnv`, `Model`,
-`ServeOptions`, `Tensor`, `make`, `recipes`, `spaces`, and `types`.
+`ServeOptions`, `Tensor`, `make`, `register`, `recipes`, `spaces`, and `types`.
 
 The top-level client and model classes are dependency-free wrappers around RLMesh-native values. For
 most user code, prefer the backend-specific modules when you want decoded NumPy arrays or Torch
@@ -16,6 +16,7 @@ tensors.
 | `rlmesh.ServeOptions`    | Native serve lifecycle options.                                       |
 | `rlmesh.Tensor`          | Native tensor value used by dependency-free clients.                  |
 | `rlmesh.make`            | Construct an environment from a recipe name, a `Recipe`, or a gym id. |
+| `rlmesh.register`        | Register a `Recipe` under its name so it can be built by name.        |
 | `rlmesh.recipes`         | Environment recipes, the registry, and migration helpers.             |
 | `rlmesh.spaces`          | Space wrappers and Gymnasium conversion helpers.                      |
 | `rlmesh.types`           | Structural protocols and value aliases.                               |

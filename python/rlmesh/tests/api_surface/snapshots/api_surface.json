@@ -10,6 +10,7 @@
       "__version__",
       "make",
       "recipes",
+      "register",
       "serving",
       "spaces",
       "types"
@@ -326,6 +327,11 @@
       "recipes": {
         "kind": "module",
         "stability": "Stable"
+      },
+      "register": {
+        "kind": "function",
+        "stability": "Stable",
+        "signature": "register(recipe: Recipe, *, overwrite: bool = False)"
       },
       "serving": {
         "kind": "module",
