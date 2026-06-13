@@ -18,6 +18,7 @@ from ._launch import (
     UnsupportedRecipeError,
     recipe_to_sandbox_args,
 )
+from ._make import make
 from ._registry import (
     RecipeNotFoundError,
     clear_registry,
@@ -61,6 +62,7 @@ __all__ = [
     "UnsupportedRecipeError",
     "build",
     "clear_registry",
+    "make",
     "recipe_to_sandbox_args",
     "register",
     "registered_names",

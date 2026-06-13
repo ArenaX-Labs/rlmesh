@@ -17,8 +17,19 @@ except ImportError as e:
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import ServeOptions
+    from rlmesh.recipes import Recipe
 
 EnvLike = BaseEnvLike[Any, Any] | VectorEnvLike[Any, Any, Any]
+
+
+def _coerce_env(env: EnvLike | Recipe) -> EnvLike:
+    """Build a recipe into an env, or pass a live env through unchanged."""
+    from rlmesh.recipes import Recipe as _Recipe
+    from rlmesh.recipes import build
+
+    if isinstance(env, _Recipe):
+        return build(env)
+    return env
 
 
 class EnvServer:
@@ -61,7 +72,7 @@ class EnvServer:
 
     def __init__(
         self,
-        env: EnvLike,
+        env: EnvLike | Recipe,
         address: str | None = None,
         *,
         host: str | None = None,
@@ -70,6 +81,7 @@ class EnvServer:
         transport: Transport | None = None,
         options: ServeOptions | None = None,
     ) -> None:
+        env = _coerce_env(env)
         normalized_address = normalize_bind_address(
             address,
             host=host,

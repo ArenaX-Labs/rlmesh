@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike, fspath
 from typing import (
+    TYPE_CHECKING,
     ClassVar,
     Generic,
     Protocol,
@@ -21,6 +22,9 @@ from ._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from .spaces import Space
 from .specs import EnvContract, SpaceSpec
 from .types import Metadata
+
+if TYPE_CHECKING:
+    from .recipes import Recipe
 
 ResetInfo: TypeAlias = dict[str, object]
 StepInfo: TypeAlias = dict[str, object]
@@ -196,14 +200,14 @@ class SandboxSessionBase(Generic[RemoteT]):
     """
 
     _remote_env_cls: ClassVar[Callable[..., object]] = _missing_remote_env_cls
-    _source: str
+    _source: str | Recipe
     _closed: bool
     sandbox: SandboxInfo
     _remote_env: RemoteT
 
     def __init__(
         self,
-        source: str,
+        source: str | Recipe,
         *,
         base_image: str | None = None,
         rlmesh_package: str | PathLike[str] | None = None,
@@ -272,8 +276,8 @@ class SandboxSessionBase(Generic[RemoteT]):
         )
 
     @property
-    def source(self) -> str:
-        """Original sandbox source string requested by the caller."""
+    def source(self) -> str | Recipe:
+        """Original sandbox source (string or ``Recipe``) requested by the caller."""
         return self._source
 
     def close(self) -> None:
@@ -355,7 +359,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
 
     def __init__(
         self,
-        source: str,
+        source: str | Recipe,
         *,
         base_image: str | None = None,
         rlmesh_package: str | PathLike[str] | None = None,
@@ -490,7 +494,7 @@ class SandboxVectorEnvBase(
 
     def __init__(
         self,
-        source: str,
+        source: str | Recipe,
         num_envs: int,
         *,
         vectorization_mode: str = "sync",
@@ -615,8 +619,36 @@ class SandboxVectorEnvBase(
         self._remote_env.close_viewer()
 
 
+def _resolve_recipe_source(
+    source: str | Recipe,
+) -> tuple[str, str | None, str | None, str | None]:
+    """Resolve a sandbox source into (display, recipe_json, provenance, context_root).
+
+    A ``Recipe`` becomes a ``Remote`` recipe document; a registered recipe name
+    becomes an ``Installed`` document (pip-install-is-consent); anything else is
+    an ordinary gym/hf source string, unchanged. When the recipe stages a project
+    tree, ``context_root`` defaults to the current directory.
+    """
+    import os
+
+    from rlmesh.recipes import Recipe as _Recipe
+    from rlmesh.recipes import RecipeNotFoundError, resolve
+
+    if isinstance(source, _Recipe):
+        recipe = source
+        provenance = "remote"
+    else:
+        try:
+            recipe = resolve(source)
+        except RecipeNotFoundError:
+            return source, None, None, None
+        provenance = "installed"
+    context_root = os.getcwd() if recipe.build.project is not None else None
+    return recipe.name, recipe.to_json(), provenance, context_root
+
+
 def _start_sandbox(
-    source: str,
+    source: str | Recipe,
     *,
     base_image: str | None,
     rlmesh_package: str | None,
@@ -628,11 +660,20 @@ def _start_sandbox(
     vectorization_mode: str | None,
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
+    display, recipe_json, provenance, context_root = _resolve_recipe_source(source)
     kwargs_json = json.dumps(gym_make_kwargs) if gym_make_kwargs else None
+    # Only forward the recipe arguments when this is actually a recipe source, so
+    # the gym/hf path stays byte-identical to before.
+    recipe_kwargs: dict[str, str] = {}
+    if recipe_json is not None and provenance is not None:
+        recipe_kwargs["recipe_json"] = recipe_json
+        recipe_kwargs["recipe_provenance"] = provenance
+        if context_root is not None:
+            recipe_kwargs["context_root"] = context_root
     started = cast(
         _SandboxStartInfo,
         _sandbox_start_env(
-            source,
+            display,
             base_image=base_image,
             rlmesh_package=rlmesh_package,
             packages=_string_sequence("packages", packages),
@@ -642,6 +683,7 @@ def _start_sandbox(
             vectorization_mode=vectorization_mode,
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,
+            **recipe_kwargs,
         ),
     )
     return SandboxInfo(

@@ -67,7 +67,27 @@ def load_env_from_spec(spec: Mapping[str, object]) -> object:
         return load_gym_env(spec)
     if kind == "hf":
         return load_hf_env(spec)
+    if kind == "recipe":
+        return load_recipe_env(spec)
     raise ValueError(f"unsupported bootstrap kind: {kind}")
+
+
+def load_recipe_env(spec: Mapping[str, object]) -> object:
+    """Construct an environment from a recipe bootstrap spec.
+
+    The build phase already shaped the image; this runs the recipe's runtime half
+    (setup + make) in-container via ``rlmesh.recipes.build``. Imported lazily to
+    avoid a recipes <-> bootstrap import cycle.
+    """
+    from rlmesh.recipes import Recipe, build
+
+    document = expect_mapping(spec.get("document"), "bootstrap spec.document")
+    num_envs = _expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = _expect_vectorization_mode(
+        spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
+    )
+    recipe = Recipe.from_dict(document)
+    return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
 
 
 def load_env_entrypoint(
@@ -487,6 +507,7 @@ __all__ = [
     "load_gym_env",
     "load_hf_env",
     "load_module_from_path",
+    "load_recipe_env",
     "looks_like_env",
     "make_gym_environment",
     "normalize_hf_env",
