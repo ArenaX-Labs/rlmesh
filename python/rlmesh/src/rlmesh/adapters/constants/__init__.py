@@ -1,0 +1,46 @@
+"""Shared adapter constants: semantic roles and metadata keys."""
+
+from .metadata import ENV_METADATA_KEY, MODEL_METADATA_KEY
+from .roles import (
+    ACTION_DELTA_POS,
+    ACTION_DELTA_POS_2,
+    ACTION_DELTA_ROT,
+    ACTION_DELTA_ROT_2,
+    ACTION_GRIPPER,
+    ACTION_GRIPPER_2,
+    EEF_POS,
+    EEF_POS_2,
+    EEF_ROT,
+    EEF_ROT_2,
+    GRIPPER_POS,
+    GRIPPER_POS_2,
+    IMAGE_PRIMARY,
+    IMAGE_SECONDARY,
+    IMAGE_WRIST,
+    INSTRUCTION,
+    JOINT_POS,
+    JOINT_VEL,
+)
+
+__all__ = [
+    "ACTION_DELTA_POS",
+    "ACTION_DELTA_POS_2",
+    "ACTION_DELTA_ROT",
+    "ACTION_DELTA_ROT_2",
+    "ACTION_GRIPPER",
+    "ACTION_GRIPPER_2",
+    "EEF_POS",
+    "EEF_POS_2",
+    "EEF_ROT",
+    "EEF_ROT_2",
+    "ENV_METADATA_KEY",
+    "GRIPPER_POS",
+    "GRIPPER_POS_2",
+    "IMAGE_PRIMARY",
+    "IMAGE_SECONDARY",
+    "IMAGE_WRIST",
+    "INSTRUCTION",
+    "JOINT_POS",
+    "JOINT_VEL",
+    "MODEL_METADATA_KEY",
+]
