@@ -28,6 +28,7 @@ from ._registry import (
     resolve_from_recipe,
     unregister,
 )
+from ._scaffold import ScaffoldResult, scaffold_from_pyproject, scaffold_recipe
 from ._schema import (
     Build,
     Fetch,
@@ -59,6 +60,7 @@ __all__ = [
     "RecipeValidationError",
     "Requires",
     "SandboxLaunchArgs",
+    "ScaffoldResult",
     "Setup",
     "UnsupportedRecipeError",
     "build",
@@ -69,5 +71,7 @@ __all__ = [
     "registered_names",
     "resolve",
     "resolve_from_recipe",
+    "scaffold_from_pyproject",
+    "scaffold_recipe",
     "unregister",
 ]
