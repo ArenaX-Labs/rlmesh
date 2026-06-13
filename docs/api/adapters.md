@@ -157,5 +157,5 @@ package (single-sourced from the native crate), including the domain-agnostic ro
 `IMAGE_SECONDARY`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL` and the arm-manipulation roles
 `IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS` (with bimanual `_2` variants) and their
 `ACTION_*` counterparts. Rotation widths follow the declared encoding;
-`rlmesh.adapters.ROTATION_DIMS` maps each encoding (`quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`)
-to its dimension count.
+`rlmesh.adapters.ROTATION_DIMS` maps each encoding (`quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`,
+`euler_xyz`) to its dimension count.

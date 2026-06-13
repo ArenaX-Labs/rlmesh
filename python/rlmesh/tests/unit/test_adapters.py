@@ -1207,3 +1207,27 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
     assert model_input_to_dict(adapt.ImageInput("img", stack=4))["stack"] == 4
     with pytest.raises(ValueError, match="stack must be >= 1"):
         adapt.ImageInput("img", stack=0)
+
+
+def test_euler_xyz_encoding_converts_end_to_end() -> None:
+    # An env reporting orientation as roll-pitch-yaw, a model wanting axis_angle.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={
+                "rpy": adapt.StateTag(role=adapt.EEF_ROT, encoding="euler_xyz")
+            },
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict({"rpy": box(3)}),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="axis_angle"),),
+        action=SMOLVLA.action,
+    )
+    adapter = resolve(env, spec)
+    # Pure yaw of 90 degrees -> axis-angle about z.
+    out = adapter.transform_obs(
+        {"rpy": np.array([0.0, 0.0, np.pi / 2], dtype=np.float32)}
+    )["rot"]
+    np.testing.assert_allclose(out, [0.0, 0.0, np.pi / 2], atol=1e-4)

@@ -139,6 +139,23 @@ fn to_matrix(value: &[f32], encoding: RotationEncoding) -> Matrix {
                 [b1[2], b2[2], b3[2]],
             ]
         }
+        RotationEncoding::EulerXyz => {
+            // [roll, pitch, yaw], extrinsic XYZ: R = Rz(yaw) Ry(pitch) Rx(roll).
+            let (roll, pitch, yaw) = (
+                f64::from(value[0]),
+                f64::from(value[1]),
+                f64::from(value[2]),
+            );
+            let (sr, cr) = (roll.sin(), roll.cos());
+            let (sp, cp) = (pitch.sin(), pitch.cos());
+            let (sy, cy) = (yaw.sin(), yaw.cos());
+            let entries = [
+                [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                [-sp, cp * sr, cp * cr],
+            ];
+            entries.map(|row| row.map(|entry| entry as f32))
+        }
     }
 }
 
@@ -187,6 +204,21 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
             } else {
                 quat
             }
+        }
+        RotationEncoding::EulerXyz => {
+            // Inverse of the extrinsic-XYZ matrix; pitch is recovered in
+            // [-pi/2, pi/2]. At gimbal lock (cos(pitch) ~ 0) roll and yaw
+            // couple, so yaw is pinned to 0.
+            let m = |row: usize, col: usize| f64::from(matrix[row][col]);
+            let sin_pitch = (-m(2, 0)).clamp(-1.0, 1.0);
+            let cos_pitch = (1.0 - sin_pitch * sin_pitch).max(0.0).sqrt();
+            let pitch = sin_pitch.asin();
+            let (roll, yaw) = if cos_pitch > EPS {
+                (m(2, 1).atan2(m(2, 2)), m(1, 0).atan2(m(0, 0)))
+            } else {
+                (m(0, 1).atan2(m(1, 1)), 0.0)
+            };
+            vec![roll as f32, pitch as f32, yaw as f32]
         }
     }
 }
@@ -255,5 +287,34 @@ mod tests {
             (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
             "{axis_angle:?}"
         );
+    }
+
+    #[test]
+    fn euler_xyz_round_trips_through_the_matrix() {
+        use RotationEncoding::{EulerXyz, QuatXyzw};
+        // Non-degenerate roll/pitch/yaw recover exactly through a quaternion.
+        let euler = vec![0.3_f32, -0.4, 1.1];
+        let quat = convert_rotation(&euler, EulerXyz, QuatXyzw).expect("to quat");
+        let back = convert_rotation(&quat, QuatXyzw, EulerXyz).expect("from quat");
+        for (expected, actual) in euler.iter().zip(&back) {
+            assert!(
+                (expected - actual).abs() < 1e-4,
+                "euler round-trip {expected} vs {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn euler_xyz_axes_match_the_convention() {
+        use RotationEncoding::{AxisAngle, EulerXyz};
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        // Pure yaw (rotation about z) -> axis-angle about z.
+        let yaw = convert_rotation(&[0.0, 0.0, half_pi], EulerXyz, AxisAngle).expect("yaw");
+        assert!(yaw[0].abs() < 1e-4 && yaw[1].abs() < 1e-4);
+        assert!((yaw[2] - half_pi).abs() < 1e-4, "{yaw:?}");
+        // Pure roll (rotation about x) -> axis-angle about x.
+        let roll = convert_rotation(&[half_pi, 0.0, 0.0], EulerXyz, AxisAngle).expect("roll");
+        assert!(roll[1].abs() < 1e-4 && roll[2].abs() < 1e-4);
+        assert!((roll[0] - half_pi).abs() < 1e-4, "{roll:?}");
     }
 }

@@ -180,10 +180,14 @@ few things are deliberately out of scope for now and fall back to an escape hatc
 - **Modalities beyond image / state / text** (depth, lidar, point clouds) are not first-class; carry
   them through an {class}`~rlmesh.adapters.InlineCustomInput` or a custom
   {class}`~rlmesh.adapters.AdapterBase`.
-- **Tokenized language** — `TextInput` passes the string through; tokenize in a custom input with
-  the model's own tokenizer rather than declaring one here.
-- **Rotation encodings** are a fixed set (`quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`); an
-  exotic convention is a custom input, or a small addition to the native crate.
+- **Tokenization is the model's job, not the adapter's.** `TextInput` delivers the instruction as a
+  string; tokenize it inside your prediction function with the tokenizer you loaded alongside the
+  checkpoint. Declaring a tokenizer here would couple the IO layer to model internals (the very
+  thing adapters avoid), so there is intentionally no `TokenizerInput`.
+- **Rotation encodings** are a fixed set (`quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`,
+  `euler_xyz`). `euler_xyz` is roll-pitch-yaw, extrinsic XYZ (`R = Rz(yaw) Ry(pitch) Rx(roll)`, the
+  ROS/scipy-`'xyz'` convention); a _different_ Euler convention is a custom input, or a small
+  addition to the native crate.
 - **Frame stacking** is host-side state, so a model spec that sets `stack` only carries it when
   serialized from the Python object (it round-trips through `to_json`, but the native resolution
   ignores it — stacking happens in the adapter, not the core).
