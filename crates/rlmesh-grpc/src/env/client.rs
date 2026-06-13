@@ -772,6 +772,7 @@ mod tests {
         let env = PlainEnv {
             contract: SpaceEnvContract {
                 id: "plain-env".to_string(),
+                autoreset_mode: Default::default(),
                 action_space: Some(space.clone()),
                 observation_space: Some(space),
                 metadata: None,
@@ -938,6 +939,7 @@ mod tests {
         let env = TokenEnv {
             contract: SpaceEnvContract {
                 id: "token-env".to_string(),
+                autoreset_mode: Default::default(),
                 action_space: Some(space.clone()),
                 observation_space: Some(space),
                 metadata: None,

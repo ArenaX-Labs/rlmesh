@@ -96,6 +96,7 @@ impl SmokeEnv {
             .unwrap();
         let env_contract = spaces::EnvContract {
             id: "SmokeEnv-v0".to_string(),
+            autoreset_mode: Default::default(),
             observation_space: Some(obs_space.clone()),
             action_space: Some(action_space.clone()),
             metadata: None,
@@ -680,6 +681,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
             seeds: vec![7],
             options: None,
             timeout_ms: 0,
+            env_indices: vec![],
         })
         .await
         .expect("adapter reset must succeed");
@@ -917,6 +919,7 @@ fn configure_route_request(route_id: &str, request_id: &str) -> JoinRequest {
             }),
             env_contract: Some(rlmesh_proto::env::v1::EnvContract {
                 id: "Ordering-v0".to_string(),
+                autoreset_mode: Default::default(),
                 observation_space: None,
                 action_space: None,
                 metadata: None,
@@ -1166,6 +1169,7 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
             }),
             env_contract: Some(rlmesh_proto::env::v1::EnvContract {
                 id: "Ordering-v0".to_string(),
+                autoreset_mode: Default::default(),
                 observation_space: None,
                 action_space: None,
                 metadata: None,

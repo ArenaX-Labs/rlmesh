@@ -802,6 +802,7 @@ mod tests {
             Self {
                 contract: SpaceEnvContract {
                     id: "handshake-only".to_string(),
+                    autoreset_mode: Default::default(),
                     action_space: Some(space.clone()),
                     observation_space: Some(space),
                     metadata: None,
@@ -875,6 +876,7 @@ mod tests {
             Self {
                 contract: SpaceEnvContract {
                     id: "slow".to_string(),
+                    autoreset_mode: Default::default(),
                     action_space: Some(space.clone()),
                     observation_space: Some(space),
                     metadata: None,
@@ -1192,6 +1194,7 @@ mod tests {
             Self {
                 contract: SpaceEnvContract {
                     id: "terminating".to_string(),
+                    autoreset_mode: Default::default(),
                     action_space: Some(space.clone()),
                     observation_space: Some(space),
                     metadata: None,

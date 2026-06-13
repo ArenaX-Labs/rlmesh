@@ -116,6 +116,8 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
                 .map(public_episode_metadata_to_proto)
                 .collect::<std::result::Result<Vec<_>, _>>()?,
             episode_ids: result.episode_ids,
+            // Full-width response; partial-width is reserved-but-deferred.
+            env_indices: Vec::new(),
         })
     }
 
@@ -322,6 +324,7 @@ mod tests {
             let action_space = spaces::spaces::DiscreteBuilder::new(3).build().unwrap();
             let env_contract = spaces::EnvContract {
                 id: "DummyEnv-v1".to_string(),
+                autoreset_mode: Default::default(),
                 observation_space: Some(obs_space.clone()),
                 action_space: Some(action_space.clone()),
                 metadata: None,
@@ -461,6 +464,7 @@ mod tests {
                     encode_batched_partial_values(&actions, &action_space).unwrap(),
                 )),
                 timeout_ms: 0,
+                env_indices: vec![],
             },
         )
         .await
@@ -487,6 +491,7 @@ mod tests {
                     encode_batched_partial_values(&actions, &action_space).unwrap(),
                 )),
                 timeout_ms: 0,
+                env_indices: vec![],
             },
         )
         .await

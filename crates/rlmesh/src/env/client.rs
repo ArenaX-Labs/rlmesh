@@ -131,6 +131,8 @@ impl RemoteEnv {
                 seeds: req.seeds,
                 options: req.options.as_ref().map(meta_map_to_proto),
                 timeout_ms: req.timeout_ms,
+                // Whole-vector reset; partial reset threads through reset_subset (A3).
+                env_indices: Vec::new(),
             })
             .await
             .map_err(Error::from)?;
@@ -173,6 +175,8 @@ impl RemoteEnv {
                         .map_err(protocol_error_to_error)?,
                 )),
                 timeout_ms: req.timeout_ms,
+                // Full-width step; subset-stepping is reserved-but-deferred.
+                env_indices: Vec::new(),
             })
             .await
             .map_err(Error::from)?;

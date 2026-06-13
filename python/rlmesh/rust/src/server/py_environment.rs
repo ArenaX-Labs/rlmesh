@@ -14,11 +14,12 @@ use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::spaces::SpaceSpec;
 use rlmesh_spaces::{
-    CloseRequest, CloseRequest as SingleCloseRequest, CloseResult as SingleCloseResult,
-    EnvContract, MetaMap, RenderFrame as NativeRenderFrame, RenderRequest,
-    RenderRequest as SingleRenderRequest, RenderResult, RenderResult as SingleRenderResult,
-    ResetRequest as SingleResetRequest, ResetResult as SingleResetResult,
-    StepRequest as SingleStepRequest, StepResult as SingleStepResult,
+    AutoresetMode, CloseRequest, CloseRequest as SingleCloseRequest,
+    CloseResult as SingleCloseResult, EnvContract, MetaMap, RenderFrame as NativeRenderFrame,
+    RenderRequest, RenderRequest as SingleRenderRequest, RenderResult,
+    RenderResult as SingleRenderResult, ResetRequest as SingleResetRequest,
+    ResetResult as SingleResetResult, StepRequest as SingleStepRequest,
+    StepResult as SingleStepResult,
 };
 use std::sync::Arc;
 
@@ -154,6 +155,7 @@ impl PyEnvironment {
                 metadata: extract_optional_meta_attr(env_ref, "metadata")?,
                 render_mode: extract_render_mode(env_ref)?,
                 num_envs: num_envs as u32,
+                autoreset_mode: derive_autoreset_mode(env_ref)?,
             };
 
             Ok(Self {
@@ -220,6 +222,47 @@ fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
     }
 
     value.extract::<String>()
+}
+
+/// Derive the per-lane autoreset convention from the env's
+/// `metadata["autoreset_mode"]` (gymnasium vector envs always set it). The value
+/// is either a gymnasium `AutoresetMode` enum (whose `.value` is one of
+/// `"NextStep"`/`"SameStep"`/`"Disabled"`) or that plain string. Anything absent
+/// or unrecognized defaults to `Disabled` — a scalar/custom env naturally needs
+/// explicit reset. `SameStep` is reserved in the protocol but not yet honored by
+/// the runtime, so it is rejected here (fail loud rather than mishandle timing).
+fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
+    if !obj.hasattr("metadata")? {
+        return Ok(AutoresetMode::Disabled);
+    }
+    let metadata = obj.getattr("metadata")?;
+    if metadata.is_none() {
+        return Ok(AutoresetMode::Disabled);
+    }
+    // metadata is a mapping; a missing key (or a non-mapping) → Disabled.
+    let mode_obj = match metadata.get_item("autoreset_mode") {
+        Ok(value) if !value.is_none() => value,
+        _ => return Ok(AutoresetMode::Disabled),
+    };
+
+    // A gymnasium AutoresetMode enum carries the canonical string in `.value`;
+    // a wire-degraded value is already a plain string.
+    let mode_str: String = if mode_obj.hasattr("value")? {
+        mode_obj.getattr("value")?.extract().unwrap_or_default()
+    } else {
+        mode_obj.extract().unwrap_or_default()
+    };
+
+    match mode_str.as_str() {
+        "NextStep" => Ok(AutoresetMode::NextStep),
+        "Disabled" => Ok(AutoresetMode::Disabled),
+        "SameStep" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
+             construct the environment with NEXT_STEP or DISABLED autoreset",
+        )),
+        // Unknown / unset → safe explicit-reset default.
+        _ => Ok(AutoresetMode::Disabled),
+    }
 }
 
 fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {

@@ -359,6 +359,7 @@ where
                 seeds: reset_seeds,
                 options: None,
                 timeout_ms: reset_timeout_ms,
+                env_indices: Vec::new(),
             }),
         )
         .await?;
@@ -479,6 +480,7 @@ where
                 self.env.step(StepRequest {
                     action: action_event.action.map(bytes_value),
                     timeout_ms: step_timeout_ms,
+                    env_indices: Vec::new(),
                 }),
             )
             .await?;
@@ -597,6 +599,7 @@ where
                         seeds: reset_seeds,
                         options: None,
                         timeout_ms: reset_timeout_ms,
+                        env_indices: Vec::new(),
                     }),
                 )
                 .await?;

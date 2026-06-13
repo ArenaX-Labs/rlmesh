@@ -27,11 +27,22 @@ message ResetRequest {
   repeated int64 seeds = 1;
   rlmesh.spaces.v1.MetaMap options = 2;
   int64 timeout_ms = 3;
+  // Partial / subenv reset. Empty = reset the whole vector (back-compat). When
+  // non-empty, reset only these lanes and `seeds` (if present) is positionally
+  // aligned to this list. Honored where the env supports partial reset (gym
+  // vector envs via options["reset_mask"]); other envs reject with UNSUPPORTED.
+  repeated int32 env_indices = 4;
 }
 
 message StepRequest {
   rlmesh.spaces.v1.SpaceValue action = 1;
   int64 timeout_ms = 2;
+  // RESERVED, behavior deferred. Empty = full-width N (the only behavior
+  // today). Non-empty is rejected with UNSUPPORTED until subset-stepping lands;
+  // when honored, the batched `action` elements and these indices are
+  // positionally aligned (length-len(env_indices)). Reserving the field number
+  // and convention now keeps subset-stepping a non-breaking addition post-seal.
+  repeated int32 env_indices = 3;
 }
 
 message RenderRequest {
@@ -68,6 +79,14 @@ message StepResponse {
   rlmesh.spaces.v1.MetaMap infos = 5;
   repeated EpisodeMetadata completed_episodes = 6;
   repeated string episode_ids = 7;
+  // RESERVED, behavior deferred. Empty = full-width N. When non-empty (future
+  // partial-width response — the bandwidth win of returning only the k advanced
+  // lanes), the positionally-aligned per-lane fields (`observation` elements,
+  // `rewards`, `terminated_mask`, `truncated_mask`, `episode_ids`) are
+  // length-len(env_indices) and aligned to it. NOTE: `completed_episodes` is
+  // NEVER positional — it is a sparse list of only the lanes that completed
+  // this step, each EpisodeMetadata self-describing via its own env_index.
+  repeated int32 env_indices = 8;
 }
 
 message RenderResponse {

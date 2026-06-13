@@ -168,6 +168,42 @@ impl From<SpaceType> for i32 {
     }
 }
 
+/// Per-lane autoreset convention an environment follows (mirrors the proto
+/// `AutoresetMode` and gymnasium's `AutoresetMode`). There is intentionally no
+/// `Unspecified` variant: the proto `UNSPECIFIED` (and any unknown value)
+/// decodes to `Disabled`, the safe explicit-reset default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(i32)]
+pub enum AutoresetMode {
+    /// Terminal obs at step `t`; the env internally resets the done lane and
+    /// delivers the fresh obs at `t+1`.
+    NextStep = 1,
+    /// Reset obs delivered in the same step the lane reports done. Reserved;
+    /// not honored by the runtime yet.
+    SameStep = 2,
+    /// No autoreset; a done lane stays inactive until an explicit reset.
+    #[default]
+    Disabled = 3,
+}
+
+impl From<i32> for AutoresetMode {
+    fn from(value: i32) -> Self {
+        match value {
+            1 => Self::NextStep,
+            2 => Self::SameStep,
+            // 0 (proto UNSPECIFIED), 3 (DISABLED), and any unknown value decode
+            // to Disabled — the safe, explicit-reset default.
+            _ => Self::Disabled,
+        }
+    }
+}
+
+impl From<AutoresetMode> for i32 {
+    fn from(value: AutoresetMode) -> Self {
+        value as i32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EnvContract {
     pub id: String,
@@ -176,4 +212,7 @@ pub struct EnvContract {
     pub metadata: Option<crate::meta::MetaMap>,
     pub render_mode: String,
     pub num_envs: u32,
+    /// Per-lane autoreset convention the runtime honors. Derived at construction
+    /// from the env's `metadata["autoreset_mode"]`; defaults to `Disabled`.
+    pub autoreset_mode: AutoresetMode,
 }

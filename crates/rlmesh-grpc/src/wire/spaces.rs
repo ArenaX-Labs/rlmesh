@@ -15,6 +15,7 @@ pub fn env_contract_to_proto(spec: &native::EnvContract) -> env_proto::EnvContra
         metadata: spec.metadata.as_ref().map(meta_map_to_proto),
         render_mode: spec.render_mode.clone(),
         num_envs: spec.num_envs,
+        autoreset_mode: i32::from(spec.autoreset_mode),
     }
 }
 
@@ -31,6 +32,8 @@ pub fn env_contract_from_proto(
         metadata: spec.metadata.map(meta_map_from_proto),
         render_mode: spec.render_mode,
         num_envs: spec.num_envs,
+        // proto UNSPECIFIED (and any unknown value) decodes to Disabled.
+        autoreset_mode: native::AutoresetMode::from(spec.autoreset_mode),
     })
 }
 

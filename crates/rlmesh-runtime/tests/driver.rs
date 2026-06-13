@@ -386,6 +386,7 @@ impl RuntimeEnv for TestEnv {
                     .into_iter()
                     .collect(),
                 episode_ids: vec![],
+                env_indices: vec![],
             },
             telemetry: None,
         })
