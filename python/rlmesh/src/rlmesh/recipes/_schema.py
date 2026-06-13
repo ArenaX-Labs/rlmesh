@@ -183,10 +183,13 @@ def _as_str_tuple(value: Sequence[str], field_name: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class GymMake:
-    """A ``gymnasium.make`` factory -- the 90% case.
+    """A ``gymnasium.make`` / ``gym.make`` factory -- the 90% case.
 
-    Covers ``CartPole-v1`` or any id a ``requires.imports`` package registers,
-    such as ``safety_gymnasium``.
+    Covers any id constructible via ``gymnasium.make``: a built-in like
+    ``CartPole-v1``, or one that a ``requires.imports`` package registers into the
+    Gymnasium registry on import (e.g. ``ale_py`` for Atari). For an environment
+    with its *own* ``make`` or one that needs a wrapper (e.g. ``safety_gymnasium``),
+    or any custom construction, use :class:`PyMake` or ``rlmesh.EnvRecipe`` instead.
     """
 
     env_id: str
@@ -205,10 +208,15 @@ class GymMake:
 
 @dataclass(frozen=True)
 class PyMake:
-    """A ``module:callable`` Python factory (DROID / LIBERO / Simpler).
+    """A ``module:callable`` Python factory referenced by string.
 
-    The factory *body* is the sole import sequencer; the envelope never pre-runs
-    ``requires.imports`` for a py recipe (see ``Recipe`` validation, spec 7.1D).
+    The right tool whenever ``gymnasium.make`` is not (an env with its own ``make``
+    plus a wrapper like ``safety_gymnasium``, or heavy construction like LIBERO /
+    Isaac). The callable can be a function or a class (its ``__init__`` is the
+    initializer). The factory *body* is the sole import sequencer; the envelope
+    never pre-runs ``requires.imports`` for a py recipe (see ``Recipe`` validation).
+    For the cohesive class form (factory + build + ``prepare()`` together), subclass
+    ``rlmesh.EnvRecipe``, which projects to a ``PyMake`` recipe.
     """
 
     entrypoint: str
@@ -399,8 +407,12 @@ class Build:
     An empty ``Build()`` reproduces today's OSS behavior (base + pip rlmesh +
     gymnasium). Every field renders to a Dockerfile instruction, *or*
     ``dockerfile`` supplies the body verbatim (the strict-superset-of-a-Dockerfile
-    trapdoor, spec 7.1H). The full ``FROM``-chain is derivable from the document
-    alone.
+    trapdoor). The full ``FROM``-chain is derivable from the document alone.
+
+    The default renderer installs ``system``/``system_runtime`` with **apt**, so a
+    structured build targets a **Debian/Ubuntu** base (the defaults --
+    ``python:3.11-slim`` and the ``nvidia/cuda`` images -- are). For another distro,
+    set ``dockerfile`` to a verbatim Dockerfile, or use ``commands``.
     """
 
     base: str | None = None

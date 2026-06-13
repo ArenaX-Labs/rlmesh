@@ -15,6 +15,11 @@
 //! Dockerfile trapdoor. `from_recipe` is inlined by the registry layer before the
 //! deriver runs. `ProjectInstall` requires its source tree to be staged into the
 //! build context under [`PROJECT_CONTEXT_DIR`] by the caller.
+//!
+//! System packages (`system`/`system_runtime`) are installed with **apt**, so a
+//! structured build targets a **Debian/Ubuntu** base; [`render_system_packages`] is
+//! the single point to generalize to another distro, and `build.dockerfile` is the
+//! escape hatch for a non-Debian base today.
 
 use std::collections::BTreeMap;
 
@@ -359,19 +364,9 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
 
     out.push_str(&format!("WORKDIR {WORKDIR}\n\n"));
 
-    // apt: system union system_runtime, order-preserving dedup, one layer.
+    // system packages: system union system_runtime, order-preserving dedup, one layer.
     let apt = union_preserving_order(&build.system, &build.system_runtime);
-    if !apt.is_empty() {
-        let mut names = Vec::with_capacity(apt.len());
-        for name in &apt {
-            validate_token("build.system", name)?;
-            names.push(shell_quote(name));
-        }
-        out.push_str(&format!(
-            "RUN apt-get update && apt-get install -y --no-install-recommends {} && rm -rf /var/lib/apt/lists/*\n\n",
-            names.join(" ")
-        ));
-    }
+    out.push_str(&render_system_packages(&apt)?);
 
     // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink it.
     if base_is_non_python(base) {
@@ -431,7 +426,7 @@ fn install_verb(installer: &str) -> &'static str {
     }
 }
 
-/// Union two apt lists preserving first-occurrence order.
+/// Union two system-package lists preserving first-occurrence order.
 fn union_preserving_order(first: &[String], second: &[String]) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
@@ -441,6 +436,34 @@ fn union_preserving_order(first: &[String], second: &[String]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Render the system-package install step.
+///
+/// **Debian/Ubuntu assumption -- the single point to generalize.** The default
+/// renderer installs `system`/`system_runtime` with `apt`, so a structured build
+/// targets a Debian/Ubuntu base (the default `python:3.11-slim` and the `nvidia/
+/// cuda` images are). To support another distro, generalize HERE: add an additive
+/// `Build.package_manager` (`serde(default)` = `apt`, backward-compatible) or infer
+/// it from the base image and branch on it -- the schema/wire format does not
+/// change, because `system`/`system_runtime` are neutral package-name lists. Until
+/// then, a non-Debian base uses the `build.dockerfile` trapdoor or `build.commands`.
+/// (A future `package_manager` field would change `build_hash`, forcing a one-time
+/// rebuild; if a persistent image catalog exists by then, omit default-valued build
+/// fields from the hash.)
+fn render_system_packages(names: &[String]) -> Result<String, DeriveError> {
+    if names.is_empty() {
+        return Ok(String::new());
+    }
+    let mut quoted = Vec::with_capacity(names.len());
+    for name in names {
+        validate_token("build.system", name)?;
+        quoted.push(shell_quote(name));
+    }
+    Ok(format!(
+        "RUN apt-get update && apt-get install -y --no-install-recommends {} && rm -rf /var/lib/apt/lists/*\n\n",
+        quoted.join(" ")
+    ))
 }
 
 /// Render the `COPY` + install for a [`ProjectInstall`] (the author's own tree).
@@ -570,8 +593,8 @@ fn render_pip_step(step: &PipInstall, verb: &str) -> Result<String, DeriveError>
 mod tests {
     use super::*;
 
-    const GYM_RECIPE_JSON: &str = include_str!("../tests/golden/safety_gymnasium.recipe.json");
-    const GYM_GOLDEN: &str = include_str!("../tests/golden/safety_gymnasium.dockerfile");
+    const GYM_RECIPE_JSON: &str = include_str!("../tests/golden/gym_atari.recipe.json");
+    const GYM_GOLDEN: &str = include_str!("../tests/golden/gym_atari.dockerfile");
     const LIBERO_RECIPE_JSON: &str = include_str!("../tests/golden/libero.recipe.json");
     const LIBERO_GOLDEN: &str = include_str!("../tests/golden/libero.dockerfile");
 
@@ -582,17 +605,17 @@ mod tests {
     #[test]
     fn deserializes_python_wire_shape() {
         let recipe = gym_recipe();
-        assert_eq!(recipe.name, "safety/point-goal");
+        assert_eq!(recipe.name, "atari/breakout");
         assert_eq!(
             recipe.make,
             Some(Make::Gym {
-                env_id: "SafetyPointGoal1-v0".to_string(),
+                env_id: "ALE/Breakout-v5".to_string(),
                 kwargs: BTreeMap::new(),
             })
         );
         assert_eq!(recipe.build.pip.len(), 1);
-        assert_eq!(recipe.build.pip[0].packages, ["safety-gymnasium==1.0.0"]);
-        assert_eq!(recipe.requires.imports, ["safety_gymnasium"]);
+        assert_eq!(recipe.build.pip[0].packages, ["ale-py"]);
+        assert_eq!(recipe.requires.imports, ["ale_py"]);
         assert_eq!(recipe.recipe_version, 1);
     }
 

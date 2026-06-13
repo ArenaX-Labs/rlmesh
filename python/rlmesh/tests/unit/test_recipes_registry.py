@@ -33,22 +33,22 @@ def _clean_registry() -> Iterator[None]:
     clear_registry()
 
 
-def _gym_recipe(name: str = "safety/point-goal") -> Recipe:
+def _gym_recipe(name: str = "atari/breakout") -> Recipe:
     return Recipe(
         name=name,
-        make=GymMake(env_id="SafetyPointGoal1-v0", kwargs={"render_mode": "rgb_array"}),
+        make=GymMake(env_id="ALE/Breakout-v5", kwargs={"render_mode": "rgb_array"}),
         build=Build(
             base="python:3.11-slim",
-            pip=[PipInstall(packages=["safety-gymnasium==1.0.0"])],
+            pip=[PipInstall(packages=["ale-py"])],
         ),
-        requires=Requires(imports=["safety_gymnasium"]),
+        requires=Requires(imports=["ale_py"]),
     )
 
 
 def test_register_and_resolve() -> None:
     recipe = register(_gym_recipe())
-    assert resolve("safety/point-goal") == recipe
-    assert registered_names() == ("safety/point-goal",)
+    assert resolve("atari/breakout") == recipe
+    assert registered_names() == ("atari/breakout",)
 
 
 def test_resolve_missing_raises_with_listing() -> None:
@@ -59,7 +59,7 @@ def test_resolve_missing_raises_with_listing() -> None:
 
 def test_register_rejects_shadowing() -> None:
     register(_gym_recipe())
-    other = Recipe(name="safety/point-goal", make=GymMake(env_id="Different-v0"))
+    other = Recipe(name="atari/breakout", make=GymMake(env_id="Different-v0"))
     with pytest.raises(ValueError, match="already registered"):
         register(other)
 
@@ -68,28 +68,28 @@ def test_register_idempotent_for_equal_recipe() -> None:
     register(_gym_recipe())
     # Re-registering an identical recipe is a no-op, not a shadow conflict.
     register(_gym_recipe())
-    assert registered_names() == ("safety/point-goal",)
+    assert registered_names() == ("atari/breakout",)
 
 
 def test_register_overwrite() -> None:
     register(_gym_recipe())
-    other = Recipe(name="safety/point-goal", make=GymMake(env_id="Different-v0"))
+    other = Recipe(name="atari/breakout", make=GymMake(env_id="Different-v0"))
     register(other, overwrite=True)
-    assert resolve("safety/point-goal").make == GymMake(env_id="Different-v0")
+    assert resolve("atari/breakout").make == GymMake(env_id="Different-v0")
 
 
 def test_unregister() -> None:
     register(_gym_recipe())
-    unregister("safety/point-goal")
+    unregister("atari/breakout")
     assert registered_names() == ()
-    unregister("safety/point-goal")  # absent is a no-op
+    unregister("atari/breakout")  # absent is a no-op
 
 
 def test_recipe_to_sandbox_args_flat_gym() -> None:
     args = recipe_to_sandbox_args(_gym_recipe())
-    assert args.source == "SafetyPointGoal1-v0"
-    assert args.packages == ("safety-gymnasium==1.0.0",)
-    assert args.imports == ("safety_gymnasium",)
+    assert args.source == "ALE/Breakout-v5"
+    assert args.packages == ("ale-py",)
+    assert args.imports == ("ale_py",)
     assert args.base_image == "python:3.11-slim"
     assert args.kwargs == {"render_mode": "rgb_array"}
 

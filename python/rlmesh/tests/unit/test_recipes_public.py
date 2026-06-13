@@ -203,17 +203,17 @@ def test_envserver_coerces_recipe() -> None:
         getattr(env, "close", lambda: None)()
 
 
-def test_make_safety_gym_one_liner_shape() -> None:
-    # The locked acceptance case: a gym recipe with flat packages round-trips
-    # through make() coercion without needing a sandbox.
+def test_make_gym_one_liner_shape() -> None:
+    # A gym recipe (Atari, registered into Gymnasium by importing ale_py) with flat
+    # packages round-trips through make() coercion without needing a sandbox.
     recipe = Recipe(
-        name="safety/point-goal",
-        make=GymMake(env_id="SafetyPointGoal1-v0"),
-        build=Build(pip=[PipInstall(packages=["safety-gymnasium==1.0.0"])]),
-        requires=Requires(imports=["safety_gymnasium"]),
+        name="atari/breakout",
+        make=GymMake(env_id="ALE/Breakout-v5"),
+        build=Build(pip=[PipInstall(packages=["ale-py"])]),
+        requires=Requires(imports=["ale_py"]),
     )
     recipes.register(recipe)
-    assert recipes.resolve("safety/point-goal") == recipe
+    assert recipes.resolve("atari/breakout") == recipe
 
 
 # ----- flat register / make sugar (Part E) -----

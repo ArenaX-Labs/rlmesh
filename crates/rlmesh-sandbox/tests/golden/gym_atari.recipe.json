@@ -1,8 +1,8 @@
 {
-  "name": "safety/point-goal",
+  "name": "atari/breakout",
   "make": {
     "kind": "gym",
-    "env_id": "SafetyPointGoal1-v0",
+    "env_id": "ALE/Breakout-v5",
     "kwargs": {}
   },
   "build": {
@@ -12,7 +12,7 @@
     "system_runtime": [],
     "pip": [
       {
-        "packages": ["safety-gymnasium==1.0.0"],
+        "packages": ["ale-py"],
         "index_url": null,
         "extra_index_urls": [],
         "no_deps": false,
@@ -36,9 +36,9 @@
     "files": []
   },
   "requires": {
-    "imports": ["safety_gymnasium"]
+    "imports": ["ale_py"]
   },
-  "summary": "Safety Gymnasium point goal",
+  "summary": "Atari Breakout via the ALE",
   "annotations": null,
   "recipe_version": 1
 }
