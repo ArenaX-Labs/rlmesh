@@ -809,8 +809,8 @@ def test_numeric_payload_data_mapping():
 def test_custom_callable_transform():
     spec = adapt.ModelSpec(
         inputs=(
-            adapt.CustomInput(
-                "engineered", transform=lambda obs: float(obs["robot0_eef_pos"][0])
+            adapt.InlineCustomInput(
+                "engineered", lambda obs: float(obs["robot0_eef_pos"][0])
             ),
         ),
         action=SMOLVLA.action,
@@ -824,7 +824,7 @@ def test_custom_callable_transform():
 
 def test_custom_entrypoint_requires_trust():
     spec = adapt.ModelSpec(
-        inputs=(adapt.CustomInput("count", transform="builtins:len"),),
+        inputs=(adapt.EntrypointCustomInput("count", "builtins:len"),),
         action=SMOLVLA.action,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="trust_entrypoints"):
@@ -894,7 +894,7 @@ def test_metadata_keys_are_side_specific():
 
 def test_custom_callable_spec_is_not_publishable():
     spec = adapt.ModelSpec(
-        inputs=(adapt.CustomInput("x", transform=lambda obs: 0),),
+        inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
         action=SMOLVLA.action,
     )
     with pytest.raises(ValueError, match="cannot be serialized"):
@@ -903,7 +903,7 @@ def test_custom_callable_spec_is_not_publishable():
 
 def test_custom_callable_is_not_serializable():
     spec = adapt.ModelSpec(
-        inputs=(adapt.CustomInput("x", transform=lambda obs: 0),),
+        inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
         action=SMOLVLA.action,
     )
     with pytest.raises(ValueError, match="cannot be serialized"):
@@ -912,7 +912,7 @@ def test_custom_callable_is_not_serializable():
 
 def test_custom_entrypoint_is_serializable():
     spec = adapt.ModelSpec(
-        inputs=(adapt.CustomInput("x", transform="builtins:len"),),
+        inputs=(adapt.EntrypointCustomInput("x", "builtins:len"),),
         action=SMOLVLA.action,
     )
     assert adapt.ModelSpec.from_json(spec.to_json()) == spec

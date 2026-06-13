@@ -168,25 +168,47 @@ class TextInput:
 
 
 @dataclass(frozen=True)
-class CustomInput:
-    """An escape hatch input computed by user code from the raw observation.
+class InlineCustomInput:
+    """A custom input computed in-process by a user callable.
+
+    Local only: the callable cannot be serialized, so a model spec carrying
+    an :class:`InlineCustomInput` cannot be published in contract metadata.
+    Use :class:`EntrypointCustomInput` for a spec that must travel.
 
     Attributes:
         key: Key of the entry in the model input payload.
-        transform: Either a callable taking the raw observation mapping, or
-            a ``module:callable`` entrypoint string. Entrypoint strings are
-            only imported when ``resolve(..., trust_entrypoints=True)``.
+        transform: Callable taking the raw observation mapping.
     """
 
     key: str
-    transform: ObsTransform | str
+    transform: ObsTransform
 
 
-ModelInput: TypeAlias = ImageInput | StateInput | TextInput | CustomInput
+@dataclass(frozen=True)
+class EntrypointCustomInput:
+    """A custom input computed by a ``module:callable`` entrypoint.
+
+    Serializable and publishable. The entrypoint is imported only when
+    ``resolve(..., trust_entrypoints=True)``; otherwise resolution refuses
+    to import it.
+
+    Attributes:
+        key: Key of the entry in the model input payload.
+        entrypoint: A ``module:callable`` string.
+    """
+
+    key: str
+    entrypoint: str
+
+
+ModelInput: TypeAlias = (
+    ImageInput | StateInput | TextInput | InlineCustomInput | EntrypointCustomInput
+)
 
 __all__ = [
-    "CustomInput",
+    "EntrypointCustomInput",
     "ImageInput",
+    "InlineCustomInput",
     "ModelInput",
     "ObsTransform",
     "StateComponent",

@@ -128,10 +128,10 @@ resolve explicitly instead, use {func}`~rlmesh.adapters.resolve_from_contract` a
 When a pairing needs logic a declarative spec cannot express, three mechanisms compose, most local
 first:
 
-- **A custom input** ({class}`~rlmesh.adapters.CustomInput`) computes one payload key from the raw
-  observation with an in-process callable, while the rest of the payload stays spec-driven. A
-  `module:callable` entrypoint string is also accepted but only imported when you pass
-  `resolve(..., trust_entrypoints=True)`; in-process callables are always local.
+- **A custom input** computes one payload key from the raw observation while the rest stays
+  spec-driven: {class}`~rlmesh.adapters.InlineCustomInput` runs an in-process callable (local only),
+  or {class}`~rlmesh.adapters.EntrypointCustomInput` names a `module:callable` string that is
+  imported only when you pass `resolve(..., trust_entrypoints=True)`.
 - **A custom adapter** subclasses {class}`~rlmesh.adapters.AdapterBase` to add stateful behavior a
   spec cannot describe (for example temporal ensembling across action chunks), typically by wrapping
   a resolved adapter and overriding only the stateful part. Override

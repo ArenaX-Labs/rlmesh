@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 from .model_inputs import (
-    CustomInput,
+    EntrypointCustomInput,
     ImageInput,
     ModelInput,
     StateComponent,
@@ -67,12 +67,12 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             "container": item.container,
             "default": item.default,
         }
-    if not isinstance(item.transform, str):
-        raise ValueError(
-            f"custom input {item.key!r} holds an in-process callable and cannot "
-            "be serialized; use a 'module:callable' entrypoint string instead"
-        )
-    return {"type": "custom", "key": item.key, "transform": item.transform}
+    if isinstance(item, EntrypointCustomInput):
+        return {"type": "custom", "key": item.key, "transform": item.entrypoint}
+    raise ValueError(
+        f"custom input {item.key!r} holds an in-process callable and cannot be "
+        "serialized; use an EntrypointCustomInput ('module:callable') instead"
+    )
 
 
 def model_input_from_dict(item: object) -> ModelInput:
@@ -141,9 +141,11 @@ def model_input_from_dict(item: object) -> ModelInput:
             default=None if default is None else str(default),
         )
     if kind == "custom":
-        return CustomInput(
+        # Only entrypoint-form customs survive serialization; an in-process
+        # callable cannot be on the wire.
+        return EntrypointCustomInput(
             key=require_str(data, "key", "custom input"),
-            transform=require_str(data, "transform", "custom input"),
+            entrypoint=require_str(data, "transform", "custom input"),
         )
     raise ValueError(f"unknown model input type {kind!r}")
 

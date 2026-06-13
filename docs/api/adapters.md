@@ -98,7 +98,13 @@ the handshake alone.
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.CustomInput
+.. autoclass:: rlmesh.adapters.InlineCustomInput
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.adapters.EntrypointCustomInput
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```

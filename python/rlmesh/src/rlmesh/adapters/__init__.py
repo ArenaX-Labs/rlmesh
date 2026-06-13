@@ -28,8 +28,9 @@ declarative; custom inputs holding in-process callables are local-only.
 
 Transformations are interpreted from declarative spec data; no code is ever
 evaluated from a spec. Bespoke feature engineering plugs in through
-:class:`CustomInput` as an in-process callable or an explicitly trusted
-``module:callable`` entrypoint. When a pairing needs logic specs cannot
+:class:`InlineCustomInput` (an in-process callable) or
+:class:`EntrypointCustomInput` (an explicitly trusted ``module:callable``
+entrypoint). When a pairing needs logic specs cannot
 express (e.g. control-space conversion requiring a kinematic model),
 subclass :class:`AdapterBase` to provide a fully custom adapter that is
 interchangeable with resolved ones.
@@ -73,11 +74,12 @@ from .specs import (
     ROTATION_DIMS,
     ActionComponent,
     ActionLayout,
-    CustomInput,
+    EntrypointCustomInput,
     EnvTags,
     ImageInput,
     ImageLayout,
     ImageTag,
+    InlineCustomInput,
     ModelInput,
     ModelSpec,
     ObsTag,
@@ -117,12 +119,13 @@ __all__ = [
     "ActionLayout",
     "AdapterBase",
     "AdapterResolutionError",
-    "CustomInput",
+    "EntrypointCustomInput",
     "EnvTags",
     "IOAdapter",
     "ImageInput",
     "ImageLayout",
     "ImageTag",
+    "InlineCustomInput",
     "ModelInput",
     "ModelSpec",
     "ObsTag",

@@ -15,8 +15,9 @@ from .env_tags import (
 from .layouts import ImageLayout
 from .model import ModelSpec
 from .model_inputs import (
-    CustomInput,
+    EntrypointCustomInput,
     ImageInput,
+    InlineCustomInput,
     ModelInput,
     ObsTransform,
     StateComponent,
@@ -29,11 +30,12 @@ __all__ = [
     "ROTATION_DIMS",
     "ActionComponent",
     "ActionLayout",
-    "CustomInput",
+    "EntrypointCustomInput",
     "EnvTags",
     "ImageInput",
     "ImageLayout",
     "ImageTag",
+    "InlineCustomInput",
     "ModelInput",
     "ModelSpec",
     "ObsTag",

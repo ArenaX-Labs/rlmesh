@@ -18,7 +18,13 @@ from .._rlmesh import adapters_resolve
 from .adapter import IOAdapter
 from .constants import ENV_METADATA_KEY
 from .errors import AdapterResolutionError
-from .specs import CustomInput, EnvTags, ModelSpec, ObsTransform
+from .specs import (
+    EntrypointCustomInput,
+    EnvTags,
+    InlineCustomInput,
+    ModelSpec,
+    ObsTransform,
+)
 from .specs.action_serialization import action_layout_to_dict
 from .specs.model_serialization import model_input_to_dict
 
@@ -40,25 +46,26 @@ def _model_wire(
     customs: dict[str, ObsTransform] = {}
     wire_inputs: list[dict[str, Any]] = []
     for model_input in model_spec.inputs:
-        if not isinstance(model_input, CustomInput):
-            wire_inputs.append(model_input_to_dict(model_input))
-            continue
-        transform = model_input.transform
-        if isinstance(transform, str):
+        if isinstance(model_input, InlineCustomInput):
+            customs[model_input.key] = model_input.transform
+            wire_transform = f"host:{model_input.key}"
+        elif isinstance(model_input, EntrypointCustomInput):
             if not trust_entrypoints:
                 raise AdapterResolutionError(
                     f"custom input {model_input.key!r} references entrypoint "
-                    f"{transform!r}; pass resolve(..., trust_entrypoints=True) "
-                    "to allow importing it"
+                    f"{model_input.entrypoint!r}; pass "
+                    "resolve(..., trust_entrypoints=True) to allow importing it"
                 )
             customs[model_input.key] = cast(
                 ObsTransform,
-                resolve_entrypoint(transform, label="custom input transform"),
+                resolve_entrypoint(
+                    model_input.entrypoint, label="custom input transform"
+                ),
             )
-            wire_transform = transform
+            wire_transform = model_input.entrypoint
         else:
-            customs[model_input.key] = transform
-            wire_transform = f"host:{model_input.key}"
+            wire_inputs.append(model_input_to_dict(model_input))
+            continue
         wire_inputs.append(
             {"type": "custom", "key": model_input.key, "transform": wire_transform}
         )
