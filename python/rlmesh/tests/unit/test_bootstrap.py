@@ -386,3 +386,23 @@ def test_parse_entrypoint_rejects_missing_callable() -> None:
 
     with pytest.raises(ValueError, match="module:callable"):
         parse_entrypoint("fake_model_module")
+
+
+def test_load_env_entrypoint_does_not_wrap_factory_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # RecipeConstructionError wraps ONLY the import/resolve boundary; an error
+    # raised inside a successfully-resolved factory must propagate raw.
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+
+    module = ModuleType("fake_env_module")
+
+    def boom(**_kwargs: object) -> object:
+        raise RuntimeError("boom-from-make")
+
+    module.boom = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_env_module", module)
+
+    with pytest.raises(RuntimeError, match="boom-from-make") as excinfo:
+        load_env_entrypoint("fake_env_module:boom")
+    assert not isinstance(excinfo.value, RecipeConstructionError)

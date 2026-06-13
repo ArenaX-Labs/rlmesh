@@ -236,3 +236,28 @@ def test_recipe_equality_independent_of_input_container_types() -> None:
         build=Build(system=("x",)),
     )
     assert a == b
+
+
+def test_gym_env_id_allows_colon_load_form() -> None:
+    # gymnasium.make accepts module:Name ids (e.g. sai_pygame:SquidHunt-v0); make
+    # is a strict superset, so GymMake.env_id must too.
+    assert GymMake(env_id="sai_pygame:SquidHunt-v0").env_id == "sai_pygame:SquidHunt-v0"
+    assert GymMake(env_id="ALE/Breakout-v5").env_id == "ALE/Breakout-v5"
+
+
+def test_gym_env_id_still_rejects_whitespace_and_metachars() -> None:
+    for bad in ["has space", "a;rm -rf", "-leadingdash"]:
+        with pytest.raises(RecipeValidationError):
+            GymMake(env_id=bad)
+
+
+def test_pymake_rejects_malformed_entrypoints() -> None:
+    for bad in ["nocolon", "mod:", ":fn", "mod:fn.", "mod:.fn", "mod:a..b"]:
+        with pytest.raises(RecipeValidationError):
+            PyMake(entrypoint=bad)
+
+
+def test_pymake_accepts_dotted_classmethod_entrypoint() -> None:
+    assert PyMake(entrypoint="mod:Class._rlmesh_construct").entrypoint == (
+        "mod:Class._rlmesh_construct"
+    )

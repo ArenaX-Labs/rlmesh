@@ -78,6 +78,10 @@ _POSIX_PATH: Final = re.compile(r"^[A-Za-z0-9._/\-]+$")
 _ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # The name half of "namespace/name"; '@' is reserved for @variant addressing.
 _RECIPE_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
+# A gymnasium env id. Unlike a recipe name it may contain ':' (the
+# ``module:Name-vN`` load form, e.g. ``sai_pygame:SquidHunt-v0``), so
+# ``rlmesh.make`` stays a strict superset of ``gymnasium.make``.
+_GYM_ENV_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:\-]*$")
 
 
 def _require_str(value: object, field_name: str) -> str:
@@ -199,7 +203,7 @@ class GymMake:
     def __post_init__(self) -> None:
         """Validate the env id and JSON-only kwargs."""
         _check_token(
-            _require_str(self.env_id, "GymMake.env_id"), _RECIPE_NAME, "GymMake.env_id"
+            _require_str(self.env_id, "GymMake.env_id"), _GYM_ENV_ID, "GymMake.env_id"
         )
         object.__setattr__(
             self, "kwargs", _clean_json_kwargs(self.kwargs, "GymMake.kwargs")
@@ -225,11 +229,15 @@ class PyMake:
 
     def __post_init__(self) -> None:
         """Validate the ``module:callable`` entrypoint and JSON-only kwargs."""
+        from rlmesh._bootstrap.entrypoint import parse_entrypoint
+
         entrypoint = _require_str(self.entrypoint, "PyMake.entrypoint")
-        if ":" not in entrypoint:
-            raise RecipeValidationError(
-                f"PyMake.entrypoint {entrypoint!r} must be 'module:callable'"
-            )
+        # Use the canonical parser so the same malformed shapes the loader rejects
+        # (``mod:``, ``:fn``, ``mod:fn.``) fail at construction, not at image build.
+        try:
+            parse_entrypoint(entrypoint, label="PyMake.entrypoint")
+        except ValueError as exc:
+            raise RecipeValidationError(str(exc)) from exc
         object.__setattr__(
             self, "kwargs", _clean_json_kwargs(self.kwargs, "PyMake.kwargs")
         )

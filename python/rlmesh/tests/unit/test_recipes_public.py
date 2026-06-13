@@ -271,3 +271,8 @@ def test_make_gym_id_forwards_imports() -> None:
         assert env.reset(seed=0)[0] is not None
     finally:
         env.close()
+
+
+def test_register_gym_sugar_accepts_colon_id() -> None:
+    recipe = rlmesh.register("sai/squid", gym="sai_pygame:SquidHunt-v0")
+    assert recipe.make == GymMake(env_id="sai_pygame:SquidHunt-v0")

@@ -11,6 +11,7 @@ zero-config recipe registry).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
@@ -52,22 +53,35 @@ def make(
     Returns:
         The constructed environment.
     """
+    if isinstance(source, EnvRecipe):
+        raise TypeError(
+            "pass the EnvRecipe subclass, not an instance: rlmesh.make(MyEnv) not "
+            "rlmesh.make(MyEnv())"
+        )
     if is_env_recipe(source):
         # Construct in-process via the class lifecycle (works for a class defined
-        # in a script/notebook); num_envs/packages/imports do not apply to a class.
-        _reject_gym_sugar_for_class(packages, imports)
+        # in a script/notebook). The gym sugar and vectorization do not apply.
+        _reject_unsupported_for_class(packages, imports, num_envs, vectorization_mode)
         return construct_authored(source, **kwargs)
     recipe = _coerce_recipe(cast("str | Recipe", source), kwargs, packages, imports)
     return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
 
 
-def _reject_gym_sugar_for_class(
-    packages: Sequence[str] | None, imports: Sequence[str] | None
+def _reject_unsupported_for_class(
+    packages: Sequence[str] | None,
+    imports: Sequence[str] | None,
+    num_envs: int,
+    vectorization_mode: str | None,
 ) -> None:
     if packages or imports:
         raise TypeError(
             "make(EnvRecipe) does not accept packages=/imports=; declare them in the "
             "class's build= (and import inside make())"
+        )
+    if num_envs != 1 or vectorization_mode is not None:
+        raise TypeError(
+            "make(EnvRecipe) does not support num_envs/vectorization_mode (a py factory "
+            "returns one env); vectorize inside your make() or use a gym source"
         )
 
 
@@ -87,9 +101,12 @@ def _coerce_recipe(
     try:
         recipe = resolve(source)
     except RecipeNotFoundError:
-        # Gym fallthrough: rlmesh.make is a strict superset of gymnasium.make.
+        # Gym fallthrough: rlmesh.make is a strict superset of gymnasium.make. The
+        # synthesized (throwaway) recipe name is sanitized -- a gym id may contain
+        # ':' (e.g. sai_pygame:SquidHunt-v0), which a recipe name may not.
+        name = "gym/" + re.sub(r"[^A-Za-z0-9._/-]", "-", source)
         return gym_sugar_to_recipe(
-            f"gym/{source}", source, packages=packages, imports=imports, kwargs=kwargs
+            name, source, packages=packages, imports=imports, kwargs=kwargs
         )
     if kwargs or packages or imports:
         raise TypeError(

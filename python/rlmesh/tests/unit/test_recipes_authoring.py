@@ -61,6 +61,15 @@ def authored_module(tmp_path: Path) -> Iterator[str]:
                     type(self).order.append("make")
                     return _StubEnv()
 
+            class BadReturn(rlmesh.EnvRecipe):
+                name = "test/bad-return"
+
+                def make(self, **kwargs):
+                    return {"not": "an env"}
+
+            class NamelessChild(Cart):  # inherits Cart.name -- must be rejected
+                pass
+
             class _StubEnv:
                 def reset(self, *, seed=None, options=None):
                     return 0, {}
@@ -201,3 +210,48 @@ def test_envserver_builds_envrecipe(authored_module: str) -> None:
         assert hasattr(env, "reset") and hasattr(env, "step")
     finally:
         getattr(env, "close", lambda: None)()
+
+
+# ----- footgun guards (from the adversarial review) -----
+
+
+def test_make_rejects_envrecipe_instance(authored_module: str) -> None:
+    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="not an instance"):
+        rlmesh.make(cart())  # the class is correct; an instance is the mistake
+
+
+def test_envserver_rejects_envrecipe_instance(authored_module: str) -> None:
+    from rlmesh.server import _coerce_env
+
+    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="not an instance"):
+        _coerce_env(cart())
+
+
+def test_make_envrecipe_rejects_vectorization(authored_module: str) -> None:
+    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="num_envs"):
+        rlmesh.make(cart, num_envs=4)
+    with pytest.raises(TypeError, match="num_envs"):
+        rlmesh.make(cart, vectorization_mode="async")
+
+
+def test_make_py_recipe_rejects_vectorization() -> None:
+    from rlmesh.recipes import PyMake, Recipe, build
+
+    recipe = Recipe(name="a/py", make=PyMake(entrypoint="mod:make"))
+    with pytest.raises(TypeError, match="num_envs"):
+        build(recipe, num_envs=4)
+
+
+def test_construct_authored_rejects_non_env_return(authored_module: str) -> None:
+    bad = _module(authored_module).BadReturn  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="did not return an environment"):
+        rlmesh.make(bad)
+
+
+def test_nameless_subclass_of_named_is_rejected(authored_module: str) -> None:
+    child = _module(authored_module).NamelessChild  # type: ignore[attr-defined]
+    with pytest.raises(RecipeValidationError, match="declare its own"):
+        child.to_recipe()

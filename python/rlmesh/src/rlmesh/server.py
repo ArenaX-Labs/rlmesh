@@ -26,10 +26,15 @@ def _coerce_env(env: EnvLike | Recipe | type[EnvRecipe]) -> EnvLike:
     """Build a recipe (or project + build an EnvRecipe) into an env, else pass through."""
     from rlmesh.recipes import Recipe as _Recipe
     from rlmesh.recipes import build
-    from rlmesh.recipes._authoring import construct_authored, is_env_recipe
+    from rlmesh.recipes._authoring import EnvRecipe, construct_authored, is_env_recipe
 
     if is_env_recipe(env):
         return construct_authored(env)
+    if isinstance(env, EnvRecipe):
+        raise TypeError(
+            "pass the EnvRecipe subclass (EnvServer(MyEnv)), not an instance "
+            "(EnvServer(MyEnv()))"
+        )
     if isinstance(env, _Recipe):
         return build(env)
     return cast("EnvLike", env)

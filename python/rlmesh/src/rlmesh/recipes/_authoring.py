@@ -100,10 +100,18 @@ class EnvRecipe:
         string. Raises if the class is not importable by that path (defined in
         ``__main__`` or a local scope), because the container must import it.
         """
-        name = getattr(cls, "name", None)
+        # Require the name on the concrete class, not inherited -- otherwise a
+        # no-name subclass would silently project under its parent's identity.
+        name = cls.__dict__.get("name")
         if not isinstance(name, str) or not name:
+            inherited = getattr(cls, "name", None)
+            hint = (
+                f" (it would otherwise inherit {inherited!r})"
+                if isinstance(inherited, str) and inherited
+                else ""
+            )
             raise RecipeValidationError(
-                f'{cls.__qualname__} must set a class attribute `name = "namespace/name"`'
+                f'{cls.__qualname__} must declare its own `name = "namespace/name"`{hint}'
             )
         module = cls.__module__
         qualname = cls.__qualname__
@@ -155,9 +163,19 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     cross into a container). Applies ``setup``, then runs the same prepare + make
     lifecycle as :meth:`EnvRecipe._rlmesh_construct`.
     """
+    from rlmesh._bootstrap.env import looks_like_env
+
     from ._build import apply_setup
 
     apply_setup(cls.setup)
     instance = cls()
     instance.prepare()
-    return instance.make(**kwargs)
+    env = instance.make(**kwargs)
+    if not looks_like_env(env):
+        # Match the gate the container/entrypoint path enforces, so both paths fail
+        # identically at construction rather than later.
+        raise TypeError(
+            f"{cls.__qualname__}.make(...) did not return an environment with "
+            "reset(...) and step(...)"
+        )
+    return env

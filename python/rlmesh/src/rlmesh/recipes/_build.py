@@ -102,6 +102,11 @@ def build(
     elif isinstance(make, PyMake):
         # NO pre-import: the factory body is the sole import sequencer. The loader
         # imports only the (empty) package list, then resolves and calls the factory.
+        if num_envs != 1 or vectorization_mode is not None:
+            raise TypeError(
+                "num_envs/vectorization_mode apply to gym sources only; a py factory "
+                "returns one env -- vectorize inside the factory"
+            )
         env = load_env_entrypoint(make.entrypoint, kwargs=dict(make.kwargs))
     else:  # HfMake -- its source materializes only inside a sandbox.
         raise UnsupportedRecipeError(
