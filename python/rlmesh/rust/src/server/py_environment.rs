@@ -260,8 +260,19 @@ fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
             "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
              construct the environment with NEXT_STEP or DISABLED autoreset",
         )),
-        // Unknown / unset → safe explicit-reset default.
-        _ => Ok(AutoresetMode::Disabled),
+        // Present (past the get_item guard) but unrecognized or non-string — a
+        // silent downgrade we must surface: a mislabeled self-autoresetting env
+        // would otherwise be double-reset by the runtime. Log the raw object repr
+        // (`value`) so the offending input is diagnosable even when extraction
+        // collapsed `mode_str` to "".
+        _ => {
+            tracing::warn!(
+                autoreset_mode = %mode_str,
+                value = ?mode_obj,
+                "unrecognized metadata[\"autoreset_mode\"]; defaulting to DISABLED (explicit reset). A self-autoresetting env mislabeled here will be double-reset by the runtime."
+            );
+            Ok(AutoresetMode::Disabled)
+        }
     }
 }
 

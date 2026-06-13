@@ -572,6 +572,12 @@ where
             self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
                 .await;
 
+            // Under NEXT_STEP, the final episode completes at its done step `t`
+            // and this early-return fires before the `t+1` roll. So the
+            // model-side `on_episode_end` for the final episode is not delivered
+            // at `t+1`; instead it fires via the close-time `finish_lifecycle`
+            // sweep during shutdown. Asymmetric versus mid-run episodes, but the
+            // callback is not lost.
             if self
                 .spec
                 .max_episodes
@@ -624,12 +630,21 @@ where
                 // path); a strict subset uses a per-lane seeded reset_subset — the
                 // controlled / reproducible path.
                 AutoresetMode::Unspecified | AutoresetMode::Disabled => {
-                    let done_lanes: Vec<i32> = step_ok
+                    let mut done_lanes: Vec<i32> = step_ok
                         .response
                         .completed_episodes
                         .iter()
                         .map(|metadata| metadata.env_index)
                         .collect();
+                    // completed_episodes can carry duplicate env_index entries
+                    // (e.g. drained interrupted episodes), which would inflate
+                    // the lane count and misfire the whole_vector decision below.
+                    // Dedupe so the count reflects distinct lanes. Sorting is
+                    // safe: reset_subset_seeds is derived FROM done_lanes (so
+                    // seeds stay positionally aligned) and env_indices is
+                    // done_lanes.clone().
+                    done_lanes.sort_unstable();
+                    done_lanes.dedup();
                     if done_lanes.is_empty() {
                         (
                             step_observation.clone(),

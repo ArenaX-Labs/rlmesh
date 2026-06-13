@@ -569,10 +569,34 @@ async fn handle_env_request<E: Environment>(
                                 // the new id now (step 0). This is NOT a reward-bearing
                                 // step, so do not record_step; gym reseeds autoreset from
                                 // entropy (seed None).
+                                let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
+                                if reward != 0.0 {
+                                    // The autoreset obs is assumed to carry reward 0. A
+                                    // non-zero reward here would belong to the fresh
+                                    // episode if recorded, corrupting it — surface the
+                                    // anomaly but drop the value.
+                                    tracing::warn!(
+                                        env_index = env_idx,
+                                        reward,
+                                        "non-zero reward on a NEXT_STEP autoreset observation is being dropped"
+                                    );
+                                }
                                 *episode_id = tracker.start_episode(env_idx as i32, None);
+                            } else if autoreset_mode == AutoresetMode::NextStep
+                                && !was_active
+                                && done
+                            {
+                                // A NEXT_STEP lane that is inactive yet reports a terminal
+                                // fresh-obs step is unsupported: the completion cannot be
+                                // attributed to any episode. Leave the id empty (as before)
+                                // but make the dropped completion visible.
+                                tracing::warn!(
+                                    env_index = env_idx,
+                                    "NEXT_STEP env reported a terminal fresh-obs step for an inactive lane; this is unsupported and the completion is dropped"
+                                );
                             }
-                            // else: a DISABLED lane awaiting an explicit reset (or the rare
-                            // edge of a terminal autoreset obs) — leave the id empty.
+                            // else: a DISABLED lane awaiting an explicit reset (or another
+                            // inactive lane) — leave the id empty.
                         }
 
                         ok.completed_episodes = completed_episodes;

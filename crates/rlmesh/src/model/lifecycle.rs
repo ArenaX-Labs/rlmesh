@@ -92,7 +92,7 @@ where
                 };
             // Per-lane reset edge: a lane whose episode id rolled, or every lane
             // at the initial whole-vector reset.
-            if rolled || observation.reset {
+            if rolled || slot.reset {
                 handler
                     .on_lane_reset(ModelLaneReset {
                         episode_id,
@@ -198,6 +198,7 @@ mod tests {
                     .map(|(env_index, episode_id)| ModelRouteSlot {
                         env_index,
                         episode_id: episode_id.to_string(),
+                        reset,
                         ..Default::default()
                     })
                     .collect(),
@@ -257,5 +258,81 @@ mod tests {
             active_episodes.get(&("session:route".to_string(), 3)),
             Some(&"episode-b".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn next_step_partial_roll_fires_on_lane_reset_only_for_rolled_lane() {
+        let mut handler = RecordingHandler::default();
+        let mut active_episodes = HashMap::new();
+
+        // Seed active episodes with a cold-start whole-vector reset across both
+        // lanes. Every slot carries reset=true here (mirroring the runtime).
+        update_lifecycle(
+            &mut handler,
+            &mut active_episodes,
+            &observation(vec![(0, "e0"), (1, "e1")], true, 2),
+        )
+        .await
+        .unwrap();
+
+        let resets_before = handler.resets;
+        let lane_resets_before = handler.lane_resets.len();
+
+        // Second call: NEXT_STEP. Only lane 0 rolled to a new episode id, so the
+        // primary slot (slot 0) carries reset=true — and, exactly as the runtime
+        // derives it (RouteSnapshot::reset = primary slot's reset), the
+        // vector-level observation.reset is ALSO true. Lane 1 kept its episode
+        // (slot.reset=false, did not roll). The OLD code keyed the per-lane reset
+        // off observation.reset, so with it true it would spuriously fire
+        // on_lane_reset for lane 1 too (2 events); the fix keys off the per-slot
+        // reset flag, so only the rolled lane fires (1 event). Setting
+        // observation.reset=true is what makes this an effective regression guard.
+        let second = ModelObservation {
+            observation: None,
+            route: ModelRouteContext {
+                session_id: "session".to_string(),
+                route_id: "route".to_string(),
+                request_id: "request".to_string(),
+                slots: vec![
+                    ModelRouteSlot {
+                        env_index: 0,
+                        episode_id: "e0b".to_string(),
+                        reset: true,
+                        ..Default::default()
+                    },
+                    ModelRouteSlot {
+                        env_index: 1,
+                        episode_id: "e1".to_string(),
+                        reset: false,
+                        ..Default::default()
+                    },
+                ],
+            },
+            reset: true,
+            num_envs: 2,
+            env_contract: None,
+        };
+
+        update_lifecycle(&mut handler, &mut active_episodes, &second)
+            .await
+            .unwrap();
+
+        // Exactly one on_lane_reset fired across the second call, for the rolled
+        // lane (env_index 0). Lane 1 must not get a spurious reset even though the
+        // primary slot's reset flag is set.
+        let lane_resets_during_second = &handler.lane_resets[lane_resets_before..];
+        assert_eq!(lane_resets_during_second.len(), 1);
+        assert_eq!(lane_resets_during_second[0].env_index, 0);
+
+        // The rolled lane retired its previous episode.
+        assert_eq!(
+            handler.episode_ends,
+            vec![ModelEpisodeEnd {
+                episode_id: "e0".to_string(),
+                env_index: 0,
+            }]
+        );
+        // A per-lane reset still surfaces the whole-vector reset edge.
+        assert_eq!(handler.resets, resets_before + 1);
     }
 }

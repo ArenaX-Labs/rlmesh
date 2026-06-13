@@ -44,6 +44,37 @@ pub trait Env: Send + Sync {
         req: ResetRequest,
     ) -> std::result::Result<ResetResult, spaces::EnvRuntimeError>;
 
+    /// Reset only the sub-environments named in `req.env_indices` (a partial /
+    /// per-lane reset), leaving the others running. An empty `env_indices`
+    /// delegates to [`reset`](Self::reset).
+    ///
+    /// The default **rejects** a non-empty request. Per-lane reset is not
+    /// something a vectorized env can do unless it explicitly supports resetting
+    /// individual sub-environments — stock gymnasium vector envs cannot, so they
+    /// fall through to this default and fail loud rather than silently resetting
+    /// the whole vector. A future in-house vector engine that can reset
+    /// individual lanes overrides this to enable the reproducible / staggered
+    /// `DISABLED`-autoreset path. The runtime only calls this for a strict
+    /// subset of done lanes under `DISABLED` autoreset; whole-vector resets and
+    /// `NEXT_STEP` envs never reach it.
+    async fn reset_subset(
+        &mut self,
+        req: ResetRequest,
+    ) -> std::result::Result<ResetResult, spaces::EnvRuntimeError> {
+        if req.env_indices.is_empty() {
+            self.reset(req).await
+        } else {
+            Err(spaces::EnvRuntimeError::Runtime(format!(
+                "partial reset of sub-envs {:?} is not supported by this environment. \
+                 Per-lane reset is only available for an env that overrides \
+                 `Env::reset_subset`. Use NEXT_STEP autoreset (the env resets done lanes \
+                 itself), run with num_envs == 1, or ensure all lanes terminate on the same \
+                 step so the whole vector resets together.",
+                req.env_indices
+            )))
+        }
+    }
+
     /// Apply one action per sub-environment and return the batched transition.
     async fn step(
         &mut self,

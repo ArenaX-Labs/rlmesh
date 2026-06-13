@@ -12,7 +12,9 @@ use rlmesh_grpc::wire::{
 };
 
 use super::Env;
-use super::types::{CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, StepRequest};
+use super::types::{
+    CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, ResetResult, StepRequest,
+};
 use crate::spaces;
 
 /// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
@@ -26,6 +28,27 @@ impl<E> WireEnvAdapter<E> {
     #[doc(hidden)]
     pub fn new(inner: E) -> Self {
         Self { inner }
+    }
+}
+
+impl<E: Env> WireEnvAdapter<E> {
+    /// Encode a public [`ResetResult`] into the proto reset response, validating
+    /// the observation batch width. Shared by `reset` and `reset_subset`.
+    fn encode_reset_response(
+        &self,
+        result: ResetResult,
+    ) -> std::result::Result<ProtoResetResponse, EnvError> {
+        validate_observation_count(&result.observations, self.inner.num_envs())?;
+
+        let observations =
+            encode_batched_partial_values(&result.observations, self.inner.observation_space())
+                .map_err(protocol_error_to_env_error)?;
+
+        Ok(ProtoResetResponse {
+            observation: Some(bytes_value(observations)),
+            infos: result.info.as_ref().map(meta_map_to_proto),
+            episode_ids: result.episode_ids,
+        })
     }
 }
 
@@ -57,21 +80,34 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
                 seeds: req.seeds,
                 options: req.options.map(meta_map_from_proto),
                 timeout_ms: req.timeout_ms,
+                env_indices: req.env_indices,
             })
             .await
             .map_err(gym_error_to_env_error)?;
 
-        validate_observation_count(&result.observations, self.inner.num_envs())?;
+        self.encode_reset_response(result)
+    }
 
-        let observations =
-            encode_batched_partial_values(&result.observations, self.inner.observation_space())
-                .map_err(protocol_error_to_env_error)?;
+    /// Partial / per-lane reset: forward the requested lane indices to the inner
+    /// env's [`reset_subset`](Env::reset_subset). An env that cannot reset
+    /// individual sub-envs inherits the rejecting default, so it fails loud here
+    /// rather than silently resetting the whole vector.
+    async fn reset_subset(
+        &mut self,
+        req: ProtoResetRequest,
+    ) -> std::result::Result<ProtoResetResponse, EnvError> {
+        let result = self
+            .inner
+            .reset_subset(ResetRequest {
+                seeds: req.seeds,
+                options: req.options.map(meta_map_from_proto),
+                timeout_ms: req.timeout_ms,
+                env_indices: req.env_indices,
+            })
+            .await
+            .map_err(gym_error_to_env_error)?;
 
-        Ok(ProtoResetResponse {
-            observation: Some(bytes_value(observations)),
-            infos: result.info.as_ref().map(meta_map_to_proto),
-            episode_ids: result.episode_ids,
-        })
+        self.encode_reset_response(result)
     }
 
     async fn step(

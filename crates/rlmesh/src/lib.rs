@@ -128,8 +128,8 @@ pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use lifecycle::ServeOptions;
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
-    ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker, RunLocalOptions,
-    ServeModelOptions, encode_action,
+    ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,
+    RunLocalOptions, ServeModelOptions, encode_action,
 };
 pub use single::{SingleEnv, SingleEnvAdapter};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
