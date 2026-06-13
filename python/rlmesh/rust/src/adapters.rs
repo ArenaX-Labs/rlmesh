@@ -31,7 +31,7 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    EnvAnnotations, ModelIoSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, resolve,
+    EnvAnnotations, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, resolve,
     roles,
 };
 use rlmesh_spaces::{DType, Tensor};
@@ -245,6 +245,20 @@ impl PyAdapterPlan {
         self.adapter.describe()
     }
 
+    /// The top-level observation keys this adapter reads.
+    ///
+    /// A host wrapper should encode only these before calling
+    /// [`transform_obs`](Self::transform_obs), so an unused — possibly
+    /// unencodable — observation key never aborts a step.
+    fn referenced_obs_keys(&self) -> Vec<String> {
+        let mut keys: BTreeSet<String> = BTreeSet::new();
+        for key in self.adapter.referenced_obs_keys() {
+            let top = key.split('.').next().unwrap_or(&key).to_owned();
+            keys.insert(top);
+        }
+        keys.into_iter().collect()
+    }
+
     /// `(model_key, transform)` pairs for custom-input holes, plan order.
     fn custom_inputs(&self) -> Vec<(String, String)> {
         self.adapter
@@ -318,7 +332,7 @@ pub fn adapters_resolve(
 ) -> PyResult<PyAdapterPlan> {
     let annotations: EnvAnnotations = serde_json::from_str(env_annotations_json)
         .map_err(|err| PyValueError::new_err(format!("invalid env annotations: {err}")))?;
-    let model_spec: ModelIoSpec = serde_json::from_str(model_spec_json)
+    let model_spec: ModelSpec = serde_json::from_str(model_spec_json)
         .map_err(|err| PyValueError::new_err(format!("invalid model spec: {err}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);

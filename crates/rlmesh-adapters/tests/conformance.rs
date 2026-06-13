@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rlmesh_adapters::v1::{EnvAnnotations, ModelIoSpec, NoCustoms, SpaceView, Value, resolve};
+use rlmesh_adapters::v1::{EnvAnnotations, ModelSpec, NoCustoms, SpaceView, Value, resolve};
 use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
 use rlmesh_spaces::{DType, Tensor};
 use serde_json::{Value as Json, json};
@@ -31,14 +31,14 @@ fn update_mode() -> bool {
     std::env::var("UPDATE_VECTORS").is_ok_and(|value| value == "1")
 }
 
-fn parse_inputs(case: &Json) -> (EnvAnnotations, SpaceView, SpaceView, ModelIoSpec) {
+fn parse_inputs(case: &Json) -> (EnvAnnotations, SpaceView, SpaceView, ModelSpec) {
     let annotations: EnvAnnotations =
         serde_json::from_value(case["env_annotations"].clone()).expect("env_annotations parses");
     let observation_space: SpaceView = serde_json::from_value(case["observation_space"].clone())
         .expect("observation_space parses");
     let action_space: SpaceView =
         serde_json::from_value(case["action_space"].clone()).expect("action_space parses");
-    let model_spec: ModelIoSpec =
+    let model_spec: ModelSpec =
         serde_json::from_value(case["model_spec"].clone()).expect("model_spec parses");
     (annotations, observation_space, action_space, model_spec)
 }
@@ -242,7 +242,7 @@ fn updated_case(name: &str, case: &Json) -> Json {
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {
-                let spec: ModelIoSpec = serde_json::from_value(doc.clone())
+                let spec: ModelSpec = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             };
@@ -313,7 +313,7 @@ fn verify_case(name: &str, case: &Json) {
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             } else {
-                let spec: ModelIoSpec = serde_json::from_value(doc.clone())
+                let spec: ModelSpec = serde_json::from_value(doc.clone())
                     .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
                 serde_json::to_value(&spec).expect("serializes")
             };

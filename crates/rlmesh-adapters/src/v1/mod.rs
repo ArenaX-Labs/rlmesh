@@ -27,7 +27,7 @@ pub use resolver::resolve;
 pub use space_view::{SpaceView, SpaceViewKind};
 pub use spec::{
     ActionComponent, ActionLayout, CustomInput, EnvAnnotations, EnvFeature, EnvFeatures, EnvImage,
-    EnvState, EnvText, ImageAnnotation, ImageInput, ImageLayout, ModelInput, ModelIoSpec,
+    EnvState, EnvText, ImageAnnotation, ImageInput, ImageLayout, ModelInput, ModelSpec,
     ObsAnnotation, RotationEncoding, StateAnnotation, StateComponent, StateContainer, StateInput,
     TextAnnotation, TextContainer, TextInput,
 };

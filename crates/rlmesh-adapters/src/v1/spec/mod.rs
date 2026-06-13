@@ -14,7 +14,7 @@ pub use env_annotations::{
 };
 pub use layouts::ImageLayout;
 pub use model::{
-    CustomInput, ImageInput, ModelInput, ModelIoSpec, StateComponent, StateContainer, StateInput,
+    CustomInput, ImageInput, ModelInput, ModelSpec, StateComponent, StateContainer, StateInput,
     TextContainer, TextInput,
 };
 pub use rotations::RotationEncoding;

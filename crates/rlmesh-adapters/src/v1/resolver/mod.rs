@@ -13,7 +13,7 @@ use super::fmt::quoted;
 use super::join::join;
 use super::plans::{ObsPlan, ResolvedAdapter};
 use super::space_view::SpaceView;
-use super::spec::{EnvAnnotations, EnvFeature, ModelInput, ModelIoSpec};
+use super::spec::{EnvAnnotations, EnvFeature, ModelInput, ModelSpec};
 
 type Result<T> = std::result::Result<T, AdapterResolutionError>;
 
@@ -48,7 +48,7 @@ pub fn resolve(
     env_annotations: &EnvAnnotations,
     observation_space: &SpaceView,
     action_space: &SpaceView,
-    model_spec: &ModelIoSpec,
+    model_spec: &ModelSpec,
     trust_entrypoints: bool,
 ) -> Result<ResolvedAdapter> {
     let env_spec = join(env_annotations, observation_space, action_space)

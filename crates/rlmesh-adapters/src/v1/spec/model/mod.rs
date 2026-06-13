@@ -26,7 +26,7 @@ pub enum ModelInput {
 
 /// Declarative description of a model's input payload and action output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ModelIoSpec {
+pub struct ModelSpec {
     pub inputs: Vec<ModelInput>,
     pub action: ActionLayout,
 }
