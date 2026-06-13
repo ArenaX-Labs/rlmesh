@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
 from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .model import ModelBase
+from .model import LifecycleCallback, ModelBase, PredictFn
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
@@ -19,6 +20,9 @@ from .types import PrimitiveValue
 
 if TYPE_CHECKING:
     import numpy as np
+
+    from .adapters import ModelSpec
+    from .specs import EnvContract
 
     NumpyArray: TypeAlias = np.ndarray[Any, Any]
     NumpyValue: TypeAlias = (
@@ -206,11 +210,25 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
     The wrapped prediction function receives one decoded observation and returns
     one action. RLMesh handles value encoding at the runtime boundary.
 
+    Pass ``spec=`` to make this an *adapted* model: at :meth:`run` time the
+    environment's published IO annotations (from its contract) and the model
+    spec are resolved into an adapter, which preprocesses observations into the
+    model's input format and postprocesses its actions back into the env's
+    format. ``predict_fn`` then works in the model's own format, with no
+    per-environment glue. ``run`` must be given an environment object (not a
+    bare address) so the contract is available.
+
     Args:
-        predict_fn: Callable that maps one observation to one action.
-        on_reset: Optional callback invoked when the environment resets.
+        predict_fn: Callable that maps one observation to one action. With
+            ``spec=``, it works in the model's declared input/output format.
+        spec: Optional model IO spec (:class:`rlmesh.adapters.ModelSpec`) that
+            turns this into an adapted model.
+        on_reset: Optional callback invoked when the environment resets. With
+            ``spec=``, the resolved adapter's ``reset`` is chained in.
         on_episode_end: Optional callback invoked when an episode ends.
         on_close: Optional callback invoked when the model worker closes.
+        trust_entrypoints: Allow ``module:callable`` custom-input entrypoints
+            in ``spec`` to be imported during resolution.
 
     Examples:
         >>> from rlmesh.numpy import Model
@@ -219,6 +237,98 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
+
+    def __init__(
+        self,
+        predict_fn: PredictFn[NumpyValue, NumpyValue],
+        *,
+        spec: ModelSpec | None = None,
+        on_reset: LifecycleCallback | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+        trust_entrypoints: bool = False,
+    ) -> None:
+        super().__init__(
+            predict_fn,
+            on_reset=on_reset,
+            on_episode_end=on_episode_end,
+            on_close=on_close,
+        )
+        self._spec = spec
+        self._raw_predict = predict_fn
+        self._user_on_reset = on_reset
+        self._trust_entrypoints = trust_entrypoints
+
+    def run(
+        self,
+        env_or_address: object,
+        *,
+        token: str = "",
+        max_episodes: int | None = None,
+        close_env: bool = False,
+    ) -> None:
+        """Run the model against an environment object or address.
+
+        When this model was built with ``spec=``, ``env_or_address`` must be an
+        environment object exposing ``env_contract`` (e.g.
+        :class:`rlmesh.numpy.RemoteEnv`): the adapter is resolved from the env's
+        published annotations and the model spec, then wired around the
+        prediction function before the run begins.
+
+        Args:
+            env_or_address: Remote environment object or endpoint address.
+            token: Optional endpoint token.
+            max_episodes: Optional number of episodes to run before returning.
+            close_env: If ``True``, request environment shutdown after the run.
+        """
+        if self._spec is not None:
+            self._wire_adapter(env_or_address)
+        super().run(
+            env_or_address,
+            token=token,
+            max_episodes=max_episodes,
+            close_env=close_env,
+        )
+
+    def _wire_adapter(self, env_or_address: object) -> None:
+        from .adapters import resolve_from_contract
+
+        spec = self._spec
+        assert spec is not None  # guarded by the caller
+        adapter = resolve_from_contract(
+            _env_contract(env_or_address),
+            spec,
+            trust_entrypoints=self._trust_entrypoints,
+        )
+        wrapped = cast(
+            "PredictFn[NumpyValue, NumpyValue]",
+            adapter.wrap_predict(self._raw_predict),
+        )
+        self._install_worker(wrapped, _chain_reset(self._user_on_reset, adapter.reset))
+        # Wired for this run; clear so a stray re-run does not silently re-resolve.
+        self._spec = None
+
+
+def _env_contract(env_or_address: object) -> EnvContract:
+    contract = getattr(env_or_address, "env_contract", None)
+    if contract is None:
+        raise TypeError(
+            "Model(spec=...).run() needs an environment object exposing "
+            "'env_contract' (e.g. rlmesh.numpy.RemoteEnv); a bare address "
+            "string carries no contract to resolve the adapter from"
+        )
+    return cast("EnvContract", contract)
+
+
+def _chain_reset(
+    user_on_reset: LifecycleCallback | None, adapter_reset: Callable[[], None]
+) -> LifecycleCallback:
+    def on_reset() -> None:
+        adapter_reset()
+        if user_on_reset is not None:
+            user_on_reset()
+
+    return on_reset
 
 
 @final

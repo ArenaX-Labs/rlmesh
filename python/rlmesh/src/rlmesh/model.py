@@ -46,12 +46,26 @@ class ModelBase(Generic[ObsT, ActT]):
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
     ) -> None:
+        self._bridge.ensure_available()
+        self._on_episode_end = on_episode_end
+        self._on_close = on_close
+        self._install_worker(predict_fn, on_reset)
+
+    def _install_worker(
+        self,
+        predict_fn: PredictFn[ObsT, ActT],
+        on_reset: LifecycleCallback | None,
+    ) -> None:
+        """Build (or rebuild) the native model worker around ``predict_fn``.
+
+        Subclasses that resolve their predict wrapper lazily -- e.g. an
+        adapter bound to an environment only at ``run`` time -- call this to
+        install the final worker before running.
+        """
         try:
             from rlmesh._rlmesh import PyModel
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
-
-        self._bridge.ensure_available()
 
         def wrapped_predict(observation: Value) -> Value:
             decoded = cast(ObsT, self._bridge.decode(observation))
@@ -61,8 +75,8 @@ class ModelBase(Generic[ObsT, ActT]):
         self._worker: PyModel = PyModel(
             predict_fn=wrapped_predict,
             on_reset=on_reset,
-            on_episode_end=on_episode_end,
-            on_close=on_close,
+            on_episode_end=self._on_episode_end,
+            on_close=self._on_close,
         )
 
     def run_local(self, env_address: str, *, token: str = "") -> None:
