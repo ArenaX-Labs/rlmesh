@@ -18,6 +18,7 @@ use crate::error::EnvError;
 use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
 use crate::wire::value_bytes_ref;
+use rlmesh_spaces::AutoresetMode;
 
 use rlmesh_proto::core::v1::{OperationMetric, OperationTelemetry, operation_metric};
 use rlmesh_proto::env::v1::{
@@ -425,20 +426,49 @@ async fn handle_env_request<E: Environment>(
             // environment seeds itself from entropy, so the episode has no seed
             // rather than a fabricated 0.
             let seeds = reset_req.seeds.clone();
+            // Non-empty env_indices is an explicit partial / subenv reset: only
+            // those lanes restart, with `seeds` positionally aligned to them.
+            let env_indices = reset_req.env_indices.clone();
+            let partial = !env_indices.is_empty();
 
             let timeout_ms = reset_req.timeout_ms;
-            let result =
-                run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await;
+            let result = if partial {
+                run_env_op_with_deadline(
+                    env.reset_subset(reset_req),
+                    timeout_ms,
+                    "env.reset_subset",
+                )
+                .await
+            } else {
+                run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
+            };
 
             match result {
                 Ok(mut ok) => {
                     let mut tracker = episode_tracker.lock().await;
-                    let episode_ids: Vec<String> = (0..num_envs)
-                        .map(|env_idx| {
-                            let seed = seeds.get(env_idx).copied();
-                            tracker.start_episode(env_idx as i32, seed)
-                        })
-                        .collect();
+                    let episode_ids: Vec<String> = if partial {
+                        // Start a fresh episode only for the reset lanes; other
+                        // lanes keep their active id. Returned ids are full-width.
+                        for (i, &env_idx) in env_indices.iter().enumerate() {
+                            let seed = seeds.get(i).copied();
+                            tracker.start_episode(env_idx, seed);
+                        }
+                        (0..num_envs)
+                            .map(|env_idx| {
+                                tracker
+                                    .active_episode_id(env_idx as i32)
+                                    .unwrap_or_default()
+                                    .to_string()
+                            })
+                            .collect()
+                    } else {
+                        (0..num_envs)
+                            .map(|env_idx| {
+                                let seed = seeds.get(env_idx).copied();
+                                tracker.start_episode(env_idx as i32, seed)
+                            })
+                            .collect()
+                    };
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
@@ -459,71 +489,108 @@ async fn handle_env_request<E: Environment>(
         Some(join_request::Kind::Step(step_req)) => {
             let mut env = env.lock().await;
             let num_envs = env.num_envs();
+            let autoreset_mode = env.env_contract().autoreset_mode;
 
-            let timeout_ms = step_req.timeout_ms;
-            let result = run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
+            // Subset-stepping is reserved on the wire (StepRequest.env_indices)
+            // but not yet honored: fail loud rather than silently treat it as a
+            // full-width step.
+            if !step_req.env_indices.is_empty() {
+                tracing::error!("StepRequest.env_indices set but subset stepping is unsupported");
+                Some(join_response::Kind::Error(env_error_to_proto(
+                    EnvError::new(
+                        crate::error::EnvErrorCode::Internal,
+                        "subset stepping (StepRequest.env_indices) is not supported",
+                    ),
+                )))
+            } else {
+                let timeout_ms = step_req.timeout_ms;
+                let result =
+                    run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
 
-            match result {
-                Ok(mut ok) => {
-                    let mut tracker = episode_tracker.lock().await;
-                    // Episodes interrupted by a replacing reset surface here so
-                    // their accounting is not lost.
-                    let mut completed_episodes = tracker.drain_interrupted();
-                    let shared_info = decode_info_struct(ok.infos.as_ref());
+                match result {
+                    Ok(mut ok) => {
+                        let mut tracker = episode_tracker.lock().await;
+                        // Episodes interrupted by a replacing reset surface here so
+                        // their accounting is not lost.
+                        let mut completed_episodes = tracker.drain_interrupted();
+                        let shared_info = decode_info_struct(ok.infos.as_ref());
 
-                    for env_idx in 0..num_envs {
-                        let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                        tracker.record_step(env_idx as i32, reward);
+                        // Per-lane episode ids. The id flips only at the NEXT_STEP
+                        // boundary (t+1, the fresh-obs step), never on the done step
+                        // t, so the terminal observation stays labelled with the
+                        // episode that just ended.
+                        let mut episode_ids = vec![String::new(); num_envs];
 
-                        let terminated = ok
-                            .terminated_mask
-                            .get(env_idx)
-                            .map(|&b| b != 0)
-                            .unwrap_or(false);
-                        let truncated = ok
-                            .truncated_mask
-                            .get(env_idx)
-                            .map(|&b| b != 0)
-                            .unwrap_or(false);
+                        for (env_idx, episode_id) in episode_ids.iter_mut().enumerate() {
+                            let terminated = ok
+                                .terminated_mask
+                                .get(env_idx)
+                                .map(|&b| b != 0)
+                                .unwrap_or(false);
+                            let truncated = ok
+                                .truncated_mask
+                                .get(env_idx)
+                                .map(|&b| b != 0)
+                                .unwrap_or(false);
+                            let done = terminated || truncated;
+                            let was_active = tracker.active_episode_id(env_idx as i32).is_some();
 
-                        // 2026.06: a terminated lane stays inactive until the
-                        // next explicit reset.
-                        if (terminated || truncated)
-                            && let Some(metadata) = tracker.complete_episode(
-                                env_idx as i32,
-                                terminated,
-                                truncated,
-                                extract_env_final_info(shared_info.as_ref(), env_idx, num_envs),
-                            )
-                        {
-                            completed_episodes.push(metadata);
+                            if was_active {
+                                // A real action-step on a running lane: its reward counts.
+                                let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
+                                tracker.record_step(env_idx as i32, reward);
+
+                                if done {
+                                    // Done step t: complete the episode. The terminal obs
+                                    // belongs to the OLD episode, so episode_ids keeps the
+                                    // completed id; the new id (if any) rolls at t+1.
+                                    if let Some(metadata) = tracker.complete_episode(
+                                        env_idx as i32,
+                                        terminated,
+                                        truncated,
+                                        extract_env_final_info(
+                                            shared_info.as_ref(),
+                                            env_idx,
+                                            num_envs,
+                                        ),
+                                    ) {
+                                        *episode_id = metadata.episode_id.clone();
+                                        completed_episodes.push(metadata);
+                                    }
+                                } else {
+                                    *episode_id = tracker
+                                        .active_episode_id(env_idx as i32)
+                                        .unwrap_or_default()
+                                        .to_string();
+                                }
+                            } else if autoreset_mode == AutoresetMode::NextStep && !done {
+                                // Fresh-obs step t+1: the env auto-reset this lane and is
+                                // delivering the first observation of a new episode. Roll
+                                // the new id now (step 0). This is NOT a reward-bearing
+                                // step, so do not record_step; gym reseeds autoreset from
+                                // entropy (seed None).
+                                *episode_id = tracker.start_episode(env_idx as i32, None);
+                            }
+                            // else: a DISABLED lane awaiting an explicit reset (or the rare
+                            // edge of a terminal autoreset obs) — leave the id empty.
                         }
+
+                        ok.completed_episodes = completed_episodes;
+                        ok.episode_ids = episode_ids;
+                        let obs_bytes = space_value_len(ok.observation.as_ref());
+                        let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
+                        tracing::trace!(
+                            obs_bytes,
+                            info_bytes,
+                            completed_episodes = ok.completed_episodes.len(),
+                            "env step completed"
+                        );
+                        Some(join_response::Kind::Step(ok))
                     }
-
-                    let episode_ids = (0..num_envs)
-                        .map(|env_idx| {
-                            tracker
-                                .active_episode_id(env_idx as i32)
-                                .unwrap_or_default()
-                                .to_string()
-                        })
-                        .collect();
-
-                    ok.completed_episodes = completed_episodes;
-                    ok.episode_ids = episode_ids;
-                    let obs_bytes = space_value_len(ok.observation.as_ref());
-                    let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
-                    tracing::trace!(
-                        obs_bytes,
-                        info_bytes,
-                        completed_episodes = ok.completed_episodes.len(),
-                        "env step completed"
-                    );
-                    Some(join_response::Kind::Step(ok))
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "env step failed");
-                    Some(join_response::Kind::Error(env_error_to_proto(e)))
+                    Err(e) => {
+                        tracing::error!(error = %e, "env step failed");
+                        Some(join_response::Kind::Error(env_error_to_proto(e)))
+                    }
                 }
             }
         }
@@ -1189,12 +1256,12 @@ mod tests {
     }
 
     impl TerminatingVectorEnv {
-        fn new() -> Self {
+        fn with_mode(autoreset_mode: rlmesh_spaces::AutoresetMode) -> Self {
             let space = SpaceSpec::default();
             Self {
                 contract: SpaceEnvContract {
                     id: "terminating".to_string(),
-                    autoreset_mode: Default::default(),
+                    autoreset_mode,
                     action_space: Some(space.clone()),
                     observation_space: Some(space),
                     metadata: None,
@@ -1203,6 +1270,18 @@ mod tests {
                 },
                 step_count: std::sync::atomic::AtomicUsize::new(0),
             }
+        }
+
+        /// DISABLED: a done lane stays inactive until an explicit reset.
+        fn new() -> Self {
+            Self::with_mode(rlmesh_spaces::AutoresetMode::Disabled)
+        }
+
+        /// NEXT_STEP: the env auto-resets a done lane and delivers its fresh obs
+        /// (terminated=false) on the following step — exactly what this mock's
+        /// step sequence already produces (terminal at n==0, fresh at n>=1).
+        fn next_step() -> Self {
+            Self::with_mode(rlmesh_spaces::AutoresetMode::NextStep)
         }
     }
 
@@ -1273,8 +1352,10 @@ mod tests {
             request_id: id.to_string(),
         };
 
-        // Step 1: lane 0 terminates. Its episode completes exactly once; no
-        // replacement episode is started, so lane 0's `episode_id` is now empty.
+        // Step 1: lane 0 terminates. Its episode completes exactly once. The
+        // terminal observation still belongs to the episode that just ended, so
+        // lane 0's `episode_id` is the COMPLETED id (not empty). This env is
+        // DISABLED, so no replacement episode is started.
         let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
         let first = match first.kind {
             Some(join_response::Kind::Step(ok)) => ok,
@@ -1282,10 +1363,11 @@ mod tests {
         };
         assert_eq!(first.completed_episodes.len(), 1, "lane 0 should complete");
         assert_eq!(first.episode_ids.len(), 2);
-        assert!(
-            first.episode_ids[0].is_empty(),
-            "terminated lane 0 must have no active episode until the next Reset"
+        assert_eq!(
+            first.episode_ids[0], first.completed_episodes[0].episode_id,
+            "the terminal step labels lane 0 with the episode that just ended"
         );
+        assert!(!first.episode_ids[0].is_empty());
         assert!(
             !first.episode_ids[1].is_empty(),
             "lane 1 keeps its active episode"
@@ -1319,6 +1401,69 @@ mod tests {
         assert!(
             tracker.active_episode_id(0).is_some(),
             "Reset must re-establish lane 0's tracked episode"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_step_rolls_episode_id_at_t_plus_1_not_at_done_step() {
+        // BLOCKER-1 regression guard. Under NEXT_STEP the env returns the
+        // terminal obs at the done step `t` and the fresh obs at `t+1`. The
+        // server must roll the episode id at `t+1` (so the terminal obs stays
+        // labelled with the episode that ended), NOT at the done step.
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+
+        let env = Arc::new(Mutex::new(TerminatingVectorEnv::next_step()));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let _ = super::handle_env_request(
+            JoinRequest {
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+                request_id: "reset".to_string(),
+            },
+            env.clone(),
+            tracker.clone(),
+        )
+        .await;
+
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        let step_ok = |r: super::JoinResponse| match r.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+
+        // Done step t: lane 0 terminates. The terminal obs keeps the OLD id; the
+        // id has NOT rolled yet.
+        let t = step_ok(super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await);
+        assert_eq!(t.completed_episodes.len(), 1, "lane 0 completes at t");
+        let old_id = t.completed_episodes[0].episode_id.clone();
+        assert_eq!(
+            t.episode_ids[0], old_id,
+            "terminal obs at t must keep the completed (old) episode id"
+        );
+
+        // Fresh-obs step t+1: the env auto-reset lane 0. NOW the id rolls to a new
+        // episode (step 0), with no spurious completion.
+        let tp1 =
+            step_ok(super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await);
+        assert!(
+            tp1.completed_episodes.is_empty(),
+            "no completion on the fresh-obs step"
+        );
+        assert!(
+            !tp1.episode_ids[0].is_empty(),
+            "lane 0 has a fresh active episode at t+1"
+        );
+        assert_ne!(
+            tp1.episode_ids[0], old_id,
+            "the fresh obs at t+1 carries a NEW episode id"
         );
     }
 }
