@@ -33,6 +33,12 @@ class ImageInput:
             ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible)
             or ``"bilinear"`` (4-tap half-pixel-center bilinear,
             OpenCV/torch-compatible).
+        stack: Number of consecutive observations to stack on a new leading
+            axis (frame history). ``1`` (default) means no stacking. Stacking
+            is applied host-side by the adapter, which buffers processed
+            frames (padding with the first frame at the start of an episode)
+            and clears them on ``reset`` -- the env still sends one frame per
+            step.
         size: Convenience for square targets -- sets both ``height`` and
             ``width``. Pass ``size`` or ``height``/``width``, not both.
     """
@@ -47,6 +53,7 @@ class ImageInput:
     lead_dims: int = 0
     upside_down: bool = False
     resample: str = "bilinear_aa"
+    stack: int = 1
     size: InitVar[int | None] = None
 
     def __post_init__(self, size: int | None) -> None:
@@ -58,6 +65,8 @@ class ImageInput:
         check_non_negative(self.height, "ImageInput.height")
         check_non_negative(self.width, "ImageInput.width")
         check_non_negative(self.lead_dims, "ImageInput.lead_dims")
+        if self.stack < 1:
+            raise ValueError(f"ImageInput.stack must be >= 1, got {self.stack}")
 
 
 @dataclass(frozen=True)

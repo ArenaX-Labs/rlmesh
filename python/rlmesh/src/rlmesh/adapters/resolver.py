@@ -21,6 +21,7 @@ from .errors import AdapterResolutionError
 from .specs import (
     EntrypointCustomInput,
     EnvTags,
+    ImageInput,
     InlineCustomInput,
     ModelSpec,
     ObsTransform,
@@ -111,7 +112,12 @@ def resolve(
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
-    return IOAdapter(plan, customs)
+    stacks = {
+        model_input.key: model_input.stack
+        for model_input in model_spec.inputs
+        if isinstance(model_input, ImageInput) and model_input.stack > 1
+    }
+    return IOAdapter(plan, customs, stacks)
 
 
 def resolve_from_contract(

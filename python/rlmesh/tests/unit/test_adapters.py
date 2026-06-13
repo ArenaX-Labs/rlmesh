@@ -1160,3 +1160,50 @@ def test_model_spec_rejects_duplicate_input_keys() -> None:
             inputs=(adapt.ImageInput("dup"), adapt.TextInput("dup")),
             action=SMOLVLA.action,
         )
+
+
+# ---------------------------------------------------------------------------
+# Frame stacking (host-side, stateful)
+# ---------------------------------------------------------------------------
+
+
+def test_image_frame_stacking_buffers_and_pads() -> None:
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=3),),
+        action=SMOLVLA.action,
+    )
+    adapter = resolve(env, spec)
+    f1 = np.full((4, 4, 3), 10, dtype=np.uint8)
+    f2 = np.full((4, 4, 3), 20, dtype=np.uint8)
+    f3 = np.full((4, 4, 3), 30, dtype=np.uint8)
+
+    p1 = adapter.transform_obs({"rgb": f1})["img"]
+    assert p1.shape == (3, 4, 4, 3)
+    np.testing.assert_array_equal(p1, np.stack([f1, f1, f1]))  # padded episode start
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f2})["img"], np.stack([f1, f1, f2])
+    )
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f3})["img"], np.stack([f1, f2, f3])
+    )
+
+    adapter.reset()  # episode boundary clears history
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f2})["img"], np.stack([f2, f2, f2])
+    )
+
+
+def test_image_input_stack_round_trips_and_omits_default() -> None:
+    from rlmesh.adapters.specs.model_serialization import model_input_to_dict
+
+    spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("img", stack=4),), action=SMOLVLA.action
+    )
+    assert adapt.ModelSpec.from_json(spec.to_json()) == spec
+    assert "stack" not in model_input_to_dict(
+        adapt.ImageInput("img")
+    )  # default omitted
+    assert model_input_to_dict(adapt.ImageInput("img", stack=4))["stack"] == 4
+    with pytest.raises(ValueError, match="stack must be >= 1"):
+        adapt.ImageInput("img", stack=0)

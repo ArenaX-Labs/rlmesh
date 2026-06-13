@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 
@@ -78,9 +79,18 @@ class IOAdapter(AdapterBase[NumpyArray]):
     observation, exactly as before.
     """
 
-    def __init__(self, plan: AdapterPlan, customs: Mapping[str, ObsTransform]) -> None:
+    def __init__(
+        self,
+        plan: AdapterPlan,
+        customs: Mapping[str, ObsTransform],
+        stacks: Mapping[str, int] | None = None,
+    ) -> None:
         self._plan = plan
         self._customs = dict(customs)
+        # Per-key frame-history depth (>1 only) and the rolling buffers that
+        # back it. Stacking happens host-side, after the native transform.
+        self._stacks = {key: n for key, n in (stacks or {}).items() if n > 1}
+        self._buffers: dict[str, deque[Any]] = {}
 
     def transform_obs(self, raw_obs: Mapping[str, Any]) -> dict[str, Any]:
         """Convert a raw env observation into the model input payload.
@@ -88,7 +98,8 @@ class IOAdapter(AdapterBase[NumpyArray]):
         Only the observation keys the plan actually reads are encoded and
         sent across the native boundary, so an unused -- possibly
         unencodable -- observation key never aborts a step. Custom inputs
-        still see the full raw observation.
+        still see the full raw observation. Inputs that request frame history
+        are stacked here from a rolling buffer, cleared by :meth:`reset`.
         """
         ensure_available()
         selected = {
@@ -100,9 +111,33 @@ class IOAdapter(AdapterBase[NumpyArray]):
         payload: dict[str, Any] = {
             key: decode_value(value) for key, value in encoded.items()
         }
+        for key, depth in self._stacks.items():
+            if key in payload:
+                payload[key] = self._stack_frames(key, payload[key], depth)
         for key, transform in self._customs.items():
             payload[key] = transform(raw_obs)
         return payload
+
+    def _stack_frames(self, key: str, frame: Any, depth: int) -> NumpyArray:
+        import numpy as np
+
+        frames = self._buffers.get(key)
+        if frames is None:
+            frames = deque[Any](maxlen=depth)
+            self._buffers[key] = frames
+        if not frames:
+            # Pad the start of an episode with copies of the first frame so
+            # the stack is full from step zero.
+            for _ in range(depth - 1):
+                frames.append(frame)
+        frames.append(frame)
+        return cast(
+            "NumpyArray", np.stack(cast("list[NumpyArray]", list(frames)), axis=0)
+        )
+
+    def reset(self) -> None:
+        """Clear the frame-history buffers at an episode boundary."""
+        self._buffers.clear()
 
     def transform_action(self, raw_action: object) -> NumpyArray:
         """Convert a model action vector into the env action vector."""

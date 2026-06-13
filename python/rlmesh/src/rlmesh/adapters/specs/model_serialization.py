@@ -26,7 +26,7 @@ from .serialization import (
 def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
     """Return the JSON-compatible dict form of a model input feature."""
     if isinstance(item, ImageInput):
-        return {
+        image: dict[str, Any] = {
             "type": "image",
             "key": item.key,
             "role": item.role,
@@ -39,6 +39,11 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             "upside_down": item.upside_down,
             "resample": item.resample,
         }
+        # Host-side field, emitted only when set so it is additive over the
+        # pinned wire format (the native core ignores it).
+        if item.stack != 1:
+            image["stack"] = item.stack
+        return image
     if isinstance(item, StateInput):
         return {
             "type": "state",
@@ -93,6 +98,7 @@ def model_input_from_dict(item: object) -> ModelInput:
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
             resample=str(data.get("resample", "bilinear_aa")),
+            stack=int(data.get("stack", 1)),
         )
     if kind == "state":
         components: list[StateComponent] = []
