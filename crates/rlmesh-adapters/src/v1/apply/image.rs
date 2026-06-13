@@ -33,6 +33,12 @@ pub(super) fn apply_image(
 }
 
 /// Return an HWC uint8 array from a raw observation value.
+///
+/// The resize/transform pipeline operates on 8-bit pixels, so the source is
+/// converted to uint8 — but never by truncation-casting. A float image is
+/// treated as normalized `[0, 1]` and scaled into `[0, 255]`; an integer
+/// image is clamped into the 8-bit range. (Casting a `[0, 1]` float image
+/// straight to `u8` used to floor every pixel to zero — a black image.)
 pub fn decode_image(value: &Value) -> Result<Array, ApplyError> {
     let Value::Array(array) = value else {
         return Err(ApplyError::new(
@@ -41,7 +47,31 @@ pub fn decode_image(value: &Value) -> Result<Array, ApplyError> {
                 .to_owned(),
         ));
     };
-    Ok(array.cast(Dtype::U8))
+    Ok(Array {
+        dtype: Dtype::U8,
+        shape: array.shape.clone(),
+        data: ArrayData::U8(to_u8_pixels(array)),
+    })
+}
+
+/// Round a scalar to the nearest 8-bit value, clamping to `[0, 255]`.
+fn round_to_u8(value: f64) -> u8 {
+    value.round_ties_even().clamp(0.0, 255.0) as u8
+}
+
+/// Convert image elements to 8-bit pixels without truncation: floats are
+/// scaled from `[0, 1]`, integers are clamped to the 8-bit range.
+fn to_u8_pixels(array: &Array) -> Vec<u8> {
+    match &array.data {
+        ArrayData::U8(data) => data.clone(),
+        ArrayData::F32(data) => data
+            .iter()
+            .map(|&x| round_to_u8(f64::from(x) * 255.0))
+            .collect(),
+        ArrayData::F64(data) => data.iter().map(|&x| round_to_u8(x * 255.0)).collect(),
+        ArrayData::I32(data) => data.iter().map(|&x| x.clamp(0, 255) as u8).collect(),
+        ArrayData::I64(data) => data.iter().map(|&x| x.clamp(0, 255) as u8).collect(),
+    }
 }
 
 fn image_dims(array: &Array) -> Result<(usize, usize, usize), ApplyError> {
@@ -249,6 +279,12 @@ pub fn resize_image(
 ) -> Result<Array, ApplyError> {
     let (src_height, src_width, _) = image_dims(array)?;
     let (height, width) = (height as usize, width as usize);
+    if height == 0 || width == 0 || src_height == 0 || src_width == 0 {
+        return Err(ApplyError::new(format!(
+            "cannot resize an image with a zero dimension (source \
+             {src_height}x{src_width}, target {height}x{width})"
+        )));
+    }
     if (src_height, src_width) == (height, width) {
         return Ok(array.clone());
     }
@@ -286,4 +322,49 @@ pub fn add_lead_dims(array: Array, count: u32) -> Array {
     let mut shape = vec![1usize; count as usize];
     shape.extend(&array.shape);
     Array { shape, ..array }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_scales_unit_float_images_instead_of_truncating() {
+        // A normalized [0, 1] float image must scale into 8-bit, not floor to
+        // an all-black image (the pre-fix `cast(u8)` behavior).
+        let image = Value::Array(Array {
+            dtype: Dtype::F32,
+            shape: vec![2, 2, 1],
+            data: ArrayData::F32(vec![0.0, 0.4, 0.6, 1.0]),
+        });
+        let decoded = decode_image(&image).expect("decode");
+        let ArrayData::U8(pixels) = decoded.data else {
+            panic!("expected uint8 pixels");
+        };
+        assert_eq!(pixels, vec![0, 102, 153, 255]);
+    }
+
+    #[test]
+    fn decode_passes_through_uint8_images() {
+        let image = Value::Array(Array {
+            dtype: Dtype::U8,
+            shape: vec![1, 1, 3],
+            data: ArrayData::U8(vec![10, 20, 30]),
+        });
+        let decoded = decode_image(&image).expect("decode");
+        assert_eq!(decoded.data, ArrayData::U8(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn resize_rejects_zero_dimensions() {
+        // A degenerate source dimension must error, not panic in the resize
+        // coordinate clamp.
+        let image = Array {
+            dtype: Dtype::U8,
+            shape: vec![0, 2, 3],
+            data: ArrayData::U8(Vec::new()),
+        };
+        let error = resize_image(&image, 4, 4, "bilinear").expect_err("zero dim");
+        assert!(error.to_string().contains("zero dimension"), "{error}");
+    }
 }
