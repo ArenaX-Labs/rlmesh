@@ -350,8 +350,6 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
             adapter.wrap_predict(self._raw_predict),
         )
         self._install_worker(wrapped, _chain_reset(self._user_on_reset, adapter.reset))
-        # Wired for this run; clear so a stray re-run does not silently re-resolve.
-        self._spec = None
 
 
 def _env_contract(env_or_address: object) -> EnvContract:
