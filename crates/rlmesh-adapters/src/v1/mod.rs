@@ -11,6 +11,7 @@ mod plans;
 mod pyfmt;
 mod resolver;
 pub mod roles;
+mod space_view;
 mod spec;
 
 pub use apply::{
@@ -24,6 +25,7 @@ pub use plans::{
     StatePlan, TextPlan,
 };
 pub use resolver::resolve;
+pub use space_view::{SpaceView, SpaceViewKind};
 pub use spec::{
     ActionComponent, ActionLayout, CustomInput, EnvFeature, EnvImage, EnvIoSpec, EnvState, EnvText,
     ImageInput, ImageLayout, ModelInput, ModelIoSpec, RotationEncoding, StateComponent,

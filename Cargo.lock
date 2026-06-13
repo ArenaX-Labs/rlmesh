@@ -3045,6 +3045,7 @@ dependencies = [
 name = "rlmesh-adapters"
 version = "0.1.0-beta.2"
 dependencies = [
+ "rlmesh-spaces",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
