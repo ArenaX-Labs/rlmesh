@@ -122,7 +122,7 @@ def test_kwargs_reject_numpy_scalar() -> None:
 
 def test_kwargs_reject_non_str_keys() -> None:
     with pytest.raises(RecipeValidationError, match="keys must be str"):
-        GymMake(env_id="E-v0", kwargs={1: "v"})
+        GymMake(env_id="E-v0", kwargs={1: "v"})  # type: ignore[dict-item]
 
 
 def test_kwargs_nested_json_round_trips() -> None:
@@ -162,6 +162,36 @@ def test_build_dockerfile_excludes_structured_fields() -> None:
         Build(dockerfile="FROM x\n", pip=[PipInstall(packages=["a"])])
     # dockerfile alone is fine
     assert Build(dockerfile="FROM x\n").dockerfile == "FROM x\n"
+
+
+def test_build_dockerfile_excludes_derived_only_fields() -> None:
+    # env/pythonpath/run_as only affect the *derived* Dockerfile, which the verbatim
+    # trapdoor bypasses -- so pairing them with dockerfile would silently drop them.
+    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
+        Build(dockerfile="FROM x\n", env={"K": "V"})
+    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
+        Build(dockerfile="FROM x\n", run_as=1000)
+    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
+        Build(dockerfile="FROM x\n", pythonpath=["/x"])
+
+
+def test_build_dockerfile_excludes_base_and_installer() -> None:
+    # The verbatim trapdoor emits the body as-is and ignores the resolved base_image
+    # and installer, so pairing dockerfile with base= builds a different FROM than the
+    # hash was computed against, and installer="uv" is silently dropped.
+    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
+        Build(dockerfile="FROM x\n", base="cuda@sha256:abc")
+    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
+        Build(dockerfile="FROM x\n", installer="uv")
+
+
+def test_build_dockerfile_permits_gpu() -> None:
+    # gpu independently drives the runtime --gpus flag in Rust, so a verbatim
+    # Dockerfile legitimately pairs with gpu=True. The default installer ("pip") is
+    # also fine -- only a *non-default* installer is rejected.
+    build = Build(dockerfile="FROM x\n", gpu=True)
+    assert build.gpu is True
+    assert build.dockerfile == "FROM x\n"
 
 
 def test_apt_name_validation() -> None:
@@ -261,3 +291,29 @@ def test_pymake_accepts_dotted_classmethod_entrypoint() -> None:
     assert PyMake(entrypoint="mod:Class._rlmesh_construct").entrypoint == (
         "mod:Class._rlmesh_construct"
     )
+
+
+def test_project_include_accepts_relative_globs() -> None:
+    # The agreed examples: a sibling glob via '..' and a plain subdir glob.
+    project = ProjectInstall(include=["../assets/**", "data/*.bin"])
+    assert project.include == ("../assets/**", "data/*.bin")
+
+
+def test_project_include_rejects_absolute_path() -> None:
+    with pytest.raises(RecipeValidationError, match="relative glob"):
+        ProjectInstall(include=["/etc/passwd"])
+
+
+def test_project_include_rejects_control_chars() -> None:
+    for bad in ["a\x00b", "with space", "semi;colon", "new\nline"]:
+        with pytest.raises(RecipeValidationError):
+            ProjectInstall(include=[bad])
+
+
+def test_project_include_rejects_unsupported_glob_metachars() -> None:
+    # The Rust include matcher implements only '*'/'**' and treats '?','[',']','{','}'
+    # as literals, so those entries would pass check() then silently match nothing.
+    # Reject them at construction instead.
+    for bad in ["file?.json", "data/[abc].txt", "data/{a,b}.bin"]:
+        with pytest.raises(RecipeValidationError):
+            ProjectInstall(include=[bad])

@@ -75,6 +75,14 @@ _GIT_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _URL: Final = re.compile(r"^https?://[^\s'\"\\]+$")
 _POSIX_PATH: Final = re.compile(r"^[A-Za-z0-9._/\-]+$")
+# A relative path glob for ProjectInstall.include: like a POSIX path but also
+# permits the only wildcards the Rust include matcher implements -- '*' and '**'.
+# '..' rides on the '.' already in the charset (the renderer enforces the
+# context_root boundary). The other glob metacharacters ('?', '[', ']', '{', '}')
+# are deliberately *rejected*: the matcher treats them as literals, so an entry
+# like 'file?.json' would pass check() then silently match nothing. Shell
+# metacharacters, whitespace, and a leading '/' are excluded too.
+_INCLUDE_GLOB: Final = re.compile(r"^[A-Za-z0-9._/\-*]+$")
 _ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # The name half of "namespace/name"; '@' is reserved for @variant addressing.
 _RECIPE_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
@@ -101,6 +109,28 @@ def _check_token(value: str, pattern: re.Pattern[str], field_name: str) -> None:
 
 def _check_apt_name(value: str, field_name: str) -> None:
     _check_token(value, _APT_NAME, field_name)
+
+
+def _check_include_glob(value: str, field_name: str) -> None:
+    """Validate a ProjectInstall.include glob entry (spec 7.1; staged by the deriver).
+
+    Each entry is a glob relative to the project root that may use ``..`` to reach
+    siblings (e.g. ``../assets/**``); the Rust deriver enforces the context_root
+    boundary at staging time. The only supported wildcards are ``*`` and ``**`` --
+    the Rust include matcher implements just those and treats ``?``/``[``/``]``/
+    ``{``/``}`` as *literals*, so those metacharacters are rejected here rather than
+    let an entry pass check() and then silently match nothing. The load-bearing
+    checks are: non-empty, no absolute path (leading ``/``), and only path/``*``
+    tokens -- no other glob metacharacters, shell metacharacters, whitespace, or
+    control characters.
+    """
+    if not value:
+        raise RecipeValidationError(f"{field_name} entry must be non-empty")
+    if value[0] == "/":
+        raise RecipeValidationError(
+            f"{field_name} {value!r} must be a relative glob, not an absolute path"
+        )
+    _check_token(value, _INCLUDE_GLOB, field_name)
 
 
 def _check_pip_package(value: str, field_name: str) -> None:
@@ -403,9 +433,10 @@ class ProjectInstall:
                 _POSIX_PATH,
                 "ProjectInstall.dest",
             )
-        object.__setattr__(
-            self, "include", _as_str_tuple(self.include, "ProjectInstall.include")
-        )
+        include = _as_str_tuple(self.include, "ProjectInstall.include")
+        for entry in include:
+            _check_include_glob(entry, "ProjectInstall.include")
+        object.__setattr__(self, "include", include)
 
 
 @dataclass(frozen=True)
@@ -478,7 +509,14 @@ class Build:
         object.__setattr__(self, "env", _clean_str_map(self.env, "Build.env"))
 
         # spec 7.1H: the verbatim-Dockerfile trapdoor is mutually exclusive with
-        # the structured build-step fields.
+        # every field that only affects the *derived* Dockerfile. The Rust deriver's
+        # verbatim trapdoor emits the body as-is and IGNORES the resolved base_image
+        # and installer, so base/installer/env/pythonpath/run_as would be silently
+        # dropped just like the structured build steps -- pairing dockerfile with
+        # base=... would even build a different FROM than the hash/wheel-compat were
+        # computed against. ``gpu`` is the lone exception: it independently drives
+        # the runtime --gpus flag, so a verbatim Dockerfile legitimately pairs with
+        # gpu=True.
         if self.dockerfile is not None:
             _require_str(self.dockerfile, "Build.dockerfile")
             structured = (
@@ -488,11 +526,21 @@ class Build:
                 self.fetch,
                 self.commands,
                 self.project,
+                self.env,
+                pythonpath,
             )
-            if any(structured) or self.from_recipe is not None:
+            if (
+                any(structured)
+                or self.base is not None
+                or self.from_recipe is not None
+                or self.run_as is not None
+                or self.installer != "pip"
+            ):
                 raise RecipeValidationError(
                     "Build.dockerfile is mutually exclusive with structured build "
-                    "fields (system/pip/fetch/project/commands/from_recipe)"
+                    "fields (base/system/pip/fetch/project/commands/from_recipe/env/"
+                    "pythonpath/run_as/installer); put those directives in the "
+                    "verbatim Dockerfile body"
                 )
 
 

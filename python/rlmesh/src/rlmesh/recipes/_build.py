@@ -18,12 +18,14 @@ for side-effect registration.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 from rlmesh._bootstrap.env import (
     import_gym_modules,
     import_packages,
+    is_env_lookup_error,
     load_env_entrypoint,
     make_gym_environment,
 )
@@ -43,14 +45,16 @@ def apply_setup(setup: Setup) -> None:
     ``setup.env`` mutates ``os.environ`` best-effort -- it is intentionally not
     isolation-safe (constructed envs read vars lazily, so a restore would break
     the live env); the sandbox is the blessed isolation path. ``setup.files`` is
-    not yet applied in-process (it lands with the tempdir-gated file writer); a
-    recipe that needs it should run in a sandbox.
+    not yet applied *anywhere* (the tempdir-gated file writer has not landed), so a
+    recipe carrying it is rejected here; the sandbox bootstrap calls this same
+    ``apply_setup``, so running in a sandbox does not work around it either.
     """
     for key, value in setup.env.items():
         os.environ[key] = value
     if setup.files:
         raise UnsupportedRecipeError(
-            "setup.files is not applied in-process yet; run the recipe in a sandbox"
+            "setup.files is not applied yet (local or sandbox); remove it and stage "
+            "files via the build phase (build.project / build.fetch) instead"
         )
 
 
@@ -65,7 +69,9 @@ def build(
     Args:
         recipe: The recipe to construct. Must not be a build-only base.
         num_envs: Number of environment instances to create.
-        vectorization_mode: Vectorization mode for ``num_envs > 1``.
+        vectorization_mode: Vectorization mode for ``num_envs > 1``. Ignored when
+            ``num_envs == 1`` (a single env is not vectorized) -- the in-container
+            bootstrap always passes ``"sync"`` for a single env.
 
     Returns:
         The constructed environment.
@@ -92,17 +98,38 @@ def build(
             raise ImportError(
                 "gymnasium or gym must be installed to build a gym recipe"
             )
-        env = make_gym_environment(
-            gym_modules[0],
-            env_id=make.env_id,
-            kwargs=dict(make.kwargs),
-            num_envs=num_envs,
-            vectorization_mode=vectorization_mode,
-        )
+        # Mirror load_gym_env: try every module in preference order, moving on when
+        # one cannot find the env id, so an env registered only in legacy gym still
+        # resolves when gymnasium is also installed.
+        errors: list[tuple[str, Exception]] = []
+        env = None
+        for gym_module in gym_modules:
+            try:
+                env = make_gym_environment(
+                    gym_module,
+                    env_id=make.env_id,
+                    kwargs=dict(make.kwargs),
+                    num_envs=num_envs,
+                    vectorization_mode=vectorization_mode,
+                )
+                break
+            except Exception as exc:
+                if is_env_lookup_error(exc):
+                    errors.append((getattr(gym_module, "__name__", "<unknown>"), exc))
+                    continue
+                raise
+        if env is None:
+            names = ", ".join(name for name, _ in errors)
+            raise RuntimeError(
+                f"failed to create gym environment {make.env_id!r} with {names}"
+            ) from (errors[0][1] if errors else None)
     elif isinstance(make, PyMake):
         # NO pre-import: the factory body is the sole import sequencer. The loader
         # imports only the (empty) package list, then resolves and calls the factory.
-        if num_envs != 1 or vectorization_mode is not None:
+        # A single env (num_envs == 1) is fine regardless of vectorization_mode --
+        # there is no vectorization with one env, and the bootstrap always passes
+        # vectorization_mode="sync". Only a genuine vector request is rejected.
+        if num_envs != 1:
             raise TypeError(
                 "num_envs/vectorization_mode apply to gym sources only; a py factory "
                 "returns one env -- vectorize inside the factory"
@@ -125,10 +152,23 @@ def _publish_annotations(env: object, annotations: Mapping[str, object]) -> None
 
     Registry-spec section 11: this runs ``join()`` against the env's real spaces
     and fails loud. The adapters layer is resolved dynamically so the recipe layer
-    does not hard-depend on it (it lives in a separate, later-merged module).
+    does not hard-depend on it (it lives in a separate, later-merged module). Until
+    that module lands, publishing degrades gracefully: a missing ``rlmesh.adapters``
+    is warned about once and skipped, so a recipe with annotations still constructs.
+    Errors raised by ``annotate()`` itself (once adapters *is* importable) still
+    propagate -- only the missing-module case is tolerated.
     """
     import importlib
 
-    adapters = importlib.import_module("rlmesh.adapters")
+    try:
+        adapters = importlib.import_module("rlmesh.adapters")
+    except ImportError:
+        warnings.warn(
+            "rlmesh.adapters is not available; skipping recipe annotation publishing "
+            "(annotations will be enforced once the adapters layer lands)",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
     annotate = adapters.annotate
     annotate(env, annotations)

@@ -22,10 +22,11 @@
 //! escape hatch for a non-Debian base today.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::DEFAULT_BASE_IMAGE;
+use crate::ResolvedRlmeshPackage;
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
@@ -35,6 +36,10 @@ const ENTRYPOINT: &str = "ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sa
 /// the deriver `COPY`s from here and `write_build_context` populates it.
 pub const PROJECT_CONTEXT_DIR: &str = "project";
 const DEFAULT_PROJECT_DEST: &str = "/opt/rlmesh/project";
+
+/// The build-context subdirectory the resolved RLMesh wheel is staged into when
+/// `rlmesh_package` is a local wheel; mirrors the gym/hf path in `docker.rs`.
+pub const PACKAGE_CONTEXT_DIR: &str = "packages";
 
 /// An error produced while deriving a Dockerfile from a recipe.
 #[derive(Debug, thiserror::Error)]
@@ -302,7 +307,21 @@ fn validate_token(field: &str, value: &str) -> Result<(), DeriveError> {
 }
 
 /// Derive a Dockerfile from a recipe (spec section 5A).
-pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
+///
+/// `base_image` and `rlmesh_package` are the values already resolved upstream by
+/// [`crate::EffectiveSandboxSpec`] (which also feeds them into the build hash):
+/// `base_image` has the `build.base`-wins-else-caller-override precedence folded
+/// in, and `rlmesh_package` is the resolved pip-spec-or-staged-wheel install ref.
+/// Passing them in (rather than re-reading `recipe.build.base` / hardcoding
+/// `pip install rlmesh`) keeps the Dockerfile in agreement with the build hash.
+/// `packages` are the extra caller-supplied pip packages (the `packages=[...]`
+/// argument to `SandboxEnv`).
+pub(crate) fn derive_dockerfile(
+    recipe: &Recipe,
+    base_image: &str,
+    rlmesh_package: &ResolvedRlmeshPackage,
+    packages: &[String],
+) -> Result<String, DeriveError> {
     let build = &recipe.build;
 
     // The verbatim-Dockerfile trapdoor: emit the body as-is, ENTRYPOINT appended
@@ -336,7 +355,9 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
     }
     let verb = install_verb(&build.installer);
 
-    let base = build.base.as_deref().unwrap_or(DEFAULT_BASE_IMAGE);
+    // `base_image` already folds in the `build.base`-wins-else-caller-override
+    // precedence (resolved upstream and hashed); do NOT re-read `build.base`.
+    let base = base_image;
     validate_token("build.base", base)?;
 
     let mut out = String::new();
@@ -364,6 +385,15 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
 
     out.push_str(&format!("WORKDIR {WORKDIR}\n\n"));
 
+    // A locally-built RLMesh wheel is staged into the build context's packages/
+    // dir by write_build_context; COPY it in so render_pip_chain can install it
+    // from the install_ref path (mirrors the gym/hf path in docker.rs).
+    if rlmesh_package.source_path().is_some() {
+        out.push_str(&format!(
+            "COPY {PACKAGE_CONTEXT_DIR} /opt/rlmesh/packages\n\n"
+        ));
+    }
+
     // system packages: system union system_runtime, order-preserving dedup, one layer.
     let apt = union_preserving_order(&build.system, &build.system_runtime);
     out.push_str(&render_system_packages(&apt)?);
@@ -383,10 +413,11 @@ pub fn derive_dockerfile(recipe: &Recipe) -> Result<String, DeriveError> {
         out.push_str(&render_fetch(fetch, verb)?);
     }
 
-    // pip: the stock preamble (bootstrap + rlmesh + gymnasium) then each step.
+    // pip: the stock preamble (bootstrap + rlmesh + gymnasium), then each recipe
+    // step, then the caller's extra `packages`.
     out.push_str(&format!(
         "RUN {}\n\n",
-        render_pip_chain(&build.pip, &build.installer)?
+        render_pip_chain(&build.pip, &build.installer, rlmesh_package, packages)?
     ));
 
     // commands: raw escape-hatch RUNs, appended last (Installed-only upstream).
@@ -493,14 +524,20 @@ fn render_fetch(fetch: &Fetch, verb: &str) -> Result<String, DeriveError> {
             validate_token("fetch.repo", repo)?;
             validate_token("fetch.dest", dest)?;
             let (repo_q, dest_q) = (shell_quote(repo), shell_quote(dest));
-            let mut chain = format!("git clone --depth=1 {repo_q} {dest_q}");
-            if let Some(git_ref) = &fetch.ref_ {
+            // When a ref is pinned, fetch it directly into a fresh repo rather
+            // than shallow-cloning the default branch first and fetching the ref
+            // on top: that pattern wastes a clone and fails on servers that will
+            // not serve an unreachable SHA. With no ref, a plain shallow clone of
+            // the default branch is correct.
+            let mut chain = if let Some(git_ref) = &fetch.ref_ {
                 validate_token("fetch.ref", git_ref)?;
                 let ref_q = shell_quote(git_ref);
-                chain.push_str(&format!(
-                    " && git -C {dest_q} fetch --depth=1 origin {ref_q} && git -C {dest_q} checkout {ref_q}"
-                ));
-            }
+                format!(
+                    "git init {dest_q} && git -C {dest_q} remote add origin {repo_q} && git -C {dest_q} fetch --depth=1 origin {ref_q} && git -C {dest_q} checkout FETCH_HEAD"
+                )
+            } else {
+                format!("git clone --depth=1 {repo_q} {dest_q}")
+            };
             if let Some(req) = &fetch.pip_requirements {
                 validate_token("fetch.pip_requirements", req)?;
                 chain.push_str(&format!(" && {verb} -r {dest_q}/{req}"));
@@ -542,8 +579,14 @@ fn nonempty<'a>(value: &'a str, field: &str) -> Result<&'a str, DeriveError> {
     }
 }
 
-/// Render the single pip `RUN` chain: installer preamble then each [`PipInstall`].
-fn render_pip_chain(steps: &[PipInstall], installer: &str) -> Result<String, DeriveError> {
+/// Render the single pip `RUN` chain: installer preamble (rlmesh + gymnasium),
+/// each [`PipInstall`] step, then the caller's extra `packages`.
+fn render_pip_chain(
+    steps: &[PipInstall],
+    installer: &str,
+    rlmesh_package: &ResolvedRlmeshPackage,
+    packages: &[String],
+) -> Result<String, DeriveError> {
     let verb = install_verb(installer);
     let mut parts = Vec::new();
     if installer == "uv" {
@@ -552,10 +595,26 @@ fn render_pip_chain(steps: &[PipInstall], installer: &str) -> Result<String, Der
     } else {
         parts.push("python -m pip install --no-cache-dir --upgrade pip".to_string());
     }
-    parts.push(format!("{verb} rlmesh"));
+    // Install the upstream-resolved RLMesh package (a pip spec like
+    // `rlmesh==X` or the COPY'd local wheel's install path), not a hardcoded
+    // `rlmesh`, so the Dockerfile agrees with the build hash.
+    let install_ref = rlmesh_package.install_ref();
+    validate_token("rlmesh_package", install_ref)?;
+    parts.push(format!("{verb} {}", shell_quote(install_ref)));
     parts.push(format!("{verb} gymnasium"));
     for step in steps {
         parts.push(render_pip_step(step, verb)?);
+    }
+    // The caller's extra `packages` (the `packages=[...]` argument to SandboxEnv)
+    // install last, in their own line, mirroring the gym/hf path in docker.rs.
+    if !packages.is_empty() {
+        let mut line = verb.to_string();
+        for package in packages {
+            validate_token("packages", package)?;
+            line.push(' ');
+            line.push_str(&shell_quote(package));
+        }
+        parts.push(line);
     }
     Ok(parts.join(" && "))
 }
@@ -589,9 +648,284 @@ fn render_pip_step(step: &PipInstall, verb: &str) -> Result<String, DeriveError>
     Ok(line)
 }
 
+/// An error produced while resolving a [`ProjectInstall::include`] glob.
+#[derive(Debug, thiserror::Error)]
+pub enum IncludeError {
+    /// Walking the project tree to match an include glob failed.
+    #[error("failed to resolve include {pattern:?}: {source}")]
+    Io {
+        /// The include pattern being resolved.
+        pattern: String,
+        /// The underlying filesystem error.
+        source: std::io::Error,
+    },
+    /// An include match resolved to a path outside the project root (a
+    /// path-traversal attempt via `..` or a symlink escaping the tree).
+    #[error("include {pattern:?} matched a path escaping the project root: {path}")]
+    Escapes {
+        /// The include pattern being resolved.
+        pattern: String,
+        /// The offending real path.
+        path: String,
+    },
+}
+
+/// One matched include entry: the on-disk path (under the project root) and its
+/// path relative to that root, which is the layout staged under
+/// [`PROJECT_CONTEXT_DIR`] and the key folded into the content digest.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct IncludeMatch {
+    /// The matched path on disk (a file or directory under the project root).
+    pub path: PathBuf,
+    /// The matched path relative to the project root (its staged layout).
+    pub relative: PathBuf,
+}
+
+/// Resolve a recipe's [`ProjectInstall::include`] globs, returning the matched
+/// files and directories sorted and deduplicated so staging and hashing fold in
+/// the *same* entries in the *same* order.
+///
+/// Globs resolve against `project_root` (`context_root.join(project.src)`). The
+/// path-traversal GUARD root is `context_root`: every match's *real* path
+/// (symlinks resolved) must stay within the real `context_root`, so a pattern
+/// may use `..` to reach a sibling above `src` (e.g. `../assets/**`, the shape
+/// the Python schema documents) but cannot escape the build context. Anything
+/// escaping `context_root` is a hard [`IncludeError::Escapes`].
+///
+/// Each match's staged layout ([`IncludeMatch::relative`]) is its path relative
+/// to `project_root`; a match reached above `project_root` via `..` is staged at
+/// its path relative to `context_root` instead (so it lands *inside* the project
+/// dir rather than climbing out of it). For the common `src == "."` case the two
+/// coincide.
+///
+/// SUPPORTED GLOB SUBSET (documented, intentionally minimal -- no `glob` crate
+/// dependency): each pattern is `/`-split into segments matched against the tree
+/// segment-by-segment. A segment may be a literal, contain `*` (matches any run
+/// of non-`/` characters within a single path segment), or be exactly `**`
+/// (matches zero or more whole path segments). So `assets/**`, `*.json`,
+/// `data/*`, and `configs/**/*.yaml` all work. A `.`/`..` segment is honored.
+pub fn resolve_includes(
+    project_root: &Path,
+    context_root: &Path,
+    includes: &[String],
+) -> Result<Vec<IncludeMatch>, IncludeError> {
+    if includes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The real context root anchors the traversal guard; the real project root
+    // anchors the staged layout. A non-existent project root simply matches
+    // nothing.
+    let (real_context, real_project) = match (
+        std::fs::canonicalize(context_root),
+        std::fs::canonicalize(project_root),
+    ) {
+        (Ok(context), Ok(project)) => (context, project),
+        _ => return Ok(Vec::new()),
+    };
+
+    // Matches are stored as canonical (symlink-resolved) real paths, guaranteed
+    // under `real_context` by the guard, so the relative layout strips cleanly
+    // even for patterns that traversed through `..`.
+    let mut matches = std::collections::BTreeSet::new();
+    for pattern in includes {
+        let segments: Vec<&str> = pattern.split('/').filter(|seg| !seg.is_empty()).collect();
+        match_glob(
+            project_root,
+            &segments,
+            pattern,
+            &real_context,
+            &mut matches,
+        )?;
+    }
+    // Prune any match nested under another matched directory so each entry is
+    // staged/hashed exactly once via the consumer's recursive tree-walk. Matches
+    // are sorted, so a parent dir precedes its descendants: keep a match only
+    // when the last-kept entry is not a prefix of it.
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for path in matches {
+        if kept.last().is_some_and(|parent| path.starts_with(parent)) {
+            continue;
+        }
+        kept.push(path);
+    }
+
+    Ok(kept
+        .into_iter()
+        .map(|path| {
+            // Prefer a project-root-relative layout; fall back to context-root-
+            // relative for an above-src match so the staged path stays inside the
+            // project dir.
+            let relative = path
+                .strip_prefix(&real_project)
+                .or_else(|_| path.strip_prefix(&real_context))
+                .unwrap_or(path.as_path())
+                .to_path_buf();
+            IncludeMatch { path, relative }
+        })
+        .collect())
+}
+
+/// Recursively match `segments` against the directory `current`, collecting
+/// matched paths into `out`. `pattern` is carried only for error messages and
+/// `real_context` is the canonical context root the traversal guard enforces.
+fn match_glob(
+    current: &Path,
+    segments: &[&str],
+    pattern: &str,
+    real_context: &Path,
+    out: &mut std::collections::BTreeSet<PathBuf>,
+) -> Result<(), IncludeError> {
+    let [segment, rest @ ..] = segments else {
+        // All segments consumed: `current` is a match. Guard it, then keep it.
+        if let Some(path) = guarded(current, pattern, real_context)? {
+            out.insert(path);
+        }
+        return Ok(());
+    };
+
+    match *segment {
+        "." => match_glob(current, rest, pattern, real_context, out),
+        ".." => {
+            let parent = current.join("..");
+            match_glob(&parent, rest, pattern, real_context, out)
+        }
+        "**" => {
+            // `**` matches zero segments (try `rest` here) ...
+            match_glob(current, rest, pattern, real_context, out)?;
+            // ... or one-or-more: descend into each child dir and re-apply `**`.
+            for child in read_child_dirs(current, pattern)? {
+                match_glob(&child, segments, pattern, real_context, out)?;
+            }
+            Ok(())
+        }
+        literal_or_star => {
+            for entry in read_entries(current, pattern)? {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if segment_matches(literal_or_star, name.as_ref()) {
+                    match_glob(&entry.path(), rest, pattern, real_context, out)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// List the immediate child entries of `dir`; a missing dir yields nothing (a
+/// glob over an absent path simply matches nothing).
+fn read_entries(dir: &Path, pattern: &str) -> Result<Vec<std::fs::DirEntry>, IncludeError> {
+    let reader = match std::fs::read_dir(dir) {
+        Ok(reader) => reader,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(IncludeError::Io {
+                pattern: pattern.to_string(),
+                source,
+            });
+        }
+    };
+    reader
+        .map(|entry| {
+            entry.map_err(|source| IncludeError::Io {
+                pattern: pattern.to_string(),
+                source,
+            })
+        })
+        .collect()
+}
+
+/// List the immediate child *directories* of `dir` for the `**` descent,
+/// SKIPPING symlinked entries.
+///
+/// Classification uses the `DirEntry`'s own file type (the LINK itself, never
+/// dereferenced), so `**` descends only into REAL directories: a benign outward
+/// symlink (e.g. `.venv -> /shared`) is not followed into `guarded()` -- where it
+/// would hard-fail as `Escapes` -- and a cyclic link cannot trigger a
+/// `FilesystemLoop`. A directly-NAMED (literal) include path that is a symlink
+/// still flows through the terminal `guarded()` containment check and is staged
+/// if it resolves within `context_root`; only the auto-descent of `**` stops
+/// following links.
+fn read_child_dirs(dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, IncludeError> {
+    let mut dirs = Vec::new();
+    for entry in read_entries(dir, pattern)? {
+        // file_type() reports the link itself, so a symlinked subdir is skipped
+        // (not followed) and a dangling/cyclic link never aborts the descent.
+        let is_real_dir = entry
+            .file_type()
+            .map(|file_type| file_type.is_dir() && !file_type.is_symlink())
+            .unwrap_or(false);
+        if is_real_dir {
+            dirs.push(entry.path());
+        }
+    }
+    Ok(dirs)
+}
+
+/// Whether a single literal-or-`*` glob segment matches a path-component `name`.
+/// `*` matches any run of characters (within the one segment); all other
+/// characters are literal.
+fn segment_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == name;
+    }
+    // Split on `*`; each literal piece must appear in order, with the first
+    // anchored at the start and the last anchored at the end.
+    let pieces: Vec<&str> = pattern.split('*').collect();
+    let mut cursor = 0usize;
+    for (index, piece) in pieces.iter().enumerate() {
+        if piece.is_empty() {
+            continue;
+        }
+        if index == 0 {
+            if !name[cursor..].starts_with(piece) {
+                return false;
+            }
+            cursor += piece.len();
+        } else if index == pieces.len() - 1 {
+            if !name[cursor..].ends_with(piece) {
+                return false;
+            }
+        } else if let Some(found) = name[cursor..].find(piece) {
+            cursor += found + piece.len();
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// Enforce the path-traversal guard: canonicalize `path` and require it to live
+/// within `real_context` (the build context root). Returns the *canonical*
+/// matched path (so its layout relative to a root strips cleanly even through
+/// `..`) or `None` if the path vanished between listing and the guard.
+fn guarded(
+    path: &Path,
+    pattern: &str,
+    real_context: &Path,
+) -> Result<Option<PathBuf>, IncludeError> {
+    let real = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(IncludeError::Io {
+                pattern: pattern.to_string(),
+                source,
+            });
+        }
+    };
+    if !real.starts_with(real_context) {
+        return Err(IncludeError::Escapes {
+            pattern: pattern.to_string(),
+            path: real.display().to_string(),
+        });
+    }
+    Ok(Some(real))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DEFAULT_BASE_IMAGE;
 
     const GYM_RECIPE_JSON: &str = include_str!("../tests/golden/gym_atari.recipe.json");
     const GYM_GOLDEN: &str = include_str!("../tests/golden/gym_atari.dockerfile");
@@ -600,6 +934,21 @@ mod tests {
 
     fn gym_recipe() -> Recipe {
         Recipe::from_json(GYM_RECIPE_JSON).expect("fixture parses")
+    }
+
+    /// A representative resolved RLMesh package for the deriver tests: a plain
+    /// pip spec named `rlmesh`, so the goldens read `'rlmesh'` (the upstream
+    /// resolver normally hands in `rlmesh==X` or a staged wheel path).
+    fn rlmesh_pkg() -> ResolvedRlmeshPackage {
+        ResolvedRlmeshPackage::Pip {
+            spec: "rlmesh".to_string(),
+        }
+    }
+
+    /// Derive against the default base, the representative pip package, and no
+    /// extra caller packages -- the common case for most deriver tests.
+    fn derive(recipe: &Recipe) -> Result<String, DeriveError> {
+        derive_dockerfile(recipe, DEFAULT_BASE_IMAGE, &rlmesh_pkg(), &[])
     }
 
     #[test]
@@ -621,7 +970,7 @@ mod tests {
 
     #[test]
     fn gym_recipe_matches_golden_dockerfile() {
-        let derived = derive_dockerfile(&gym_recipe()).expect("derives");
+        let derived = derive(&gym_recipe()).expect("derives");
         assert_eq!(
             derived, GYM_GOLDEN,
             "derived Dockerfile drifted from the checked-in golden"
@@ -632,7 +981,7 @@ mod tests {
     fn empty_build_uses_default_base() {
         let recipe = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
             .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(&format!("FROM {DEFAULT_BASE_IMAGE}")));
     }
 
@@ -642,7 +991,7 @@ mod tests {
             r#"{"name":"a","build":{"system":["cmake","g++"],"system_runtime":["g++","libglew2.2"]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(
             "RUN apt-get update && apt-get install -y --no-install-recommends 'cmake' 'g++' 'libglew2.2' && rm -rf /var/lib/apt/lists/*"
         ));
@@ -657,7 +1006,7 @@ mod tests {
             ]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(
             "python -m pip install --no-cache-dir --index-url 'https://download.pytorch.org/whl/cu124' 'torch'"
         ));
@@ -670,7 +1019,7 @@ mod tests {
             r#"{"name":"a","build":{"gpu":true,"env":{"MUJOCO_GL":"egl"},"pythonpath":["/opt/x","/opt/y"]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains("ENV NVIDIA_DRIVER_CAPABILITIES=all"));
         assert!(derived.contains("ENV MUJOCO_GL=egl"));
         assert!(derived.contains("ENV PYTHONPATH=/opt/x:/opt/y"));
@@ -681,7 +1030,7 @@ mod tests {
         let recipe =
             Recipe::from_json(r#"{"name":"a","build":{"run_as":1000,"commands":["echo built"]}}"#)
                 .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains("RUN sh -lc 'echo built'"));
         assert!(derived.contains("USER 1000"));
         assert!(derived.contains("useradd --create-home --uid 1000 rlmesh"));
@@ -693,7 +1042,7 @@ mod tests {
             r#"{"name":"a","build":{"dockerfile":"FROM scratch\nRUN echo hi\n"}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert_eq!(
             derived,
             "FROM scratch\nRUN echo hi\n\nENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n"
@@ -706,7 +1055,7 @@ mod tests {
             r#"{"name":"a","build":{"project":{"src":".","dest":"/opt/robot_env"}}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains("COPY project /opt/robot_env"));
         assert!(derived.contains("RUN python -m pip install --no-cache-dir -e '/opt/robot_env'"));
     }
@@ -715,7 +1064,7 @@ mod tests {
     fn renders_project_default_dest_and_non_editable() {
         let recipe = Recipe::from_json(r#"{"name":"a","build":{"project":{"editable":false}}}"#)
             .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains("COPY project /opt/rlmesh/project"));
         assert!(derived.contains("RUN python -m pip install --no-cache-dir '/opt/rlmesh/project'"));
         assert!(!derived.contains(" -e '/opt/rlmesh/project'"));
@@ -727,10 +1076,26 @@ mod tests {
             r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://github.com/x/LIBERO.git","ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","dest":"/opt/LIBERO","pip_install":true}]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
+        // A pinned ref fetches into a fresh repo (no default-branch clone first)
+        // and checks out FETCH_HEAD.
         assert!(derived.contains(
-            "RUN git clone --depth=1 'https://github.com/x/LIBERO.git' '/opt/LIBERO' && git -C '/opt/LIBERO' fetch --depth=1 origin 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && git -C '/opt/LIBERO' checkout 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && python -m pip install --no-cache-dir -e '/opt/LIBERO' && rm -rf '/opt/LIBERO'/.git"
+            "RUN git init '/opt/LIBERO' && git -C '/opt/LIBERO' remote add origin 'https://github.com/x/LIBERO.git' && git -C '/opt/LIBERO' fetch --depth=1 origin 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && git -C '/opt/LIBERO' checkout FETCH_HEAD && python -m pip install --no-cache-dir -e '/opt/LIBERO' && rm -rf '/opt/LIBERO'/.git"
         ));
+    }
+
+    #[test]
+    fn renders_git_fetch_without_ref_uses_plain_clone() {
+        // With no ref pinned, fall back to a shallow clone of the default branch.
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://github.com/x/R.git","dest":"/opt/R","pip_install":true}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        assert!(derived.contains(
+            "RUN git clone --depth=1 'https://github.com/x/R.git' '/opt/R' && python -m pip install --no-cache-dir -e '/opt/R' && rm -rf '/opt/R'/.git"
+        ));
+        assert!(!derived.contains("git init"));
     }
 
     #[test]
@@ -739,7 +1104,7 @@ mod tests {
             r#"{"name":"a","build":{"fetch":[{"kind":"url","url":"https://x/a.tar.gz","dest":"/opt/a.tar.gz","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(
             "RUN curl -fsSL 'https://x/a.tar.gz' -o '/opt/a.tar.gz' && echo '0000000000000000000000000000000000000000000000000000000000000000  /opt/a.tar.gz' | sha256sum -c -"
         ));
@@ -751,10 +1116,7 @@ mod tests {
             r#"{"name":"a","build":{"fetch":[{"kind":"git","repo":"https://x/r.git"}]}}"#,
         )
         .expect("parses");
-        assert!(matches!(
-            derive_dockerfile(&recipe),
-            Err(DeriveError::MissingField(_))
-        ));
+        assert!(matches!(derive(&recipe), Err(DeriveError::MissingField(_))));
     }
 
     #[test]
@@ -763,30 +1125,35 @@ mod tests {
             r#"{"name":"a","build":{"installer":"uv","pip":[{"packages":["sapien"]}]}}"#,
         )
         .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert!(derived.contains("python -m pip install --no-cache-dir uv"));
-        assert!(derived.contains("uv pip install --system --no-cache-dir rlmesh"));
+        assert!(derived.contains("uv pip install --system --no-cache-dir 'rlmesh'"));
         assert!(derived.contains("uv pip install --system --no-cache-dir 'sapien'"));
     }
 
     #[test]
     fn non_python_base_gets_python_symlink() {
-        let recipe = Recipe::from_json(
-            r#"{"name":"a","build":{"base":"nvidia/cuda:12.4.1-runtime-ubuntu22.04"}}"#,
+        // The base now arrives already-resolved as an argument (folding in the
+        // build.base-wins precedence upstream), so pass the cuda base directly.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let derived = derive_dockerfile(
+            &recipe,
+            "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+            &rlmesh_pkg(),
+            &[],
         )
-        .expect("parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        .expect("derives");
         assert!(derived.contains("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python"));
         // The default python base must NOT get the symlink.
         let py = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
             .expect("parses");
-        assert!(!derive_dockerfile(&py).expect("derives").contains("ln -sf"));
+        assert!(!derive(&py).expect("derives").contains("ln -sf"));
     }
 
     #[test]
     fn libero_recipe_matches_golden_dockerfile() {
         let recipe = Recipe::from_json(LIBERO_RECIPE_JSON).expect("fixture parses");
-        let derived = derive_dockerfile(&recipe).expect("derives");
+        let derived = derive(&recipe).expect("derives");
         assert_eq!(
             derived, LIBERO_GOLDEN,
             "derived LIBERO Dockerfile drifted from the checked-in golden"
@@ -799,5 +1166,156 @@ mod tests {
         let json = serde_json::to_string(&recipe).expect("serializes");
         let back = Recipe::from_json(&json).expect("parses");
         assert_eq!(recipe, back);
+    }
+
+    #[test]
+    fn installs_resolved_pip_rlmesh_ref_not_hardcoded_rlmesh() {
+        // The resolved pip spec (e.g. a pinned version) must be what gets
+        // installed, so the Dockerfile agrees with the build hash.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let pkg = ResolvedRlmeshPackage::Pip {
+            spec: "rlmesh==0.1.0b2".to_string(),
+        };
+        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &pkg, &[]).expect("derives");
+        assert!(derived.contains("python -m pip install --no-cache-dir 'rlmesh==0.1.0b2'"));
+    }
+
+    #[test]
+    fn copies_and_installs_staged_local_rlmesh_wheel() {
+        // A local wheel rlmesh package stages a packages/ dir into the context,
+        // so the deriver must COPY it and install from the wheel's install path.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let pkg = ResolvedRlmeshPackage::Wheel {
+            source_path: "/tmp/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl".into(),
+            install_path: "/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl"
+                .to_string(),
+            sha256: "abc".to_string(),
+        };
+        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &pkg, &[]).expect("derives");
+        assert!(derived.contains("COPY packages /opt/rlmesh/packages"));
+        assert!(derived.contains(
+            "python -m pip install --no-cache-dir '/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl'"
+        ));
+    }
+
+    #[test]
+    fn appends_caller_extra_packages_to_pip_chain() {
+        // The packages=[...] argument to SandboxEnv must reach the pip chain.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let packages = vec!["pygame".to_string(), "numpy==1.26.4".to_string()];
+        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &rlmesh_pkg(), &packages)
+            .expect("derives");
+        assert!(derived.contains("python -m pip install --no-cache-dir 'pygame' 'numpy==1.26.4'"));
+    }
+
+    fn write(path: &Path, contents: &[u8]) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn resolve_includes_matches_double_star_glob() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("assets/sub/a.png"), b"a");
+        write(&root.join("assets/b.png"), b"b");
+        write(&root.join("code.py"), b"code");
+
+        // src == "." so project_root == context_root.
+        let matches = resolve_includes(root, root, &["assets/**".to_string()]).unwrap();
+        // `assets/**` collapses to the single `assets` dir (descendants pruned),
+        // so its whole subtree stages once; `code.py` is not matched.
+        let relatives: Vec<_> = matches.iter().map(|m| m.relative.clone()).collect();
+        assert_eq!(relatives, vec![PathBuf::from("assets")]);
+    }
+
+    #[test]
+    fn resolve_includes_matches_star_within_a_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("a.json"), b"1");
+        write(&root.join("b.json"), b"2");
+        write(&root.join("c.txt"), b"3");
+
+        let matches = resolve_includes(root, root, &["*.json".to_string()]).unwrap();
+        let relatives: Vec<_> = matches.iter().map(|m| m.relative.clone()).collect();
+        assert_eq!(
+            relatives,
+            vec![PathBuf::from("a.json"), PathBuf::from("b.json")]
+        );
+    }
+
+    #[test]
+    fn resolve_includes_reaches_a_sibling_above_src() {
+        // src is a subdir; `../assets/**` reaches a sibling above src but within
+        // context_root, and is staged relative to context_root so it lands
+        // inside the project dir (not climbing out via `..`).
+        let dir = tempfile::tempdir().unwrap();
+        let context_root = dir.path();
+        write(&context_root.join("assets/scene.json"), b"a");
+        std::fs::create_dir_all(context_root.join("pkg")).unwrap();
+        let project_root = context_root.join("pkg");
+
+        let matches =
+            resolve_includes(&project_root, context_root, &["../assets/**".to_string()]).unwrap();
+        let relatives: Vec<_> = matches.iter().map(|m| m.relative.clone()).collect();
+        assert_eq!(relatives, vec![PathBuf::from("assets")]);
+    }
+
+    #[test]
+    fn resolve_includes_rejects_a_path_escaping_the_context_root() {
+        // A symlink pointing outside the context root must be rejected by the
+        // traversal guard rather than silently staging foreign content.
+        let outer = tempfile::tempdir().unwrap();
+        write(&outer.path().join("secret.txt"), b"secret");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outer.path().join("secret.txt"), root.join("link.txt"))
+                .unwrap();
+            let err = resolve_includes(root, root, &["link.txt".to_string()]).unwrap_err();
+            assert!(matches!(err, IncludeError::Escapes { .. }));
+        }
+    }
+
+    #[test]
+    fn resolve_includes_absent_pattern_matches_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let matches = resolve_includes(dir.path(), dir.path(), &["nope/**".to_string()]).unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn double_star_descent_skips_symlinked_subdirs_without_aborting() {
+        // `**` descent must SKIP symlinked subdirs rather than follow them: a
+        // benign outward link (the canonical `.venv -> /shared` shape) must not
+        // reach the traversal guard and hard-fail as Escapes, and a cyclic link
+        // must not abort with a FilesystemLoop. A real file under the descent is
+        // still matched; the link's target is simply not included.
+        let outer = tempfile::tempdir().unwrap();
+        write(&outer.path().join("foreign.txt"), b"foreign");
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("real/a.txt"), b"a");
+        // A benign outward symlink (whose target holds a `.txt` that would be
+        // matched -- and rejected as Escapes -- if `**` descended through it) ...
+        std::os::unix::fs::symlink(outer.path(), root.join("venv")).unwrap();
+        // ... and a directory self-link (a FilesystemLoop if descended).
+        std::os::unix::fs::symlink(".", root.join("loop")).unwrap();
+
+        // src == "." so project_root == context_root; `**/*.txt` descends into
+        // every child dir, so it exercises read_child_dirs at the root.
+        let matches = resolve_includes(root, root, &["**/*.txt".to_string()])
+            .expect("a symlinked subdir under ** must be skipped, not abort");
+        let relatives: Vec<_> = matches.iter().map(|m| m.relative.clone()).collect();
+        // The real file is matched; the escaping link's foreign `.txt` target is
+        // not staged and neither link aborts the descent.
+        assert_eq!(relatives, vec![PathBuf::from("real/a.txt")]);
     }
 }

@@ -287,6 +287,20 @@ impl DockerBackend {
             let dest = tempdir.path().join(crate::recipe::PROJECT_CONTEXT_DIR);
             copy_tree(&src, &dest)
                 .with_context(|| format!("failed to stage project tree {}", src.display()))?;
+
+            // Also stage each `include` glob match (extra non-code assets, e.g.
+            // `../assets/**` siblings above src), preserving its staged layout so
+            // the single `COPY {PROJECT_CONTEXT_DIR}` carries them. The same
+            // matches are folded into the build hash by recipe_content_digest.
+            let includes = crate::recipe::resolve_includes(&src, root, &project.include)
+                .with_context(|| {
+                    format!("failed to resolve project includes under {}", src.display())
+                })?;
+            for include in includes {
+                copy_tree(&include.path, &dest.join(&include.relative)).with_context(|| {
+                    format!("failed to stage project include {}", include.path.display())
+                })?;
+            }
         }
 
         let dockerfile = render_dockerfile(spec)?;
@@ -481,10 +495,17 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     validate_dockerfile_token("base_image", &spec.base_image)?;
 
     // A recipe source drives the Dockerfile through the language-neutral deriver
-    // (the §5A contract); gym/hf use the fixed preamble below.
+    // (the §5A contract); gym/hf use the fixed preamble below. The deriver is fed
+    // the upstream-resolved base image, rlmesh package, and extra packages (the
+    // same values the build hash covers) rather than re-deriving them.
     if let Some(recipe) = &spec.recipe {
-        return crate::recipe::derive_dockerfile(recipe)
-            .map_err(|err| anyhow!("failed to derive recipe Dockerfile: {err}"));
+        return crate::recipe::derive_dockerfile(
+            recipe,
+            &spec.base_image,
+            &spec.rlmesh_package,
+            &spec.packages,
+        )
+        .map_err(|err| anyhow!("failed to derive recipe Dockerfile: {err}"));
     }
 
     let source_copy = match &spec.resolved_source {
@@ -606,13 +627,32 @@ fn format_startup_failure_report(
 }
 
 /// Recursively copy a file or directory tree from `src` to `dest`.
+///
+/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: a child
+/// entry is classified by its own `entry.file_type()` (which reports the LINK
+/// itself, never dereferencing or erroring on a dangling/looping target), and a
+/// symlink child is skipped outright -- not copied, not recursed into. This
+/// keeps a link that points outside the tree from leaking foreign bytes into the
+/// image and stops a cyclic/dangling link from aborting the build. `fs::metadata`
+/// is used ONLY to classify the passed-in root, so an explicitly-named src that
+/// is itself a symlink-to-dir is still honored; every CHILD is filtered before
+/// any recursion, so metadata never runs on a link. `hash_path_tree` in lib.rs
+/// makes the identical skip decision so the staged bytes equal the hashed bytes.
+/// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
+/// (a guarded, canonicalized glob), not by silently following links here.
 fn copy_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
     let metadata =
-        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+        fs::metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
     if metadata.is_dir() {
         fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
+            // Skip symlink children identically to hash_path_tree: file_type()
+            // reports the link itself, so a dangling/cyclic/escaping link is
+            // skipped without ever dereferencing it.
+            if entry.file_type()?.is_symlink() {
+                continue;
+            }
             copy_tree(&entry.path(), &dest.join(entry.file_name()))?;
         }
     } else {
@@ -924,7 +964,7 @@ mod tests {
 
     use super::{
         BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
-        confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
+        confirmed_terminal_summary, copy_tree, current_pid_namespace_id, docker_run_args,
         format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
         parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
         render_dockerfile, shell_quote, tail_text,
@@ -1481,5 +1521,129 @@ mod tests {
         );
         assert!(object.contains_key("make"));
         assert!(object.contains_key("setup"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_a_symlinked_directory() {
+        use std::fs;
+
+        // A symlinked directory inside the source tree is SKIPPED (its real
+        // target is still staged under its own name, but the link entry is not).
+        let src_root = tempfile::tempdir().unwrap();
+        let real_dir = src_root.path().join("real");
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::write(real_dir.join("asset.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(&real_dir, src_root.path().join("link")).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a symlinked dir must be skipped, not error");
+
+        // The real directory is staged; the symlink name is NOT.
+        assert_eq!(
+            fs::read(out.join("real/asset.txt")).unwrap(),
+            b"payload".to_vec()
+        );
+        assert!(
+            !out.join("link").exists(),
+            "the symlinked dir must not be staged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_a_symlinked_file() {
+        use std::fs;
+
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("target.txt"), b"hello").unwrap();
+        std::os::unix::fs::symlink(
+            src_root.path().join("target.txt"),
+            src_root.path().join("alias.txt"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a symlinked file must be skipped, not error");
+
+        // The real file is staged; the symlink alias is NOT.
+        assert_eq!(fs::read(out.join("target.txt")).unwrap(), b"hello".to_vec());
+        assert!(
+            !out.join("alias.txt").exists(),
+            "the symlinked file must not be staged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_abort_on_a_cyclic_symlink() {
+        use std::fs;
+
+        // A directory self-link (link -> .) would make a follow-links walker hit
+        // a FilesystemLoop and abort; skipping the link entry stages cleanly.
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(".", src_root.path().join("link")).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a cyclic symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(!out.join("link").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_abort_on_a_dangling_symlink() {
+        use std::fs;
+
+        // A dangling link (-> a nonexistent target) would make a follow-links
+        // walker hit NotFound and abort; skipping the link entry stages cleanly.
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(
+            src_root.path().join("does-not-exist"),
+            src_root.path().join("link"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a dangling symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(!out.join("link").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_stage_an_escaping_symlink() {
+        use std::fs;
+
+        // A link to a file OUTSIDE the staged root must not leak that file into
+        // the image: the link entry is skipped, so its target is absent.
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            src_root.path().join("leak"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("an escaping symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(
+            !out.join("leak").exists(),
+            "an out-of-tree symlink target must not be staged"
+        );
     }
 }

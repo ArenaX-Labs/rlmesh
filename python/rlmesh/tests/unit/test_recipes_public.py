@@ -32,7 +32,7 @@ def test_make_gym_id_fallthrough() -> None:
 def test_make_forwards_gym_kwargs() -> None:
     env = rlmesh.make("CartPole-v1", render_mode="rgb_array")
     try:
-        assert env.render_mode == "rgb_array"
+        assert env.render_mode == "rgb_array"  # type: ignore[attr-defined]
     finally:
         env.close()
 
@@ -249,7 +249,7 @@ def test_register_needs_exactly_one_of_gym_or_factory() -> None:
 def test_register_object_form_rejects_sugar() -> None:
     recipe = Recipe(name="a/b", make=GymMake("E-v0"))
     with pytest.raises(TypeError, match="takes no gym"):
-        rlmesh.register(recipe, gym="E-v0")
+        rlmesh.register(recipe, gym="E-v0")  # type: ignore[call-overload]
 
 
 def test_register_factory_rejects_imports() -> None:

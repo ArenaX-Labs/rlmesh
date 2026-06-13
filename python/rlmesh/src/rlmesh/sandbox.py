@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike, fspath
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -33,6 +34,8 @@ ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
 RemoteT = TypeVar("RemoteT")
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
+# Immutable empty mapping used as the default for callers that pass no make kwargs.
+_NO_MAKE_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
 def _missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
@@ -621,6 +624,7 @@ class SandboxVectorEnvBase(
 
 def _resolve_recipe_source(
     source: str | Recipe | type[EnvRecipe],
+    gym_make_kwargs: Mapping[str, object] = _NO_MAKE_KWARGS,
 ) -> tuple[str, str | None, str | None, str | None]:
     """Resolve a sandbox source into (display, recipe_json, provenance, context_root).
 
@@ -630,32 +634,108 @@ def _resolve_recipe_source(
     too. ``Remote`` is reserved for a document handed in from an untrusted external
     source (the future catalog/wire path). A plain id/name that is not a recipe is
     an ordinary gym/hf source string, unchanged. When the recipe stages a project
-    tree, ``context_root`` defaults to the current directory.
+    tree, ``context_root`` is the recipe's defining-package directory when that can
+    be determined, falling back to the current directory.
+
+    ``gym_make_kwargs`` are baked into ``recipe.make.kwargs`` so the in-container
+    ``build()`` forwards them to the factory, matching local
+    ``rlmesh.make(recipe, **kwargs)``. They are *not* also forwarded via
+    ``kwargs_json`` on the recipe path (the recipe bootstrap payload carries only
+    ``make.kwargs``), so nothing is applied twice.
     """
+    import dataclasses
     import os
 
-    from rlmesh.recipes import RecipeNotFoundError, resolve, resolve_from_recipe
-    from rlmesh.recipes._authoring import as_authored_recipe
+    from rlmesh.recipes import (
+        HfMake,
+        RecipeNotFoundError,
+        UnsupportedRecipeError,
+        resolve,
+        resolve_from_recipe,
+    )
+    from rlmesh.recipes._authoring import as_authored_recipe, is_env_recipe
+    from rlmesh.recipes._registry import class_origin_dir, recipe_origin_dir
 
+    # ``origin`` is the filesystem directory of the code that *defined* the recipe,
+    # used to stage a ProjectInstall from the package's own source tree rather than
+    # the caller's cwd. ``None`` means we could not determine it.
+    origin: str | None = None
     authored = as_authored_recipe(source)
     if authored is not None:
         recipe = authored
         provenance = "installed"
+        if is_env_recipe(source):
+            # An authored EnvRecipe knows its defining module; stage from there.
+            origin = class_origin_dir(source)
     elif isinstance(source, str):
         try:
             recipe = resolve(source)
         except RecipeNotFoundError:
             return source, None, None, None
         provenance = "installed"
+        # A name resolves to a recipe registered by some package; prefer that
+        # registrant's module directory when the registry recorded it.
+        origin = recipe_origin_dir(source)
     else:
         raise TypeError(
             f"sandbox source must be a str, Recipe, or EnvRecipe, got "
             f"{type(source).__name__}"
         )
+    # Capture the from_recipe base name BEFORE inlining: from_recipe is exclusive
+    # with other build fields, so when it is set the inlined ProjectInstall always
+    # comes from the BASE, and its `src` is relative to the base's source tree --
+    # not the child's. We use this below to stage from the base's origin.
+    base_name = recipe.build.from_recipe
     # Inline any `from_recipe` base build before the wire so a task family shares
     # one image.
     recipe = resolve_from_recipe(recipe)
-    context_root = os.getcwd() if recipe.build.project is not None else None
+    # An HfMake recipe materializes its source only via the sandbox HF path, never
+    # the recipe path; reject it here so we fail fast instead of after a full image
+    # build (the in-container build() would otherwise raise UnsupportedRecipeError).
+    if isinstance(recipe.make, HfMake):
+        raise UnsupportedRecipeError(
+            f"recipe {recipe.name!r} uses HfMake, which materializes its source only "
+            "via the sandbox HF path, not the recipe path; pass the HF source string "
+            "to SandboxEnv instead"
+        )
+    # setup.files is not applied anywhere yet (the tempdir-gated file writer has not
+    # landed; the in-container build() -> apply_setup raises on it too). Reject it
+    # here so we fail fast instead of after a full image build.
+    if recipe.setup.files:
+        raise UnsupportedRecipeError(
+            "setup.files is not applied yet (local or sandbox); remove it and stage "
+            "files via the build phase (build.project / build.fetch) instead"
+        )
+    # Bake any make kwargs into the recipe document so the in-container factory
+    # receives them (the recipe bootstrap payload carries make.kwargs, not the
+    # gym/hf kwargs_json). A build-only base has no make to carry them.
+    if gym_make_kwargs:
+        if recipe.make is None:
+            raise TypeError(
+                f"recipe {recipe.name!r} is a build-only base (make is None); it takes "
+                "no environment make kwargs"
+            )
+        merged_make = dataclasses.replace(
+            recipe.make, kwargs={**recipe.make.kwargs, **gym_make_kwargs}
+        )
+        recipe = dataclasses.replace(recipe, make=merged_make)
+    if recipe.build.project is None:
+        context_root = None
+    else:
+        # When the build came from a `from_recipe` base, the inlined project.src is
+        # relative to the BASE's source tree, not the child's -- so prefer the base's
+        # recorded origin. (from_recipe is exclusive with other build fields, so the
+        # ProjectInstall is always the base's.) Fall back to the child's origin only
+        # when the base has no recorded origin.
+        if base_name is not None:
+            base_origin = recipe_origin_dir(base_name)
+            if base_origin is not None:
+                origin = base_origin
+        # Stage a ProjectInstall from the recipe's defining package when we know it,
+        # falling back to the caller's cwd otherwise (e.g. a plain in-process Recipe
+        # instance assembled at the call site has no determinable origin -- the cwd
+        # is then the only host tree we can reasonably stage from).
+        context_root = origin if origin is not None else os.getcwd()
     return recipe.name, recipe.to_json(), provenance, context_root
 
 
@@ -672,8 +752,9 @@ def _start_sandbox(
     vectorization_mode: str | None,
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
-    display, recipe_json, provenance, context_root = _resolve_recipe_source(source)
-    kwargs_json = json.dumps(gym_make_kwargs) if gym_make_kwargs else None
+    display, recipe_json, provenance, context_root = _resolve_recipe_source(
+        source, gym_make_kwargs
+    )
     # Only forward the recipe arguments when this is actually a recipe source, so
     # the gym/hf path stays byte-identical to before.
     recipe_kwargs: dict[str, str] = {}
@@ -682,6 +763,14 @@ def _start_sandbox(
         recipe_kwargs["recipe_provenance"] = provenance
         if context_root is not None:
             recipe_kwargs["context_root"] = context_root
+        # On the recipe path the make kwargs are baked into the document's
+        # make.kwargs by _resolve_recipe_source (the recipe bootstrap payload
+        # carries make.kwargs, not kwargs_json), so do not also ship kwargs_json --
+        # the document is their sole carrier. The gym/hf path below keeps shipping
+        # kwargs_json exactly as before.
+        kwargs_json: str | None = None
+    else:
+        kwargs_json = json.dumps(gym_make_kwargs) if gym_make_kwargs else None
     started = cast(
         _SandboxStartInfo,
         _sandbox_start_env(

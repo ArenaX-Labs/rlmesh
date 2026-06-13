@@ -37,7 +37,7 @@ def test_build_gym_recipe_forwards_kwargs() -> None:
         )
     )
     try:
-        assert env.render_mode == "rgb_array"
+        assert env.render_mode == "rgb_array"  # type: ignore[attr-defined]
     finally:
         env.close()
 
@@ -81,8 +81,15 @@ def test_build_setup_files_unsupported_in_process() -> None:
         make=GymMake(env_id="CartPole-v1"),
         setup=Setup(files=[FileWrite(path="x.txt", contents="hi")]),
     )
-    with pytest.raises(UnsupportedRecipeError, match=r"setup\.files"):
+    # The message must not advise "run it in a sandbox" -- the sandbox bootstrap
+    # calls this same apply_setup, so that advice would be impossible to follow.
+    with pytest.raises(
+        UnsupportedRecipeError, match=r"setup\.files is not applied yet"
+    ) as excinfo:
         build(recipe)
+    assert "sandbox" not in str(excinfo.value) or "local or sandbox" in str(
+        excinfo.value
+    )
 
 
 @pytest.fixture
@@ -126,3 +133,119 @@ def test_build_py_recipe_wires_entrypoint(py_factory_module: str) -> None:
     obs, info = env.reset()
     assert obs == "wired"
     assert info == {}
+
+
+def test_build_py_recipe_accepts_bootstrap_vectorization_mode(
+    py_factory_module: str,
+) -> None:
+    # The bootstrap (load_recipe_env) always passes vectorization_mode="sync" for a
+    # single env; a num_envs==1 py build must accept it rather than crash.
+    recipe = Recipe(
+        name="acme/factory",
+        make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
+    )
+    env = build(recipe, num_envs=1, vectorization_mode="sync")
+    obs, _ = env.reset()
+    assert obs == "default"
+
+
+def test_build_py_recipe_ignores_vectorization_mode_for_single_env(
+    py_factory_module: str,
+) -> None:
+    # build()'s PyMake guard is `num_envs != 1`, so a single-env py recipe silently
+    # ignores vectorization_mode (a single env is not vectorized). This is reachable
+    # via rlmesh.make(py_recipe, vectorization_mode="async").
+    recipe = Recipe(
+        name="acme/factory",
+        make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
+    )
+    env = build(recipe, num_envs=1, vectorization_mode="async")
+    obs, _ = env.reset()
+    assert obs == "default"
+
+
+def test_build_py_recipe_rejects_true_vector_request(py_factory_module: str) -> None:
+    recipe = Recipe(
+        name="acme/factory",
+        make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
+    )
+    with pytest.raises(TypeError, match="gym sources only"):
+        build(recipe, num_envs=4)
+
+
+def test_build_recipe_with_annotations_degrades_without_adapters(
+    py_factory_module: str,
+) -> None:
+    # rlmesh.adapters does not exist in this branch yet; a recipe with annotations
+    # must still construct (publishing is skipped with a single warning).
+    import importlib.util
+
+    if importlib.util.find_spec("rlmesh.adapters") is not None:
+        pytest.skip("rlmesh.adapters is now available; degradation path is moot")
+
+    recipe = Recipe(
+        name="acme/factory",
+        make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
+        annotations={"observation": {"kind": "box"}},
+    )
+    with pytest.warns(RuntimeWarning, match="rlmesh.adapters is not available"):
+        env = build(recipe)
+    obs, _ = env.reset()
+    assert obs == "default"
+
+
+class _FakeGymModule:
+    """A stand-in gym module whose ``make`` either fails to find the env or succeeds."""
+
+    def __init__(self, name: str, *, succeeds: bool) -> None:
+        self.__name__ = name
+        self._succeeds = succeeds
+
+    def make(self, env_id: str, **kwargs: object) -> object:
+        if not self._succeeds:
+            raise NameNotFound(env_id)
+        return _FakeEnv(env_id)
+
+
+class NameNotFound(Exception):  # noqa: N818 -- name must match gymnasium's exactly
+    """Mirrors gymnasium's NameNotFound (matched by is_env_lookup_error by name)."""
+
+
+class _FakeEnv:
+    def __init__(self, env_id: str) -> None:
+        self.env_id = env_id
+
+    def reset(self, *, seed: object = None, options: object = None) -> object:
+        return self.env_id, {}
+
+    def step(self, action: object) -> object:
+        return self.env_id, 0.0, False, False, {}
+
+
+def test_build_gym_recipe_falls_back_to_legacy_gym(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # First module (gymnasium-like) does not have the env registered; the loop must
+    # move on and resolve it from the second (legacy gym-like) module.
+    first = _FakeGymModule("gymnasium", succeeds=False)
+    second = _FakeGymModule("gym", succeeds=True)
+    monkeypatch.setattr(
+        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+    )
+    recipe = Recipe(name="legacy/only", make=GymMake(env_id="LegacyOnly-v0"))
+    env = build(recipe)
+    obs, _ = env.reset()
+    assert obs == "LegacyOnly-v0"
+
+
+def test_build_gym_recipe_raises_aggregated_when_all_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _FakeGymModule("gymnasium", succeeds=False)
+    second = _FakeGymModule("gym", succeeds=False)
+    monkeypatch.setattr(
+        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+    )
+    recipe = Recipe(name="legacy/only", make=GymMake(env_id="Nowhere-v0"))
+    with pytest.raises(RuntimeError, match="failed to create gym environment"):
+        build(recipe)

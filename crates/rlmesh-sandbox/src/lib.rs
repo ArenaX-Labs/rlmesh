@@ -334,9 +334,16 @@ fn validate_recipe_build(
     // (7.1G) Remote build.pip must be version-pinned with an allowlisted index;
     // the base, if set, must be digest-pinned.
     for step in &build.pip {
+        // A `-r requirements.txt` smuggles packages whose contents cannot be
+        // version-pinned or index-allowlisted here, so it bypasses the gate
+        // below; reject it outright for Remote recipes.
+        anyhow::ensure!(
+            step.requirements.is_none(),
+            "a Remote recipe's build.pip must not use a -r requirements file (its contents cannot be version-pinned or index-allowlisted)"
+        );
         for package in &step.packages {
             anyhow::ensure!(
-                package.contains("=="),
+                requirement_is_version_pinned(package),
                 "a Remote recipe's build.pip must version-pin every package (got {package:?})"
             );
         }
@@ -365,7 +372,32 @@ fn is_allowlisted_index(url: &str) -> bool {
         "https://download.pytorch.org/whl",
         "https://pypi.nvidia.com",
     ];
-    ALLOWED.iter().any(|prefix| url.starts_with(prefix))
+    ALLOWED.iter().any(|prefix| index_url_matches(url, prefix))
+}
+
+/// Whether `url` is the allowlisted `prefix` itself or a path UNDER it, anchored
+/// at a real `/` boundary so a sibling/look-alike host cannot slip through. An
+/// unanchored `starts_with` would let `https://pypi.nvidia.com.evil.example/...`
+/// match `https://pypi.nvidia.com`; requiring the next char be `/` (or end of
+/// string) closes that bypass.
+fn index_url_matches(url: &str, prefix: &str) -> bool {
+    match url.strip_prefix(prefix) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('/'),
+        None => false,
+    }
+}
+
+/// Whether a PEP 508 requirement string version-pins its package NAME.
+///
+/// The check must look at the requirement portion only: an environment marker
+/// (the part after `;`) like `torch ; os_name == 'posix'` contains a `==` that
+/// would spuriously satisfy a naive `contains("==")` while leaving `torch`
+/// itself unpinned. So strip the marker first, then require a real version pin
+/// (`==` or `===`) in the requirement portion.
+fn requirement_is_version_pinned(package: &str) -> bool {
+    let requirement = package.split(';').next().unwrap_or(package);
+    requirement.contains("==")
 }
 
 /// Compute a content digest of the recipe's `ProjectInstall` source tree (7.1A),
@@ -386,6 +418,21 @@ fn recipe_content_digest(
     let src = root.join(&project.src);
     let mut hasher = Sha256::new();
     hash_path_tree(&src, &src, &mut hasher)?;
+
+    // Fold in each `include` glob match too, keyed by its staged layout, so
+    // editing an included asset rebuilds the image. resolve_includes returns the
+    // SAME entries copy_tree stages, in the same sorted order, so the digest
+    // tracks exactly the bytes that ship.
+    let includes = recipe::resolve_includes(&src, root, &project.include)
+        .with_context(|| format!("failed to resolve project includes under {}", src.display()))?;
+    for include in includes {
+        // Distinguish an include subtree from the main tree by its layout key.
+        hasher.update(b"include\0");
+        hasher.update(include.relative.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        hash_path_tree(&include.path, &include.path, &mut hasher)?;
+    }
+
     Ok(Some(
         hasher
             .finalize()
@@ -398,13 +445,34 @@ fn recipe_content_digest(
 /// Hash a file or directory tree deterministically: for each file (in sorted
 /// relative-path order) the relative path and its bytes are folded in, so the
 /// digest tracks content, not just paths (mirrors Docker's COPY-layer cache key).
+///
+/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: each child
+/// is classified by its own `entry.file_type()` (which reports the LINK itself,
+/// never dereferencing or erroring on a dangling/looping target) and a symlink
+/// child is dropped before it is sorted, hashed, or recursed into. `copy_tree`
+/// in docker.rs makes the identical skip decision so the *exact* set of bytes
+/// this hashes matches the set staged into the image. `fs::metadata` is used
+/// ONLY to classify the passed-in root; every CHILD is filtered first, so it
+/// never runs on a link and cannot abort on a cycle or a dangling target.
+/// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
+/// (a guarded, canonicalized glob), not by silently following links here.
 fn hash_path_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<()> {
     let metadata =
-        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
     if metadata.is_dir() {
         let mut entries: Vec<PathBuf> = fs::read_dir(path)
             .with_context(|| format!("failed to read dir {}", path.display()))?
-            .map(|entry| entry.map(|e| e.path()))
+            // Skip symlink children identically to copy_tree: file_type() reports
+            // the link itself, so a dangling/cyclic/escaping link is dropped
+            // without ever dereferencing it.
+            .filter_map(|entry| match entry {
+                Ok(entry) => match entry.file_type() {
+                    Ok(file_type) if file_type.is_symlink() => None,
+                    Ok(_) => Some(Ok(entry.path())),
+                    Err(err) => Some(Err(err)),
+                },
+                Err(err) => Some(Err(err)),
+            })
             .collect::<std::result::Result<_, _>>()?;
         entries.sort();
         for entry in entries {
@@ -1276,6 +1344,26 @@ mod tests {
     }
 
     #[test]
+    fn remote_recipe_rejects_pip_requirements_file() {
+        // A `-r requirements.txt` smuggles packages past the version-pin and
+        // index-allowlist gate, so a Remote recipe must reject it even when its
+        // explicit packages are pinned.
+        let with_requirements = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch==2.0.0".to_string()],
+                requirements: Some("requirements.txt".to_string()),
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&with_requirements, RecipeProvenance::Remote, true).is_err());
+        // An Installed recipe is unaffected (the gate returns Ok early).
+        assert!(
+            validate_recipe_build(&with_requirements, RecipeProvenance::Installed, true).is_ok()
+        );
+    }
+
+    #[test]
     fn remote_recipe_accepts_fully_pinned_build() {
         let build = recipe::Build {
             base: Some("python@sha256:abc".to_string()),
@@ -1346,5 +1434,142 @@ mod tests {
             first, second,
             "editing staged content must change the digest"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_digest_skips_symlinks_and_is_stable_under_cycle_or_dangling() {
+        // hash_path_tree and copy_tree make the IDENTICAL skip decision: a
+        // symlink within the tree is not hashed (so it never leaks out-of-tree
+        // bytes into the digest), and a cyclic/dangling link does not abort the
+        // hash. Editing a symlink TARGET reachable only through the link leaves
+        // the digest unchanged -- such assets must be carried via `include`, not
+        // by silently following links.
+        let target_root = tempfile::tempdir().unwrap();
+        let real = target_root.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("data.bin"), b"v1").unwrap();
+
+        let src_dir = tempfile::tempdir().unwrap();
+        std::fs::write(src_dir.path().join("kept.py"), b"print(1)").unwrap();
+        // A symlinked dir whose target lives OUTSIDE src (reachable only through
+        // the link), a directory self-link (cycle), and a dangling link.
+        std::os::unix::fs::symlink(&real, src_dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(".", src_dir.path().join("cycle")).unwrap();
+        std::os::unix::fs::symlink(
+            src_dir.path().join("does-not-exist"),
+            src_dir.path().join("dangling"),
+        )
+        .unwrap();
+
+        let recipe = recipe::Recipe::from_json(
+            &serde_json::json!({"name":"a","build":{"project":{"src":"."}}}).to_string(),
+        )
+        .unwrap();
+        // The cyclic/dangling links must not abort the hash.
+        let first = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
+            .unwrap()
+            .unwrap();
+        // Editing the symlink TARGET must NOT change the digest: the link entry
+        // is skipped, exactly as copy_tree skips staging it.
+        std::fs::write(real.join("data.bin"), b"v2-longer").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "a skipped symlink's target must not affect the digest"
+        );
+    }
+
+    #[test]
+    fn content_digest_tracks_include_glob_assets_above_src() {
+        // An `include`d asset ABOVE src (a sibling not carried by the src-tree
+        // copy/hash) must still be folded into the digest, so editing it rebuilds
+        // the image. Using an above-src asset isolates the include logic: the
+        // src-tree hash alone would NOT cover it.
+        let dir = tempfile::tempdir().unwrap();
+        let context_root = dir.path();
+        std::fs::create_dir_all(context_root.join("pkg")).unwrap();
+        std::fs::write(context_root.join("pkg/code.py"), b"code").unwrap();
+        std::fs::create_dir_all(context_root.join("assets")).unwrap();
+        std::fs::write(context_root.join("assets/scene.json"), b"a").unwrap();
+
+        let recipe = recipe::Recipe::from_json(
+            &serde_json::json!({
+                "name":"a",
+                "build":{"project":{"src":"pkg","include":["../assets/**"]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let first = recipe_content_digest(Some(&recipe), Some(context_root))
+            .unwrap()
+            .unwrap();
+        std::fs::write(context_root.join("assets/scene.json"), b"changed-longer").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(context_root))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "editing an included above-src asset must change the digest"
+        );
+    }
+
+    #[test]
+    fn allowlist_anchors_at_a_path_boundary() {
+        // Exact match and a real sub-path are allowed.
+        assert!(is_allowlisted_index("https://pypi.nvidia.com"));
+        assert!(is_allowlisted_index("https://pypi.nvidia.com/simple"));
+        assert!(is_allowlisted_index(
+            "https://download.pytorch.org/whl/cu124"
+        ));
+        // A look-alike host that merely has the allowlisted entry as a string
+        // prefix must NOT match (the bypass this fix closes).
+        assert!(!is_allowlisted_index(
+            "https://pypi.nvidia.com.evil.example/simple"
+        ));
+        assert!(!is_allowlisted_index("https://attacker.example/simple"));
+    }
+
+    #[test]
+    fn version_pin_check_is_marker_aware() {
+        // A real pin passes.
+        assert!(requirement_is_version_pinned("torch==2.0.0"));
+        assert!(requirement_is_version_pinned("torch===2.0.0"));
+        assert!(requirement_is_version_pinned(
+            "torch==2.0.0 ; os_name == 'posix'"
+        ));
+        // An unpinned package whose ONLY `==` lives in an environment marker must
+        // be rejected (the bypass this fix closes).
+        assert!(!requirement_is_version_pinned("torch ; os_name == 'posix'"));
+        assert!(!requirement_is_version_pinned("torch"));
+    }
+
+    #[test]
+    fn remote_recipe_rejects_marker_only_equals_as_unpinned() {
+        // End-to-end through the gate: a marker `==` must not satisfy the pin.
+        let build = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch ; os_name == 'posix'".to_string()],
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&build, RecipeProvenance::Remote, true).is_err());
+    }
+
+    #[test]
+    fn remote_recipe_rejects_lookalike_allowlist_host() {
+        // End-to-end through the gate: a look-alike host index must be rejected.
+        let build = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch==2.0.0".to_string()],
+                index_url: Some("https://pypi.nvidia.com.evil.example/simple".to_string()),
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&build, RecipeProvenance::Remote, true).is_err());
     }
 }

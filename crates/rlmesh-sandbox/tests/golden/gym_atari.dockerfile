@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /opt/rlmesh
 
-RUN python -m pip install --no-cache-dir --upgrade pip && python -m pip install --no-cache-dir rlmesh && python -m pip install --no-cache-dir gymnasium && python -m pip install --no-cache-dir 'ale-py'
+RUN python -m pip install --no-cache-dir --upgrade pip && python -m pip install --no-cache-dir 'rlmesh' && python -m pip install --no-cache-dir gymnasium && python -m pip install --no-cache-dir 'ale-py'
 
 EXPOSE 50051
 ENTRYPOINT ["python", "-m", "rlmesh._bootstrap.sandbox_env"]

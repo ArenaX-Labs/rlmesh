@@ -388,6 +388,26 @@ def test_parse_entrypoint_rejects_missing_callable() -> None:
         parse_entrypoint("fake_model_module")
 
 
+def test_recipe_construction_error_is_catchable_as_import_error() -> None:
+    # load_env_entrypoint is public (rlmesh.serving.load_env_entrypoint) and used to
+    # raise a raw ImportError/AttributeError/TypeError/ValueError. The wrapper must
+    # stay catchable by an old-style `except ImportError` so callers do not break.
+    from rlmesh._bootstrap.env import RecipeConstructionError
+
+    assert issubclass(RecipeConstructionError, ImportError)
+    assert issubclass(RecipeConstructionError, RuntimeError)
+
+
+def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
+    # A bad entrypoint that previously surfaced a raw ImportError must still be
+    # catchable as ImportError even though it is now a RecipeConstructionError.
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+
+    with pytest.raises(ImportError) as excinfo:
+        load_env_entrypoint("fake_env_module")
+    assert isinstance(excinfo.value, RecipeConstructionError)
+
+
 def test_load_env_entrypoint_does_not_wrap_factory_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

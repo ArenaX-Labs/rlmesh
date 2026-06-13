@@ -13,7 +13,9 @@ Anti-shadowing: re-registering an already-registered name is rejected unless
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from types import MappingProxyType
 from typing import overload
 
@@ -23,8 +25,10 @@ from ._schema import Build, GymMake, PyMake, Recipe
 
 __all__ = [
     "RecipeNotFoundError",
+    "class_origin_dir",
     "clear_registry",
     "pprint_registry",
+    "recipe_origin_dir",
     "register",
     "registered_names",
     "registry",
@@ -39,6 +43,11 @@ class RecipeNotFoundError(LookupError):
 
 
 _REGISTRY: dict[str, Recipe] = {}
+# Best-effort ``name -> defining-package directory`` for recipes registered by an
+# author other than the caller. Used to stage a ProjectInstall from the recipe's
+# own source tree (not the launching process's cwd). Only populated when the
+# origin can be determined; otherwise the name is simply absent.
+_ORIGINS: dict[str, str] = {}
 
 
 @overload
@@ -95,14 +104,16 @@ def register(
     """
     if is_env_recipe(source):
         _reject_flat_kwargs(gym, factory, packages, imports)
-        _store(source.to_recipe(), overwrite=overwrite)
+        # An authored EnvRecipe carries its own defining module, so stage a
+        # ProjectInstall from there regardless of who calls register().
+        _store(source.to_recipe(), overwrite=overwrite, origin=class_origin_dir(source))
         return source
     if isinstance(source, Recipe):
         _reject_flat_kwargs(gym, factory, packages, imports)
-        return _store(source, overwrite=overwrite)
+        return _store(source, overwrite=overwrite, origin=_caller_origin())
     if isinstance(source, str):
         recipe = _flat_recipe(source, gym, factory, packages, imports)
-        return _store(recipe, overwrite=overwrite)
+        return _store(recipe, overwrite=overwrite, origin=_caller_origin())
     raise TypeError(
         "register() first argument must be a name string, a Recipe, or an "
         f"EnvRecipe subclass, got {type(source).__name__}"
@@ -139,14 +150,67 @@ def _flat_recipe(
     return factory_sugar_to_recipe(name, factory, packages=packages, imports=imports)
 
 
-def _store(recipe: Recipe, *, overwrite: bool) -> Recipe:
+def _store(recipe: Recipe, *, overwrite: bool, origin: str | None = None) -> Recipe:
     existing = _REGISTRY.get(recipe.name)
     if existing is not None and not overwrite and existing != recipe:
         raise ValueError(
             f"recipe {recipe.name!r} is already registered; pass overwrite=True to replace it"
         )
     _REGISTRY[recipe.name] = recipe
+    if origin is not None:
+        _ORIGINS[recipe.name] = origin
+    else:
+        # A re-registration without a determinable origin must not leave a stale
+        # one behind that points at the previous registrant's tree.
+        _ORIGINS.pop(recipe.name, None)
     return recipe
+
+
+def class_origin_dir(cls: type[EnvRecipe]) -> str | None:
+    """Return the directory of the module that defines ``cls``, or None.
+
+    Best-effort: a dynamically created class (no source file) has no origin. The
+    sandbox uses this to stage an authored ``EnvRecipe``'s ProjectInstall from its
+    defining package rather than the launching process's current directory.
+    """
+    try:
+        source_file = inspect.getfile(cls)
+    except (TypeError, OSError):
+        return None
+    return str(Path(source_file).resolve().parent)
+
+
+def _caller_origin() -> str | None:
+    """Return the directory of the module that *called* ``register()``, or None.
+
+    Walks past frames in this module so the recorded origin is the registrant's
+    own file, not ``_registry.py``. Best-effort: returns None when the caller has
+    no file path (e.g. ``__main__`` typed at a REPL, or an exec'd string).
+    """
+    this_file = __file__
+    for frame_info in inspect.stack()[1:]:
+        filename = frame_info.filename
+        if filename == this_file:
+            continue
+        module = frame_info.frame.f_globals.get("__name__")
+        # A REPL / exec'd snippet has no importable on-disk package to stage from.
+        if filename in ("<stdin>", "<string>") or module == "__main__":
+            return None
+        if not Path(filename).exists():
+            return None
+        return str(Path(filename).resolve().parent)
+    return None
+
+
+def recipe_origin_dir(name: str) -> str | None:
+    """Return the defining-package directory recorded for a registered recipe.
+
+    Best-effort: returns ``None`` when no recipe is registered under ``name`` or
+    its origin could not be determined at ``register()`` time. The sandbox uses
+    this to stage a ProjectInstall from the recipe author's source tree instead of
+    the launching process's current directory.
+    """
+    return _ORIGINS.get(name)
 
 
 def resolve(name: str) -> Recipe:
@@ -261,8 +325,10 @@ def pprint_registry(*, disable_print: bool = False) -> str | None:
 def unregister(name: str) -> None:
     """Remove a recipe from the registry if present (no error when absent)."""
     _REGISTRY.pop(name, None)
+    _ORIGINS.pop(name, None)
 
 
 def clear_registry() -> None:
     """Remove every registered recipe (primarily for test isolation)."""
     _REGISTRY.clear()
+    _ORIGINS.clear()

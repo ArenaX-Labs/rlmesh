@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import pytest
+from rlmesh.recipes import Build, EnvRecipe, ProjectInstall
 
 
 def test_sandbox_cleanup_runs_on_keyboard_interrupt(
@@ -243,6 +245,225 @@ def test_sandbox_accepts_string_sequence_packages_imports(
         pass
 
     assert captured[field] == ["ale-py"]
+
+
+def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
+    # A recipe source carries make kwargs in the document (make.kwargs), since the
+    # recipe bootstrap payload never threads kwargs_json into the recipe build.
+    from rlmesh import recipes
+    from rlmesh.recipes import GymMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
+    _, recipe_json, provenance, _ = _resolve_recipe_source(
+        recipe, {"render_mode": "rgb_array"}
+    )
+
+    assert provenance == "installed"
+    assert recipe_json is not None
+    document = recipes.Recipe.from_json(recipe_json)
+    assert document.make is not None
+    assert dict(document.make.kwargs) == {"render_mode": "rgb_array"}
+
+
+def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
+    # Caller kwargs win over the recipe's own baked make kwargs, like
+    # rlmesh.make(recipe, **kwargs).
+    from rlmesh.recipes import GymMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="cart/pole",
+        make=GymMake(env_id="CartPole-v1", kwargs={"render_mode": "human", "g": 9.8}),
+    )
+    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {"render_mode": "rgb_array"})
+
+    assert recipe_json is not None
+    document = Recipe.from_json(recipe_json)
+    assert document.make is not None
+    assert dict(document.make.kwargs) == {"render_mode": "rgb_array", "g": 9.8}
+
+
+def test_resolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
+    # A build-only base recipe (make=None) has nowhere to bake make kwargs.
+    from rlmesh.recipes import Build, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
+    with pytest.raises(TypeError, match="build-only base"):
+        _resolve_recipe_source(base, {"render_mode": "rgb_array"})
+
+
+def test_resolve_recipe_source_rejects_hf_make_before_build() -> None:
+    # An HfMake recipe must be rejected up front, not only after a full image build
+    # by the in-container build().
+    from rlmesh.recipes import HfMake, Recipe, UnsupportedRecipeError
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="acme/hf",
+        make=HfMake(repo="acme/env", revision="a" * 40),
+    )
+    with pytest.raises(UnsupportedRecipeError, match="HfMake"):
+        _resolve_recipe_source(recipe, {})
+
+
+def test_resolve_recipe_source_rejects_setup_files_before_build() -> None:
+    # setup.files is not applied anywhere yet (the in-container build() -> apply_setup
+    # raises on it too), so it must be rejected up front -- before any image build.
+    from rlmesh.recipes import GymMake, Recipe, Setup, UnsupportedRecipeError
+    from rlmesh.recipes._schema import FileWrite
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="acme/with-files",
+        make=GymMake(env_id="CartPole-v1"),
+        setup=Setup(files=[FileWrite(path="x.txt", contents="hi")]),
+    )
+    with pytest.raises(
+        UnsupportedRecipeError, match=r"setup\.files is not applied yet"
+    ):
+        _resolve_recipe_source(recipe, {})
+
+
+def test_resolve_recipe_source_from_recipe_uses_base_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When a task recipe inlines a `from_recipe` base, the base supplies the entire
+    # build (incl. its ProjectInstall, whose src is relative to the BASE's tree). The
+    # staged context_root must therefore be the BASE's origin (dir A), not the task's
+    # registration dir / cwd (dir B).
+    from rlmesh import recipes
+    from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    base = Recipe(
+        name="acme/base",
+        make=PyMake(entrypoint="acme_env:make"),
+        build=Build(project=ProjectInstall(src=".")),
+    )
+    task = Recipe(
+        name="acme/task",
+        make=GymMake(env_id="CartPole-v1"),
+        build=Build(from_recipe="acme/base"),
+    )
+    recipes.register(base)
+    recipes.register(task)
+    # Force the two recipes to have *different* recorded origins so we can prove the
+    # base's origin (dir A) wins over the task's (dir B / cwd).
+    origins = {"acme/base": "/dir/A", "acme/task": "/dir/B"}
+    monkeypatch.setattr(
+        "rlmesh.recipes._registry.recipe_origin_dir",
+        lambda name: origins.get(name),
+    )
+    try:
+        _, _, provenance, context_root = _resolve_recipe_source("acme/task", {})
+    finally:
+        recipes.unregister("acme/base")
+        recipes.unregister("acme/task")
+
+    assert provenance == "installed"
+    assert context_root == "/dir/A"
+
+
+def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
+    # An authored EnvRecipe with a ProjectInstall stages from its defining module's
+    # directory, not the launching process's cwd.
+    from pathlib import Path
+
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    _, recipe_json, provenance, context_root = _resolve_recipe_source(
+        _ProjectRecipe, {}
+    )
+
+    assert provenance == "installed"
+    assert recipe_json is not None
+    expected = str(Path(__file__).resolve().parent)
+    assert context_root == expected
+
+
+def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
+    # A recipe resolved by registered name stages a ProjectInstall from the
+    # registrant's module directory (recorded at register() time), not the cwd.
+    from pathlib import Path
+
+    from rlmesh import recipes
+    from rlmesh.recipes import Build, ProjectInstall, PyMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="acme/by-name",
+        make=PyMake(entrypoint="acme_env:make"),
+        build=Build(project=ProjectInstall(src=".")),
+    )
+    recipes.register(recipe)
+    try:
+        _, _, provenance, context_root = _resolve_recipe_source("acme/by-name", {})
+    finally:
+        recipes.unregister("acme/by-name")
+
+    assert provenance == "installed"
+    # register() above runs from this test module, so its origin is this directory.
+    assert context_root == str(Path(__file__).resolve().parent)
+
+
+def test_resolve_recipe_source_plain_id_unchanged() -> None:
+    # A plain gym id that is not a registered recipe stays an ordinary source.
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    assert _resolve_recipe_source("CartPole-v1", {"render_mode": "rgb_array"}) == (
+        "CartPole-v1",
+        None,
+        None,
+        None,
+    )
+
+
+def test_start_sandbox_recipe_path_omits_kwargs_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On the recipe path the make kwargs ride the document (make.kwargs); they must
+    # not ALSO be shipped via kwargs_json, which the recipe bootstrap ignores.
+    from rlmesh import sandbox
+    from rlmesh.recipes import GymMake, Recipe
+
+    captured: dict[str, object] = {}
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+
+    recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
+    sandbox._start_sandbox(
+        recipe,
+        base_image=None,
+        rlmesh_package=None,
+        packages=None,
+        imports=None,
+        trust_remote_code=False,
+        allow_unpinned_hf=False,
+        num_envs=1,
+        vectorization_mode=None,
+        gym_make_kwargs={"render_mode": "rgb_array"},
+    )
+
+    assert captured["kwargs_json"] is None
+    baked = Recipe.from_json(cast(str, captured["recipe_json"]))
+    assert baked.make is not None
+    assert dict(baked.make.kwargs) == {"render_mode": "rgb_array"}
+
+
+class _ProjectRecipe(EnvRecipe):
+    """A test EnvRecipe whose build stages its own package source tree."""
+
+    name = "acme/project"
+    build = Build(project=ProjectInstall(src="."))
+
+    def make(self, **kwargs: object) -> object:
+        return SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
 
 def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
