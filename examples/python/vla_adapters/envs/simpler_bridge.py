@@ -43,10 +43,7 @@ OBSERVATION_SPACE = gym.spaces.Dict(
             {
                 "eef_pos": gym.spaces.Box(-np.inf, np.inf, (3,), np.float32),
                 "eef_quat": gym.spaces.Box(-np.inf, np.inf, (4,), np.float32),
-                # Unbounded in the space; the meaningful range is declared on
-                # the annotation (StateAnnotation.range) instead, the usual
-                # split when a sim reports raw proprio without tight bounds.
-                "gripper_width": gym.spaces.Box(-np.inf, np.inf, (1,), np.float32),
+                "gripper_width": gym.spaces.Box(0.0, 0.08, (1,), np.float32),
             }
         ),
         "task_instruction": gym.spaces.Text(max_length=256),

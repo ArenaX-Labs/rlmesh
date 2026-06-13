@@ -169,16 +169,37 @@ fn derive_state_range(
     key: &str,
 ) -> Result<Option<(f64, f64)>> {
     match (uniform_finite_range(leaf), annotation) {
-        (Some(space), Some(annotation)) if space != annotation => {
-            Err(JoinError::RangeDisagreement {
-                key: key.to_owned(),
-                annotation,
-                space,
-            })
+        (Some(space), Some(annotation)) => {
+            if ranges_agree(space, annotation) {
+                // The explicit annotation is the author's stated intent; keep
+                // it exactly (the space's bounds may be the same value at a
+                // narrower precision).
+                Ok(Some(annotation))
+            } else {
+                Err(JoinError::RangeDisagreement {
+                    key: key.to_owned(),
+                    annotation,
+                    space,
+                })
+            }
         }
-        (Some(space), _) => Ok(Some(space)),
+        (Some(space), None) => Ok(Some(space)),
         (None, annotation) => Ok(annotation),
     }
+}
+
+/// Whether two `(low, high)` ranges agree up to floating-point rounding.
+///
+/// A space stores its bounds at the dtype's precision, so a float32
+/// gymnasium `Box(_, 0.08, _)` projects to `0.0799999982`; an exact compare
+/// against an annotation's `0.08` would reject ranges that are equal in
+/// intent. The tolerance (~8x float32 epsilon, with an absolute floor) still
+/// rejects genuine disagreements.
+fn ranges_agree(a: (f64, f64), b: (f64, f64)) -> bool {
+    fn close(x: f64, y: f64) -> bool {
+        (x - y).abs() <= 1e-6 * x.abs().max(y.abs()).max(1.0)
+    }
+    close(a.0, b.0) && close(a.1, b.1)
 }
 
 /// The single finite `(low, high)` pair a space declares, or `None` if it is
@@ -508,6 +529,39 @@ mod tests {
             panic!("expected state");
         };
         assert_eq!(state.range, Some((0.0, 2.0)));
+    }
+
+    #[test]
+    fn finite_bounds_agree_with_annotation_up_to_float32_rounding() {
+        // A float32 gymnasium Box(0, 0.08) projects its high bound to the
+        // nearest float32, 0.0799999982; the annotation declares 0.08. These
+        // must agree (rounding, not disagreement), and the exact annotation
+        // value is kept.
+        let f32_high = f64::from(0.08_f32);
+        assert_ne!(f32_high, 0.08);
+        let obs = dict_view(vec![(
+            "g",
+            box_view(vec![1], Some(vec![0.0]), Some(vec![f32_high])),
+        )]);
+        let mut observation = BTreeMap::new();
+        observation.insert(
+            "g".to_owned(),
+            ObsAnnotation::State(StateAnnotation {
+                role: "proprio/gripper".to_owned(),
+                encoding: None,
+                range: Some((0.0, 0.08)),
+            }),
+        );
+        let annotations = EnvAnnotations {
+            observation,
+            action: action_layout(vec![]),
+        };
+        let action = box_view(vec![0], None, None);
+        let features = join(&annotations, &obs, &action).expect("join");
+        let EnvFeature::State(state) = &features.observation[0] else {
+            panic!("expected state");
+        };
+        assert_eq!(state.range, Some((0.0, 0.08)));
     }
 
     #[test]
