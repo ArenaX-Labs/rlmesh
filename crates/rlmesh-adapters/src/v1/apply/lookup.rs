@@ -68,7 +68,7 @@ pub fn map_range(value: &mut [f32], src: (f64, f64), dst: (f64, f64)) -> Result<
     let span = src_high - src_low;
     if span == 0.0 {
         return Err(ApplyError::new(
-            "source range for action mapping has zero width".to_owned(),
+            "source range for an affine map has zero width".to_owned(),
         ));
     }
     for entry in value {

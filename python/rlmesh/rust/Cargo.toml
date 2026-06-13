@@ -51,7 +51,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 half = { workspace = true }
-image = { workspace = true, features = ["png"] }
+image = { workspace = true, features = ["png", "jpeg"] }
 pyo3 = { workspace = true, features = [
   "auto-initialize",
   "extension-module",

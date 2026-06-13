@@ -9,9 +9,10 @@
 //! Values cross the boundary in a small tagged-tuple encoding produced by
 //! `rlmesh.adapters.helpers.bridge`:
 //!
-//! - `("a", dtype, shape, bytes)` — a dense array (native byte order)
-//! - `("b", bytes)` — an encoded image (PNG), decoded here to an RGB uint8
-//!   HWC array (codec-level bridge behavior, not part of the pinned v1
+//! - `("a", dtype, shape, bytes)` — a dense array (little-endian element
+//!   bytes, matching the repo-wide tensor/scalar codec)
+//! - `("b", bytes)` — an encoded image (PNG/JPEG), decoded here to an RGB
+//!   uint8 HWC array (codec-level bridge behavior, not part of the pinned v1
 //!   semantics)
 //! - `("t", str)` — text
 //! - `("n", float)` — a scalar number

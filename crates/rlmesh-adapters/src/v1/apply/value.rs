@@ -40,6 +40,10 @@ pub fn to_f64_vec(tensor: &Tensor) -> Vec<f64> {
 }
 
 /// Flat `f32` view of a tensor (NumPy `astype(float32).reshape(-1)`).
+///
+/// The state/action kernels compute in `f32` to match the reference; integer
+/// magnitudes beyond `f32`'s exact range therefore lose precision here. That
+/// is a deliberate engine-wide choice, not a per-call rounding bug.
 pub fn to_f32_vec(tensor: &Tensor) -> Vec<f32> {
     to_f64_vec(tensor)
         .into_iter()
