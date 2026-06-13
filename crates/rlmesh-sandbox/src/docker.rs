@@ -497,13 +497,23 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     // A recipe source drives the Dockerfile through the language-neutral deriver
     // (the §5A contract); gym/hf use the fixed preamble below. The deriver is fed
     // the upstream-resolved base image, rlmesh package, and extra packages (the
-    // same values the build hash covers) rather than re-deriving them.
+    // same values the build hash covers) rather than re-deriving them, plus the
+    // recipe's provenance so it can skip the implicit unpinned gymnasium for a
+    // Remote recipe (which the reproducibility gate forces fully-pinned).
     if let Some(recipe) = &spec.recipe {
+        let provenance = match &spec.requested_source {
+            EnvironmentSourceRef::Recipe(reference) => reference.provenance,
+            // gym/hf never reach the deriver (no recipe), but a recipe spec must
+            // carry a Recipe source; treat any other source as the trusted,
+            // gymnasium-injecting path rather than silently dropping it.
+            _ => crate::RecipeProvenance::Installed,
+        };
         return crate::recipe::derive_dockerfile(
             recipe,
             &spec.base_image,
             &spec.rlmesh_package,
             &spec.packages,
+            provenance,
         )
         .map_err(|err| anyhow!("failed to derive recipe Dockerfile: {err}"));
     }

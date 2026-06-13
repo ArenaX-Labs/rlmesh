@@ -7,8 +7,9 @@
 //! 5A): the neutral conformance surface a non-Python deriver (a future capi
 //! consumer) must reproduce, guarded by golden-file tests.
 //!
-//! The deriver covers the full build vocabulary: base (+python symlink for a
-//! non-python base), env/pythonpath/gpu, apt (`system` united with
+//! The deriver covers the full build vocabulary: base (+a build-time python
+//! detect/symlink for a base whose name does not advertise python),
+//! env/pythonpath/gpu, apt (`system` united with
 //! `system_runtime`), the author's `project` tree (`COPY` + editable install),
 //! third-party `fetch` (pinned git clone / checksummed url download), pip or uv
 //! install steps, a `run_as` user drop, raw `commands`, and the verbatim-
@@ -26,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ResolvedRlmeshPackage;
+use crate::{RecipeProvenance, ResolvedRlmeshPackage};
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
@@ -316,11 +317,26 @@ fn validate_token(field: &str, value: &str) -> Result<(), DeriveError> {
 /// `pip install rlmesh`) keeps the Dockerfile in agreement with the build hash.
 /// `packages` are the extra caller-supplied pip packages (the `packages=[...]`
 /// argument to `SandboxEnv`).
+///
+/// `provenance` gates the implicit unpinned `gymnasium` install: an `Installed`
+/// recipe gets it for free (the convenience the gym/hf paths also bake in), but
+/// a `Remote` recipe (forced fully-pinned + digest-pinned by the upstream
+/// reproducibility gate) must NOT receive a mutable PyPI resolve, so the
+/// implicit `gymnasium` is skipped -- a `Remote` recipe that needs gymnasium
+/// declares a pinned `gymnasium==X` in `build.pip` itself.
+///
+/// Ordering: `FROM` -> `ENV` -> `WORKDIR` -> `COPY packages` -> apt (system
+/// packages) -> build-time python detection (a non-`python` base self-installs
+/// python3/pip and a `python` symlink only when it lacks them) -> early uv
+/// bootstrap (for `installer="uv"`, so `project`/`fetch` can use `uv pip
+/// install`) -> `project` -> `fetch` -> the pip/uv chain -> `commands` ->
+/// `run_as` -> `EXPOSE`/`ENTRYPOINT`.
 pub(crate) fn derive_dockerfile(
     recipe: &Recipe,
     base_image: &str,
     rlmesh_package: &ResolvedRlmeshPackage,
     packages: &[String],
+    provenance: RecipeProvenance,
 ) -> Result<String, DeriveError> {
     let build = &recipe.build;
 
@@ -404,21 +420,33 @@ pub(crate) fn derive_dockerfile(
             apt.push(tool.to_string());
         }
     }
-    // A non-python base (e.g. nvidia/cuda) ships no python3, so the symlink below
-    // and the pip layer would both fail; install python3 + pip via apt first.
-    if base_is_non_python(base) {
-        for tool in ["python3", "python3-pip"] {
-            if !apt.iter().any(|name| name.as_str() == tool) {
-                apt.push(tool.to_string());
-            }
-        }
-    }
     out.push_str(&render_system_packages(&apt)?);
 
-    // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink the
-    // python3 just installed above so `python -m pip ...` resolves.
+    // A base whose NAME lacks "python" might be a bare CUDA base (no interpreter)
+    // OR a python-capable image whose tag just does not say so (e.g.
+    // `nvcr.io/nvidia/pytorch:...-py3`, `nvidia/isaac-lab:...`). DETECT python at
+    // BUILD time instead of installing unconditionally: these RUNs no-op on an
+    // image that already ships python3/python (so the image's own interpreter and
+    // preinstalled packages are left untouched) and install/symlink only on a
+    // bare base. Emitted after apt and before the uv bootstrap / project / fetch /
+    // pip chain so `python -m pip ...` resolves from here on.
     if base_is_non_python(base) {
-        out.push_str("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python\n\n");
+        out.push_str(
+            "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)\n",
+        );
+        out.push_str(
+            "RUN command -v python >/dev/null 2>&1 || ln -sf \"$(command -v python3)\" /usr/local/bin/python\n\n",
+        );
+    }
+
+    // installer=="uv": bootstrap uv with pip BEFORE any `uv pip install` runs.
+    // `render_project` / `render_fetch` use the install verb (`uv pip install
+    // ...` here), but `render_pip_chain` is where uv would otherwise be installed
+    // -- after them -- so a project or a pip-installing fetch would hit `uv: not
+    // found`. Emit the bootstrap early; render_pip_chain then starts at the rlmesh
+    // install for uv (the pip path keeps bootstrapping pip inside its own RUN).
+    if build.installer == "uv" {
+        out.push_str("RUN python -m pip install --no-cache-dir uv\n\n");
     }
 
     // project: COPY the author's staged tree then install it (editable by default).
@@ -431,11 +459,17 @@ pub(crate) fn derive_dockerfile(
         out.push_str(&render_fetch(fetch, verb)?);
     }
 
-    // pip: the stock preamble (bootstrap + rlmesh + gymnasium), then each recipe
-    // step, then the caller's extra `packages`.
+    // pip: the stock preamble (rlmesh, plus an implicit gymnasium for Installed
+    // provenance only), then each recipe step, then the caller's extra `packages`.
     out.push_str(&format!(
         "RUN {}\n\n",
-        render_pip_chain(&build.pip, &build.installer, rlmesh_package, packages)?
+        render_pip_chain(
+            &build.pip,
+            &build.installer,
+            rlmesh_package,
+            packages,
+            provenance,
+        )?
     ));
 
     // commands: raw escape-hatch RUNs, appended last (Installed-only upstream).
@@ -461,7 +495,13 @@ pub(crate) fn derive_dockerfile(
     Ok(out)
 }
 
-/// Whether a base image lacks a `python` on PATH and needs the `python3` symlink.
+/// A cheap "this base definitely ships python" fast-path: an image whose name
+/// contains "python" (e.g. `python:3.11-slim`) surely has an interpreter, so the
+/// deriver emits nothing extra. A `false` result is NOT a verdict that python is
+/// absent -- it only means we cannot tell from the name (a bare CUDA base has no
+/// python, but a pytorch/isaac image does despite a name that lacks "python"), so
+/// the caller emits build-time `command -v` detection rather than installing
+/// unconditionally.
 fn base_is_non_python(base: &str) -> bool {
     let image = base.rsplit('/').next().unwrap_or(base);
     !image.contains("python")
@@ -620,29 +660,42 @@ fn nonempty<'a>(value: &'a str, field: &str) -> Result<&'a str, DeriveError> {
     }
 }
 
-/// Render the single pip `RUN` chain: installer preamble (rlmesh + gymnasium),
-/// each [`PipInstall`] step, then the caller's extra `packages`.
+/// Render the single pip `RUN` chain: installer preamble (rlmesh, plus an
+/// implicit gymnasium for `Installed` provenance only), each [`PipInstall`] step,
+/// then the caller's extra `packages`.
+///
+/// For `installer="uv"`, uv is bootstrapped earlier in [`derive_dockerfile`]
+/// (before `project`/`fetch`, which also install through uv), so this chain
+/// starts directly at the rlmesh install; the pip path keeps its `--upgrade pip`
+/// bootstrap inside this RUN.
 fn render_pip_chain(
     steps: &[PipInstall],
     installer: &str,
     rlmesh_package: &ResolvedRlmeshPackage,
     packages: &[String],
+    provenance: RecipeProvenance,
 ) -> Result<String, DeriveError> {
     let verb = install_verb(installer);
     let mut parts = Vec::new();
-    if installer == "uv" {
-        // Bootstrap uv itself with pip, then install everything through uv.
-        parts.push("python -m pip install --no-cache-dir uv".to_string());
-    } else {
+    if installer != "uv" {
+        // uv is bootstrapped early in derive_dockerfile; pip upgrades itself here.
         parts.push("python -m pip install --no-cache-dir --upgrade pip".to_string());
     }
     // Install the upstream-resolved RLMesh package (a pip spec like
     // `rlmesh==X` or the COPY'd local wheel's install path), not a hardcoded
-    // `rlmesh`, so the Dockerfile agrees with the build hash.
+    // `rlmesh`, so the Dockerfile agrees with the build hash. This is the host's
+    // resolved spec, not recipe-controlled, so it installs for every provenance.
     let install_ref = rlmesh_package.install_ref();
     validate_token("rlmesh_package", install_ref)?;
     parts.push(format!("{verb} {}", shell_quote(install_ref)));
-    parts.push(format!("{verb} gymnasium"));
+    // The implicit unpinned `gymnasium` is a convenience for `Installed` recipes
+    // (mirroring the gym/hf paths). A `Remote` recipe is forced fully-pinned by
+    // the upstream reproducibility gate, so injecting a mutable PyPI resolve here
+    // would bypass it: skip the implicit install and let the recipe declare a
+    // pinned `gymnasium==X` in `build.pip` itself.
+    if provenance == RecipeProvenance::Installed {
+        parts.push(format!("{verb} gymnasium"));
+    }
     for step in steps {
         parts.push(render_pip_step(step, verb)?);
     }
@@ -986,10 +1039,17 @@ mod tests {
         }
     }
 
-    /// Derive against the default base, the representative pip package, and no
-    /// extra caller packages -- the common case for most deriver tests.
+    /// Derive against the default base, the representative pip package, no extra
+    /// caller packages, and `Installed` provenance (so the implicit gymnasium is
+    /// injected) -- the common case for most deriver tests and the goldens.
     fn derive(recipe: &Recipe) -> Result<String, DeriveError> {
-        derive_dockerfile(recipe, DEFAULT_BASE_IMAGE, &rlmesh_pkg(), &[])
+        derive_dockerfile(
+            recipe,
+            DEFAULT_BASE_IMAGE,
+            &rlmesh_pkg(),
+            &[],
+            RecipeProvenance::Installed,
+        )
     }
 
     #[test]
@@ -1248,41 +1308,168 @@ mod tests {
     }
 
     #[test]
-    fn non_python_base_gets_python_symlink() {
+    fn uv_is_bootstrapped_before_a_project_uv_install() {
+        // installer="uv" + a project: render_project emits `uv pip install -e ...`,
+        // but uv is bootstrapped (`python -m pip install ... uv`) in render_pip_chain
+        // which runs AFTER the project -- so without an early bootstrap the build
+        // hits `uv: not found`. The early bootstrap must precede the first project
+        // `uv pip install`.
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"installer":"uv","project":{"src":".","dest":"/opt/p"}}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        let bootstrap = derived
+            .find("RUN python -m pip install --no-cache-dir uv")
+            .expect("early uv bootstrap RUN");
+        let project_install = derived
+            .find("RUN uv pip install --system --no-cache-dir -e '/opt/p'")
+            .expect("project uv install");
+        assert!(
+            bootstrap < project_install,
+            "uv must be bootstrapped before the project `uv pip install`"
+        );
+    }
+
+    #[test]
+    fn uv_is_bootstrapped_before_a_fetch_uv_install() {
+        // Same hazard via a pip-installing fetch: its `uv pip install -e <dest>`
+        // runs before render_pip_chain, so the early bootstrap must precede it.
+        let recipe = Recipe::from_json(
+            r#"{"name":"a","build":{"installer":"uv","fetch":[{"kind":"git","repo":"https://x/r.git","dest":"/opt/r","pip_install":true}]}}"#,
+        )
+        .expect("parses");
+        let derived = derive(&recipe).expect("derives");
+        let bootstrap = derived
+            .find("RUN python -m pip install --no-cache-dir uv")
+            .expect("early uv bootstrap RUN");
+        let fetch_install = derived
+            .find("uv pip install --system --no-cache-dir -e '/opt/r'")
+            .expect("fetch uv install");
+        assert!(
+            bootstrap < fetch_install,
+            "uv must be bootstrapped before the fetch `uv pip install`"
+        );
+    }
+
+    #[test]
+    fn remote_provenance_skips_implicit_unpinned_gymnasium() {
+        // A Remote recipe is forced fully-pinned by the upstream reproducibility
+        // gate, so the deriver must NOT inject an implicit unpinned gymnasium
+        // (that would resolve a mutable PyPI package, bypassing the gate). An
+        // Installed recipe still gets it as a convenience.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let remote = derive_dockerfile(
+            &recipe,
+            DEFAULT_BASE_IMAGE,
+            &rlmesh_pkg(),
+            &[],
+            RecipeProvenance::Remote,
+        )
+        .expect("derives");
+        assert!(
+            !remote.contains("gymnasium"),
+            "Remote provenance must not inject an unpinned gymnasium"
+        );
+        // The host-controlled rlmesh install still happens regardless of provenance.
+        assert!(remote.contains("python -m pip install --no-cache-dir 'rlmesh'"));
+
+        let installed = derive_dockerfile(
+            &recipe,
+            DEFAULT_BASE_IMAGE,
+            &rlmesh_pkg(),
+            &[],
+            RecipeProvenance::Installed,
+        )
+        .expect("derives");
+        assert!(
+            installed.contains("python -m pip install --no-cache-dir gymnasium"),
+            "Installed provenance still injects the convenience gymnasium"
+        );
+    }
+
+    #[test]
+    fn non_python_base_detects_python_at_build_time() {
         // The base now arrives already-resolved as an argument (folding in the
         // build.base-wins precedence upstream), so pass the cuda base directly.
+        // A bare CUDA base has no interpreter, but we no longer install python3
+        // unconditionally (that would clobber a pytorch/isaac image's own python):
+        // both the install and the symlink are guarded by a build-time
+        // `command -v` so they no-op on an image that already has python.
         let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
         let derived = derive_dockerfile(
             &recipe,
             "nvidia/cuda:12.4.1-runtime-ubuntu22.04",
             &rlmesh_pkg(),
             &[],
+            RecipeProvenance::Installed,
         )
         .expect("derives");
-        assert!(derived.contains("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python"));
-        // python3 + pip must be apt-installed BEFORE the symlink and the pip layer,
-        // else `command -v python3` is empty and `python -m pip` fails.
-        let apt = derived.find("apt-get install").expect("apt step");
-        let symlink = derived.find("ln -sf").expect("python symlink");
+        // Both steps are CONDITIONAL: they install/symlink only when python is
+        // absent, so a python-capable image is left untouched.
+        assert!(derived.contains(
+            "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)"
+        ));
+        assert!(derived.contains(
+            "RUN command -v python >/dev/null 2>&1 || ln -sf \"$(command -v python3)\" /usr/local/bin/python"
+        ));
+        // python3 / python3-pip must NOT be force-added to the unconditional apt
+        // install line (that is the clobbering behavior we removed); they appear
+        // only inside the guarded `command -v ... ||` RUN.
+        if let Some(apt_line) = derived
+            .lines()
+            .find(|line| line.starts_with("RUN apt-get update && apt-get install"))
+        {
+            assert!(
+                !apt_line.contains("python3"),
+                "python3 must not be in the unconditional apt install line: {apt_line}"
+            );
+        }
+        // The detect/symlink must precede the pip layer so `python -m pip` resolves.
+        let detect = derived.find("command -v python3").expect("python detect");
         let pip = derived.find("-m pip install").expect("pip layer");
-        assert!(
-            derived[apt..symlink].contains("'python3'"),
-            "apt installs python3"
-        );
-        assert!(
-            derived[apt..symlink].contains("'python3-pip'"),
-            "apt installs python3-pip"
-        );
-        assert!(
-            apt < symlink && symlink < pip,
-            "apt -> symlink -> pip order"
-        );
-        // The default python base must NOT get the symlink or the python3 apt pkgs.
+        assert!(detect < pip, "python detect must precede the pip layer");
+
+        // The default python base must NOT get either conditional RUN.
         let py = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
             .expect("parses");
         let py_derived = derive(&py).expect("derives");
+        assert!(!py_derived.contains("command -v python3"));
         assert!(!py_derived.contains("ln -sf"));
-        assert!(!py_derived.contains("'python3-pip'"));
+    }
+
+    #[test]
+    fn pytorch_base_self_detects_python_instead_of_clobbering() {
+        // `nvcr.io/nvidia/pytorch:24.01-py3` ships its own python, but its NAME
+        // contains no literal "python" ('pytorch' is not 'python'), so the deriver
+        // cannot tell from the tag. It must emit the CONDITIONAL detect form (which
+        // no-ops on the preinstalled interpreter), NOT an unconditional apt install
+        // that would clobber the image's python and hide its packages.
+        let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
+        let derived = derive_dockerfile(
+            &recipe,
+            "nvcr.io/nvidia/pytorch:24.01-py3",
+            &rlmesh_pkg(),
+            &[],
+            RecipeProvenance::Installed,
+        )
+        .expect("derives");
+        // The guarded detect/symlink (a no-op when python is present) is emitted...
+        assert!(derived.contains(
+            "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)"
+        ));
+        assert!(derived.contains(
+            "RUN command -v python >/dev/null 2>&1 || ln -sf \"$(command -v python3)\" /usr/local/bin/python"
+        ));
+        // ...and there is NO unconditional apt install of python3 that would
+        // clobber the image's interpreter.
+        assert!(
+            !derived.lines().any(
+                |line| line.starts_with("RUN apt-get update && apt-get install")
+                    && line.contains("python3")
+            ),
+            "pytorch base must self-detect, not unconditionally install python3"
+        );
     }
 
     #[test]
@@ -1311,7 +1498,14 @@ mod tests {
         let pkg = ResolvedRlmeshPackage::Pip {
             spec: "rlmesh==0.1.0b2".to_string(),
         };
-        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &pkg, &[]).expect("derives");
+        let derived = derive_dockerfile(
+            &recipe,
+            DEFAULT_BASE_IMAGE,
+            &pkg,
+            &[],
+            RecipeProvenance::Installed,
+        )
+        .expect("derives");
         assert!(derived.contains("python -m pip install --no-cache-dir 'rlmesh==0.1.0b2'"));
     }
 
@@ -1326,7 +1520,14 @@ mod tests {
                 .to_string(),
             sha256: "abc".to_string(),
         };
-        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &pkg, &[]).expect("derives");
+        let derived = derive_dockerfile(
+            &recipe,
+            DEFAULT_BASE_IMAGE,
+            &pkg,
+            &[],
+            RecipeProvenance::Installed,
+        )
+        .expect("derives");
         assert!(derived.contains("COPY packages /opt/rlmesh/packages"));
         assert!(derived.contains(
             "python -m pip install --no-cache-dir '/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl'"
@@ -1338,8 +1539,14 @@ mod tests {
         // The packages=[...] argument to SandboxEnv must reach the pip chain.
         let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
         let packages = vec!["pygame".to_string(), "numpy==1.26.4".to_string()];
-        let derived = derive_dockerfile(&recipe, DEFAULT_BASE_IMAGE, &rlmesh_pkg(), &packages)
-            .expect("derives");
+        let derived = derive_dockerfile(
+            &recipe,
+            DEFAULT_BASE_IMAGE,
+            &rlmesh_pkg(),
+            &packages,
+            RecipeProvenance::Installed,
+        )
+        .expect("derives");
         assert!(derived.contains("python -m pip install --no-cache-dir 'pygame' 'numpy==1.26.4'"));
     }
 

@@ -167,6 +167,12 @@ impl EffectiveSandboxSpec {
             }
             _ => None,
         };
+        // Provenance is build-relevant for a recipe (it changes the derived
+        // Dockerfile, see BuildHashInput.provenance); gym/hf sources leave it None.
+        let recipe_provenance = match &source {
+            EnvironmentSourceRef::Recipe(reference) => Some(reference.provenance),
+            _ => None,
+        };
         let context_root = options.context_root.clone();
 
         let recipe_base = recipe.as_ref().and_then(|r| r.build.base.clone());
@@ -219,6 +225,7 @@ impl EffectiveSandboxSpec {
             packages: &packages,
             imports: &imports,
             build: recipe.as_ref().map(|r| &r.build),
+            provenance: recipe_provenance,
             content_digest: content_digest.as_deref(),
         })
         .map_err(SandboxError::invalid_option)?;
@@ -277,6 +284,12 @@ struct BuildHashInput<'a> {
     imports: &'a [String],
     /// The recipe build phase (None for gym/hf). A build change rebuilds.
     build: Option<&'a recipe::Build>,
+    /// The recipe provenance (None for gym/hf). The deriver emits a DIFFERENT
+    /// Dockerfile by provenance -- a Remote recipe skips the implicit unpinned
+    /// `gymnasium` install -- so provenance must key the image too. Without this,
+    /// an Installed and a Remote recipe with a byte-identical build phase would
+    /// collide on one cached image tag and reuse the wrong Dockerfile.
+    provenance: Option<RecipeProvenance>,
     /// A content digest of the staged `ProjectInstall` tree (7.1A).
     content_digest: Option<&'a str>,
 }
@@ -1066,6 +1079,30 @@ mod tests {
         .unwrap();
 
         assert_ne!(base.build_hash, changed.build_hash);
+    }
+
+    #[test]
+    fn build_hash_keys_recipe_provenance() {
+        // The deriver emits a different Dockerfile by provenance (a Remote recipe
+        // skips the implicit unpinned gymnasium), so two specs with a byte-identical
+        // build phase but different provenance must NOT share an image tag -- else
+        // ensure_image would reuse the wrong (Installed/Remote) Dockerfile.
+        let document = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "gym", "env_id": "E-v0"},
+            "build": {"base": "python@sha256:abc"},
+        });
+        let installed = EffectiveSandboxSpec::resolve(
+            recipe_source(document.clone(), RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        let remote = EffectiveSandboxSpec::resolve(
+            recipe_source(document, RecipeProvenance::Remote),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_ne!(installed.build_hash, remote.build_hash);
     }
 
     #[test]

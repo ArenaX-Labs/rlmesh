@@ -625,6 +625,7 @@ class SandboxVectorEnvBase(
 def _resolve_recipe_source(
     source: str | Recipe | type[EnvRecipe],
     gym_make_kwargs: Mapping[str, object] = _NO_MAKE_KWARGS,
+    imports: Sequence[str] | None = None,
 ) -> tuple[str, str | None, str | None, str | None]:
     """Resolve a sandbox source into (display, recipe_json, provenance, context_root).
 
@@ -642,12 +643,20 @@ def _resolve_recipe_source(
     ``rlmesh.make(recipe, **kwargs)``. They are *not* also forwarded via
     ``kwargs_json`` on the recipe path (the recipe bootstrap payload carries only
     ``make.kwargs``), so nothing is applied twice.
+
+    ``imports`` are merged into ``recipe.requires.imports`` for the same reason: the
+    recipe bootstrap reads ``requires.imports`` in-container, never the caller's
+    ``imports=`` (which only the gym/hf path forwards). Merging keeps a caller's
+    registration import (e.g. ``ale_py``) from being silently dropped on the recipe
+    path. ``requires.imports`` is meaningless for a ``PyMake``/build-only recipe (the
+    py factory owns its own imports), so caller imports on those raise.
     """
     import dataclasses
     import os
 
     from rlmesh.recipes import (
         HfMake,
+        PyMake,
         RecipeNotFoundError,
         UnsupportedRecipeError,
         resolve,
@@ -725,6 +734,25 @@ def _resolve_recipe_source(
             recipe.make, kwargs={**recipe.make.kwargs, **gym_make_kwargs}
         )
         recipe = dataclasses.replace(recipe, make=merged_make)
+    # Merge any caller imports into the recipe document's requires.imports so the
+    # in-container bootstrap runs them (it reads requires.imports, never the caller's
+    # imports=). requires.imports is forbidden/meaningless for a PyMake or build-only
+    # base -- the py factory owns its own imports -- so reject caller imports there
+    # instead of silently dropping them.
+    if imports:
+        if recipe.make is None or isinstance(recipe.make, PyMake):
+            raise TypeError(
+                f"recipe {recipe.name!r} is a PyMake/build-only recipe; imports= does "
+                "not apply -- a py factory performs its own imports"
+            )
+        # De-duplicate while preserving order: the recipe's own imports first, then
+        # the caller's new entries.
+        merged_imports = list(recipe.requires.imports)
+        for name in imports:
+            if name not in merged_imports:
+                merged_imports.append(name)
+        merged_requires = dataclasses.replace(recipe.requires, imports=merged_imports)
+        recipe = dataclasses.replace(recipe, requires=merged_requires)
     if recipe.build.project is None:
         context_root = None
     else:
@@ -758,11 +786,17 @@ def _start_sandbox(
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
     display, recipe_json, provenance, context_root = _resolve_recipe_source(
-        source, gym_make_kwargs
+        source, gym_make_kwargs, imports
     )
     # Only forward the recipe arguments when this is actually a recipe source, so
     # the gym/hf path stays byte-identical to before.
     recipe_kwargs: dict[str, str] = {}
+    # On the recipe path the caller imports are merged into the document's
+    # requires.imports by _resolve_recipe_source (the bootstrap reads requires.imports,
+    # not the imports= channel), so do not also forward them via _sandbox_start_env --
+    # the merged document is their sole carrier. The gym/hf path keeps forwarding
+    # imports exactly as before.
+    forwarded_imports = imports
     if recipe_json is not None and provenance is not None:
         recipe_kwargs["recipe_json"] = recipe_json
         recipe_kwargs["recipe_provenance"] = provenance
@@ -774,6 +808,7 @@ def _start_sandbox(
         # the document is their sole carrier. The gym/hf path below keeps shipping
         # kwargs_json exactly as before.
         kwargs_json: str | None = None
+        forwarded_imports = None
     else:
         kwargs_json = json.dumps(gym_make_kwargs) if gym_make_kwargs else None
     started = cast(
@@ -783,7 +818,7 @@ def _start_sandbox(
             base_image=base_image,
             rlmesh_package=rlmesh_package,
             packages=_string_sequence("packages", packages),
-            imports=_string_sequence("imports", imports),
+            imports=_string_sequence("imports", forwarded_imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,

@@ -464,6 +464,161 @@ def test_resolve_recipe_source_plain_id_unchanged() -> None:
     )
 
 
+def test_resolve_recipe_source_merges_imports_into_requires() -> None:
+    # A recipe source carries caller imports= in the document (requires.imports),
+    # since the recipe bootstrap reads requires.imports, never the caller's imports=
+    # channel. Without the merge a registration import (e.g. ale_py) is dropped and
+    # the gym env is not found in-container.
+    from rlmesh.recipes import GymMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
+    _, recipe_json, provenance, _ = _resolve_recipe_source(recipe, {}, ["ale_py"])
+
+    assert provenance == "installed"
+    assert recipe_json is not None
+    document = Recipe.from_json(recipe_json)
+    assert "ale_py" in document.requires.imports
+
+
+def test_resolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
+    # The recipe's own imports come first; caller imports append, de-duplicated.
+    from rlmesh.recipes import GymMake, Recipe, Requires
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="my/atari",
+        make=GymMake(env_id="ALE/Pong-v5"),
+        requires=Requires(imports=["ale_py", "shimmy"]),
+    )
+    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {}, ["ale_py", "extra_reg"])
+
+    assert recipe_json is not None
+    document = Recipe.from_json(recipe_json)
+    assert list(document.requires.imports) == ["ale_py", "shimmy", "extra_reg"]
+
+
+def test_resolve_recipe_source_pymake_with_imports_raises() -> None:
+    # requires.imports is forbidden for PyMake (the py factory owns its imports), so
+    # a caller imports= on a PyMake recipe is rejected rather than silently dropped.
+    from rlmesh.recipes import PyMake, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(name="acme/py", make=PyMake(entrypoint="acme_env:make"))
+    with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
+        _resolve_recipe_source(recipe, {}, ["ale_py"])
+
+
+def test_resolve_recipe_source_build_only_base_with_imports_raises() -> None:
+    # A build-only base (make=None) has no make/requires surface for caller imports.
+    from rlmesh.recipes import Build, Recipe
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
+    with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
+        _resolve_recipe_source(base, {}, ["ale_py"])
+
+
+def test_resolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
+    # The default (no caller imports) path is identical to before: the recipe's own
+    # requires.imports passes through unchanged.
+    from rlmesh.recipes import GymMake, Recipe, Requires
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    recipe = Recipe(
+        name="my/atari",
+        make=GymMake(env_id="ALE/Pong-v5"),
+        requires=Requires(imports=["ale_py"]),
+    )
+    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {})
+
+    assert recipe_json is not None
+    document = Recipe.from_json(recipe_json)
+    assert list(document.requires.imports) == ["ale_py"]
+
+
+def test_resolve_recipe_source_plain_id_with_imports_unchanged() -> None:
+    # A plain gym source string (not a recipe) is unchanged: imports= is NOT consumed
+    # here -- it stays forwarded via the gym/hf path's imports= channel.
+    from rlmesh.sandbox import _resolve_recipe_source
+
+    assert _resolve_recipe_source("CartPole-v1", {}, ["ale_py"]) == (
+        "CartPole-v1",
+        None,
+        None,
+        None,
+    )
+
+
+def test_start_sandbox_gym_path_forwards_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On the gym/hf source-string path, imports= is still forwarded to
+    # _sandbox_start_env byte-identically to before (the recipe-merge path does not
+    # apply to a non-recipe source).
+    from rlmesh import sandbox
+
+    captured: dict[str, object] = {}
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+
+    sandbox._start_sandbox(
+        "CartPole-v1",
+        base_image=None,
+        rlmesh_package=None,
+        packages=None,
+        imports=["ale_py"],
+        trust_remote_code=False,
+        allow_unpinned_hf=False,
+        num_envs=1,
+        vectorization_mode=None,
+        gym_make_kwargs={},
+    )
+
+    assert captured["imports"] == ["ale_py"]
+    assert "recipe_json" not in captured
+
+
+def test_start_sandbox_recipe_path_omits_forwarded_imports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On the recipe path the caller imports ride the document (requires.imports); they
+    # must NOT also be forwarded via _sandbox_start_env's imports= channel (which the
+    # recipe bootstrap ignores), so the document is their sole carrier.
+    from rlmesh import sandbox
+    from rlmesh.recipes import GymMake, Recipe
+
+    captured: dict[str, object] = {}
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+
+    recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
+    sandbox._start_sandbox(
+        recipe,
+        base_image=None,
+        rlmesh_package=None,
+        packages=None,
+        imports=["ale_py"],
+        trust_remote_code=False,
+        allow_unpinned_hf=False,
+        num_envs=1,
+        vectorization_mode=None,
+        gym_make_kwargs={},
+    )
+
+    assert captured["imports"] == []
+    merged = Recipe.from_json(cast(str, captured["recipe_json"]))
+    assert "ale_py" in merged.requires.imports
+
+
 def test_start_sandbox_recipe_path_omits_kwargs_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
