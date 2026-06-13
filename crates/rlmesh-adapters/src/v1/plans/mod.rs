@@ -6,6 +6,8 @@ mod image;
 mod state;
 mod text;
 
+use std::collections::BTreeSet;
+
 use super::describe;
 
 pub use action::{ActionPlan, ActionSegment};
@@ -37,5 +39,34 @@ impl ResolvedAdapter {
     /// conformance vectors pin the exact text.
     pub fn describe(&self) -> String {
         describe::describe_adapter(self)
+    }
+
+    /// The observation keys this adapter actually reads.
+    ///
+    /// Lets a caller decode only the referenced observation leaves instead of
+    /// the whole observation — so an unused (possibly unencodable) env key
+    /// never aborts a step. Custom inputs are excluded: they resolve against
+    /// the raw host observation, not the decoded payload.
+    pub fn referenced_obs_keys(&self) -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        for plan in &self.obs_plans {
+            match plan {
+                ObsPlan::Image(image) => {
+                    keys.insert(image.env_key.clone());
+                }
+                ObsPlan::State(state) => {
+                    for piece in &state.pieces {
+                        if !piece.zero_fill {
+                            keys.insert(piece.env_key.clone());
+                        }
+                    }
+                }
+                ObsPlan::Text(text) => {
+                    keys.insert(text.env_key.clone());
+                }
+                ObsPlan::Custom(_) => {}
+            }
+        }
+        keys
     }
 }

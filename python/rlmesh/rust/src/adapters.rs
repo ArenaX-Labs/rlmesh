@@ -22,7 +22,7 @@
 //! ([`SkipCustoms`]) and the Python wrapper runs the user's callable on the
 //! raw Python observation afterwards.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -180,6 +180,39 @@ fn decode_value(encoded: &Bound<'_, PyAny>) -> PyResult<Value> {
     }
 }
 
+/// Decode only the top-level observation entries the adapter reads.
+///
+/// Decoding the whole observation would let an unused — possibly
+/// unencodable — env key abort a step the model does not even depend on.
+fn decode_referenced_obs(
+    encoded: &Bound<'_, PyAny>,
+    referenced: &BTreeSet<String>,
+) -> PyResult<BTreeMap<String, Value>> {
+    let tuple = encoded.cast::<PyTuple>()?;
+    let tag: String = tuple.get_item(0)?.extract()?;
+    if tag != "m" {
+        return Err(PyValueError::new_err(
+            "expected a mapping observation".to_owned(),
+        ));
+    }
+    // Referenced keys may be dotted (nested Dict paths); decode the whole
+    // top-level entry that contains each.
+    let top_level: BTreeSet<&str> = referenced
+        .iter()
+        .map(|key| key.split('.').next().unwrap_or(key.as_str()))
+        .collect();
+    let entries = tuple.get_item(1)?;
+    let dict = entries.cast::<PyDict>()?;
+    let mut out: BTreeMap<String, Value> = BTreeMap::new();
+    for (key, value) in dict.iter() {
+        let key: String = key.extract()?;
+        if top_level.contains(key.as_str()) {
+            out.insert(key, decode_value(&value)?);
+        }
+    }
+    Ok(out)
+}
+
 fn array_bytes(data: &ArrayData) -> Vec<u8> {
     match data {
         ArrayData::U8(values) => values.clone(),
@@ -290,11 +323,7 @@ impl PyAdapterPlan {
         py: Python<'py>,
         raw_obs: &Bound<'py, PyAny>,
     ) -> PyResult<BTreeMap<String, Py<PyAny>>> {
-        let Value::Map(raw_obs) = decode_value(raw_obs)? else {
-            return Err(PyValueError::new_err(
-                "expected a mapping observation".to_owned(),
-            ));
-        };
+        let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
         let payload = self
             .adapter
             .transform_obs(&raw_obs, &SkipCustoms)
