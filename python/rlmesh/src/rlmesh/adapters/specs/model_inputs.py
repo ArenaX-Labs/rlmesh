@@ -9,6 +9,7 @@ from typing import Any, Literal, TypeAlias
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
 from .layouts import ImageLayout
 from .rotations import RotationEncoding
+from .serialization import check_non_negative
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
@@ -45,6 +46,11 @@ class ImageInput:
     upside_down: bool = False
     resample: str = "bilinear_aa"
 
+    def __post_init__(self) -> None:
+        check_non_negative(self.height, "ImageInput.height")
+        check_non_negative(self.width, "ImageInput.width")
+        check_non_negative(self.lead_dims, "ImageInput.lead_dims")
+
 
 @dataclass(frozen=True)
 class StateComponent:
@@ -72,6 +78,10 @@ class StateComponent:
     optional: bool = False
     range: tuple[float, float] | None = None
 
+    def __post_init__(self) -> None:
+        check_non_negative(self.dim, "StateComponent.dim")
+        check_non_negative(self.index, "StateComponent.index")
+
 
 @dataclass(frozen=True)
 class StateInput:
@@ -92,6 +102,9 @@ class StateInput:
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
+
+    def __post_init__(self) -> None:
+        check_non_negative(self.pad_to, "StateInput.pad_to")
 
 
 @dataclass(frozen=True)

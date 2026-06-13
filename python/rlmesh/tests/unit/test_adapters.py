@@ -1099,3 +1099,27 @@ def test_model_spec_run_requires_an_env_object() -> None:
     # A bare address carries no contract to resolve the adapter from.
     with pytest.raises(TypeError, match="env_contract"):
         model.run("127.0.0.1:5555", max_episodes=1)
+
+
+def test_negative_u32_fields_are_rejected_at_construction() -> None:
+    with pytest.raises(ValueError, match="width must be non-negative"):
+        adapt.ImageInput("image", width=-1)
+    with pytest.raises(ValueError, match="lead_dims must be non-negative"):
+        adapt.ImageInput("image", lead_dims=-2)
+    with pytest.raises(ValueError, match="dim must be non-negative"):
+        adapt.StateComponent(adapt.EEF_POS, dim=-1)
+    with pytest.raises(ValueError, match="index must be non-negative"):
+        adapt.StateComponent(adapt.EEF_POS, index=-1)
+    with pytest.raises(ValueError, match="pad_to must be non-negative"):
+        adapt.StateInput(
+            "s", components=(adapt.StateComponent(adapt.EEF_POS),), pad_to=-1
+        )
+    with pytest.raises(ValueError, match="dim must be non-negative"):
+        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=-1)
+
+
+def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
+    from rlmesh.adapters.helpers.bridge import encode_value
+
+    assert encode_value(np.bool_(True)) == ("n", 1.0)
+    assert encode_value(np.bool_(False)) == ("n", 0.0)

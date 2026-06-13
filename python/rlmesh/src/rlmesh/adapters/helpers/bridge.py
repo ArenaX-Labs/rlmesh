@@ -55,7 +55,7 @@ def encode_value(value: object) -> tuple[Any, ...]:
                 for key, item in cast(Mapping[Any, Any], value).items()
             },
         )
-    if isinstance(value, (bool, int, float, np.integer, np.floating)):
+    if isinstance(value, (bool, int, float, np.bool_, np.integer, np.floating)):
         return ("n", float(cast(Any, value)))
     if isinstance(value, (list, tuple)):
         return ("l", [encode_value(item) for item in cast(Any, value)])

@@ -46,6 +46,17 @@ def require_str(data: Mapping[str, Any], key: str, label: str) -> str:
     return value
 
 
+def check_non_negative(value: int | None, label: str) -> None:
+    """Reject a negative count for a field the native core stores as ``u32``.
+
+    Caught here, at spec construction, so the failure names the field instead
+    of surfacing later as a cryptic ``expected u32`` deserialization error at
+    resolve time.
+    """
+    if value is not None and value < 0:
+        raise ValueError(f"{label} must be non-negative, got {value}")
+
+
 def opt_range(value: object, label: str) -> tuple[float, float] | None:
     """Parse an optional ``(low, high)`` pair."""
     if value is None:
@@ -80,6 +91,7 @@ def opt_layout(value: object, label: str) -> ImageLayout:
 
 __all__ = [
     "as_mapping",
+    "check_non_negative",
     "load_json_mapping",
     "opt_encoding",
     "opt_layout",

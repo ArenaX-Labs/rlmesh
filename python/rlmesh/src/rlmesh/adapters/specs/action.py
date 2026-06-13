@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .rotations import RotationEncoding
+from .serialization import check_non_negative
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,9 @@ class ActionComponent:
     encoding: RotationEncoding | None = None
     range: tuple[float, float] | None = None
     binary: bool = False
+
+    def __post_init__(self) -> None:
+        check_non_negative(self.dim, "ActionComponent.dim")
 
 
 @dataclass(frozen=True)
