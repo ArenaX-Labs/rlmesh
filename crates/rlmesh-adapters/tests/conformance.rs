@@ -10,10 +10,18 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rlmesh_adapters::v1::{
-    ArrayData, Dtype, EnvAnnotations, ModelIoSpec, NoCustoms, SpaceView, Value, resolve,
-};
+use rlmesh_adapters::v1::{EnvAnnotations, ModelIoSpec, NoCustoms, SpaceView, Value, resolve};
+use rlmesh_spaces::scalar::{Scalar, decode_scalars, encode_scalars};
+use rlmesh_spaces::{DType, Tensor};
 use serde_json::{Value as Json, json};
+
+/// Whether a dtype is a float family (controls integer-vs-float JSON output).
+fn is_float_dtype(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Float16 | DType::Bfloat16 | DType::Float32 | DType::Float64
+    )
+}
 
 fn cases_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("conformance/v1/cases")
@@ -60,33 +68,21 @@ fn dec(value: &Json) -> Value {
         ),
         "array" => {
             let dtype =
-                Dtype::parse(value["dtype"].as_str().expect("dtype")).expect("supported dtype");
-            let shape: Vec<usize> = value["shape"]
+                DType::from_name(value["dtype"].as_str().expect("dtype")).expect("supported dtype");
+            let shape: Vec<i64> = value["shape"]
                 .as_array()
                 .expect("shape")
                 .iter()
-                .map(|dim| dim.as_u64().expect("dim") as usize)
+                .map(|dim| dim.as_i64().expect("dim"))
                 .collect();
-            let numbers: Vec<f64> = value["data"]
+            let scalars: Vec<Scalar> = value["data"]
                 .as_array()
                 .expect("array data")
                 .iter()
-                .map(|item| item.as_f64().expect("numeric element"))
+                .map(|item| Scalar::Float(item.as_f64().expect("numeric element")))
                 .collect();
-            let data = match dtype {
-                Dtype::U8 => ArrayData::U8(numbers.iter().map(|&x| x as u8).collect()),
-                Dtype::I32 => ArrayData::I32(numbers.iter().map(|&x| x as i32).collect()),
-                Dtype::I64 => ArrayData::I64(numbers.iter().map(|&x| x as i64).collect()),
-                Dtype::F32 => ArrayData::F32(numbers.iter().map(|&x| x as f32).collect()),
-                Dtype::F64 => ArrayData::F64(numbers),
-            };
-            let array = rlmesh_adapters::v1::Array { dtype, shape, data };
-            assert_eq!(
-                array.shape.iter().product::<usize>(),
-                array.len(),
-                "array shape/data length mismatch in case input"
-            );
-            Value::Array(array)
+            let bytes = encode_scalars(&scalars, dtype).expect("encode case array");
+            Value::Tensor(Tensor::from_vec(bytes, shape, dtype).expect("case tensor"))
         }
         other => panic!("unknown value kind {other:?}"),
     }
@@ -116,31 +112,27 @@ fn enc(value: &Value) -> Json {
                 .map(|(key, item)| (key.clone(), enc(item)))
                 .collect::<serde_json::Map<String, Json>>(),
         }),
-        Value::Array(array) => {
-            let data: Vec<Json> = match &array.data {
-                ArrayData::U8(values) => values.iter().map(|&x| json!(x)).collect(),
-                ArrayData::I32(values) => values.iter().map(|&x| json!(x)).collect(),
-                ArrayData::I64(values) => values.iter().map(|&x| json!(x)).collect(),
-                ArrayData::F32(values) => values.iter().map(|&x| json!(f64::from(x))).collect(),
-                ArrayData::F64(values) => values.iter().map(|&x| json!(x)).collect(),
-            };
+        Value::Tensor(tensor) => {
+            let dtype = tensor.dtype();
+            let scalars =
+                decode_scalars(&tensor.to_contiguous_bytes(), dtype).expect("decode tensor");
+            let data: Vec<Json> = scalars
+                .iter()
+                .map(|scalar| {
+                    if is_float_dtype(dtype) {
+                        json!(scalar.to_f64(dtype))
+                    } else {
+                        json!(scalar.as_i64())
+                    }
+                })
+                .collect();
             json!({
                 "kind": "array",
-                "dtype": array.dtype.as_str(),
-                "shape": array.shape,
+                "dtype": dtype.name(),
+                "shape": tensor.shape(),
                 "data": data,
             })
         }
-    }
-}
-
-fn array_f64s(data: &ArrayData) -> Vec<f64> {
-    match data {
-        ArrayData::U8(values) => values.iter().map(|&x| f64::from(x)).collect(),
-        ArrayData::I32(values) => values.iter().map(|&x| f64::from(x)).collect(),
-        ArrayData::I64(values) => values.iter().map(|&x| x as f64).collect(),
-        ArrayData::F32(values) => values.iter().map(|&x| f64::from(x)).collect(),
-        ArrayData::F64(values) => values.clone(),
     }
 }
 
@@ -183,22 +175,31 @@ fn assert_value(name: &str, key: &str, actual: &Value, expected: &Json, atol: f6
             }
         }
         "array" => {
-            let Value::Array(array) = actual else {
+            let Value::Tensor(tensor) = actual else {
                 panic!("{name}/{key}: expected array, got {actual:?}");
             };
             assert_eq!(
-                array.dtype.as_str(),
+                tensor.dtype().name(),
                 expected["dtype"].as_str().expect("conformance fixture"),
                 "{name}/{key}: dtype"
             );
-            let expected_shape: Vec<usize> = expected["shape"]
+            let expected_shape: Vec<i64> = expected["shape"]
                 .as_array()
                 .expect("conformance fixture")
                 .iter()
-                .map(|dim| dim.as_u64().expect("conformance fixture") as usize)
+                .map(|dim| dim.as_i64().expect("conformance fixture"))
                 .collect();
-            assert_eq!(array.shape, expected_shape, "{name}/{key}: shape");
-            let actual_values = array_f64s(&array.data);
+            assert_eq!(
+                tensor.shape(),
+                expected_shape.as_slice(),
+                "{name}/{key}: shape"
+            );
+            let actual_values: Vec<f64> =
+                decode_scalars(&tensor.to_contiguous_bytes(), tensor.dtype())
+                    .expect("decode tensor")
+                    .iter()
+                    .map(|scalar| scalar.to_f64(tensor.dtype()))
+                    .collect();
             let expected_values: Vec<f64> = expected["data"]
                 .as_array()
                 .expect("conformance fixture")
@@ -294,7 +295,7 @@ fn updated_case(name: &str, case: &Json) -> Json {
                     .iter()
                     .map(|(key, value)| (key.clone(), enc(value)))
                     .collect::<serde_json::Map<String, Json>>(),
-                "action": enc(&Value::Array(action)),
+                "action": enc(&Value::Tensor(action)),
                 "atol": if atol.is_null() { json!(1e-6) } else { atol },
             });
         }
@@ -368,7 +369,7 @@ fn verify_case(name: &str, case: &Json) {
             assert_value(
                 name,
                 "action",
-                &Value::Array(action),
+                &Value::Tensor(action),
                 &case["expect"]["action"],
                 atol,
             );

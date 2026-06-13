@@ -1,10 +1,11 @@
 //! Apply resolved plans to concrete observation and action values.
 //!
-//! The engine operates on its own [`Value`] model (typed arrays, text,
-//! lists, nested maps); bridging host tensor types (numpy, the runtime's
-//! native values) is binding-layer work. Custom inputs are host-language
-//! holes: provide a [`CustomTransform`] to fill them, or use [`NoCustoms`]
-//! when the specs are fully declarative.
+//! The engine operates on a [`Value`] payload model — a `rlmesh_spaces::Tensor`
+//! plus text/scalar/list/map — so dense data shares the repo-wide tensor type;
+//! bridging host tensor types (numpy, the runtime's native values) is
+//! binding-layer work. Custom inputs are host-language holes: provide a
+//! [`CustomTransform`] to fill them, or use [`NoCustoms`] when the specs are
+//! fully declarative.
 
 mod action;
 mod error;
@@ -18,9 +19,11 @@ mod value;
 
 use std::collections::BTreeMap;
 
+use rlmesh_spaces::Tensor;
+
 pub use error::ApplyError;
 pub use geometry::convert_rotation;
-pub use value::{Array, ArrayData, Dtype, Value};
+pub use value::Value;
 
 use super::plans::ResolvedAdapter;
 
@@ -79,7 +82,7 @@ impl ResolvedAdapter {
     }
 
     /// Convert a model action output into the env action vector (float32).
-    pub fn transform_action(&self, raw_action: &Value) -> Result<Array, ApplyError> {
+    pub fn transform_action(&self, raw_action: &Value) -> Result<Tensor, ApplyError> {
         action::transform_action(&self.action_plan, raw_action)
     }
 }

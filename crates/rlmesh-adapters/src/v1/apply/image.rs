@@ -4,127 +4,92 @@
 //! vectors: `bilinear` (4-tap, half-pixel centers) and `bilinear_aa`
 //! (antialiased separable triangle filter, PIL-compatible within +-1
 //! uint8 step). Both compute in float64 with one final round-half-to-even
-//! like the reference.
+//! like the reference. Pixels are carried in `rlmesh_spaces::Tensor`.
 
 use std::collections::BTreeMap;
+
+use rlmesh_spaces::{DType, Tensor};
 
 use super::super::plans::ImagePlan;
 use super::super::spec::ImageLayout;
 use super::error::ApplyError;
 use super::lookup::lookup;
-use super::value::{Array, ArrayData, Dtype, Value};
+use super::value::{self, Value};
 
 /// Produce one model image input from a raw observation.
 pub(super) fn apply_image(
     plan: &ImagePlan,
     raw_obs: &BTreeMap<String, Value>,
 ) -> Result<Value, ApplyError> {
-    let mut array = decode_image(lookup(raw_obs, &plan.env_key)?)?;
-    array = to_layout(&array, plan.src_layout, ImageLayout::Hwc)?;
+    let mut image = decode_image(lookup(raw_obs, &plan.env_key)?)?;
+    image = to_layout(&image, plan.src_layout, ImageLayout::Hwc)?;
     if plan.flip {
-        array = flip_180(&array)?;
+        image = flip_180(&image)?;
     }
     if let Some((height, width)) = plan.size {
-        array = resize_image(&array, height, width, &plan.resample)?;
+        image = resize_image(&image, height, width, &plan.resample)?;
     }
-    array = finalize_dtype(&array, &plan.dtype, plan.normalize)?;
-    array = to_layout(&array, ImageLayout::Hwc, plan.dst_layout)?;
-    Ok(Value::Array(add_lead_dims(array, plan.lead_dims)))
+    image = finalize_dtype(&image, &plan.dtype, plan.normalize)?;
+    image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
+    Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
 }
 
-/// Return an HWC uint8 array from a raw observation value.
+/// Return an HWC uint8 tensor from a raw observation value.
 ///
-/// The resize/transform pipeline operates on 8-bit pixels, so the source is
-/// converted to uint8 — but never by truncation-casting. A float image is
-/// treated as normalized `[0, 1]` and scaled into `[0, 255]`; an integer
-/// image is clamped into the 8-bit range. (Casting a `[0, 1]` float image
-/// straight to `u8` used to floor every pixel to zero — a black image.)
-pub fn decode_image(value: &Value) -> Result<Array, ApplyError> {
-    let Value::Array(array) = value else {
+/// The pipeline operates on 8-bit pixels; the source is converted without
+/// truncation-casting (a `[0, 1]` float image is scaled, not floored to
+/// black).
+pub fn decode_image(value: &Value) -> Result<Tensor, ApplyError> {
+    let Value::Tensor(tensor) = value else {
         return Err(ApplyError::new(
             "expected an image array observation value (encoded image bytes \
              are a binding-level concern)"
                 .to_owned(),
         ));
     };
-    Ok(Array {
-        dtype: Dtype::U8,
-        shape: array.shape.clone(),
-        data: ArrayData::U8(to_u8_pixels(array)),
-    })
+    Ok(value::tensor_from_u8(
+        tensor.shape().to_vec(),
+        value::to_u8_pixels(tensor),
+    ))
 }
 
-/// Round a scalar to the nearest 8-bit value, clamping to `[0, 255]`.
-fn round_to_u8(value: f64) -> u8 {
-    value.round_ties_even().clamp(0.0, 255.0) as u8
-}
-
-/// Convert image elements to 8-bit pixels without truncation: floats are
-/// scaled from `[0, 1]`, integers are clamped to the 8-bit range.
-fn to_u8_pixels(array: &Array) -> Vec<u8> {
-    match &array.data {
-        ArrayData::U8(data) => data.clone(),
-        ArrayData::F32(data) => data
-            .iter()
-            .map(|&x| round_to_u8(f64::from(x) * 255.0))
-            .collect(),
-        ArrayData::F64(data) => data.iter().map(|&x| round_to_u8(x * 255.0)).collect(),
-        ArrayData::I32(data) => data.iter().map(|&x| x.clamp(0, 255) as u8).collect(),
-        ArrayData::I64(data) => data.iter().map(|&x| x.clamp(0, 255) as u8).collect(),
-    }
-}
-
-fn image_dims(array: &Array) -> Result<(usize, usize, usize), ApplyError> {
-    if array.shape.len() != 3 {
+fn image_dims(tensor: &Tensor) -> Result<(usize, usize, usize), ApplyError> {
+    let shape = value::shape_usize(tensor);
+    if shape.len() != 3 {
         return Err(ApplyError::new(format!(
             "expected an HWC image with 3 axes, got shape {:?}",
-            array.shape
+            tensor.shape()
         )));
     }
-    Ok((array.shape[0], array.shape[1], array.shape[2]))
-}
-
-/// Reorder array elements so `out[i] = data[indices[i]]`, dtype-generic.
-fn gather(data: &ArrayData, indices: &[usize]) -> ArrayData {
-    match data {
-        ArrayData::U8(values) => ArrayData::U8(indices.iter().map(|&i| values[i]).collect()),
-        ArrayData::I32(values) => ArrayData::I32(indices.iter().map(|&i| values[i]).collect()),
-        ArrayData::I64(values) => ArrayData::I64(indices.iter().map(|&i| values[i]).collect()),
-        ArrayData::F32(values) => ArrayData::F32(indices.iter().map(|&i| values[i]).collect()),
-        ArrayData::F64(values) => ArrayData::F64(indices.iter().map(|&i| values[i]).collect()),
-    }
+    Ok((shape[0], shape[1], shape[2]))
 }
 
 /// Rotate an HWC image by 180 degrees.
-pub fn flip_180(array: &Array) -> Result<Array, ApplyError> {
-    let (height, width, channels) = image_dims(array)?;
-    let mut indices = Vec::with_capacity(array.len());
+pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
+    let (height, width, channels) = image_dims(tensor)?;
+    let mut indices = Vec::with_capacity(tensor.numel());
     for row in 0..height {
         for col in 0..width {
             let src = ((height - 1 - row) * width + (width - 1 - col)) * channels;
             indices.extend(src..src + channels);
         }
     }
-    Ok(Array {
-        dtype: array.dtype,
-        shape: array.shape.clone(),
-        data: gather(&array.data, &indices),
-    })
+    Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
 }
 
 /// Transpose an image between `hwc` and `chw` layouts (any dtype).
 pub fn to_layout(
-    array: &Array,
+    tensor: &Tensor,
     source: ImageLayout,
     target: ImageLayout,
-) -> Result<Array, ApplyError> {
+) -> Result<Tensor, ApplyError> {
     if source == target {
-        return Ok(array.clone());
+        return Ok(tensor.clone());
     }
-    let mut indices = Vec::with_capacity(array.len());
+    let mut indices = Vec::with_capacity(tensor.numel());
     let shape = match target {
         ImageLayout::Chw => {
-            let (height, width, channels) = image_dims(array)?;
+            let (height, width, channels) = image_dims(tensor)?;
             for channel in 0..channels {
                 for row in 0..height {
                     for col in 0..width {
@@ -135,7 +100,7 @@ pub fn to_layout(
             vec![channels, height, width]
         }
         ImageLayout::Hwc => {
-            let (channels, height, width) = image_dims(array)?;
+            let (channels, height, width) = image_dims(tensor)?;
             for row in 0..height {
                 for col in 0..width {
                     for channel in 0..channels {
@@ -146,38 +111,21 @@ pub fn to_layout(
             vec![height, width, channels]
         }
     };
-    Ok(Array {
-        dtype: array.dtype,
-        shape,
-        data: gather(&array.data, &indices),
-    })
+    Ok(value::gather(tensor, &indices, value::shape_i64(&shape)))
 }
 
-fn u8_pixels(array: &Array) -> Result<&[u8], ApplyError> {
-    match &array.data {
-        ArrayData::U8(data) => Ok(data),
-        _ => Err(ApplyError::new(
-            "resize expects uint8 image data".to_owned(),
-        )),
-    }
-}
-
-fn finish_pixels(blended: Vec<f64>, shape: Vec<usize>) -> Array {
+fn finish_pixels(blended: Vec<f64>, shape: Vec<usize>) -> Tensor {
     let data: Vec<u8> = blended
         .into_iter()
         .map(|value| value.round_ties_even().clamp(0.0, 255.0) as u8)
         .collect();
-    Array {
-        dtype: Dtype::U8,
-        shape,
-        data: ArrayData::U8(data),
-    }
+    value::tensor_from_u8(value::shape_i64(&shape), data)
 }
 
 /// 4-tap half-pixel-center bilinear resize (OpenCV/torch-compatible).
-fn resize_bilinear(array: &Array, height: usize, width: usize) -> Result<Array, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(array)?;
-    let data = u8_pixels(array)?;
+fn resize_bilinear(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
+    let (src_height, src_width, channels) = image_dims(tensor)?;
+    let data = value::u8_pixels(tensor)?;
     let coords = |dst: usize, src: usize| -> Vec<(usize, usize, f64)> {
         (0..dst)
             .map(|i| {
@@ -233,9 +181,9 @@ fn triangle_weights(src: usize, dst: usize) -> Vec<(usize, Vec<f64>)> {
 }
 
 /// Antialiased separable triangle-filter resize (PIL-compatible).
-fn resize_bilinear_aa(array: &Array, height: usize, width: usize) -> Result<Array, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(array)?;
-    let data = u8_pixels(array)?;
+fn resize_bilinear_aa(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
+    let (src_height, src_width, channels) = image_dims(tensor)?;
+    let data = value::u8_pixels(tensor)?;
     let col_weights = triangle_weights(src_width, width);
     let row_weights = triangle_weights(src_height, height);
 
@@ -272,12 +220,12 @@ fn resize_bilinear_aa(array: &Array, height: usize, width: usize) -> Result<Arra
 
 /// Resize an HWC uint8 image with the declared resample algorithm.
 pub fn resize_image(
-    array: &Array,
+    tensor: &Tensor,
     height: u32,
     width: u32,
     resample: &str,
-) -> Result<Array, ApplyError> {
-    let (src_height, src_width, _) = image_dims(array)?;
+) -> Result<Tensor, ApplyError> {
+    let (src_height, src_width, _) = image_dims(tensor)?;
     let (height, width) = (height as usize, width as usize);
     if height == 0 || width == 0 || src_height == 0 || src_width == 0 {
         return Err(ApplyError::new(format!(
@@ -286,42 +234,41 @@ pub fn resize_image(
         )));
     }
     if (src_height, src_width) == (height, width) {
-        return Ok(array.clone());
+        return Ok(tensor.clone());
     }
     match resample {
-        "bilinear" => resize_bilinear(array, height, width),
-        "bilinear_aa" => resize_bilinear_aa(array, height, width),
+        "bilinear" => resize_bilinear(tensor, height, width),
+        "bilinear_aa" => resize_bilinear_aa(tensor, height, width),
         other => Err(ApplyError::new(format!("unsupported resample {other:?}"))),
     }
 }
 
 /// Cast an image to `dtype`, optionally scaling 8-bit values into [0, 1].
-pub fn finalize_dtype(array: &Array, dtype: &str, normalize: bool) -> Result<Array, ApplyError> {
-    let dtype = Dtype::parse(dtype)?;
+pub fn finalize_dtype(tensor: &Tensor, dtype: &str, normalize: bool) -> Result<Tensor, ApplyError> {
+    let target = DType::from_name(dtype).ok_or_else(|| {
+        ApplyError::new(format!("unsupported dtype {dtype:?} for an image output"))
+    })?;
     if normalize {
-        let scaled: Vec<f32> = array
-            .to_f32_vec()
+        let scaled: Vec<f32> = value::to_f32_vec(tensor)
             .into_iter()
             .map(|value| value / 255.0)
             .collect();
-        let scaled = Array {
-            dtype: Dtype::F32,
-            shape: array.shape.clone(),
-            data: ArrayData::F32(scaled),
-        };
-        return Ok(scaled.cast(dtype));
+        let scaled = value::tensor_from_f32(tensor.shape().to_vec(), &scaled);
+        return value::cast(&scaled, target);
     }
-    Ok(array.cast(dtype))
+    value::cast(tensor, target)
 }
 
 /// Prepend `count` singleton axes to an image.
-pub fn add_lead_dims(array: Array, count: u32) -> Array {
+pub fn add_lead_dims(tensor: Tensor, count: u32) -> Tensor {
     if count == 0 {
-        return array;
+        return tensor;
     }
-    let mut shape = vec![1usize; count as usize];
-    shape.extend(&array.shape);
-    Array { shape, ..array }
+    let mut shape = vec![1i64; count as usize];
+    shape.extend_from_slice(tensor.shape());
+    tensor
+        .reshape(&shape)
+        .expect("adding unit axes preserves the element count")
 }
 
 #[cfg(test)]
@@ -331,39 +278,23 @@ mod tests {
     #[test]
     fn decode_scales_unit_float_images_instead_of_truncating() {
         // A normalized [0, 1] float image must scale into 8-bit, not floor to
-        // an all-black image (the pre-fix `cast(u8)` behavior).
-        let image = Value::Array(Array {
-            dtype: Dtype::F32,
-            shape: vec![2, 2, 1],
-            data: ArrayData::F32(vec![0.0, 0.4, 0.6, 1.0]),
-        });
+        // an all-black image.
+        let image = Value::Tensor(value::tensor_from_f32(vec![2, 2, 1], &[0.0, 0.4, 0.6, 1.0]));
         let decoded = decode_image(&image).expect("decode");
-        let ArrayData::U8(pixels) = decoded.data else {
-            panic!("expected uint8 pixels");
-        };
-        assert_eq!(pixels, vec![0, 102, 153, 255]);
+        assert_eq!(decoded.dtype(), DType::Uint8);
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [0u8, 102, 153, 255]);
     }
 
     #[test]
     fn decode_passes_through_uint8_images() {
-        let image = Value::Array(Array {
-            dtype: Dtype::U8,
-            shape: vec![1, 1, 3],
-            data: ArrayData::U8(vec![10, 20, 30]),
-        });
+        let image = Value::Tensor(value::tensor_from_u8(vec![1, 1, 3], vec![10, 20, 30]));
         let decoded = decode_image(&image).expect("decode");
-        assert_eq!(decoded.data, ArrayData::U8(vec![10, 20, 30]));
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30]);
     }
 
     #[test]
     fn resize_rejects_zero_dimensions() {
-        // A degenerate source dimension must error, not panic in the resize
-        // coordinate clamp.
-        let image = Array {
-            dtype: Dtype::U8,
-            shape: vec![0, 2, 3],
-            data: ArrayData::U8(Vec::new()),
-        };
+        let image = value::tensor_from_u8(vec![0, 2, 3], Vec::new());
         let error = resize_image(&image, 4, 4, "bilinear").expect_err("zero dim");
         assert!(error.to_string().contains("zero dimension"), "{error}");
     }

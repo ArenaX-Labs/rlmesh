@@ -1,10 +1,12 @@
 //! Apply a resolved action plan to a model action output.
 
+use rlmesh_spaces::Tensor;
+
 use super::super::plans::ActionPlan;
 use super::error::ApplyError;
 use super::geometry::convert_rotation;
 use super::lookup::{map_range, numeric_vector};
-use super::value::{Array, Value};
+use super::value::{self, Value};
 
 fn sign(value: f32) -> f32 {
     if value > 0.0 {
@@ -17,7 +19,7 @@ fn sign(value: f32) -> f32 {
 }
 
 /// Convert a model action vector into the env action vector (float32).
-pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Array, ApplyError> {
+pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor, ApplyError> {
     let action = numeric_vector(raw_action)?;
     if action.len() != plan.in_dim as usize {
         return Err(ApplyError::new(format!(
@@ -51,5 +53,5 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Array, 
         }
     }
     let len = pieces.len();
-    Ok(Array::from_f32(vec![len], pieces))
+    Ok(value::tensor_from_f32(vec![len as i64], &pieces))
 }

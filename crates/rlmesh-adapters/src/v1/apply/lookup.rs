@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::error::ApplyError;
-use super::value::Value;
+use super::value::{self, Value};
 
 /// Fetch a value from an observation map, traversing dotted paths.
 pub fn lookup<'obs>(
@@ -35,7 +35,7 @@ pub fn lookup<'obs>(
 /// Return a flat float32 vector from a raw numeric value.
 pub fn numeric_vector(value: &Value) -> Result<Vec<f32>, ApplyError> {
     match value {
-        Value::Array(array) => Ok(array.to_f32_vec()),
+        Value::Tensor(tensor) => Ok(value::to_f32_vec(tensor)),
         Value::Number(number) => Ok(vec![*number as f32]),
         Value::List(items) => {
             let mut out = Vec::with_capacity(items.len());

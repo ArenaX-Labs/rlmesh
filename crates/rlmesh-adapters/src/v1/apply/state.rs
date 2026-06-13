@@ -2,12 +2,14 @@
 
 use std::collections::BTreeMap;
 
+use rlmesh_spaces::{DType, Tensor};
+
 use super::super::plans::StatePlan;
 use super::super::spec::StateContainer;
 use super::error::ApplyError;
 use super::geometry::convert_rotation;
 use super::lookup::{lookup, map_range, numeric_vector};
-use super::value::{Array, ArrayData, Dtype, Value};
+use super::value::{self, Value};
 
 fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
     let mut inferred: Option<usize> = None;
@@ -45,14 +47,11 @@ fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
     Ok(out)
 }
 
-fn list_value(array: &Array) -> Vec<Value> {
-    match &array.data {
-        ArrayData::U8(data) => data.iter().map(|&x| Value::Number(f64::from(x))).collect(),
-        ArrayData::I32(data) => data.iter().map(|&x| Value::Number(f64::from(x))).collect(),
-        ArrayData::I64(data) => data.iter().map(|&x| Value::Number(x as f64)).collect(),
-        ArrayData::F32(data) => data.iter().map(|&x| Value::Number(f64::from(x))).collect(),
-        ArrayData::F64(data) => data.iter().map(|&x| Value::Number(x)).collect(),
-    }
+fn list_value(tensor: &Tensor) -> Vec<Value> {
+    value::to_f64_vec(tensor)
+        .into_iter()
+        .map(Value::Number)
+        .collect()
 }
 
 /// Produce one model state input from a raw observation.
@@ -100,14 +99,19 @@ pub(super) fn apply_state(
         state.resize(pad_to, 0.0);
     }
     let len = state.len();
-    let mut array = Array::from_f32(vec![len], state).cast(Dtype::parse(&plan.dtype)?);
+    let target = DType::from_name(&plan.dtype)
+        .ok_or_else(|| ApplyError::new(format!("unsupported state dtype {:?}", plan.dtype)))?;
+    let mut tensor = value::cast(&value::tensor_from_f32(vec![len as i64], &state), target)?;
     if let Some(shape_spec) = &plan.reshape {
-        array.shape = reshape(shape_spec, len)?;
+        let shape = reshape(shape_spec, len)?;
+        tensor = tensor
+            .reshape(&value::shape_i64(&shape))
+            .map_err(|err| ApplyError::new(err.to_string()))?;
     }
     if plan.container == StateContainer::List {
-        return Ok(Value::List(list_value(&array)));
+        return Ok(Value::List(list_value(&tensor)));
     }
-    Ok(Value::Array(array))
+    Ok(Value::Tensor(tensor))
 }
 
 #[cfg(test)]
@@ -137,18 +141,12 @@ mod tests {
         let mut raw = BTreeMap::new();
         raw.insert(
             "gripper".to_owned(),
-            Value::Array(Array {
-                dtype: Dtype::F32,
-                shape: vec![3],
-                data: ArrayData::F32(vec![0.0, 127.5, 255.0]),
-            }),
+            Value::Tensor(value::tensor_from_f32(vec![3], &[0.0, 127.5, 255.0])),
         );
-        let Value::Array(out) = apply_state(&plan, &raw).expect("apply") else {
-            panic!("expected an array");
+        let Value::Tensor(out) = apply_state(&plan, &raw).expect("apply") else {
+            panic!("expected a tensor");
         };
-        let ArrayData::F32(values) = out.data else {
-            panic!("expected f32");
-        };
+        let values = value::to_f32_vec(&out);
         assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
         assert!(values[1].abs() < 1e-6, "{values:?}");
         assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");

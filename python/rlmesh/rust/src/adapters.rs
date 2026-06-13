@@ -30,9 +30,10 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    Array, ArrayData, Dtype, EnvAnnotations, ModelIoSpec, ObsPlan, ResolvedAdapter, SkipCustoms,
-    SpaceView, Value, resolve, roles,
+    EnvAnnotations, ModelIoSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, resolve,
+    roles,
 };
+use rlmesh_spaces::{DType, Tensor};
 
 /// Wire-vocabulary constants re-exported to Python. The `rlmesh-adapters`
 /// crate is the single source of truth: bindings re-export, never re-declare.
@@ -86,59 +87,21 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Byte size of one element of an adapters `Dtype`.
-const fn dtype_size(dtype: Dtype) -> usize {
-    match dtype {
-        Dtype::U8 => 1,
-        Dtype::I32 | Dtype::F32 => 4,
-        Dtype::I64 | Dtype::F64 => 8,
-    }
-}
-
 fn decode_value(encoded: &Bound<'_, PyAny>) -> PyResult<Value> {
     let tuple = encoded.cast::<PyTuple>()?;
     let tag: String = tuple.get_item(0)?.extract()?;
     match tag.as_str() {
         "a" => {
-            let dtype = Dtype::parse(&tuple.get_item(1)?.extract::<String>()?)
-                .map_err(|err| PyValueError::new_err(err.message))?;
-            let shape: Vec<usize> = tuple.get_item(2)?.extract()?;
+            let dtype = DType::from_name(&tuple.get_item(1)?.extract::<String>()?)
+                .ok_or_else(|| PyValueError::new_err("unsupported array dtype".to_owned()))?;
+            let shape: Vec<i64> = tuple.get_item(2)?.extract()?;
             let raw: Vec<u8> = tuple.get_item(3)?.extract()?;
-            // The decoded buffer must be exactly the element count times the
-            // element size; a short buffer would otherwise panic the chunker.
-            let expected = shape.iter().product::<usize>() * dtype_size(dtype);
-            if raw.len() != expected {
-                return Err(PyValueError::new_err(format!(
-                    "array byte length {} does not match shape {shape:?} of {} \
-                     ({expected} bytes expected)",
-                    raw.len(),
-                    dtype.as_str(),
-                )));
-            }
-            let data = match dtype {
-                Dtype::U8 => ArrayData::U8(raw),
-                Dtype::I32 => ArrayData::I32(
-                    raw.chunks_exact(4)
-                        .map(|chunk| i32::from_ne_bytes(chunk.try_into().expect("4-byte chunk")))
-                        .collect(),
-                ),
-                Dtype::I64 => ArrayData::I64(
-                    raw.chunks_exact(8)
-                        .map(|chunk| i64::from_ne_bytes(chunk.try_into().expect("8-byte chunk")))
-                        .collect(),
-                ),
-                Dtype::F32 => ArrayData::F32(
-                    raw.chunks_exact(4)
-                        .map(|chunk| f32::from_ne_bytes(chunk.try_into().expect("4-byte chunk")))
-                        .collect(),
-                ),
-                Dtype::F64 => ArrayData::F64(
-                    raw.chunks_exact(8)
-                        .map(|chunk| f64::from_ne_bytes(chunk.try_into().expect("8-byte chunk")))
-                        .collect(),
-                ),
-            };
-            Ok(Value::Array(Array { dtype, shape, data }))
+            // `Tensor::from_vec` validates that the byte length matches the
+            // shape and dtype, so a short or mismatched buffer is a clean
+            // error rather than a panic in the chunker.
+            let tensor = Tensor::from_vec(raw, shape, dtype)
+                .map_err(|err| PyValueError::new_err(format!("invalid array value: {err}")))?;
+            Ok(Value::Tensor(tensor))
         }
         "b" => {
             let raw: Vec<u8> = tuple.get_item(1)?.extract()?;
@@ -148,11 +111,13 @@ fn decode_value(encoded: &Bound<'_, PyAny>) -> PyResult<Value> {
                 })?
                 .to_rgb8();
             let (width, height) = decoded.dimensions();
-            Ok(Value::Array(Array {
-                dtype: Dtype::U8,
-                shape: vec![height as usize, width as usize, 3],
-                data: ArrayData::U8(decoded.into_raw()),
-            }))
+            let tensor = Tensor::from_vec(
+                decoded.into_raw(),
+                vec![i64::from(height), i64::from(width), 3],
+                DType::Uint8,
+            )
+            .map_err(|err| PyValueError::new_err(format!("invalid decoded image: {err}")))?;
+            Ok(Value::Tensor(tensor))
         }
         "t" => Ok(Value::Text(tuple.get_item(1)?.extract()?)),
         "n" => Ok(Value::Number(tuple.get_item(1)?.extract()?)),
@@ -213,38 +178,17 @@ fn decode_referenced_obs(
     Ok(out)
 }
 
-fn array_bytes(data: &ArrayData) -> Vec<u8> {
-    match data {
-        ArrayData::U8(values) => values.clone(),
-        ArrayData::I32(values) => values
-            .iter()
-            .flat_map(|value| value.to_ne_bytes())
-            .collect(),
-        ArrayData::I64(values) => values
-            .iter()
-            .flat_map(|value| value.to_ne_bytes())
-            .collect(),
-        ArrayData::F32(values) => values
-            .iter()
-            .flat_map(|value| value.to_ne_bytes())
-            .collect(),
-        ArrayData::F64(values) => values
-            .iter()
-            .flat_map(|value| value.to_ne_bytes())
-            .collect(),
-    }
-}
-
 fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
-        Value::Array(array) => {
-            let shape = PyTuple::new(py, array.shape.iter())?;
-            let data = PyBytes::new(py, &array_bytes(&array.data));
+        Value::Tensor(tensor) => {
+            let shape = PyTuple::new(py, tensor.shape().iter())?;
+            let bytes = tensor.to_contiguous_bytes();
+            let data = PyBytes::new(py, &bytes);
             Ok(PyTuple::new(
                 py,
                 [
                     "a".into_pyobject(py)?.into_any(),
-                    array.dtype.as_str().into_pyobject(py)?.into_any(),
+                    tensor.dtype().name().into_pyobject(py)?.into_any(),
                     shape.into_any(),
                     data.into_any(),
                 ],
@@ -345,7 +289,7 @@ impl PyAdapterPlan {
             .adapter
             .transform_action(&decode_value(raw_action)?)
             .map_err(|err| PyValueError::new_err(err.message))?;
-        encode_value(py, &Value::Array(action))
+        encode_value(py, &Value::Tensor(action))
     }
 }
 
