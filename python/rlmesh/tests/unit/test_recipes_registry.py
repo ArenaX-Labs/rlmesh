@@ -158,7 +158,9 @@ def test_recipe_to_sandbox_args_rejects_structured_build() -> None:
         make=GymMake(env_id="E-v0"),
         build=Build(
             system=["cmake"],
-            fetch=[Fetch(kind="git", repo="https://x/r.git", ref="a" * 40)],
+            fetch=[
+                Fetch(kind="git", repo="https://x/r.git", ref="a" * 40, dest="/opt/r")
+            ],
             project=ProjectInstall(),
             gpu=True,
         ),

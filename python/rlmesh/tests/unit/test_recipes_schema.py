@@ -236,8 +236,31 @@ def test_fetch_url_validates_sha256() -> None:
     with pytest.raises(RecipeValidationError):
         Fetch(kind="url", url="https://x/a.tar.gz", sha256="short")
     assert (
-        Fetch(kind="url", url="https://x/a.tar.gz", sha256="0" * 64).sha256 == "0" * 64
+        Fetch(
+            kind="url", url="https://x/a.tar.gz", sha256="0" * 64, dest="/opt/a"
+        ).sha256
+        == "0" * 64
     )
+
+
+def test_fetch_requires_non_empty_dest() -> None:
+    # dest is required for both kinds (the deriver clones/downloads INTO it); an
+    # empty dest must fail eagerly, not only later at the Rust build boundary.
+    with pytest.raises(RecipeValidationError, match="non-empty dest"):
+        Fetch(kind="git", repo="https://x/r.git")
+    with pytest.raises(RecipeValidationError, match="non-empty dest"):
+        Fetch(kind="url", url="https://x/a.tar.gz", sha256="0" * 64)
+
+
+def test_token_validation_rejects_trailing_newline() -> None:
+    # `$`-anchored patterns match before a trailing newline, so match() would
+    # accept "cmake\n"; fullmatch() rejects it. Guards every _check_token field.
+    with pytest.raises(RecipeValidationError):
+        Build(system=["cmake\n"])
+    with pytest.raises(RecipeValidationError):
+        Recipe(name="acme/env\n")
+    with pytest.raises(RecipeValidationError):
+        ProjectInstall(src="pkg\n")
 
 
 def test_index_url_must_be_url() -> None:

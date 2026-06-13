@@ -372,12 +372,18 @@ fn validate_recipe_build(
             );
         }
     }
-    if let Some(base) = &build.base {
-        anyhow::ensure!(
-            base.contains("@sha256:"),
-            "a Remote recipe's base image must be digest-pinned (got {base:?})"
+    // A Remote recipe must DECLARE its base: omitting it would fall back to the
+    // default (or caller) image -- a mutable tag like `python:3.11-slim` -- which
+    // is not reproducible, defeating the pinning guarantee above.
+    let Some(base) = &build.base else {
+        anyhow::bail!(
+            "a Remote recipe must declare a digest-pinned build.base (omitting it falls back to a mutable default tag)"
         );
-    }
+    };
+    anyhow::ensure!(
+        base.contains("@sha256:"),
+        "a Remote recipe's base image must be digest-pinned (got {base:?})"
+    );
 
     Ok(())
 }
@@ -1394,8 +1400,10 @@ mod tests {
             ..recipe::Build::default()
         };
         assert!(validate_recipe_build(&direct_ref, RecipeProvenance::Remote, true).is_err());
-        // A normal version-pinned package and an extras+marker spec still pass.
+        // A normal version-pinned package and an extras+marker spec still pass
+        // (with the digest-pinned base a Remote recipe now requires).
         let normal = recipe::Build {
+            base: Some("python@sha256:abc".to_string()),
             pip: vec![recipe::PipInstall {
                 packages: vec![
                     "pkg==1.0".to_string(),
@@ -1406,6 +1414,33 @@ mod tests {
             ..recipe::Build::default()
         };
         assert!(validate_recipe_build(&normal, RecipeProvenance::Remote, true).is_ok());
+    }
+
+    #[test]
+    fn remote_recipe_requires_a_declared_pinned_base() {
+        // Omitting build.base for a Remote recipe is rejected: it would fall back
+        // to a mutable default tag, defeating reproducibility.
+        let no_base = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["pkg==1.0".to_string()],
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&no_base, RecipeProvenance::Remote, true).is_err());
+        // A digest-pinned base passes; a mutable-tag base is still rejected.
+        let pinned = recipe::Build {
+            base: Some("python@sha256:abc".to_string()),
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&pinned, RecipeProvenance::Remote, true).is_ok());
+        let mutable = recipe::Build {
+            base: Some("python:3.11-slim".to_string()),
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&mutable, RecipeProvenance::Remote, true).is_err());
+        // Installed recipes are unaffected by the base requirement.
+        assert!(validate_recipe_build(&no_base, RecipeProvenance::Installed, false).is_ok());
     }
 
     #[test]

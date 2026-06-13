@@ -404,9 +404,19 @@ pub(crate) fn derive_dockerfile(
             apt.push(tool.to_string());
         }
     }
+    // A non-python base (e.g. nvidia/cuda) ships no python3, so the symlink below
+    // and the pip layer would both fail; install python3 + pip via apt first.
+    if base_is_non_python(base) {
+        for tool in ["python3", "python3-pip"] {
+            if !apt.iter().any(|name| name.as_str() == tool) {
+                apt.push(tool.to_string());
+            }
+        }
+    }
     out.push_str(&render_system_packages(&apt)?);
 
-    // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink it.
+    // A non-python base (e.g. nvidia/cuda) has no `python` on PATH; symlink the
+    // python3 just installed above so `python -m pip ...` resolves.
     if base_is_non_python(base) {
         out.push_str("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python\n\n");
     }
@@ -1250,10 +1260,29 @@ mod tests {
         )
         .expect("derives");
         assert!(derived.contains("RUN ln -sf \"$(command -v python3)\" /usr/local/bin/python"));
-        // The default python base must NOT get the symlink.
+        // python3 + pip must be apt-installed BEFORE the symlink and the pip layer,
+        // else `command -v python3` is empty and `python -m pip` fails.
+        let apt = derived.find("apt-get install").expect("apt step");
+        let symlink = derived.find("ln -sf").expect("python symlink");
+        let pip = derived.find("-m pip install").expect("pip layer");
+        assert!(
+            derived[apt..symlink].contains("'python3'"),
+            "apt installs python3"
+        );
+        assert!(
+            derived[apt..symlink].contains("'python3-pip'"),
+            "apt installs python3-pip"
+        );
+        assert!(
+            apt < symlink && symlink < pip,
+            "apt -> symlink -> pip order"
+        );
+        // The default python base must NOT get the symlink or the python3 apt pkgs.
         let py = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
             .expect("parses");
-        assert!(!derive(&py).expect("derives").contains("ln -sf"));
+        let py_derived = derive(&py).expect("derives");
+        assert!(!py_derived.contains("ln -sf"));
+        assert!(!py_derived.contains("'python3-pip'"));
     }
 
     #[test]

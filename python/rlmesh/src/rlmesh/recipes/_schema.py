@@ -102,7 +102,11 @@ def _require_str(value: object, field_name: str) -> str:
 
 
 def _check_token(value: str, pattern: re.Pattern[str], field_name: str) -> None:
-    if not pattern.match(value):
+    # fullmatch, not match: with a `$`-anchored pattern, match() accepts a value
+    # with a trailing newline (`$` matches before the final \n), which then breaks
+    # the Dockerfile line / recipe name at the Rust boundary. fullmatch requires
+    # the whole string to match, so a trailing \n (or any control char) is rejected.
+    if not pattern.fullmatch(value):
         raise RecipeValidationError(
             f"{field_name} {value!r} is not a valid {field_name} token"
         )
@@ -404,10 +408,15 @@ class Fetch:
                 _check_token(
                     _require_str(self.sha256, "Fetch.sha256"), _SHA256, "Fetch.sha256"
                 )
-        if self.dest:
-            _check_token(
-                _require_str(self.dest, "Fetch.dest"), _POSIX_PATH, "Fetch.dest"
+        # dest is required for both kinds: the deriver clones/downloads INTO it,
+        # and an empty dest fails the Rust deriver (MissingField) only at build
+        # time -- reject it eagerly here instead.
+        dest = _require_str(self.dest, "Fetch.dest")
+        if not dest:
+            raise RecipeValidationError(
+                f"Fetch(kind={kind!r}) requires a non-empty dest="
             )
+        _check_token(dest, _POSIX_PATH, "Fetch.dest")
         if self.pip_requirements is not None:
             _check_token(
                 _require_str(self.pip_requirements, "Fetch.pip_requirements"),
@@ -434,7 +443,7 @@ class ProjectInstall:
     def __post_init__(self) -> None:
         """Validate the source/destination paths and include globs."""
         src = _require_str(self.src, "ProjectInstall.src")
-        if src != "." and not _POSIX_PATH.match(src):
+        if src != "." and not _POSIX_PATH.fullmatch(src):
             raise RecipeValidationError(
                 f"ProjectInstall.src {src!r} is not a valid path"
             )
