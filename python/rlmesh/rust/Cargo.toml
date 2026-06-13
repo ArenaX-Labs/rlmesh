@@ -23,14 +23,20 @@ crate-type = ["cdylib", "rlib"]
 name = "stub_gen"
 path = "src/bin/stub_gen.rs"
 doc = false
+# The stub generator is the only target that needs `stub-gen`.
+required-features = ["stub-gen"]
 
 [features]
-default = []
+default = ["viewer"]
 abi3-py311 = ["pyo3/abi3-py311"]
+# Bundles the egui/eframe render viewer into the extension.
+viewer = ["dep:rlmesh-cli"]
+# Links pyo3-stub-gen for dev-time `_rlmesh.pyi` generation.
+stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
 rlmesh = { workspace = true }
-rlmesh-cli = { workspace = true }
+rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-spaces = { workspace = true }
@@ -50,7 +56,12 @@ pyo3 = { workspace = true, features = [
   "extension-module",
   "generate-import-lib",
 ] }
-pyo3-stub-gen = { workspace = true }
+pyo3-stub-gen = { workspace = true, optional = true }
+# Non-optional on purpose: a build-time-only proc-macro whose
+# rustpython-parser/unicode_names2 deps are host tools that never link into the
+# cdylib. Supplies `gen_stub_*` (under `stub-gen`) and the `remove_gen_stub`
+# no-op shim (without it) for the inert `#[gen_stub(...)]` helper attributes.
+pyo3-stub-gen-derive = { workspace = true }
 rand = { workspace = true }
 
 [build-dependencies]

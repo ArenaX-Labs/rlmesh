@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    ConfigureRouteRequest, JoinRequest, PredictRequest, join_request, join_response,
+    CloseRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest, PredictRequest,
+    join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -125,9 +126,9 @@ impl crate::SingleEnv for SmokeEnv {
 
     async fn reset(
         &mut self,
-        _req: spaces::ResetRequest,
-    ) -> std::result::Result<spaces::ResetResult, spaces::EnvRuntimeError> {
-        Ok(spaces::ResetResult {
+        _req: spaces::request::ResetRequest,
+    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::ResetResult {
             observation: Some(spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
             )),
@@ -138,9 +139,9 @@ impl crate::SingleEnv for SmokeEnv {
 
     async fn step(
         &mut self,
-        _req: spaces::StepRequest,
-    ) -> std::result::Result<spaces::StepResult, spaces::EnvRuntimeError> {
-        Ok(spaces::StepResult {
+        _req: spaces::request::StepRequest,
+    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::StepResult {
             observation: Some(spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![1], vec![1], spaces::DType::Uint8).unwrap(),
             )),
@@ -161,8 +162,57 @@ impl crate::SingleEnv for SmokeEnv {
     async fn close(
         &mut self,
         _req: spaces::CloseRequest,
-    ) -> std::result::Result<spaces::CloseResult, spaces::EnvRuntimeError> {
-        Ok(spaces::CloseResult)
+    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
+        Ok(spaces::request::CloseResult)
+    }
+}
+
+/// A single-env that records the reset seed it was asked to use, and ends each
+/// episode after one step so a bounded run terminates promptly.
+struct SeedRecordingEnv {
+    inner: SmokeEnv,
+    reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
+}
+
+#[async_trait]
+impl crate::SingleEnv for SeedRecordingEnv {
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        crate::SingleEnv::observation_space(&self.inner)
+    }
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        crate::SingleEnv::action_space(&self.inner)
+    }
+    fn env_contract(&self) -> &spaces::EnvContract {
+        crate::SingleEnv::env_contract(&self.inner)
+    }
+
+    async fn reset(
+        &mut self,
+        req: spaces::request::ResetRequest,
+    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+        self.reset_seeds.lock().await.push(req.seed);
+        crate::SingleEnv::reset(&mut self.inner, req).await
+    }
+
+    async fn step(
+        &mut self,
+        req: spaces::request::StepRequest,
+    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::step(&mut self.inner, req).await
+    }
+
+    async fn render(
+        &mut self,
+        req: spaces::RenderRequest,
+    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::render(&mut self.inner, req).await
+    }
+
+    async fn close(
+        &mut self,
+        req: spaces::CloseRequest,
+    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
+        crate::SingleEnv::close(&mut self.inner, req).await
     }
 }
 
@@ -205,13 +255,111 @@ async fn run_local_smoke_uses_in_process_model() {
         predicts: Arc::clone(&predicts),
         closes: Arc::clone(&closes),
     })
-    .run_local_to_async_for_episodes(ConnectAddress::Tcp(env_address), "local-token", 1)
+    .run_local_async(RunLocalOptions::new(ConnectAddress::Tcp(env_address)).for_episodes(1))
     .await
     .unwrap();
 
     assert!(predicts.load(Ordering::SeqCst) >= 1);
     assert_eq!(closes.load(Ordering::SeqCst), 1);
     env_server.abort();
+}
+
+#[tokio::test]
+async fn user_set_base_seed_reaches_the_env_reset_seeds() {
+    async fn run_with_base_seed(base_seed: Option<i64>) -> Vec<Option<i64>> {
+        let reset_seeds = Arc::new(Mutex::new(Vec::new()));
+        let env = SeedRecordingEnv {
+            inner: SmokeEnv::new(),
+            reset_seeds: Arc::clone(&reset_seeds),
+        };
+        // Bind first so the listener is accepting before run_local connects.
+        let bound = crate::EnvServer::new(crate::SingleEnvAdapter::new(env))
+            .bind(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .await
+            .unwrap();
+        let address = bound.local_addr().to_string();
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        let mut options = RunLocalOptions::parse(&address).unwrap().for_episodes(1);
+        options.base_seed = base_seed;
+
+        ModelWorker::new(SmokeModel {
+            predicts: Arc::new(AtomicUsize::new(0)),
+            closes: Arc::new(AtomicUsize::new(0)),
+        })
+        .run_local_async(options)
+        .await
+        .unwrap();
+
+        // The served env stays up across client sessions (see the close()
+        // contract); abort the server task now that the run is done.
+        server.abort();
+
+        reset_seeds.lock().await.clone()
+    }
+
+    // With a user-set base_seed, the env's first reset receives a concrete
+    // (deterministic) seed rather than None.
+    let seeded = run_with_base_seed(Some(4242)).await;
+    assert!(
+        seeded.first().map(Option::is_some).unwrap_or(false),
+        "expected a concrete reset seed, got {seeded:?}"
+    );
+
+    // Determinism: the same base_seed yields the same reset seed.
+    let seeded_again = run_with_base_seed(Some(4242)).await;
+    assert_eq!(
+        seeded.first(),
+        seeded_again.first(),
+        "the same base_seed must produce the same reset seed"
+    );
+
+    // Without a base_seed, no seed is injected (the env decides).
+    let unseeded = run_with_base_seed(None).await;
+    assert_eq!(
+        unseeded.first(),
+        Some(&None),
+        "no base_seed must leave the reset seed unset, got {unseeded:?}"
+    );
+}
+
+#[test]
+fn run_local_and_serve_options_cover_all_axes() {
+    // run_local: address + for_episodes + base_seed axes via one options struct.
+    let run = RunLocalOptions::parse("tcp://env:50051")
+        .unwrap()
+        .for_episodes(5)
+        .base_seed(123);
+    assert_eq!(run.max_episodes, Some(5));
+    assert_eq!(run.base_seed, Some(123));
+    assert_eq!(
+        run.env_address,
+        ConnectAddress::parse("tcp://env:50051").unwrap()
+    );
+
+    // Defaults: unbounded, no seed.
+    let default_run = RunLocalOptions::new(ConnectAddress::parse("tcp://env:1").unwrap());
+    assert_eq!(default_run.max_episodes, None);
+    assert_eq!(default_run.base_seed, None);
+
+    // serve: address + token + serve options axes via one options struct.
+    let serve = ServeModelOptions::parse("tcp://0.0.0.0:50061")
+        .unwrap()
+        .token("secret")
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        });
+    assert_eq!(serve.token, "secret");
+    assert!(serve.serve.allow_remote_shutdown);
+
+    // No token => empty (auth disabled), default serve options.
+    let default_serve = ServeModelOptions::new(BindAddress::parse("tcp://0.0.0.0:1").unwrap());
+    assert!(default_serve.token.is_empty());
+    assert_eq!(default_serve.serve, ServeOptions::default());
 }
 
 #[tokio::test]
@@ -235,7 +383,6 @@ async fn served_model_configure_route_requires_env_contract() {
         })),
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
-        None,
     )
     .await;
 
@@ -275,7 +422,6 @@ async fn served_model_predict_mirrors_route_context() {
                 num_envs: 1,
             },
         )]))),
-        None,
     )
     .await;
 
@@ -325,11 +471,126 @@ async fn served_model_predict_rejects_route_wider_than_opened_route() {
                 num_envs: 1,
             },
         )]))),
-        None,
     )
     .await;
 
     assert!(matches!(response.kind, Some(join_response::Kind::Error(_))));
+}
+
+#[tokio::test]
+async fn served_model_close_route_drains_route_episodes() {
+    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
+    let active_episodes = Arc::new(Mutex::new(HashMap::from([
+        (
+            ("session-1:route-1".to_string(), 0),
+            "episode-route-1".to_string(),
+        ),
+        (
+            ("session-1:route-2".to_string(), 0),
+            "episode-route-2".to_string(),
+        ),
+    ])));
+    let route_configs = Arc::new(Mutex::new(HashMap::from([
+        (
+            "session-1:route-1".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                num_envs: 1,
+            },
+        ),
+        (
+            "session-1:route-2".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                num_envs: 1,
+            },
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::CloseRoute(CloseRouteRequest {
+                context: Some(rlmesh_proto::model::v1::PredictContext {
+                    session_id: "session-1".to_string(),
+                    route_id: "route-1".to_string(),
+                    request_id: "close-route-1".to_string(),
+                    ..Default::default()
+                }),
+                reason: "route complete".to_string(),
+            })),
+            request_id: "close-route-1".to_string(),
+        },
+        Arc::clone(&handler),
+        Arc::clone(&active_episodes),
+        Arc::clone(&route_configs),
+    )
+    .await;
+
+    assert!(matches!(
+        response.kind,
+        Some(join_response::Kind::CloseRoute(_))
+    ));
+    assert_eq!(
+        handler.lock().await.episode_ends,
+        vec![ModelEpisodeEnd {
+            episode_id: "episode-route-1".to_string(),
+            env_index: 0,
+        }]
+    );
+    let active_episodes = active_episodes.lock().await;
+    assert!(!active_episodes.contains_key(&("session-1:route-1".to_string(), 0)));
+    assert_eq!(
+        active_episodes.get(&("session-1:route-2".to_string(), 0)),
+        Some(&"episode-route-2".to_string())
+    );
+    drop(active_episodes);
+    let route_configs = route_configs.lock().await;
+    assert!(!route_configs.contains_key("session-1:route-1"));
+    assert!(route_configs.contains_key("session-1:route-2"));
+}
+
+#[tokio::test]
+async fn served_model_close_drains_all_active_episodes() {
+    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
+    let active_episodes = Arc::new(Mutex::new(HashMap::from([
+        (
+            ("session-1:route-1".to_string(), 0),
+            "episode-route-1".to_string(),
+        ),
+        (
+            ("session-1:route-2".to_string(), 1),
+            "episode-route-2".to_string(),
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::Close(CloseRequest {
+                reason: "session complete".to_string(),
+            })),
+            request_id: "close-1".to_string(),
+        },
+        Arc::clone(&handler),
+        Arc::clone(&active_episodes),
+        Arc::new(Mutex::new(HashMap::new())),
+    )
+    .await;
+
+    assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
+    assert_eq!(
+        handler.lock().await.episode_ends,
+        vec![
+            ModelEpisodeEnd {
+                episode_id: "episode-route-1".to_string(),
+                env_index: 0,
+            },
+            ModelEpisodeEnd {
+                episode_id: "episode-route-2".to_string(),
+                env_index: 1,
+            },
+        ]
+    );
+    assert!(active_episodes.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -347,34 +608,28 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
             predicts: server_predicts,
             closes: server_closes,
         })
-        .serve_to_async_with_options(
-            BindAddress::Tcp {
+        .serve_async(
+            ServeModelOptions::new(BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port,
-            },
-            "route-token",
-            ServeOptions {
+            })
+            .token("route-token")
+            .serve_options(ServeOptions {
                 allow_remote_shutdown: true,
                 ..ServeOptions::default()
-            },
+            }),
         )
         .await
     });
 
     let address = format!("tcp://127.0.0.1:{port}");
-    let mut client = loop {
-        match rlmesh_grpc::ModelClient::connect(&address, "route-token").await {
-            Ok(mut client) => {
-                client.handshake().await.unwrap();
-                break client;
-            }
-            Err(err) if !server.is_finished() => {
-                let _ = err;
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            Err(err) => panic!("model server did not start: {err}"),
-        }
-    };
+    let connect_options = rlmesh_grpc::ConnectOptions::with_deadline(Duration::from_secs(5))
+        .backoff(Duration::from_millis(10));
+    let mut client =
+        rlmesh_grpc::ModelClient::connect_with_retry(&address, "route-token", &connect_options)
+            .await
+            .expect("model server did not start");
+    client.handshake().await.unwrap();
 
     client.close("client session complete").await.unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -396,6 +651,634 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
 
     assert_eq!(predicts.load(Ordering::SeqCst), 0);
     assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
+    use rlmesh_runtime::RuntimeEnv;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let env_address = format!("tcp://{}", listener.local_addr().unwrap());
+    let env_server = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(rlmesh_grpc::env::env_service(
+                crate::env::WireEnvAdapter::new(crate::SingleEnvAdapter::new(SmokeEnv::new())),
+            ))
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap()
+    });
+
+    let mut client = rlmesh_grpc::EnvClient::connect(&env_address).await.unwrap();
+    client.handshake().await.unwrap();
+
+    // The public adapter lets external RuntimeDriver embedders drive a remote
+    // env without re-implementing the take_last_telemetry choreography.
+    let mut adapter = crate::EnvClientRuntimeEnv::new(client);
+    let reset = adapter
+        .reset(rlmesh_proto::env::v1::ResetRequest {
+            seeds: vec![7],
+            options: None,
+            timeout_ms: 0,
+        })
+        .await
+        .expect("adapter reset must succeed");
+    assert!(
+        reset.telemetry.is_some(),
+        "adapter must encapsulate and surface per-call telemetry"
+    );
+
+    env_server.abort();
+}
+
+#[tokio::test]
+async fn model_bind_resolves_port_zero_before_serving() {
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .token("route-token")
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+
+    // The OS-assigned port is known before serving begins.
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    assert_ne!(port, 0, "port 0 must resolve to a real port");
+
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    // No poll-connect race: the resolved address is immediately usable.
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut client = rlmesh_grpc::ModelClient::connect(&address, "route-token")
+        .await
+        .unwrap();
+    client.handshake().await.unwrap();
+    let shutdown = client.shutdown("test complete").await.unwrap();
+    assert!(shutdown.accepted);
+
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn served_model_reports_grpc_health_serving() {
+    use tonic_health::ServingStatus;
+    use tonic_health::pb::HealthCheckRequest;
+    use tonic_health::pb::health_client::HealthClient;
+
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .token("route-token")
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    // The standard health service requires no route token (it is a distinct
+    // gRPC service from ModelService) and reports overall health = SERVING.
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut health = HealthClient::new(channel);
+    let response = health
+        .check(HealthCheckRequest {
+            service: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response.status, ServingStatus::Serving as i32);
+
+    let mut client =
+        rlmesh_grpc::ModelClient::connect(&format!("tcp://127.0.0.1:{port}"), "route-token")
+            .await
+            .unwrap();
+    assert!(client.shutdown("done").await.unwrap().accepted);
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+/// A handler whose `predict` latency is controlled per-request by the slot
+/// `step` field (`step == 0` sleeps `slow_delay`, otherwise returns promptly),
+/// recording the order in which predicts *complete* and the per-route order in
+/// which lifecycle hooks and predicts *enter* the critical section.
+#[derive(Clone)]
+struct OrderingHandler {
+    slow_delay: Duration,
+    /// `(route_id, step)` in handler-entry order for predicts.
+    predict_order: Arc<Mutex<Vec<(String, i64)>>>,
+    /// `(route_id, event)` where event is one of "reset"/"predict"/"close" in
+    /// handler-entry order, to assert per-route lifecycle ordering.
+    route_events: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait]
+impl ModelHandler for OrderingHandler {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload> {
+        let route_id = observation.route.route_id.clone();
+        let step = observation.step();
+        self.predict_order
+            .lock()
+            .await
+            .push((route_id.clone(), step));
+        self.route_events
+            .lock()
+            .await
+            .push((route_id, "predict".to_string()));
+        if step == 0 {
+            tokio::time::sleep(self.slow_delay).await;
+        }
+        Ok(spaces::BinaryPayload {
+            data: vec![step as u8],
+        })
+    }
+
+    async fn on_reset(&mut self, observation: &ModelObservation) -> Result<()> {
+        self.route_events
+            .lock()
+            .await
+            .push((observation.route.route_id.clone(), "reset".to_string()));
+        Ok(())
+    }
+
+    async fn on_episode_end(&mut self, _event: ModelEpisodeEnd) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Spin up a real served model on an ephemeral port and return its address plus
+/// a low-level `ModelServiceClient` Join stream that lets the test send multiple
+/// requests before reading any response (the public `ModelClient` is
+/// single-flight by API and cannot overlap sends).
+async fn bound_ordering_server(
+    handler: OrderingHandler,
+    predict_concurrency: Option<usize>,
+) -> (
+    tokio::task::JoinHandle<crate::Result<()>>,
+    rlmesh_proto::model::v1::model_service_client::ModelServiceClient<tonic::transport::Channel>,
+    u16,
+) {
+    let bound = ModelWorker::new(handler)
+        .bind_async(
+            ServeModelOptions::new(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .serve_options(ServeOptions {
+                allow_remote_shutdown: true,
+                predict_concurrency,
+                ..ServeOptions::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let client = rlmesh_proto::model::v1::model_service_client::ModelServiceClient::new(channel);
+    (server, client, port)
+}
+
+fn predict_context(
+    route_id: &str,
+    request_id: &str,
+    step: i64,
+) -> rlmesh_proto::model::v1::PredictContext {
+    rlmesh_proto::model::v1::PredictContext {
+        session_id: "session".to_string(),
+        route_id: route_id.to_string(),
+        request_id: request_id.to_string(),
+        slots: vec![rlmesh_proto::model::v1::PredictSlot {
+            episode_id: format!("ep-{route_id}"),
+            env_index: 0,
+            step,
+            reset: step == 0,
+        }],
+    }
+}
+
+fn configure_route_request(route_id: &str, request_id: &str) -> JoinRequest {
+    JoinRequest {
+        kind: Some(join_request::Kind::ConfigureRoute(ConfigureRouteRequest {
+            context: Some(rlmesh_proto::model::v1::PredictContext {
+                session_id: "session".to_string(),
+                route_id: route_id.to_string(),
+                request_id: request_id.to_string(),
+                ..Default::default()
+            }),
+            env_contract: Some(rlmesh_proto::env::v1::EnvContract {
+                id: "Ordering-v0".to_string(),
+                observation_space: None,
+                action_space: None,
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            }),
+        })),
+        request_id: request_id.to_string(),
+    }
+}
+
+fn predict_join_request(route_id: &str, request_id: &str, step: i64) -> JoinRequest {
+    JoinRequest {
+        kind: Some(join_request::Kind::Predict(PredictRequest {
+            context: Some(predict_context(route_id, request_id, step)),
+            observation: None,
+        })),
+        request_id: request_id.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn pipelined_requests_complete_out_of_order() {
+    // Under option (a) the handler mutex is held across `predict`, so two
+    // *predicts* serialize at the handler. Pipelining still removes head-of-line
+    // blocking for work that does NOT touch the handler: `ConfigureRoute` only
+    // mutates the route table. A configure sent *after* a slow in-flight predict
+    // therefore completes *first* — that is the out-of-order guarantee the
+    // server delivers and that the single-flight design could not.
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(300),
+        predict_order: Arc::new(Mutex::new(Vec::new())),
+        route_events: Arc::new(Mutex::new(Vec::new())),
+    };
+    let (server, mut client, _port) = bound_ordering_server(handler, None).await;
+
+    let (req_tx, req_rx) = mpsc::channel::<JoinRequest>(8);
+    let request_stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+    let mut responses = client
+        .join(tonic::Request::new(request_stream))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Configure the "slow" route and read its ack.
+    req_tx
+        .send(configure_route_request("slow", "cfg-slow"))
+        .await
+        .unwrap();
+    let ack = responses.message().await.unwrap().unwrap();
+    assert!(matches!(
+        ack.kind,
+        Some(join_response::Kind::ConfigureRoute(_))
+    ));
+
+    // Send a slow predict on the "slow" route, then a ConfigureRoute on a
+    // different route. The configure response must arrive first.
+    req_tx
+        .send(predict_join_request("slow", "predict-slow", 0))
+        .await
+        .unwrap();
+    req_tx
+        .send(configure_route_request("other", "cfg-other"))
+        .await
+        .unwrap();
+
+    let first = responses.message().await.unwrap().unwrap();
+    assert_eq!(
+        first.request_id, "cfg-other",
+        "a configure must not be head-of-line-blocked by an in-flight slow predict"
+    );
+    assert!(matches!(
+        first.kind,
+        Some(join_response::Kind::ConfigureRoute(_))
+    ));
+    let second = responses.message().await.unwrap().unwrap();
+    assert_eq!(second.request_id, "predict-slow");
+
+    drop(req_tx);
+    let _ = responses.message().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn pipelined_predicts_preserve_per_route_order() {
+    let route_events = Arc::new(Mutex::new(Vec::new()));
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(150),
+        predict_order: Arc::new(Mutex::new(Vec::new())),
+        route_events: Arc::clone(&route_events),
+    };
+    let (server, mut client, _port) = bound_ordering_server(handler, None).await;
+
+    let (req_tx, req_rx) = mpsc::channel::<JoinRequest>(8);
+    let request_stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+    let mut responses = client
+        .join(tonic::Request::new(request_stream))
+        .await
+        .unwrap()
+        .into_inner();
+
+    req_tx
+        .send(configure_route_request("r", "cfg"))
+        .await
+        .unwrap();
+    let ack = responses.message().await.unwrap().unwrap();
+    assert!(matches!(
+        ack.kind,
+        Some(join_response::Kind::ConfigureRoute(_))
+    ));
+
+    // Two predicts on the SAME route: the first is slow (step 0, reset), the
+    // second fast (step 1). Per-route order must keep predict step 0 before 1.
+    req_tx
+        .send(predict_join_request("r", "p0", 0))
+        .await
+        .unwrap();
+    req_tx
+        .send(predict_join_request("r", "p1", 1))
+        .await
+        .unwrap();
+
+    // Same-route responses also arrive in order.
+    let first = responses.message().await.unwrap().unwrap();
+    assert_eq!(first.request_id, "p0");
+    let second = responses.message().await.unwrap().unwrap();
+    assert_eq!(second.request_id, "p1");
+
+    drop(req_tx);
+    let _ = responses.message().await;
+
+    let events = route_events.lock().await.clone();
+    // For route "r": reset (from step-0 predict) then predict p0 then predict p1.
+    let r_events: Vec<&str> = events
+        .iter()
+        .filter(|(route, _)| route == "r")
+        .map(|(_, event)| event.as_str())
+        .collect();
+    assert_eq!(
+        r_events,
+        vec!["reset", "predict", "predict"],
+        "per-route lifecycle order must match send order: {events:?}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn close_drains_after_in_flight_same_route_predict() {
+    let route_events = Arc::new(Mutex::new(Vec::new()));
+    let predict_order = Arc::new(Mutex::new(Vec::new()));
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(250),
+        predict_order: Arc::clone(&predict_order),
+        route_events: Arc::clone(&route_events),
+    };
+    let (server, mut client, _port) = bound_ordering_server(handler, None).await;
+
+    let (req_tx, req_rx) = mpsc::channel::<JoinRequest>(8);
+    let request_stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+    let mut responses = client
+        .join(tonic::Request::new(request_stream))
+        .await
+        .unwrap()
+        .into_inner();
+
+    req_tx
+        .send(configure_route_request("r", "cfg"))
+        .await
+        .unwrap();
+    let _ = responses.message().await.unwrap().unwrap();
+
+    // A slow predict followed immediately by a whole-session Close. The Close
+    // barrier must not overtake the in-flight predict.
+    req_tx
+        .send(predict_join_request("r", "p0", 0))
+        .await
+        .unwrap();
+    req_tx
+        .send(JoinRequest {
+            kind: Some(join_request::Kind::Close(CloseRequest {
+                reason: "done".to_string(),
+            })),
+            request_id: "close".to_string(),
+        })
+        .await
+        .unwrap();
+
+    let first = responses.message().await.unwrap().unwrap();
+    assert_eq!(
+        first.request_id, "p0",
+        "the in-flight predict must complete before Close drains"
+    );
+    let second = responses.message().await.unwrap().unwrap();
+    assert_eq!(second.request_id, "close");
+    assert!(matches!(second.kind, Some(join_response::Kind::Close(_))));
+
+    // The predict's handler entry happened before the Close drain.
+    let order = predict_order.lock().await.clone();
+    assert_eq!(order, vec![("r".to_string(), 0)]);
+
+    drop(req_tx);
+    server.abort();
+}
+
+#[tokio::test]
+async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
+    // End-to-end: the high-level ModelClient issues two overlapping predicts via
+    // predict_concurrent against the real pipelined server; both must resolve to
+    // their own response (demux by request_id), even though they overlap.
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(100),
+        predict_order: Arc::new(Mutex::new(Vec::new())),
+        route_events: Arc::new(Mutex::new(Vec::new())),
+    };
+    let bound = ModelWorker::new(handler)
+        .bind_async(
+            ServeModelOptions::new(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .token("tok")
+            .serve_options(ServeOptions {
+                allow_remote_shutdown: true,
+                ..ServeOptions::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut client = rlmesh_grpc::ModelClient::connect(&address, "tok")
+        .await
+        .unwrap();
+    client.handshake().await.unwrap();
+    client
+        .configure_route(ConfigureRouteRequest {
+            context: Some(rlmesh_proto::model::v1::PredictContext {
+                session_id: "s".to_string(),
+                route_id: "r".to_string(),
+                request_id: "cfg".to_string(),
+                ..Default::default()
+            }),
+            env_contract: Some(rlmesh_proto::env::v1::EnvContract {
+                id: "Ordering-v0".to_string(),
+                observation_space: None,
+                action_space: None,
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            }),
+        })
+        .await
+        .unwrap();
+
+    let client = Arc::new(client);
+    let make_predict = |request_id: &str, step: i64| PredictRequest {
+        context: Some(rlmesh_proto::model::v1::PredictContext {
+            session_id: "s".to_string(),
+            route_id: "r".to_string(),
+            request_id: request_id.to_string(),
+            slots: vec![rlmesh_proto::model::v1::PredictSlot {
+                episode_id: "ep".to_string(),
+                env_index: 0,
+                step,
+                reset: step == 0,
+            }],
+        }),
+        observation: None,
+    };
+
+    let c1 = Arc::clone(&client);
+    let p1 = make_predict("predict-1", 0);
+    let first = tokio::spawn(async move { c1.predict_concurrent(p1).await });
+    let c2 = Arc::clone(&client);
+    let p2 = make_predict("predict-2", 1);
+    let second = tokio::spawn(async move { c2.predict_concurrent(p2).await });
+
+    let r1 = first.await.unwrap().unwrap();
+    let r2 = second.await.unwrap().unwrap();
+    assert_eq!(r1.context.unwrap().request_id, "predict-1");
+    assert_eq!(r2.context.unwrap().request_id, "predict-2");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn pipelined_idle_activity_stays_balanced() {
+    // Every request emits exactly one Started/Finished pair. If pipelining ever
+    // leaked an unbalanced Started, the idle-shutdown counter would never return
+    // to zero and the idle timer would never fire. We assert the server *does*
+    // idle-shut-down shortly after a batch of pipelined predicts drains, which is
+    // only possible if every pair balanced.
+    let handler = OrderingHandler {
+        slow_delay: Duration::from_millis(20),
+        predict_order: Arc::new(Mutex::new(Vec::new())),
+        route_events: Arc::new(Mutex::new(Vec::new())),
+    };
+    let bound = ModelWorker::new(handler)
+        .bind_async(
+            ServeModelOptions::new(BindAddress::Tcp {
+                host: "127.0.0.1".to_string(),
+                port: 0,
+            })
+            .serve_options(ServeOptions {
+                idle_timeout: Some(Duration::from_millis(150)),
+                ..ServeOptions::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    {
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut client =
+            rlmesh_proto::model::v1::model_service_client::ModelServiceClient::new(channel);
+        let (req_tx, req_rx) = mpsc::channel::<JoinRequest>(16);
+        let request_stream = tokio_stream::wrappers::ReceiverStream::new(req_rx);
+        let mut responses = client
+            .join(tonic::Request::new(request_stream))
+            .await
+            .unwrap()
+            .into_inner();
+        req_tx
+            .send(configure_route_request("r", "cfg"))
+            .await
+            .unwrap();
+        let _ = responses.message().await.unwrap().unwrap();
+        // Fire several overlapping predicts.
+        for i in 0..5 {
+            req_tx
+                .send(predict_join_request("r", &format!("p{i}"), i as i64))
+                .await
+                .unwrap();
+        }
+        for _ in 0..5 {
+            let _ = responses.message().await.unwrap().unwrap();
+        }
+        // Drop the stream so no further activity is generated.
+        drop(req_tx);
+        let _ = responses.message().await;
+    }
+
+    // With balanced activity, the idle timer fires and the server shuts down.
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .expect("server must idle-shut-down (balanced idle activity)")
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -477,7 +1360,7 @@ async fn served_lifecycle_tracks_episode_boundaries_per_env_index() {
 }
 
 #[tokio::test]
-async fn idle_shutdown_waits_for_first_request_then_idle_window() {
+async fn idle_shutdown_arms_immediately_and_activity_extends_window() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let shutdown = tokio::spawn(async move {
         rlmesh_grpc::lifecycle::wait_for_idle_shutdown(&mut rx, Duration::from_millis(25)).await;
@@ -486,10 +1369,11 @@ async fn idle_shutdown_waits_for_first_request_then_idle_window() {
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert!(!shutdown.is_finished());
 
-    tx.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
-    tx.send(()).unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tx.send(rlmesh_grpc::lifecycle::IdleActivity::Started)
+        .expect("idle activity receiver should be open");
+    tx.send(rlmesh_grpc::lifecycle::IdleActivity::Finished)
+        .expect("idle activity receiver should be open");
+    tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!shutdown.is_finished());
 
     tokio::time::timeout(Duration::from_millis(100), shutdown)

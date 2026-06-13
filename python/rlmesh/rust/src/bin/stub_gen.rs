@@ -11,6 +11,8 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
     "EnvironmentException",
 ];
 const SUPPLEMENTAL_STUBS: &str = r#"
+__version__: builtins.str
+
 class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...
@@ -128,7 +130,7 @@ fn check_stub_fresh(dest: &Path, expected: &str) -> io::Result<()> {
     }
 
     Err(io::Error::other(format!(
-        "{} is stale; run `cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen`",
+        "{} is stale; run `cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen` (or `mise run stubs:generate`)",
         dest.display()
     )))
 }
@@ -137,7 +139,7 @@ fn check_no_stale_package_stub_dir(manifest_dir: &Path) -> io::Result<()> {
     let stale_dir = package_stub_dir(manifest_dir);
     if stale_dir.exists() {
         return Err(io::Error::other(format!(
-            "{} is stale; run `cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen`",
+            "{} is stale; run `cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen` (or `mise run stubs:generate`)",
             stale_dir.display()
         )));
     }

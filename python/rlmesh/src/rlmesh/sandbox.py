@@ -42,8 +42,8 @@ class _SandboxStartInfo(TypedDict):
     container_id: str
 
 
-class RemoteEnvHandle(Protocol):
-    """Remote client shape required by single-environment sandbox sessions."""
+class _RemoteHandleBase(Protocol):
+    """Surface shared by single- and vector-environment remote handles."""
 
     @property
     def env_contract(self) -> EnvContract:
@@ -66,16 +66,6 @@ class RemoteEnvHandle(Protocol):
         ...
 
     @property
-    def observation_space(self) -> Space[object]:
-        """Observation space reported by the endpoint."""
-        ...
-
-    @property
-    def action_space(self) -> Space[object]:
-        """Action space reported by the endpoint."""
-        ...
-
-    @property
     def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the endpoint."""
         ...
@@ -83,19 +73,6 @@ class RemoteEnvHandle(Protocol):
     @property
     def action_space_spec(self) -> SpaceSpec:
         """Native action space spec reported by the endpoint."""
-        ...
-
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, object] | None = None,
-    ) -> tuple[object, ResetInfo]:
-        """Reset the remote environment."""
-        ...
-
-    def step(self, action: object) -> tuple[object, float, bool, bool, StepInfo]:
-        """Step the remote environment with one action."""
         ...
 
     def render(self, *, env_index: int = 0) -> object | None:
@@ -117,28 +94,35 @@ class RemoteEnvHandle(Protocol):
         ...
 
 
-class RemoteVectorEnvHandle(Protocol):
+class RemoteEnvHandle(_RemoteHandleBase, Protocol):
+    """Remote client shape required by single-environment sandbox sessions."""
+
+    @property
+    def observation_space(self) -> Space[object]:
+        """Observation space reported by the endpoint."""
+        ...
+
+    @property
+    def action_space(self) -> Space[object]:
+        """Action space reported by the endpoint."""
+        ...
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict[str, object] | None = None,
+    ) -> tuple[object, ResetInfo]:
+        """Reset the remote environment."""
+        ...
+
+    def step(self, action: object) -> tuple[object, float, bool, bool, StepInfo]:
+        """Step the remote environment with one action."""
+        ...
+
+
+class RemoteVectorEnvHandle(_RemoteHandleBase, Protocol):
     """Remote client shape required by vector sandbox sessions."""
-
-    @property
-    def env_contract(self) -> EnvContract:
-        """Environment contract reported by the remote endpoint."""
-        ...
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for ``env_contract``."""
-        ...
-
-    @property
-    def render_mode(self) -> str | None:
-        """Configured render mode reported by the endpoint."""
-        ...
-
-    @property
-    def metadata(self) -> Metadata:
-        """Endpoint metadata."""
-        ...
 
     @property
     def observation_space(self) -> Space[object]:
@@ -161,16 +145,6 @@ class RemoteVectorEnvHandle(Protocol):
         ...
 
     @property
-    def observation_space_spec(self) -> SpaceSpec:
-        """Native observation space spec reported by the endpoint."""
-        ...
-
-    @property
-    def action_space_spec(self) -> SpaceSpec:
-        """Native action space spec reported by the endpoint."""
-        ...
-
-    @property
     def num_envs(self) -> int:
         """Number of environments in the vector endpoint."""
         ...
@@ -186,24 +160,6 @@ class RemoteVectorEnvHandle(Protocol):
 
     def step(self, actions: object) -> tuple[object, object, object, object, StepInfo]:
         """Step all remote environments with a batch of actions."""
-        ...
-
-    def render(self, *, env_index: int = 0) -> object | None:
-        """Render a frame from one remote environment."""
-        ...
-
-    def open_viewer(
-        self, *, env_index: int = 0, fps: float | None | str = "env"
-    ) -> None:
-        """Open a local render viewer for one remote environment."""
-        ...
-
-    def close_viewer(self) -> None:
-        """Close the local render viewer if one is open."""
-        ...
-
-    def close(self) -> None:
-        """Detach from the remote endpoint."""
         ...
 
 
@@ -366,10 +322,12 @@ class SandboxSessionBase(Generic[RemoteT]):
         except BaseException as exc:  # pragma: no cover - best effort cleanup path
             remote_error = exc
 
-        try:
-            _sandbox_stop_env(container_id=self.sandbox.container_id)
-        finally:
-            self._closed = True
+        # Only mark the session closed once the container is actually stopped.
+        # If stopping fails (e.g. a transient Docker daemon error) leave
+        # ``_closed`` False so close()/__exit__/__del__ can retry the teardown
+        # instead of permanently leaking the container.
+        _sandbox_stop_env(container_id=self.sandbox.container_id)
+        self._closed = True
 
         if remote_error is not None:
             raise remote_error
@@ -677,8 +635,8 @@ def _start_sandbox(
             source,
             base_image=base_image,
             rlmesh_package=rlmesh_package,
-            packages=list(packages or []),
-            imports=list(imports or []),
+            packages=_string_sequence("packages", packages),
+            imports=_string_sequence("imports", imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
@@ -692,6 +650,23 @@ def _start_sandbox(
         address=started["address"],
         container_id=started["container_id"],
     )
+
+
+def _string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
+    """Normalize a package/import sequence, rejecting a bare ``str``.
+
+    A bare ``str`` satisfies ``Sequence[str]`` but iterating it yields single
+    characters, which would silently forward one-letter package or import names
+    to the sandbox. Require an explicit list/tuple of names instead.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raise TypeError(
+            f"{name}= expects a sequence of strings, not a bare str; "
+            f"pass [{value!r}] for a single entry"
+        )
+    return list(value)
 
 
 def _reject_removed_option(name: str, value: object) -> None:

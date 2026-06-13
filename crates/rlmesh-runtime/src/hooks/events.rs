@@ -1,5 +1,7 @@
-use prost_types::Struct;
+use std::sync::Arc;
+
 use rlmesh_proto::common::v1::MessageBytes;
+use rlmesh_proto::spaces::v1::MetaMap;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -97,7 +99,7 @@ pub struct EpisodeCompletedEvent {
     pub terminated: bool,
     pub truncated: bool,
     pub duration_ms: i64,
-    pub final_info: Option<Struct>,
+    pub final_info: Option<MetaMap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,7 +112,9 @@ pub struct ActionReceivedEvent {
     pub episode_record_ids: Vec<String>,
     pub step: i64,
     pub env_index: i32,
-    pub action_space: SpaceSpec,
+    /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
+    /// rather than deep-copying the action space spec on every step.
+    pub action_space: Arc<SpaceSpec>,
     pub action: Option<MessageBytes>,
 }
 
@@ -137,7 +141,9 @@ pub struct ObservationEmittedEvent {
     pub env_index: i32,
     pub is_reset: bool,
     pub num_envs: u32,
-    pub observation_space: SpaceSpec,
+    /// Shared so the per-step, per-hook event fan-out clones an `Arc` pointer
+    /// rather than deep-copying the observation space spec on every step.
+    pub observation_space: Arc<SpaceSpec>,
     pub observation: Option<MessageBytes>,
 }
 
@@ -153,6 +159,31 @@ pub struct TimingSummary {
     pub p99_ms: Option<f64>,
 }
 
+/// Kind of a non-duration metric reported via [`MetricSummary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricKind {
+    /// `OperationMetric::ByteCount` — a byte gauge/counter sample.
+    ByteCount,
+    /// `OperationMetric::Number` — a generic numeric gauge sample.
+    Number,
+}
+
+/// Aggregated non-duration operation metric (byte counts and generic numbers
+/// carried by `OperationTelemetry`). Duration metrics are reported via
+/// [`TimingSummary`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricSummary {
+    pub operation: String,
+    pub component_id: String,
+    pub name: String,
+    pub kind: MetricKind,
+    pub sample_count: u64,
+    pub avg: Option<f64>,
+    pub p50: Option<f64>,
+    pub p95: Option<f64>,
+    pub p99: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetryWindowEvent {
     pub session_id: String,
@@ -163,6 +194,7 @@ pub struct TelemetryWindowEvent {
     pub request_bytes_per_second: Option<f64>,
     pub response_bytes_per_second: Option<f64>,
     pub timings: Vec<TimingSummary>,
+    pub metrics: Vec<MetricSummary>,
     pub env_latency_ms_avg: Option<f64>,
     pub env_latency_ms_p50: Option<f64>,
     pub env_latency_ms_p95: Option<f64>,
@@ -189,6 +221,7 @@ pub struct TelemetrySummaryEvent {
     pub request_bytes_per_second: Option<f64>,
     pub response_bytes_per_second: Option<f64>,
     pub timings: Vec<TimingSummary>,
+    pub metrics: Vec<MetricSummary>,
     pub env_latency_ms_avg: Option<f64>,
     pub env_latency_ms_p50: Option<f64>,
     pub env_latency_ms_p95: Option<f64>,

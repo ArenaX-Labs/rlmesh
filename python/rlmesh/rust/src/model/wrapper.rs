@@ -1,23 +1,24 @@
 use async_trait::async_trait;
 use pyo3::prelude::*;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::spaces::BinaryPayload;
 use rlmesh::{
     BindAddress, ConnectAddress, Error as RLMeshError, ModelEpisodeEnd, ModelHandler,
-    ModelObservation, ModelWorker,
+    ModelObservation, ModelWorker, RunLocalOptions, ServeModelOptions,
 };
-use rlmesh_grpc::wire::{binary_to_bytes, decode_batched_partial_values};
-use rlmesh_spaces::{
-    SpaceValue,
-    spaces::{SpaceKind, SpaceSpec},
+use rlmesh_grpc::wire::{
+    binary_to_bytes, decode_batched_partial_values, encode_batched_partial_values,
 };
+use rlmesh_spaces::{SpaceValue, spaces::SpaceSpec};
 use std::sync::Arc;
 
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_neutral, encode_i64_sequence_bytes,
-    py_any_to_space_value_with_backend, space_value_to_py_neutral,
+    ValueBackend, batched_space_values_to_py_neutral, py_any_to_space_value_with_backend,
+    space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
 use crate::types::errors::to_py_err;
@@ -129,7 +130,7 @@ impl ModelHandler for PyModelHandler {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyModel {
     predict_fn: Py<PyAny>,
@@ -175,7 +176,9 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let token = token.to_string();
+        // `token` is retained for backward compatibility; env auth is configured
+        // on the environment server.
+        let _ = token;
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),
@@ -188,7 +191,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async(env_address, &token)
+                    .run_local_async(RunLocalOptions::new(env_address))
                     .await
             })
         })
@@ -215,7 +218,9 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        let token = token.to_string();
+        // `token` retained for backward compatibility; run_local does not
+        // authenticate against the env (see `run_local`).
+        let _ = token;
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),
@@ -228,7 +233,7 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .run_local_to_async_for_episodes(env_address, &token, max_episodes)
+                    .run_local_async(RunLocalOptions::new(env_address).for_episodes(max_episodes))
                     .await
             })
         })
@@ -253,7 +258,7 @@ impl PyModel {
 
         let address = BindAddress::parse(address).map_err(to_py_err)?;
         let token = token.to_string();
-        let options = options.map(PyServeOptions::to_rust).unwrap_or_default();
+        let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
         let profiler = Arc::clone(&self.profiler);
         let handler = Python::attach(|py| PyModelHandler {
             predict_fn: self.predict_fn.clone_ref(py),
@@ -266,7 +271,11 @@ impl PyModel {
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .serve_to_async_with_options(address, &token, options)
+                    .serve_async(
+                        ServeModelOptions::new(address)
+                            .token(token)
+                            .serve_options(options),
+                    )
                     .await
             })
         })
@@ -278,6 +287,7 @@ impl PyModel {
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"
@@ -328,32 +338,32 @@ fn neutral_observation<'py>(
 }
 
 fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<Vec<u8>> {
-    match (space.spec.as_ref(), value) {
-        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => {
-            Ok(value.to_contiguous_bytes().into_owned())
-        }
-        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
-            Ok(value.to_le_bytes().to_vec())
-        }
-        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
-            Ok(values.iter().map(|value| u8::from(*value)).collect())
-        }
-        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
-            encode_i64_sequence_bytes(values, space.dtype)
-        }
-        _ => Err(pyo3::exceptions::PyTypeError::new_err(
-            "model worker only supports array-like action spaces",
-        )),
-    }
+    // The env-side wire adapter decodes the model action via
+    // decode_batched_partial_values, so encode through the matching
+    // encode_batched_partial_values to stay byte-compatible. For the raw-batch
+    // spaces (Box/Discrete/MultiBinary/MultiDiscrete) this yields the same
+    // contiguous bytes as before; for Text/Dict/Tuple it produces the proto
+    // payload the env decoder expects, so text-action envs are now servable.
+    let single = std::slice::from_ref(value);
+    encode_batched_partial_values(single, space)
+        .map(|payload| payload.data)
+        .map_err(|err| {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "failed to encode model action for {:?} space: {err}",
+                space.space_type()
+            ))
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::neutral_observation;
+    use super::{neutral_observation, space_value_to_raw_bytes};
     use pyo3::Python;
     use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use rlmesh::spaces::BinaryPayload;
-    use rlmesh_grpc::wire::encode_batched_partial_values;
+    use rlmesh_grpc::wire::{
+        binary_to_bytes, decode_batched_partial_values, encode_batched_partial_values,
+    };
     use rlmesh_spaces::SpaceValue;
     use rlmesh_spaces::spaces::{DictSpaceBuilder, TextBuilder};
 
@@ -426,5 +436,42 @@ mod tests {
                 "open drawer"
             );
         });
+    }
+
+    #[test]
+    fn text_action_encodes_to_env_decodable_bytes() {
+        let space = TextBuilder::new(32).build().unwrap();
+        let value = SpaceValue::Text("press button".to_string());
+
+        let bytes = space_value_to_raw_bytes(&value, &space).unwrap();
+        let payload = binary_to_bytes(&BinaryPayload { data: bytes });
+
+        let decoded = decode_batched_partial_values(Some(&payload), &space).unwrap();
+        assert_eq!(decoded, vec![value]);
+    }
+
+    #[test]
+    fn dict_action_encodes_to_env_decodable_bytes() {
+        let space = instruction_space();
+        let value = instruction_value("open drawer");
+
+        let bytes = space_value_to_raw_bytes(&value, &space).unwrap();
+        let payload = binary_to_bytes(&BinaryPayload { data: bytes });
+
+        let decoded = decode_batched_partial_values(Some(&payload), &space).unwrap();
+        assert_eq!(decoded, vec![value]);
+    }
+
+    #[test]
+    fn raw_action_bytes_match_batched_partial_encoding() {
+        // Box/Discrete/etc. must stay byte-identical to the wire batch encoding.
+        let space = instruction_space();
+        let value = instruction_value("pick cup");
+
+        let raw = space_value_to_raw_bytes(&value, &space).unwrap();
+        let expected = encode_batched_partial_values(std::slice::from_ref(&value), &space)
+            .unwrap()
+            .data;
+        assert_eq!(raw, expected);
     }
 }

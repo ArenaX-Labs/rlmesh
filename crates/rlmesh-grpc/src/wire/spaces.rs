@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use prost_types::{ListValue, Struct, Value, value};
 use rlmesh_proto::env::v1 as env_proto;
 use rlmesh_proto::spaces::v1 as proto;
+use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
@@ -12,7 +12,7 @@ pub fn env_contract_to_proto(spec: &native::EnvContract) -> env_proto::EnvContra
         id: spec.id.clone(),
         action_space: spec.action_space.as_ref().map(space_spec_to_proto),
         observation_space: spec.observation_space.as_ref().map(space_spec_to_proto),
-        metadata: spec.metadata.as_ref().map(meta_map_to_struct),
+        metadata: spec.metadata.as_ref().map(meta_map_to_proto),
         render_mode: spec.render_mode.clone(),
         num_envs: spec.num_envs,
     }
@@ -28,7 +28,7 @@ pub fn env_contract_from_proto(
             .observation_space
             .map(space_spec_from_proto)
             .transpose()?,
-        metadata: spec.metadata.map(meta_map_from_struct),
+        metadata: spec.metadata.map(meta_map_from_proto),
         render_mode: spec.render_mode,
         num_envs: spec.num_envs,
     })
@@ -43,10 +43,71 @@ pub fn space_spec_to_proto(spec: &native::SpaceSpec) -> proto::SpaceSpec {
 }
 
 pub fn space_spec_from_proto(spec: proto::SpaceSpec) -> Result<native::SpaceSpec, ProtocolError> {
-    Ok(native::SpaceSpec {
+    let decoded = native::SpaceSpec {
         shape: spec.shape,
         dtype: native_dtype_from_proto(spec.dtype)?,
         spec: spec.spec.map(space_kind_from_proto).transpose()?,
+    };
+    validate_typed_bound_lengths(&decoded)?;
+    Ok(decoded)
+}
+
+/// Fail fast on malformed typed Box bounds at wire decode instead of letting a
+/// bad spec handshake successfully and only error on the first `contains()`.
+/// Bounds bytes are little-endian scalars in the space's dtype (the codebase
+/// assumes little-endian hosts throughout): one scalar for uniform bounds,
+/// `numel` scalars elementwise.
+fn validate_typed_bound_lengths(spec: &native::SpaceSpec) -> Result<(), ProtocolError> {
+    let Some(native::SpaceKind::Box(box_spec)) = &spec.spec else {
+        return Ok(());
+    };
+    let (low, high, count) = match &box_spec.bounds {
+        Some(native::BoxBounds::TypedUniform(bounds)) => (&bounds.low, &bounds.high, 1),
+        Some(native::BoxBounds::TypedElementwise(bounds)) => {
+            let numel = checked_box_shape_numel(&spec.shape)?;
+            (&bounds.low, &bounds.high, numel)
+        }
+        _ => return Ok(()),
+    };
+    let elem = native::dtype_size(spec.dtype);
+    if elem == 0 {
+        return Err(ProtocolError::DecodeError(
+            "typed Box bounds require a concrete dtype".to_string(),
+        ));
+    }
+    let expected = count.checked_mul(elem).ok_or_else(|| {
+        ProtocolError::DecodeError("typed Box bounds byte length overflowed".to_string())
+    })?;
+    for (name, bytes) in [("low", low), ("high", high)] {
+        if bytes.len() != expected {
+            return Err(ProtocolError::DecodeError(format!(
+                "typed Box bounds `{name}` carries {} bytes; expected {expected} \
+                 ({count} {:?} scalar(s))",
+                bytes.len(),
+                spec.dtype,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn checked_box_shape_numel(shape: &[i64]) -> Result<usize, ProtocolError> {
+    if shape.is_empty() {
+        return Err(ProtocolError::DecodeError(
+            "typed elementwise Box bounds require a non-empty shape".to_string(),
+        ));
+    }
+    shape.iter().enumerate().try_fold(1usize, |acc, (i, &dim)| {
+        if dim <= 0 {
+            return Err(ProtocolError::DecodeError(format!(
+                "typed elementwise Box bounds shape[{i}] must be > 0"
+            )));
+        }
+        acc.checked_mul(dim as usize).ok_or_else(|| {
+            ProtocolError::DecodeError(
+                "typed elementwise Box bounds shape product overflowed".to_string(),
+            )
+        })
     })
 }
 
@@ -141,14 +202,20 @@ fn box_bounds_to_proto(bounds: &native::BoxBounds) -> proto::box_spec::Bounds {
                 high: bounds.high,
             })
         }
-        native::BoxBounds::Axiswise(bounds) => {
-            proto::box_spec::Bounds::Axiswise(proto::AxiswiseBounds {
+        native::BoxBounds::Elementwise(bounds) => {
+            proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
             })
         }
-        native::BoxBounds::Elementwise(bounds) => {
-            proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
+        native::BoxBounds::TypedUniform(bounds) => {
+            proto::box_spec::Bounds::TypedUniform(proto::TypedUniformBounds {
+                low: bounds.low.clone(),
+                high: bounds.high.clone(),
+            })
+        }
+        native::BoxBounds::TypedElementwise(bounds) => {
+            proto::box_spec::Bounds::TypedElementwise(proto::TypedElementwiseBounds {
                 low: bounds.low.clone(),
                 high: bounds.high.clone(),
             })
@@ -167,14 +234,20 @@ fn box_bounds_from_proto(
                 high: bounds.high,
             })
         }
-        proto::box_spec::Bounds::Axiswise(bounds) => {
-            native::BoxBounds::Axiswise(native::AxiswiseBounds {
+        proto::box_spec::Bounds::Elementwise(bounds) => {
+            native::BoxBounds::Elementwise(native::ElementwiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
         }
-        proto::box_spec::Bounds::Elementwise(bounds) => {
-            native::BoxBounds::Elementwise(native::ElementwiseBounds {
+        proto::box_spec::Bounds::TypedUniform(bounds) => {
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: bounds.low,
+                high: bounds.high,
+            })
+        }
+        proto::box_spec::Bounds::TypedElementwise(bounds) => {
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
                 low: bounds.low,
                 high: bounds.high,
             })
@@ -233,60 +306,52 @@ fn multidiscrete_nvec_from_proto(
     })
 }
 
-pub fn meta_map_to_struct(value: &native::MetaMap) -> Struct {
-    Struct {
-        fields: value
+pub fn meta_map_to_proto(value: &native::MetaMap) -> proto::MetaMap {
+    proto::MetaMap {
+        entries: value
             .iter()
             .map(|(key, value)| (key.clone(), meta_value_to_proto(value)))
             .collect(),
     }
 }
 
-pub fn meta_map_from_struct(value: Struct) -> native::MetaMap {
+pub fn meta_map_from_proto(value: proto::MetaMap) -> native::MetaMap {
     value
-        .fields
+        .entries
         .into_iter()
         .map(|(key, value)| (key, meta_value_from_proto(value)))
         .collect::<BTreeMap<_, _>>()
 }
 
-pub(crate) fn meta_value_to_proto(value: &native::MetaValue) -> Value {
+pub(crate) fn meta_value_to_proto(value: &native::MetaValue) -> proto::MetaValue {
+    // A null/None value is encoded as a MetaValue with no oneof set.
     let kind = match value {
-        native::MetaValue::Null => value::Kind::NullValue(0),
-        native::MetaValue::Bool(value) => value::Kind::BoolValue(*value),
-        native::MetaValue::Int(value) => value::Kind::NumberValue(*value as f64),
-        native::MetaValue::Float(value) => value::Kind::NumberValue(*value),
-        native::MetaValue::String(value) => value::Kind::StringValue(value.clone()),
-        native::MetaValue::List(value) => value::Kind::ListValue(ListValue {
-            values: value.iter().map(meta_value_to_proto).collect(),
-        }),
-        native::MetaValue::Map(value) => value::Kind::StructValue(meta_map_to_struct(value)),
+        native::MetaValue::Null => None,
+        native::MetaValue::Bool(value) => Some(MetaKind::Bool(*value)),
+        native::MetaValue::Int(value) => Some(MetaKind::Int(*value)),
+        native::MetaValue::Float(value) => Some(MetaKind::Float(*value)),
+        native::MetaValue::String(value) => Some(MetaKind::Str(value.clone())),
+        native::MetaValue::Bytes(value) => Some(MetaKind::Bytes(value.clone())),
+        native::MetaValue::List(value) => Some(MetaKind::List(proto::MetaList {
+            items: value.iter().map(meta_value_to_proto).collect(),
+        })),
+        native::MetaValue::Map(value) => Some(MetaKind::Map(meta_map_to_proto(value))),
     };
-    Value { kind: Some(kind) }
+    proto::MetaValue { kind }
 }
 
-pub(crate) fn meta_value_from_proto(value: Value) -> native::MetaValue {
+pub(crate) fn meta_value_from_proto(value: proto::MetaValue) -> native::MetaValue {
     match value.kind {
-        Some(value::Kind::NullValue(_)) | None => native::MetaValue::Null,
-        Some(value::Kind::BoolValue(value)) => native::MetaValue::Bool(value),
-        Some(value::Kind::NumberValue(value)) => {
-            if value.fract() == 0.0 && value.is_finite() {
-                native::MetaValue::Int(value as i64)
-            } else {
-                native::MetaValue::Float(value)
-            }
+        None => native::MetaValue::Null,
+        Some(MetaKind::Bool(value)) => native::MetaValue::Bool(value),
+        Some(MetaKind::Int(value)) => native::MetaValue::Int(value),
+        Some(MetaKind::Float(value)) => native::MetaValue::Float(value),
+        Some(MetaKind::Str(value)) => native::MetaValue::String(value),
+        Some(MetaKind::Bytes(value)) => native::MetaValue::Bytes(value),
+        Some(MetaKind::List(value)) => {
+            native::MetaValue::List(value.items.into_iter().map(meta_value_from_proto).collect())
         }
-        Some(value::Kind::StringValue(value)) => native::MetaValue::String(value),
-        Some(value::Kind::ListValue(value)) => native::MetaValue::List(
-            value
-                .values
-                .into_iter()
-                .map(meta_value_from_proto)
-                .collect(),
-        ),
-        Some(value::Kind::StructValue(value)) => {
-            native::MetaValue::Map(meta_map_from_struct(value))
-        }
+        Some(MetaKind::Map(value)) => native::MetaValue::Map(meta_map_from_proto(value)),
     }
 }
 
@@ -365,5 +430,208 @@ mod tests {
     #[test]
     fn test_dtype_from_proto_rejects_unknown_value() {
         assert!(native_dtype_from_proto(999).is_err());
+    }
+
+    fn box_spec(
+        dtype: native::DType,
+        bounds: native::BoxBounds,
+        shape: Vec<i64>,
+    ) -> native::SpaceSpec {
+        native::SpaceSpec {
+            shape,
+            dtype,
+            spec: Some(native::SpaceKind::Box(native::BoxSpec {
+                bounds: Some(bounds),
+            })),
+        }
+    }
+
+    fn roundtrip(spec: &native::SpaceSpec) -> native::SpaceSpec {
+        space_spec_from_proto(space_spec_to_proto(spec)).expect("decodes")
+    }
+
+    #[test]
+    fn test_box_bounds_proto_roundtrip_all_variants() {
+        let cases = [
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Unbounded(true),
+                vec![3],
+            ),
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Uniform(native::UniformBounds {
+                    low: -1.0,
+                    high: 1.0,
+                }),
+                vec![3],
+            ),
+            box_spec(
+                native::DType::Float32,
+                native::BoxBounds::Elementwise(native::ElementwiseBounds {
+                    low: vec![0.0, 1.0],
+                    high: vec![2.0, 3.0],
+                }),
+                vec![2],
+            ),
+            box_spec(
+                native::DType::Int64,
+                native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                    low: i64::MIN.to_le_bytes().to_vec(),
+                    high: i64::MAX.to_le_bytes().to_vec(),
+                }),
+                vec![4],
+            ),
+            box_spec(
+                native::DType::Uint64,
+                native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                    low: [0u64, 1].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                    high: [u64::MAX, 9].iter().flat_map(|v| v.to_le_bytes()).collect(),
+                }),
+                vec![2],
+            ),
+        ];
+        for spec in cases {
+            assert_eq!(roundtrip(&spec), spec, "roundtrip mismatch for {spec:?}");
+        }
+    }
+
+    #[test]
+    fn test_typed_bounds_bytes_survive_the_wire() {
+        // The raw bytes of an i64::MAX bound must be preserved exactly; an f64
+        // path would have rounded them.
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: (i64::MAX - 1).to_le_bytes().to_vec(),
+                high: i64::MAX.to_le_bytes().to_vec(),
+            }),
+            vec![1],
+        );
+        let decoded = roundtrip(&spec);
+        let native::SpaceKind::Box(b) = decoded.spec.unwrap() else {
+            panic!("expected Box");
+        };
+        let native::BoxBounds::TypedUniform(t) = b.bounds.unwrap() else {
+            panic!("expected typed-uniform bounds");
+        };
+        assert_eq!(t.high, i64::MAX.to_le_bytes());
+        assert_eq!(t.low, (i64::MAX - 1).to_le_bytes());
+    }
+
+    #[test]
+    fn malformed_typed_bounds_fail_at_wire_decode() {
+        // A typed bound with the wrong byte length must be rejected at spec
+        // decode (handshake time), not deferred to the first contains().
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                low: vec![0u8; 4], // 4 bytes, but Int64 needs 8
+                high: i64::MAX.to_le_bytes().to_vec(),
+            }),
+            vec![2],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("typed Box bounds"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_negative_shape() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: 0i64.to_le_bytes().to_vec(),
+                high: 1i64.to_le_bytes().to_vec(),
+            }),
+            vec![-1],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("shape[0] must be > 0"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_shape_product_overflow() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: Vec::new(),
+                high: Vec::new(),
+            }),
+            vec![i64::MAX, 3],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("shape product overflowed"));
+    }
+
+    #[test]
+    fn malformed_typed_elementwise_bounds_reject_byte_length_overflow() {
+        let spec = box_spec(
+            native::DType::Int64,
+            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                low: Vec::new(),
+                high: Vec::new(),
+            }),
+            vec![i64::MAX, 2],
+        );
+        let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
+        assert!(err.to_string().contains("byte length overflowed"));
+    }
+
+    fn meta_roundtrip(value: native::MetaValue) -> native::MetaValue {
+        meta_value_from_proto(meta_value_to_proto(&value))
+    }
+
+    #[test]
+    fn meta_int_beyond_two_pow_53_survives_exactly() {
+        let value = native::MetaValue::Int((1i64 << 53) + 1);
+        assert_eq!(meta_roundtrip(value.clone()), value);
+
+        let value = native::MetaValue::Int(i64::MAX);
+        assert_eq!(meta_roundtrip(value.clone()), value);
+        let value = native::MetaValue::Int(i64::MIN);
+        assert_eq!(meta_roundtrip(value.clone()), value);
+    }
+
+    #[test]
+    fn meta_whole_number_float_stays_float() {
+        let value = native::MetaValue::Float(2.0);
+        assert_eq!(meta_roundtrip(value.clone()), value);
+        assert!(matches!(
+            meta_roundtrip(native::MetaValue::Float(2.0)),
+            native::MetaValue::Float(_)
+        ));
+    }
+
+    #[test]
+    fn meta_preserves_bool_str_bytes_null() {
+        for value in [
+            native::MetaValue::Null,
+            native::MetaValue::Bool(true),
+            native::MetaValue::Bool(false),
+            native::MetaValue::String("hello".to_string()),
+            native::MetaValue::Bytes(vec![0, 1, 2, 255]),
+        ] {
+            assert_eq!(meta_roundtrip(value.clone()), value);
+        }
+    }
+
+    #[test]
+    fn meta_nested_list_and_map_roundtrip() {
+        let mut map = native::MetaMap::new();
+        map.insert("big".to_string(), native::MetaValue::Int((1i64 << 53) + 1));
+        map.insert("flag".to_string(), native::MetaValue::Bool(true));
+        map.insert(
+            "list".to_string(),
+            native::MetaValue::List(vec![
+                native::MetaValue::Float(2.0),
+                native::MetaValue::Bytes(vec![7, 8]),
+                native::MetaValue::Null,
+            ]),
+        );
+        let value = native::MetaValue::Map(map.clone());
+        assert_eq!(meta_roundtrip(value), native::MetaValue::Map(map.clone()));
+
+        // And as a whole MetaMap channel.
+        assert_eq!(meta_map_from_proto(meta_map_to_proto(&map)), map);
     }
 }

@@ -1,9 +1,9 @@
 # rlmesh-cli
 
-Command-line entrypoint for RLMesh evaluation workflows.
+Command-line entrypoint for inspecting RLMesh distributions and running support commands.
 
-This crate publishes the `rlmesh` binary. The beta CLI is intentionally small and is mainly used for
-distribution inspection plus internal viewer plumbing used by the Python package.
+This crate publishes the `rlmesh` binary. The beta CLI is small: `version` for distribution
+inspection plus internal viewer plumbing used by the Python package.
 
 ## Installation
 

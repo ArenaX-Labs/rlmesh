@@ -1,53 +1,77 @@
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
 use image::ImageFormat;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyTuple};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::{ConnectAddress, RemoteEnv};
+use rlmesh::{ConnectAddress, RemoteEnv, ResetResult, StepResult};
 use rlmesh_spaces::spaces::SpaceSpec;
 use rlmesh_spaces::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, make_space,
     meta_map_to_pydict, py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
     py_any_to_space_value_with_backend, space_value_to_py_neutral, tensor_from_shape,
 };
-use crate::telemetry::{ProfileCollector, init_tracing};
+use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::errors::to_py_err;
+use crate::types::value_size::observation_size;
 
-#[gen_stub_pyclass]
-#[pyclass(module = "rlmesh._rlmesh")]
-pub struct PyEnvClient {
-    client: Arc<Mutex<RemoteEnv>>,
-    runtime: tokio::runtime::Runtime,
+/// Interval for polling Python signals during blocked RPCs.
+const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Process-wide Tokio runtime shared by Python env clients.
+fn shared_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build shared rlmesh client runtime")
+    })
+}
+
+/// Shared core for single and vector env facades.
+struct ClientCore {
+    client: RemoteEnv,
+    runtime: &'static tokio::runtime::Runtime,
     address: String,
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
-    handshake_complete: bool,
     profiler: Arc<ProfileCollector>,
+    default_timeout: Option<Duration>,
+    num_envs: usize,
 }
 
-#[allow(clippy::await_holding_lock)]
-#[pymethods]
-impl PyEnvClient {
-    #[new]
-    #[pyo3(signature = (address, *, connect_timeout_seconds=None))]
-    fn new(address: &str, connect_timeout_seconds: Option<f64>) -> PyResult<Self> {
-        init_tracing("env_client");
-        let profiler = ProfileCollector::new("env_client");
+impl ClientCore {
+    fn connect(
+        role: &'static str,
+        address: &str,
+        connect_timeout_seconds: Option<f64>,
+        request_timeout_seconds: Option<f64>,
+    ) -> PyResult<Self> {
+        init_tracing(role);
+        let profiler = ProfileCollector::new(role);
 
-        let connect_span = tracing::info_span!("rlmesh.client.connect", address = address);
-        let _connect_enter = connect_span.enter();
+        let connect_span = profiling_enabled()
+            .then(|| tracing::info_span!("rlmesh.client.connect", address = address));
+        let _connect_enter = connect_span.as_ref().map(|span| span.enter());
         let connect_guard = profiler.start("client.connect");
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-        })?;
+        let runtime = shared_runtime();
 
         let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
-        let client = connect_remote_env(&runtime, connect_address, connect_timeout_seconds)?;
+        let default_timeout = optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
+
+        let client = Python::attach(|py| {
+            py.detach(|| connect_remote_env(runtime, connect_address, connect_timeout_seconds))
+        })?;
+
         let normalized_address = client.address().to_string();
         let observation_space = require_contract_space(
             client.env_contract().observation_space.clone(),
@@ -55,177 +79,320 @@ impl PyEnvClient {
         )?;
         let action_space =
             require_contract_space(client.env_contract().action_space.clone(), "action_space")?;
+        let num_envs = client.num_envs();
         let _ = connect_guard.finish(0);
 
         Ok(Self {
-            client: Arc::new(Mutex::new(client)),
+            client,
             runtime,
             address: normalized_address,
             observation_space,
             action_space,
-            handshake_complete: true,
             profiler,
+            default_timeout,
+            num_envs,
+        })
+    }
+
+    /// Payload size when profiling is active.
+    fn measure(&self, value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
+        if self.profiler.is_enabled() {
+            observation_size(value)
+        } else {
+            0
+        }
+    }
+
+    fn span(&self, name: &'static str) -> Option<tracing::span::EnteredSpan> {
+        profiling_enabled()
+            .then(|| tracing::info_span!("rlmesh.client", op = name, address = %self.address))
+            .map(|span| span.entered())
+    }
+
+    fn env_contract_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        env_contract_to_py(py, self.client.env_contract())
+    }
+
+    /// Resolve a per-call timeout: an explicit kwarg overrides the client
+    /// default; `None`/`0` means no timeout.
+    fn resolve_timeout(&self, per_call: Option<f64>) -> PyResult<Option<Duration>> {
+        match per_call {
+            Some(value) => optional_timeout(Some(value), "timeout_seconds"),
+            None => Ok(self.default_timeout),
+        }
+    }
+
+    fn timeout_ms(timeout: Option<Duration>) -> i64 {
+        timeout
+            .map(|t| t.as_millis().min(i64::MAX as u128) as i64)
+            .unwrap_or(0)
+    }
+
+    /// Run one RPC with the GIL released and an optional timeout.
+    fn run_rpc<F, T>(&mut self, py: Python<'_>, timeout: Option<Duration>, make: F) -> PyResult<T>
+    where
+        F: for<'a> FnOnce(
+                &'a mut RemoteEnv,
+            )
+                -> std::pin::Pin<Box<dyn Future<Output = rlmesh::Result<T>> + 'a>>
+            + Send,
+        T: Send,
+    {
+        let client = &mut self.client;
+        let runtime = self.runtime;
+
+        let outcome = py.detach(|| {
+            runtime.block_on(async move {
+                let mut rpc = make(client);
+
+                let mut poll = tokio::time::interval(SIGNAL_POLL_INTERVAL);
+                poll.tick().await; // first tick fires immediately; consume it.
+
+                let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+
+                loop {
+                    tokio::select! {
+                        result = &mut rpc => return RpcOutcome::Done(result),
+                        _ = poll.tick() => {
+                            // Re-acquire the GIL only to check for pending signals.
+                            if let Err(err) = Python::attach(|py| py.check_signals()) {
+                                return RpcOutcome::Signal(err);
+                            }
+                            if let Some(deadline) = deadline
+                                && tokio::time::Instant::now() >= deadline
+                            {
+                                return RpcOutcome::TimedOut;
+                            }
+                        }
+                    }
+                }
+            })
+        });
+
+        match outcome {
+            RpcOutcome::Done(result) => result.map_err(to_py_err),
+            RpcOutcome::Signal(err) => Err(err),
+            RpcOutcome::TimedOut => Err(pyo3::exceptions::PyTimeoutError::new_err(format!(
+                "remote environment call timed out after {:.3}s",
+                timeout.expect("timeout set when TimedOut").as_secs_f64()
+            ))),
+        }
+    }
+
+    fn reset_rpc(
+        &mut self,
+        py: Python<'_>,
+        seeds: Vec<i64>,
+        options: Option<rlmesh_spaces::MetaMap>,
+        timeout: Option<Duration>,
+    ) -> PyResult<ResetResult> {
+        let timeout_ms = Self::timeout_ms(timeout);
+        self.run_rpc(py, timeout, move |client| {
+            Box::pin(client.reset(rlmesh::ResetRequest {
+                seeds,
+                options,
+                timeout_ms,
+            }))
+        })
+    }
+
+    fn step_rpc(
+        &mut self,
+        py: Python<'_>,
+        actions: Vec<rlmesh_spaces::SpaceValue>,
+        timeout: Option<Duration>,
+    ) -> PyResult<StepResult> {
+        let timeout_ms = Self::timeout_ms(timeout);
+        self.run_rpc(py, timeout, move |client| {
+            Box::pin(client.step(rlmesh::StepRequest {
+                actions,
+                timeout_ms,
+            }))
+        })
+    }
+
+    fn render_message(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        rpc_phase: &'static str,
+        timeout: Option<Duration>,
+    ) -> PyResult<Option<NativeRenderFrame>> {
+        let rpc_guard = self.profiler.start(rpc_phase);
+        let timeout_ms = Self::timeout_ms(timeout);
+        let result = self.run_rpc(py, timeout, move |client| {
+            Box::pin(client.render(NativeRenderRequest {
+                env_index: Some(env_index),
+                timeout_ms,
+            }))
+        })?;
+
+        let message = result.frame;
+        let frame_bytes_len = message
+            .as_ref()
+            .map(|frame| frame.png_frame.len())
+            .unwrap_or(0);
+        let _ = rpc_guard.finish(frame_bytes_len);
+        Ok(message)
+    }
+
+    fn close_rpc(&mut self, py: Python<'_>) -> PyResult<()> {
+        let result = self.run_rpc(py, self.default_timeout, |client| Box::pin(client.close()));
+        match result {
+            Ok(_) => {}
+            // Teardown is best-effort: when the graceful Close cannot complete
+            // within the client's default timeout (e.g. the server is still
+            // draining a slow step), detach locally instead of raising out of
+            // what is almost always a `finally` block. Dropping the stream
+            // releases the server's session slot.
+            Err(err)
+                if Python::attach(|py| {
+                    err.is_instance_of::<pyo3::exceptions::PyTimeoutError>(py)
+                }) =>
+            {
+                tracing::warn!(
+                    "close timed out behind an in-flight server operation;                      detaching the session locally"
+                );
+                self.client.detach();
+            }
+            Err(err) => return Err(err),
+        }
+        self.profiler.log_summary_once();
+        Ok(())
+    }
+
+    fn shutdown_rpc(&mut self, py: Python<'_>, reason: String) -> PyResult<bool> {
+        let accepted = self.run_rpc(py, self.default_timeout, move |client| {
+            Box::pin(client.shutdown(reason))
+        })?;
+        self.profiler.log_summary_once();
+        Ok(accepted)
+    }
+}
+
+enum RpcOutcome<T> {
+    Done(rlmesh::Result<T>),
+    Signal(PyErr),
+    TimedOut,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh")]
+pub struct PyEnvClient {
+    core: ClientCore,
+}
+
+#[pymethods]
+impl PyEnvClient {
+    #[new]
+    #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+    fn new(
+        address: &str,
+        connect_timeout_seconds: Option<f64>,
+        request_timeout_seconds: Option<f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            core: ClientCore::connect(
+                "env_client",
+                address,
+                connect_timeout_seconds,
+                request_timeout_seconds,
+            )?,
         })
     }
 
     fn address(&self) -> String {
-        self.address.clone()
+        self.core.address.clone()
     }
 
-    fn handshake(&mut self) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.handshake", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.handshake");
-        let env_contract = self
-            .client
-            .lock()
-            .expect("env client mutex poisoned")
-            .env_contract()
-            .clone();
-        let _ = total_guard.finish(0);
-
-        Python::attach(|py| env_contract_to_py(py, &env_contract))
+    fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("handshake");
+        self.core.env_contract_py(py)
     }
 
     fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if !self.handshake_complete {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must be called before observation_space()",
-            ));
-        }
-        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
+        Ok(make_space(py, &self.core.observation_space)?
+            .into_any()
+            .unbind())
     }
 
     fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if !self.handshake_complete {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must be called before action_space()",
-            ));
-        }
-        Ok(make_space(py, &self.action_space)?.into_any().unbind())
+        Ok(make_space(py, &self.core.action_space)?.into_any().unbind())
     }
 
-    #[pyo3(signature = (seeds=None, options=None))]
+    #[pyo3(signature = (seeds=None, options=None, *, timeout_seconds=None))]
     fn reset(
         &mut self,
         py: Python<'_>,
         seeds: Option<Vec<i64>>,
         options: Option<Py<PyAny>>,
+        timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.reset", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.reset.total");
-        let encode_guard = self.profiler.start("client.reset.encode_options");
+        let _span = self.core.span("reset");
+        let total_guard = self.core.profiler.start("client.reset.total");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
 
-        let client = Arc::clone(&self.client);
-        let options = match options {
-            Some(options) => {
-                let options_ref = options.bind(py);
-                if options_ref.is_none() {
-                    None
-                } else {
-                    Some(py_any_to_meta_map(options_ref)?)
-                }
-            }
-            None => None,
-        };
+        let options = decode_options(py, options)?;
         let options_bytes = options.as_ref().map(|value| value.len()).unwrap_or(0);
-        let _ = encode_guard.finish(options_bytes);
 
-        let rpc_guard = self.profiler.start("client.reset.rpc");
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .reset(rlmesh::ResetRequest {
-                            seeds: seeds.unwrap_or_default(),
-                            options,
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
-
+        let rpc_guard = self.core.profiler.start("client.reset.rpc");
+        let result = self
+            .core
+            .reset_rpc(py, seeds.unwrap_or_default(), options, timeout)?;
         let observation = result.observations.first().cloned();
-        let obs_bytes_len = observation_size(observation.as_ref());
+        let obs_bytes_len = self.core.measure(observation.as_ref());
         let info_bytes_len = result.info.as_ref().map(|info| info.len()).unwrap_or(0);
         let _ = rpc_guard.finish(obs_bytes_len + info_bytes_len);
 
-        let decode_guard = self.profiler.start("client.reset.decode_obs");
         let obs = match observation.as_ref() {
-            Some(value) => space_value_to_py_neutral(py, value, &self.observation_space)?,
+            Some(value) => space_value_to_py_neutral(py, value, &self.core.observation_space)?,
             None => py.None().bind(py).clone(),
         };
-
-        let info = match result.info.as_ref() {
-            Some(info) => meta_map_to_pydict(py, info)?,
-            None => pyo3::types::PyDict::new(py),
-        };
-        info.set_item("episode_ids", result.episode_ids.to_vec())?;
+        let info = info_to_pydict(py, result.info.as_ref())?;
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids.to_vec())?;
+        }
 
         let tuple = PyTuple::new(py, [obs.as_any(), info.as_any()])?;
-        let _ = decode_guard.finish(obs_bytes_len);
         let _ = total_guard.finish(options_bytes + obs_bytes_len + info_bytes_len);
         Ok(tuple.into_any().unbind())
     }
 
-    fn step(&mut self, py: Python<'_>, actions: Py<PyAny>) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.step", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.step.total");
+    #[pyo3(signature = (actions, *, timeout_seconds=None))]
+    fn step(
+        &mut self,
+        py: Python<'_>,
+        actions: Py<PyAny>,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("step");
+        let total_guard = self.core.profiler.start("client.step.total");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
 
-        let client = Arc::clone(&self.client);
-        let action_space = self.action_space.clone();
-
-        let encode_guard = self.profiler.start("client.step.encode_action");
-        let actions_ref = actions.bind(py);
         let action = py_any_to_space_value_with_backend(
             py,
-            actions_ref,
-            &action_space,
+            actions.bind(py),
+            &self.core.action_space,
             ValueBackend::Native,
         )?;
-        let action_bytes_len = observation_size(Some(&action));
-        let _ = encode_guard.finish(action_bytes_len);
+        let action_bytes_len = self.core.measure(Some(&action));
 
-        let rpc_guard = self.profiler.start("client.step.rpc");
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .step(rlmesh::StepRequest {
-                            actions: vec![action],
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
-
+        let rpc_guard = self.core.profiler.start("client.step.rpc");
+        let result = self.core.step_rpc(py, vec![action], timeout)?;
         let observation = result.observations.first().cloned();
         let reward = result.rewards.first().copied().unwrap_or_default();
         let terminated = result.terminated.first().copied().unwrap_or_default();
         let truncated = result.truncated.first().copied().unwrap_or_default();
-        let obs_bytes_len = observation_size(observation.as_ref());
+        let obs_bytes_len = self.core.measure(observation.as_ref());
         let info_bytes_len = result.info.as_ref().map(|info| info.len()).unwrap_or(0);
         let _ = rpc_guard.finish(action_bytes_len + obs_bytes_len + info_bytes_len);
 
-        let decode_guard = self.profiler.start("client.step.decode_obs");
         let obs = match observation.as_ref() {
-            Some(value) => space_value_to_py_neutral(py, value, &self.observation_space)?,
+            Some(value) => space_value_to_py_neutral(py, value, &self.core.observation_space)?,
             None => py.None().bind(py).clone(),
         };
-
-        let info = match result.info.as_ref() {
-            Some(info) => meta_map_to_pydict(py, info)?,
-            None => pyo3::types::PyDict::new(py),
-        };
-        if terminated || truncated {
+        let info = info_to_pydict(py, result.info.as_ref())?;
+        if (terminated || truncated) && !info.contains("completed_episodes")? {
             info.set_item("completed_episodes", 1)?;
         }
 
@@ -239,341 +406,191 @@ impl PyEnvClient {
                 info.as_any(),
             ],
         )?;
-        let _ = decode_guard.finish(obs_bytes_len);
         let _ = total_guard.finish(action_bytes_len + obs_bytes_len + info_bytes_len);
         Ok(tuple.into_any().unbind())
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.render", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.render.total");
-        let result = self.render_message(py, env_index, "client.render.rpc")?;
-        let frame_bytes_len = result
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
-
-        let decode_guard = self.profiler.start("client.render.decode_frame");
-        let decoded = match result {
-            Some(message) => decode_render_frame(py, &message)?.into_any().unbind(),
-            None => py.None(),
-        };
-        let _ = decode_guard.finish(frame_bytes_len);
-        let _ = total_guard.finish(frame_bytes_len);
-        Ok(decoded)
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result = self
+            .core
+            .render_message(py, env_index, "client.render.rpc", timeout)?;
+        match result {
+            Some(message) => Ok(decode_render_frame(py, &message)?.into_any().unbind()),
+            None => Ok(py.None()),
+        }
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render_packet(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.render_packet", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.render_packet.total");
-        let result = self.render_message(py, env_index, "client.render_packet.rpc")?;
-        let frame_bytes_len = result
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
-
-        let packet = match result {
-            Some(frame) => PyBytes::new(py, render_packet(&frame)).into_any().unbind(),
-            None => py.None(),
-        };
-        let _ = total_guard.finish(frame_bytes_len);
-        Ok(packet)
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render_packet(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render_packet");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result =
+            self.core
+                .render_message(py, env_index, "client.render_packet.rpc", timeout)?;
+        match result {
+            Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
+            None => Ok(py.None()),
+        }
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render_bundle(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let span = tracing::info_span!("rlmesh.client.render_bundle", address = %self.address);
-        let _enter = span.enter();
-        let total_guard = self.profiler.start("client.render_bundle.total");
-        let result = self.render_message(py, env_index, "client.render_bundle.rpc")?;
-        let frame_bytes_len = result
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
-
-        let decode_guard = self.profiler.start("client.render_bundle.decode_frame");
-        let bundle = match result {
-            Some(frame) => {
-                let frame_value = decode_render_frame(py, &frame)?.into_any().unbind();
-                let packet = PyBytes::new(py, render_packet(&frame));
-                PyTuple::new(py, [frame_value.bind(py).as_any(), packet.as_any()])?
-                    .into_any()
-                    .unbind()
-            }
-            None => PyTuple::new(
-                py,
-                [py.None().bind(py).as_any(), py.None().bind(py).as_any()],
-            )?
-            .into_any()
-            .unbind(),
-        };
-        let _ = decode_guard.finish(frame_bytes_len);
-        let _ = total_guard.finish(frame_bytes_len);
-        Ok(bundle)
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render_bundle(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render_bundle");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result =
+            self.core
+                .render_message(py, env_index, "client.render_bundle.rpc", timeout)?;
+        render_bundle_py(py, result)
     }
 
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let span = tracing::info_span!("rlmesh.client.close", address = %self.address);
-        let _enter = span.enter();
-        let client = Arc::clone(&self.client);
-        let runtime = &self.runtime;
-
-        py.detach(|| {
-            runtime.block_on(async move {
-                let mut guard = client.lock().expect("env client mutex poisoned");
-                guard.close().await
-            })
-        })
-        .map_err(to_py_err)?;
-
-        self.profiler.log_summary_once();
-        Ok(())
+        let _span = self.core.span("close");
+        self.core.close_rpc(py)
     }
 
     #[pyo3(signature = (reason="owner shutdown"))]
     fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
-        let span = tracing::info_span!("rlmesh.client.shutdown", address = %self.address);
-        let _enter = span.enter();
-        let client = Arc::clone(&self.client);
-        let reason = reason.to_string();
-        let runtime = &self.runtime;
-
-        let accepted = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard.shutdown(reason).await
-                })
-            })
-            .map_err(to_py_err)?;
-
-        self.profiler.log_summary_once();
-        Ok(accepted)
+        let _span = self.core.span("shutdown");
+        self.core.shutdown_rpc(py, reason.to_string())
     }
 }
 
 impl Drop for PyEnvClient {
     fn drop(&mut self) {
-        self.profiler.log_summary_once();
+        self.core.profiler.log_summary_once();
     }
 }
 
-fn connect_remote_env(
-    runtime: &tokio::runtime::Runtime,
-    address: ConnectAddress,
-    connect_timeout_seconds: Option<f64>,
-) -> PyResult<RemoteEnv> {
-    let timeout = optional_connect_timeout(connect_timeout_seconds)?;
-    let connect = RemoteEnv::connect_to(address);
-    match timeout {
-        Some(timeout) => runtime
-            .block_on(async { tokio::time::timeout(timeout, connect).await })
-            .map_err(|_| {
-                pyo3::exceptions::PyTimeoutError::new_err(format!(
-                    "remote environment connect timed out after {:.3}s",
-                    timeout.as_secs_f64()
-                ))
-            })?
-            .map_err(to_py_err),
-        None => runtime.block_on(connect).map_err(to_py_err),
-    }
-}
-
-fn optional_connect_timeout(value: Option<f64>) -> PyResult<Option<Duration>> {
-    value
-        .map(|value| {
-            Duration::try_from_secs_f64(value).map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "connect_timeout_seconds must be a non-negative finite float or None",
-                )
-            })
-        })
-        .transpose()
-}
-
-fn require_contract_space(space: Option<SpaceSpec>, field: &'static str) -> PyResult<SpaceSpec> {
-    space.ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "remote environment contract missing {field}"
-        ))
-    })
-}
-
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyVectorEnvClient {
-    client: Arc<Mutex<RemoteEnv>>,
-    runtime: tokio::runtime::Runtime,
-    address: String,
-    observation_space: SpaceSpec,
-    action_space: SpaceSpec,
-    handshake_complete: bool,
-    profiler: Arc<ProfileCollector>,
-    num_envs: usize,
+    core: ClientCore,
 }
 
-#[allow(clippy::await_holding_lock)]
 #[pymethods]
 impl PyVectorEnvClient {
     #[new]
-    #[pyo3(signature = (address, *, connect_timeout_seconds=None))]
-    fn new(address: &str, connect_timeout_seconds: Option<f64>) -> PyResult<Self> {
-        init_tracing("vector_env_client");
-        let profiler = ProfileCollector::new("vector_env_client");
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("failed to create runtime: {e}"))
-        })?;
-
-        let connect_address = ConnectAddress::parse(address).map_err(to_py_err)?;
-        let client = connect_remote_env(&runtime, connect_address, connect_timeout_seconds)?;
-        let normalized_address = client.address().to_string();
-        let observation_space = require_contract_space(
-            client.env_contract().observation_space.clone(),
-            "observation_space",
-        )?;
-        let action_space =
-            require_contract_space(client.env_contract().action_space.clone(), "action_space")?;
-        let num_envs = client.num_envs();
-
+    #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+    fn new(
+        address: &str,
+        connect_timeout_seconds: Option<f64>,
+        request_timeout_seconds: Option<f64>,
+    ) -> PyResult<Self> {
         Ok(Self {
-            client: Arc::new(Mutex::new(client)),
-            runtime,
-            address: normalized_address,
-            observation_space,
-            action_space,
-            handshake_complete: true,
-            profiler,
-            num_envs,
+            core: ClientCore::connect(
+                "vector_env_client",
+                address,
+                connect_timeout_seconds,
+                request_timeout_seconds,
+            )?,
         })
     }
 
     fn address(&self) -> String {
-        self.address.clone()
+        self.core.address.clone()
     }
 
-    fn handshake(&mut self) -> PyResult<Py<PyAny>> {
-        let env_contract = self
-            .client
-            .lock()
-            .expect("env client mutex poisoned")
-            .env_contract()
-            .clone();
-        Python::attach(|py| env_contract_to_py(py, &env_contract))
+    fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("handshake");
+        self.core.env_contract_py(py)
     }
 
     fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if !self.handshake_complete {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must be called before observation_space()",
-            ));
-        }
-        Ok(make_space(py, &self.observation_space)?.into_any().unbind())
+        Ok(make_space(py, &self.core.observation_space)?
+            .into_any()
+            .unbind())
     }
 
     fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if !self.handshake_complete {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "handshake() must be called before action_space()",
-            ));
-        }
-        Ok(make_space(py, &self.action_space)?.into_any().unbind())
+        Ok(make_space(py, &self.core.action_space)?.into_any().unbind())
     }
 
     fn num_envs(&self) -> usize {
-        self.num_envs
+        self.core.num_envs
     }
 
-    #[pyo3(signature = (seeds=None, options=None))]
+    #[pyo3(signature = (seeds=None, options=None, *, timeout_seconds=None))]
     fn reset(
         &mut self,
         py: Python<'_>,
         seeds: Option<Vec<i64>>,
         options: Option<Py<PyAny>>,
+        timeout_seconds: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
-        let client = Arc::clone(&self.client);
-        let options = match options {
-            Some(options) => {
-                let options_ref = options.bind(py);
-                if options_ref.is_none() {
-                    None
-                } else {
-                    Some(py_any_to_meta_map(options_ref)?)
-                }
-            }
-            None => None,
-        };
+        let _span = self.core.span("reset");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let options = decode_options(py, options)?;
 
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .reset(rlmesh::ResetRequest {
-                            seeds: seeds.unwrap_or_default(),
-                            options,
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
+        let result = self
+            .core
+            .reset_rpc(py, seeds.unwrap_or_default(), options, timeout)?;
 
-        let obs =
-            batched_space_values_to_py_neutral(py, &result.observations, &self.observation_space)?;
-        let info = match result.info.as_ref() {
-            Some(info) => meta_map_to_pydict(py, info)?,
-            None => pyo3::types::PyDict::new(py),
-        };
-        info.set_item("episode_ids", result.episode_ids)?;
+        let obs = batched_space_values_to_py_neutral(
+            py,
+            &result.observations,
+            &self.core.observation_space,
+        )?;
+        let info = info_to_pydict(py, result.info.as_ref())?;
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids)?;
+        }
         Ok(PyTuple::new(py, [obs.as_any(), info.as_any()])?
             .into_any()
             .unbind())
     }
 
-    fn step(&mut self, py: Python<'_>, actions: Py<PyAny>) -> PyResult<Py<PyAny>> {
-        let client = Arc::clone(&self.client);
-        let action_space = self.action_space.clone();
-        let obs_space = self.observation_space.clone();
-        let num_envs = self.num_envs;
-        let actions_ref = actions.bind(py);
+    #[pyo3(signature = (actions, *, timeout_seconds=None))]
+    fn step(
+        &mut self,
+        py: Python<'_>,
+        actions: Py<PyAny>,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("step");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
         let batched_actions = py_any_to_batched_space_values_with_backend(
             py,
-            actions_ref,
-            &action_space,
-            num_envs,
+            actions.bind(py),
+            &self.core.action_space,
+            self.core.num_envs,
             ValueBackend::Native,
         )?;
 
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .step(rlmesh::StepRequest {
-                            actions: batched_actions,
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
+        let result = self.core.step_rpc(py, batched_actions, timeout)?;
 
-        let obs = batched_space_values_to_py_neutral(py, &result.observations, &obs_space)?;
+        let obs = batched_space_values_to_py_neutral(
+            py,
+            &result.observations,
+            &self.core.observation_space,
+        )?;
         let rewards = vector_f64_to_py(py, &result.rewards)?;
         let terminated = vector_bool_to_py(py, &result.terminated)?;
         let truncated = vector_bool_to_py(py, &result.truncated)?;
-        let info = match result.info.as_ref() {
-            Some(info) => meta_map_to_pydict(py, info)?,
-            None => pyo3::types::PyDict::new(py),
-        };
-        info.set_item("episode_ids", result.episode_ids)?;
-        info.set_item("completed_episodes", result.completed_episodes.len())?;
+        let info = info_to_pydict(py, result.info.as_ref())?;
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids)?;
+        }
+        if !info.contains("completed_episodes")? {
+            info.set_item("completed_episodes", result.completed_episodes.len())?;
+        }
 
         Ok(PyTuple::new(
             py,
@@ -589,193 +606,203 @@ impl PyVectorEnvClient {
         .unbind())
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let result = self.render_message(py, env_index, "client.render.rpc")?;
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result = self
+            .core
+            .render_message(py, env_index, "client.render.rpc", timeout)?;
         match result {
             Some(message) => Ok(decode_render_frame(py, &message)?.into_any().unbind()),
             None => Ok(py.None()),
         }
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render_packet(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let result = self.render_message(py, env_index, "client.render_packet.rpc")?;
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render_packet(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render_packet");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result =
+            self.core
+                .render_message(py, env_index, "client.render_packet.rpc", timeout)?;
         match result {
             Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
             None => Ok(py.None()),
         }
     }
 
-    #[pyo3(signature = (env_index=0))]
-    fn render_bundle(&mut self, py: Python<'_>, env_index: usize) -> PyResult<Py<PyAny>> {
-        let result = self.render_message(py, env_index, "client.render_bundle.rpc")?;
-        match result {
-            Some(frame) => {
-                let frame_value = decode_render_frame(py, &frame)?.into_any().unbind();
-                let packet = PyBytes::new(py, render_packet(&frame));
-                Ok(
-                    PyTuple::new(py, [frame_value.bind(py).as_any(), packet.as_any()])?
-                        .into_any()
-                        .unbind(),
-                )
-            }
-            None => Ok(PyTuple::new(
-                py,
-                [py.None().bind(py).as_any(), py.None().bind(py).as_any()],
-            )?
-            .into_any()
-            .unbind()),
-        }
+    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+    fn render_bundle(
+        &mut self,
+        py: Python<'_>,
+        env_index: usize,
+        timeout_seconds: Option<f64>,
+    ) -> PyResult<Py<PyAny>> {
+        let _span = self.core.span("render_bundle");
+        let timeout = self.core.resolve_timeout(timeout_seconds)?;
+        let result =
+            self.core
+                .render_message(py, env_index, "client.render_bundle.rpc", timeout)?;
+        render_bundle_py(py, result)
     }
 
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let client = Arc::clone(&self.client);
-        let runtime = &self.runtime;
-        py.detach(|| {
-            runtime.block_on(async move {
-                let mut guard = client.lock().expect("env client mutex poisoned");
-                guard.close().await
-            })
-        })
-        .map_err(to_py_err)?;
-        self.profiler.log_summary_once();
-        Ok(())
+        let _span = self.core.span("close");
+        self.core.close_rpc(py)
     }
 
     #[pyo3(signature = (reason="owner shutdown"))]
     fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
-        let client = Arc::clone(&self.client);
-        let reason = reason.to_string();
-        let runtime = &self.runtime;
-        let accepted = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard.shutdown(reason).await
-                })
-            })
-            .map_err(to_py_err)?;
-        self.profiler.log_summary_once();
-        Ok(accepted)
+        let _span = self.core.span("shutdown");
+        self.core.shutdown_rpc(py, reason.to_string())
     }
 }
 
 impl Drop for PyVectorEnvClient {
     fn drop(&mut self) {
-        self.profiler.log_summary_once();
+        self.core.profiler.log_summary_once();
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"
 class PyEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
-    def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None) -> tuple[Value, ResetInfo]: ...
-    def step(self, actions: Value) -> tuple[Value, float, bool, bool, StepInfo]: ...
-    def render(self, env_index: int = 0) -> Value | None: ...
-    def render_packet(self, env_index: int = 0) -> bytes | None: ...
-    def render_bundle(self, env_index: int = 0) -> tuple[Value | None, bytes | None]: ...
+    def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None, *, timeout_seconds: float | None = None) -> tuple[Value, ResetInfo]: ...
+    def step(self, actions: Value, *, timeout_seconds: float | None = None) -> tuple[Value, float, bool, bool, StepInfo]: ...
+    def render(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> Value | None: ...
+    def render_packet(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> bytes | None: ...
+    def render_bundle(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> tuple[Value | None, bytes | None]: ...
     def close(self) -> None: ...
     def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
 
+#[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
         r#"
 class PyVectorEnvClient:
-    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None) -> None: ...
+    def __init__(self, address: str, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
     def address(self) -> str: ...
     def handshake(self) -> EnvContract: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
     def num_envs(self) -> int: ...
-    def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None) -> tuple[Value, ResetInfo]: ...
-    def step(self, actions: object) -> tuple[Value, Value, Value, Value, StepInfo]: ...
-    def render(self, env_index: int = 0) -> Value | None: ...
-    def render_packet(self, env_index: int = 0) -> bytes | None: ...
-    def render_bundle(self, env_index: int = 0) -> tuple[Value | None, bytes | None]: ...
+    def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None, *, timeout_seconds: float | None = None) -> tuple[Value, ResetInfo]: ...
+    def step(self, actions: object, *, timeout_seconds: float | None = None) -> tuple[Value, Value, Value, Value, StepInfo]: ...
+    def render(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> Value | None: ...
+    def render_packet(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> bytes | None: ...
+    def render_bundle(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> tuple[Value | None, bytes | None]: ...
     def close(self) -> None: ...
     def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
     }
 }
 
-impl PyVectorEnvClient {
-    #[allow(clippy::await_holding_lock)]
-    fn render_message(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        rpc_phase: &'static str,
-    ) -> PyResult<Option<NativeRenderFrame>> {
-        let client = Arc::clone(&self.client);
-        let rpc_guard = self.profiler.start(rpc_phase);
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .render(NativeRenderRequest {
-                            env_index: Some(env_index),
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
-
-        let message = result.frame;
-        let frame_bytes_len = message
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
-        let _ = rpc_guard.finish(frame_bytes_len);
-        Ok(message)
+fn connect_remote_env(
+    runtime: &tokio::runtime::Runtime,
+    address: ConnectAddress,
+    connect_timeout_seconds: Option<f64>,
+) -> PyResult<RemoteEnv> {
+    let timeout = optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
+    let connect = RemoteEnv::connect_to(address);
+    match timeout {
+        Some(timeout) => runtime
+            .block_on(async { tokio::time::timeout(timeout, connect).await })
+            .map_err(|_| {
+                pyo3::exceptions::PyTimeoutError::new_err(format!(
+                    "remote environment connect timed out after {:.3}s",
+                    timeout.as_secs_f64()
+                ))
+            })?
+            .map_err(to_py_err),
+        None => runtime.block_on(connect).map_err(to_py_err),
     }
 }
 
-impl PyEnvClient {
-    #[allow(clippy::await_holding_lock)]
-    fn render_message(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        rpc_phase: &'static str,
-    ) -> PyResult<Option<NativeRenderFrame>> {
-        let client = Arc::clone(&self.client);
+fn optional_timeout(value: Option<f64>, field: &'static str) -> PyResult<Option<Duration>> {
+    match value {
+        // Treat 0 (and None) as "no timeout" to mirror the wire contract.
+        None | Some(0.0) => Ok(None),
+        Some(value) => Duration::try_from_secs_f64(value).map(Some).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{field} must be a non-negative finite float or None"
+            ))
+        }),
+    }
+}
 
-        let rpc_guard = self.profiler.start(rpc_phase);
-        let runtime = &self.runtime;
-        let result = py
-            .detach(|| {
-                runtime.block_on(async move {
-                    let mut guard = client.lock().expect("env client mutex poisoned");
-                    guard
-                        .render(NativeRenderRequest {
-                            env_index: Some(env_index),
-                            timeout_ms: 0,
-                        })
-                        .await
-                })
-            })
-            .map_err(to_py_err)?;
+fn require_contract_space(space: Option<SpaceSpec>, field: &'static str) -> PyResult<SpaceSpec> {
+    space.ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "remote environment contract missing {field}"
+        ))
+    })
+}
 
-        let message = result.frame;
-        let frame_bytes_len = message
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
-        let _ = rpc_guard.finish(frame_bytes_len);
-        Ok(message)
+fn decode_options(
+    py: Python<'_>,
+    options: Option<Py<PyAny>>,
+) -> PyResult<Option<rlmesh_spaces::MetaMap>> {
+    match options {
+        Some(options) => {
+            let options_ref = options.bind(py);
+            if options_ref.is_none() {
+                Ok(None)
+            } else {
+                Ok(Some(py_any_to_meta_map(options_ref)?))
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+fn info_to_pydict<'py>(
+    py: Python<'py>,
+    info: Option<&rlmesh_spaces::MetaMap>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    match info {
+        Some(info) => meta_map_to_pydict(py, info),
+        None => Ok(pyo3::types::PyDict::new(py)),
+    }
+}
+
+fn render_bundle_py(py: Python<'_>, result: Option<NativeRenderFrame>) -> PyResult<Py<PyAny>> {
+    match result {
+        Some(frame) => {
+            let frame_value = decode_render_frame(py, &frame)?.into_any().unbind();
+            let packet = PyBytes::new(py, render_packet(&frame));
+            Ok(
+                PyTuple::new(py, [frame_value.bind(py).as_any(), packet.as_any()])?
+                    .into_any()
+                    .unbind(),
+            )
+        }
+        None => Ok(PyTuple::new(
+            py,
+            [py.None().bind(py).as_any(), py.None().bind(py).as_any()],
+        )?
+        .into_any()
+        .unbind()),
     }
 }
 
@@ -793,14 +820,25 @@ fn decode_render_frame<'py>(
 }
 
 fn decode_render_bytes(frame: &NativeRenderFrame) -> Result<DecodedRenderFrame, String> {
+    use image::DynamicImage;
+
     let image = image::load_from_memory_with_format(&frame.png_frame, ImageFormat::Png)
         .map_err(|err| err.to_string())?;
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(DecodedRenderFrame {
-        shape: vec![height as usize, width as usize, 4],
-        raw: rgba.into_raw(),
-    })
+
+    let (width, height) = (image.width() as usize, image.height() as usize);
+    let (channels, raw) = match image {
+        DynamicImage::ImageLuma8(buf) => (1usize, buf.into_raw()),
+        DynamicImage::ImageRgb8(buf) => (3, buf.into_raw()),
+        DynamicImage::ImageRgba8(buf) => (4, buf.into_raw()),
+        other => (4, other.to_rgba8().into_raw()),
+    };
+
+    let shape = if channels == 1 {
+        vec![height, width]
+    } else {
+        vec![height, width, channels]
+    };
+    Ok(DecodedRenderFrame { shape, raw })
 }
 
 fn render_packet(frame: &NativeRenderFrame) -> &[u8] {
@@ -823,20 +861,41 @@ fn vector_bool_to_py<'py>(py: Python<'py>, values: &[bool]) -> PyResult<Py<PyAny
     Ok(tensor_from_shape(py, bytes, vec![values.len()], "bool")?.unbind())
 }
 
-fn observation_size(value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
-    value.map_or(0, space_value_size)
-}
+#[cfg(test)]
+mod tests {
+    use super::{NativeRenderFrame, decode_render_bytes};
+    use image::{ColorType, ImageEncoder, codecs::png::PngEncoder};
 
-fn space_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
-    match value {
-        rlmesh_spaces::SpaceValue::Box(value) => value.nbytes(),
-        rlmesh_spaces::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
-        rlmesh_spaces::SpaceValue::MultiBinary(values) => values.len(),
-        rlmesh_spaces::SpaceValue::MultiDiscrete(values) => {
-            values.len() * std::mem::size_of::<i64>()
-        }
-        rlmesh_spaces::SpaceValue::Text(value) => value.len(),
-        rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(space_value_size).sum(),
-        rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(space_value_size).sum(),
+    fn png_frame(raw: &[u8], width: u32, height: u32, color: ColorType) -> NativeRenderFrame {
+        let mut encoded = Vec::new();
+        PngEncoder::new(&mut encoded)
+            .write_image(raw, width, height, color.into())
+            .unwrap();
+        NativeRenderFrame { png_frame: encoded }
+    }
+
+    #[test]
+    fn rgb_source_decodes_to_three_channels() {
+        // 2x1 RGB image -> Gymnasium rgb_array contract is (H, W, 3).
+        let frame = png_frame(&[1, 2, 3, 4, 5, 6], 2, 1, ColorType::Rgb8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![1, 2, 3]);
+        assert_eq!(decoded.raw, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn rgba_source_decodes_to_four_channels() {
+        let frame = png_frame(&[1, 2, 3, 4, 5, 6, 7, 8], 2, 1, ColorType::Rgba8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![1, 2, 4]);
+        assert_eq!(decoded.raw, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn grayscale_source_decodes_to_two_dimensions() {
+        let frame = png_frame(&[10, 20, 30, 40], 2, 2, ColorType::L8);
+        let decoded = decode_render_bytes(&frame).unwrap();
+        assert_eq!(decoded.shape, vec![2, 2]);
+        assert_eq!(decoded.raw, vec![10, 20, 30, 40]);
     }
 }

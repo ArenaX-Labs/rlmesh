@@ -210,13 +210,15 @@ run = [
 # ──────────────────────────────────────────────
 # Native Python stubs
 # ──────────────────────────────────────────────
+# The stub_gen bin declares `stub-gen` via required-features, so this task must
+# pass it explicitly.
 [tasks."stubs:generate"]
 description = "Generate native Python stubs"
-run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen"
 
 [tasks."stubs:check"]
 description = "Check generated native Python stubs without modifying files"
-run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --bin stub_gen -- --check"
+run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-gen --bin stub_gen -- --check"
 
 # ──────────────────────────────────────────────
 # Compatibility policy (non-mutating)

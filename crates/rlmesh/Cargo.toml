@@ -22,9 +22,13 @@ rlmesh-runtime = { workspace = true }
 tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["net"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros"] }
+tonic-health = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

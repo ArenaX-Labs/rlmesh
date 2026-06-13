@@ -278,6 +278,48 @@ def test_dry_run_does_not_require_wheels(
     assert "counter-entrypoint:trace" in output
 
 
+def test_report_wheel_selection_warns_on_stale_wheel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from datetime import datetime, timezone
+
+    from rlmesh_system.support import wheel as wheel_module
+
+    wheel_dir = tmp_path / "dist"
+    wheel_dir.mkdir()
+    wheel = wheel_dir / "rlmesh-0.1.0-cp311-abi3-linux_x86_64.whl"
+    wheel.write_bytes(b"")
+
+    monkeypatch.setattr(
+        wheel_module,
+        "newest_source_commit_time",
+        lambda _root: datetime(2100, 1, 1, tzinfo=timezone.utc),
+    )
+
+    environment = EnvironmentSpec(
+        name="basic-py311",
+        python="3.11",
+        dependencies=(),
+        dependency_args=(),
+        env={},
+        tier="basic",
+        scenarios=(),
+        warmups=1,
+        samples=1,
+        processes=1,
+        timeout_seconds=1,
+        rlmesh={},
+    )
+
+    runner.report_wheel_selection([environment], wheel_dir, runner.Renderer(plain=True))
+
+    output = capsys.readouterr().out
+    assert wheel.name in output
+    assert "WARNING" in output
+
+
 def _write_report(path: Path, measurements: list[dict[str, object]]) -> None:
     path.write_text(json.dumps({"schema_version": 1, "measurements": measurements}))
 

@@ -12,6 +12,7 @@ def test_root_namespace_is_small() -> None:
         "ServeOptions",
         "Tensor",
         "__version__",
+        "serving",
         "spaces",
         "types",
     ]

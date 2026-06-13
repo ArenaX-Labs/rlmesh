@@ -1,9 +1,5 @@
 use std::fs;
-use std::io::Write;
-use std::net::TcpListener;
-use std::path::Path;
 use std::process::Command;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -18,6 +14,23 @@ use crate::{EffectiveSandboxSpec, EnvironmentSourceRef, hf};
 const DEFAULT_CONTAINER_PORT: u16 = 50051;
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTAINER_LOG_TAIL_BYTES: usize = 64 * 1024;
+
+/// Label stamped on every container rlmesh starts.
+const OWNER_LABEL: &str = "rlmesh.sandbox=1";
+const OWNER_LABEL_FILTER: &str = "label=rlmesh.sandbox=1";
+
+/// Label key recording the OS process id that owns a container.
+const OWNER_PID_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid";
+const OWNER_PID_NS_LABEL_KEY: &str = "rlmesh.sandbox.owner-pid-ns";
+
+/// `docker ps --format` template emitting one
+/// `<id>|<owner-pid>|<owner-pid-ns>|<status>` line
+/// per container. A `|` delimiter (rather than whitespace) is used so the
+/// *empty* owner-pid field of legacy containers that predate per-process
+/// labeling is preserved as an empty middle column rather than collapsed away.
+/// `.State` is the single-word state (e.g. `running`, `exited`), matching the
+/// values [`ContainerState::status`] holds.
+const REAP_PS_FORMAT: &str = "{{.ID}}|{{.Label \"rlmesh.sandbox.owner-pid\"}}|{{.Label \"rlmesh.sandbox.owner-pid-ns\"}}|{{.State}}";
 
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
@@ -41,9 +54,10 @@ impl DockerBackend {
             &spec.build_hash[..12.min(spec.build_hash.len())]
         );
 
-        if docker_image_exists(&image_tag)?
-            && let Some(image_id) = inspect_image_id(&image_tag)?
-        {
+        // A single `docker image inspect` answers both "does it exist" and
+        // "what is its id": inspect_image_id returns Ok(None) when the image is
+        // absent, so a second existence probe is redundant.
+        if let Some(image_id) = inspect_image_id(&image_tag)? {
             return Ok(BuildArtifact { image_id });
         }
 
@@ -64,28 +78,45 @@ impl DockerBackend {
         Ok(BuildArtifact { image_id })
     }
 
-    pub fn run_container(
+    pub async fn run_container_async(
         &self,
         spec: &EffectiveSandboxSpec,
         artifact: &BuildArtifact,
     ) -> Result<StartedContainer> {
-        let host_port = reserve_host_port()?;
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
+        // The bootstrap payload carries runtime-only parameters (kwargs,
+        // num_envs, vectorization_mode, ...). It is delivered at `docker run`
+        // time via an env var rather than baked into the image, so changing a
+        // runtime parameter never rebuilds the image or invalidates the pip
+        // install layer.
+        let bootstrap_json = render_bootstrap_json(spec)?;
         let output = Command::new("docker")
             .args(docker_run_args(
                 &container_name,
-                host_port,
                 &artifact.image_id,
+                &bootstrap_json,
+                std::process::id(),
             ))
             .output()
             .context("failed to start docker container")?;
         if !output.status.success() {
+            // `docker run` can leave a created (but not started) container behind
+            // when startup fails after the container is created (e.g. a port
+            // collision). Remove it by name so we do not leak it.
+            let _ = self.remove_container(&container_name);
             bail!("docker run failed:\n{}", command_output(&output));
         }
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let host_port = match resolve_published_port(&container_id) {
+            Ok(port) => port,
+            Err(err) => {
+                let _ = self.stop_container(&container_id);
+                return Err(err);
+            }
+        };
         let address = format!("tcp://127.0.0.1:{host_port}");
-        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)) {
+        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
             let report = self.startup_failure_report(&container_id, &container_name, &err);
             let _ = self.stop_container(&container_id);
             return Err(report);
@@ -106,6 +137,40 @@ impl DockerBackend {
             self.stop_running_container(container_id)?;
         }
         self.remove_container(container_id)
+    }
+
+    /// Best-effort reap of orphaned rlmesh-owned containers.
+    ///
+    /// Only containers whose recorded owner process is gone are removed; current
+    /// process containers are excluded and individual Docker failures are skipped.
+    pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
+        let candidates = list_owned_containers()?;
+        let self_pid = std::process::id();
+        let self_pid_namespace = current_pid_namespace_id();
+        let mut reaped = Vec::new();
+        for candidate in candidates {
+            // Never reap our own containers, even if a pid-reuse coincidence
+            // were to make the liveness check ambiguous.
+            if candidate.owner_pid == Some(self_pid) {
+                continue;
+            }
+            let owner_liveness = candidate
+                .owner_pid
+                .map_or(OwnerPidLiveness::Unknown, |pid| {
+                    owner_pid_liveness(
+                        pid,
+                        candidate.owner_pid_namespace.as_deref(),
+                        self_pid_namespace.as_deref(),
+                    )
+                });
+            if !is_orphan(&candidate.status, candidate.owner_pid, owner_liveness) {
+                continue;
+            }
+            if self.stop_container(&candidate.id).is_ok() {
+                reaped.push(candidate.id);
+            }
+        }
+        Ok(reaped)
     }
 
     fn stop_running_container(&self, container_id: &str) -> Result<()> {
@@ -207,13 +272,6 @@ impl DockerBackend {
             )?;
         }
 
-        write_json(
-            &tempdir.path().join("bootstrap.json"),
-            &BootstrapConfigFile {
-                spec: BootstrapSpec::from_effective_spec(spec),
-            },
-        )?;
-
         let dockerfile = render_dockerfile(spec)?;
         fs::write(tempdir.path().join("Dockerfile"), dockerfile)
             .context("failed to write generated Dockerfile")?;
@@ -307,44 +365,62 @@ struct HfBootstrapSpec {
     vectorization_mode: String,
 }
 
-fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
-    let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
 
     loop {
-        match runtime.block_on(async {
-            tokio::time::timeout(READY_PROBE_TIMEOUT, async {
-                let mut client = EnvClient::connect(address).await?;
-                client.handshake().await?;
-                Ok::<_, rlmesh_grpc::error::Error>(())
-            })
-            .await
-        }) {
+        let probe = tokio::time::timeout(READY_PROBE_TIMEOUT, async {
+            let mut client = EnvClient::connect(address).await?;
+            client.handshake().await?;
+            Ok::<_, rlmesh_grpc::error::Error>(())
+        })
+        .await;
+
+        match probe {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(err)) => {
-                if let Some(state) = inspect_container_state(container_id)?
-                    && state.is_terminal()
-                {
-                    bail!("sandbox container exited before ready: {}", state.summary());
+                if let Some(state) = container_terminated(container_id) {
+                    bail!("sandbox container exited before ready ({state})");
                 }
                 if Instant::now() >= deadline {
                     return Err(err.into());
                 }
-                thread::sleep(Duration::from_millis(300));
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) if Instant::now() < deadline => {
-                if let Some(state) = inspect_container_state(container_id)?
-                    && state.is_terminal()
-                {
-                    bail!("sandbox container exited before ready: {}", state.summary());
+                if let Some(state) = container_terminated(container_id) {
+                    bail!("sandbox container exited before ready ({state})");
                 }
-                thread::sleep(Duration::from_millis(300));
+                tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(_) => bail!(
                 "sandbox container did not respond within {} seconds",
                 timeout.as_secs()
             ),
         }
+    }
+}
+
+/// Whether the container is *confirmed* to have reached a terminal state.
+///
+/// A transient `docker inspect` failure (e.g. the daemon is briefly busy) is
+/// treated as "not confirmed terminal" so the readiness wait keeps polling
+/// until its own deadline, rather than tearing down a container that is about
+/// to become ready. Only an inspect that succeeds and reports a terminal
+/// status returns `true`.
+/// When the container is confirmed terminal, returns its state summary for
+/// the error message; None while it is still running or not yet inspectable.
+fn container_terminated(container_id: &str) -> Option<String> {
+    confirmed_terminal_summary(inspect_container_state(container_id))
+}
+
+/// Decide whether an inspect result confirms the container is terminal. A
+/// transient inspect error or a not-yet-found container is treated as "not
+/// confirmed", so the readiness wait keeps polling instead of aborting.
+fn confirmed_terminal_summary(inspected: Result<Option<ContainerState>>) -> Option<String> {
+    match inspected {
+        Ok(Some(state)) if state.is_terminal() => Some(state.summary()),
+        _ => None,
     }
 }
 
@@ -362,24 +438,35 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     };
     let package_command = render_package_install_command(spec);
 
+    // The bootstrap payload is supplied at run time via the
+    // RLMESH_BOOTSTRAP_JSON env var (see docker_run_args), not COPY'd into the
+    // image, so runtime-only parameters never invalidate the image cache.
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
 ENV RLMESH_ENV_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
-COPY bootstrap.json /opt/rlmesh/bootstrap.json\n\
 {}\
 {}\
 \n\
 RUN sh -lc {}\n\n\
 EXPOSE {DEFAULT_CONTAINER_PORT}\n\
-ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\", \"/opt/rlmesh/bootstrap.json\"]\n",
+ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
         spec.base_image,
         source_copy,
         package_copy,
         shell_quote(&package_command),
     ))
+}
+
+/// Serialize the bootstrap payload that is injected at run time via the
+/// `RLMESH_BOOTSTRAP_JSON` env var.
+fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
+    serde_json::to_string(&BootstrapConfigFile {
+        spec: BootstrapSpec::from_effective_spec(spec),
+    })
+    .context("failed to serialize sandbox bootstrap payload")
 }
 
 fn render_package_install_command(spec: &EffectiveSandboxSpec) -> String {
@@ -422,23 +509,6 @@ fn validate_dockerfile_token(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, value)?;
-    file.write_all(b"\n")?;
-    Ok(())
-}
-
-fn reserve_host_port() -> Result<u16> {
-    let listener = TcpListener::bind("127.0.0.1:0").context("failed to reserve a local port")?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
-}
-
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -474,20 +544,214 @@ fn format_startup_failure_report(
     )
 }
 
-fn docker_run_args(container_name: &str, host_port: u16, image_id: &str) -> Vec<String> {
-    vec![
+fn docker_run_args(
+    container_name: &str,
+    image_id: &str,
+    bootstrap_json: &str,
+    owner_pid: u32,
+) -> Vec<String> {
+    let mut args = vec![
         "run".to_string(),
         "-d".to_string(),
         "--cap-drop".to_string(),
         "ALL".to_string(),
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
+        // Mark the container as rlmesh-owned so orphans can be reaped.
+        "--label".to_string(),
+        OWNER_LABEL.to_string(),
+        // Record the owning process so the reaper can tell a live owner's
+        // container apart from an orphan: only containers whose owner process
+        // is gone are reaped.
+        "--label".to_string(),
+        format!("{OWNER_PID_LABEL_KEY}={owner_pid}"),
+    ];
+    if let Some(pid_namespace) = current_pid_namespace_id() {
+        args.extend([
+            "--label".to_string(),
+            format!("{OWNER_PID_NS_LABEL_KEY}={pid_namespace}"),
+        ]);
+    }
+    args.extend([
+        // Deliver the bootstrap payload (runtime-only parameters) at run time
+        // so changing it never rebuilds the image.
+        "--env".to_string(),
+        format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
         "--name".to_string(),
         container_name.to_string(),
+        // Let docker pick a free host port (binding it atomically) instead of
+        // reserving one ourselves and racing between releasing it and `docker
+        // run`. The assigned port is read back via `docker port`.
         "-p".to_string(),
-        format!("127.0.0.1:{host_port}:{DEFAULT_CONTAINER_PORT}"),
+        format!("127.0.0.1:0:{DEFAULT_CONTAINER_PORT}"),
         image_id.to_string(),
-    ]
+    ]);
+    args
+}
+
+/// Read back the host port docker published for the container's gRPC port.
+fn resolve_published_port(container_id: &str) -> Result<u16> {
+    let output = Command::new("docker")
+        .args(["port", container_id, &DEFAULT_CONTAINER_PORT.to_string()])
+        .output()
+        .context("failed to read published docker port")?;
+    if !output.status.success() {
+        bail!(
+            "docker port failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_published_port(&stdout).ok_or_else(|| {
+        anyhow!("could not parse published port from docker port output: {stdout:?}")
+    })
+}
+
+/// Parse the host port from `docker port` output lines like
+/// `127.0.0.1:49153` or `0.0.0.0:49153` (one mapping per line).
+fn parse_published_port(raw: &str) -> Option<u16> {
+    raw.lines()
+        .filter_map(|line| line.trim().rsplit_once(':'))
+        .find_map(|(_, port)| port.trim().parse::<u16>().ok())
+}
+
+/// A rlmesh-owned container candidate for reaping: its id, the recorded owner
+/// process id (absent for legacy containers), and its docker state word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedContainer {
+    id: String,
+    owner_pid: Option<u32>,
+    owner_pid_namespace: Option<String>,
+    status: String,
+}
+
+/// List every rlmesh-owned container (running or stopped), together with its
+/// recorded owner pid and state, by filtering on the `rlmesh.sandbox` label.
+fn list_owned_containers() -> Result<Vec<OwnedContainer>> {
+    let output = Command::new("docker")
+        .args([
+            "ps",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            OWNER_LABEL_FILTER,
+            "--format",
+            REAP_PS_FORMAT,
+        ])
+        .output()
+        .context("failed to list rlmesh sandbox containers")?;
+    if !output.status.success() {
+        bail!(
+            "docker ps failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_owned_containers(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Parse pipe-delimited `docker ps --format` output (see [`REAP_PS_FORMAT`])
+/// into [`OwnedContainer`] rows. Lines without an id and a non-empty state are
+/// skipped; an empty or non-numeric owner-pid field (legacy containers) parses
+/// to `None`.
+fn parse_owned_containers(raw: &str) -> Vec<OwnedContainer> {
+    raw.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('|');
+            let id = fields.next()?.trim();
+            let owner_pid = fields.next().unwrap_or("").trim();
+            let owner_pid_namespace_or_status = fields.next().unwrap_or("").trim();
+            let status = fields.next();
+            let (owner_pid_namespace, status) = match status {
+                Some(status) => (
+                    (!owner_pid_namespace_or_status.is_empty())
+                        .then(|| owner_pid_namespace_or_status.to_string()),
+                    status.trim(),
+                ),
+                None => (None, owner_pid_namespace_or_status),
+            };
+            if id.is_empty() || status.is_empty() {
+                return None;
+            }
+            Some(OwnedContainer {
+                id: id.to_string(),
+                owner_pid: owner_pid.parse::<u32>().ok(),
+                owner_pid_namespace,
+                status: status.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Decide whether a rlmesh-owned container is an orphan that may be reaped.
+///
+/// This is the pure core of the reaper, factored out so it can be tested
+/// without Docker. Inputs are the container's docker state word, its recorded
+/// owner pid (`None` for legacy containers that predate per-process labeling),
+/// and whether that pid is currently alive.
+///
+/// Rules:
+/// - A container whose owner process is still alive is never an orphan (this is
+///   the live-session case the reaper must not disturb).
+/// - A container whose recorded owner process is gone is an orphan regardless
+///   of state (running leftovers from a hard-killed owner are exactly what we
+///   reap).
+/// - A legacy container *without* an owner-pid label is treated as an orphan
+///   only when it is not running, since we cannot prove an owner is gone; a
+///   running unlabeled container is left alone to avoid killing a live session
+///   started by an older rlmesh build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerPidLiveness {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+fn is_orphan(status: &str, owner_pid: Option<u32>, owner_liveness: OwnerPidLiveness) -> bool {
+    match owner_pid {
+        Some(_) => owner_liveness == OwnerPidLiveness::Dead,
+        None => !is_running_status(status),
+    }
+}
+
+/// Whether a docker state word denotes a running container.
+fn is_running_status(status: &str) -> bool {
+    status.eq_ignore_ascii_case("running")
+}
+
+fn owner_pid_liveness(
+    pid: u32,
+    owner_pid_namespace: Option<&str>,
+    self_pid_namespace: Option<&str>,
+) -> OwnerPidLiveness {
+    match (owner_pid_namespace, self_pid_namespace) {
+        (Some(owner), Some(current)) if owner == current => {
+            if pid_is_alive(pid) {
+                OwnerPidLiveness::Alive
+            } else {
+                OwnerPidLiveness::Dead
+            }
+        }
+        _ => OwnerPidLiveness::Unknown,
+    }
+}
+
+fn current_pid_namespace_id() -> Option<String> {
+    fs::read_link("/proc/self/ns/pid")
+        .ok()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Best-effort liveness check for a process id, std-only via `/proc/<pid>`
+/// existence (Linux). This carries an inherent pid-reuse race: if the original
+/// owner died and the OS recycled its pid for an unrelated process, the
+/// container is mistaken for live and skipped this sweep (it will be reaped on
+/// a later sweep once the recycled pid also exits). That residual race is
+/// acceptable: erring toward *not* reaping is the safe direction, since the
+/// cost is a leaked container, not a killed live session.
+fn pid_is_alive(pid: u32) -> bool {
+    std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
 fn inspect_container_state(container_id: &str) -> Result<Option<ContainerState>> {
@@ -546,14 +810,6 @@ fn tail_text(value: &str, max_bytes: usize) -> String {
     )
 }
 
-fn docker_image_exists(image_ref: &str) -> Result<bool> {
-    let output = Command::new("docker")
-        .args(["image", "inspect", image_ref])
-        .output()
-        .context("failed to inspect docker image")?;
-    Ok(output.status.success())
-}
-
 fn inspect_image_id(image_ref: &str) -> Result<Option<String>> {
     let output = Command::new("docker")
         .args(["image", "inspect", "--format", "{{.Id}}", image_ref])
@@ -571,11 +827,15 @@ fn inspect_image_id(image_ref: &str) -> Result<Option<String>> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use anyhow::anyhow;
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, docker_run_args, format_startup_failure_report,
-        parse_container_state, render_dockerfile, shell_quote, tail_text,
+        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
+        confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
+        format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
+        parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
+        render_dockerfile, shell_quote, tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -615,11 +875,15 @@ mod tests {
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
         assert!(!dockerfile.contains("COPY source"));
+        // The bootstrap payload is delivered at run time, not baked into the
+        // image, so runtime-only parameter changes never invalidate the build.
+        assert!(!dockerfile.contains("COPY bootstrap.json"));
+        assert!(!dockerfile.contains("bootstrap.json"));
     }
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", 49152, "sha256:abc");
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -627,7 +891,241 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--cap-drop"));
         assert!(args.iter().any(|arg| arg == "no-new-privileges"));
         assert!(args.iter().any(|arg| arg == "rlmesh-sandbox-test"));
-        assert!(args.iter().any(|arg| arg == "127.0.0.1:49152:50051"));
+    }
+
+    #[test]
+    fn docker_run_args_publish_ephemeral_host_port() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        // Docker assigns the host port atomically; we must not bake a fixed one in.
+        assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
+        assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:4")));
+    }
+
+    #[test]
+    fn docker_run_args_label_container_for_reaping() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        let label_idx = args.iter().position(|arg| arg == "--label");
+        assert!(label_idx.is_some(), "containers must carry an owner label");
+        assert_eq!(
+            args.get(label_idx.unwrap() + 1).map(String::as_str),
+            Some("rlmesh.sandbox=1")
+        );
+    }
+
+    #[test]
+    fn docker_run_args_stamp_owner_pid_label() {
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        // The owner-pid label must be present so the reaper can tell a live
+        // owner's container apart from an orphan.
+        assert!(
+            args.iter()
+                .any(|arg| arg == "rlmesh.sandbox.owner-pid=4242"),
+            "containers must record their owner pid: {args:?}"
+        );
+    }
+
+    #[test]
+    fn docker_run_args_stamp_owner_pid_namespace_when_available() {
+        let Some(pid_namespace) = current_pid_namespace_id() else {
+            return;
+        };
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+
+        assert!(
+            args.iter()
+                .any(|arg| arg == &format!("rlmesh.sandbox.owner-pid-ns={pid_namespace}")),
+            "containers must record their owner pid namespace when available: {args:?}"
+        );
+    }
+
+    #[test]
+    fn docker_run_args_inject_bootstrap_payload_at_run_time() {
+        let args = docker_run_args(
+            "rlmesh-sandbox-test",
+            "sha256:abc",
+            "{\"spec\":{\"kind\":\"gym\"}}",
+            4242,
+        );
+
+        let env_idx = args.iter().position(|arg| arg == "--env");
+        assert!(env_idx.is_some(), "bootstrap must be passed via --env");
+        assert_eq!(
+            args.get(env_idx.unwrap() + 1).map(String::as_str),
+            Some("RLMESH_BOOTSTRAP_JSON={\"spec\":{\"kind\":\"gym\"}}")
+        );
+    }
+
+    #[test]
+    fn render_bootstrap_json_carries_runtime_params() {
+        let mut kwargs = BTreeMap::new();
+        kwargs.insert("render_mode".to_string(), json!("rgb_array"));
+        let spec = EffectiveSandboxSpec {
+            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
+            resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
+                env_id: "CartPole-v1".to_string(),
+            }),
+            base_image: "python:3.12-slim".to_string(),
+            rlmesh_package: pip_rlmesh_package(),
+            packages: vec![],
+            imports: vec![],
+            kwargs,
+            num_envs: 4,
+            vectorization_mode: VectorizationMode::Async,
+            build_hash: "abcdef0123456789".to_string(),
+        };
+
+        let json = render_bootstrap_json(&spec).unwrap();
+        assert!(json.contains("rgb_array"));
+        assert!(json.contains("\"num_envs\":4"));
+        assert!(json.contains("async"));
+    }
+
+    #[test]
+    fn transient_inspect_failure_does_not_confirm_termination() {
+        let running = ContainerState {
+            status: "running".to_string(),
+            exit_code: None,
+            error: String::new(),
+        };
+        let exited = ContainerState {
+            status: "exited".to_string(),
+            exit_code: Some(0),
+            error: String::new(),
+        };
+
+        // Only a successful inspect reporting a terminal state confirms exit.
+        assert!(confirmed_terminal_summary(Ok(Some(exited))).is_some());
+        assert!(confirmed_terminal_summary(Ok(Some(running))).is_none());
+        // A transient inspect error or a not-yet-found container must NOT abort
+        // the readiness wait (it would tear down a healthy container).
+        assert!(confirmed_terminal_summary(Ok(None)).is_none());
+        assert!(
+            confirmed_terminal_summary(Err(anyhow!("docker inspect failed: daemon busy")))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parse_owned_containers_reads_id_pid_and_status() {
+        let parsed = parse_owned_containers(
+            "abc123|4242|pid:[4026531836]|running\ndef456|7|pid:[4026531837]|exited\n",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                OwnedContainer {
+                    id: "abc123".to_string(),
+                    owner_pid: Some(4242),
+                    owner_pid_namespace: Some("pid:[4026531836]".to_string()),
+                    status: "running".to_string(),
+                },
+                OwnedContainer {
+                    id: "def456".to_string(),
+                    owner_pid: Some(7),
+                    owner_pid_namespace: Some("pid:[4026531837]".to_string()),
+                    status: "exited".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_owned_containers_handles_legacy_unlabeled_pid() {
+        let parsed = parse_owned_containers("abc123|||running\nxyz789|notapid||exited\n");
+        assert_eq!(
+            parsed,
+            vec![
+                OwnedContainer {
+                    id: "abc123".to_string(),
+                    owner_pid: None,
+                    owner_pid_namespace: None,
+                    status: "running".to_string(),
+                },
+                OwnedContainer {
+                    id: "xyz789".to_string(),
+                    owner_pid: None,
+                    owner_pid_namespace: None,
+                    status: "exited".to_string(),
+                },
+            ]
+        );
+        assert!(parse_owned_containers("\n  \n").is_empty());
+        assert!(parse_owned_containers("").is_empty());
+    }
+
+    #[test]
+    fn is_orphan_spares_containers_owned_by_a_live_process() {
+        assert!(!is_orphan("running", Some(4242), OwnerPidLiveness::Alive));
+        assert!(!is_orphan("exited", Some(4242), OwnerPidLiveness::Alive));
+    }
+
+    #[test]
+    fn is_orphan_reaps_containers_whose_owner_is_gone() {
+        // Owner process gone: reap regardless of container state, including a
+        // running leftover from a hard-killed owner.
+        assert!(is_orphan("running", Some(4242), OwnerPidLiveness::Dead));
+        assert!(is_orphan("exited", Some(4242), OwnerPidLiveness::Dead));
+    }
+
+    #[test]
+    fn is_orphan_spares_containers_when_owner_liveness_is_unknown() {
+        assert!(!is_orphan("running", Some(4242), OwnerPidLiveness::Unknown));
+        assert!(!is_orphan("exited", Some(4242), OwnerPidLiveness::Unknown));
+    }
+
+    #[test]
+    fn is_orphan_treats_legacy_unlabeled_containers_conservatively() {
+        // No owner-pid label: only reap when not running, since we cannot prove
+        // the owner is gone. A running unlabeled container is left alone.
+        assert!(is_orphan("exited", None, OwnerPidLiveness::Unknown));
+        assert!(is_orphan("dead", None, OwnerPidLiveness::Unknown));
+        assert!(is_orphan("created", None, OwnerPidLiveness::Unknown));
+        assert!(!is_orphan("running", None, OwnerPidLiveness::Unknown));
+        // State word casing must not change the decision.
+        assert!(!is_orphan("Running", None, OwnerPidLiveness::Unknown));
+    }
+
+    #[test]
+    fn owner_pid_liveness_is_unknown_without_matching_namespace() {
+        assert_eq!(
+            owner_pid_liveness(4242, None, Some("pid:[1]")),
+            OwnerPidLiveness::Unknown
+        );
+        assert_eq!(
+            owner_pid_liveness(4242, Some("pid:[2]"), Some("pid:[1]")),
+            OwnerPidLiveness::Unknown
+        );
+        assert_eq!(
+            owner_pid_liveness(4242, Some("pid:[1]"), None),
+            OwnerPidLiveness::Unknown
+        );
+    }
+
+    #[test]
+    fn pid_is_alive_detects_current_process() {
+        // The test process itself is alive; a very high pid is overwhelmingly
+        // unlikely to exist on a normal system.
+        assert!(pid_is_alive(std::process::id()));
+        assert!(!pid_is_alive(u32::MAX));
+    }
+
+    #[test]
+    fn parse_published_port_reads_host_port() {
+        assert_eq!(parse_published_port("127.0.0.1:49153\n"), Some(49153));
+        assert_eq!(parse_published_port("0.0.0.0:50000"), Some(50000));
+        // IPv6 mappings appear with bracketed hosts; last colon-separated field is the port.
+        assert_eq!(parse_published_port("[::]:51000\n"), Some(51000));
+        // First parseable mapping wins when docker lists several bindings.
+        assert_eq!(
+            parse_published_port("0.0.0.0:49153\n[::]:49153\n"),
+            Some(49153)
+        );
+        assert_eq!(parse_published_port(""), None);
+        assert_eq!(parse_published_port("garbage"), None);
     }
 
     #[test]

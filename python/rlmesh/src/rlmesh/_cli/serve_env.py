@@ -14,12 +14,8 @@ from rlmesh._bootstrap.env import (
     import_packages,
     is_env_lookup_error,
 )
-from rlmesh._bootstrap.env import (
-    load_env_entrypoint as _bootstrap_load_env_entrypoint,
-)
-from rlmesh._bootstrap.env import (
-    load_environment as _bootstrap_load_environment,
-)
+from rlmesh.serving import load_env as _serving_load_env
+from rlmesh.serving import load_env_entrypoint as _serving_load_env_entrypoint
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike
@@ -35,6 +31,7 @@ __all__ = [
     "main",
     "serve_args_from_namespace",
     "serve_from_args",
+    "write_ready_fd",
 ]
 
 
@@ -49,6 +46,27 @@ class ServeArgs:
     package: list[str]
     verbose: bool
     kwargs: dict[str, Any] | None = None
+    ready_fd: int | None = None
+
+
+def write_ready_fd(fd: int, address: str) -> None:
+    """Write the bound server address to ``fd`` and close it.
+
+    This is the machine-readable readiness signal: supervisors pass a writable
+    file descriptor via ``--ready-fd`` and block reading it until a single line
+    (the resolved bind address, e.g. ``tcp://127.0.0.1:54321``) arrives and the
+    descriptor is closed. The write happens only after the listener is bound, so
+    a successful read means the server is accepting connections. Closing the
+    descriptor signals end-of-file so the reader unblocks deterministically.
+
+    Errors are surfaced to the caller (a bad descriptor is a supervisor
+    misconfiguration worth failing loudly on) rather than swallowed.
+    """
+    payload = f"{address}\n".encode()
+    written = 0
+    while written < len(payload):
+        written += os.write(fd, payload[written:])
+    os.close(fd)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -90,6 +108,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--kwargs-json",
         type=_json_object,
         help="JSON object passed as keyword arguments to the environment loader",
+    )
+    _ = parser.add_argument(
+        "--ready-fd",
+        type=int,
+        help=(
+            "File descriptor to write the bound address to (one line) and close "
+            "once the server is accepting connections. Lets supervisors wait for "
+            "readiness without grepping stdout."
+        ),
     )
     _ = parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
@@ -142,7 +169,7 @@ def serve_from_args(args: ServeArgs) -> int:
             if path is None:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
-                path = f"/tmp/rlmesh-{_socket_label(source_name)}.sock"
+                path = _default_unix_socket_path(source_name)
             server = EnvServer(env, path=path, transport="unix")
         else:
             server = (
@@ -159,7 +186,10 @@ def serve_from_args(args: ServeArgs) -> int:
             print(f"✓ Num envs: {args.num_envs}")
         print()
         print("Waiting for client connection...")
-        print("Press Ctrl+C to stop")
+        print("Press Ctrl+C to stop", flush=True)
+
+        if args.ready_fd is not None:
+            write_ready_fd(args.ready_fd, server.address)
 
         server.serve()
         print("\nClient disconnected")
@@ -185,13 +215,13 @@ def load_environment(
     vectorization_mode: str | None = None,
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper for the shared bootstrap env loader."""
-    return _bootstrap_load_environment(
+    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    return _serving_load_env(
         env_id,
-        package_names,
-        num_envs,
-        vectorization_mode,
-        kwargs,
+        packages=package_names,
+        num_envs=num_envs,
+        vectorization_mode=vectorization_mode,
+        kwargs=kwargs,
     )
 
 
@@ -200,8 +230,12 @@ def load_env_entrypoint(
     package_names: list[str],
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper for the shared bootstrap env entrypoint loader."""
-    return _bootstrap_load_env_entrypoint(entrypoint, package_names, kwargs)
+    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    return _serving_load_env_entrypoint(
+        entrypoint,
+        packages=package_names,
+        kwargs=kwargs,
+    )
 
 
 def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
@@ -216,6 +250,7 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
         package=_namespace_str_list(args, "package"),
         verbose=_namespace_bool(args, "verbose"),
         kwargs=_namespace_dict_or_none(args, "kwargs_json"),
+        ready_fd=_namespace_int_or_none(args, "ready_fd"),
     )
 
 
@@ -238,6 +273,13 @@ def _namespace_int(args: argparse.Namespace, name: str) -> int:
     if not isinstance(value, int):
         raise TypeError(f"expected argparse field {name!r} to be an int")
     return value
+
+
+def _namespace_int_or_none(args: argparse.Namespace, name: str) -> int | None:
+    value: object = vars(args).get(name)
+    if value is None or isinstance(value, int):
+        return value
+    raise TypeError(f"expected argparse field {name!r} to be an int | None")
 
 
 def _namespace_bool(args: argparse.Namespace, name: str) -> bool:
@@ -279,6 +321,31 @@ def _json_object(value: str) -> dict[str, Any]:
 
 def _socket_label(value: str) -> str:
     return re.sub(r"[^a-z0-9_-]+", "_", value.lower()).strip("_") or "env"
+
+
+def _default_unix_socket_path(source_name: str) -> str:
+    """Return a per-user private default path for the unix socket.
+
+    A predictable world-readable name in shared ``/tmp`` lets another local
+    user squat the socket or pre-bind it. Prefer ``$XDG_RUNTIME_DIR`` (already
+    per-user and 0700) and otherwise create a private ``0700`` temp directory,
+    so the default socket is not reachable or hijackable by other users.
+    """
+    import tempfile
+
+    filename = f"rlmesh-{_socket_label(source_name)}.sock"
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir and os.path.isdir(runtime_dir):
+        base = os.path.join(runtime_dir, "rlmesh")
+        try:
+            os.makedirs(base, mode=0o700, exist_ok=True)
+            return os.path.join(base, filename)
+        except OSError:
+            pass
+
+    private_dir = tempfile.mkdtemp(prefix="rlmesh-")
+    return os.path.join(private_dir, filename)
 
 
 if __name__ == "__main__":  # pragma: no cover

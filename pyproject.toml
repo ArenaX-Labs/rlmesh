@@ -40,9 +40,11 @@ reportMissingTypeStubs = false
 reportExplicitAny = false
 reportImplicitOverride = "none"
 
-pythonVersion = "3.11"
+pythonVersion = "3.10"
 pythonPlatform = "All"
-executionEnvironments = [{ root = "." }]
+# tools/ run only in the 3.11+ dev venv (tomllib); the 3.10 floor applies to the
+# shipped package and its user-facing tests.
+executionEnvironments = [{ root = "tools", pythonVersion = "3.11" }, { root = "." }]
 
 [tool.pytest.ini_options]
 pythonpath = [

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -141,6 +141,108 @@ def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
             rlmesh_package="local",
             package_spec="wheel.whl",
         )
+
+
+def test_sandbox_retries_close_after_transient_stop_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    stop_calls: list[str] = []
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def close(self) -> None:
+            pass
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    def flaky_stop(*, container_id: str) -> None:
+        stop_calls.append(container_id)
+        if len(stop_calls) == 1:
+            raise RuntimeError("docker daemon unavailable")
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", _start_result)
+    monkeypatch.setattr(sandbox, "_sandbox_stop_env", flaky_stop)
+
+    session = SandboxUnderTest("CartPole-v1")
+
+    # First close attempt fails while stopping the container.
+    with pytest.raises(RuntimeError, match="docker daemon unavailable"):
+        session.close()
+    # Session must not be marked closed, so the container is not leaked.
+    assert session._closed is False
+
+    # A retry succeeds and stops the container.
+    session.close()
+    assert session._closed is True
+    assert stop_calls == ["container-1", "container-1"]
+
+
+@pytest.mark.parametrize("field", ["packages", "imports"])
+def test_sandbox_rejects_bare_str_packages_imports(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_start_env",
+        lambda *_args, **_kwargs: pytest.fail("sandbox should not start"),
+    )
+
+    with pytest.raises(TypeError, match=rf"{field}= expects a sequence of strings"):
+        kwargs: dict[str, Any] = {field: "ale-py"}
+        SandboxUnderTest("CartPole-v1", **kwargs)
+
+
+@pytest.mark.parametrize("field", ["packages", "imports"])
+def test_sandbox_accepts_string_sequence_packages_imports(
+    field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rlmesh import sandbox
+
+    captured: dict[str, object] = {}
+    stopped: list[str] = []
+
+    class Remote:
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def close(self) -> None:
+            pass
+
+    class SandboxUnderTest(sandbox.SandboxSessionBase[object]):
+        _remote_env_cls: ClassVar[type[Remote]] = Remote
+
+    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return _start_result()
+
+    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_stop_env",
+        lambda *, container_id: stopped.append(container_id),
+    )
+
+    kwargs: dict[str, Any] = {field: ["ale-py"]}
+    with SandboxUnderTest("CartPole-v1", **kwargs):
+        pass
+
+    assert captured[field] == ["ale-py"]
 
 
 def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:

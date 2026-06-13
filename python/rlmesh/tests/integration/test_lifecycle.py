@@ -44,6 +44,57 @@ class TinySpecEnv(TinyEnv):
         self.spec = SimpleNamespace(id="TinySpecEnv-v0")
 
 
+class SlowStepEnv(TinyEnv):
+    """Env whose step() blocks long enough to trip a short client timeout."""
+
+    def __init__(self, step_delay: float) -> None:
+        super().__init__()
+        self._step_delay = step_delay
+
+    def step(self, action: object):
+        time.sleep(self._step_delay)
+        return super().step(action)
+
+
+class InfoKeyEnv(TinyEnv):
+    """Env that emits its own episode_ids/completed_episodes info keys."""
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, object] | None = None
+    ):
+        return 0, {"episode_ids": ["env-supplied"]}
+
+    def step(self, action: object):
+        return (
+            1,
+            1.0,
+            True,
+            False,
+            {
+                "episode_ids": ["env-supplied"],
+                "completed_episodes": "env-value",
+            },
+        )
+
+
+class RenderingEnv(TinyEnv):
+    """Env that renders a fixed-shape rgb_array frame."""
+
+    def __init__(self, channels: int) -> None:
+        super().__init__()
+        self.render_mode = "rgb_array"
+        self._channels = channels
+
+    def render(self) -> NumpyArray:
+        import numpy as np
+
+        if self._channels == 1:
+            return np.arange(4 * 3, dtype=np.uint8).reshape(4, 3)
+        return np.arange(4 * 3 * self._channels, dtype=np.uint8).reshape(
+            4, 3, self._channels
+        )
+
+
 class TinyVectorEnv:
     def __init__(self) -> None:
         from rlmesh import spaces
@@ -372,6 +423,18 @@ def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
     assert env.close_calls == 1
 
 
+@pytest.mark.parametrize("spec_id", [None, 123, object()])
+def test_env_contract_id_falls_back_for_non_string_spec_id(spec_id: object) -> None:
+    """Non-string spec.id falls back to "UnknownEnv-v1"."""
+    env = TinyEnv()
+    env.spec = SimpleNamespace(id=spec_id)  # type: ignore[attr-defined]
+    server = env_server(env)
+    try:
+        assert server.env_contract.id == "UnknownEnv-v1"
+    finally:
+        server.shutdown()
+
+
 def test_env_server_vector_contract_reports_num_envs() -> None:
     env = TinySpecVectorEnv()
     server = env_server(env)
@@ -409,6 +472,168 @@ def test_env_server_wait_returns_true_after_remote_shutdown() -> None:
         assert server.wait(timeout=3.0) is True
     finally:
         server.shutdown()
+
+    assert env.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("channels", "expected_shape"),
+    [(3, (4, 3, 3)), (4, (4, 3, 4)), (1, (4, 3))],
+)
+def test_remote_render_preserves_source_channel_count(
+    channels: int, expected_shape: tuple[int, ...]
+) -> None:
+    """remote render() preserves the source frame shape."""
+    import numpy as np
+    import rlmesh
+
+    env = RenderingEnv(channels)
+    server = env_server(env)
+    server.start()
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        try:
+            remote.reset(seed=0)
+            frame = remote.render()
+            assert frame is not None
+            array = np.asarray(frame)
+            assert array.shape == expected_shape
+            assert array.dtype == np.uint8
+        finally:
+            remote.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_preserves_env_provided_info_keys() -> None:
+    """Client telemetry does not overwrite env-provided info keys."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = InfoKeyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            _, reset_info = client.reset()
+            assert reset_info["episode_ids"] == ["env-supplied"]
+
+            _, _, _, _, step_info = client.step(0)
+            assert step_info["episode_ids"] == ["env-supplied"]
+            assert step_info["completed_episodes"] == "env-value"
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_injects_episode_ids_when_env_omits_them() -> None:
+    """When the env omits the key, rlmesh still injects its telemetry."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            _, reset_info = client.reset()
+            assert "episode_ids" in reset_info
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_step_respects_per_call_timeout() -> None:
+    """Per-call timeout bounds a blocked step."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = SlowStepEnv(step_delay=3.0)
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address)
+        try:
+            client.reset()
+            with pytest.raises(TimeoutError):
+                client.step(0, timeout_seconds=0.2)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_constructor_default_timeout_applies() -> None:
+    """A client-wide request_timeout_seconds bounds calls without a per-call arg."""
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = SlowStepEnv(step_delay=3.0)
+    server = env_server(env)
+    server.start()
+    try:
+        client = PyEnvClient(server.address, request_timeout_seconds=0.2)
+        try:
+            client.reset()
+            with pytest.raises(TimeoutError):
+                client.step(0)
+        finally:
+            client.close()
+    finally:
+        server.shutdown()
+
+
+def test_client_rejects_invalid_timeout() -> None:
+    from rlmesh._rlmesh import PyEnvClient
+
+    env = TinyEnv()
+    server = env_server(env)
+    server.start()
+    try:
+        with pytest.raises(ValueError):
+            PyEnvClient(server.address, request_timeout_seconds=float("nan"))
+    finally:
+        server.shutdown()
+
+
+def test_background_server_survives_unrelated_sigint() -> None:
+    """Background start() leaves process signal handlers alone."""
+    import os
+    import signal as signal_module
+
+    import rlmesh
+
+    if not hasattr(signal_module, "SIGINT"):
+        pytest.skip("SIGINT not available on this platform")
+
+    env = TinyEnv()
+    server = env_server(env)
+
+    previous_handler = signal_module.getsignal(signal_module.SIGINT)
+    # Swallow SIGINT in the test process so the raised KeyboardInterrupt (chained
+    # from Python's own handler) does not abort the test runner.
+    signal_module.signal(signal_module.SIGINT, lambda *_: None)
+    try:
+        server.start()
+        try:
+            remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+            remote.close()
+
+            os.kill(os.getpid(), signal_module.SIGINT)
+            time.sleep(0.5)
+
+            # Server should still be serving: a fresh client connects and steps.
+            survivor = connect_with_retry(rlmesh.RemoteEnv, server.address)
+            try:
+                observation, _ = survivor.reset(seed=7)
+                assert observation == 0
+            finally:
+                survivor.close()
+            assert server.wait(0.01) is False
+        finally:
+            server.shutdown()
+    finally:
+        signal_module.signal(signal_module.SIGINT, previous_handler)
 
     assert env.close_calls == 1
 
@@ -744,3 +969,69 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
         server.shutdown()
 
     assert calls == ["reset", "episode_end", "close"]
+
+
+def test_server_client_lifecycle_process_exits_promptly() -> None:
+    """Server shutdown returns with an open client connection."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import rlmesh
+        from rlmesh import EnvServer
+
+        class TinyEnv:
+            def __init__(self):
+                from rlmesh import spaces
+                self.observation_space = spaces.Discrete(2)
+                self.action_space = spaces.Discrete(2)
+            def reset(self, *, seed=None, options=None):
+                return 0, {}
+            def step(self, action):
+                return 1, 1.0, True, False, {}
+            def close(self):
+                pass
+
+        server = EnvServer(
+            TinyEnv(),
+            host="127.0.0.1",
+            port=0,
+            options=rlmesh.ServeOptions(allow_remote_shutdown=True),
+        )
+        server.start()
+        remote = rlmesh.RemoteEnv(server.address)
+        remote.reset(seed=1)
+        remote.step(remote.action_space.sample())
+
+        try:
+            rlmesh.Model(lambda _o: 0).run(
+                remote, max_episodes=1, close_env=True
+            )
+        except Exception:
+            pass
+        finally:
+            server.shutdown()
+
+        print("CLEAN-EXIT")
+        """
+    )
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(
+            "server/client lifecycle process hung and did not exit within 30s"
+        ) from exc
+
+    if "Operation not permitted" in result.stderr:
+        pytest.skip("local tcp bind is not permitted in this environment")
+    assert result.returncode == 0, result.stderr
+    assert "CLEAN-EXIT" in result.stdout

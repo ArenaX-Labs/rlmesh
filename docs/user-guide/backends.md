@@ -15,8 +15,8 @@ env = rlmesh.RemoteEnv("127.0.0.1:5555")
 
 ## NumPy
 
-NumPy is the recommended first choice for examples and notebooks. Tensor leaves decode to NumPy
-arrays, while Python primitives and nested containers are preserved.
+Use NumPy for examples and notebooks. Tensor leaves decode to NumPy arrays, while Python primitives
+and nested containers are preserved.
 
 ```python
 from rlmesh.numpy import RemoteEnv

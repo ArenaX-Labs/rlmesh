@@ -2,6 +2,7 @@ use crate::errors::{SpaceError, err_space};
 use crate::spaces::{SpaceKind, SpaceSpec};
 use crate::{DType, DiscreteSpec};
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct DiscreteBuilder {
     n: i64,
     start: i64,

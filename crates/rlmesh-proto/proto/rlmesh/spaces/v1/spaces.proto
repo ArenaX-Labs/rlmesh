@@ -8,11 +8,20 @@ import "rlmesh/spaces/v1/types.proto";
 // ======= Fundamental Spaces ======= //
 // ================================== //
 message BoxSpec {
+  // Field 3 (`axiswise`) is reserved. Bounds use `elementwise` when per-element
+  // values are needed.
+  reserved 3;
+  reserved "axiswise";
+
   oneof bounds {
     bool unbounded = 1;
     UniformBounds uniform = 2;
-    AxiswiseBounds axiswise = 3;
     ElementwiseBounds elementwise = 4;
+    // Dtype-typed bounds carry the bound scalars as raw little-endian bytes
+    // interpreted with the BoxSpec's dtype, so integer dtypes (int64/uint64)
+    // round-trip exactly instead of losing precision through `double`.
+    TypedUniformBounds typed_uniform = 5;
+    TypedElementwiseBounds typed_elementwise = 6;
   }
 }
 
@@ -21,14 +30,29 @@ message UniformBounds {
   double high = 2;
 }
 
-message AxiswiseBounds {
-  repeated double low = 1; // len == rank
-  repeated double high = 2;
-}
-
 message ElementwiseBounds {
   repeated double low = 1; // len == numel(shape)
   repeated double high = 2;
+}
+
+// A single low/high bound pair carried as raw bytes in the space's dtype.
+//
+// Each field holds exactly one scalar: `dtype_size(dtype)` little-endian
+// bytes, where `dtype` is the enclosing SpaceSpec's `dtype`. The bound
+// applies uniformly to every element of the Box.
+message TypedUniformBounds {
+  bytes low = 1; // one scalar, space dtype, little-endian
+  bytes high = 2; // one scalar, space dtype, little-endian
+}
+
+// Per-element low/high bounds carried as raw bytes in the space's dtype.
+//
+// Each field holds `numel(shape)` scalars in row-major (C) order, packed as
+// little-endian `dtype` elements; the byte length must equal
+// `numel * dtype_size(dtype)`.
+message TypedElementwiseBounds {
+  bytes low = 1; // numel scalars, space dtype, little-endian
+  bytes high = 2; // numel scalars, space dtype, little-endian
 }
 
 message DiscreteSpec {

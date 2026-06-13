@@ -28,6 +28,7 @@ use crate::spaces::{
     py_any_to_space_value_with_backend, space_value_to_py_with_backend,
 };
 use crate::telemetry::ProfileCollector;
+use crate::types::value_size::space_value_size as native_value_size;
 
 /// A Rust wrapper around a Python gymnasium environment.
 ///
@@ -133,11 +134,12 @@ impl PyEnvironment {
             let observation_space = crate::spaces::parse_space(&obs_space_py)?;
             let action_space = crate::spaces::parse_space(&action_space_py)?;
 
-            // Build spaces spec
             let env_id = if env_ref.hasattr("spec")? {
                 let spec = env_ref.getattr("spec")?;
                 if !spec.is_none() && spec.hasattr("id")? {
-                    spec.getattr("id")?.extract::<String>().unwrap_or_default()
+                    spec.getattr("id")?
+                        .extract::<String>()
+                        .unwrap_or_else(|_| String::from("UnknownEnv-v1"))
                 } else {
                     String::from("UnknownEnv-v1")
                 }
@@ -239,17 +241,36 @@ type VectorStepResultParts<'py> = (
 fn normalize_reset_result<'py>(
     py: Python<'py>,
     result: Bound<'py, PyAny>,
+    observation_space: &SpaceSpec,
 ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
     if let Ok(tuple) = result.cast::<PyTuple>()
         && tuple.len() == 2
     {
         let info = tuple.get_item(1)?;
         if info.is_none() || info.cast::<PyDict>().is_ok() {
-            return Ok((tuple.get_item(0)?, info));
+            let obs = tuple.get_item(0)?;
+            if !is_tuple_space(observation_space)
+                || py_any_to_space_value_with_backend(
+                    py,
+                    &obs,
+                    observation_space,
+                    ValueBackend::Auto,
+                )
+                .is_ok()
+            {
+                return Ok((obs, info));
+            }
         }
     }
 
     Ok((result, PyDict::new(py).into_any()))
+}
+
+fn is_tuple_space(space: &SpaceSpec) -> bool {
+    matches!(
+        space.spec.as_ref(),
+        Some(rlmesh_spaces::spaces::SpaceKind::Tuple(_))
+    )
 }
 
 fn normalize_single_step_result<'py>(
@@ -427,7 +448,7 @@ impl PyEnvironment {
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
                 let _ = call_guard.finish(0);
 
-                let (obs, info) = normalize_reset_result(py, result)?;
+                let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
                 let encode_guard = profiler.start("server.reset.encode_obs");
                 let observation = py_any_to_space_value_with_backend(
@@ -665,7 +686,7 @@ impl PyEnvironment {
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
                 let _ = call_guard.finish(0);
 
-                let (obs, info) = normalize_reset_result(py, result)?;
+                let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
                 let encode_guard = profiler.start("server.reset.encode_obs");
                 let observations = py_any_to_batched_space_values_with_backend(
@@ -975,29 +996,28 @@ impl RLMeshEnv for PyVectorEnv {
     }
 }
 
-fn native_value_size(value: &rlmesh_spaces::SpaceValue) -> usize {
-    match value {
-        rlmesh_spaces::SpaceValue::Box(value) => value.nbytes(),
-        rlmesh_spaces::SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
-        rlmesh_spaces::SpaceValue::MultiBinary(values) => values.len(),
-        rlmesh_spaces::SpaceValue::MultiDiscrete(values) => {
-            values.len() * std::mem::size_of::<i64>()
-        }
-        rlmesh_spaces::SpaceValue::Text(value) => value.len(),
-        rlmesh_spaces::SpaceValue::Dict(values) => values.values().map(native_value_size).sum(),
-        rlmesh_spaces::SpaceValue::Tuple(values) => values.iter().map(native_value_size).sum(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlmesh_spaces::spaces::{DiscreteBuilder, TupleSpaceBuilder};
+
+    fn discrete_space() -> SpaceSpec {
+        DiscreteBuilder::new(8).build().unwrap()
+    }
+
+    fn tuple_two_space() -> SpaceSpec {
+        TupleSpaceBuilder::new()
+            .with(DiscreteBuilder::new(8).build().unwrap())
+            .with(DiscreteBuilder::new(8).build().unwrap())
+            .build()
+            .unwrap()
+    }
 
     #[test]
     fn legacy_reset_obs_only_gets_empty_info() {
         Python::attach(|py| {
             let result = 7i64.into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result).unwrap();
+            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
 
             assert_eq!(obs.extract::<i64>().unwrap(), 7);
             assert!(info.cast::<PyDict>().unwrap().is_empty());
@@ -1010,7 +1030,7 @@ mod tests {
             let info = PyDict::new(py);
             info.set_item("seed", 123).unwrap();
             let result = (7i64, info).into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result).unwrap();
+            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
 
             assert_eq!(obs.extract::<i64>().unwrap(), 7);
             assert_eq!(
@@ -1023,6 +1043,46 @@ mod tests {
                     .unwrap(),
                 123
             );
+        });
+    }
+
+    #[test]
+    fn modern_reset_splits_two_tuple_observation_space() {
+        Python::attach(|py| {
+            let info = PyDict::new(py);
+            info.set_item("seed", 123).unwrap();
+            let result = ((7i64, 3i64), info).into_pyobject(py).unwrap().into_any();
+            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
+
+            let obs_tuple = obs.cast::<PyTuple>().unwrap();
+            assert_eq!(obs_tuple.len(), 2);
+            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
+            assert_eq!(obs_tuple.get_item(1).unwrap().extract::<i64>().unwrap(), 3);
+            assert_eq!(
+                info.cast::<PyDict>()
+                    .unwrap()
+                    .get_item("seed")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<i64>()
+                    .unwrap(),
+                123
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_obs_only_two_tuple_is_not_split_for_tuple_space() {
+        Python::attach(|py| {
+            let second = PyDict::new(py);
+            second.set_item("pos", 1).unwrap();
+            let result = (7i64, second).into_pyobject(py).unwrap().into_any();
+            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
+
+            let obs_tuple = obs.cast::<PyTuple>().unwrap();
+            assert_eq!(obs_tuple.len(), 2);
+            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
+            assert!(info.cast::<PyDict>().unwrap().is_empty());
         });
     }
 

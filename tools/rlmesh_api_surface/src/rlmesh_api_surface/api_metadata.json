@@ -89,6 +89,7 @@
     "rlmesh.torch",
     "rlmesh.jax",
     "rlmesh.sandbox",
+    "rlmesh.serving",
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs"
@@ -159,6 +160,12 @@
       "stability": "Experimental",
       "status": "Experimental.",
       "title": "rlmesh.jax"
+    },
+    "rlmesh.serving": {
+      "title": "rlmesh.serving",
+      "description": "Public helpers for loading environments to serve through RLMesh.",
+      "stability": "Experimental",
+      "status": "Experimental."
     }
   },
   "exports": {

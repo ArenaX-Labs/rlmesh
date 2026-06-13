@@ -3,10 +3,7 @@ use crate::spaces::composite::*;
 use crate::spaces::fundamental::*;
 use crate::{SpaceSpec, SpaceType};
 
-/// Validate a space specification.
-///
-/// This recursively validates all nested spaces and ensures all constraints
-/// are satisfied (shape matches bounds, dtype is valid, etc.).
+/// Validate a space spec and its children.
 pub fn validate_space(spec: &SpaceSpec) -> Result<(), SpaceError> {
     validate_space_at(spec, "$")
 }

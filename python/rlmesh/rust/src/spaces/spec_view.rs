@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyModule};
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -18,7 +19,7 @@ use crate::spaces::{
     ValueBackend, make_space, meta_map_to_pydict, parse_space, py_any_to_space_value_with_backend,
 };
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "SpaceSpec",
@@ -30,7 +31,8 @@ pub struct PySpaceSpec {
     pub(super) inner: SpaceSpec,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PySpaceSpec {
     #[getter]
@@ -78,7 +80,7 @@ impl PySpaceSpec {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(
     module = "rlmesh._rlmesh",
     name = "EnvContract",
@@ -90,7 +92,8 @@ pub struct PyEnvContract {
     inner: EnvContract,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyEnvContract {
     #[getter]
@@ -189,14 +192,15 @@ impl PyEnvContract {
     }
 }
 
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "Space")]
 pub struct PySpace {
     spec: SpaceSpec,
     rng: Mutex<StdRng>,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PySpace {
     #[getter]
@@ -226,15 +230,18 @@ impl PySpace {
         dtype_name(self.spec.dtype)
     }
 
+    #[pyo3(signature = (seed=None))]
     fn seed(&self, seed: Option<u64>) -> Option<u64> {
         let seed = seed.unwrap_or_else(rand::random);
-        *self.rng.lock().expect("rng mutex poisoned") = StdRng::seed_from_u64(seed);
+        // Recover from a poisoned mutex: a prior sample() that raised a Python
+        // exception while holding the guard must not permanently brick the RNG.
+        *self.rng.lock().unwrap_or_else(|err| err.into_inner()) = StdRng::seed_from_u64(seed);
         Some(seed)
     }
 
     #[gen_stub(override_return_type(type_repr = "object", imports = ()))]
     fn sample<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let mut rng = self.rng.lock().expect("rng mutex poisoned");
+        let mut rng = self.rng.lock().unwrap_or_else(|err| err.into_inner());
         sample_space_value(py, &self.spec, &mut rng)
     }
 
@@ -265,11 +272,14 @@ impl PySpace {
     }
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def space_spec_from_gym_space(space: object) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn space_spec_from_gym_space(py: Python<'_>, space: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -282,11 +292,14 @@ fn space_spec_from_gym_space(py: Python<'_>, space: &Bound<'_, PyAny>) -> PyResu
     .map(|value| value.into_any())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (low, high, shape, dtype=None))]
@@ -297,19 +310,46 @@ fn box_space_spec(
     shape: Vec<i64>,
     dtype: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
-    space_spec_to_pyobject(
-        py,
+    let dtype = parse_dtype(dtype, DType::Float32)?;
+    // A fully open range is unbounded regardless of dtype.
+    let builder = if low == f64::NEG_INFINITY && high == f64::INFINITY {
+        BoxSpaceBuilder::unbounded(shape)
+    } else if is_integral_dtype(dtype) && low.is_finite() && high.is_finite() {
+        // Integer/boolean dtypes with finite bounds carry exact dtype-typed
+        // bounds; the f64 args are truncated into the integer domain.
+        BoxSpaceBuilder::int_scalar(low as i64, high as i64, shape)
+    } else {
+        // Float dtypes, and half-open integer ranges, keep the double-based
+        // uniform form (an infinite side reads as unbounded at containment).
         BoxSpaceBuilder::scalar(low, high, shape)
-            .dtype(parse_dtype(dtype, DType::Float32)?)
-            .build(),
+    };
+    space_spec_to_pyobject(py, builder.dtype(dtype).build())
+}
+
+/// Integer/boolean dtypes whose Box bounds are stored as dtype-typed bytes.
+fn is_integral_dtype(dtype: DType) -> bool {
+    matches!(
+        dtype,
+        DType::Bool
+            | DType::Uint8
+            | DType::Int8
+            | DType::Int16
+            | DType::Uint16
+            | DType::Int32
+            | DType::Uint32
+            | DType::Int64
+            | DType::Uint64
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def discrete_space_spec(n: int, start: int = 0, dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (n, start=0, dtype=None))]
@@ -328,11 +368,14 @@ fn discrete_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (shape, dtype=None))]
@@ -349,11 +392,14 @@ fn multi_binary_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (nvec, dtype=None))]
@@ -370,11 +416,14 @@ fn multi_discrete_space_spec(
     )
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def text_space_spec(max_length: int, min_length: int = 1, charset: str | None = None) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 #[pyo3(signature = (max_length, min_length=1, charset=None))]
@@ -391,11 +440,14 @@ fn text_space_spec(
     space_spec_to_pyobject(py, builder.build())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn dict_space_spec(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -413,11 +465,14 @@ fn dict_space_spec(py: Python<'_>, entries: &Bound<'_, PyAny>) -> PyResult<Py<Py
     space_spec_to_pyobject(py, builder.build())
 }
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def tuple_space_spec(spaces: list[object]) -> SpaceSpec: ...
 "#
+    )
 )]
 #[pyfunction]
 fn tuple_space_spec(py: Python<'_>, spaces: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -589,6 +644,55 @@ mod tests {
             let sample = space.sample(py).unwrap();
 
             assert!(space.contains(py, &sample));
+        });
+    }
+
+    #[test]
+    fn box_sample_returns_native_tensor() {
+        use rlmesh_spaces::spaces::BoxSpaceBuilder;
+
+        Python::attach(|py| {
+            let spec = BoxSpaceBuilder::scalar(-1.0, 1.0, vec![2, 3])
+                .dtype(rlmesh_spaces::DType::Float32)
+                .build()
+                .unwrap();
+            let space = PySpace::new(spec);
+
+            // The sampler now builds a Tensor buffer directly rather than
+            // emitting nested Python lists for Python to repack.
+            let sample = space.sample(py).unwrap();
+            assert!(
+                sample
+                    .extract::<pyo3::PyRef<'_, crate::spaces::tensor::PyTensor>>()
+                    .is_ok()
+            );
+            let shape: Vec<usize> = sample.getattr("shape").unwrap().extract().unwrap();
+            assert_eq!(shape, vec![2, 3]);
+            assert!(space.contains(py, &sample));
+        });
+    }
+
+    #[test]
+    fn malformed_discrete_sample_errors_without_poisoning() {
+        use rlmesh_spaces::DType;
+        use rlmesh_spaces::DiscreteSpec;
+        use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
+
+        Python::attach(|py| {
+            // A remote contract can carry an invalid Discrete{n:0}; sampling it
+            // must raise a clean Python error rather than panicking.
+            let spec = SpaceSpec {
+                shape: vec![],
+                dtype: DType::Int64,
+                spec: Some(SpaceKind::Discrete(DiscreteSpec { n: 0, start: 0 })),
+            };
+            let space = PySpace::new(spec);
+
+            assert!(space.sample(py).is_err());
+            // The RNG mutex must not be poisoned: seeding and re-sampling still
+            // return clean errors instead of panicking.
+            assert_eq!(space.seed(Some(7)), Some(7));
+            assert!(space.sample(py).is_err());
         });
     }
 

@@ -34,9 +34,13 @@ struct RenderViewerApp {
 
 impl RenderViewerApp {
     fn new(config: RenderViewerConfig) -> Self {
+        Self::with_receiver(config, spawn_stdin_reader())
+    }
+
+    fn with_receiver(config: RenderViewerConfig, rx: Receiver<ViewerEvent>) -> Self {
         Self {
             title: config.title,
-            rx: spawn_stdin_reader(),
+            rx,
             frame: None,
             texture: TextureSlot::default(),
             status: "Waiting for render frames...".to_string(),
@@ -140,28 +144,36 @@ fn spawn_stdin_reader() -> Receiver<ViewerEvent> {
     thread::spawn(move || {
         let stdin = io::stdin();
         let mut reader = stdin.lock();
-
-        loop {
-            match read_wire_frame(&mut reader) {
-                Ok(Some(event)) => {
-                    if tx.send(event).is_err() {
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    let _ = tx.send(ViewerEvent::Exit);
-                    break;
-                }
-                Err(err) => {
-                    let _ = tx.send(ViewerEvent::Error(err));
-                    let _ = tx.send(ViewerEvent::Exit);
-                    break;
-                }
-            }
-        }
+        pump_wire_frames(&mut reader, &tx);
     });
 
     rx
+}
+
+/// Read framed viewer events from `reader` and forward them on `tx` until the
+/// stream ends, errors, or the receiver is dropped.
+fn pump_wire_frames(reader: &mut impl Read, tx: &mpsc::Sender<ViewerEvent>) {
+    loop {
+        match read_wire_frame(reader) {
+            Ok(Some(event)) => {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {
+                let _ = tx.send(ViewerEvent::Exit);
+                break;
+            }
+            Err(err) => {
+                // Surface the error and keep the window open so the user can
+                // read it. Do NOT follow with Exit: the UI drains all pending
+                // events in one frame, so an immediate Exit would close the
+                // window before the error status is ever rendered.
+                let _ = tx.send(ViewerEvent::Error(err));
+                break;
+            }
+        }
+    }
 }
 
 fn read_wire_frame(reader: &mut impl Read) -> Result<Option<ViewerEvent>, String> {
@@ -177,6 +189,14 @@ fn read_wire_frame(reader: &mut impl Read) -> Result<Option<ViewerEvent>, String
         u32::from_le_bytes(header[1..5].try_into().expect("header[1..5] is 4 bytes")) as usize;
 
     if kind == 0 {
+        // Clear carries no payload, but the header still declares a length field.
+        // Consume any declared payload bytes so a producer that writes a nonzero
+        // len cannot desynchronize the stream into spurious "unsupported event"
+        // errors on the following header.
+        if len != 0 {
+            io::copy(&mut reader.by_ref().take(len as u64), &mut io::sink())
+                .map_err(|err| format!("failed to skip viewer clear payload: {err}"))?;
+        }
         return Ok(Some(ViewerEvent::Clear));
     }
     if kind != 1 {
@@ -222,6 +242,7 @@ fn fit_to_bounds(width: f32, height: f32, bounds: egui::Vec2) -> egui::Vec2 {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::mpsc;
 
     use image::{DynamicImage, ImageBuffer, ImageFormat, Luma};
 
@@ -248,5 +269,57 @@ mod tests {
         let mut raw = Vec::new();
         image.write_to(&mut Cursor::new(&mut raw), format).unwrap();
         raw
+    }
+
+    #[test]
+    fn read_wire_frame_consumes_clear_payload() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&[0, 4, 0, 0, 0]); // kind=0, len=4
+        stream.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // payload
+        stream.extend_from_slice(&[0, 0, 0, 0, 0]); // kind=0, len=0
+        let mut reader = Cursor::new(stream);
+
+        assert!(matches!(
+            read_wire_frame(&mut reader).unwrap(),
+            Some(ViewerEvent::Clear)
+        ));
+        assert!(matches!(
+            read_wire_frame(&mut reader).unwrap(),
+            Some(ViewerEvent::Clear)
+        ));
+        assert!(read_wire_frame(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn decode_error_emits_error_without_exit() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&[1, 3, 0, 0, 0]); // kind=1, len=3
+        stream.extend_from_slice(&[0, 0, 0]); // bogus payload -> decode error
+        let mut reader = Cursor::new(stream);
+
+        let (tx, rx) = mpsc::channel();
+        pump_wire_frames(&mut reader, &tx);
+        drop(tx);
+
+        let events: Vec<ViewerEvent> = rx.into_iter().collect();
+        assert_eq!(events.len(), 1, "expected exactly one event (the error)");
+        assert!(
+            matches!(&events[0], ViewerEvent::Error(_)),
+            "expected an Error event"
+        );
+
+        let (tx2, rx2) = mpsc::channel();
+        for event in events {
+            tx2.send(event).unwrap();
+        }
+        drop(tx2);
+        let mut app = RenderViewerApp::with_receiver(
+            RenderViewerConfig {
+                title: "test".to_string(),
+            },
+            rx2,
+        );
+        app.poll_events();
+        assert!(!app.should_close, "decode error must not close the window");
     }
 }

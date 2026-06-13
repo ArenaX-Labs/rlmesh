@@ -92,16 +92,22 @@ def assert_installed_wheel() -> None:
 def run_artifact(
     name: str, *, tier: str, samples: int, warmups: int
 ) -> list[Measurement]:
-    if name == "tensor-numpy-view":
-        return tensor_numpy_view(tier=tier, samples=samples, warmups=warmups)
-    if name == "tensor-torch-view":
-        return tensor_torch_view(tier=tier, samples=samples, warmups=warmups)
+    if name in {"tensor-numpy-view", "tensor-numpy-readonly"}:
+        return tensor_numpy_readonly(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-numpy-copy":
+        return tensor_numpy_copy(tier=tier, samples=samples, warmups=warmups)
+    if name in {"tensor-torch-view", "tensor-torch-readonly"}:
+        return tensor_torch_readonly(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-torch-copy":
+        return tensor_torch_copy(tier=tier, samples=samples, warmups=warmups)
     if name == "tensor-export-copy":
         return tensor_export_copy(tier=tier, samples=samples, warmups=warmups)
     if name == "tensor-torch-export-copy":
         return tensor_torch_export_copy(tier=tier, samples=samples, warmups=warmups)
-    if name == "tensor-jax-view":
-        return tensor_jax_view(tier=tier, samples=samples, warmups=warmups)
+    if name in {"tensor-jax-view", "tensor-jax-readonly"}:
+        return tensor_jax_readonly(tier=tier, samples=samples, warmups=warmups)
+    if name == "tensor-jax-copy":
+        return tensor_jax_copy(tier=tier, samples=samples, warmups=warmups)
     if name == "tensor-dlpack-import":
         return tensor_dlpack_import(tier=tier, samples=samples, warmups=warmups)
     if name == "tensor-numpy-encode":
@@ -109,7 +115,43 @@ def run_artifact(
     raise SystemExit(f"unknown artifact {name!r}")
 
 
-def tensor_numpy_view(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+def tensor_numpy_readonly(
+    *, tier: str, samples: int, warmups: int
+) -> list[Measurement]:
+    import numpy as np
+    from rlmesh import Tensor
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        tensor = Tensor(bytes(size), [size], "uint8")
+        array = np.from_dlpack(tensor)
+        assert isinstance(array, np.ndarray)
+        assert array.shape == (size,)
+        assert array.dtype == np.uint8
+        assert not array.flags.writeable
+        assert not array.flags.owndata
+        iterations = view_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.numpy.readonly/{size_label(size)}",
+                lambda tensor=tensor: np.from_dlpack(tensor),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata=framework_metadata(
+                    framework="numpy",
+                    mode="readonly",
+                    operation="from_dlpack",
+                    size=size,
+                    path="dlpack-shared",
+                ),
+            )
+        )
+    return measurements
+
+
+def tensor_numpy_copy(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
     import numpy as np
     from rlmesh import Tensor
     from rlmesh import numpy as rlmesh_numpy
@@ -121,24 +163,31 @@ def tensor_numpy_view(*, tier: str, samples: int, warmups: int) -> list[Measurem
         assert isinstance(array, np.ndarray)
         assert array.shape == (size,)
         assert array.dtype == np.uint8
-        assert not array.flags.writeable
-        assert not array.flags.owndata
-        iterations = view_iterations_for_size(size)
+        assert array.flags.writeable
+        iterations = copy_iterations_for_size(size)
         measurements.append(
             measure(
-                f"tensor.numpy.asarray/{size_label(size)}",
+                f"tensor.numpy.copy/{size_label(size)}",
                 lambda tensor=tensor: rlmesh_numpy.asarray(tensor),
                 samples=samples,
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "zero-copy-view"},
+                metadata=framework_metadata(
+                    framework="numpy",
+                    mode="copy",
+                    operation="asarray",
+                    size=size,
+                    path="writable-copy",
+                ),
             )
         )
     return measurements
 
 
-def tensor_torch_view(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+def tensor_torch_readonly(
+    *, tier: str, samples: int, warmups: int
+) -> list[Measurement]:
     import torch
     from rlmesh import Tensor
     from rlmesh import torch as rlmesh_torch
@@ -153,13 +202,52 @@ def tensor_torch_view(*, tier: str, samples: int, warmups: int) -> list[Measurem
         iterations = view_iterations_for_size(size)
         measurements.append(
             measure(
-                f"tensor.torch.as_tensor/{size_label(size)}",
+                f"tensor.torch.readonly/{size_label(size)}",
                 lambda tensor=tensor: rlmesh_torch.as_tensor(tensor),
                 samples=samples,
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "zero-copy-view"},
+                metadata=framework_metadata(
+                    framework="torch",
+                    mode="readonly",
+                    operation="as_tensor",
+                    size=size,
+                    path="dlpack-shared",
+                ),
+            )
+        )
+    return measurements
+
+
+def tensor_torch_copy(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+    import torch
+    from rlmesh import Tensor
+    from rlmesh import torch as rlmesh_torch
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        tensor = Tensor(bytes(size), [size], "uint8")
+        copied = rlmesh_torch.as_tensor(tensor, copy=True)
+        assert isinstance(copied, torch.Tensor)
+        assert tuple(copied.shape) == (size,)
+        assert copied.dtype == torch.uint8
+        iterations = copy_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.torch.copy/{size_label(size)}",
+                lambda tensor=tensor: rlmesh_torch.as_tensor(tensor, copy=True),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata=framework_metadata(
+                    framework="torch",
+                    mode="copy",
+                    operation="as_tensor(copy=True)",
+                    size=size,
+                    path="writable-copy",
+                ),
             )
         )
     return measurements
@@ -180,7 +268,13 @@ def tensor_export_copy(*, tier: str, samples: int, warmups: int) -> list[Measure
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "copy"},
+                metadata=framework_metadata(
+                    framework="native",
+                    mode="copy",
+                    operation="bytes(memoryview)",
+                    size=size,
+                    path="byte-export",
+                ),
             )
         )
     return measurements
@@ -206,13 +300,19 @@ def tensor_torch_export_copy(
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "torch-roundtrip"},
+                metadata=framework_metadata(
+                    framework="torch",
+                    mode="copy",
+                    operation="from_tensor+as_tensor",
+                    size=size,
+                    path="torch-roundtrip",
+                ),
             )
         )
     return measurements
 
 
-def tensor_jax_view(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+def tensor_jax_readonly(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
     import jax
     from rlmesh import Tensor
     from rlmesh import jax as rlmesh_jax
@@ -226,14 +326,54 @@ def tensor_jax_view(*, tier: str, samples: int, warmups: int) -> list[Measuremen
         iterations = view_iterations_for_size(size)
         measurements.append(
             measure(
-                f"tensor.jax.asarray/{size_label(size)}",
+                f"tensor.jax.readonly/{size_label(size)}",
                 # block_until_ready keeps async dispatch honest in the timing.
                 lambda tensor=tensor: rlmesh_jax.asarray(tensor).block_until_ready(),
                 samples=samples,
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "dlpack-shared"},
+                metadata=framework_metadata(
+                    framework="jax",
+                    mode="readonly",
+                    operation="asarray",
+                    size=size,
+                    path="dlpack-shared",
+                ),
+            )
+        )
+    return measurements
+
+
+def tensor_jax_copy(*, tier: str, samples: int, warmups: int) -> list[Measurement]:
+    import jax
+    from rlmesh import Tensor
+    from rlmesh import jax as rlmesh_jax
+
+    measurements = []
+    for size in sizes_for_tier(tier):
+        tensor = Tensor(bytes(size), [size], "uint8")
+        copied = rlmesh_jax.asarray(tensor).copy().block_until_ready()
+        assert isinstance(copied, jax.Array)
+        assert copied.shape == (size,)
+        iterations = copy_iterations_for_size(size)
+        measurements.append(
+            measure(
+                f"tensor.jax.copy/{size_label(size)}",
+                lambda tensor=tensor: rlmesh_jax.asarray(tensor)
+                .copy()
+                .block_until_ready(),
+                samples=samples,
+                warmups=warmups,
+                iterations=iterations,
+                bytes_per_iter=size,
+                metadata=framework_metadata(
+                    framework="jax",
+                    mode="copy",
+                    operation="asarray.copy",
+                    size=size,
+                    path="device-copy",
+                ),
             )
         )
     return measurements
@@ -257,7 +397,13 @@ def tensor_dlpack_import(*, tier: str, samples: int, warmups: int) -> list[Measu
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "copy-import"},
+                metadata=framework_metadata(
+                    framework="native",
+                    mode="copy",
+                    operation="from_dlpack",
+                    size=size,
+                    path="copy-import",
+                ),
             )
         )
     return measurements
@@ -282,10 +428,33 @@ def tensor_numpy_encode(*, tier: str, samples: int, warmups: int) -> list[Measur
                 warmups=warmups,
                 iterations=iterations,
                 bytes_per_iter=size,
-                metadata={"path": "copy"},
+                metadata=framework_metadata(
+                    framework="numpy",
+                    mode="copy",
+                    operation="from_array",
+                    size=size,
+                    path="copy-import",
+                ),
             )
         )
     return measurements
+
+
+def framework_metadata(
+    *,
+    framework: str,
+    mode: str,
+    operation: str,
+    size: int,
+    path: str,
+) -> dict[str, object]:
+    return {
+        "framework": framework,
+        "mode": mode,
+        "operation": operation,
+        "size": size_label(size),
+        "path": path,
+    }
 
 
 def measure(

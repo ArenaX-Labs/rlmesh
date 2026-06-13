@@ -135,3 +135,104 @@ def test_gymnasium_nested_structure_roundtrip() -> None:
     assert isinstance(restored.spaces["obs"], gymnasium.spaces.Box)
     assert isinstance(restored.spaces["choice"], gymnasium.spaces.Discrete)
     assert isinstance(restored.spaces["pair"], gymnasium.spaces.Tuple)
+
+
+def test_gymnasium_int64_box_roundtrips_2_pow_63_minus_1_exactly() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    top = np.int64(2**63 - 1)
+    source = gymnasium.spaces.Box(
+        low=np.int64(0),
+        high=top,
+        shape=(2,),
+        dtype=np.int64,
+    )
+
+    space = spaces.from_gymnasium_space(source)
+    assert isinstance(space, spaces.Box)
+    assert space.dtype == "int64"
+
+    restored = spaces.to_gymnasium_space(space)
+    assert isinstance(restored, gymnasium.spaces.Box)
+    assert restored.dtype == np.dtype("int64")
+    # The bound survives exactly; an f64 round-trip would round it up to 2**63.
+    assert int(restored.high.max()) == 2**63 - 1
+    np.testing.assert_array_equal(restored.high, source.high)
+    np.testing.assert_array_equal(restored.low, source.low)
+
+
+def test_gymnasium_int64_elementwise_box_roundtrips_exactly() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    source = gymnasium.spaces.Box(
+        low=np.array([0, 100], dtype=np.int64),
+        high=np.array([10, 2**63 - 1], dtype=np.int64),
+        dtype=np.int64,
+    )
+
+    space = spaces.from_gymnasium_space(source)
+    restored = spaces.to_gymnasium_space(space)
+
+    np.testing.assert_array_equal(restored.low, source.low)
+    np.testing.assert_array_equal(restored.high, source.high)
+
+
+def test_gymnasium_uint64_box_roundtrips_full_range_exactly() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    source = gymnasium.spaces.Box(
+        low=np.uint64(0),
+        high=np.uint64(2**64 - 1),
+        shape=(1,),
+        dtype=np.uint64,
+    )
+
+    space = spaces.from_gymnasium_space(source)
+    restored = spaces.to_gymnasium_space(space)
+
+    assert restored.dtype == np.dtype("uint64")
+    assert int(restored.high.max()) == 2**64 - 1
+    np.testing.assert_array_equal(restored.high, source.high)
+
+
+def test_gymnasium_shape_2_1_box_is_not_misclassified() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    source = gymnasium.spaces.Box(
+        low=np.array([[0.0], [1.0]], dtype=np.float32),
+        high=np.array([[1.0], [2.0]], dtype=np.float32),
+        shape=(2, 1),
+        dtype=np.float32,
+    )
+
+    space = spaces.from_gymnasium_space(source)
+    restored = spaces.to_gymnasium_space(space)
+
+    assert isinstance(restored, gymnasium.spaces.Box)
+    assert restored.shape == (2, 1)
+    np.testing.assert_array_equal(restored.low, source.low)
+    np.testing.assert_array_equal(restored.high, source.high)
+
+
+def test_gymnasium_rank2_scalar_low_broadcast_matches_gymnasium() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh import spaces
+
+    # gymnasium broadcasts the scalar low across the (2,3) shape; the rlmesh
+    # round-trip must reproduce that exact per-element broadcast.
+    source = gymnasium.spaces.Box(
+        low=0.0,
+        high=np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+        shape=(2, 3),
+        dtype=np.float32,
+    )
+
+    space = spaces.from_gymnasium_space(source)
+    restored = spaces.to_gymnasium_space(space)
+
+    np.testing.assert_array_equal(restored.low, source.low)
+    np.testing.assert_array_equal(restored.high, source.high)

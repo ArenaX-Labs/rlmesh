@@ -2,6 +2,7 @@ use crate::errors::{SpaceError, err_space};
 use crate::spaces::{SpaceKind, SpaceSpec, validate_space};
 use crate::{DType, MultiDiscreteNvec, MultiDiscreteSpec};
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct MultiDiscreteBuilder {
     dtype: DType,
     shape: Vec<i64>,

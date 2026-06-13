@@ -32,6 +32,7 @@ from rlmesh_system.support.reports import (
     compare_reports,
     regression_exit_code,
 )
+from rlmesh_system.support.wheel import inspect_wheel
 
 ROOT = Path(__file__).resolve().parents[4]
 SYSTEM_DIR = ROOT / "tests" / "system"
@@ -152,6 +153,36 @@ def main(argv: list[str] | None = None) -> int:
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
+def report_wheel_selection(
+    environments: list[EnvironmentSpec],
+    wheel_dir: Path,
+    renderer: Renderer,
+) -> None:
+    """Print the wheel each Python version will install and warn if it is stale.
+
+    ``uv pip install --find-links`` silently installs whatever matching wheel
+    sits in ``wheel_dir``; a leftover pre-build wheel produces misleading
+    numbers. Surface the selection (and a loud warning when it predates the
+    sources) so a stale wheel never goes unnoticed.
+    """
+    seen: set[str] = set()
+    for environment in environments:
+        if environment.python in seen:
+            continue
+        seen.add(environment.python)
+        status = inspect_wheel(wheel_dir, environment.python, root=ROOT)
+        if status is None:
+            renderer.print(
+                f"python {environment.python}: no matching rlmesh wheel in {wheel_dir}"
+            )
+            continue
+        renderer.print(f"python {environment.python}:")
+        for line in status.header_lines():
+            highlight = line.startswith("WARNING") and renderer.rich
+            renderer.print(f"  [bold red]{line}[/]" if highlight else f"  {line}")
+    renderer.print()
+
+
 def print_dry_run(
     environments: list[EnvironmentSpec],
     spec: object,
@@ -219,6 +250,8 @@ def run_environments(
         raise SystemExit(
             f"no rlmesh wheels found in {wheel_dir}; run build:python:local first"
         )
+
+    report_wheel_selection(environments, wheel_dir, renderer)
 
     work_dir.mkdir(parents=True, exist_ok=True)
     report_dir = work_dir / "reports"

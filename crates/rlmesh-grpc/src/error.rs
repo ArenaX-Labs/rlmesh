@@ -5,6 +5,7 @@ use thiserror::Error;
 
 /// Top-level error type for rlmesh-grpc operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// Transport-level error (connection, I/O, etc.)
     #[error("transport error: {0}")]
@@ -17,6 +18,10 @@ pub enum Error {
     /// Environment error (from the environment itself)
     #[error("environment error: {0}")]
     Environment(#[from] EnvError),
+
+    /// Model error (from a served model handler)
+    #[error("model error: {0}")]
+    Model(#[from] ModelError),
 
     /// Operation timed out
     #[error("timeout after {0:?}")]
@@ -41,6 +46,12 @@ impl Error {
         match self {
             Self::Timeout(_) => true,
             Self::Environment(error) => error.is_recoverable,
+            Self::Model(error) => error.is_recoverable,
+            Self::Transport(TransportError::Unavailable(_)) => true,
+            Self::Transport(TransportError::Status {
+                code: tonic::Code::DeadlineExceeded,
+                ..
+            }) => true,
             Self::Transport(TransportError::Io(_)) => false,
             Self::Transport(TransportError::ConnectionClosed) => false,
             _ => false,
@@ -48,8 +59,44 @@ impl Error {
     }
 }
 
+/// Map a `tonic::Status` from an established connection into a structured
+/// [`enum@Error`], preserving the gRPC status code so callers can distinguish a
+/// retryable condition (e.g. `Unavailable`) from a permanent one (e.g.
+/// `Unimplemented`) instead of seeing every failure as `failed to connect`.
+pub fn status_to_grpc_error(status: tonic::Status) -> Error {
+    use tonic::Code;
+
+    let message = status.message().to_string();
+    match status.code() {
+        // Retryable / transport-ish conditions.
+        Code::Unavailable | Code::ResourceExhausted | Code::Aborted => {
+            Error::Transport(TransportError::Unavailable(message))
+        }
+        // No duration is available on a server-reported deadline, so keep the
+        // structured code (recoverable) instead of fabricating Timeout(0ns).
+        Code::DeadlineExceeded => Error::Transport(TransportError::Status {
+            code: status.code(),
+            message,
+        }),
+        Code::Cancelled => Error::Cancelled(message),
+        Code::Unauthenticated | Code::PermissionDenied => {
+            Error::Transport(TransportError::Status {
+                code: status.code(),
+                message,
+            })
+        }
+        // Everything else (Unimplemented, Internal, InvalidArgument, ...) is a
+        // permanent protocol/server error; keep the structured code.
+        _ => Error::Transport(TransportError::Status {
+            code: status.code(),
+            message,
+        }),
+    }
+}
+
 /// Transport-level errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TransportError {
     /// I/O error
     #[error("io error: {0}")]
@@ -74,10 +121,24 @@ pub enum TransportError {
     /// Message too large
     #[error("message too large: {size} > {max}")]
     MessageTooLarge { size: usize, max: usize },
+
+    /// Server is temporarily unavailable (retryable).
+    #[error("server unavailable: {0}")]
+    Unavailable(String),
+
+    /// A gRPC status returned on an established connection, preserving its code.
+    #[error("grpc status {code:?}: {message}")]
+    Status {
+        /// The gRPC status code.
+        code: tonic::Code,
+        /// The status message.
+        message: String,
+    },
 }
 
 /// Protocol-level errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ProtocolError {
     /// Failed to encode message
     #[error("encode error: {0}")]
@@ -125,6 +186,7 @@ impl std::fmt::Display for EnvError {
 
 /// Environment error codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EnvErrorCode {
     /// Unspecified error
     Unspecified,
@@ -205,8 +267,62 @@ impl From<EnvErrorCode> for rlmesh_proto::env::v1::EnvErrorCode {
     }
 }
 
+/// Model errors (from a served model handler).
+#[derive(Debug, Error)]
+pub struct ModelError {
+    /// Error code
+    pub code: ModelErrorCode,
+    /// Human-readable message
+    pub message: String,
+    /// Whether this error is recoverable
+    pub is_recoverable: bool,
+    /// Debug information
+    pub debug_info: Option<String>,
+}
+
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{:?}] {}", self.code, self.message)
+    }
+}
+
+/// Model error codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelErrorCode {
+    /// Unspecified error
+    Unspecified,
+    /// The request was invalid
+    InvalidRequest,
+    /// The route was not configured
+    NotConfigured,
+    /// The model is busy with another operation
+    Busy,
+    /// Internal error
+    Internal,
+    /// Operation was cancelled
+    Cancelled,
+    /// The model/route was closed
+    Closed,
+}
+
+impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
+    fn from(code: rlmesh_proto::model::v1::ModelErrorCode) -> Self {
+        use rlmesh_proto::model::v1::ModelErrorCode as ProtoCode;
+        match code {
+            ProtoCode::Unspecified => ModelErrorCode::Unspecified,
+            ProtoCode::InvalidRequest => ModelErrorCode::InvalidRequest,
+            ProtoCode::NotConfigured => ModelErrorCode::NotConfigured,
+            ProtoCode::Busy => ModelErrorCode::Busy,
+            ProtoCode::Internal => ModelErrorCode::Internal,
+            ProtoCode::Cancelled => ModelErrorCode::Cancelled,
+            ProtoCode::Closed => ModelErrorCode::Closed,
+        }
+    }
+}
+
 /// Server-specific errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ServerError {
     /// Server already running
     #[error("server already running")]
@@ -227,6 +343,7 @@ pub enum ServerError {
 
 /// Client-specific errors.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ClientError {
     /// Not connected
     #[error("not connected")]
@@ -247,3 +364,53 @@ pub enum ClientError {
 
 /// Result type alias for rlmesh-grpc operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod status_mapping_tests {
+    use super::*;
+    use tonic::{Code, Status};
+
+    #[test]
+    fn unavailable_status_maps_to_recoverable_transport_error() {
+        let error = status_to_grpc_error(Status::new(Code::Unavailable, "try later"));
+        assert!(error.is_recoverable(), "Unavailable must be retryable");
+        match error {
+            Error::Transport(TransportError::Unavailable(message)) => {
+                assert_eq!(message, "try later");
+            }
+            other => panic!("expected Unavailable transport error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unimplemented_status_preserves_code_and_is_not_recoverable() {
+        let error = status_to_grpc_error(Status::new(Code::Unimplemented, "no such method"));
+        assert!(!error.is_recoverable(), "Unimplemented must be permanent");
+        match error {
+            Error::Transport(TransportError::Status { code, message }) => {
+                assert_eq!(code, Code::Unimplemented);
+                assert_eq!(message, "no such method");
+            }
+            other => panic!("expected structured Status error, got {other:?}"),
+        }
+        // It must NOT be misreported as a connect failure.
+        let error = status_to_grpc_error(Status::new(Code::Unimplemented, "x"));
+        assert!(!error.to_string().contains("failed to connect"));
+    }
+
+    #[test]
+    fn deadline_exceeded_status_keeps_code_and_recoverability() {
+        let error = status_to_grpc_error(Status::new(Code::DeadlineExceeded, "slow"));
+        assert!(matches!(
+            error,
+            Error::Transport(TransportError::Status {
+                code: Code::DeadlineExceeded,
+                ..
+            })
+        ));
+        assert!(error.is_recoverable());
+        // The message must not fabricate a zero duration.
+        assert!(!error.to_string().contains("0ns"));
+        assert!(error.to_string().contains("slow"));
+    }
+}

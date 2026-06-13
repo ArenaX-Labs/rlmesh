@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Protocol, SupportsFloat, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Protocol,
+    SupportsFloat,
+    TypeAlias,
+    TypeVar,
+    Union,
+)
 
-from ._rlmesh import Tensor as _Tensor
+if TYPE_CHECKING:
+    from ._rlmesh import Tensor as _Tensor
 
 PrimitiveValue: TypeAlias = None | bool | int | float | str | bytes
-Value: TypeAlias = (
-    PrimitiveValue | _Tensor | list["Value"] | tuple["Value", ...] | dict[str, "Value"]
-)
+Value: TypeAlias = Union[
+    PrimitiveValue,
+    "_Tensor",
+    list["Value"],
+    tuple["Value", ...],
+    dict[str, "Value"],
+]
 Metadata: TypeAlias = Mapping[str, object]
 InfoDict: TypeAlias = dict[str, object]
 

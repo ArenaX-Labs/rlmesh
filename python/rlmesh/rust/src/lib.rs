@@ -7,13 +7,20 @@ mod spaces;
 mod telemetry;
 mod types;
 
+#[cfg(feature = "viewer")]
 use std::ffi::OsString;
+#[cfg(feature = "stub-gen")]
 use std::path::PathBuf;
 
+#[cfg(feature = "viewer")]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use pyo3_stub_gen::derive::{gen_stub_pyfunction, gen_type_alias_from_python};
+#[cfg(all(feature = "viewer", feature = "stub-gen"))]
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
+#[cfg(feature = "stub-gen")]
+use pyo3_stub_gen::derive::gen_type_alias_from_python;
 
+#[cfg(feature = "stub-gen")]
 gen_type_alias_from_python!(
     "rlmesh._rlmesh",
     r#"
@@ -24,11 +31,17 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
-#[gen_stub_pyfunction(
-    module = "rlmesh._rlmesh",
-    python = r#"
+// Viewer support is feature-gated (on by default) so a lean wheel can opt out
+// of linking egui/eframe via `--no-default-features`.
+#[cfg(feature = "viewer")]
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
 def run_cli(args: list[str]) -> int: ...
 "#
+    )
 )]
 #[pyfunction]
 fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
@@ -46,20 +59,17 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
 #[pymodule]
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Register custom exception types
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+
     types::errors::register_exceptions(m)?;
     spaces::register_classes(m)?;
     m.add_class::<lifecycle::PyServeOptions>()?;
 
-    // Add server classes
     m.add_class::<server::PyEnvServer>()?;
-
-    // Add model classes
     m.add_class::<model::PyModel>()?;
-
-    // Add client classes
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
+    #[cfg(feature = "viewer")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
@@ -67,11 +77,13 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
+#[cfg(feature = "stub-gen")]
 pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     pyo3_stub_gen::StubInfo::from_pyproject_toml(resolve_pyproject_toml(&manifest_dir))
 }
 
+#[cfg(feature = "stub-gen")]
 fn resolve_pyproject_toml(manifest_dir: &std::path::Path) -> PathBuf {
     let mut candidates = vec![
         manifest_dir.join("../pyproject.toml"),

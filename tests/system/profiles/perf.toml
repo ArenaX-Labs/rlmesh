@@ -6,12 +6,7 @@ environments = ["perf-numpy-py311", "perf-torch-py311", "perf-jax-py311"]
 tier = "basic"
 python = "3.11"
 dependencies = ["numpy"]
-scenarios = [
-  "perf-tensor-numpy-view",
-  "perf-tensor-export-copy",
-  "perf-tensor-numpy-encode",
-  "perf-tensor-dlpack-import",
-]
+scenarios = ["perf-tensor-numpy-readonly", "perf-tensor-numpy-copy"]
 warmups = 2
 samples = 5
 timeout_seconds = 300
@@ -21,7 +16,7 @@ tier = "torch"
 python = "3.11"
 dependencies = ["numpy", "torch"]
 dependency_args = ["--torch-backend", "cpu"]
-scenarios = ["perf-tensor-torch-view", "perf-tensor-torch-export-copy"]
+scenarios = ["perf-tensor-torch-readonly", "perf-tensor-torch-copy"]
 warmups = 2
 samples = 5
 timeout_seconds = 420
@@ -30,42 +25,37 @@ timeout_seconds = 420
 tier = "jax"
 python = "3.11"
 dependencies = ["numpy", "jax"]
-scenarios = ["perf-tensor-jax-view"]
+scenarios = ["perf-tensor-jax-readonly", "perf-tensor-jax-copy"]
 warmups = 2
 samples = 5
 timeout_seconds = 420
 
-[scenarios.perf-tensor-numpy-view]
+[scenarios.perf-tensor-numpy-readonly]
 kind = "artifact"
-description = "NumPy zero-copy tensor view timing."
-artifact = "tensor-numpy-view"
+description = "NumPy read-only shared tensor view timing."
+artifact = "tensor-numpy-readonly"
 
-[scenarios.perf-tensor-export-copy]
+[scenarios.perf-tensor-numpy-copy]
 kind = "artifact"
-description = "memoryview byte export copy timing."
-artifact = "tensor-export-copy"
+description = "Tensor -> NumPy writable copy timing."
+artifact = "tensor-numpy-copy"
 
-[scenarios.perf-tensor-numpy-encode]
+[scenarios.perf-tensor-torch-readonly]
 kind = "artifact"
-description = "NumPy array -> Tensor encode copy timing."
-artifact = "tensor-numpy-encode"
+description = "Torch shared tensor view timing."
+artifact = "tensor-torch-readonly"
 
-[scenarios.perf-tensor-dlpack-import]
+[scenarios.perf-tensor-torch-copy]
 kind = "artifact"
-description = "Tensor.from_dlpack copy-import timing from a NumPy producer."
-artifact = "tensor-dlpack-import"
+description = "Tensor -> Torch writable copy timing."
+artifact = "tensor-torch-copy"
 
-[scenarios.perf-tensor-torch-view]
+[scenarios.perf-tensor-jax-readonly]
 kind = "artifact"
-description = "Torch DLPack zero-copy tensor view timing."
-artifact = "tensor-torch-view"
+description = "JAX shared immutable tensor import timing."
+artifact = "tensor-jax-readonly"
 
-[scenarios.perf-tensor-torch-export-copy]
+[scenarios.perf-tensor-jax-copy]
 kind = "artifact"
-description = "Torch tensor roundtrip (export + view) timing."
-artifact = "tensor-torch-export-copy"
-
-[scenarios.perf-tensor-jax-view]
-kind = "artifact"
-description = "JAX DLPack import timing (shared for aligned buffers)."
-artifact = "tensor-jax-view"
+description = "Tensor -> JAX copy timing."
+artifact = "tensor-jax-copy"

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -106,10 +107,232 @@ async fn fatal_transform_hook_failure_closes_route() {
     assert!(model.closed.load(Ordering::SeqCst));
 }
 
+#[tokio::test]
+async fn driver_threads_deterministic_reset_seeds() {
+    let mut spec = one_episode_spec();
+    spec.base_seed = Some(1234);
+    spec.max_episodes = Some(2);
+
+    let first_env = TestEnv::default();
+    let first_model = TestModel::default();
+    RuntimeDriver::new(
+        spec.clone(),
+        first_env.clone(),
+        first_model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let second_env = TestEnv::default();
+    let second_model = TestModel::default();
+    RuntimeDriver::new(
+        spec,
+        second_env.clone(),
+        second_model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let first_seeds = first_env
+        .reset_seeds
+        .lock()
+        .expect("reset seed recorder lock poisoned")
+        .clone();
+    let second_seeds = second_env
+        .reset_seeds
+        .lock()
+        .expect("reset seed recorder lock poisoned")
+        .clone();
+
+    assert_eq!(first_seeds, second_seeds);
+    assert_eq!(first_seeds.len(), 2);
+    assert_eq!(first_seeds[0].len(), 1);
+    assert_eq!(first_seeds[1].len(), 1);
+    assert_ne!(first_seeds[0], first_seeds[1]);
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("simulated transport failure")]
+struct FakeTransportError;
+
+#[test]
+fn env_rpc_preserves_recoverability_and_source() {
+    let recoverable =
+        RuntimeError::env_rpc_with_recoverability("env.step", 7, true, FakeTransportError);
+    assert!(recoverable.is_recoverable());
+
+    let fatal = RuntimeError::env_rpc("env.reset", 0, FakeTransportError);
+    assert!(!fatal.is_recoverable());
+
+    // The structured source is preserved and downcastable, not flattened to a
+    // string.
+    use std::error::Error;
+    let source = recoverable.source().expect("EnvRpc carries a source");
+    assert!(source.downcast_ref::<FakeTransportError>().is_some());
+}
+
+#[test]
+fn model_rpc_preserves_source() {
+    let error = RuntimeError::model_rpc("local-model", FakeTransportError);
+    assert!(!error.is_recoverable());
+
+    let recoverable =
+        RuntimeError::model_rpc_with_recoverability("endpoint-a", true, FakeTransportError);
+    assert!(recoverable.is_recoverable());
+
+    use std::error::Error;
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<FakeTransportError>())
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn cancellation_reason_is_threaded_from_caller() {
+    use tokio_util::sync::CancellationToken;
+
+    let env = TestEnv::default();
+    let model = TestModel::default();
+    let cancellation = CancellationToken::new();
+    // Pre-cancel so the first cancellation check trips during the session.
+    cancellation.cancel();
+
+    let error = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run_with_cancellation_reason(cancellation, "operator requested shutdown")
+    .await
+    .unwrap_err();
+
+    let RuntimeError::RouteCancelled { reason, .. } = error else {
+        panic!("expected RouteCancelled, got {error:?}");
+    };
+    assert_eq!(reason, "operator requested shutdown");
+}
+
+#[tokio::test]
+async fn default_cancellation_reason_does_not_claim_sibling_failure() {
+    use tokio_util::sync::CancellationToken;
+
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+
+    let error = RuntimeDriver::new(
+        one_episode_spec(),
+        TestEnv::default(),
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run_with_cancellation(cancellation)
+    .await
+    .unwrap_err();
+
+    let RuntimeError::RouteCancelled { reason, .. } = error else {
+        panic!("expected RouteCancelled, got {error:?}");
+    };
+    assert!(
+        !reason.contains("sibling"),
+        "default reason should not fabricate a sibling-route failure: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn observation_emitted_always_carries_transformed_payload() {
+    let env = TestEnv {
+        terminal_after: 2,
+        ..Default::default()
+    };
+    let model = TestModel::default();
+    const MARKER: u8 = 0xAB;
+    let hooks = Arc::new(RecordingHooks {
+        observation_marker: Some(MARKER),
+        ..Default::default()
+    });
+
+    RuntimeDriver::new(one_episode_spec(), env, model.clone(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    let emitted = hooks
+        .emitted_observations
+        .lock()
+        .expect("emitted observation recorder lock poisoned")
+        .clone();
+
+    // Model saw: initial reset observation + the step observation for the
+    // non-terminal step. (The terminal step's observation is never sent.)
+    assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
+    // Every emitted observation must be the transformed payload the model
+    // actually received, i.e. carry the marker byte.
+    for (_, bytes) in &emitted {
+        assert_eq!(
+            bytes.first().copied(),
+            Some(MARKER),
+            "observation_emitted exposed pre-transform bytes: {bytes:?}"
+        );
+    }
+    // The model received exactly these transformed observations.
+    let seen = model
+        .seen_observations
+        .lock()
+        .expect("model observation recorder lock poisoned")
+        .clone();
+    assert_eq!(
+        seen,
+        emitted
+            .iter()
+            .map(|(_, bytes)| bytes.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn shutdown_enforces_service_close_timeout_on_hung_model() {
+    let env = TestEnv::default();
+    let model = TestModel {
+        close_route_hangs: true,
+        ..Default::default()
+    };
+    let mut spec = one_episode_spec();
+    spec.limits.service_close_timeout = Duration::from_millis(50);
+
+    // Without driver-side timeout enforcement, run() would hang forever in
+    // shutdown on the hung close_route. The driver must give up after
+    // service_close_timeout and complete the session.
+    let report = tokio::time::timeout(
+        Duration::from_secs(5),
+        RuntimeDriver::new(
+            spec,
+            env,
+            model.clone(),
+            Arc::new(RecordingHooks::default()),
+        )
+        .run(),
+    )
+    .await
+    .expect("driver hung in shutdown despite service_close_timeout")
+    .expect("session should complete");
+
+    assert_eq!(report.total_episodes, 1);
+    // The hung close never set `closed`, confirming the driver abandoned it.
+    assert!(!model.closed.load(Ordering::SeqCst));
+}
+
 #[derive(Clone)]
 struct TestEnv {
     closed: Arc<AtomicBool>,
     step_count: Arc<AtomicUsize>,
+    reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
     terminal_after: usize,
 }
 
@@ -118,6 +341,7 @@ impl Default for TestEnv {
         Self {
             closed: Arc::new(AtomicBool::new(false)),
             step_count: Arc::new(AtomicUsize::new(0)),
+            reset_seeds: Arc::new(Mutex::new(Vec::new())),
             terminal_after: 1,
         }
     }
@@ -125,7 +349,11 @@ impl Default for TestEnv {
 
 #[async_trait]
 impl RuntimeEnv for TestEnv {
-    async fn reset(&mut self, _request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        self.reset_seeds
+            .lock()
+            .expect("reset seed recorder lock poisoned")
+            .push(request.seeds);
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
             response: ResetResponse {
@@ -174,6 +402,10 @@ struct TestModel {
     closed: Arc<AtomicBool>,
     predicts: Arc<AtomicUsize>,
     predict_delay: Option<Duration>,
+    seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
+    // Simulates a close_route impl that blocks (e.g. an RPC on a hung
+    // connection) without honoring the supplied timeout.
+    close_route_hangs: bool,
 }
 
 #[async_trait]
@@ -186,6 +418,16 @@ impl RuntimeModel for TestModel {
             tokio::time::sleep(delay).await;
         }
         self.predicts.fetch_add(1, Ordering::SeqCst);
+        let observation_bytes = request
+            .observation
+            .as_ref()
+            .and_then(|value| value.bytes.as_ref())
+            .map(|message| message.data.clone())
+            .unwrap_or_default();
+        self.seen_observations
+            .lock()
+            .expect("model observation recorder lock poisoned")
+            .push(observation_bytes);
         Ok(RuntimeModelPrediction {
             response: PredictResponse {
                 context: request.context,
@@ -200,6 +442,10 @@ impl RuntimeModel for TestModel {
         _request: CloseRouteRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
+        if self.close_route_hangs {
+            // Ignore the supplied timeout entirely, like a misbehaving impl.
+            std::future::pending::<()>().await;
+        }
         self.closed.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -211,6 +457,11 @@ struct RecordingHooks {
     ended: AtomicUsize,
     failed: AtomicUsize,
     fail_action_transform: bool,
+    // When set, transform_observation prepends this marker byte to every
+    // observation it forwards to the model.
+    observation_marker: Option<u8>,
+    // Records (is_reset, observation_bytes) for every observation_emitted hook.
+    emitted_observations: Mutex<Vec<(bool, Vec<u8>)>>,
 }
 
 #[async_trait]
@@ -228,6 +479,34 @@ impl RuntimeHooks for RecordingHooks {
             return Err(HookError::Message("transform failed".to_string()));
         }
         Ok(event.action)
+    }
+
+    async fn transform_observation(
+        &self,
+        event: rlmesh_runtime::ObservationEmittedEvent,
+    ) -> Result<Option<MessageBytes>, HookError> {
+        let Some(marker) = self.observation_marker else {
+            return Ok(event.observation);
+        };
+        Ok(event.observation.map(|mut value| {
+            value.data.insert(0, marker);
+            value
+        }))
+    }
+
+    async fn observation_emitted(
+        &self,
+        event: rlmesh_runtime::ObservationEmittedEvent,
+    ) -> Result<(), HookError> {
+        let bytes = event
+            .observation
+            .map(|value| value.data)
+            .unwrap_or_default();
+        self.emitted_observations
+            .lock()
+            .expect("emitted observation recorder lock poisoned")
+            .push((event.is_reset, bytes));
+        Ok(())
     }
 
     async fn session_ended(
@@ -261,6 +540,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
             ..Default::default()
         },
         num_envs: 1,
+        base_seed: None,
         max_episodes: Some(1),
         close_env_on_end: true,
         limits: Default::default(),

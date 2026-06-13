@@ -1,7 +1,6 @@
 //! Space value types and validation.
 //!
-//! Runtime value representations for RLMesh spaces
-//! and functions to validate that values belong to their spaces.
+//! Runtime values and validation for RLMesh spaces.
 
 use std::collections::BTreeMap;
 
@@ -13,38 +12,32 @@ use crate::spaces::fundamental::{
 use crate::spaces::{SpaceSpec, SpaceType};
 use crate::tensor::Tensor;
 
-/// A runtime value that can belong to a space.
-///
-/// This is the Rust representation of values that flow through the
-/// environment interface (observations, actions, etc.).
+/// Runtime value carried by an RLMesh space.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpaceValue {
-    /// Box space value - continuous tensor
+    /// Continuous tensor.
     Box(Tensor),
 
-    /// Discrete space value - single integer
+    /// Single integer.
     Discrete(i64),
 
-    /// MultiBinary space value - boolean array
+    /// Boolean array.
     MultiBinary(Vec<bool>),
 
-    /// MultiDiscrete space value - integer array
+    /// Integer array.
     MultiDiscrete(Vec<i64>),
 
-    /// Text space value - string
+    /// String value.
     Text(String),
 
-    /// Dict space value - named sub-values
+    /// Named child values.
     Dict(BTreeMap<String, SpaceValue>),
 
-    /// Tuple space value - ordered sub-values
+    /// Ordered child values.
     Tuple(Vec<SpaceValue>),
 }
 
-/// Check if a value belongs to a space.
-///
-/// Returns Ok(()) if the value is valid for the space, or an error describing
-/// why the value doesn't fit.
+/// Validate that `value` belongs to `space`.
 pub fn contains(space: &SpaceSpec, value: &SpaceValue) -> Result<(), SpaceError> {
     contains_at(space, value, "$")
 }

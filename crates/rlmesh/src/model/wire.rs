@@ -27,6 +27,22 @@ pub(super) fn model_error(message: impl Into<String>) -> join_response::Kind {
     })
 }
 
+/// Map a facade [`Error`] returned by a handler onto the wire model-error,
+/// preserving the handler-fault vs internal-fault distinction and the
+/// recoverable flag so the caller can react appropriately.
+pub(super) fn model_error_from_error(error: &Error) -> join_response::Kind {
+    let (code, is_recoverable) = match error {
+        Error::Model(model) => (ModelErrorCode::Internal, model.is_recoverable),
+        _ => (ModelErrorCode::Internal, false),
+    };
+    join_response::Kind::Error(ModelError {
+        code: code as i32,
+        message: error.to_string(),
+        is_recoverable,
+        debug_info: String::new(),
+    })
+}
+
 pub(super) fn model_join_request_operation(kind: Option<&join_request::Kind>) -> &'static str {
     match kind {
         Some(join_request::Kind::ConfigureRoute(_)) => "model.configure_route",
@@ -162,5 +178,36 @@ impl From<&ModelRouteSlot> for PredictSlot {
             step: value.step,
             reset: value.reset,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unwrap_error(kind: join_response::Kind) -> ModelError {
+        match kind {
+            join_response::Kind::Error(error) => error,
+            other => panic!("expected model error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handler_model_error_preserves_recoverability_on_the_wire() {
+        // A recoverable handler decline must surface as a recoverable model
+        // error, not a non-recoverable internal/transport fault.
+        let recoverable = unwrap_error(model_error_from_error(&Error::model_recoverable(
+            "retry me",
+        )));
+        assert!(recoverable.is_recoverable);
+        assert_eq!(recoverable.code, ModelErrorCode::Internal as i32);
+        assert!(recoverable.message.contains("retry me"));
+
+        let permanent = unwrap_error(model_error_from_error(&Error::model("bad observation")));
+        assert!(!permanent.is_recoverable);
+
+        // A genuine internal fault is never reported as recoverable.
+        let internal = unwrap_error(model_error_from_error(&Error::Internal("boom".to_string())));
+        assert!(!internal.is_recoverable);
     }
 }

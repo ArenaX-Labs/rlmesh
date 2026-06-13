@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use half::{bf16, f16};
 use thiserror::Error;
 
@@ -22,10 +24,152 @@ impl Scalar {
             Scalar::Float(value) => value as i64,
         }
     }
+
+    /// Reinterpret an integer scalar's bit pattern as `u64` for the one dtype
+    /// (`Uint64`) whose values do not fit `i64`. `decode_scalars` stores a
+    /// `Uint64` element as `Scalar::Int(u64::from_le_bytes(..) as i64)`, so this
+    /// just undoes that bit-cast; `Bool` maps to 0/1 and `Float` saturates.
+    ///
+    /// This is the single place the `Uint64 -> u64` reinterpretation lives;
+    /// consumers (sampling, spec formatting, comparison) must not re-derive it.
+    pub fn as_u64(self) -> u64 {
+        match self {
+            Scalar::Bool(value) => u64::from(value),
+            Scalar::Int(value) => value as u64,
+            // Saturating: negatives clamp to 0, large positives to u64::MAX.
+            Scalar::Float(value) => value as u64,
+        }
+    }
+
+    /// Dtype-aware `f64` view. For every dtype except `Uint64` this matches the
+    /// straightforward numeric value; for `Uint64` the stored `i64` is first
+    /// reinterpreted as `u64` so values above `i64::MAX` (which `decode_scalars`
+    /// wraps to negatives) convert to the correct positive magnitude.
+    ///
+    /// This is the single place the `Uint64` bit-cast lives for `f64`
+    /// conversion; no consumer should re-derive it.
+    pub fn to_f64(self, dtype: DType) -> f64 {
+        match self {
+            Scalar::Bool(value) => f64::from(u8::from(value)),
+            Scalar::Float(value) => value,
+            Scalar::Int(value) if dtype == DType::Uint64 => (value as u64) as f64,
+            Scalar::Int(value) => value as f64,
+        }
+    }
+
+    /// Total order between two decoded scalars in their dtype's native domain.
+    ///
+    /// Integer dtypes compare as integers (`Uint64` in the unsigned domain,
+    /// every other integer dtype in the signed domain). Float dtypes compare as
+    /// floats. The mixed case — a `Float` bound against an `Int` value, which
+    /// the Box builder allows (e.g. `scalar(-100.0, 100.0).dtype(Int16)`) — is
+    /// compared *exactly*, never by truncating either side: an integer `i`
+    /// compares against a float `f` by their true real-number values.
+    ///
+    /// Returns `None` only when a `Float` operand is NaN (NaN is unordered);
+    /// callers decide how to treat that.
+    pub fn cmp_typed(self, other: Scalar, dtype: DType) -> Option<Ordering> {
+        match (self, other) {
+            (Scalar::Float(a), Scalar::Float(b)) => a.partial_cmp(&b),
+            (Scalar::Bool(a), Scalar::Bool(b)) => Some(a.cmp(&b)),
+            // Mixed float/int: compare exactly in the real domain. `cmp_float_int`
+            // returns `f cmp i`; flip when the float is the right-hand operand.
+            (Scalar::Float(f), other) => cmp_float_int(f, other.int_operand(dtype)),
+            (this, Scalar::Float(f)) => {
+                cmp_float_int(f, this.int_operand(dtype)).map(Ordering::reverse)
+            }
+            // Both integral (Int/Bool). Uint64 compares unsigned.
+            (a, b) if dtype == DType::Uint64 => Some(a.as_u64().cmp(&b.as_u64())),
+            (a, b) => Some(a.as_i64().cmp(&b.as_i64())),
+        }
+    }
+
+    /// An integral operand for mixed float/int comparison: `Uint64` values are
+    /// reinterpreted unsigned, everything else (Bool/Int) is signed.
+    fn int_operand(self, dtype: DType) -> IntOperand {
+        match self {
+            Scalar::Float(_) => unreachable!("int_operand called on a float scalar"),
+            _ if dtype == DType::Uint64 => IntOperand::Unsigned(self.as_u64()),
+            _ => IntOperand::Signed(self.as_i64()),
+        }
+    }
+}
+
+/// The integer side of a mixed float/int comparison, preserving the unsigned
+/// domain for `Uint64` so the full `u64` range compares exactly.
+#[derive(Clone, Copy)]
+enum IntOperand {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+/// Compare a float against an integer by their *exact* real-number values, with
+/// no truncation of either side. Returns `Some(Ordering)` for `f cmp i`, or
+/// `None` iff `f` is NaN.
+///
+/// A 64-bit integer can be larger in magnitude than any `f64` can represent
+/// exactly, so casting the integer to `f64` and comparing can round and give
+/// the wrong answer at the edges. Instead we cast the *float* down to the
+/// integer domain via `floor`, which is exact: `floor(f)` is a (possibly
+/// out-of-range) integer, and `f` lies in `[floor(f), floor(f) + 1)`. Comparing
+/// `i` against `floor(f)` in the integer domain — with the fractional part of
+/// `f` breaking the tie at equality — is therefore exact.
+fn cmp_float_int(f: f64, i: IntOperand) -> Option<Ordering> {
+    if f.is_nan() {
+        return None;
+    }
+    // Cast the integer side up to f64 only to pick the branch; the actual
+    // comparison stays in the integer domain. INFINITY/NEG_INFINITY are handled
+    // by the range checks below (floor is still +/-inf, caught as out of range).
+    let floor = f.floor();
+    let result = match i {
+        IntOperand::Signed(i) => {
+            // i64 spans [-(2^63), 2^63). If floor(f) is below/at-or-above that
+            // span, i is unambiguously above/below f.
+            if floor < -(2.0f64.powi(63)) {
+                Ordering::Greater // f below every i64
+            } else if floor >= 2.0f64.powi(63) {
+                Ordering::Less // f at or above every i64
+            } else {
+                refine_int_vs_float(i.cmp(&(floor as i64)), f, floor)
+            }
+        }
+        IntOperand::Unsigned(i) => {
+            if floor < 0.0 {
+                Ordering::Greater // f negative, every u64 >= 0
+            } else if floor >= 2.0f64.powi(64) {
+                Ordering::Less // f at or above every u64
+            } else {
+                refine_int_vs_float(i.cmp(&(floor as u64)), f, floor)
+            }
+        }
+    };
+    // `result` is `i cmp f`; the caller wants `f cmp i`, so reverse.
+    Some(result.reverse())
+}
+
+/// Given `i.cmp(&floor(f))`, refine the equal case using the fractional part of
+/// `f`. Returns `i cmp f`.
+fn refine_int_vs_float(int_cmp_floor: Ordering, f: f64, floor: f64) -> Ordering {
+    match int_cmp_floor {
+        // i < floor(f) <= f.
+        Ordering::Less => Ordering::Less,
+        // i > floor(f); since i is an integer, i >= floor(f) + 1 > f.
+        Ordering::Greater => Ordering::Greater,
+        // i == floor(f): equal iff f has no fractional part, else i < f.
+        Ordering::Equal => {
+            if f == floor {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            }
+        }
+    }
 }
 
 /// Errors raised by the scalar byte codec.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScalarError {
     #[error("cannot encode or decode scalars with unspecified dtype")]
     UnspecifiedDtype,
@@ -35,6 +179,76 @@ pub enum ScalarError {
         elem: usize,
         dtype: DType,
     },
+    #[error("value {value} is out of range for {dtype:?}")]
+    OutOfRange { value: String, dtype: DType },
+}
+
+/// Inclusive integer range a (non-`Uint64`) integer dtype can represent
+/// exactly, as `i64` endpoints. `Uint64`'s high end (`u64::MAX`) does not fit
+/// `i64`, so unsigned bounds are range-checked separately by
+/// [`check_uint_in_dtype_range`].
+fn signed_dtype_range(dtype: DType) -> Option<(i64, i64)> {
+    Some(match dtype {
+        DType::Bool => (0, 1),
+        DType::Uint8 => (0, u8::MAX as i64),
+        DType::Int8 => (i8::MIN as i64, i8::MAX as i64),
+        DType::Int16 => (i16::MIN as i64, i16::MAX as i64),
+        DType::Uint16 => (0, u16::MAX as i64),
+        DType::Int32 => (i32::MIN as i64, i32::MAX as i64),
+        DType::Uint32 => (0, u32::MAX as i64),
+        DType::Int64 => (i64::MIN, i64::MAX),
+        // Uint64's signed-representable half; the full range needs the unsigned
+        // checker.
+        DType::Uint64 => (0, i64::MAX),
+        // Float / Unspecified dtypes have no exact integer range here.
+        _ => return None,
+    })
+}
+
+/// Reject a signed-integer bound that does not fit `dtype`'s exact integer
+/// range. Float dtypes accept any `i64` (encoding routes through `f64`).
+pub fn check_int_in_dtype_range(value: i64, dtype: DType) -> Result<(), ScalarError> {
+    if dtype == DType::Unspecified {
+        return Err(ScalarError::UnspecifiedDtype);
+    }
+    if let Some((lo, hi)) = signed_dtype_range(dtype)
+        && !(lo..=hi).contains(&value)
+    {
+        return Err(ScalarError::OutOfRange {
+            value: value.to_string(),
+            dtype,
+        });
+    }
+    Ok(())
+}
+
+/// Reject an unsigned-integer bound that does not fit `dtype`'s exact integer
+/// range. `Uint64` accepts the full `u64`; signed dtypes additionally reject
+/// values above their (non-negative) maximum. Float dtypes accept any `u64`.
+pub fn check_uint_in_dtype_range(value: u64, dtype: DType) -> Result<(), ScalarError> {
+    if dtype == DType::Unspecified {
+        return Err(ScalarError::UnspecifiedDtype);
+    }
+    let out_of_range = match dtype {
+        DType::Uint64 => false,
+        DType::Bool => value > 1,
+        DType::Uint8 => value > u8::MAX as u64,
+        DType::Uint16 => value > u16::MAX as u64,
+        DType::Uint32 => value > u32::MAX as u64,
+        DType::Int8 => value > i8::MAX as u64,
+        DType::Int16 => value > i16::MAX as u64,
+        DType::Int32 => value > i32::MAX as u64,
+        DType::Int64 => value > i64::MAX as u64,
+        // Float / Unspecified: no exact-integer constraint.
+        _ => false,
+    };
+    if out_of_range {
+        return Err(ScalarError::OutOfRange {
+            value: value.to_string(),
+            dtype,
+        });
+    }
+    Ok(())
 }
 
 /// Encode scalars as little-endian element bytes of `dtype`.
@@ -268,6 +482,107 @@ mod tests {
             encode_i64_scalars(&[1], DType::Unspecified),
             Err(ScalarError::UnspecifiedDtype)
         );
+    }
+
+    #[test]
+    fn test_cmp_typed_uint64_compares_unsigned() {
+        // u64::MAX decodes to Scalar::Int(-1); it must compare *greater* than 0
+        // under Uint64, not less.
+        let max = decode_scalars(&u64::MAX.to_le_bytes(), DType::Uint64).unwrap()[0];
+        let zero = Scalar::Int(0);
+        assert_eq!(max.cmp_typed(zero, DType::Uint64), Some(Ordering::Greater));
+        assert_eq!(zero.cmp_typed(max, DType::Uint64), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn test_cmp_typed_mixed_float_int_is_exact_no_truncation() {
+        assert_eq!(
+            Scalar::Int(0).cmp_typed(Scalar::Float(0.5), DType::Int64),
+            Some(Ordering::Less)
+        );
+        // -1.0 (low) vs every Uint64 value: -1.0 is below 0, so 0 > -1.0.
+        assert_eq!(
+            Scalar::Float(-1.0).cmp_typed(Scalar::Int(0), DType::Uint64),
+            Some(Ordering::Less),
+            "float low -1.0 must be below uint value 0"
+        );
+        // 100.0 (high) vs u64::MAX-as-Int(-1) reinterpreted: u64::MAX > 100.
+        let umax = Scalar::Int(-1); // bit pattern of u64::MAX
+        assert_eq!(
+            umax.cmp_typed(Scalar::Float(100.0), DType::Uint64),
+            Some(Ordering::Greater)
+        );
+    }
+
+    #[test]
+    fn test_cmp_typed_float_int_edge_at_i64_extremes() {
+        // i64::MAX as f64 rounds up to 2^63 (> i64::MAX). Comparing the exact
+        // integer i64::MAX against that float must say the int is *less*.
+        let f = i64::MAX as f64; // == 2^63
+        assert_eq!(
+            Scalar::Int(i64::MAX).cmp_typed(Scalar::Float(f), DType::Int64),
+            Some(Ordering::Less)
+        );
+        // i64::MIN as f64 is exactly -2^63 (representable), so equal.
+        let f = i64::MIN as f64;
+        assert_eq!(
+            Scalar::Int(i64::MIN).cmp_typed(Scalar::Float(f), DType::Int64),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn test_cmp_typed_float_int_fractional_and_infinity() {
+        // 3 vs 2.9 -> greater; 2 vs 2.9 -> less.
+        assert_eq!(
+            Scalar::Int(3).cmp_typed(Scalar::Float(2.9), DType::Int64),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            Scalar::Int(2).cmp_typed(Scalar::Float(2.9), DType::Int64),
+            Some(Ordering::Less)
+        );
+        // Any int is below +inf and above -inf.
+        assert_eq!(
+            Scalar::Int(0).cmp_typed(Scalar::Float(f64::INFINITY), DType::Int64),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            Scalar::Int(0).cmp_typed(Scalar::Float(f64::NEG_INFINITY), DType::Int64),
+            Some(Ordering::Greater)
+        );
+        // NaN is unordered.
+        assert_eq!(
+            Scalar::Int(0).cmp_typed(Scalar::Float(f64::NAN), DType::Int64),
+            None
+        );
+    }
+
+    #[test]
+    fn test_to_f64_uint64_reinterprets() {
+        let umax = decode_scalars(&u64::MAX.to_le_bytes(), DType::Uint64).unwrap()[0];
+        assert_eq!(umax.to_f64(DType::Uint64), u64::MAX as f64);
+        // Same bits under Int64 read as -1.0.
+        assert_eq!(umax.to_f64(DType::Int64), -1.0);
+    }
+
+    #[test]
+    fn test_check_int_in_dtype_range() {
+        assert!(check_int_in_dtype_range(300, DType::Int8).is_err());
+        assert!(check_int_in_dtype_range(127, DType::Int8).is_ok());
+        assert!(check_int_in_dtype_range(-1, DType::Uint8).is_err());
+        assert!(check_int_in_dtype_range(i64::MAX, DType::Int64).is_ok());
+        // Float dtypes accept any integer.
+        assert!(check_int_in_dtype_range(i64::MAX, DType::Float32).is_ok());
+    }
+
+    #[test]
+    fn test_check_uint_in_dtype_range() {
+        assert!(check_uint_in_dtype_range(1u64 << 33, DType::Uint32).is_err());
+        assert!(check_uint_in_dtype_range(u32::MAX as u64, DType::Uint32).is_ok());
+        assert!(check_uint_in_dtype_range(u64::MAX, DType::Uint64).is_ok());
+        // i64::MAX + 1 does not fit Int64.
+        assert!(check_uint_in_dtype_range(1u64 << 63, DType::Int64).is_err());
     }
 
     #[test]

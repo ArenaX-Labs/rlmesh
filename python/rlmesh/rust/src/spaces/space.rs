@@ -11,23 +11,46 @@ pub fn parse_space<'py>(space: &Bound<'py, PyAny>) -> PyResult<SpaceSpec> {
         return Ok(spec);
     }
 
-    let type_name = space.get_type().name()?.to_string();
+    // Dispatch with isinstance against the imported Gymnasium classes (rather
+    // than the unqualified class name) so user subclasses such as
+    // `class MyBox(gym.spaces.Box)` are recognised, consistent with the
+    // Python-side from_gymnasium_space converter.
+    let spaces = import_gym(space.py())?.getattr("spaces")?;
 
-    match type_name.as_str() {
-        // === Fundamental === //
-        "Box" => parse_box(space),
-        "Discrete" => parse_discrete(space),
-        "MultiBinary" => parse_multibinary(space),
-        "MultiDiscrete" => parse_multidiscrete(space),
-        "Text" => parse_text(space),
-
-        // === Composite === //
-        "Dict" => parse_dict(space),
-        "Tuple" => parse_tuple(space),
-
-        _ => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+    if is_gym_instance(space, &spaces, "Box")? {
+        parse_box(space)
+    } else if is_gym_instance(space, &spaces, "Discrete")? {
+        parse_discrete(space)
+    } else if is_gym_instance(space, &spaces, "MultiBinary")? {
+        parse_multibinary(space)
+    } else if is_gym_instance(space, &spaces, "MultiDiscrete")? {
+        parse_multidiscrete(space)
+    } else if is_gym_instance(space, &spaces, "Text")? {
+        parse_text(space)
+    } else if is_gym_instance(space, &spaces, "Dict")? {
+        parse_dict(space)
+    } else if is_gym_instance(space, &spaces, "Tuple")? {
+        parse_tuple(space)
+    } else {
+        let type_name = space.get_type().name()?.to_string();
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "Unsupported space type: {type_name}"
-        ))),
+        )))
+    }
+}
+
+/// Whether `space` is an instance of `gymnasium.spaces.<name>`.
+///
+/// A missing class (e.g. older Gym lacking `Text`) is treated as "not an
+/// instance" rather than an error.
+fn is_gym_instance(
+    space: &Bound<'_, PyAny>,
+    spaces: &Bound<'_, PyAny>,
+    name: &str,
+) -> PyResult<bool> {
+    match spaces.getattr(name) {
+        Ok(class) => space.is_instance(&class),
+        Err(_) => Ok(false),
     }
 }
 
@@ -141,6 +164,33 @@ mod tests {
 
             let parsed = parse_space(&discrete).unwrap();
             assert!(matches!(parsed.spec, Some(SpaceKind::Discrete(_))));
+        });
+    }
+
+    #[test]
+    fn parse_space_accepts_gym_space_subclasses() {
+        Python::attach(|py| {
+            let spaces = import_gym(py).unwrap().getattr("spaces").unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("spaces", &spaces).unwrap();
+            // A user-defined subclass of gym.spaces.Box, as found in many
+            // wrapper/robotics libraries.
+            py.run(
+                pyo3::ffi::c_str!("class MyBox(spaces.Box):\n    pass\n"),
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            let my_box = py
+                .eval(
+                    pyo3::ffi::c_str!("MyBox(low=-1.0, high=1.0, shape=(2,))"),
+                    Some(&globals),
+                    None,
+                )
+                .unwrap();
+
+            let parsed = parse_space(&my_box).unwrap();
+            assert!(matches!(parsed.spec, Some(SpaceKind::Box(_))));
         });
     }
 

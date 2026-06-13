@@ -28,6 +28,17 @@ pub mod capabilities {
 
     /// Core RLMesh space specifications and values.
     pub const SPACES_CORE_V1: &str = "rlmesh.spaces.core.v1";
+
+    /// A served model endpoint processes Join-stream requests concurrently
+    /// (pipelined predict): responses arrive in completion order rather than
+    /// strict arrival order, while per-route lifecycle ordering is preserved.
+    ///
+    /// Advisory only and never an edition change — the wire messages are
+    /// identical (every response still mirrors its `request_id`). A client uses
+    /// it to decide whether overlapping multiple predicts on one connection will
+    /// actually pipeline (capability present) or serialize behind the handler
+    /// (capability absent). See `docs/editions/2026.06.md`.
+    pub const MODEL_CONCURRENT_PREDICT_V1: &str = "rlmesh.model.concurrent_predict.v1";
 }
 
 /// Return whether a client protocol generation can speak to a server protocol generation.

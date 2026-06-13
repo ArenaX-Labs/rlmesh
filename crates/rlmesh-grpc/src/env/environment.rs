@@ -9,34 +9,33 @@ use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
 
 use crate::error::EnvError;
 
-/// An environment that can be served over RLMesh gRPC.
+/// Transport-facing environment contract.
 ///
-/// This is the transport-facing contract. Public native Gym-style
-/// environments should normally be adapted by the `rlmesh` facade instead of
-/// implementing this trait directly.
+/// Most users adapt environments through the higher-level `rlmesh` facade
+/// instead of implementing this trait directly.
 #[async_trait]
 pub trait Environment: Send + Sync {
-    /// Get the observation space specification.
+    /// Observation space.
     fn observation_space(&self) -> &SpaceSpec;
 
-    /// Get the action space specification.
+    /// Action space.
     fn action_space(&self) -> &SpaceSpec;
 
-    /// Get the number of parallel environments (1 for single env).
+    /// Number of parallel environments, or `1` for a single environment.
     fn num_envs(&self) -> usize;
 
-    /// Get the full gymnasium spec.
+    /// Full environment contract.
     fn env_contract(&self) -> &EnvContract;
 
-    /// Reset the environment(s).
+    /// Reset the environment or vector.
     async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, EnvError>;
 
-    /// Take a step in the environment(s).
+    /// Step the environment or vector.
     async fn step(&mut self, req: StepRequest) -> Result<StepResponse, EnvError>;
 
-    /// Render the environment(s).
+    /// Render the environment or vector.
     async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, EnvError>;
 
-    /// Close the environment(s).
+    /// Close the environment or vector.
     async fn close(&mut self) -> Result<CloseResponse, EnvError>;
 }

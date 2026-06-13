@@ -31,6 +31,37 @@ where
     Ok(())
 }
 
+pub(super) async fn finish_route_lifecycle<H>(
+    handler: &mut H,
+    active_episodes: &mut HashMap<(String, i32), String>,
+    route_key: &str,
+) -> Result<()>
+where
+    H: ModelHandler,
+{
+    let mut episode_ends = active_episodes
+        .iter()
+        .filter_map(|((active_route_key, env_index), episode_id)| {
+            (active_route_key == route_key).then_some(ModelEpisodeEnd {
+                episode_id: episode_id.clone(),
+                env_index: *env_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    episode_ends.sort_by(|left, right| {
+        left.env_index
+            .cmp(&right.env_index)
+            .then_with(|| left.episode_id.cmp(&right.episode_id))
+    });
+
+    for episode_end in episode_ends {
+        active_episodes.remove(&(route_key.to_string(), episode_end.env_index));
+        handler.on_episode_end(episode_end).await?;
+    }
+
+    Ok(())
+}
+
 pub(super) async fn update_lifecycle<H>(
     handler: &mut H,
     active_episodes: &mut HashMap<(String, i32), String>,
@@ -42,15 +73,10 @@ where
     let route_key = route_state_key(observation);
     if observation.num_envs > 1 {
         let mut should_emit_reset = observation.reset;
-        let episode_ids = observation.route.episode_ids();
-        let episode_ids = if episode_ids.is_empty() {
-            vec![observation.route.primary_episode_id().to_string()]
-        } else {
-            episode_ids
-        };
 
-        for (env_index, episode_id) in episode_ids.into_iter().enumerate() {
-            let env_index = env_index as i32;
+        for slot in &observation.route.slots {
+            let env_index = slot.env_index;
+            let episode_id = slot.episode_id.clone();
             if let Some(previous_episode) =
                 active_episodes.insert((route_key.clone(), env_index), episode_id.clone())
                 && previous_episode != episode_id
@@ -100,4 +126,100 @@ fn route_state_key(observation: &ModelObservation) -> String {
         "{}:{}",
         observation.route.session_id, observation.route.route_id
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::types::{ModelRouteContext, ModelRouteSlot};
+    use crate::spaces;
+
+    #[derive(Default)]
+    struct RecordingHandler {
+        resets: usize,
+        episode_ends: Vec<ModelEpisodeEnd>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelHandler for RecordingHandler {
+        async fn predict(
+            &mut self,
+            _observation: ModelObservation,
+        ) -> crate::Result<spaces::BinaryPayload> {
+            Ok(spaces::BinaryPayload { data: Vec::new() })
+        }
+
+        async fn on_reset(&mut self, _observation: &ModelObservation) -> crate::Result<()> {
+            self.resets += 1;
+            Ok(())
+        }
+
+        async fn on_episode_end(&mut self, event: ModelEpisodeEnd) -> crate::Result<()> {
+            self.episode_ends.push(event);
+            Ok(())
+        }
+    }
+
+    fn observation(slots: Vec<(i32, &str)>, reset: bool, num_envs: usize) -> ModelObservation {
+        ModelObservation {
+            observation: None,
+            route: ModelRouteContext {
+                session_id: "session".to_string(),
+                route_id: "route".to_string(),
+                request_id: "request".to_string(),
+                slots: slots
+                    .into_iter()
+                    .map(|(env_index, episode_id)| ModelRouteSlot {
+                        env_index,
+                        episode_id: episode_id.to_string(),
+                        ..Default::default()
+                    })
+                    .collect(),
+            },
+            reset,
+            num_envs,
+            env_contract: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn multi_env_lifecycle_uses_slot_env_index() {
+        let mut handler = RecordingHandler::default();
+        let mut active_episodes = HashMap::new();
+
+        update_lifecycle(
+            &mut handler,
+            &mut active_episodes,
+            &observation(vec![(2, "episode-a"), (3, "episode-b")], true, 4),
+        )
+        .await
+        .unwrap();
+        update_lifecycle(
+            &mut handler,
+            &mut active_episodes,
+            &observation(
+                vec![
+                    (0, "episode-c"),
+                    (1, "episode-d"),
+                    (2, "episode-a"),
+                    (3, "episode-b"),
+                ],
+                false,
+                4,
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(handler.resets, 1);
+        assert!(handler.episode_ends.is_empty());
+        assert_eq!(
+            active_episodes.get(&("session:route".to_string(), 2)),
+            Some(&"episode-a".to_string())
+        );
+        assert_eq!(
+            active_episodes.get(&("session:route".to_string(), 3)),
+            Some(&"episode-b".to_string())
+        );
+    }
 }

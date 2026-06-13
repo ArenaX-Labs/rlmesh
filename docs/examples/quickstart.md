@@ -1,7 +1,7 @@
 # Quickstart Example
 
-This is the first loop to run. One process owns a Gymnasium environment. Another process connects to
-it as a remote environment.
+Run this loop first. One process owns a Gymnasium environment. Another process connects to it as a
+remote environment.
 
 ## Serve CartPole
 

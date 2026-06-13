@@ -159,12 +159,29 @@ def compare_measurement(
 
 
 def thresholds_for(name: str) -> tuple[float, float, float | None]:
-    if name.startswith(("tensor.numpy.asarray", "tensor.torch.as_tensor")):
+    if name.startswith(
+        (
+            "tensor.numpy.asarray",
+            "tensor.numpy.readonly",
+            "tensor.torch.as_tensor",
+            "tensor.torch.readonly",
+        )
+    ):
         return 0.15, 0.05, None
-    if name.startswith("tensor.jax.asarray"):
+    if name.startswith(("tensor.jax.asarray", "tensor.jax.readonly")):
         # XLA dispatch adds noise on top of the shared-buffer import.
         return 0.25, 0.10, None
-    if name.startswith(("tensor.from_dlpack", "tensor.numpy.from_array")):
+    if name.startswith(
+        (
+            "tensor.from_dlpack",
+            "tensor.numpy.from_array",
+            "tensor.numpy.copy",
+            "tensor.torch.copy",
+            "tensor.jax.copy",
+            "tensor.export.bytes",
+            "tensor.torch.export",
+        )
+    ):
         return 0.20, 0.25, 0.15
     if name.startswith("remote.image"):
         return 0.20, 0.25, 0.15

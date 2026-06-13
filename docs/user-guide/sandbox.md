@@ -1,8 +1,8 @@
 # Sandbox Environments
 
-Sandbox helpers are experimental in this beta. Use one when an environment should keep its own
-dependencies, imports, and runtime process. The client still uses the normal `reset`, `step`,
-`render`, and `close` loop.
+Sandbox helpers are experimental in this beta. Use one when an environment needs its own
+dependencies and process. The client still uses the normal `reset`, `step`, `render`, and `close`
+loop.
 
 For runnable files, see {doc}`../examples/sandboxes`.
 
@@ -29,8 +29,8 @@ the `gym://` form resolve to the same kind of source.
 
 ## Hugging Face EnvHub
 
-Sandbox sources can also point at Hugging Face EnvHub repositories with `hf://`. These repositories
-are expected to expose an environment factory, as described in the
+Sandbox sources can point at Hugging Face EnvHub repositories with `hf://`. These repositories
+expose an environment factory, as described in the
 [Hugging Face EnvHub docs](https://huggingface.co/docs/lerobot/envhub).
 
 The LeRobot CartPole demo returns suite `cartpole_suite`, task `0`, so the selector is explicit:
@@ -48,7 +48,7 @@ with SandboxEnv(
     observation, reward, terminated, truncated, info = env.step(action)
 ```
 
-Use `SandboxVectorEnv` when the selected source should serve more than one environment.
+Use `SandboxVectorEnv` when the selected source serves more than one environment.
 
 The demo is unpinned for convenience. For real evaluations, pin to a full commit SHA:
 
@@ -68,10 +68,9 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 | `allow_unpinned_hf` | Allows unpinned Hugging Face sources; keep this off for reproducibility. |
 | `**gym_make_kwargs` | Keyword arguments forwarded to Gymnasium or EnvHub environment creation. |
 
-Use `rlmesh_package="local"` from the RLMesh checkout to install a compatible wheel from
-`python/rlmesh/dist` into the sandbox image. You can also pass an exact wheel path or a pip package
-specifier such as `rlmesh==0.1.0b2` when testing compatibility against another RLMesh build. For
-process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
+Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `python/rlmesh/dist`
+into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as
+`rlmesh==0.1.0b2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ## Safety
 

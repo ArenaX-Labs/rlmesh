@@ -7,6 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
+#[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh::env::WireEnvAdapter;
 use rlmesh::{BindAddress, ServeOptions};
@@ -39,6 +40,9 @@ enum BoundListener {
 
 type ServeResult = Result<(), String>;
 
+/// Default shutdown cap for embedded Python servers.
+const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+
 struct ServerResources {
     env: PyServerEnv,
     runtime: tokio::runtime::Runtime,
@@ -55,7 +59,7 @@ enum ServerState {
 }
 
 /// Python wrapper for the RLMesh EnvService server.
-#[gen_stub_pyclass]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyEnvServer {
     state: StdMutex<ServerState>,
@@ -64,7 +68,8 @@ pub struct PyEnvServer {
     shutdown: ShutdownTrigger,
 }
 
-#[gen_stub_pymethods]
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
 impl PyEnvServer {
     /// Create a new RLMesh environment server.
@@ -173,7 +178,7 @@ impl PyEnvServer {
                 env: py_env,
                 runtime,
                 listener,
-                options: options.map(PyServeOptions::to_rust).unwrap_or_default(),
+                options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
             }))),
             shutdown,
         })
@@ -205,7 +210,7 @@ impl PyEnvServer {
         let address = self.address.clone();
         let shutdown = self.shutdown.clone();
 
-        let result = py.detach(move || run_server(resources, address, shutdown));
+        let result = py.detach(move || run_server(resources, address, shutdown, true));
 
         let mut state = self.state.lock().expect("server state mutex poisoned");
         *state = ServerState::Stopped;
@@ -215,14 +220,14 @@ impl PyEnvServer {
     }
 
     /// Start serving on a background thread.
-    fn start(&self) -> PyResult<()> {
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
         let resources = take_resources(&self.state, "start", ServerState::StartingBackground)?;
         let address = self.address.clone();
         let shutdown = self.shutdown.clone();
 
         let handle = std::thread::Builder::new()
             .name("rlmesh-env-server".to_string())
-            .spawn(move || run_server(resources, address, shutdown))
+            .spawn(move || run_server(resources, address, shutdown, false))
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
                     "failed to spawn server thread: {}",
@@ -246,7 +251,7 @@ impl PyEnvServer {
         };
 
         if let Some(handle) = action {
-            join_background_server(handle)?;
+            py.detach(|| join_background_server(handle))?;
         }
 
         Ok(())
@@ -450,6 +455,7 @@ fn run_server(
     resources: ServerResources,
     address: String,
     shutdown: ShutdownTrigger,
+    install_signal_handlers: bool,
 ) -> ServeResult {
     let ServerResources {
         env,
@@ -460,7 +466,9 @@ fn run_server(
 
     runtime.block_on(async move {
         tracing::info!("EnvService serving on {}", address);
-        spawn_signal_shutdown(shutdown.clone());
+        if install_signal_handlers {
+            spawn_signal_shutdown(shutdown.clone());
+        }
 
         match env {
             PyServerEnv::Single(env) => {
@@ -483,6 +491,11 @@ where
     WireEnvAdapter<E>: Environment + 'static,
 {
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+    // Bound both teardown phases so the background serve thread always terminates
+    // and EnvServer.shutdown()'s join (and interpreter exit) can never hang on a
+    // lingering client connection or a blocking close hook.
+    let drain_timeout = Some(options.drain_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
+    let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     let env = Arc::new(Mutex::new(env));
     let grpc_options = rlmesh_grpc::ServeOptions::from(options);
     let service = env_service_from_shared(
@@ -500,7 +513,7 @@ where
                     shutdown.cancelled_owned(),
                 ),
             shutdown.clone(),
-            options.drain_timeout,
+            drain_timeout,
         )
         .await
         .map_err(|err| err.to_string()),
@@ -514,7 +527,7 @@ where
                         shutdown.cancelled_owned(),
                     ),
                 shutdown.clone(),
-                options.drain_timeout,
+                drain_timeout,
             )
             .await;
             let _ = std::fs::remove_file(path);
@@ -522,7 +535,7 @@ where
         }
     };
 
-    let close_result = close_env(env, options.close_timeout).await;
+    let close_result = close_env(env, close_timeout).await;
     match (serve_result, close_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(err), Ok(())) => Err(err),
@@ -563,8 +576,9 @@ fn cleanup_ready_resources(resources: ServerResources) -> ServeResult {
         }
     }
 
+    let close_timeout = Some(options.close_timeout.unwrap_or(DEFAULT_SHUTDOWN_GRACE));
     runtime.block_on(async move {
-        await_close_with_timeout(env.close(), options.close_timeout)
+        await_close_with_timeout(env.close(), close_timeout)
             .await
             .map_err(|timeout| format!("close timed out after {}ms", timeout.as_millis()))?
             .map_err(|err| err.to_string())

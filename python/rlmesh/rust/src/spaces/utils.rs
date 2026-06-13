@@ -49,36 +49,27 @@ where
     }
 }
 
-pub fn extract_1d_f64<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<f64>> {
-    obj.try_iter()?.map(|x| x?.extract::<f64>()).collect()
+/// Flatten an arbitrarily nested array-like (numpy ndarray of any rank,
+/// nested lists/tuples, or a scalar) into a flat row-major `Vec<f64>`.
+///
+/// Unlike [`extract_1d_f64`], this descends into rank>=2 arrays so that the
+/// per-element bounds of a multi-dimensional Box survive instead of being
+/// silently collapsed to a global min/max.
+pub fn flatten_f64<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<f64>> {
+    let mut out = Vec::new();
+    flatten_f64_into(obj, &mut out)?;
+    Ok(out)
 }
 
-pub fn deep_min_f64<'py>(obj: &Bound<'py, PyAny>) -> PyResult<f64> {
-    if let Ok(v) = obj.extract::<f64>() {
-        return Ok(v);
+fn flatten_f64_into<'py>(obj: &Bound<'py, PyAny>, out: &mut Vec<f64>) -> PyResult<()> {
+    if let Ok(value) = obj.extract::<f64>() {
+        out.push(value);
+        return Ok(());
     }
-    let mut m = f64::INFINITY;
     for item in obj.try_iter()? {
-        let v = deep_min_f64(&item?)?;
-        if v < m {
-            m = v;
-        }
+        flatten_f64_into(&item?, out)?;
     }
-    Ok(m)
-}
-
-pub fn deep_max_f64<'py>(obj: &Bound<'py, PyAny>) -> PyResult<f64> {
-    if let Ok(v) = obj.extract::<f64>() {
-        return Ok(v);
-    }
-    let mut m = f64::NEG_INFINITY;
-    for item in obj.try_iter()? {
-        let v = deep_max_f64(&item?)?;
-        if v > m {
-            m = v;
-        }
-    }
-    Ok(m)
+    Ok(())
 }
 
 pub fn import_gym<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyModule>> {

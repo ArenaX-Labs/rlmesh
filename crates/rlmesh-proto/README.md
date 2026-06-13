@@ -12,6 +12,16 @@ message and service types for protocol-level integration.
 rlmesh-proto = "0.1.0-beta.2"
 ```
 
+## Build Requirements
+
+The build script compiles the bundled `.proto` definitions with `tonic-prost-build`, which invokes
+the Protocol Buffers compiler `protoc`. Building this crate (and therefore any crate that depends on
+it, such as `rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, and `rlmesh-sandbox`) requires `protoc` on
+the system. Install it from your package manager (for example `apt install protobuf-compiler` or
+`brew install protobuf`), or set the `PROTOC` environment variable to an existing binary. A `protoc`
+of at least 3.15 is required for the proto3 `optional` fields used here. The `docs.rs` build image
+already provides `protoc`, so the published API docs build without extra configuration.
+
 ## Status
 
 This supporting crate is part of the supported beta protocol surface. Message shape may still change

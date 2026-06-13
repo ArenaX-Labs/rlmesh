@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import assert_type
 
 from rlmesh import spaces
 from rlmesh.types import Value
+from typing_extensions import assert_type
 
 box = spaces.Box(-1.0, 1.0, shape=[2], dtype="float32")
 assert_type(box.kind, str)

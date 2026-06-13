@@ -118,11 +118,25 @@ impl ProfileCollector {
         }
     }
 
+    /// Whether profiling is active.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn start(self: &Arc<Self>, phase: &'static str) -> PhaseGuard {
+        if !self.enabled {
+            return PhaseGuard {
+                collector: Arc::clone(self),
+                phase,
+                start: None,
+                bytes: 0,
+                recorded: true,
+            };
+        }
         PhaseGuard {
             collector: Arc::clone(self),
             phase,
-            start: Instant::now(),
+            start: Some(Instant::now()),
             bytes: 0,
             recorded: false,
         }
@@ -157,16 +171,21 @@ impl ProfileCollector {
 pub struct PhaseGuard {
     collector: Arc<ProfileCollector>,
     phase: &'static str,
-    start: Instant,
+    start: Option<Instant>,
     bytes: usize,
     recorded: bool,
 }
 
 impl PhaseGuard {
     pub fn finish(mut self, bytes: usize) -> Duration {
+        let Some(start) = self.start else {
+            // Profiling disabled: nothing to record.
+            self.recorded = true;
+            return Duration::ZERO;
+        };
         self.bytes = bytes;
         self.recorded = true;
-        let duration = self.start.elapsed();
+        let duration = start.elapsed();
         self.collector.record(self.phase, duration, self.bytes);
         duration
     }
@@ -178,7 +197,9 @@ impl Drop for PhaseGuard {
             return;
         }
 
-        self.collector
-            .record(self.phase, self.start.elapsed(), self.bytes);
+        if let Some(start) = self.start {
+            self.collector
+                .record(self.phase, start.elapsed(), self.bytes);
+        }
     }
 }

@@ -81,6 +81,111 @@ fn telemetry_window_includes_generic_runtime_and_endpoint_timings() {
 }
 
 #[test]
+fn session_lifetime_samples_stay_bounded() {
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    // Far more steps than any reasonable reservoir capacity; total_* buffers
+    // would grow to STEPS in length before the reservoir bound was added.
+    const STEPS: u64 = 100_000;
+    for step in 0..STEPS {
+        accumulator.record_operation_telemetry(
+            "model-a",
+            Some(&OperationTelemetry {
+                operation: "model.predict".to_string(),
+                component_id: String::new(),
+                metrics: vec![OperationMetric {
+                    name: "endpoint.total".to_string(),
+                    labels: Default::default(),
+                    value: Some(operation_metric::Value::DurationNs(2_000_000)),
+                }],
+            }),
+        );
+        accumulator.record_step(StepTimingSample {
+            model_wait: Duration::from_millis(step % 50),
+            env_step: Duration::from_millis(step % 30),
+            request_bytes: 1,
+            response_bytes: 1,
+            env_component_id: "env-a",
+            model_component_id: "model-a",
+        });
+    }
+
+    // Memory must stay bounded well below the number of steps.
+    assert!(
+        accumulator.max_total_sample_buffer() <= 8192,
+        "session-lifetime sample buffer grew unbounded: {}",
+        accumulator.max_total_sample_buffer()
+    );
+
+    // The summary must still report the true total sample count.
+    let summary = accumulator
+        .summary("session-a", RuntimeRouteContext::default())
+        .unwrap();
+    assert_eq!(summary.sample_count, STEPS);
+    let endpoint = summary
+        .timings
+        .iter()
+        .find(|timing| timing.name == "endpoint.total")
+        .expect("endpoint.total timing present");
+    assert_eq!(endpoint.sample_count, STEPS);
+}
+
+#[test]
+fn records_byte_count_and_number_metrics() {
+    use crate::hooks::MetricKind;
+
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.started_at = Instant::now() - Duration::from_secs(2);
+    accumulator.record_operation_telemetry(
+        "env-a",
+        Some(&OperationTelemetry {
+            operation: "env.step".to_string(),
+            component_id: String::new(),
+            metrics: vec![
+                OperationMetric {
+                    name: "payload.bytes".to_string(),
+                    labels: Default::default(),
+                    value: Some(operation_metric::Value::ByteCount(2048)),
+                },
+                OperationMetric {
+                    name: "batch.size".to_string(),
+                    labels: Default::default(),
+                    value: Some(operation_metric::Value::Number(8.0)),
+                },
+            ],
+        }),
+    );
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(10),
+        env_step: Duration::from_millis(20),
+        request_bytes: 3,
+        response_bytes: 4,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+
+    let event = accumulator
+        .flush("session-a", RuntimeRouteContext::default())
+        .unwrap();
+
+    let bytes = event
+        .metrics
+        .iter()
+        .find(|metric| metric.name == "payload.bytes")
+        .expect("byte_count metric recorded");
+    assert_eq!(bytes.kind, MetricKind::ByteCount);
+    assert_eq!(bytes.sample_count, 1);
+    assert_eq!(bytes.avg, Some(2048.0));
+
+    let number = event
+        .metrics
+        .iter()
+        .find(|metric| metric.name == "batch.size")
+        .expect("number metric recorded");
+    assert_eq!(number.kind, MetricKind::Number);
+    assert_eq!(number.avg, Some(8.0));
+}
+
+#[test]
 fn telemetry_summary_keeps_samples_after_window_flush() {
     let mut accumulator = TelemetryWindowAccumulator::default();
     accumulator.started_at = Instant::now() - Duration::from_secs(2);

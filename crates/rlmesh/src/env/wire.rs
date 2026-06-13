@@ -7,19 +7,23 @@ use rlmesh_grpc::env::{
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values,
-    meta_map_from_struct, meta_map_to_struct, render_result_to_proto, value_bytes,
+    bytes_value, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto, render_result_to_proto, value_bytes,
 };
 
 use super::Env;
 use super::types::{CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, StepRequest};
 use crate::spaces;
 
+/// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
+#[doc(hidden)]
 pub struct WireEnvAdapter<E> {
     inner: E,
 }
 
 impl<E> WireEnvAdapter<E> {
+    /// Wrap an [`Env`] for the wire layer.
+    #[doc(hidden)]
     pub fn new(inner: E) -> Self {
         Self { inner }
     }
@@ -51,7 +55,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .inner
             .reset(ResetRequest {
                 seeds: req.seeds,
-                options: req.options.map(meta_map_from_struct),
+                options: req.options.map(meta_map_from_proto),
                 timeout_ms: req.timeout_ms,
             })
             .await
@@ -65,7 +69,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
 
         Ok(ProtoResetResponse {
             observation: Some(bytes_value(observations)),
-            infos: result.info.as_ref().map(meta_map_to_struct),
+            infos: result.info.as_ref().map(meta_map_to_proto),
             episode_ids: result.episode_ids,
         })
     }
@@ -105,7 +109,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             rewards: result.rewards,
             terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
             truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
-            infos: result.info.as_ref().map(meta_map_to_struct),
+            infos: result.info.as_ref().map(meta_map_to_proto),
             completed_episodes: result
                 .completed_episodes
                 .iter()
@@ -155,6 +159,8 @@ fn gym_error_to_env_error(error: spaces::EnvRuntimeError) -> EnvError {
             EnvError::new(EnvErrorCode::InvalidAction, message)
         }
         spaces::EnvRuntimeError::Runtime(message) => EnvError::new(EnvErrorCode::Internal, message),
+        // EnvRuntimeError is #[non_exhaustive]; treat unknown variants as internal.
+        other => EnvError::new(EnvErrorCode::Internal, other.to_string()),
     }
 }
 
@@ -172,7 +178,7 @@ fn public_episode_metadata_to_proto(
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
         duration_ms: value.duration_ms,
-        final_info: value.final_info.as_ref().map(meta_map_to_struct),
+        final_info: value.final_info.as_ref().map(meta_map_to_proto),
     })
 }
 
@@ -194,7 +200,7 @@ pub(super) fn proto_episode_metadata_to_public(
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
         duration_ms: value.duration_ms,
-        final_info: value.final_info.map(meta_map_from_struct),
+        final_info: value.final_info.map(meta_map_from_proto),
     })
 }
 
@@ -543,7 +549,20 @@ mod tests {
             }
         };
 
-        client.close().await.unwrap();
+        let _ = client
+            .reset(ResetRequest {
+                seeds: vec![11, 22],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        let mut final_episodes = client.close().await.unwrap().final_episodes;
+        final_episodes.sort_by_key(|episode| episode.env_index);
+        assert_eq!(final_episodes.len(), 2);
+        assert_eq!(final_episodes[0].env_index, 0);
+        assert_eq!(final_episodes[0].seed, Some(11));
+        assert_eq!(final_episodes[1].env_index, 1);
+        assert_eq!(final_episodes[1].seed, Some(22));
         assert_eq!(closes.load(Ordering::SeqCst), 0);
 
         let mut second_client = RemoteEnv::connect(&address).await.unwrap();
@@ -557,5 +576,353 @@ mod tests {
             .unwrap();
 
         assert_eq!(closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn detached_session_episodes_do_not_bleed_into_the_next_session() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let server = tokio::spawn(async move {
+            EnvServer::new(DummyEnv::new())
+                .serve_with_options(
+                    BindAddress::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port,
+                    },
+                    ServeOptions {
+                        allow_remote_shutdown: true,
+                        ..ServeOptions::default()
+                    },
+                )
+                .await
+        });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut first = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(client) => break client,
+                Err(err) if !server.is_finished() => {
+                    let _ = err;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("environment server did not start: {err}"),
+            }
+        };
+
+        // Start episodes, then abandon the session without a graceful Close.
+        let _ = first
+            .reset(ResetRequest {
+                seeds: vec![77, 88],
+                ..ResetRequest::default()
+            })
+            .await
+            .unwrap();
+        first.detach();
+        drop(first);
+
+        // The slot frees once the server observes the stream end; retry until
+        // the second session is admitted.
+        let mut second = loop {
+            let mut candidate = RemoteEnv::connect(&address).await.unwrap();
+            match candidate.reset(ResetRequest::default()).await {
+                Ok(_) => break candidate,
+                Err(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        };
+
+        let step = second
+            .step(StepRequest {
+                actions: vec![
+                    spaces::SpaceValue::Discrete(0),
+                    spaces::SpaceValue::Discrete(1),
+                ],
+                ..StepRequest::default()
+            })
+            .await
+            .unwrap();
+        for episode in &step.completed_episodes {
+            assert_ne!(episode.seed, Some(77), "stale episode bled across sessions");
+            assert_ne!(episode.seed, Some(88), "stale episode bled across sessions");
+        }
+
+        assert!(second.shutdown("test shutdown").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn served_env_unix_socket_recovers_from_stale_socket_file() {
+        let dir = std::env::temp_dir().join(format!("rlmesh-env-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("env.sock");
+        let _ = std::fs::remove_file(&socket_path);
+
+        // Leave a stale socket file behind, as a previous unclean run would.
+        // Without stale-socket cleanup, bind(2) returns AddrInUse forever.
+        let stale = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        drop(stale);
+        assert!(socket_path.exists(), "stale socket file must exist");
+
+        let addr = BindAddress::Unix {
+            path: socket_path.clone(),
+        };
+        let server = tokio::spawn({
+            let addr = addr.clone();
+            async move {
+                EnvServer::new(DummyEnv::new())
+                    .serve_with_options(
+                        addr,
+                        ServeOptions {
+                            allow_remote_shutdown: true,
+                            ..ServeOptions::default()
+                        },
+                    )
+                    .await
+            }
+        });
+
+        let address = format!("unix://{}", socket_path.display());
+        let mut client = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(client) => break client,
+                Err(err) if !server.is_finished() => {
+                    let _ = err;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("environment server did not start over stale socket: {err}"),
+            }
+        };
+
+        assert!(client.shutdown("test shutdown").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        // The socket file is unlinked after shutdown so a re-serve would succeed.
+        assert!(
+            !socket_path.exists(),
+            "socket file must be unlinked after shutdown"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn env_serve_options_token_is_enforced_by_the_server() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let addr = BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port,
+        };
+        let server = tokio::spawn({
+            let addr = addr.clone();
+            async move {
+                EnvServer::new(DummyEnv::new())
+                    .serve_with_options(
+                        addr,
+                        ServeOptions {
+                            allow_remote_shutdown: true,
+                            token: Some("s3cret".to_string()),
+                            ..ServeOptions::default()
+                        },
+                    )
+                    .await
+            }
+        });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+
+        // An unauthenticated facade connect is rejected: the token set through
+        // ServeOptions actually reaches and is enforced by the env service.
+        let connect_error = loop {
+            match RemoteEnv::connect(&address).await {
+                Ok(_) => panic!("unauthenticated connect must be rejected when a token is set"),
+                Err(err) if !server.is_finished() => {
+                    let message = err.to_string();
+                    if message.contains("invalid env token") {
+                        break message;
+                    }
+                    // Not yet listening; retry.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("env server did not start: {err}"),
+            }
+        };
+        assert!(connect_error.contains("invalid env token"));
+
+        // A token-bearing facade client connects and handshakes successfully.
+        let env = RemoteEnv::connect_with_token(&address, "s3cret")
+            .await
+            .expect("facade connect_with_token must reach a token-protected env");
+        drop(env);
+
+        // A token-bearing client handshakes successfully.
+        let mut authed = rlmesh_grpc::EnvClient::connect_with_token(&address, "s3cret")
+            .await
+            .unwrap();
+        authed.handshake().await.expect("authorized handshake");
+        assert!(authed.shutdown("test shutdown").await.unwrap().accepted);
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_env_reset_and_step_decode_with_shared_specs() {
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+
+        // Multiple reset/step calls reuse the Arc-shared specs (no per-call deep
+        // clone) and still decode the expected number of observations.
+        for _ in 0..3 {
+            let reset = client.reset(ResetRequest::default()).await.unwrap();
+            assert_eq!(reset.observations.len(), client.num_envs());
+            let step = client
+                .step(StepRequest {
+                    actions: vec![
+                        spaces::SpaceValue::Discrete(0),
+                        spaces::SpaceValue::Discrete(1),
+                    ],
+                    timeout_ms: 0,
+                })
+                .await
+                .unwrap();
+            assert_eq!(step.observations.len(), client.num_envs());
+        }
+
+        assert!(client.shutdown("done").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn env_bind_resolves_port_zero_before_serving() {
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // The OS-assigned port is known before we await shutdown.
+        let resolved = bound.local_addr().clone();
+        let port = match resolved {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp bind address, got {other:?}"),
+        };
+        assert_ne!(port, 0, "port 0 must resolve to a real port");
+
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        // No poll-connect race: the resolved address is immediately usable.
+        let address = format!("tcp://127.0.0.1:{port}");
+        let mut client = RemoteEnv::connect(&address).await.unwrap();
+        let _ = client.reset(ResetRequest::default()).await.unwrap();
+        assert!(client.shutdown("test shutdown").await.unwrap());
+
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn served_env_reports_grpc_health_serving() {
+        use tonic_health::ServingStatus;
+        use tonic_health::pb::HealthCheckRequest;
+        use tonic_health::pb::health_client::HealthClient;
+
+        let bound = EnvServer::new(DummyEnv::new())
+            .bind_with_options(
+                BindAddress::Tcp {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                ServeOptions {
+                    allow_remote_shutdown: true,
+                    ..ServeOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let port = match bound.local_addr().clone() {
+            BindAddress::Tcp { port, .. } => port,
+            other => panic!("expected tcp, got {other:?}"),
+        };
+        let server = tokio::spawn(async move { bound.serve().await });
+
+        // A standard grpc.health.v1 client sees overall server health = SERVING.
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let mut health = HealthClient::new(channel);
+        let response = health
+            .check(HealthCheckRequest {
+                service: String::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.status, ServingStatus::Serving as i32);
+
+        // Shut the server down through the existing env client path.
+        let mut client = RemoteEnv::connect(&format!("tcp://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        assert!(client.shutdown("done").await.unwrap());
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

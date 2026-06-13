@@ -9,29 +9,10 @@ conversion code and the public client/model/sandbox classes.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Final
 
 from ._rlmesh import Tensor
 from ._values import decode_tree, encode_tree
 from .types import Value
-
-# Mirrors rlmesh_spaces DType::ALL (minus Unspecified); the Rust core is the
-# source of truth for dtype names.
-SUPPORTED_DTYPES: Final[tuple[str, ...]] = (
-    "bool",
-    "uint8",
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "uint16",
-    "uint32",
-    "uint64",
-    "float16",
-    "bfloat16",
-    "float32",
-    "float64",
-)
 
 
 class FrameworkBridge:
@@ -68,4 +49,4 @@ class FrameworkBridge:
         return encode_tree(value, self._encode_leaf)
 
 
-__all__ = ["SUPPORTED_DTYPES", "FrameworkBridge"]
+__all__ = ["FrameworkBridge"]

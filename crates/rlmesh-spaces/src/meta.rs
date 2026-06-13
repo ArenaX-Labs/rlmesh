@@ -7,6 +7,7 @@ pub enum MetaValue {
     Int(i64),
     Float(f64),
     String(String),
+    Bytes(Vec<u8>),
     List(Vec<MetaValue>),
     Map(MetaMap),
 }

@@ -7,7 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Callable, MutableMapping
+from typing import cast
 
 from ._cli.main import find_repo_root
 
@@ -15,8 +16,17 @@ _DISTRIBUTION_ENV = "RLMESH_CLI_DISTRIBUTION"
 
 
 def _run_extension_cli(argv: list[str]) -> int:
-    from ._rlmesh import run_cli
+    import rlmesh._rlmesh as _rlmesh
 
+    # run_cli only exists in builds with the 'viewer' cargo feature; lean
+    # wheels omit it (and the GUI stack) entirely.
+    run_cli = cast(
+        "Callable[[list[str]], int] | None", getattr(_rlmesh, "run_cli", None)
+    )
+    if run_cli is None:
+        raise ImportError(
+            "the rlmesh native module was built without the 'viewer' feature"
+        )
     return int(run_cli(argv))
 
 

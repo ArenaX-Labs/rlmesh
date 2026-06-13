@@ -47,7 +47,7 @@ env = { fixture = "image-grid", kwargs = { width = 4, height = 3, channels = 3 }
 
 [scenarios.tensor-numpy-view]
 kind = "artifact"
-description = "Installed wheel NumPy zero-copy tensor view checks."
+description = "Installed wheel NumPy read-only shared tensor view checks."
 artifact = "tensor-numpy-view"
 
 [scenarios.tensor-export-copy]

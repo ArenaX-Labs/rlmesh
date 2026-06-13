@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import assert_type
-
 import rlmesh
 from rlmesh import spaces
 from rlmesh.specs import EnvContract
 from rlmesh.types import InfoDict, Value
+from typing_extensions import assert_type
 
 
 class TinyEnv:

@@ -1,8 +1,14 @@
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use rlmesh_proto::env::v1::EnvContract;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 use serde::{Deserialize, Serialize};
+
+/// Empty fallback returned by the internal `*_validated` accessors only on the
+/// unreachable path where the space is absent despite validation (see their
+/// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
+static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSessionSpec {
@@ -13,6 +19,7 @@ pub struct RuntimeSessionSpec {
     pub env_id: String,
     pub env_contract: EnvContract,
     pub num_envs: usize,
+    pub base_seed: Option<i64>,
     pub max_episodes: Option<u64>,
     pub close_env_on_end: bool,
     pub limits: RuntimeLimits,
@@ -35,6 +42,12 @@ impl RuntimeSessionSpec {
         if self.num_envs == 0 {
             return Err("runtime num_envs must be greater than zero".to_string());
         }
+        if self.num_envs > 1 {
+            return Err(
+                "runtime num_envs greater than one is not supported until per-lane reset is available"
+                    .to_string(),
+            );
+        }
         if self.env_contract.observation_space.is_none() {
             return Err("runtime env_contract is missing observation_space".to_string());
         }
@@ -55,18 +68,50 @@ impl RuntimeSessionSpec {
         }
     }
 
-    pub fn observation_space(&self) -> &SpaceSpec {
+    /// Returns the observation space, or `None` if the spec has not been
+    /// populated/validated (`env_contract.observation_space` is unset).
+    ///
+    /// All `RuntimeSessionSpec` fields are public, so an unvalidated spec is
+    /// trivial to construct; this accessor never panics. The driver validates
+    /// the spec before running and uses the infallible internal accessor.
+    pub fn observation_space(&self) -> Option<&SpaceSpec> {
+        self.env_contract.observation_space.as_ref()
+    }
+
+    /// Returns the action space, or `None` if the spec has not been
+    /// populated/validated (`env_contract.action_space` is unset).
+    ///
+    /// See [`RuntimeSessionSpec::observation_space`] for why this is fallible.
+    pub fn action_space(&self) -> Option<&SpaceSpec> {
+        self.env_contract.action_space.as_ref()
+    }
+
+    /// Observation space for internal use after [`validate`](Self::validate)
+    /// has confirmed it is present.
+    pub(crate) fn observation_space_validated(&self) -> &SpaceSpec {
+        debug_assert!(
+            self.env_contract.observation_space.is_some(),
+            "observation_space accessed before validate()"
+        );
+        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.env_contract
             .observation_space
             .as_ref()
-            .expect("RuntimeSessionSpec validated observation_space")
+            .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 
-    pub fn action_space(&self) -> &SpaceSpec {
+    /// Action space for internal use after [`validate`](Self::validate) has
+    /// confirmed it is present.
+    pub(crate) fn action_space_validated(&self) -> &SpaceSpec {
+        debug_assert!(
+            self.env_contract.action_space.is_some(),
+            "action_space accessed before validate()"
+        );
+        // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
         self.env_contract
             .action_space
             .as_ref()
-            .expect("RuntimeSessionSpec validated action_space")
+            .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 }
 
@@ -225,9 +270,61 @@ mod duration_millis {
 mod tests {
     use std::time::Duration;
 
+    use rlmesh_proto::env::v1::EnvContract;
+    use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
-    use super::RuntimeLimits;
+    use super::{RuntimeLimits, RuntimeSessionSpec};
+
+    fn valid_spec() -> RuntimeSessionSpec {
+        RuntimeSessionSpec {
+            session_id: "session".to_string(),
+            route_id: "route".to_string(),
+            env_component_id: "env".to_string(),
+            model_component_id: "model".to_string(),
+            env_id: "env-id".to_string(),
+            env_contract: EnvContract {
+                observation_space: Some(SpaceSpec::default()),
+                action_space: Some(SpaceSpec::default()),
+                num_envs: 1,
+                ..Default::default()
+            },
+            num_envs: 1,
+            base_seed: None,
+            max_episodes: Some(1),
+            close_env_on_end: true,
+            limits: RuntimeLimits::default(),
+        }
+    }
+
+    #[test]
+    fn space_accessors_return_none_on_unvalidated_spec() {
+        let mut spec = valid_spec();
+        // An unvalidated spec is trivially constructible since all fields are
+        // public; the accessors must not panic.
+        spec.env_contract = EnvContract::default();
+
+        assert!(spec.observation_space().is_none());
+        assert!(spec.action_space().is_none());
+    }
+
+    #[test]
+    fn space_accessors_return_some_on_populated_spec() {
+        let spec = valid_spec();
+        assert!(spec.observation_space().is_some());
+        assert!(spec.action_space().is_some());
+    }
+
+    #[test]
+    fn validate_rejects_vectorized_runtime_sessions() {
+        let mut spec = valid_spec();
+        spec.num_envs = 2;
+        spec.env_contract.num_envs = 2;
+
+        let error = spec.validate().unwrap_err();
+
+        assert!(error.contains("per-lane reset"));
+    }
 
     #[test]
     fn runtime_limits_json_uses_explicit_millisecond_fields() {

@@ -49,6 +49,10 @@ multiple-versions = "allow"
 wildcards = "deny"
 highlight = "simplest-path"
 
+# Architecture boundary: only protocol-aware crates may depend on rlmesh-proto
+# directly.
+deny = [{ name = "rlmesh-proto", wrappers = ["rlmesh", "rlmesh-grpc", "rlmesh-runtime"] }]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

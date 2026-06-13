@@ -3,7 +3,7 @@ pub mod spaces;
 pub mod value;
 
 pub use spaces::{
-    env_contract_from_proto, env_contract_to_proto, meta_map_from_struct, meta_map_to_struct,
+    env_contract_from_proto, env_contract_to_proto, meta_map_from_proto, meta_map_to_proto,
     space_spec_from_proto, space_spec_to_proto,
 };
 pub use value::{

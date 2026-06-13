@@ -28,8 +28,8 @@ For a custom object without Gymnasium, see `quickstart/serve.py`.
 
 ## Sandbox Examples
 
-Use these when the environment should start in an owned Docker-backed process instead of a separate
-server terminal.
+Use these when the environment needs an owned Docker-backed process instead of a separate server
+terminal.
 
 ```bash
 uv run python examples/python/sandbox/gym_sandbox.py

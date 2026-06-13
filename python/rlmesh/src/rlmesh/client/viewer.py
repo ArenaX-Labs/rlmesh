@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+import select
 import struct
 import subprocess
 import sys
@@ -10,7 +12,7 @@ import time
 import warnings
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Literal, Protocol, final
+from typing import IO, Literal, Protocol, final
 
 from ..specs import EnvContract
 from ..types import Metadata
@@ -18,6 +20,11 @@ from ..types import Metadata
 RenderPacket = bytes | bytearray | memoryview | None
 ViewerFPS = float | None | Literal["env"]
 EMPTY_METADATA: Mapping[str, object] = MappingProxyType({})
+
+# Maximum time to spend pushing one frame to a stalled viewer before dropping
+# the connection. Keeps env.step()/reset() from hanging forever when the viewer
+# subprocess stops draining its stdin pipe.
+VIEWER_WRITE_TIMEOUT_SECONDS = 1.0
 
 
 class RenderClient(Protocol):
@@ -86,6 +93,16 @@ class ViewerMixin:
             process.terminate()
             raise RuntimeError("failed to open render viewer stdin")
 
+        # Non-blocking writes let us bound how long a frame push can block when
+        # the viewer stalls (POSIX only; on other platforms we rely on the
+        # select-based timeout below, which still guards against indefinite
+        # hangs for selectable pipes).
+        if os.name == "posix":
+            try:
+                os.set_blocking(process.stdin.fileno(), False)
+            except OSError:  # pragma: no cover - platform/pipe dependent
+                pass
+
         self._viewer = ViewerProcess(
             process,
             env_index,
@@ -125,15 +142,25 @@ class ViewerMixin:
         try:
             self._maybe_sleep_for_viewer_fps(viewer, pace=pace)
             if packet is None:
-                _ = process.stdin.write(struct.pack("<BI", 0, 0))
-                process.stdin.flush()
-                viewer.last_frame_at = time.perf_counter()
-                return
+                frame = struct.pack("<BI", 0, 0)
+            else:
+                raw = bytes(packet)
+                frame = struct.pack("<BI", 1, len(raw)) + raw
 
-            raw = bytes(packet)
-            _ = process.stdin.write(struct.pack("<BI", 1, len(raw)))
-            _ = process.stdin.write(raw)
-            process.stdin.flush()
+            if not self._write_frame_with_deadline(process.stdin, frame):
+                # Viewer stalled past the timeout; drop it rather than hang
+                # step()/reset() forever. A partial framed write would desync
+                # the stream, so tearing the viewer down is the safe policy.
+                if not self._viewer_warning_emitted:
+                    warnings.warn(
+                        "render viewer is not draining frames; closing it to "
+                        "avoid blocking the environment loop",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    self._viewer_warning_emitted = True
+                self._shutdown_viewer(wait=False)
+                return
             viewer.last_frame_at = time.perf_counter()
         except (BrokenPipeError, OSError):  # pragma: no cover - viewer best effort
             self._shutdown_viewer(wait=False)
@@ -145,6 +172,50 @@ class ViewerMixin:
                     stacklevel=2,
                 )
                 self._viewer_warning_emitted = True
+
+    @staticmethod
+    def _write_frame_with_deadline(
+        stdin: IO[bytes],
+        frame: bytes,
+        *,
+        timeout: float = VIEWER_WRITE_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Write one complete frame, giving up after ``timeout`` seconds.
+
+        Returns ``True`` when the whole frame was written and flushed, or
+        ``False`` when the viewer did not drain in time (the caller drops the
+        viewer). Raising ``BrokenPipeError``/``OSError`` propagates to the
+        caller as before. Works whether or not the pipe is non-blocking.
+        """
+        deadline = time.monotonic() + timeout
+        view = memoryview(frame)
+        fileno = stdin.fileno()
+        while view:
+            try:
+                written = stdin.write(view)
+            except BlockingIOError:
+                written = None
+            if written:
+                view = view[written:]
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            # Wait until the pipe is writable again (or the timeout elapses).
+            _, writable, _ = select.select([], [fileno], [], remaining)
+            if not writable:
+                return False
+        try:
+            stdin.flush()
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _, writable, _ = select.select([], [fileno], [], remaining)
+            if not writable:
+                return False
+            stdin.flush()
+        return True
 
     def _resolve_viewer_fps_limit(self, fps: ViewerFPS) -> float | None:
         if fps == "env":

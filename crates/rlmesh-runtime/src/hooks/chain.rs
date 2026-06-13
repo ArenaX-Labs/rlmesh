@@ -40,210 +40,110 @@ impl RuntimeHookChain {
     }
 }
 
+/// Broadcasts `$event` to every hook via `$method`, running all hooks even when
+/// some fail and returning the first error (lifecycle/progress/telemetry/log
+/// semantics).
+macro_rules! fan_out_event {
+    ($self:ident, $method:ident, $event:ident) => {{
+        let mut first_error = None;
+        for hook in &$self.hooks {
+            if let Err(error) = hook.$method($event.clone()).await {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }};
+}
+
+/// Folds `$event`'s `$payload` field through every hook via `$method`, feeding
+/// each hook's output into the next and short-circuiting on the first error
+/// (transform semantics).
+///
+/// The payload (a tensor-carrying [`MessageBytes`]) is *moved* through each
+/// per-hook event rather than deep-copied: the template event carries `None` in
+/// `$payload`, each iteration clones only the cheap metadata (`action_space` is
+/// an `Arc`) and moves the current payload in. This avoids an `O(hooks)` memcpy
+/// of the full payload per step while preserving identical fold semantics.
+macro_rules! fold_transform {
+    ($self:ident, $method:ident, $event:ident, $payload:ident) => {{
+        let mut event = $event;
+        // Lift the payload out so the per-hook clone never copies it.
+        let mut payload = event.$payload.take();
+        for hook in &$self.hooks {
+            let mut per_hook = event.clone();
+            per_hook.$payload = payload;
+            payload = hook.$method(per_hook).await?;
+        }
+        Ok(payload)
+    }};
+}
+
 #[async_trait]
 impl RuntimeHooks for RuntimeHookChain {
     async fn env_connected(&self, event: EnvConnectedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.env_connected(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, env_connected, event)
     }
 
     async fn model_connected(&self, event: ModelConnectedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.model_connected(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, model_connected, event)
     }
 
     async fn session_started(&self, event: SessionStartedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.session_started(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, session_started, event)
     }
 
     async fn episode_started(&self, event: EpisodeStartedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.episode_started(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, episode_started, event)
     }
 
     async fn episode_completed(&self, event: EpisodeCompletedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.episode_completed(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, episode_completed, event)
     }
 
     async fn action_received(&self, event: ActionReceivedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.action_received(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, action_received, event)
     }
 
     async fn transform_action(
         &self,
         event: ActionReceivedEvent,
     ) -> Result<Option<MessageBytes>, HookError> {
-        let ActionReceivedEvent {
-            session_id,
-            route,
-            episode_id,
-            episode_record_id,
-            episode_ids,
-            episode_record_ids,
-            step,
-            env_index,
-            action_space,
-            mut action,
-        } = event;
-        for hook in &self.hooks {
-            action = hook
-                .transform_action(ActionReceivedEvent {
-                    session_id: session_id.clone(),
-                    route: route.clone(),
-                    episode_id: episode_id.clone(),
-                    episode_record_id: episode_record_id.clone(),
-                    episode_ids: episode_ids.clone(),
-                    episode_record_ids: episode_record_ids.clone(),
-                    step,
-                    env_index,
-                    action_space: action_space.clone(),
-                    action,
-                })
-                .await?;
-        }
-        Ok(action)
+        fold_transform!(self, transform_action, event, action)
     }
 
     async fn step_completed(&self, event: StepCompletedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.step_completed(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, step_completed, event)
     }
 
     async fn observation_emitted(&self, event: ObservationEmittedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.observation_emitted(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, observation_emitted, event)
     }
 
     async fn transform_observation(
         &self,
         event: ObservationEmittedEvent,
     ) -> Result<Option<MessageBytes>, HookError> {
-        let ObservationEmittedEvent {
-            session_id,
-            route,
-            episode_id,
-            episode_record_id,
-            episode_ids,
-            episode_record_ids,
-            step,
-            env_index,
-            is_reset,
-            num_envs,
-            observation_space,
-            mut observation,
-        } = event;
-        for hook in &self.hooks {
-            observation = hook
-                .transform_observation(ObservationEmittedEvent {
-                    session_id: session_id.clone(),
-                    route: route.clone(),
-                    episode_id: episode_id.clone(),
-                    episode_record_id: episode_record_id.clone(),
-                    episode_ids: episode_ids.clone(),
-                    episode_record_ids: episode_record_ids.clone(),
-                    step,
-                    env_index,
-                    is_reset,
-                    num_envs,
-                    observation_space: observation_space.clone(),
-                    observation,
-                })
-                .await?;
-        }
-        Ok(observation)
+        fold_transform!(self, transform_observation, event, observation)
     }
 
     async fn telemetry_window(&self, event: TelemetryWindowEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.telemetry_window(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, telemetry_window, event)
     }
 
     async fn telemetry_summary(&self, event: TelemetrySummaryEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.telemetry_summary(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, telemetry_summary, event)
     }
 
     async fn session_ended(&self, event: SessionEndedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.session_ended(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, session_ended, event)
     }
 
     async fn session_failed(&self, event: SessionFailedEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.session_failed(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, session_failed, event)
     }
 
     async fn log(&self, event: LogEvent) -> Result<(), HookError> {
-        let mut first_error = None;
-        for hook in &self.hooks {
-            if let Err(error) = hook.log(event.clone()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        fan_out_event!(self, log, event)
     }
 }
 
@@ -360,7 +260,7 @@ mod tests {
             episode_record_ids: vec!["episode-artifact".to_string()],
             step: 1,
             env_index: 0,
-            action_space: SpaceSpec::default(),
+            action_space: std::sync::Arc::new(SpaceSpec::default()),
             action: Some(MessageBytes { data }),
         }
     }

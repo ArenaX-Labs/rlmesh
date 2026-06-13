@@ -3,7 +3,7 @@
 This is the private fixture package installed into clean system-test venvs. It contains envs,
 models, artifact checks, and trace drivers used by `tools/rlmesh_system`.
 
-## Adding fixtures
+## Adding Fixtures
 
 Add envs under `src/rlmesh_system_fixtures/envs/` and register the factory:
 

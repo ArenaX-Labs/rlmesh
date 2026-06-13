@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use prost::Message;
-use prost_types::{Struct, Value, value};
+use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
+use rlmesh_proto::spaces::v1::{MetaMap, MetaValue};
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
@@ -14,7 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::env::Environment;
 use crate::env::episode::EpisodeTracker;
 use crate::error::EnvError;
-use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
 use crate::wire::value_bytes_ref;
 
@@ -31,13 +32,87 @@ use rlmesh_proto::{
 
 use super::{env_error_to_proto, is_protocol_generation_compatible};
 
+/// Run an environment operation under a deadline, then drain it before the next
+/// request may access the same environment.
+///
+/// Python-backed environments are not generally cancellable. On timeout this
+/// keeps polling the operation to completion while the caller still holds the
+/// environment mutex, preventing overlapping access to the wrapped environment.
+async fn run_env_op_with_deadline<F, T>(
+    op: F,
+    timeout_ms: i64,
+    operation: &str,
+) -> Result<T, EnvError>
+where
+    F: std::future::Future<Output = Result<T, EnvError>>,
+{
+    if timeout_ms <= 0 {
+        return op.await;
+    }
+
+    let timeout_duration = Duration::from_millis(timeout_ms as u64);
+    tokio::pin!(op);
+
+    match tokio::time::timeout(timeout_duration, op.as_mut()).await {
+        Ok(result) => result,
+        Err(_) => {
+            // Deadline elapsed. The underlying env op cannot be cancelled, so we
+            // must drive it to completion before releasing the env mutex; only
+            // then is it safe for the next request to access the env.
+            tracing::warn!(
+                operation,
+                timeout_ms,
+                "{operation} exceeded {timeout_ms}ms deadline; draining the in-flight \
+                 operation to completion before serving the next request to avoid concurrent \
+                 access to the environment"
+            );
+            match op.await {
+                Ok(_) => tracing::warn!(
+                    operation,
+                    "{operation} completed after its deadline; result discarded (client already \
+                     received a timeout error)"
+                ),
+                Err(error) => tracing::warn!(
+                    operation,
+                    error = %error,
+                    "{operation} failed after its deadline; error discarded (client already \
+                     received a timeout error)"
+                ),
+            }
+            Err(EnvError::new(
+                crate::error::EnvErrorCode::Timeout,
+                format!("{operation} timed out after {timeout_ms}ms"),
+            ))
+        }
+    }
+}
+
 /// A transport server that implements the `EnvService` tonic trait.
 pub struct GrpcEnvServer<E: Environment> {
     env: Arc<Mutex<E>>,
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    /// Optional bearer token required on the `authorization` metadata header.
+    /// Empty means authentication is disabled.
+    token: String,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
+    /// Whether a Join stream is currently active. The env protocol has no
+    /// session identity and a single env / episode tracker is shared across all
+    /// streams, so concurrent Join streams would interleave reset/step on the
+    /// same non-thread-safe environment and one client's Close would complete
+    /// every other client's episodes. We therefore admit only one Join stream at
+    /// a time and reject the rest until the active one ends.
+    join_active: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// RAII guard that releases the single-Join-stream slot when dropped.
+struct JoinSlotGuard(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for JoinSlotGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl<E: Environment> GrpcEnvServer<E> {
@@ -51,7 +126,7 @@ impl<E: Environment> GrpcEnvServer<E> {
         env: E,
         shutdown: ShutdownTrigger,
         serve_options: ServeOptions,
-        activity_tx: Option<mpsc::UnboundedSender<()>>,
+        activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
         Self::from_shared(
             Arc::new(Mutex::new(env)),
@@ -66,14 +141,33 @@ impl<E: Environment> GrpcEnvServer<E> {
         env: Arc<Mutex<E>>,
         shutdown: ShutdownTrigger,
         serve_options: ServeOptions,
-        activity_tx: Option<mpsc::UnboundedSender<()>>,
+        activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
+        let token = serve_options.token.clone().unwrap_or_default();
         Self {
             env,
             episode_tracker: Arc::new(Mutex::new(EpisodeTracker::new())),
             shutdown,
             serve_options,
+            token,
             activity_tx,
+            join_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Reject the request when a token is configured and the request's
+    /// `authorization` metadata does not match it. Mirrors the model service's
+    /// bearer-token check. A no-op when no token is configured.
+    fn authenticate<T>(&self, request: &Request<T>) -> Result<(), Status> {
+        let provided = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if crate::helpers::bearer_token_matches(&self.token, provided) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated("invalid env token"))
         }
     }
 }
@@ -82,6 +176,8 @@ pub fn env_service<E: Environment + 'static>(
     env: E,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
     rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::new(env))
+        .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+        .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
 }
 
 #[doc(hidden)]
@@ -89,7 +185,7 @@ pub fn env_service_from_shared<E: Environment + 'static>(
     env: Arc<Mutex<E>>,
     shutdown: ShutdownTrigger,
     serve_options: ServeOptions,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {
     rlmesh_proto::env::v1::env_service_server::EnvServiceServer::new(GrpcEnvServer::from_shared(
         env,
@@ -97,6 +193,8 @@ pub fn env_service_from_shared<E: Environment + 'static>(
         serve_options,
         activity_tx,
     ))
+    .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(crate::MAX_MESSAGE_SIZE)
 }
 
 #[tonic::async_trait]
@@ -113,6 +211,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeResponse>, Status> {
+        self.authenticate(&request)?;
         let req = request.into_inner();
 
         tracing::info!(
@@ -182,6 +281,28 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<Streaming<JoinRequest>>,
     ) -> Result<Response<Self::JoinStream>, Status> {
+        self.authenticate(&request)?;
+        // Reject a second concurrent Join stream: the env protocol carries no
+        // session identity and the env + episode tracker are shared, so two
+        // streams cannot safely coexist.
+        if self
+            .join_active
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_err()
+        {
+            tracing::warn!("rejecting Join stream: environment already has an active session");
+            return Err(Status::failed_precondition(
+                "environment already has an active Join session; only one client may be connected \
+                 at a time",
+            ));
+        }
+        let join_slot = JoinSlotGuard(self.join_active.clone());
+
         let mut req_stream = request.into_inner();
         let env = self.env.clone();
         let episode_tracker = self.episode_tracker.clone();
@@ -190,6 +311,9 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<JoinResponse, Status>>(64);
 
         tokio::spawn(async move {
+            // Hold the slot guard for the lifetime of this stream; dropping it
+            // (on normal completion, error, or task cancellation) frees the slot.
+            let _join_slot = join_slot;
             while let Some(req_result) = req_stream.next().await {
                 let req = match req_result {
                     Ok(req) => req,
@@ -201,10 +325,17 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
                 let close_after = matches!(req.kind, Some(join_request::Kind::Close(_)));
                 if let Some(activity_tx) = &activity_tx {
-                    let _ = activity_tx.send(());
+                    let _ = activity_tx.send(IdleActivity::Started);
                 }
-
-                let res = handle_env_request(req, env.clone(), episode_tracker.clone()).await;
+                // RAII pairing: the matching Finished must fire even if the
+                // served environment's reset/step/render panics and unwinds out
+                // of this loop, or the idle-shutdown in-flight count stays
+                // elevated forever and idle shutdown never fires. The guard's
+                // scope ends at the bottom of this loop iteration (request done).
+                let res = {
+                    let _activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
+                    handle_env_request(req, env.clone(), episode_tracker.clone()).await
+                };
 
                 let send_result = tx.send(Ok(res)).await;
 
@@ -219,6 +350,19 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     break;
                 }
             }
+
+            // The session is over, however it ended. A graceful Close already
+            // drained the tracker; an abrupt end (client drop/detach/network)
+            // must not leak this session's episodes into the next session's
+            // accounting, so complete anything still active as truncated. The
+            // metadata has no recipient (the stream is gone) and is dropped.
+            let leftover = episode_tracker.lock().await.complete_all("session ended");
+            if !leftover.is_empty() {
+                tracing::info!(
+                    episodes = leftover.len(),
+                    "completed episodes left active by an abruptly-ended session"
+                );
+            }
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -228,6 +372,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         &self,
         request: Request<ShutdownRequest>,
     ) -> Result<Response<ShutdownResponse>, Status> {
+        self.authenticate(&request)?;
         let request = request.into_inner();
 
         if !self.serve_options.allow_remote_shutdown {
@@ -276,38 +421,27 @@ async fn handle_env_request<E: Environment>(
             let mut env = env.lock().await;
 
             let num_envs = env.num_envs();
-            let seeds = if reset_req.seeds.is_empty() {
-                vec![0; num_envs]
-            } else {
-                reset_req.seeds.clone()
-            };
+            // Record the seed honestly: an empty seeds vector means the
+            // environment seeds itself from entropy, so the episode has no seed
+            // rather than a fabricated 0.
+            let seeds = reset_req.seeds.clone();
 
             let timeout_ms = reset_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.reset(reset_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("reset timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.reset(reset_req).await
-            };
+            let result =
+                run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await;
 
             match result {
                 Ok(mut ok) => {
                     let mut tracker = episode_tracker.lock().await;
                     let episode_ids: Vec<String> = (0..num_envs)
                         .map(|env_idx| {
-                            let seed = seeds.get(env_idx).copied().unwrap_or(0);
+                            let seed = seeds.get(env_idx).copied();
                             tracker.start_episode(env_idx as i32, seed)
                         })
                         .collect();
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
-                    let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
+                    let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::debug!(
                         obs_bytes,
                         info_bytes,
@@ -327,28 +461,19 @@ async fn handle_env_request<E: Environment>(
             let num_envs = env.num_envs();
 
             let timeout_ms = step_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.step(step_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("step timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.step(step_req).await
-            };
+            let result = run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
 
             match result {
                 Ok(mut ok) => {
                     let mut tracker = episode_tracker.lock().await;
-                    let mut completed_episodes = Vec::new();
+                    // Episodes interrupted by a replacing reset surface here so
+                    // their accounting is not lost.
+                    let mut completed_episodes = tracker.drain_interrupted();
                     let shared_info = decode_info_struct(ok.infos.as_ref());
 
                     for env_idx in 0..num_envs {
                         let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                        tracker.record_step(env_idx as i32, reward, None);
+                        tracker.record_step(env_idx as i32, reward);
 
                         let terminated = ok
                             .terminated_mask
@@ -361,6 +486,8 @@ async fn handle_env_request<E: Environment>(
                             .map(|&b| b != 0)
                             .unwrap_or(false);
 
+                        // 2026.06: a terminated lane stays inactive until the
+                        // next explicit reset.
                         if (terminated || truncated)
                             && let Some(metadata) = tracker.complete_episode(
                                 env_idx as i32,
@@ -385,7 +512,7 @@ async fn handle_env_request<E: Environment>(
                     ok.completed_episodes = completed_episodes;
                     ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
-                    let info_bytes = ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0);
+                    let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::trace!(
                         obs_bytes,
                         info_bytes,
@@ -404,18 +531,8 @@ async fn handle_env_request<E: Environment>(
             let mut env = env.lock().await;
 
             let timeout_ms = render_req.timeout_ms;
-            let result = if timeout_ms > 0 {
-                let timeout_duration = Duration::from_millis(timeout_ms as u64);
-                match tokio::time::timeout(timeout_duration, env.render(render_req)).await {
-                    Ok(result) => result,
-                    Err(_) => Err(EnvError::new(
-                        crate::error::EnvErrorCode::Timeout,
-                        format!("render timed out after {}ms", timeout_ms),
-                    )),
-                }
-            } else {
-                env.render(render_req).await
-            };
+            let result =
+                run_env_op_with_deadline(env.render(render_req), timeout_ms, "env.render").await;
 
             match result {
                 Ok(ok) => {
@@ -492,11 +609,11 @@ fn join_response_payload_bytes(response: &JoinResponse) -> usize {
     match response.kind.as_ref() {
         Some(join_response::Kind::Reset(ok)) => {
             space_value_len(ok.observation.as_ref())
-                + ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0)
+                + ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0)
         }
         Some(join_response::Kind::Step(ok)) => {
             space_value_len(ok.observation.as_ref())
-                + ok.infos.as_ref().map(Struct::encoded_len).unwrap_or(0)
+                + ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0)
         }
         Some(join_response::Kind::Render(ok)) => ok.png_frame.as_ref().map(Vec::len).unwrap_or(0),
         Some(join_response::Kind::Error(error)) => error.message.len() + error.debug_info.len(),
@@ -512,7 +629,7 @@ fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> us
         .unwrap_or(0)
 }
 
-fn decode_info_struct(info: Option<&Struct>) -> Option<Struct> {
+fn decode_info_struct(info: Option<&MetaMap>) -> Option<MetaMap> {
     info.cloned()
 }
 
@@ -531,13 +648,13 @@ fn operation_telemetry(operation: &str, endpoint_total: Duration) -> OperationTe
 }
 
 fn extract_env_final_info(
-    info: Option<&Struct>,
+    info: Option<&MetaMap>,
     env_idx: usize,
     num_envs: usize,
-) -> Option<Struct> {
+) -> Option<MetaMap> {
     let info = info?;
-    let final_info = info.fields.get("final_info")?;
-    let is_present = match info.fields.get("_final_info") {
+    let final_info = info.entries.get("final_info")?;
+    let is_present = match info.entries.get("_final_info") {
         Some(mask) => value_bool_at(mask, env_idx).unwrap_or(false),
         None => num_envs == 1,
     };
@@ -547,11 +664,11 @@ fn extract_env_final_info(
     }
 
     match &final_info.kind {
-        Some(value::Kind::StructValue(struct_value)) => Some(struct_value.clone()),
-        Some(value::Kind::ListValue(list_value)) => {
-            let entry = list_value.values.get(env_idx)?;
+        Some(MetaKind::Map(map)) => Some(map.clone()),
+        Some(MetaKind::List(list)) => {
+            let entry = list.items.get(env_idx)?;
             match &entry.kind {
-                Some(value::Kind::StructValue(struct_value)) => Some(struct_value.clone()),
+                Some(MetaKind::Map(map)) => Some(map.clone()),
                 _ => None,
             }
         }
@@ -559,11 +676,11 @@ fn extract_env_final_info(
     }
 }
 
-fn value_bool_at(value: &Value, env_idx: usize) -> Option<bool> {
+fn value_bool_at(value: &MetaValue, env_idx: usize) -> Option<bool> {
     match &value.kind {
-        Some(value::Kind::ListValue(list_value)) => {
-            let entry = list_value.values.get(env_idx)?;
-            if let Some(value::Kind::BoolValue(flag)) = &entry.kind {
+        Some(MetaKind::List(list)) => {
+            let entry = list.items.get(env_idx)?;
+            if let Some(MetaKind::Bool(flag)) = &entry.kind {
                 Some(*flag)
             } else {
                 None
@@ -578,11 +695,10 @@ pub async fn serve<E: Environment + 'static>(
     env: E,
     addr: impl Into<std::net::SocketAddr>,
 ) -> Result<(), tonic::transport::Error> {
-    use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-
-    let server = GrpcEnvServer::new(env);
+    let (_health_reporter, health_service) = crate::health::serving_health_service().await;
     tonic::transport::Server::builder()
-        .add_service(EnvServiceServer::new(server))
+        .add_service(health_service)
+        .add_service(env_service(env))
         .serve(addr.into())
         .await
 }
@@ -604,6 +720,77 @@ mod tests {
 
     use super::{Environment, GrpcEnvServer};
     use crate::error::EnvError;
+
+    #[tokio::test]
+    async fn handshake_enforces_optional_bearer_token() {
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+
+        let options = ServeOptions {
+            token: Some("secret-token".to_string()),
+            ..Default::default()
+        };
+        let server = GrpcEnvServer::new_with_options(
+            HandshakeOnlyEnv::default(),
+            ShutdownTrigger::new(),
+            options,
+            None,
+        );
+
+        // No token -> rejected.
+        let err = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .expect_err("missing token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Wrong token -> rejected.
+        let mut wrong = Request::new(handshake_request(
+            PROTOCOL_GENERATION,
+            &[CURRENT_WORKFLOW_EDITION],
+        ));
+        wrong
+            .metadata_mut()
+            .insert("authorization", "nope".parse().unwrap());
+        let err = EnvService::handshake(&server, wrong)
+            .await
+            .expect_err("wrong token must be rejected");
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        // Correct token -> accepted.
+        let mut ok = Request::new(handshake_request(
+            PROTOCOL_GENERATION,
+            &[CURRENT_WORKFLOW_EDITION],
+        ));
+        ok.metadata_mut()
+            .insert("authorization", "secret-token".parse().unwrap());
+        let response = EnvService::handshake(&server, ok)
+            .await
+            .expect("correct token must be accepted")
+            .into_inner();
+        assert!(response.compatible);
+    }
+
+    #[tokio::test]
+    async fn handshake_without_token_is_unauthenticated_by_default() {
+        // A server with no configured token accepts unauthenticated requests.
+        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let response = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .expect("no-token server accepts requests")
+        .into_inner();
+        assert!(response.compatible);
+    }
 
     struct HandshakeOnlyEnv {
         contract: SpaceEnvContract,
@@ -671,6 +858,213 @@ mod tests {
                 .map(|edition| edition.to_string())
                 .collect(),
         }
+    }
+
+    /// An env whose `step` sleeps and asserts it is never entered concurrently.
+    struct SlowConcurrencyEnv {
+        contract: SpaceEnvContract,
+        step_delay: std::time::Duration,
+        in_op: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        overlap_detected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        completed_steps: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SlowConcurrencyEnv {
+        fn new(step_delay: std::time::Duration) -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "slow".to_string(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 1,
+                },
+                step_delay,
+                in_op: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                overlap_detected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                completed_steps: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for SlowConcurrencyEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            1
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            use std::sync::atomic::Ordering;
+            let in_op = self.in_op.clone();
+            let overlap = self.overlap_detected.clone();
+            let completed = self.completed_steps.clone();
+            let delay = self.step_delay;
+            let handle = tokio::spawn(async move {
+                if in_op.swap(true, Ordering::SeqCst) {
+                    overlap.store(true, Ordering::SeqCst);
+                }
+                tokio::time::sleep(delay).await;
+                in_op.store(false, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            });
+            let _ = handle.await;
+            Ok(StepResponse::default())
+        }
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn timed_out_step_drains_before_next_request_runs() {
+        use std::sync::Arc;
+        use std::sync::atomic::Ordering;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{JoinRequest, join_request, join_response};
+
+        let env = SlowConcurrencyEnv::new(std::time::Duration::from_millis(200));
+        let overlap = env.overlap_detected.clone();
+        let completed = env.completed_steps.clone();
+        let env = Arc::new(Mutex::new(env));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let step_req = |timeout_ms: i64, id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest {
+                timeout_ms,
+                ..Default::default()
+            })),
+            request_id: id.to_string(),
+        };
+
+        // Dispatch the second step while the first is still draining.
+        let first = {
+            let env = env.clone();
+            let tracker = tracker.clone();
+            tokio::spawn(async move {
+                super::handle_env_request(step_req(50, "first"), env, tracker).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        let second = {
+            let env = env.clone();
+            let tracker = tracker.clone();
+            tokio::spawn(async move {
+                super::handle_env_request(step_req(0, "second"), env, tracker).await
+            })
+        };
+
+        let first_res = first.await.unwrap();
+        let second_res = second.await.unwrap();
+
+        // The first call returned a Timeout error to the client...
+        assert!(matches!(
+            first_res.kind,
+            Some(join_response::Kind::Error(ref e))
+                if e.code == rlmesh_proto::env::v1::EnvErrorCode::Timeout as i32
+        ));
+        // ...but the orphaned op was drained, and the second ran without overlap.
+        assert!(matches!(
+            second_res.kind,
+            Some(join_response::Kind::Step(_))
+        ));
+        assert!(
+            !overlap.load(Ordering::SeqCst),
+            "two env.step calls overlapped against the same environment"
+        );
+        // Both steps actually executed to completion in the env.
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn join_rejects_a_second_concurrent_stream() {
+        use rlmesh_proto::env::v1::JoinRequest;
+        use rlmesh_proto::env::v1::env_service_client::EnvServiceClient;
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use tokio::sync::oneshot;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(GrpcEnvServer::new(
+                    HandshakeOnlyEnv::default(),
+                )))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let endpoint = format!("http://{addr}");
+        let mut client = loop {
+            match EnvServiceClient::connect(endpoint.clone()).await {
+                Ok(client) => break client,
+                Err(_) if !server.is_finished() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("test server did not start: {error}"),
+            }
+        };
+        let mut client2 = EnvServiceClient::connect(endpoint.clone()).await.unwrap();
+
+        // First Join stream: the slot is claimed synchronously in the join
+        // handler before it returns, so holding the request channel open keeps
+        // the stream active on the server.
+        let (tx1, rx1) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let first = client
+            .join(ReceiverStream::new(rx1))
+            .await
+            .expect("first join accepted")
+            .into_inner();
+
+        // Second Join stream must be rejected.
+        let (_tx2, rx2) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+        let second = client2.join(ReceiverStream::new(rx2)).await;
+        let status = second.expect_err("second concurrent join must be rejected");
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+        // After the first stream ends, a new Join is admitted again.
+        drop(tx1);
+        drop(first);
+        let mut admitted = None;
+        for _ in 0..50 {
+            let (_tx3, rx3) = tokio::sync::mpsc::channel::<JoinRequest>(1);
+            match client2.join(ReceiverStream::new(rx3)).await {
+                Ok(stream) => {
+                    admitted = Some((_tx3, stream));
+                    break;
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        assert!(
+            admitted.is_some(),
+            "slot was not released after the first stream ended"
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
     #[tokio::test]
@@ -782,5 +1176,146 @@ mod tests {
             assert!(response.selected_workflow_edition.is_empty());
             assert!(response.env_contract.is_none());
         }
+    }
+
+    /// A 2-lane vector env whose first step terminates lane 0 and whose later
+    /// steps never terminate, modelling a non-autoresetting vector env (e.g.
+    /// gymnasium `AutoresetMode::DISABLED`) that keeps accepting steps.
+    struct TerminatingVectorEnv {
+        contract: SpaceEnvContract,
+        step_count: std::sync::atomic::AtomicUsize,
+    }
+
+    impl TerminatingVectorEnv {
+        fn new() -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "terminating".to_string(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 2,
+                },
+                step_count: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for TerminatingVectorEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            2
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            let n = self
+                .step_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Lane 0 terminates on the first step only; lane 1 never terminates.
+            let terminated_mask = if n == 0 {
+                vec![1u8, 0u8]
+            } else {
+                vec![0u8, 0u8]
+            };
+            Ok(StepResponse {
+                rewards: vec![1.0, 1.0],
+                terminated_mask,
+                truncated_mask: vec![0u8, 0u8],
+                ..Default::default()
+            })
+        }
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
+
+    #[tokio::test]
+    async fn terminated_lane_starts_no_phantom_episode_until_reset() {
+        // 2026.06: terminated lanes stay inactive until explicit reset.
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+
+        let env = Arc::new(Mutex::new(TerminatingVectorEnv::new()));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        // Reset both lanes.
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "reset".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+
+        let step_req = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+
+        // Step 1: lane 0 terminates. Its episode completes exactly once; no
+        // replacement episode is started, so lane 0's `episode_id` is now empty.
+        let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
+        let first = match first.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+        assert_eq!(first.completed_episodes.len(), 1, "lane 0 should complete");
+        assert_eq!(first.episode_ids.len(), 2);
+        assert!(
+            first.episode_ids[0].is_empty(),
+            "terminated lane 0 must have no active episode until the next Reset"
+        );
+        assert!(
+            !first.episode_ids[1].is_empty(),
+            "lane 1 keeps its active episode"
+        );
+
+        // Step 2: no phantom episode is delivered for lane 0 (no spurious
+        // truncated 0-step completion), and lane 0 still has no active episode.
+        let second = super::handle_env_request(step_req("s2"), env.clone(), tracker.clone()).await;
+        let second = match second.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+        assert!(
+            second.completed_episodes.is_empty(),
+            "no phantom episode may be delivered for the terminated lane"
+        );
+        assert!(second.episode_ids[0].is_empty());
+        assert!(!second.episode_ids[1].is_empty());
+
+        // An explicit Reset re-establishes a tracked episode for every lane.
+        let _ = super::handle_env_request(
+            JoinRequest {
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+                request_id: "reset2".to_string(),
+            },
+            env.clone(),
+            tracker.clone(),
+        )
+        .await;
+        let tracker = tracker.lock().await;
+        assert!(
+            tracker.active_episode_id(0).is_some(),
+            "Reset must re-establish lane 0's tracked episode"
+        );
     }
 }

@@ -1,9 +1,15 @@
+//! Served model endpoint: the tonic `ModelService` implementation.
+//!
+//! This implementation stays in the facade because it is parameterized over the
+//! public [`crate::ModelHandler`] family. Moving it into `rlmesh-grpc` would
+//! introduce a dependency cycle or force a new lower-level model trait.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rlmesh_grpc::lifecycle::{
-    await_close_with_timeout, await_server_shutdown, start_idle_shutdown,
+    ActivityFinishedGuard, IdleActivity, await_close_with_timeout, start_idle_shutdown,
 };
 use rlmesh_grpc::wire::env_contract_from_proto;
 use rlmesh_proto::model::v1::{
@@ -16,36 +22,74 @@ use rlmesh_proto::{
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
     negotiate_workflow_edition, supported_workflow_editions,
 };
-use tokio::net::TcpListener;
-#[cfg(unix)]
-use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::TcpListenerStream;
-#[cfg(unix)]
-use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use super::handler::ModelHandler;
-use super::lifecycle::update_lifecycle;
+use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::wire::{
-    ModelAction, model_action_to_endpoint_response, model_error, model_join_request_operation,
-    model_observation_from_endpoint_request, model_operation_telemetry,
+    ModelAction, model_action_to_endpoint_response, model_error, model_error_from_error,
+    model_join_request_operation, model_observation_from_endpoint_request,
+    model_operation_telemetry,
 };
+use crate::bound::BoundListener;
 use crate::{BindAddress, Error, Result, ServeOptions, spaces};
 
-pub(super) async fn serve_model_with_options<H>(
+/// A model server that has bound its listener but not yet started serving.
+///
+/// Created by [`crate::ModelWorker::bind_async`]. Use
+/// [`BoundModelServer::local_addr`]
+/// to read the resolved bind address (e.g. the OS-assigned port for TCP port
+/// 0), then [`BoundModelServer::serve`] to run until shutdown.
+pub struct BoundModelServer {
+    listener: BoundListener,
+    router: tonic::transport::server::Router,
+    shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
+    handler: Arc<Mutex<dyn ModelHandler>>,
+    local_addr: BindAddress,
+    drain_timeout: Option<Duration>,
+    close_timeout: Option<Duration>,
+}
+
+impl BoundModelServer {
+    /// The resolved address the server is bound to.
+    pub fn local_addr(&self) -> &BindAddress {
+        &self.local_addr
+    }
+
+    /// Serve until shutdown, then run the handler close hook.
+    pub async fn serve(self) -> Result<()> {
+        let serve_result = self
+            .listener
+            .serve(self.router, self.shutdown, self.drain_timeout)
+            .await;
+        let close_result = close_model(self.handler, self.close_timeout).await;
+        match (serve_result, close_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Err(err)) => Err(err),
+            (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
+                "model server failed: {serve_err}; close hook failed: {close_err}"
+            ))),
+        }
+    }
+}
+
+pub(super) async fn bind_model_with_options<H>(
     handler: H,
     address: BindAddress,
     token: &str,
     options: ServeOptions,
-) -> Result<()>
+) -> Result<BoundModelServer>
 where
     H: ModelHandler + 'static,
 {
     let handler = Arc::new(Mutex::new(handler));
     let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+    let drain_timeout = options.drain_timeout;
+    let close_timeout = options.close_timeout;
     let service = model_service(
         Arc::clone(&handler),
         token.to_string(),
@@ -53,66 +97,30 @@ where
         shutdown.clone(),
         options,
     );
-    let serve_result = match address {
-        BindAddress::Tcp { host, port } => {
-            let listener = TcpListener::bind((host.as_str(), port))
-                .await
-                .map_err(|err| Error::Server(err.to_string()))?;
-            await_server_shutdown(
-                tonic::transport::Server::builder()
-                    .add_service(service)
-                    .serve_with_incoming_shutdown(
-                        TcpListenerStream::new(listener),
-                        shutdown.cancelled_owned(),
-                    ),
-                shutdown.clone(),
-                options.drain_timeout,
-            )
-            .await
-            .map_err(|err| Error::Server(err.to_string()))
-        }
-        BindAddress::Unix { path } => {
-            #[cfg(not(unix))]
-            {
-                let _ = path;
-                return Err(Error::Address(
-                    "unix sockets are not supported on Windows; use tcp://host:port instead"
-                        .to_string(),
-                ));
-            }
 
-            #[cfg(unix)]
-            {
-                let listener =
-                    UnixListener::bind(&path).map_err(|err| Error::Server(err.to_string()))?;
-                await_server_shutdown(
-                    tonic::transport::Server::builder()
-                        .add_service(service)
-                        .serve_with_incoming_shutdown(
-                            UnixListenerStream::new(listener),
-                            shutdown.cancelled_owned(),
-                        ),
-                    shutdown.clone(),
-                    options.drain_timeout,
-                )
-                .await
-                .map_err(|err| Error::Server(err.to_string()))
-            }
-        }
-    };
-    let close_result = close_model(handler, options.close_timeout).await;
-    match (serve_result, close_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(err), Ok(())) => Err(err),
-        (Ok(()), Err(err)) => Err(err),
-        (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
-            "model server failed: {serve_err}; close hook failed: {close_err}"
-        ))),
-    }
+    let listener = BoundListener::bind(address).await?;
+    let local_addr = listener.local_addr()?;
+    let (_health_reporter, health_service) = rlmesh_grpc::health::serving_health_service().await;
+    let router = tonic::transport::Server::builder()
+        .add_service(health_service)
+        .add_service(service);
+    // Upcast so the bound handle does not leak the handler generic; only the
+    // close hook needs the handler afterward.
+    let handler: Arc<Mutex<dyn ModelHandler>> = handler;
+
+    Ok(BoundModelServer {
+        listener,
+        router,
+        shutdown,
+        handler,
+        local_addr,
+        drain_timeout,
+        close_timeout,
+    })
 }
 
-async fn close_model<H: ModelHandler + 'static>(
-    handler: Arc<Mutex<H>>,
+async fn close_model(
+    handler: Arc<Mutex<dyn ModelHandler>>,
     close_timeout: Option<Duration>,
 ) -> Result<()> {
     let close = async { handler.lock().await.on_close().await };
@@ -126,7 +134,7 @@ struct ServedModelServer<H> {
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
     token: String,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
 }
@@ -140,7 +148,7 @@ pub(super) struct ModelRouteConfig {
 fn model_service<H>(
     handler: Arc<Mutex<H>>,
     token: String,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
+    activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
     serve_options: ServeOptions,
 ) -> ModelServiceServer<ServedModelServer<H>>
@@ -156,6 +164,8 @@ where
         shutdown,
         serve_options,
     })
+    .max_decoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
+    .max_encoding_message_size(rlmesh_grpc::MAX_MESSAGE_SIZE)
 }
 
 #[tonic::async_trait]
@@ -201,6 +211,10 @@ where
             capabilities: capability_map(&[
                 capabilities::MODEL_SERVICE_V1,
                 capabilities::SPACES_CORE_V1,
+                // The served model pipelines Join-stream requests (see `join`).
+                // Advisory: lets clients detect that overlapping predicts will
+                // actually pipeline rather than serialize behind the handler.
+                capabilities::MODEL_CONCURRENT_PREDICT_V1,
             ]),
             selected_workflow_edition: if compatible {
                 selected_edition.unwrap_or_default().to_string()
@@ -214,6 +228,12 @@ where
     type JoinStream =
         tokio_stream::wrappers::ReceiverStream<std::result::Result<JoinResponse, Status>>;
 
+    /// Handle a pipelined Join stream.
+    ///
+    /// Responses may complete out of arrival order, but each route is serialized
+    /// through a per-route chain so lifecycle updates cannot overtake earlier
+    /// requests on the same route. A whole-session `Close` waits for all in-flight
+    /// route work before draining final episode accounting.
     async fn join(
         &self,
         request: Request<Streaming<JoinRequest>>,
@@ -224,30 +244,90 @@ where
         let active_episodes = Arc::clone(&self.active_episodes);
         let route_configs = Arc::clone(&self.route_configs);
         let activity_tx = self.activity_tx.clone();
+        let concurrency = self
+            .serve_options
+            .predict_concurrency
+            .unwrap_or(rlmesh_grpc::DEFAULT_PREDICT_CONCURRENCY)
+            .max(1);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
         tokio::spawn(async move {
+            // Per-route tail of completion signals, kept bounded across the
+            // stream's lifetime even as it cycles fresh route keys per episode.
+            // See [`RouteTails`] for the ordering and reaping invariants.
+            let mut route_tails = RouteTails::new();
+
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
                     Ok(request) => request,
                     Err(error) => {
-                        let _ = error;
+                        log_join_stream_error(&error);
                         break;
                     }
                 };
                 let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
-                let response = handle_model_request(
-                    request,
-                    Arc::clone(&handler),
-                    Arc::clone(&active_episodes),
-                    Arc::clone(&route_configs),
-                    activity_tx.clone(),
-                )
-                .await;
-                let send_result = tx.send(Ok(response)).await;
-                if send_result.is_err() {
-                    break;
+                let route_key = join_request_route_key(&request);
+
+                // Compute the gate this request must wait on before entering its
+                // handler critical section, and the signal it fires on completion.
+                // `CloseRoute` is keyed like any other request: it replaces its
+                // route's tail so a later `ConfigureRoute` reopening the same key
+                // chains after it, and its fired tail is later reaped, keeping the
+                // map bounded for long-lived streams.
+                let (gate, done_tx): (RequestGate, tokio::sync::oneshot::Sender<()>) =
+                    if close_after {
+                        // Close drains every route: wait for all outstanding requests.
+                        route_tails.close_all_gate()
+                    } else {
+                        // Chain this request after the previous one on its route (if
+                        // any). Requests with no route key (malformed) are ungated.
+                        route_tails.next_keyed_gate(route_key.as_deref())
+                    };
+
+                // Acquire a permit before spawning so the number of outstanding
+                // per-request tasks stays bounded; held for the task's lifetime.
+                let permit = match Arc::clone(&semaphore).acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+
+                if let Some(activity_tx) = &activity_tx {
+                    let _ = activity_tx.send(IdleActivity::Started);
                 }
+                // RAII pairing: the matching Finished must fire even if the
+                // spawned request task panics, or the idle-shutdown in-flight
+                // count stays elevated forever and idle shutdown never fires.
+                let activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
+
+                let handler = Arc::clone(&handler);
+                let active_episodes = Arc::clone(&active_episodes);
+                let route_configs = Arc::clone(&route_configs);
+                let tx = tx.clone();
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let _activity_guard = activity_guard;
+                    // Wait for predecessors so the handler critical section runs in
+                    // per-route arrival order (or, for Close, after every route).
+                    gate.wait().await;
+
+                    let response =
+                        handle_model_request(request, handler, active_episodes, route_configs)
+                            .await;
+
+                    // Release successors on this route *before* sending the
+                    // response, so per-route ordering does not depend on the
+                    // unbounded response channel draining.
+                    let _ = done_tx.send(());
+
+                    if tx.send(Ok(response)).await.is_err() {
+                        tracing::warn!(
+                            "model join response receiver closed before response could be delivered"
+                        );
+                    }
+                });
+
                 if close_after {
                     break;
                 }
@@ -292,14 +372,10 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     handler: Arc<Mutex<H>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
-    activity_tx: Option<mpsc::UnboundedSender<()>>,
 ) -> JoinResponse {
     let request_id = request.request_id.clone();
     let operation = model_join_request_operation(request.kind.as_ref());
     let started_at = Instant::now();
-    if let Some(activity_tx) = &activity_tx {
-        let _ = activity_tx.send(());
-    }
 
     let kind = match request.kind {
         Some(join_request::Kind::ConfigureRoute(request)) => {
@@ -312,6 +388,19 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             let route_key = request.context.as_ref().and_then(route_config_key);
             match route_key {
                 Some(route_key) => {
+                    let drain_result = {
+                        let mut handler = handler.lock().await;
+                        let mut active_episodes = active_episodes.lock().await;
+                        finish_route_lifecycle(&mut *handler, &mut active_episodes, &route_key)
+                            .await
+                    };
+                    if let Err(error) = drain_result {
+                        return JoinResponse {
+                            kind: Some(model_error(error.to_string())),
+                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            request_id,
+                        };
+                    }
                     route_configs.lock().await.remove(&route_key);
                     Some(join_response::Kind::CloseRoute(CloseRouteResponse {}))
                 }
@@ -319,6 +408,18 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             }
         }
         Some(join_request::Kind::Close(_request)) => {
+            let drain_result = {
+                let mut handler = handler.lock().await;
+                let mut active_episodes = active_episodes.lock().await;
+                finish_lifecycle(&mut *handler, &mut active_episodes).await
+            };
+            if let Err(error) = drain_result {
+                return JoinResponse {
+                    kind: Some(model_error(error.to_string())),
+                    telemetry: Some(model_operation_telemetry(operation, started_at)),
+                    request_id,
+                };
+            }
             Some(join_response::Kind::Close(CloseResponse {}))
         }
         None => Some(model_error("empty model request")),
@@ -384,8 +485,7 @@ async fn handle_predict<H: ModelHandler + 'static>(
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     async {
-        let mut observation =
-            model_observation_from_endpoint_request(request).map_err(|err| err.to_string())?;
+        let mut observation = model_observation_from_endpoint_request(request)?;
         let route = observation.route.clone();
         let route_key = model_route_config_key(&route);
         let config = route_configs
@@ -393,23 +493,20 @@ async fn handle_predict<H: ModelHandler + 'static>(
             .await
             .get(&route_key)
             .cloned()
-            .ok_or_else(|| "model route was not configured".to_string())?;
+            .ok_or_else(|| Error::model("model route was not configured"))?;
         observation.env_contract = config.env_contract;
         observation.num_envs = config.num_envs;
         if observation.route.slots.len() > config.num_envs {
-            return Err("predict route has more slots than configured route".to_string());
+            return Err(Error::model(
+                "predict route has more slots than configured route",
+            ));
         }
 
         let mut handler = handler.lock().await;
         let mut active_episodes = active_episodes.lock().await;
-        update_lifecycle(&mut *handler, &mut active_episodes, &observation)
-            .await
-            .map_err(|err| err.to_string())?;
-        let action = handler
-            .predict(observation)
-            .await
-            .map_err(|err| err.to_string())?;
-        Ok::<_, String>(join_response::Kind::Predict(
+        update_lifecycle(&mut *handler, &mut active_episodes, &observation).await?;
+        let action = handler.predict(observation).await?;
+        Ok::<_, Error>(join_response::Kind::Predict(
             model_action_to_endpoint_response(ModelAction {
                 action: Some(action),
                 route,
@@ -418,8 +515,132 @@ async fn handle_predict<H: ModelHandler + 'static>(
         ))
     }
     .await
-    .unwrap_or_else(model_error)
+    .unwrap_or_else(|error| model_error_from_error(&error))
     .into()
+}
+
+/// Per-route tail of completion signals for a single Join stream.
+///
+/// Each entry maps `session_id:route_id` to a receiver that fires when the most
+/// recently enqueued request for that route finishes its handler critical
+/// section. The reader task is single-threaded and consults this in arrival
+/// order, so it needs no locking.
+///
+/// # Bounded growth
+///
+/// A keyed request (`ConfigureRoute` / `Predict` / `CloseRoute`) always replaces
+/// its route's tail so the next request on that route — including a
+/// `ConfigureRoute` that *reopens* a key after `CloseRoute` — chains correctly
+/// after the in-flight predecessor. A `CloseRoute` is the typical last request
+/// on a route, so without pruning its fired tail would linger forever and a
+/// long-lived stream cycling fresh `session_id:route_id` keys per episode would
+/// leak one entry per closed route, growing unboundedly over days. To bound the
+/// map, [`RouteTails::next_gate`] reaps every entry whose receiver has already
+/// completed (sender fired or dropped) on each call: a completed tail means that
+/// route's last request already finished, so a future reopen needs nothing to
+/// wait on. The map therefore holds at most the routes with work still in
+/// flight (plus any completed-but-not-yet-reaped tails since the last call),
+/// independent of how many routes the stream has cycled through.
+#[derive(Default)]
+struct RouteTails {
+    tails: HashMap<String, tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl RouteTails {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Compute the gate a keyed (`route_key = Some`) or malformed (`None`)
+    /// request must await, and the sender it fires on completion. The request's
+    /// fresh tail replaces its route's previous tail; completed tails for *other*
+    /// routes are reaped so the map stays bounded over the stream's lifetime.
+    fn next_keyed_gate(
+        &mut self,
+        route_key: Option<&str>,
+    ) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+        let prev = route_key.and_then(|key| self.tails.remove(key));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        if let Some(key) = route_key {
+            self.tails.insert(key.to_string(), done_rx);
+        }
+        self.reap_completed();
+        (RequestGate::Prev(prev), done_tx)
+    }
+
+    /// Compute the whole-session `Close` barrier: drain every outstanding route
+    /// tail to wait on, then hand back a discarded sender for type uniformity.
+    fn close_all_gate(&mut self) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+        let prev = self.tails.drain().map(|(_, rx)| rx).collect::<Vec<_>>();
+        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
+        (RequestGate::All(prev), done_tx)
+    }
+
+    /// Drop tails whose receiver has already completed — the sender fired or was
+    /// dropped — meaning that route's last enqueued request has finished. A fired
+    /// `oneshot::Receiver` resolves immediately, so reaping it never relaxes
+    /// ordering: a route reopened after its tail was reaped had its predecessor
+    /// already complete, hence nothing left to wait on.
+    fn reap_completed(&mut self) {
+        self.tails.retain(|_, rx| {
+            matches!(
+                rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            )
+        });
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.tails.len()
+    }
+}
+
+/// The set of predecessor completion signals a request must await before it may
+/// enter its handler critical section, preserving per-route arrival order.
+enum RequestGate {
+    /// Wait for the previous same-route request (if any). A dropped/`None`
+    /// sender resolves immediately, so a failed predecessor never deadlocks a
+    /// successor.
+    Prev(Option<tokio::sync::oneshot::Receiver<()>>),
+    /// Wait for every outstanding request across all routes (whole-session
+    /// `Close` barrier).
+    All(Vec<tokio::sync::oneshot::Receiver<()>>),
+}
+
+impl RequestGate {
+    async fn wait(self) {
+        match self {
+            RequestGate::Prev(prev) => {
+                if let Some(rx) = prev {
+                    // A `RecvError` means the predecessor's sender was dropped
+                    // (it finished or its task panicked); either way we proceed.
+                    let _ = rx.await;
+                }
+            }
+            RequestGate::All(prev) => {
+                for rx in prev {
+                    let _ = rx.await;
+                }
+            }
+        }
+    }
+}
+
+/// Route key for ordering a Join request on its per-route chain.
+///
+/// `ConfigureRoute` / `Predict` / `CloseRoute` are keyed by their
+/// `session_id:route_id`; whole-session `Close` and malformed requests (missing
+/// context or ids) return `None` — `Close` is handled as an all-routes barrier
+/// by the caller, and ungated malformed requests still produce an in-band error.
+fn join_request_route_key(request: &JoinRequest) -> Option<String> {
+    let context = match request.kind.as_ref()? {
+        join_request::Kind::ConfigureRoute(request) => request.context.as_ref()?,
+        join_request::Kind::Predict(request) => request.context.as_ref()?,
+        join_request::Kind::CloseRoute(request) => request.context.as_ref()?,
+        join_request::Kind::Close(_) => return None,
+    };
+    route_config_key(context)
 }
 
 fn route_config_key(context: &rlmesh_proto::model::v1::PredictContext) -> Option<String> {
@@ -433,26 +654,88 @@ fn model_route_config_key(route: &super::types::ModelRouteContext) -> String {
     format!("{}:{}", route.session_id, route.route_id)
 }
 
+/// Log an inbound Join-stream error meaningfully instead of swallowing it.
+///
+/// Mirrors the env server's handling so a client that aborts or sends a
+/// malformed Join stream leaves a diagnostic trace rather than disappearing
+/// silently.
+fn log_join_stream_error(error: &Status) {
+    tracing::debug!("model join stream closed: {}", error);
+}
+
 impl<H> ServedModelServer<H> {
+    /// Reject the request unless its `authorization` metadata matches the
+    /// configured route token (constant-time compare). An empty configured
+    /// token disables authentication: every request is accepted.
     fn authenticate<T>(&self, request: &Request<T>) -> std::result::Result<(), Status> {
-        let token = request
+        let provided = request
             .metadata()
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
-        if token != self.token {
-            return Err(Status::unauthenticated("invalid route token"));
+        if rlmesh_grpc::helpers::bearer_token_matches(&self.token, provided) {
+            Ok(())
+        } else {
+            Err(Status::unauthenticated("invalid route token"))
         }
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
     use async_trait::async_trait;
     use rlmesh_proto::CURRENT_WORKFLOW_EDITION;
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::{Layer, Registry};
 
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct CaptureLayer {
+        messages: Arc<StdMutex<Vec<String>>>,
+    }
+
+    struct MessageVisitor<'a>(&'a mut Vec<String>);
+
+    impl Visit for MessageVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut messages = self.messages.lock().unwrap();
+            let mut visitor = MessageVisitor(&mut messages);
+            event.record(&mut visitor);
+        }
+    }
+
+    #[test]
+    fn inbound_join_stream_error_is_logged_not_swallowed() {
+        let layer = CaptureLayer::default();
+        let messages = Arc::clone(&layer.messages);
+        let subscriber = Registry::default().with(layer);
+
+        with_default(subscriber, || {
+            log_join_stream_error(&Status::aborted("client went away"));
+        });
+
+        let messages = messages.lock().unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("model join stream closed")
+                    && message.contains("client went away")),
+            "expected a diagnostic log for the inbound stream error, got {messages:?}"
+        );
+    }
 
     #[derive(Default)]
     struct NoopModelHandler;
@@ -513,6 +796,130 @@ mod tests {
                 supported_workflow_editions()
             );
         }
+    }
+
+    /// Drive a tail through its lifecycle: take the gate, fire the sender, and
+    /// confirm the gate it handed out (the *predecessor* of this request) is
+    /// already satisfied where expected.
+    fn fire(done_tx: tokio::sync::oneshot::Sender<()>) {
+        let _ = done_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn route_tails_reaps_closed_routes_so_the_map_stays_bounded() {
+        // A long-lived Join stream cycling fresh `session_id:route_id` keys
+        // (ConfigureRoute → Predict → CloseRoute per episode) must not leak one
+        // tail entry per closed route. After each episode's requests complete,
+        // the next episode's first request reaps the prior fired tails.
+        let mut tails = RouteTails::new();
+
+        for episode in 0..1_000 {
+            let key = format!("session:{episode}");
+
+            // ConfigureRoute: no predecessor on a fresh key, installs a tail.
+            let (gate, configure_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(None)));
+            // Predict: gated on ConfigureRoute, replaces the tail.
+            let (gate, predict_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(Some(_))));
+            // CloseRoute: gated on Predict, replaces the tail once more.
+            let (gate, close_done) = tails.next_keyed_gate(Some(&key));
+            assert!(matches!(gate, RequestGate::Prev(Some(_))));
+
+            // Requests complete (in handler order) and fire their tails.
+            fire(configure_done);
+            fire(predict_done);
+            fire(close_done);
+
+            // The CloseRoute's fired tail still lingers until the next call reaps
+            // it; the map never holds more than this single episode's tail.
+            assert!(
+                tails.len() <= 1,
+                "episode {episode}: route tails grew to {} entries",
+                tails.len()
+            );
+        }
+
+        // After the final episode's CloseRoute fired, one more keyed request on a
+        // brand-new route reaps the leftover tail, leaving only the new one.
+        let (_gate, _done) = tails.next_keyed_gate(Some("session:final"));
+        assert_eq!(
+            tails.len(),
+            1,
+            "only the in-flight route should remain after reaping"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_tails_reopen_after_close_still_sequences() {
+        // Reopening a route key after CloseRoute must gate the new ConfigureRoute
+        // on the still-in-flight CloseRoute, never overtake it.
+        let mut tails = RouteTails::new();
+        let key = "session:route";
+
+        let (_g, configure_done) = tails.next_keyed_gate(Some(key));
+        let (_g, close_done) = tails.next_keyed_gate(Some(key));
+        fire(configure_done);
+
+        // CloseRoute is still in flight (close_done not fired): a reopening
+        // ConfigureRoute on the same key must chain after it.
+        let (reopen_gate, _reopen_done) = tails.next_keyed_gate(Some(key));
+        let mut reopen_prev = match reopen_gate {
+            RequestGate::Prev(Some(rx)) => rx,
+            RequestGate::Prev(None) => {
+                panic!("reopen must gate on the in-flight CloseRoute, got an ungated request")
+            }
+            RequestGate::All(_) => panic!("a keyed request must never produce an All gate"),
+        };
+
+        // The reopen gate is unresolved until CloseRoute completes.
+        assert!(matches!(
+            reopen_prev.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        // Once CloseRoute fires, the reopen gate resolves and the reopen proceeds.
+        fire(close_done);
+        assert!(reopen_prev.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn route_tails_reopen_after_reaped_close_is_ungated() {
+        // If the CloseRoute already completed *and* was reaped, a reopen on the
+        // same key has nothing to wait on — ordering is still correct because the
+        // predecessor genuinely finished.
+        let mut tails = RouteTails::new();
+        let key = "session:route";
+
+        let (_g, configure_done) = tails.next_keyed_gate(Some(key));
+        let (_g, close_done) = tails.next_keyed_gate(Some(key));
+        fire(configure_done);
+        fire(close_done);
+        // A keyed request on another route triggers reaping of the fired tail.
+        let (_g, _d) = tails.next_keyed_gate(Some("other:route"));
+
+        // Reopen the original key: its tail was reaped, so no predecessor gate.
+        let (reopen_gate, _d) = tails.next_keyed_gate(Some(key));
+        assert!(
+            matches!(reopen_gate, RequestGate::Prev(None)),
+            "reaped-then-reopened route should be ungated"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_tails_close_drains_every_route() {
+        // Whole-session Close is a barrier over all outstanding routes and clears
+        // the map regardless of how many routes are in flight.
+        let mut tails = RouteTails::new();
+        let (_g, _d0) = tails.next_keyed_gate(Some("a:1"));
+        let (_g, _d1) = tails.next_keyed_gate(Some("b:1"));
+        assert_eq!(tails.len(), 2);
+
+        let (gate, _close_done) = tails.close_all_gate();
+        match gate {
+            RequestGate::All(prev) => assert_eq!(prev.len(), 2),
+            RequestGate::Prev(_) => panic!("Close must produce an All gate over every route"),
+        }
+        assert_eq!(tails.len(), 0, "Close must clear every route tail");
     }
 
     #[tokio::test]

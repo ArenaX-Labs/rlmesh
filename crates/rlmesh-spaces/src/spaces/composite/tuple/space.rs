@@ -2,6 +2,7 @@ use crate::errors::{SpaceError, err_space};
 use crate::spaces::{SpaceKind, SpaceSpec, validate_space, validate_space_at};
 use crate::{DType, TupleSpec};
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct TupleSpaceBuilder {
     spaces: Vec<SpaceSpec>,
 }

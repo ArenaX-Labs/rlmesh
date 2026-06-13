@@ -6,6 +6,7 @@ Use this when you need exact imports, methods, and backend behavior.
 
 - {doc}`core`: top-level package exports.
 - {doc}`env-server`: serving Gymnasium-compatible environments.
+- {doc}`serving`: experimental helpers for loading environments to serve.
 - {doc}`remote-envs`: remote client base classes and endpoint behavior.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`models`: model worker wrappers.
@@ -24,6 +25,7 @@ Use this when you need exact imports, methods, and backend behavior.
 
 core
 env-server
+serving
 remote-envs
 contracts
 models

@@ -1,12 +1,14 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[non_exhaustive]
 pub enum SpaceError {
     #[error("{path}: {msg}")]
     Invalid { path: String, msg: String },
 }
 
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EnvRuntimeError {
     #[error("invalid space: {0}")]
     InvalidSpace(String),

@@ -114,7 +114,15 @@ fn py_any_to_space_value_unchecked(
             } else if let Ok(number) = normalized.extract::<i64>() {
                 number
             } else {
-                normalized.extract::<f64>()? as i64
+                // Reject non-integer floats instead of truncating toward zero,
+                // matching gymnasium's Discrete.contains.
+                let number = normalized.extract::<f64>()?;
+                if !number.is_finite() || number.fract() != 0.0 {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Discrete value must be an integer, got {number}"
+                    )));
+                }
+                number as i64
             };
             SpaceValue::Discrete(value)
         }
@@ -246,6 +254,34 @@ class AutoresetMode:
                 native.get("autoreset_mode"),
                 Some(&MetaValue::String("next_step".to_string()))
             );
+        });
+    }
+
+    #[test]
+    fn discrete_rejects_non_integer_float() {
+        Python::attach(|py| {
+            let space = DiscreteBuilder::new(3).build().unwrap();
+            let value = py.eval(pyo3::ffi::c_str!("1.9"), None, None).unwrap();
+
+            let err = py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("must be an integer"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn discrete_accepts_integer_valued_float() {
+        Python::attach(|py| {
+            let space = DiscreteBuilder::new(3).build().unwrap();
+            let value = py.eval(pyo3::ffi::c_str!("1.0"), None, None).unwrap();
+
+            let encoded =
+                py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
+                    .unwrap();
+            assert_eq!(encoded, rlmesh_spaces::SpaceValue::Discrete(1));
         });
     }
 

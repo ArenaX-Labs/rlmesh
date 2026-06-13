@@ -13,19 +13,18 @@
 
 </div>
 
-RLMesh is an evaluation framework for connecting models to environments. The Python SDK serves
-Gymnasium-style environments, connects local or remote evaluators, and keeps the same workflow
-usable when evaluation moves behind a service boundary. Rust crates provide the lower-level runtime,
-protocol, and packaging layers.
+RLMesh connects models to environments for evaluation. The Python SDK serves Gymnasium-style
+environments and lets evaluators call `reset`, `step`, `render`, and `close` over local or remote
+transports. Rust crates provide the lower-level runtime, protocol, and packaging layers.
 
 ## Project Status
 
-RLMesh is currently in beta. The published beta is intended for early adopters and feedback; APIs
-and package structure may still change before a stable release.
+RLMesh is in beta. Pin versions for active projects; APIs and package structure may still change
+before a stable release.
 
-RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are the
-current supported surfaces, and the project intends to support clean, simple bindings for additional
-languages where there is demand, with C++ as a likely early candidate.
+RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are
+supported today. Additional language bindings are future work, not part of the current public
+surface.
 
 ## Installation
 
@@ -37,10 +36,10 @@ pip install --pre rlmesh
 
 ## Quickstart
 
-Install the Python package with Gymnasium support:
+Install the Python package with Gymnasium support and the NumPy client adapter:
 
 ```bash
-pip install --pre "rlmesh[gymnasium]"
+pip install --pre "rlmesh[gymnasium,numpy]"
 ```
 
 In one process, serve a standard Gymnasium environment:
@@ -69,9 +68,18 @@ while not (terminated or truncated):
 env.close()
 ```
 
-For runnable files and exact commands, see the [`examples/python`](examples/python) index. Start
-with the quickstart example, use sandbox examples for owned Docker-backed environments, and use the
-optional MuJoCo and Pygame examples for isolated heavier dependency stacks.
+For runnable files and exact commands, see [`examples/python`](examples/python). Start with the
+quickstart, then try sandbox examples for Docker-backed environments or the optional MuJoCo and
+Pygame examples for heavier dependency stacks.
+
+## Building the Rust SDK
+
+The Rust crates generate their gRPC stubs from `.proto` files at build time. Building any of them
+(`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`, `rlmesh-cli`) from source, including a
+plain `cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler
+`protoc` on the system. Install it from your package manager (for example
+`apt install protobuf-compiler` or `brew install protobuf`), or point `PROTOC` at an existing
+binary. The Python package has no such requirement; its wheels ship pre-built.
 
 ## Packages
 

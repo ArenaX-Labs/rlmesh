@@ -18,10 +18,11 @@ use super::wire::{
 };
 use crate::{ConnectAddress, Error, Result, spaces};
 
-pub(super) async fn run_local_to_async_with_max_episodes<H>(
+pub(super) async fn run_local<H>(
     handler: &mut H,
     env_address: ConnectAddress,
     max_episodes: Option<u64>,
+    base_seed: Option<i64>,
 ) -> Result<()>
 where
     H: ModelHandler + 'static,
@@ -48,18 +49,19 @@ where
         env_id,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
+        base_seed,
         max_episodes,
         close_env_on_end: false,
         limits: Default::default(),
     };
-    let env = LocalRuntimeEnv { inner: env };
+    let env = EnvClientRuntimeEnv::new(env);
     let active_episodes = Arc::new(Mutex::new(HashMap::new()));
-    let model = LocalRuntimeModel {
+    let model = ModelHandlerRuntimeModel::new(
         handler,
         env_contract,
         num_envs,
-        active_episodes: Arc::clone(&active_episodes),
-    };
+        Arc::clone(&active_episodes),
+    );
 
     let result = RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run()
@@ -75,22 +77,49 @@ where
     result
 }
 
-struct LocalRuntimeEnv {
+/// Adapts a connected [`rlmesh_grpc::EnvClient`] to the [`RuntimeEnv`] trait
+/// expected by [`rlmesh_runtime::RuntimeDriver`].
+///
+/// Use this to drive a remote environment from your own `RuntimeDriver`
+/// embedding without re-implementing the per-call telemetry choreography: the
+/// adapter takes the client's last-operation telemetry after each `reset`/`step`
+/// and attaches it to the runtime result for you, and it maps transport errors
+/// onto recoverable/non-recoverable [`rlmesh_runtime::RuntimeError`]s.
+pub struct EnvClientRuntimeEnv {
     inner: rlmesh_grpc::EnvClient,
 }
 
+impl EnvClientRuntimeEnv {
+    /// Wrap a connected (and handshaked) env client.
+    pub fn new(client: rlmesh_grpc::EnvClient) -> Self {
+        Self { inner: client }
+    }
+
+    /// Borrow the underlying client.
+    pub fn client(&self) -> &rlmesh_grpc::EnvClient {
+        &self.inner
+    }
+
+    /// Consume the adapter and return the underlying client.
+    pub fn into_inner(self) -> rlmesh_grpc::EnvClient {
+        self.inner
+    }
+}
+
 #[async_trait]
-impl RuntimeEnv for LocalRuntimeEnv {
+impl RuntimeEnv for EnvClientRuntimeEnv {
     async fn reset(
         &mut self,
         request: rlmesh_proto::env::v1::ResetRequest,
     ) -> std::result::Result<RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
         let response = self.inner.reset(request).await.map_err(|err| {
-            rlmesh_runtime::RuntimeError::EnvRpc {
-                operation: "env.reset",
-                step: 0,
-                message: err.to_string(),
-            }
+            let recoverable = err.is_recoverable();
+            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+                "env.reset",
+                0,
+                recoverable,
+                err,
+            )
         })?;
         Ok(RuntimeEnvReset {
             response,
@@ -102,15 +131,15 @@ impl RuntimeEnv for LocalRuntimeEnv {
         &mut self,
         request: rlmesh_proto::env::v1::StepRequest,
     ) -> std::result::Result<RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
-        let response =
-            self.inner
-                .step(request)
-                .await
-                .map_err(|err| rlmesh_runtime::RuntimeError::EnvRpc {
-                    operation: "env.step",
-                    step: 0,
-                    message: err.to_string(),
-                })?;
+        let response = self.inner.step(request).await.map_err(|err| {
+            let recoverable = err.is_recoverable();
+            rlmesh_runtime::RuntimeError::env_rpc_with_recoverability(
+                "env.step",
+                0,
+                recoverable,
+                err,
+            )
+        })?;
         Ok(RuntimeEnvStep {
             response,
             telemetry: self.inner.take_last_telemetry(),
@@ -127,15 +156,46 @@ impl RuntimeEnv for LocalRuntimeEnv {
     }
 }
 
-struct LocalRuntimeModel<'a, H> {
+/// Adapts a [`ModelHandler`] to the [`RuntimeModel`] trait expected by
+/// [`rlmesh_runtime::RuntimeDriver`].
+///
+/// Use this to drive your handler from your own `RuntimeDriver` embedding. The
+/// adapter decodes the runtime's predict request into a
+/// [`ModelObservation`](crate::ModelObservation),
+/// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
+/// each `predict`, and re-encodes the action — the same choreography the
+/// in-process `run_local` path performs.
+///
+/// It borrows the handler mutably so the caller retains ownership (e.g. to run
+/// the close hook afterward). `active_episodes` is shared lifecycle state; pass
+/// a fresh `Arc<Mutex<_>>` and drain it with the model lifecycle helpers when
+/// the session ends.
+pub struct ModelHandlerRuntimeModel<'a, H> {
     handler: &'a mut H,
     env_contract: spaces::EnvContract,
     num_envs: usize,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
 }
 
+impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
+    /// Build an adapter for `handler` against the given env contract.
+    pub fn new(
+        handler: &'a mut H,
+        env_contract: spaces::EnvContract,
+        num_envs: usize,
+        active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
+    ) -> Self {
+        Self {
+            handler,
+            env_contract,
+            num_envs,
+            active_episodes,
+        }
+    }
+}
+
 #[async_trait]
-impl<H> RuntimeModel for LocalRuntimeModel<'_, H>
+impl<H> RuntimeModel for ModelHandlerRuntimeModel<'_, H>
 where
     H: ModelHandler + 'static,
 {
@@ -143,28 +203,20 @@ where
         &mut self,
         request: PredictRequest,
     ) -> std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError> {
-        let mut observation = model_observation_from_endpoint_request(request).map_err(|err| {
-            rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            }
-        })?;
+        let mut observation = model_observation_from_endpoint_request(request)
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         let route = observation.route.clone();
         observation.env_contract = Some(self.env_contract.clone());
         observation.num_envs = self.num_envs;
         let mut active_episodes = self.active_episodes.lock().await;
         update_lifecycle(self.handler, &mut active_episodes, &observation)
             .await
-            .map_err(|err| rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            })?;
-        let action = self.handler.predict(observation).await.map_err(|err| {
-            rlmesh_runtime::RuntimeError::ModelRpc {
-                component_id: "local-model".to_string(),
-                message: err.to_string(),
-            }
-        })?;
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let action = self
+            .handler
+            .predict(observation)
+            .await
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         Ok(RuntimeModelPrediction {
             response: model_action_to_endpoint_response(ModelAction {
                 action: Some(action),

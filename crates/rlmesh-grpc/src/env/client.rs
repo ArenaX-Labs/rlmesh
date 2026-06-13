@@ -41,12 +41,14 @@ pub struct EnvClient {
     client: EnvServiceClient<tonic::transport::Channel>,
     /// Connected address in normalized display form.
     address: String,
+    /// Bearer token sent on the `authorization` metadata header (empty = none).
+    token: String,
     /// Client state.
     state: ClientState,
     /// Sender half of the Join bidi stream request channel.
     request_tx: Option<mpsc::Sender<JoinRequest>>,
     /// Receiver half of the Join bidi stream response channel.
-    response_rx: Option<mpsc::Receiver<JoinResponse>>,
+    response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
     /// Counter for generating unique request IDs.
     request_counter: u64,
     /// Telemetry attached to the last Join response.
@@ -59,12 +61,21 @@ impl EnvClient {
     /// `addr` may be `"host:port"`, `"tcp://host:port"`, `"http://host:port"`,
     /// or `"unix:///path/to/socket"` on Unix.
     pub async fn connect(addr: &str) -> Result<Self, GrpcError> {
+        Self::connect_with_token(addr, "").await
+    }
+
+    /// Connect to an EnvService server, sending `token` on the `authorization`
+    /// metadata header of every request. An empty token sends no header and is
+    /// equivalent to [`EnvClient::connect`].
+    pub async fn connect_with_token(addr: &str, token: &str) -> Result<Self, GrpcError> {
         let target = parse_env_connect_target(addr)?;
 
         #[cfg(unix)]
         let channel = if let Some(socket_path) = target.unix_path().cloned() {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
 
             endpoint
                 .connect_with_connector(service_fn(move |_: tonic::transport::Uri| {
@@ -74,8 +85,10 @@ impl EnvClient {
                 .await
                 .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
         } else {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
             endpoint
                 .connect()
                 .await
@@ -84,8 +97,10 @@ impl EnvClient {
 
         #[cfg(not(unix))]
         let channel = {
-            let endpoint = tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
-                .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            let endpoint = crate::configure_endpoint(
+                tonic::transport::Endpoint::from_shared(target.endpoint().to_string())
+                    .map_err(|e| TransportError::ConnectFailed(e.to_string()))?,
+            );
             endpoint
                 .connect()
                 .await
@@ -93,14 +108,30 @@ impl EnvClient {
         };
 
         Ok(Self {
-            client: EnvServiceClient::new(channel),
+            client: EnvServiceClient::new(channel)
+                .max_decoding_message_size(crate::MAX_MESSAGE_SIZE)
+                .max_encoding_message_size(crate::MAX_MESSAGE_SIZE),
             address: target.display_address().to_string(),
+            token: token.to_string(),
             state: ClientState::Connected,
             request_tx: None,
             response_rx: None,
             request_counter: 0,
             last_telemetry: None,
         })
+    }
+
+    /// Connect to an EnvService server, retrying until the server accepts the
+    /// connection (or the deadline/cancellation in `options` fires).
+    ///
+    /// Only the transport connect is retried; perform the handshake explicitly
+    /// on the returned client.
+    pub async fn connect_with_retry(
+        addr: &str,
+        token: &str,
+        options: &crate::connect::ConnectOptions,
+    ) -> Result<Self, GrpcError> {
+        crate::connect::retry_connect(options, || Self::connect_with_token(addr, token)).await
     }
 
     /// Connected address in normalized display form.
@@ -118,7 +149,8 @@ impl EnvClient {
         self.last_telemetry.take()
     }
 
-    /// Perform the handshake RPC and set up the Join bidi stream.
+    /// Perform the handshake RPC. The Join bidi stream (the env's exclusive
+    /// session slot) is opened lazily by the first reset/step/render/close.
     #[tracing::instrument(
         name = "rlmesh.grpc.client.handshake",
         skip_all,
@@ -153,8 +185,6 @@ impl EnvClient {
         };
         self.state = ClientState::Ready;
 
-        self.setup_join_stream().await?;
-
         Ok(handshake)
     }
 
@@ -174,9 +204,9 @@ impl EnvClient {
 
         Ok(self
             .client
-            .handshake(req)
+            .handshake(self.authorized_request(req)?)
             .await
-            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner())
     }
 
@@ -188,6 +218,7 @@ impl EnvClient {
     )]
     pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Reset(req)),
@@ -216,6 +247,7 @@ impl EnvClient {
     )]
     pub async fn step(&mut self, req: StepRequest) -> Result<StepResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Step(req)),
@@ -244,6 +276,7 @@ impl EnvClient {
     )]
     pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, GrpcError> {
         self.ensure_ready()?;
+        self.ensure_join_stream().await?;
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Render(req)),
@@ -264,9 +297,26 @@ impl EnvClient {
         }
     }
 
-    /// Close this client session on the remote environment server.
+    /// Close this client's session on the server and tear down the local Join
+    /// stream.
+    ///
+    /// This ends the **session**, not the **server**: the served environment
+    /// detaches the session and remains available for a subsequent client to
+    /// connect and run a new session. It does not stop the server process — use
+    /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
+
+        // A client that never opened the Join stream holds none of the server's
+        // exclusive session slot, so there is nothing to close remotely. Opening
+        // a fresh Join here just to close it would race any *other* client's
+        // active session and earn a FailedPrecondition from the server's
+        // join_active CAS — exactly the lockout the lazy Join stream exists to
+        // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
+        if self.request_tx.is_none() || self.response_rx.is_none() {
+            self.close_local();
+            return Ok(CloseResponse::default());
+        }
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Close(
@@ -303,11 +353,11 @@ impl EnvClient {
 
         let response = self
             .client
-            .shutdown(ShutdownRequest {
+            .shutdown(self.authorized_request(ShutdownRequest {
                 reason: reason.into(),
-            })
+            })?)
             .await
-            .map_err(|err| TransportError::ConnectFailed(err.to_string()))?
+            .map_err(crate::error::status_to_grpc_error)?
             .into_inner();
 
         if response.accepted {
@@ -315,6 +365,19 @@ impl EnvClient {
         }
 
         Ok(response)
+    }
+
+    /// Tear down the local session state without a Close round-trip.
+    ///
+    /// Dropping the Join stream releases the server's exclusive session slot
+    /// once the server observes the stream end — if an operation is still
+    /// draining server-side, the slot frees only after it completes, so an
+    /// immediate reconnect can still be rejected briefly. The server completes
+    /// this session's in-flight episodes as truncated; their metadata is not
+    /// returned to this client. Use when a graceful [`EnvClient::close`] is
+    /// not possible (e.g. it timed out behind a long-draining operation).
+    pub fn detach(&mut self) {
+        self.close_local();
     }
 
     // ---- Private helpers ----
@@ -325,19 +388,45 @@ impl EnvClient {
         self.state = ClientState::Closed;
     }
 
+    /// Open the Join stream on first use. The stream is the env's exclusive
+    /// session slot (the server admits one Join at a time), so it is acquired
+    /// lazily on the first streaming operation rather than at handshake —
+    /// an idle connected client must not lock other clients out of the env.
+    async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
+        if self.request_tx.is_none() || self.response_rx.is_none() {
+            self.setup_join_stream().await?;
+        }
+        Ok(())
+    }
+
     async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
         let (tx, rx) = mpsc::channel::<JoinRequest>(32);
         let request_stream = ReceiverStream::new(rx);
 
         let response = self
             .client
-            .join(request_stream)
+            .join(self.authorized_request(request_stream)?)
             .await
-            .map_err(|e| TransportError::ConnectFailed(e.to_string()))?;
+            .map_err(crate::error::status_to_grpc_error)?;
 
         self.request_tx = Some(tx);
         self.response_rx = Some(spawn_response_pump(response.into_inner()));
         Ok(())
+    }
+
+    /// Wrap a message in a `tonic::Request`, attaching the `authorization`
+    /// metadata header when a token is configured.
+    fn authorized_request<T>(&self, message: T) -> Result<tonic::Request<T>, GrpcError> {
+        let mut request = tonic::Request::new(message);
+        if !self.token.is_empty() {
+            request.metadata_mut().insert(
+                "authorization",
+                self.token
+                    .parse()
+                    .map_err(|_| TransportError::InvalidAddress("invalid token".to_string()))?,
+            );
+        }
+        Ok(request)
     }
 
     #[tracing::instrument(
@@ -377,6 +466,19 @@ impl EnvClient {
                 );
                 GrpcError::from(TransportError::ConnectionClosed)
             })?;
+            let response = match response {
+                Ok(response) => response,
+                Err(status) => {
+                    tracing::error!(
+                        request_id = %request_id,
+                        request_kind,
+                        code = ?status.code(),
+                        message = %status.message(),
+                        "env join stream returned an error status"
+                    );
+                    return Err(super::protocol::status_to_grpc_error(status));
+                }
+            };
             if response.request_id == request_id {
                 return Ok(response);
             }
@@ -424,9 +526,20 @@ fn validate_env_contract(env_contract: &EnvContract) -> Result<(), GrpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_proto::env::v1::{CloseRequest, CloseResponse, StepResponse};
+    use rlmesh_proto::env::v1::env_service_server::{EnvService, EnvServiceServer};
+    use rlmesh_proto::env::v1::{
+        CloseRequest, CloseResponse, HandshakeRequest, HandshakeResponse, ShutdownRequest,
+        ShutdownResponse, StepResponse,
+    };
     use rlmesh_proto::spaces::v1::SpaceSpec;
+    use rlmesh_proto::{
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        supported_workflow_editions,
+    };
+    use tokio::sync::oneshot;
+    use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Endpoint;
+    use tonic::{Request, Response, Status};
 
     #[test]
     fn validate_env_contract_requires_spaces() {
@@ -459,6 +572,7 @@ mod tests {
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
+            token: String::new(),
             address: "http://127.0.0.1:1".to_string(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
@@ -468,19 +582,19 @@ mod tests {
         };
 
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Step(StepResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "target".to_string(),
                 kind: Some(join_response::Kind::Close(CloseResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
 
@@ -497,12 +611,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_on_stream_surfaces_pump_status_error_to_caller() {
+        let (request_tx, _request_rx) = mpsc::channel(1);
+        let (response_tx, response_rx) = mpsc::channel(1);
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            token: String::new(),
+            address: "tcp://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: Some(request_tx),
+            response_rx: Some(response_rx),
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        // The response pump propagates a transport Status (e.g. a response that
+        // exceeded the decode limit) instead of just dropping it. The pending
+        // caller must observe that status, not an opaque "connection closed".
+        response_tx
+            .send(Err(tonic::Status::new(
+                tonic::Code::ResourceExhausted,
+                "message length too large",
+            )))
+            .await
+            .unwrap();
+
+        let error = client
+            .step(StepRequest::default())
+            .await
+            .expect_err("a stream status error must surface to the caller");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("message length too large"),
+            "expected the gRPC status message to survive, got: {message}"
+        );
+        assert!(
+            !matches!(
+                error,
+                GrpcError::Transport(TransportError::ConnectionClosed)
+            ),
+            "status error was collapsed into opaque ConnectionClosed"
+        );
+    }
+
+    #[tokio::test]
     async fn close_sends_remote_close_then_closes_locally() {
         let (request_tx, mut request_rx) = mpsc::channel(1);
         let (response_tx, response_rx) = mpsc::channel(1);
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         let mut client = EnvClient {
             client: EnvServiceClient::new(channel),
+            token: String::new(),
             address: "tcp://127.0.0.1:1".to_string(),
             state: ClientState::Ready,
             request_tx: Some(request_tx),
@@ -512,11 +673,11 @@ mod tests {
         };
 
         response_tx
-            .send(JoinResponse {
+            .send(Ok(JoinResponse {
                 request_id: "grpc-req-1".to_string(),
                 kind: Some(join_response::Kind::Close(CloseResponse::default())),
                 telemetry: None,
-            })
+            }))
             .await
             .unwrap();
 
@@ -527,5 +688,360 @@ mod tests {
         let request = request_rx.recv().await.unwrap();
         assert!(matches!(request.kind, Some(join_request::Kind::Close(_))));
         assert_eq!(request.request_id, "grpc-req-1");
+    }
+
+    #[tokio::test]
+    async fn close_on_never_used_client_is_local_only_and_opens_no_join() {
+        // A client that handshook but never ran an operation has no Join stream.
+        // close() must not open one just to tear it down — that would race any
+        // other client's active session (server join_active CAS). It should
+        // short-circuit to a local-only close.
+        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let mut client = EnvClient {
+            client: EnvServiceClient::new(channel),
+            token: String::new(),
+            address: "tcp://127.0.0.1:1".to_string(),
+            state: ClientState::Ready,
+            request_tx: None,
+            response_rx: None,
+            request_counter: 0,
+            last_telemetry: None,
+        };
+
+        let response = client.close().await.unwrap();
+
+        assert!(response.final_episodes.is_empty());
+        assert_eq!(client.state(), ClientState::Closed);
+        // No Join stream was ever opened, and the request counter was not bumped
+        // (no JoinRequest was minted).
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+        assert_eq!(client.request_counter, 0);
+    }
+
+    #[tokio::test]
+    async fn idle_client_close_does_not_lock_out_an_active_session() {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
+
+        struct PlainEnv {
+            contract: SpaceEnvContract,
+        }
+        #[async_trait::async_trait]
+        impl crate::env::Environment for PlainEnv {
+            fn observation_space(&self) -> &SpaceSpec {
+                self.contract.observation_space.as_ref().unwrap()
+            }
+            fn action_space(&self) -> &SpaceSpec {
+                self.contract.action_space.as_ref().unwrap()
+            }
+            fn num_envs(&self) -> usize {
+                1
+            }
+            fn env_contract(&self) -> &SpaceEnvContract {
+                &self.contract
+            }
+            async fn reset(
+                &mut self,
+                _req: ResetRequest,
+            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+                Ok(ResetResponse::default())
+            }
+            async fn step(
+                &mut self,
+                _req: StepRequest,
+            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+                Ok(StepResponse::default())
+            }
+            async fn render(
+                &mut self,
+                _req: RenderRequest,
+            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+                Ok(RenderResponse::default())
+            }
+            async fn close(
+                &mut self,
+            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+                Ok(CloseResponse::default())
+            }
+        }
+
+        let space = SpaceSpec::default();
+        let env = PlainEnv {
+            contract: SpaceEnvContract {
+                id: "plain-env".to_string(),
+                action_space: Some(space.clone()),
+                observation_space: Some(space),
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            },
+        };
+        let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
+            env,
+            ShutdownTrigger::new(),
+            ServeOptions::default(),
+            None,
+        ));
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+
+        // Client A holds the env's single Join session (opened lazily by reset).
+        let mut client_a = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        client_a.handshake().await.expect("handshake A");
+        client_a
+            .reset(ResetRequest::default())
+            .await
+            .expect("A reset");
+        assert!(client_a.request_tx.is_some());
+
+        let mut client_b = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        client_b.handshake().await.expect("handshake B");
+        assert!(client_b.request_tx.is_none());
+
+        client_b
+            .close()
+            .await
+            .expect("idle client close must not contend for the active Join slot");
+        assert_eq!(client_b.state(), ClientState::Closed);
+        assert!(client_b.request_tx.is_none());
+
+        // Client A's session is undisturbed and remains usable.
+        client_a
+            .step(StepRequest::default())
+            .await
+            .expect("A still usable after B close");
+        client_a.close().await.expect("A graceful close");
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[derive(Default)]
+    struct RejectJoinService;
+
+    #[async_trait::async_trait]
+    impl EnvService for RejectJoinService {
+        async fn handshake(
+            &self,
+            _request: Request<HandshakeRequest>,
+        ) -> std::result::Result<Response<HandshakeResponse>, Status> {
+            Ok(Response::new(HandshakeResponse {
+                compatible: true,
+                server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+                min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
+                selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+                supported_workflow_editions: supported_workflow_editions(),
+                env_contract: Some(EnvContract {
+                    observation_space: Some(SpaceSpec::default()),
+                    action_space: Some(SpaceSpec::default()),
+                    num_envs: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }))
+        }
+
+        type JoinStream = ReceiverStream<std::result::Result<JoinResponse, Status>>;
+
+        async fn join(
+            &self,
+            _request: Request<tonic::Streaming<JoinRequest>>,
+        ) -> std::result::Result<Response<Self::JoinStream>, Status> {
+            Err(Status::unavailable("join unavailable"))
+        }
+
+        async fn shutdown(
+            &self,
+            _request: Request<ShutdownRequest>,
+        ) -> std::result::Result<Response<ShutdownResponse>, Status> {
+            Ok(Response::new(ShutdownResponse {
+                accepted: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_with_token_authenticates_against_token_server() {
+        use crate::env::server::GrpcEnvServer;
+        use crate::lifecycle::{ServeOptions, ShutdownTrigger};
+        use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
+        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
+
+        struct TokenEnv {
+            contract: SpaceEnvContract,
+        }
+        #[async_trait::async_trait]
+        impl crate::env::Environment for TokenEnv {
+            fn observation_space(&self) -> &SpaceSpec {
+                self.contract.observation_space.as_ref().unwrap()
+            }
+            fn action_space(&self) -> &SpaceSpec {
+                self.contract.action_space.as_ref().unwrap()
+            }
+            fn num_envs(&self) -> usize {
+                1
+            }
+            fn env_contract(&self) -> &SpaceEnvContract {
+                &self.contract
+            }
+            async fn reset(
+                &mut self,
+                _req: ResetRequest,
+            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+                Ok(ResetResponse::default())
+            }
+            async fn step(
+                &mut self,
+                _req: StepRequest,
+            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+                Ok(StepResponse::default())
+            }
+            async fn render(
+                &mut self,
+                _req: RenderRequest,
+            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+                Ok(RenderResponse::default())
+            }
+            async fn close(
+                &mut self,
+            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+                Ok(CloseResponse::default())
+            }
+        }
+
+        let space = SpaceSpec::default();
+        let env = TokenEnv {
+            contract: SpaceEnvContract {
+                id: "token-env".to_string(),
+                action_space: Some(space.clone()),
+                observation_space: Some(space),
+                metadata: None,
+                render_mode: String::new(),
+                num_envs: 1,
+            },
+        };
+        let options = ServeOptions {
+            token: Some("s3cret".to_string()),
+            ..Default::default()
+        };
+        let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
+            env,
+            ShutdownTrigger::new(),
+            options,
+            None,
+        ));
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut anon = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+        let err = anon.handshake().await.unwrap_err();
+        assert!(
+            err.to_string().contains("invalid env token"),
+            "unauthenticated handshake should be rejected, got: {err}"
+        );
+
+        // A client with the correct token handshakes successfully.
+        let mut authed = EnvClient::connect_with_token(&address, "s3cret")
+            .await
+            .unwrap();
+        authed.handshake().await.expect("authorized handshake");
+        assert_eq!(authed.state(), ClientState::Ready);
+
+        let _ = shutdown_tx.send(());
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
+    #[tokio::test]
+    async fn join_failure_surfaces_on_first_operation_and_leaves_client_usable() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(EnvServiceServer::new(RejectJoinService))
+                .serve_with_shutdown(addr, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let address = format!("tcp://{addr}");
+        let connect_options =
+            crate::connect::ConnectOptions::with_deadline(std::time::Duration::from_secs(5))
+                .backoff(std::time::Duration::from_millis(10));
+        let mut client = EnvClient::connect_with_retry(&address, "", &connect_options)
+            .await
+            .expect("test server did not start");
+
+        // The handshake itself succeeds: the Join stream (the exclusive
+        // session slot) is only acquired lazily by the first streaming op.
+        client.handshake().await.expect("handshake is join-free");
+        assert_eq!(client.state(), ClientState::Ready);
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+
+        // The join failure surfaces on the first operation and leaves the
+        // client un-wedged (no half-open stream state).
+        let error = client
+            .reset(ResetRequest::default())
+            .await
+            .expect_err("join is unavailable");
+        assert!(error.to_string().contains("join unavailable"));
+        assert_eq!(client.state(), ClientState::Ready);
+        assert!(client.request_tx.is_none());
+        assert!(client.response_rx.is_none());
+
+        let _ = shutdown_tx.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

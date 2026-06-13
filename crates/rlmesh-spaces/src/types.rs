@@ -7,15 +7,31 @@ pub struct UniformBounds {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct AxiswiseBounds {
+pub struct ElementwiseBounds {
     pub low: Vec<f64>,
     pub high: Vec<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct ElementwiseBounds {
-    pub low: Vec<f64>,
-    pub high: Vec<f64>,
+/// A single low/high bound pair carried as raw little-endian bytes in the
+/// enclosing space's dtype (one scalar each).
+///
+/// `low`/`high` must each be exactly `dtype_size(dtype)` bytes. Used so that
+/// integer dtypes (notably `int64`/`uint64`) carry exact bounds instead of
+/// losing precision through `f64`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypedUniformBounds {
+    pub low: Vec<u8>,
+    pub high: Vec<u8>,
+}
+
+/// Per-element low/high bounds carried as raw little-endian bytes in the
+/// enclosing space's dtype, in row-major (C) order.
+///
+/// `low`/`high` must each be exactly `numel * dtype_size(dtype)` bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TypedElementwiseBounds {
+    pub low: Vec<u8>,
+    pub high: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -28,8 +44,9 @@ pub struct BoxSpec {
 pub enum BoxBounds {
     Unbounded(bool),
     Uniform(UniformBounds),
-    Axiswise(AxiswiseBounds),
     Elementwise(ElementwiseBounds),
+    TypedUniform(TypedUniformBounds),
+    TypedElementwise(TypedElementwiseBounds),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

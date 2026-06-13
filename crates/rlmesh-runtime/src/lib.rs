@@ -1,9 +1,8 @@
 //! RLMesh single-session runtime driver.
 //!
-//! This crate owns the shared `reset -> predict -> step` execution semantics
-//! for one ready environment/model session. It deliberately does not own
-//! managed route fan-out, endpoint pooling, workload expansion, scheduling, or
-//! cluster lifecycle.
+//! Shared `reset -> predict -> step` semantics for one ready model/environment
+//! session. Scheduling, endpoint pools, route fan-out, and cluster lifecycle
+//! live elsewhere.
 
 mod driver;
 pub mod hooks;
@@ -20,9 +19,17 @@ pub use driver::{
 };
 pub use hooks::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
-    RuntimeHookChain, RuntimeHooks, RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
-    TimingSummary,
+    LogEvent, LogLevel, MetricKind, MetricSummary, ModelConnectedEvent, NoopRuntimeHooks,
+    ObservationEmittedEvent, RuntimeHookChain, RuntimeHooks, RuntimeRouteContext,
+    SessionEndedEvent, SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
+    TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
+
+/// Protocol types used by the runtime public API.
+///
+/// Runtime traits and hooks name generated `rlmesh_proto::*::v1` types directly.
+/// Re-exporting the crate gives implementors the version-correct path. Protocol
+/// regeneration or a major `prost`/`tonic` bump is therefore a runtime breaking
+/// change.
+pub use rlmesh_proto;

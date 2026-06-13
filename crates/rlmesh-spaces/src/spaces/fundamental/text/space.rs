@@ -9,6 +9,7 @@ macro_rules! text_space_v1 {
     };
 }
 
+#[must_use = "a space builder does nothing until .build() is called"]
 pub struct TextBuilder {
     min_length: i64,
     max_length: i64,
@@ -78,6 +79,10 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
 
     if t.max_length <= 0 {
         return err_space!(path, "Text", "max_length must be > 0");
+    }
+
+    if t.min_length > t.max_length {
+        return err_space!(path, "Text", "min_length must be <= max_length");
     }
 
     Ok(())
