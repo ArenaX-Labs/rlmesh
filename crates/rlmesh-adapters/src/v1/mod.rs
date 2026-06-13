@@ -6,6 +6,7 @@
 mod apply;
 mod describe;
 mod error;
+mod join;
 mod keys;
 mod plans;
 mod pyfmt;
@@ -19,6 +20,7 @@ pub use apply::{
     convert_rotation,
 };
 pub use error::AdapterResolutionError;
+pub use join::{JoinError, join};
 pub use keys::{ENV_METADATA_KEY, MODEL_METADATA_KEY};
 pub use plans::{
     ActionPlan, ActionSegment, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter, StatePiece,
@@ -27,7 +29,8 @@ pub use plans::{
 pub use resolver::resolve;
 pub use space_view::{SpaceView, SpaceViewKind};
 pub use spec::{
-    ActionComponent, ActionLayout, CustomInput, EnvFeature, EnvFeatures, EnvImage, EnvState,
-    EnvText, ImageInput, ImageLayout, ModelInput, ModelIoSpec, RotationEncoding, StateComponent,
-    StateContainer, StateInput, TextContainer, TextInput,
+    ActionComponent, ActionLayout, CustomInput, EnvAnnotations, EnvFeature, EnvFeatures, EnvImage,
+    EnvState, EnvText, ImageAnnotation, ImageInput, ImageLayout, ModelInput, ModelIoSpec,
+    ObsAnnotation, RotationEncoding, StateAnnotation, StateComponent, StateContainer, StateInput,
+    TextAnnotation, TextContainer, TextInput,
 };
