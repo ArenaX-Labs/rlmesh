@@ -2,14 +2,35 @@
 
 Recipe APIs are experimental in this beta. A recipe is an inert, JSON-serializable description of
 how to construct an environment, with three phases: `make` (the factory), `build` (the image), and
-`setup` (construct-time data). See {doc}`../user-guide/recipes` for a task-oriented guide.
+`setup` (construct-time data). Structured builds assume a Debian/Ubuntu base and `apt`; for another
+distro use `build.dockerfile`. See {doc}`../user-guide/recipes` for a task-oriented guide.
+
+## Authoring -- `EnvRecipe`
+
+The headline authoring surface: subclass `EnvRecipe` to co-locate the build/setup data and the
+factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.EnvRecipe`.
+
+```{eval-rst}
+.. autoclass:: rlmesh.recipes.EnvRecipe
+   :members: make, prepare, to_recipe, check
+   :show-inheritance:
+```
 
 ## Construction
 
-`rlmesh.make` is the top-level entry point; it is the same function as `rlmesh.recipes.make`.
+`rlmesh.make` and `rlmesh.register` are the top-level pair; they are the same functions as
+`rlmesh.recipes.make` / `rlmesh.recipes.register`.
 
 ```{eval-rst}
 .. autofunction:: rlmesh.recipes.make
+```
+
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.register
+```
+
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.check
 ```
 
 ```{eval-rst}
@@ -93,10 +114,6 @@ how to construct an environment, with three phases: `make` (the factory), `build
 ## Registry
 
 ```{eval-rst}
-.. autofunction:: rlmesh.recipes.register
-```
-
-```{eval-rst}
 .. autofunction:: rlmesh.recipes.resolve
 ```
 
@@ -114,16 +131,18 @@ how to construct an environment, with three phases: `make` (the factory), `build
 
 ## Migration
 
+One-shot tooling in the `rlmesh.recipes.scaffold` submodule.
+
 ```{eval-rst}
-.. autofunction:: rlmesh.recipes.scaffold_recipe
+.. autofunction:: rlmesh.recipes.scaffold.scaffold_from_pyproject
 ```
 
 ```{eval-rst}
-.. autofunction:: rlmesh.recipes.scaffold_from_pyproject
+.. autofunction:: rlmesh.recipes.scaffold.scaffold_recipe
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.recipes.ScaffoldResult
+.. autoclass:: rlmesh.recipes.scaffold.ScaffoldResult
    :members:
    :show-inheritance:
 ```
@@ -132,6 +151,11 @@ how to construct an environment, with three phases: `make` (the factory), `build
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.RecipeValidationError
+   :show-inheritance:
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.recipes.RecipeConstructionError
    :show-inheritance:
 ```
 
