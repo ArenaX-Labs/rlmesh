@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub use error::SandboxError;
-pub use source::{EnvironmentSourceRef, GymSourceRef, HfSourceRef};
+pub use source::{
+    EnvironmentSourceRef, GymSourceRef, HfSourceRef, RecipeProvenance, RecipeSourceRef,
+};
 
 pub const DEFAULT_BASE_IMAGE: &str = "python:3.11-slim";
 pub const DEFAULT_PACKAGE_NAME: &str = "rlmesh";
@@ -30,6 +32,10 @@ pub struct SandboxOptions {
     pub vectorization_mode: VectorizationMode,
     pub trust_remote_code: bool,
     pub allow_unpinned_hf: bool,
+    /// The recipe author's source-tree root, used to resolve a relative
+    /// `ProjectInstall.src` for build-context staging and content hashing. Only
+    /// meaningful for a recipe source with a `build.project`.
+    pub context_root: Option<PathBuf>,
 }
 
 impl Default for SandboxOptions {
@@ -44,6 +50,7 @@ impl Default for SandboxOptions {
             vectorization_mode: VectorizationMode::Sync,
             trust_remote_code: false,
             allow_unpinned_hf: false,
+            context_root: None,
         }
     }
 }
@@ -127,6 +134,12 @@ pub(crate) struct EffectiveSandboxSpec {
     pub kwargs: BTreeMap<String, serde_json::Value>,
     pub num_envs: usize,
     pub vectorization_mode: VectorizationMode,
+    /// The parsed recipe for a `recipe://` source; `None` for gym/hf. When set,
+    /// its build phase drives the Dockerfile (the deriver) and its runtime phase
+    /// (setup/make/requires) rides the bootstrap payload.
+    pub recipe: Option<recipe::Recipe>,
+    /// The recipe author's source-tree root, for `ProjectInstall` staging.
+    pub context_root: Option<PathBuf>,
     pub build_hash: String,
 }
 
@@ -135,8 +148,33 @@ impl EffectiveSandboxSpec {
         source: EnvironmentSourceRef,
         options: SandboxOptions,
     ) -> std::result::Result<Self, SandboxError> {
-        let base_image = validate_nonempty("base_image", options.resolved_base_image())
-            .map_err(SandboxError::invalid_option)?;
+        // A recipe source carries its build phase in the document; parse it up
+        // front, gate its build by provenance, and let build.base override the
+        // image. Gym/hf sources leave `recipe` None.
+        let recipe = match &source {
+            EnvironmentSourceRef::Recipe(reference) => {
+                let parsed =
+                    recipe::Recipe::from_json(&reference.document.to_string()).map_err(|err| {
+                        SandboxError::invalid_source(format!("invalid recipe document: {err}"))
+                    })?;
+                validate_recipe_build(
+                    &parsed.build,
+                    reference.provenance,
+                    options.trust_remote_code,
+                )
+                .map_err(SandboxError::recipe_build_policy)?;
+                Some(parsed)
+            }
+            _ => None,
+        };
+        let context_root = options.context_root.clone();
+
+        let recipe_base = recipe.as_ref().and_then(|r| r.build.base.clone());
+        let base_image = match recipe_base {
+            Some(base) => validate_nonempty("base_image", base),
+            None => validate_nonempty("base_image", options.resolved_base_image()),
+        }
+        .map_err(SandboxError::invalid_option)?;
         let rlmesh_package = options
             .resolved_rlmesh_package(&base_image)
             .map_err(SandboxError::wheel)?;
@@ -154,6 +192,14 @@ impl EffectiveSandboxSpec {
         let num_envs = validate_num_envs(options.num_envs).map_err(SandboxError::invalid_option)?;
         let vectorization_mode = options.vectorization_mode;
         let resolved_source = resolve_source(&source).map_err(SandboxError::source_resolution)?;
+
+        // (7.1A) When the recipe stages a host tree (ProjectInstall), fold a
+        // content digest of that tree into the build hash so editing the source
+        // -- with the recipe JSON unchanged -- rebuilds the image instead of
+        // silently reusing a stale one.
+        let content_digest = recipe_content_digest(recipe.as_ref(), context_root.as_deref())
+            .map_err(SandboxError::invalid_option)?;
+
         // build_hash deliberately excludes runtime-only parameters (kwargs,
         // num_envs, vectorization_mode): they are delivered to the container at
         // `docker run` time via the bootstrap payload, never baked into the
@@ -166,6 +212,8 @@ impl EffectiveSandboxSpec {
             rlmesh_package: &rlmesh_package,
             packages: &packages,
             imports: &imports,
+            build: recipe.as_ref().map(|r| &r.build),
+            content_digest: content_digest.as_deref(),
         })
         .map_err(SandboxError::invalid_option)?;
 
@@ -180,6 +228,8 @@ impl EffectiveSandboxSpec {
             kwargs,
             num_envs,
             vectorization_mode,
+            recipe,
+            context_root,
             build_hash,
         })
     }
@@ -205,6 +255,150 @@ struct BuildHashInput<'a> {
     rlmesh_package: &'a ResolvedRlmeshPackage,
     packages: &'a [String],
     imports: &'a [String],
+    /// The recipe build phase (None for gym/hf). A build change rebuilds.
+    build: Option<&'a recipe::Build>,
+    /// A content digest of the staged `ProjectInstall` tree (7.1A).
+    content_digest: Option<&'a str>,
+}
+
+/// Gate a recipe's build phase by provenance (spec section 2 / 7.1E / 7.1G).
+///
+/// `Installed` recipes build anything (a build is no more privileged than the
+/// Dockerfile the package would otherwise hand-write). A `Remote` recipe's build
+/// is pinned and restricted: free-form `commands`, `from_recipe`, and
+/// `ProjectInstall` are rejected outright; every `Fetch` must be pinned; and
+/// every `build.pip` step must be version-pinned with an allowlisted index and a
+/// digest-pinned base.
+fn validate_recipe_build(
+    build: &recipe::Build,
+    provenance: RecipeProvenance,
+    _trust_remote_code: bool,
+) -> Result<()> {
+    if provenance == RecipeProvenance::Installed {
+        return Ok(());
+    }
+
+    // Remote: free-form shell and host-tree references can never be pinned.
+    anyhow::ensure!(
+        build.commands.is_empty(),
+        "a Remote recipe must not carry build.commands (no pinning a free-form shell line)"
+    );
+    anyhow::ensure!(
+        build.from_recipe.is_none(),
+        "a Remote recipe must not use build.from_recipe (name-confusion substitution vector)"
+    );
+    anyhow::ensure!(
+        build.project.is_none(),
+        "a Remote recipe must not use a ProjectInstall (there is no host tree to read)"
+    );
+    anyhow::ensure!(
+        build.dockerfile.is_none(),
+        "a Remote recipe must not carry a verbatim build.dockerfile (unpinnable)"
+    );
+
+    // Remote fetches must be pinned (a 40-char git ref / a url sha256).
+    for fetch in &build.fetch {
+        match fetch.kind.as_str() {
+            "git" => anyhow::ensure!(
+                fetch.ref_.as_deref().is_some_and(looks_like_full_git_sha),
+                "a Remote recipe's git fetch must pin a full 40-character commit ref"
+            ),
+            "url" => anyhow::ensure!(
+                fetch.sha256.is_some(),
+                "a Remote recipe's url fetch must pin a sha256"
+            ),
+            other => anyhow::bail!("unknown fetch kind {other:?}"),
+        }
+    }
+
+    // (7.1G) Remote build.pip must be version-pinned with an allowlisted index;
+    // the base, if set, must be digest-pinned.
+    for step in &build.pip {
+        for package in &step.packages {
+            anyhow::ensure!(
+                package.contains("=="),
+                "a Remote recipe's build.pip must version-pin every package (got {package:?})"
+            );
+        }
+        for index in step.index_url.iter().chain(step.extra_index_urls.iter()) {
+            anyhow::ensure!(
+                is_allowlisted_index(index),
+                "a Remote recipe's pip index {index:?} is not on the allowlist"
+            );
+        }
+    }
+    if let Some(base) = &build.base {
+        anyhow::ensure!(
+            base.contains("@sha256:"),
+            "a Remote recipe's base image must be digest-pinned (got {base:?})"
+        );
+    }
+
+    Ok(())
+}
+
+/// The default pip-index allowlist for Remote recipes (PyPI + the two indices
+/// real GPU recipes need). A hosted catalog may extend this.
+fn is_allowlisted_index(url: &str) -> bool {
+    const ALLOWED: [&str; 3] = [
+        "https://pypi.org/simple",
+        "https://download.pytorch.org/whl",
+        "https://pypi.nvidia.com",
+    ];
+    ALLOWED.iter().any(|prefix| url.starts_with(prefix))
+}
+
+/// Compute a content digest of the recipe's `ProjectInstall` source tree (7.1A),
+/// resolved against `context_root`. Returns None when there is nothing to stage.
+fn recipe_content_digest(
+    recipe: Option<&recipe::Recipe>,
+    context_root: Option<&Path>,
+) -> Result<Option<String>> {
+    let Some(recipe) = recipe else {
+        return Ok(None);
+    };
+    let Some(project) = &recipe.build.project else {
+        return Ok(None);
+    };
+    let Some(root) = context_root else {
+        anyhow::bail!("recipe ProjectInstall requires a context_root to stage from");
+    };
+    let src = root.join(&project.src);
+    let mut hasher = Sha256::new();
+    hash_path_tree(&src, &src, &mut hasher)?;
+    Ok(Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    ))
+}
+
+/// Hash a file or directory tree deterministically: for each file (in sorted
+/// relative-path order) the relative path and its bytes are folded in, so the
+/// digest tracks content, not just paths (mirrors Docker's COPY-layer cache key).
+fn hash_path_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.is_dir() {
+        let mut entries: Vec<PathBuf> = fs::read_dir(path)
+            .with_context(|| format!("failed to read dir {}", path.display()))?
+            .map(|entry| entry.map(|e| e.path()))
+            .collect::<std::result::Result<_, _>>()?;
+        entries.sort();
+        for entry in entries {
+            hash_path_tree(root, &entry, hasher)?;
+        }
+    } else if metadata.is_file() {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +477,11 @@ fn resolve_source(source: &EnvironmentSourceRef) -> Result<source::ResolvedEnvir
                     task: source.task.clone(),
                 },
             ))
+        }
+        // A recipe arrives already-structured; there is no remote revision to
+        // resolve, so it passes through unchanged.
+        EnvironmentSourceRef::Recipe(source) => {
+            Ok(source::ResolvedEnvironmentSourceRef::Recipe(source.clone()))
         }
     }
 }
@@ -965,5 +1164,136 @@ mod tests {
         );
         assert_eq!(first.slug(), "org-repo-suite-0");
         assert_ne!(first.build_hash, second.build_hash);
+    }
+
+    fn recipe_source(
+        document: serde_json::Value,
+        provenance: RecipeProvenance,
+    ) -> EnvironmentSourceRef {
+        EnvironmentSourceRef::Recipe(RecipeSourceRef {
+            name: "acme/env".to_string(),
+            document,
+            provenance,
+        })
+    }
+
+    fn gym_recipe_document() -> serde_json::Value {
+        serde_json::json!({
+            "name": "acme/env",
+            "make": {"kind": "gym", "env_id": "CartPole-v1"},
+            "build": {"pip": [{"packages": ["pygame"]}]},
+            "requires": {"imports": ["my_envs"]}
+        })
+    }
+
+    #[test]
+    fn recipe_source_resolves_and_derives_its_dockerfile() {
+        let source = recipe_source(gym_recipe_document(), RecipeProvenance::Installed);
+        let spec = EffectiveSandboxSpec::resolve(source, SandboxOptions::default()).unwrap();
+        assert!(spec.recipe.is_some());
+        assert_eq!(spec.slug(), "acme-env");
+        assert_eq!(spec.resolved_display(), "recipe://acme/env");
+    }
+
+    #[test]
+    fn recipe_base_overrides_default_image() {
+        let mut document = gym_recipe_document();
+        document["build"]["base"] = serde_json::json!("nvidia/cuda:12.4.1-runtime-ubuntu22.04");
+        let source = recipe_source(document, RecipeProvenance::Installed);
+        let spec = EffectiveSandboxSpec::resolve(source, SandboxOptions::default()).unwrap();
+        assert_eq!(spec.base_image, "nvidia/cuda:12.4.1-runtime-ubuntu22.04");
+    }
+
+    #[test]
+    fn installed_recipe_build_passes_the_gate() {
+        let build = recipe::Build {
+            commands: vec!["echo hi".to_string()],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&build, RecipeProvenance::Installed, false).is_ok());
+    }
+
+    #[test]
+    fn remote_recipe_rejects_commands_and_unpinned_fetch() {
+        let with_commands = recipe::Build {
+            commands: vec!["echo hi".to_string()],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&with_commands, RecipeProvenance::Remote, true).is_err());
+
+        let unpinned_fetch = recipe::Build {
+            fetch: vec![recipe::Fetch {
+                kind: "git".to_string(),
+                repo: Some("https://x/r.git".to_string()),
+                ref_: Some("main".to_string()),
+                ..recipe::Fetch::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&unpinned_fetch, RecipeProvenance::Remote, true).is_err());
+    }
+
+    #[test]
+    fn remote_recipe_rejects_unpinned_pip_and_bad_index() {
+        let unpinned = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch".to_string()],
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&unpinned, RecipeProvenance::Remote, true).is_err());
+
+        let bad_index = recipe::Build {
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch==2.0.0".to_string()],
+                index_url: Some("https://attacker.example/simple".to_string()),
+                ..recipe::PipInstall::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&bad_index, RecipeProvenance::Remote, true).is_err());
+    }
+
+    #[test]
+    fn remote_recipe_accepts_fully_pinned_build() {
+        let build = recipe::Build {
+            base: Some("python@sha256:abc".to_string()),
+            pip: vec![recipe::PipInstall {
+                packages: vec!["torch==2.0.0".to_string()],
+                index_url: Some("https://download.pytorch.org/whl/cu124".to_string()),
+                ..recipe::PipInstall::default()
+            }],
+            fetch: vec![recipe::Fetch {
+                kind: "git".to_string(),
+                repo: Some("https://x/r.git".to_string()),
+                ref_: Some("a".repeat(40)),
+                dest: "/opt/r".to_string(),
+                ..recipe::Fetch::default()
+            }],
+            ..recipe::Build::default()
+        };
+        assert!(validate_recipe_build(&build, RecipeProvenance::Remote, true).is_ok());
+    }
+
+    #[test]
+    fn content_digest_tracks_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), b"print(1)").unwrap();
+        let recipe = recipe::Recipe::from_json(
+            &serde_json::json!({"name":"a","build":{"project":{"src":"."}}}).to_string(),
+        )
+        .unwrap();
+        let first = recipe_content_digest(Some(&recipe), Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        std::fs::write(dir.path().join("a.py"), b"print(2)").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "editing staged content must change the digest"
+        );
     }
 }

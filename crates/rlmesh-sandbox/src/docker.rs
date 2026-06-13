@@ -90,12 +90,14 @@ impl DockerBackend {
         // runtime parameter never rebuilds the image or invalidates the pip
         // install layer.
         let bootstrap_json = render_bootstrap_json(spec)?;
+        let gpu = spec.recipe.as_ref().is_some_and(|recipe| recipe.build.gpu);
         let output = Command::new("docker")
             .args(docker_run_args(
                 &container_name,
                 &artifact.image_id,
                 &bootstrap_json,
                 std::process::id(),
+                gpu,
             ))
             .output()
             .context("failed to start docker container")?;
@@ -272,6 +274,21 @@ impl DockerBackend {
             )?;
         }
 
+        // Stage the recipe author's ProjectInstall tree into the build context
+        // under the dir the deriver COPYs from. Rejected for Remote provenance
+        // upstream (validate_recipe_build) since there is no host tree to read.
+        if let Some(recipe) = &spec.recipe
+            && let Some(project) = &recipe.build.project
+        {
+            let root = spec.context_root.as_ref().ok_or_else(|| {
+                anyhow!("recipe ProjectInstall requires a context_root to stage from")
+            })?;
+            let src = root.join(&project.src);
+            let dest = tempdir.path().join(crate::recipe::PROJECT_CONTEXT_DIR);
+            copy_tree(&src, &dest)
+                .with_context(|| format!("failed to stage project tree {}", src.display()))?;
+        }
+
         let dockerfile = render_dockerfile(spec)?;
         fs::write(tempdir.path().join("Dockerfile"), dockerfile)
             .context("failed to write generated Dockerfile")?;
@@ -320,11 +337,12 @@ struct BootstrapConfigFile {
 enum BootstrapSpec {
     Gym(GymBootstrapSpec),
     Hf(HfBootstrapSpec),
+    Recipe(RecipeBootstrapSpec),
 }
 
 impl BootstrapSpec {
-    fn from_effective_spec(spec: &EffectiveSandboxSpec) -> Self {
-        match &spec.resolved_source {
+    fn from_effective_spec(spec: &EffectiveSandboxSpec) -> Result<Self> {
+        Ok(match &spec.resolved_source {
             ResolvedEnvironmentSourceRef::Gym(source) => Self::Gym(GymBootstrapSpec {
                 env_id: source.env_id.clone(),
                 imports: spec.imports.clone(),
@@ -341,8 +359,34 @@ impl BootstrapSpec {
                 num_envs: spec.num_envs,
                 vectorization_mode: spec.vectorization_mode.as_str().to_string(),
             }),
-        }
+            ResolvedEnvironmentSourceRef::Recipe(_) => {
+                let recipe = spec
+                    .recipe
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("recipe source missing its parsed recipe"))?;
+                Self::Recipe(RecipeBootstrapSpec {
+                    // Only the runtime phase (setup/make/requires/annotations)
+                    // rides the payload; the build phase already shaped the image
+                    // and must not re-ship.
+                    document: runtime_document(recipe)?,
+                    num_envs: spec.num_envs,
+                    vectorization_mode: spec.vectorization_mode.as_str().to_string(),
+                })
+            }
+        })
     }
+}
+
+/// Serialize a recipe's runtime half (build phase stripped) for the bootstrap
+/// payload. The container has already been built, so re-shipping the build keys
+/// would only bloat the payload.
+fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
+    let mut value =
+        serde_json::to_value(recipe).context("failed to serialize recipe bootstrap document")?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("build");
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,6 +405,15 @@ struct HfBootstrapSpec {
     task: Option<String>,
     imports: Vec<String>,
     kwargs: std::collections::BTreeMap<String, serde_json::Value>,
+    num_envs: usize,
+    vectorization_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecipeBootstrapSpec {
+    /// The recipe's runtime half (setup/make/requires/annotations); the build
+    /// phase is stripped because it already shaped the image.
+    document: serde_json::Value,
     num_envs: usize,
     vectorization_mode: String,
 }
@@ -427,9 +480,17 @@ fn confirmed_terminal_summary(inspected: Result<Option<ContainerState>>) -> Opti
 fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     validate_dockerfile_token("base_image", &spec.base_image)?;
 
+    // A recipe source drives the Dockerfile through the language-neutral deriver
+    // (the §5A contract); gym/hf use the fixed preamble below.
+    if let Some(recipe) = &spec.recipe {
+        return crate::recipe::derive_dockerfile(recipe)
+            .map_err(|err| anyhow!("failed to derive recipe Dockerfile: {err}"));
+    }
+
     let source_copy = match &spec.resolved_source {
         ResolvedEnvironmentSourceRef::Gym(_) => "",
         ResolvedEnvironmentSourceRef::Hf(_) => "COPY source /opt/rlmesh/source\n",
+        ResolvedEnvironmentSourceRef::Recipe(_) => "",
     };
     let package_copy = if spec.rlmesh_package.source_path().is_some() {
         "COPY packages /opt/rlmesh/packages\n"
@@ -464,7 +525,7 @@ ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
 /// `RLMESH_BOOTSTRAP_JSON` env var.
 fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
     serde_json::to_string(&BootstrapConfigFile {
-        spec: BootstrapSpec::from_effective_spec(spec),
+        spec: BootstrapSpec::from_effective_spec(spec)?,
     })
     .context("failed to serialize sandbox bootstrap payload")
 }
@@ -544,11 +605,32 @@ fn format_startup_failure_report(
     )
 }
 
+/// Recursively copy a file or directory tree from `src` to `dest`.
+fn copy_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let metadata =
+        fs::symlink_metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dest)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    }
+    Ok(())
+}
+
 fn docker_run_args(
     container_name: &str,
     image_id: &str,
     bootstrap_json: &str,
     owner_pid: u32,
+    gpu: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -570,6 +652,16 @@ fn docker_run_args(
         args.extend([
             "--label".to_string(),
             format!("{OWNER_PID_NS_LABEL_KEY}={pid_namespace}"),
+        ]);
+    }
+    if gpu {
+        // GPU access is via the nvidia runtime, not Linux capabilities, so it
+        // coexists with the --cap-drop ALL / no-new-privileges hardening above.
+        args.extend([
+            "--gpus".to_string(),
+            "all".to_string(),
+            "--env".to_string(),
+            "NVIDIA_VISIBLE_DEVICES=all".to_string(),
         ]);
     }
     args.extend([
@@ -864,6 +956,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -883,7 +977,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -895,7 +989,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -904,7 +998,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -916,7 +1010,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_stamp_owner_pid_label() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         // The owner-pid label must be present so the reaper can tell a live
         // owner's container apart from an orphan.
@@ -932,7 +1026,7 @@ mod tests {
         let Some(pid_namespace) = current_pid_namespace_id() else {
             return;
         };
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         assert!(
             args.iter()
@@ -948,6 +1042,7 @@ mod tests {
             "sha256:abc",
             "{\"spec\":{\"kind\":\"gym\"}}",
             4242,
+            false,
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -975,6 +1070,8 @@ mod tests {
             kwargs,
             num_envs: 4,
             vectorization_mode: VectorizationMode::Async,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1194,6 +1291,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1224,6 +1323,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1255,10 +1356,13 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
-        let BootstrapSpec::Hf(bootstrap) = BootstrapSpec::from_effective_spec(&spec) else {
+        let BootstrapSpec::Hf(bootstrap) = BootstrapSpec::from_effective_spec(&spec).unwrap()
+        else {
             panic!("expected HF bootstrap spec");
         };
 
@@ -1288,14 +1392,94 @@ mod tests {
             kwargs,
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
         match &spec.resolved_source {
             ResolvedEnvironmentSourceRef::Gym(source) => assert_eq!(source.env_id, "CartPole-v1"),
-            ResolvedEnvironmentSourceRef::Hf(_) => panic!("expected gym source"),
+            _ => panic!("expected gym source"),
         }
         assert_eq!(spec.imports, vec!["my_envs"]);
         assert_eq!(spec.kwargs["render_mode"], json!("rgb_array"));
+    }
+
+    fn recipe_spec(document: serde_json::Value) -> EffectiveSandboxSpec {
+        let parsed = crate::recipe::Recipe::from_json(&document.to_string()).unwrap();
+        let reference = crate::RecipeSourceRef {
+            name: "acme/env".to_string(),
+            document,
+            provenance: crate::RecipeProvenance::Installed,
+        };
+        EffectiveSandboxSpec {
+            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            requested_source: EnvironmentSourceRef::Recipe(reference.clone()),
+            resolved_source: ResolvedEnvironmentSourceRef::Recipe(reference),
+            base_image: parsed
+                .build
+                .base
+                .clone()
+                .unwrap_or_else(|| crate::DEFAULT_BASE_IMAGE.to_string()),
+            rlmesh_package: pip_rlmesh_package(),
+            packages: vec![],
+            imports: vec![],
+            kwargs: BTreeMap::new(),
+            num_envs: 1,
+            vectorization_mode: VectorizationMode::Sync,
+            recipe: Some(parsed),
+            context_root: None,
+            build_hash: "abcdef0123456789".to_string(),
+        }
+    }
+
+    #[test]
+    fn docker_run_args_add_gpu_flags_iff_gpu() {
+        let without = docker_run_args("n", "img", "{}", 1, false);
+        assert!(!without.iter().any(|arg| arg == "--gpus"));
+
+        let with = docker_run_args("n", "img", "{}", 1, true);
+        let idx = with.iter().position(|arg| arg == "--gpus").expect("--gpus");
+        assert_eq!(with[idx + 1], "all");
+        assert!(with.iter().any(|arg| arg == "NVIDIA_VISIBLE_DEVICES=all"));
+        // GPU access must not weaken the existing hardening.
+        assert!(with.iter().any(|arg| arg == "--cap-drop"));
+    }
+
+    #[test]
+    fn recipe_spec_renders_via_the_deriver() {
+        let spec = recipe_spec(json!({
+            "name": "acme/env",
+            "make": {"kind": "gym", "env_id": "CartPole-v1"},
+            "build": {"pip": [{"packages": ["pygame"]}]}
+        }));
+        let dockerfile = render_dockerfile(&spec).unwrap();
+        assert!(dockerfile.contains("FROM python:3.11-slim"));
+        assert!(dockerfile.contains("'pygame'"));
+        assert!(
+            dockerfile
+                .contains("ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]")
+        );
+    }
+
+    #[test]
+    fn recipe_bootstrap_strips_the_build_phase() {
+        let spec = recipe_spec(json!({
+            "name": "acme/env",
+            "make": {"kind": "gym", "env_id": "CartPole-v1"},
+            "build": {"pip": [{"packages": ["pygame"]}]},
+            "setup": {"env": {"K": "V"}}
+        }));
+        let BootstrapSpec::Recipe(bootstrap) = BootstrapSpec::from_effective_spec(&spec).unwrap()
+        else {
+            panic!("expected recipe bootstrap spec");
+        };
+        let object = bootstrap.document.as_object().unwrap();
+        assert!(
+            !object.contains_key("build"),
+            "build phase must not re-ship"
+        );
+        assert!(object.contains_key("make"));
+        assert!(object.contains_key("setup"));
     }
 }
