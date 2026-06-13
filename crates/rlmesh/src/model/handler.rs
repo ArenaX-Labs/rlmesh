@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use super::types::{ModelEpisodeEnd, ModelObservation};
+use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation};
 use crate::{Result, spaces};
 
 /// User policy plus episode lifecycle hooks.
@@ -36,7 +36,19 @@ pub trait ModelHandler: Send {
     /// Called when a new episode begins, before its first `predict`.
     ///
     /// Defaults to a no-op. Use it to reset per-episode policy state.
+    ///
+    /// For per-lane reset affinity under vectorized envs prefer
+    /// [`on_lane_reset`](ModelHandler::on_lane_reset), which carries the
+    /// `env_index` of the lane that rolled.
     async fn on_reset(&mut self, _observation: &ModelObservation) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called when a single lane's episode rolls (a per-lane reset edge),
+    /// carrying the `env_index`. Fires once per lane whose episode id changed —
+    /// at the initial reset and at each NEXT_STEP autoreset boundary. Defaults
+    /// to a no-op; a stateful per-lane adapter resets exactly that lane's state.
+    async fn on_lane_reset(&mut self, _event: ModelLaneReset) -> Result<()> {
         Ok(())
     }
 

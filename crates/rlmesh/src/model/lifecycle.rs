@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::handler::ModelHandler;
-use super::types::{ModelEpisodeEnd, ModelObservation};
+use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation};
 use crate::Result;
 
 pub(super) async fn finish_lifecycle<H>(
@@ -77,13 +77,25 @@ where
         for slot in &observation.route.slots {
             let env_index = slot.env_index;
             let episode_id = slot.episode_id.clone();
-            if let Some(previous_episode) =
-                active_episodes.insert((route_key.clone(), env_index), episode_id.clone())
-                && previous_episode != episode_id
-            {
+            let rolled =
+                match active_episodes.insert((route_key.clone(), env_index), episode_id.clone()) {
+                    Some(previous_episode) if previous_episode != episode_id => {
+                        handler
+                            .on_episode_end(ModelEpisodeEnd {
+                                episode_id: previous_episode,
+                                env_index,
+                            })
+                            .await?;
+                        true
+                    }
+                    _ => false,
+                };
+            // Per-lane reset edge: a lane whose episode id rolled, or every lane
+            // at the initial whole-vector reset.
+            if rolled || observation.reset {
                 handler
-                    .on_episode_end(ModelEpisodeEnd {
-                        episode_id: previous_episode,
+                    .on_lane_reset(ModelLaneReset {
+                        episode_id,
                         env_index,
                     })
                     .await?;
@@ -96,21 +108,29 @@ where
         }
     } else {
         let current_episode = observation.route.primary_episode_id().to_string();
+        let env_index = observation.route.primary_env_index();
 
         if observation.reset {
-            if let Some(previous_episode) = active_episodes.insert(
-                (route_key.clone(), observation.route.primary_env_index()),
-                current_episode.clone(),
-            ) && previous_episode != current_episode
+            if let Some(previous_episode) =
+                active_episodes.insert((route_key.clone(), env_index), current_episode.clone())
+                && previous_episode != current_episode
             {
                 handler
                     .on_episode_end(ModelEpisodeEnd {
                         episode_id: previous_episode,
-                        env_index: observation.route.primary_env_index(),
+                        env_index,
                     })
                     .await?;
             }
 
+            // Single env is a lane of one: surface the same per-lane reset edge so
+            // a stateful single-env adapter resets through the one sink.
+            handler
+                .on_lane_reset(ModelLaneReset {
+                    episode_id: current_episode.clone(),
+                    env_index,
+                })
+                .await?;
             handler.on_reset(observation).await?;
         } else {
             active_episodes
@@ -138,6 +158,7 @@ mod tests {
     struct RecordingHandler {
         resets: usize,
         episode_ends: Vec<ModelEpisodeEnd>,
+        lane_resets: Vec<ModelLaneReset>,
     }
 
     #[async_trait::async_trait]
@@ -151,6 +172,11 @@ mod tests {
 
         async fn on_reset(&mut self, _observation: &ModelObservation) -> crate::Result<()> {
             self.resets += 1;
+            Ok(())
+        }
+
+        async fn on_lane_reset(&mut self, event: ModelLaneReset) -> crate::Result<()> {
+            self.lane_resets.push(event);
             Ok(())
         }
 
@@ -213,6 +239,16 @@ mod tests {
 
         assert_eq!(handler.resets, 1);
         assert!(handler.episode_ends.is_empty());
+        // The initial whole-vector reset fired a per-lane reset for each active
+        // lane (2 and 3), carrying their env_index; the second observation rolled
+        // no existing lane so it added none.
+        let mut reset_lanes: Vec<i32> = handler
+            .lane_resets
+            .iter()
+            .map(|reset| reset.env_index)
+            .collect();
+        reset_lanes.sort_unstable();
+        assert_eq!(reset_lanes, vec![2, 3]);
         assert_eq!(
             active_episodes.get(&("session:route".to_string(), 2)),
             Some(&"episode-a".to_string())

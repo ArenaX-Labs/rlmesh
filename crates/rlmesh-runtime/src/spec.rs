@@ -42,12 +42,6 @@ impl RuntimeSessionSpec {
         if self.num_envs == 0 {
             return Err("runtime num_envs must be greater than zero".to_string());
         }
-        if self.num_envs > 1 {
-            return Err(
-                "runtime num_envs greater than one is not supported until per-lane reset is available"
-                    .to_string(),
-            );
-        }
         if self.env_contract.observation_space.is_none() {
             return Err("runtime env_contract is missing observation_space".to_string());
         }
@@ -316,14 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_vectorized_runtime_sessions() {
+    fn validate_accepts_vectorized_runtime_sessions() {
+        // num_envs > 1 is supported now that the driver honors per-lane autoreset
+        // and per-lane reset is expressible on the wire.
         let mut spec = valid_spec();
-        spec.num_envs = 2;
-        spec.env_contract.num_envs = 2;
+        spec.num_envs = 4;
+        spec.env_contract.num_envs = 4;
 
-        let error = spec.validate().unwrap_err();
-
-        assert!(error.contains("per-lane reset"));
+        assert!(spec.validate().is_ok());
     }
 
     #[test]
