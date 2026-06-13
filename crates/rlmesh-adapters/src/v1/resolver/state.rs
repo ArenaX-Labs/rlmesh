@@ -40,6 +40,8 @@ pub(super) fn plan_state(
                     dst_encoding: None,
                     dim: Some(zero_fill_width(component, &model_input.key)?),
                     index: None,
+                    src_range: None,
+                    dst_range: None,
                     zero_fill: true,
                 });
                 continue;
@@ -117,6 +119,8 @@ pub(super) fn plan_state(
             dst_encoding: component.encoding,
             dim: component.dim,
             index: component.index,
+            src_range: env_state.range,
+            dst_range: component.range,
             zero_fill: false,
         });
     }

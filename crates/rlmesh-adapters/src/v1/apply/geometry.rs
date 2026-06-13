@@ -151,12 +151,22 @@ fn matrix_to(matrix: &Matrix, encoding: RotationEncoding) -> Vec<f32> {
             if theta.abs() < EPS {
                 return vec![0.0; 3];
             }
+            let sin_theta = theta.sin();
+            if sin_theta.abs() < EPS {
+                // θ ≈ π: the antisymmetric part of R vanishes (a 180° rotation
+                // matrix is symmetric), so `matrix[2][1] - matrix[1][2]` etc.
+                // are all ~0 and the axis is lost. Recover it through the
+                // quaternion path, which handles this case via the
+                // largest-diagonal branch.
+                let quat = matrix_to_quat_xyzw(matrix);
+                return quat_xyzw_to_axis_angle([quat[0], quat[1], quat[2], quat[3]]);
+            }
             let axis = [
                 matrix[2][1] - matrix[1][2],
                 matrix[0][2] - matrix[2][0],
                 matrix[1][0] - matrix[0][1],
             ];
-            let factor = (theta / (2.0 * theta.sin() + EPS)) as f32;
+            let factor = (theta / (2.0 * sin_theta + EPS)) as f32;
             axis.iter().map(|&x| x * factor).collect()
         }
         RotationEncoding::Rot6d => {
@@ -206,4 +216,44 @@ pub fn convert_rotation(
         return Ok(quat_xyzw_to_axis_angle(as_quat_xyzw(value, source)));
     }
     Ok(matrix_to(&to_matrix(value, source), target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matrix_to_axis_angle_recovers_180_degree_rotation() {
+        // rot6d (first two columns) of a 180° rotation about x:
+        // R = diag(1, -1, -1). The matrix is symmetric, so the antisymmetric
+        // recovery yields a zero axis — the pre-fix bug returned ~[0, 0, 0].
+        let rot6d = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0];
+        let axis_angle =
+            convert_rotation(&rot6d, RotationEncoding::Rot6d, RotationEncoding::AxisAngle)
+                .expect("convert");
+        let pi = std::f32::consts::PI;
+        assert!(
+            (axis_angle[0].abs() - pi).abs() < 1e-4,
+            "expected |angle| ~ pi about x, got {axis_angle:?}"
+        );
+        assert!(
+            axis_angle[1].abs() < 1e-4 && axis_angle[2].abs() < 1e-4,
+            "{axis_angle:?}"
+        );
+    }
+
+    #[test]
+    fn near_pi_branch_only_engages_close_to_pi() {
+        // A general (non-degenerate) rotation must still resolve to a non-zero
+        // axis-angle — the near-pi branch must not swallow ordinary angles.
+        let rot6d = [0.0, 1.0, 0.0, -1.0, 0.0, 0.0]; // 90° about z
+        let axis_angle =
+            convert_rotation(&rot6d, RotationEncoding::Rot6d, RotationEncoding::AxisAngle)
+                .expect("convert");
+        let angle: f32 = axis_angle.iter().map(|&x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "{axis_angle:?}"
+        );
+    }
 }

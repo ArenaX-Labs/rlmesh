@@ -101,6 +101,7 @@
             "encoding": null,
             "index": null,
             "optional": true,
+            "range": null,
             "role": "proprio/extra"
           }
         ],

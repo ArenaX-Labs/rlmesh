@@ -13,6 +13,10 @@ pub struct StatePiece {
     pub dst_encoding: Option<RotationEncoding>,
     pub dim: Option<u32>,
     pub index: Option<u32>,
+    /// Source value range (the env feature's), mapped into `dst_range`.
+    pub src_range: Option<(f64, f64)>,
+    /// Target value range (the model component's).
+    pub dst_range: Option<(f64, f64)>,
     pub zero_fill: bool,
 }
 

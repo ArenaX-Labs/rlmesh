@@ -6,7 +6,7 @@ use super::super::plans::StatePlan;
 use super::super::spec::StateContainer;
 use super::error::ApplyError;
 use super::geometry::convert_rotation;
-use super::lookup::{lookup, numeric_vector};
+use super::lookup::{lookup, map_range, numeric_vector};
 use super::value::{Array, ArrayData, Dtype, Value};
 
 fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
@@ -81,6 +81,11 @@ pub(super) fn apply_state(
         } else if let Some(dim) = piece.dim {
             value.truncate(dim as usize);
         }
+        if let (Some(src), Some(dst)) = (piece.src_range, piece.dst_range)
+            && src != dst
+        {
+            map_range(&mut value, src, dst)?;
+        }
         state.extend(value);
     }
     if let Some(pad_to) = plan.pad_to {
@@ -103,4 +108,49 @@ pub(super) fn apply_state(
         return Ok(Value::List(list_value(&array)));
     }
     Ok(Value::Array(array))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::plans::StatePiece;
+    use super::*;
+
+    #[test]
+    fn maps_state_values_from_env_range_into_model_range() {
+        let plan = StatePlan {
+            model_key: "state".to_owned(),
+            pieces: vec![StatePiece {
+                env_key: "gripper".to_owned(),
+                src_encoding: None,
+                dst_encoding: None,
+                dim: None,
+                index: None,
+                src_range: Some((0.0, 255.0)),
+                dst_range: Some((-1.0, 1.0)),
+                zero_fill: false,
+            }],
+            pad_to: None,
+            dtype: "float32".to_owned(),
+            reshape: None,
+            container: StateContainer::Array,
+        };
+        let mut raw = BTreeMap::new();
+        raw.insert(
+            "gripper".to_owned(),
+            Value::Array(Array {
+                dtype: Dtype::F32,
+                shape: vec![3],
+                data: ArrayData::F32(vec![0.0, 127.5, 255.0]),
+            }),
+        );
+        let Value::Array(out) = apply_state(&plan, &raw).expect("apply") else {
+            panic!("expected an array");
+        };
+        let ArrayData::F32(values) = out.data else {
+            panic!("expected f32");
+        };
+        assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
+        assert!(values[1].abs() < 1e-6, "{values:?}");
+        assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");
+    }
 }

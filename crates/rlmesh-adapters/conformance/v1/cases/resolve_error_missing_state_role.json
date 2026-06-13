@@ -79,6 +79,7 @@
             "encoding": null,
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/gripper"
           }
         ],

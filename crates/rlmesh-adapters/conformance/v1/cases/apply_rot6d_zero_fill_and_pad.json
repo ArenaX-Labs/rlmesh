@@ -133,6 +133,7 @@
             "encoding": null,
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/eef_pos"
           },
           {
@@ -140,6 +141,7 @@
             "encoding": "rot6d",
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/eef_rot"
           },
           {
@@ -147,6 +149,7 @@
             "encoding": null,
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/gripper"
           },
           {
@@ -154,6 +157,7 @@
             "encoding": null,
             "index": null,
             "optional": true,
+            "range": null,
             "role": "proprio/eef_pos_2"
           }
         ],

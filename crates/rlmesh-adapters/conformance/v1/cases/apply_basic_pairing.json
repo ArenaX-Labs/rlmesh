@@ -155,6 +155,7 @@
             "encoding": null,
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/eef_pos"
           },
           {
@@ -162,6 +163,7 @@
             "encoding": "axis_angle",
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/eef_rot"
           },
           {
@@ -169,6 +171,7 @@
             "encoding": null,
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/gripper"
           }
         ],

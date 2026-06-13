@@ -79,6 +79,7 @@
             "encoding": "rot6d",
             "index": null,
             "optional": false,
+            "range": null,
             "role": "proprio/eef_rot"
           }
         ],

@@ -18,6 +18,11 @@ pub struct StateComponent {
     pub dim: Option<u32>,
     #[serde(default)]
     pub index: Option<u32>,
+    /// Target value range. When set and the env feature declares a (derived
+    /// or annotated) source range, values are affinely mapped from the env
+    /// range into this one — the state-side analogue of action range mapping.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
     #[serde(default)]
     pub optional: bool,
 }
