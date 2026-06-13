@@ -41,6 +41,19 @@ Available sandbox examples:
 - [`sandbox/hf_sandbox.py`](sandbox/hf_sandbox.py): starts
   `hf://lerobot/cartpole-env:cartpole_suite/0`.
 
+## Recipe Examples
+
+Use these when an environment needs custom construction -- a build phase (deps, base image, render
+backend) plus a `make()` that returns the env, possibly wrapped. Recipes are authored as inert data,
+so they validate on a laptop that can't import the heavy sim deps.
+
+- [`recipes/render_into_obs.py`](recipes/render_into_obs.py): folds a render-only env's camera frame
+  into its observation (the MetaWorld case), and validates the recipe without installing MetaWorld.
+
+```bash
+uv run python examples/python/recipes/render_into_obs.py
+```
+
 ## Optional Environment Examples
 
 The SAI examples keep their own `pyproject.toml`, lockfile, and `.venv`. That is intentional: these
