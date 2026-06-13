@@ -13,17 +13,21 @@ Anti-shadowing: re-registering an already-registered name is rejected unless
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from types import MappingProxyType
+from typing import overload
 
-from ._authoring import EnvRecipe, as_authored_recipe
+from ._authoring import EnvRecipe, is_env_recipe
 from ._gym_sugar import factory_sugar_to_recipe, gym_sugar_to_recipe
-from ._schema import Build, Recipe
+from ._schema import Build, GymMake, PyMake, Recipe
 
 __all__ = [
     "RecipeNotFoundError",
     "clear_registry",
+    "pprint_registry",
     "register",
     "registered_names",
+    "registry",
     "resolve",
     "resolve_from_recipe",
     "unregister",
@@ -37,6 +41,20 @@ class RecipeNotFoundError(LookupError):
 _REGISTRY: dict[str, Recipe] = {}
 
 
+@overload
+def register(source: type[EnvRecipe], *, overwrite: bool = ...) -> type[EnvRecipe]: ...
+@overload
+def register(source: Recipe, *, overwrite: bool = ...) -> Recipe: ...
+@overload
+def register(
+    source: str,
+    *,
+    gym: str | None = ...,
+    factory: str | None = ...,
+    packages: Sequence[str] = ...,
+    imports: Sequence[str] = ...,
+    overwrite: bool = ...,
+) -> Recipe: ...
 def register(
     source: str | Recipe | type[EnvRecipe],
     *,
@@ -45,20 +63,23 @@ def register(
     packages: Sequence[str] = (),
     imports: Sequence[str] = (),
     overwrite: bool = False,
-) -> Recipe:
+) -> Recipe | type[EnvRecipe]:
     """Register a recipe so it can be built by name.
 
-    Two forms:
+    Three forms:
 
-    * **Object** -- ``register(recipe)`` or ``register(MyEnvRecipe)``: register a
-      :class:`Recipe` or project + register an ``EnvRecipe`` subclass.
+    * **Decorator / class** -- ``@register`` above an ``EnvRecipe`` subclass (or
+      ``register(MyEnvRecipe)``): projects and registers it, and returns the class
+      so the decorated name stays bound to it.
+    * **Object** -- ``register(recipe)``: register a :class:`Recipe`, returned as-is.
     * **Flat naming sugar** -- ``register("namespace/name", gym=..., packages=[...])``
       or ``register("namespace/name", factory="mod:fn", packages=[...])``: the name
       is the first argument; pass exactly one of ``gym=`` (a gym id) or ``factory=``
       (a ``module:callable``). The sugar builds the validated recipe dataclasses.
 
     Args:
-        source: A name (with ``gym=``/``factory=``), a ``Recipe``, or an ``EnvRecipe``.
+        source: An ``EnvRecipe`` subclass, a ``Recipe``, or a name (with
+            ``gym=``/``factory=``).
         gym: A gym id, for the flat form. Mutually exclusive with ``factory``.
         factory: A ``module:callable`` factory, for the flat form.
         packages: Pip packages the env needs (flat form).
@@ -66,27 +87,39 @@ def register(
         overwrite: Allow replacing an existing registration with the same name.
 
     Returns:
-        The registered recipe.
+        The first argument: the class for an ``EnvRecipe`` (decorator-friendly), the
+        ``Recipe`` for an object, or the synthesized ``Recipe`` for the flat form.
 
     Raises:
         ValueError: If the name is already registered and ``overwrite`` is ``False``.
     """
-    authored = as_authored_recipe(source)
-    if authored is not None:
-        if gym or factory or packages or imports:
-            raise TypeError(
-                "register(Recipe | EnvRecipe) takes no gym=/factory=/packages=/"
-                "imports=; those are for the flat register(name, ...) form"
-            )
-        recipe = authored
-    elif isinstance(source, str):
+    if is_env_recipe(source):
+        _reject_flat_kwargs(gym, factory, packages, imports)
+        _store(source.to_recipe(), overwrite=overwrite)
+        return source
+    if isinstance(source, Recipe):
+        _reject_flat_kwargs(gym, factory, packages, imports)
+        return _store(source, overwrite=overwrite)
+    if isinstance(source, str):
         recipe = _flat_recipe(source, gym, factory, packages, imports)
-    else:
+        return _store(recipe, overwrite=overwrite)
+    raise TypeError(
+        "register() first argument must be a name string, a Recipe, or an "
+        f"EnvRecipe subclass, got {type(source).__name__}"
+    )
+
+
+def _reject_flat_kwargs(
+    gym: str | None,
+    factory: str | None,
+    packages: Sequence[str],
+    imports: Sequence[str],
+) -> None:
+    if gym or factory or packages or imports:
         raise TypeError(
-            "register() first argument must be a name string, a Recipe, or an "
-            f"EnvRecipe subclass, got {type(source).__name__}"
+            "register(Recipe | EnvRecipe) takes no gym=/factory=/packages=/"
+            "imports=; those are for the flat register(name, ...) form"
         )
-    return _store(recipe, overwrite=overwrite)
 
 
 def _flat_recipe(
@@ -162,6 +195,67 @@ def resolve_from_recipe(recipe: Recipe, _seen: frozenset[str] = frozenset()) -> 
 def registered_names() -> tuple[str, ...]:
     """Return the sorted names of all locally registered recipes."""
     return tuple(sorted(_REGISTRY))
+
+
+def registry() -> Mapping[str, Recipe]:
+    """Return a read-only view of the local ``name -> recipe`` map.
+
+    The view reflects later registrations; it cannot be mutated (use
+    :func:`register`/:func:`unregister`).
+    """
+    return MappingProxyType(_REGISTRY)
+
+
+def _make_kind(recipe: Recipe) -> str:
+    make = recipe.make
+    if make is None:
+        return "base"  # a build-only base (e.g. a from_recipe parent)
+    if isinstance(make, GymMake):
+        return "gym"
+    if isinstance(make, PyMake):
+        return "py"
+    return "hf"  # Make is a closed union; the remaining arm is HfMake
+
+
+def _format_registry() -> str:
+    names = registered_names()
+    header = f"===== rlmesh recipes ({len(names)}) ====="
+    if not names:
+        return f"{header}\n  <empty>"
+
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        namespace = name.split("/", 1)[0] if "/" in name else ""
+        groups.setdefault(namespace, []).append(name)
+
+    name_width = max(len(name) for name in names)
+    lines = [header]
+    for namespace in sorted(groups):
+        lines.append(f"{namespace}/" if namespace else "(root)")
+        for name in groups[namespace]:
+            recipe = _REGISTRY[name]
+            kind = _make_kind(recipe)
+            gpu = "gpu" if recipe.build.gpu else ""
+            summary = recipe.summary or "—"
+            lines.append(f"  {name:<{name_width}}  {kind:<4} {gpu:<3}  {summary}")
+    return "\n".join(lines)
+
+
+def pprint_registry(*, disable_print: bool = False) -> str | None:
+    """Pretty-print the registered recipes, grouped by namespace.
+
+    Shows each recipe's name, make kind (``gym``/``py``/``hf``/``base``), a ``gpu``
+    marker, and its summary. Covers only the local rlmesh recipe registry, not the
+    Gymnasium registry (use ``gymnasium.pprint_registry()`` for that).
+
+    Args:
+        disable_print: Return the formatted string instead of printing it.
+    """
+    text = _format_registry()
+    if disable_print:
+        return text
+    print(text)
+    return None
 
 
 def unregister(name: str) -> None:

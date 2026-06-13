@@ -70,6 +70,13 @@ def authored_module(tmp_path: Path) -> Iterator[str]:
             class NamelessChild(Cart):  # inherits Cart.name -- must be rejected
                 pass
 
+            @rlmesh.register
+            class Registered(rlmesh.EnvRecipe):  # auto-registers at import
+                name = "test/registered"
+
+                def make(self, **kwargs):
+                    return _StubEnv()
+
             class _StubEnv:
                 def reset(self, *, seed=None, options=None):
                     return 0, {}
@@ -255,3 +262,35 @@ def test_nameless_subclass_of_named_is_rejected(authored_module: str) -> None:
     child = _module(authored_module).NamelessChild  # type: ignore[attr-defined]
     with pytest.raises(RecipeValidationError, match="declare its own"):
         child.to_recipe()
+
+
+# ----- the @register decorator -----
+
+
+def test_register_decorator_binds_class_and_registers(authored_module: str) -> None:
+    registered = _module(authored_module).Registered  # type: ignore[attr-defined]
+    # @register returned the class (not a Recipe), so the name stays usable...
+    assert isinstance(registered, type)
+    assert issubclass(registered, EnvRecipe)
+    # ...and the projected recipe was stored under its name.
+    assert recipes.resolve("test/registered") == registered.to_recipe()
+
+
+def test_register_decorator_call_form_returns_class(authored_module: str) -> None:
+    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
+    assert rlmesh.register(cart) is cart  # register(cls) is decorator-equivalent
+    assert recipes.resolve("cart/pole") == cart.to_recipe()
+
+
+def test_register_decorator_rejects_unimportable() -> None:
+    # A recipe the container cannot import (here a local class; __main__ is the
+    # other case) cannot travel by reference, so @register fails fast rather than
+    # storing an unbuildable entry.
+    class Local(EnvRecipe):
+        name = "x/local"
+
+        def make(self, **kwargs: object) -> object:
+            return None
+
+    with pytest.raises(RecipeValidationError, match="cannot import"):
+        rlmesh.register(Local)

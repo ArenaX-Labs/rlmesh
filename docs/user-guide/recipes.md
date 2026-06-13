@@ -121,6 +121,21 @@ attributes and records the entrypoint string -- it never instantiates the class 
 dependencies, so this works on a machine that cannot run the env. Validate a recipe without
 importing anything with `LiberoObject.check()`.
 
+`register` also works as a decorator -- `@rlmesh.register` above the class registers it on import
+and returns the class unchanged:
+
+```python
+@rlmesh.register
+class LiberoObject(rlmesh.EnvRecipe):
+    name = "acme/libero-object"
+    ...
+```
+
+It must live in an importable module (not a `__main__` script), because the container imports the
+factory by reference. To see what is registered, `rlmesh.recipes.pprint_registry()` prints the
+recipes grouped by namespace, and `rlmesh.recipes.registry()` returns a read-only `name -> recipe`
+view.
+
 ## Share one build across tasks
 
 Declare a heavy build once as a base recipe; each task references it with `from_recipe`. Every task

@@ -17,9 +17,11 @@ from rlmesh.recipes import (
     Setup,
     UnsupportedRecipeError,
     clear_registry,
+    pprint_registry,
     recipe_to_sandbox_args,
     register,
     registered_names,
+    registry,
     resolve,
     resolve_from_recipe,
     unregister,
@@ -83,6 +85,47 @@ def test_unregister() -> None:
     unregister("atari/breakout")
     assert registered_names() == ()
     unregister("atari/breakout")  # absent is a no-op
+
+
+def test_register_object_returns_recipe() -> None:
+    recipe = _gym_recipe()
+    assert register(recipe) is recipe  # object form: returns its argument
+
+
+def test_registry_is_a_read_only_view() -> None:
+    register(_gym_recipe())
+    view = registry()
+    assert dict(view) == {"atari/breakout": resolve("atari/breakout")}
+    with pytest.raises(TypeError):
+        view["x"] = _gym_recipe("x/y")  # type: ignore[index]
+    # The view is live: a later registration shows through.
+    register(_gym_recipe("a/two"))
+    assert set(view) == {"atari/breakout", "a/two"}
+
+
+def test_pprint_registry_groups_by_namespace() -> None:
+    register(_gym_recipe("atari/breakout"))
+    register(
+        Recipe(
+            name="robot/franka",
+            make=PyMake(entrypoint="robot_env:make"),
+            build=Build(gpu=True),
+            summary="Franka stack",
+        )
+    )
+    text = pprint_registry(disable_print=True)
+    assert text is not None
+    assert "rlmesh recipes (2)" in text
+    assert "atari/" in text and "robot/" in text
+    assert "atari/breakout" in text and "gym" in text
+    assert "franka" in text and "py" in text and "gpu" in text
+    assert "Franka stack" in text
+
+
+def test_pprint_registry_empty() -> None:
+    text = pprint_registry(disable_print=True)
+    assert text is not None
+    assert "(0)" in text and "<empty>" in text
 
 
 def test_recipe_to_sandbox_args_flat_gym() -> None:
