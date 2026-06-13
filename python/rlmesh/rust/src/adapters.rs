@@ -31,8 +31,8 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    EnvAnnotations, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, resolve,
-    roles,
+    EnvAnnotations, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
+    resolve, roles,
 };
 use rlmesh_spaces::{DType, Tensor};
 
@@ -69,6 +69,41 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ),
     ("ACTION_GRIPPER_2", roles::manipulation::ACTION_GRIPPER_2),
 ];
+
+/// Stub-only declarations for the wire constants that [`register_constants`]
+/// adds at runtime, so the generated `_rlmesh.pyi` (and downstream type
+/// checkers) see them. `module_variable!` feeds the stub generator only and
+/// is available solely under the `stub-gen` feature, so the whole block is
+/// gated; the runtime registration below is the source of truth.
+#[cfg(feature = "stub-gen")]
+mod stub_constants {
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_SECONDARY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "INSTRUCTION", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_VEL", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "GRIPPER_POS_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER_2", String);
+    pyo3_stub_gen::module_variable!(
+        "rlmesh._rlmesh",
+        "ROTATION_DIMS",
+        std::collections::HashMap<String, u32>
+    );
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_LAYOUTS", Vec<String>);
+}
 
 /// Register the wire-vocabulary constants on the `_rlmesh` module.
 pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -311,14 +346,17 @@ impl PyAdapterPlan {
 /// Resolve env annotations + spaces and a model spec into a plan handle.
 ///
 /// `observation_space`/`action_space` are gymnasium space objects; they are
-/// parsed and projected into the adapters `SpaceView`. Entrypoint trust is
-/// passed through to the resolver (the Python wrapper decides it).
+/// parsed and projected into the adapters `SpaceView`. Custom-input
+/// entrypoint trust is enforced by the Python wrapper *before* this call
+/// (untrusted entrypoints never reach here), so the core resolves with
+/// trust granted: every custom input that arrives is already vetted and is
+/// kept as a host-filled hole.
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_resolve(env_annotations_json: str, observation_space: object, action_space: object, model_spec_json: str, trust_entrypoints: bool) -> AdapterPlan: ...
+def adapters_resolve(env_annotations_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 "#
     )
 )]
@@ -328,7 +366,6 @@ pub fn adapters_resolve(
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
     model_spec_json: &str,
-    trust_entrypoints: bool,
 ) -> PyResult<PyAdapterPlan> {
     let annotations: EnvAnnotations = serde_json::from_str(env_annotations_json)
         .map_err(|err| PyValueError::new_err(format!("invalid env annotations: {err}")))?;
@@ -336,13 +373,37 @@ pub fn adapters_resolve(
         .map_err(|err| PyValueError::new_err(format!("invalid model spec: {err}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
-    let adapter = resolve(
-        &annotations,
-        &obs_view,
-        &action_view,
-        &model_spec,
-        trust_entrypoints,
-    )
-    .map_err(|err| PyValueError::new_err(err.message))?;
+    let adapter = resolve(&annotations, &obs_view, &action_view, &model_spec, true)
+        .map_err(|err| PyValueError::new_err(err.message))?;
     Ok(PyAdapterPlan { adapter })
+}
+
+/// Validate env annotations against the env's observation/action spaces.
+///
+/// Runs only the native `join` step that [`adapters_resolve`] performs
+/// internally -- no model side. This surfaces annotation/space mismatches at
+/// authoring time (e.g. from `rlmesh.adapters.annotate`) before any model is
+/// paired against the env.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def adapters_join_check(env_annotations_json: str, observation_space: object, action_space: object) -> None: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn adapters_join_check(
+    env_annotations_json: &str,
+    observation_space: &Bound<'_, PyAny>,
+    action_space: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let annotations: EnvAnnotations = serde_json::from_str(env_annotations_json)
+        .map_err(|err| PyValueError::new_err(format!("invalid env annotations: {err}")))?;
+    let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
+    let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
+    join(&annotations, &obs_view, &action_view)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    Ok(())
 }

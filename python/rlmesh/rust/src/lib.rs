@@ -78,6 +78,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     adapters::register_constants(m)?;
     m.add_class::<adapters::PyAdapterPlan>()?;
     m.add_function(wrap_pyfunction!(adapters::adapters_resolve, m)?)?;
+    m.add_function(wrap_pyfunction!(adapters::adapters_join_check, m)?)?;
 
     Ok(())
 }
