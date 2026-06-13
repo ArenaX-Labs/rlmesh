@@ -3111,6 +3111,7 @@ dependencies = [
  "pyo3-stub-gen-derive",
  "rand 0.10.1",
  "rlmesh",
+ "rlmesh-adapters",
  "rlmesh-cli",
  "rlmesh-grpc",
  "rlmesh-sandbox",

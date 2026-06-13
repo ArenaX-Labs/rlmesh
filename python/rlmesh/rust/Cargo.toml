@@ -36,6 +36,7 @@ stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
 rlmesh = { workspace = true }
+rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-sandbox = { workspace = true }

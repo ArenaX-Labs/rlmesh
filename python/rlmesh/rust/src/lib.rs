@@ -1,3 +1,4 @@
+mod adapters;
 mod client;
 mod lifecycle;
 mod model;
@@ -73,6 +74,10 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
+
+    adapters::register_constants(m)?;
+    m.add_class::<adapters::PyAdapterPlan>()?;
+    m.add_function(wrap_pyfunction!(adapters::adapters_resolve, m)?)?;
 
     Ok(())
 }
