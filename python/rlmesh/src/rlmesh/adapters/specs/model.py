@@ -31,6 +31,12 @@ class ModelSpec:
     inputs: tuple[ModelInput, ...]
     action: ActionLayout
 
+    def __post_init__(self) -> None:
+        keys = [item.key for item in self.inputs]
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise ValueError(f"ModelSpec has duplicate input keys: {duplicates}")
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
 

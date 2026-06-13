@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
 
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
@@ -32,7 +32,9 @@ class ImageInput:
         resample: Resize algorithm the model's training pipeline used:
             ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible)
             or ``"bilinear"`` (4-tap half-pixel-center bilinear,
-            OpenCV/torch-compatible). Validated at resolve time.
+            OpenCV/torch-compatible).
+        size: Convenience for square targets -- sets both ``height`` and
+            ``width``. Pass ``size`` or ``height``/``width``, not both.
     """
 
     key: str
@@ -45,8 +47,14 @@ class ImageInput:
     lead_dims: int = 0
     upside_down: bool = False
     resample: str = "bilinear_aa"
+    size: InitVar[int | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, size: int | None) -> None:
+        if size is not None:
+            if self.height is not None or self.width is not None:
+                raise ValueError("ImageInput: pass size=, or height=/width=, not both")
+            object.__setattr__(self, "height", size)
+            object.__setattr__(self, "width", size)
         check_non_negative(self.height, "ImageInput.height")
         check_non_negative(self.width, "ImageInput.width")
         check_non_negative(self.lead_dims, "ImageInput.lead_dims")
@@ -94,16 +102,50 @@ class StateInput:
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
+
+    For a single-piece state, pass ``role`` (and optionally ``encoding`` /
+    ``dim`` / ``index``) instead of ``components`` -- e.g.
+    ``StateInput("state", role=EEF_POS)`` is shorthand for
+    ``StateInput("state", components=(StateComponent(EEF_POS),))``.
     """
 
     key: str
-    components: tuple[StateComponent, ...]
+    components: tuple[StateComponent, ...] = ()
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
+    role: InitVar[str | None] = None
+    encoding: InitVar[RotationEncoding | None] = None
+    dim: InitVar[int | None] = None
+    index: InitVar[int | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(
+        self,
+        role: str | None,
+        encoding: RotationEncoding | None,
+        dim: int | None,
+        index: int | None,
+    ) -> None:
+        single = (
+            role is not None
+            or encoding is not None
+            or dim is not None
+            or index is not None
+        )
+        if self.components and single:
+            raise ValueError(
+                "StateInput: pass components=, or a single role=/encoding=/"
+                "dim=/index=, not both"
+            )
+        if not self.components:
+            if role is None:
+                raise ValueError("StateInput needs components=(...) or a single role=")
+            object.__setattr__(
+                self,
+                "components",
+                (StateComponent(role, encoding, dim, index),),
+            )
         check_non_negative(self.pad_to, "StateInput.pad_to")
 
 

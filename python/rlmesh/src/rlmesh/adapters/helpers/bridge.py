@@ -13,10 +13,13 @@ module imports it.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any, cast
 
 from ...numpy import NumpyArray
+
+_logger = logging.getLogger("rlmesh.adapters")
 
 # The element dtypes the native bridge accepts verbatim. Anything else is
 # coerced to the nearest supported family (int64 / float32) before crossing,
@@ -35,6 +38,11 @@ def _as_array(value: object) -> NumpyArray:
         array = cast(NumpyArray, array.astype(np.uint8))
     if str(array.dtype) not in _SUPPORTED_DTYPES:
         target = np.int64 if array.dtype.kind in "iu" else np.float32
+        _logger.debug(
+            "adapter bridge coercing observation dtype %s -> %s",
+            str(array.dtype),
+            str(np.dtype(target)),
+        )
         array = cast(NumpyArray, array.astype(target))
     return cast(NumpyArray, np.ascontiguousarray(array))
 

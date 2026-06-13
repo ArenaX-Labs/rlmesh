@@ -1113,3 +1113,50 @@ def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
 
     assert encode_value(np.bool_(True)) == ("n", 1.0)
     assert encode_value(np.bool_(False)) == ("n", 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Spec ergonomics: size=, single-component StateInput, eager validation
+# ---------------------------------------------------------------------------
+
+
+def test_image_input_size_shorthand() -> None:
+    assert adapt.ImageInput("img", size=224) == adapt.ImageInput(
+        "img", height=224, width=224
+    )
+    with pytest.raises(ValueError, match="size=, or height"):
+        adapt.ImageInput("img", size=224, height=10)
+
+
+def test_state_input_single_component_shorthand() -> None:
+    assert adapt.StateInput(
+        "s", role=adapt.EEF_POS, encoding="axis_angle"
+    ) == adapt.StateInput(
+        "s", components=(adapt.StateComponent(adapt.EEF_POS, encoding="axis_angle"),)
+    )
+    with pytest.raises(ValueError, match="components=, or a single"):
+        adapt.StateInput(
+            "s", components=(adapt.StateComponent(adapt.EEF_POS),), role=adapt.EEF_ROT
+        )
+    with pytest.raises(ValueError, match="needs components"):
+        adapt.StateInput("s")
+
+
+def test_state_input_sugar_resolves_like_explicit() -> None:
+    spec = adapt.ModelSpec(
+        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
+        action=SMOLVLA.action,
+    )
+    adapter = resolve(LIBERO_ENV, spec)
+    np.testing.assert_allclose(
+        adapter.transform_obs(make_obs())["state"],
+        np.asarray(make_obs()["robot0_eef_pos"], dtype=np.float32),
+    )
+
+
+def test_model_spec_rejects_duplicate_input_keys() -> None:
+    with pytest.raises(ValueError, match="duplicate input keys"):
+        adapt.ModelSpec(
+            inputs=(adapt.ImageInput("dup"), adapt.TextInput("dup")),
+            action=SMOLVLA.action,
+        )
