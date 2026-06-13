@@ -9,6 +9,7 @@ __all__ = [
     "RLMeshException",
     "ProtocolException",
     "EnvironmentException",
+    "AdapterPlan",
     "EnvContract",
     "PrimitiveValue",
     "PyEnvClient",
@@ -20,6 +21,7 @@ __all__ = [
     "SpaceSpec",
     "Tensor",
     "Value",
+    "adapters_resolve",
     "box_space_spec",
     "dict_space_spec",
     "discrete_space_spec",
@@ -56,6 +58,31 @@ class SandboxRunInfo(TypedDict):
     resolved_source: str
     address: str
     container_id: str
+
+@typing.final
+class AdapterPlan:
+    r"""
+    A resolved adapter plan handle backed by the `rlmesh-adapters` core.
+    """
+    def describe(self) -> builtins.str:
+        r"""
+        Human-readable summary of the resolved transformations.
+        """
+    def custom_inputs(self) -> builtins.list[tuple[builtins.str, builtins.str]]:
+        r"""
+        `(model_key, transform)` pairs for custom-input holes, plan order.
+        """
+    def transform_obs(self, raw_obs: typing.Any) -> builtins.dict[builtins.str, typing.Any]:
+        r"""
+        Apply the observation plans to a bridge-encoded observation map.
+        
+        Returns `{model_key: encoded_value}`; custom inputs are omitted
+        (the caller fills them from the raw host observation).
+        """
+    def transform_action(self, raw_action: typing.Any) -> typing.Any:
+        r"""
+        Apply the action plan to a bridge-encoded model action.
+        """
 
 @typing.final
 class EnvContract:
@@ -266,6 +293,8 @@ class Tensor:
         """
     def tobytes(self) -> bytes: ...
     def __repr__(self) -> builtins.str: ...
+
+def adapters_resolve(env_annotations_json: str, observation_space: object, action_space: object, model_spec_json: str, trust_entrypoints: bool) -> AdapterPlan: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
