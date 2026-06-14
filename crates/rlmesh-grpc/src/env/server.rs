@@ -13,7 +13,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::env::Environment;
-use crate::env::episode::EpisodeTracker;
+use crate::env::episode::{EpisodeTracker, LaneState};
 use crate::error::EnvError;
 use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
@@ -347,6 +347,12 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                     break;
                 }
 
+                // TODO(#6): a non-recoverable `Kind::Error` (e.g. a NEXT_STEP
+                // lane-contract violation from handle_env_request) is delivered to
+                // the client but does NOT end the stream — only a send failure or
+                // a Close breaks this loop, so a lenient client can keep stepping.
+                // Tracker state stays consistent, so this is a transport-policy
+                // decision deferred to its own change.
                 if close_after {
                     break;
                 }
@@ -431,16 +437,28 @@ async fn handle_env_request<E: Environment>(
             let env_indices = reset_req.env_indices.clone();
             let partial = !env_indices.is_empty();
 
+            // env_indices/seeds arrive straight off the wire, so a foreign or
+            // buggy client can send out-of-range, negative, duplicate, or
+            // length-mismatched lanes. Validate before touching the env or the
+            // tracker: silently deduping/truncating would start phantom or
+            // misaligned episodes (seeds are positionally aligned to lanes).
             let timeout_ms = reset_req.timeout_ms;
-            let result = if partial {
-                run_env_op_with_deadline(
-                    env.reset_subset(reset_req),
-                    timeout_ms,
-                    "env.reset_subset",
-                )
-                .await
-            } else {
-                run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
+            let result = match validate_partial_reset(partial, &env_indices, &seeds, num_envs) {
+                Err(message) => Err(EnvError::new(
+                    crate::error::EnvErrorCode::InvalidAction,
+                    message,
+                )),
+                Ok(()) if partial => {
+                    run_env_op_with_deadline(
+                        env.reset_subset(reset_req),
+                        timeout_ms,
+                        "env.reset_subset",
+                    )
+                    .await
+                }
+                Ok(()) => {
+                    run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
+                }
             };
 
             match result {
@@ -498,7 +516,7 @@ async fn handle_env_request<E: Environment>(
                 tracing::error!("StepRequest.env_indices set but subset stepping is unsupported");
                 Some(join_response::Kind::Error(env_error_to_proto(
                     EnvError::new(
-                        crate::error::EnvErrorCode::Internal,
+                        crate::error::EnvErrorCode::InvalidAction,
                         "subset stepping (StepRequest.env_indices) is not supported",
                     ),
                 )))
@@ -510,106 +528,106 @@ async fn handle_env_request<E: Environment>(
                 match result {
                     Ok(mut ok) => {
                         let mut tracker = episode_tracker.lock().await;
-                        // Episodes interrupted by a replacing reset surface here so
-                        // their accounting is not lost.
-                        let mut completed_episodes = tracker.drain_interrupted();
-                        let shared_info = decode_info_struct(ok.infos.as_ref());
+                        // TODO(#6): SameStep falls through to the DISABLED/Idle
+                        // path here (next_step is only true for NextStep) and is
+                        // silently mishandled. It is rejected upstream at spec /
+                        // Python validation today, so it cannot reach a
+                        // runtime-driven server; add an explicit guard (or real
+                        // SameStep support) here once that contract is defined.
+                        let next_step = autoreset_mode == AutoresetMode::NextStep;
 
-                        // Per-lane episode ids. The id flips only at the NEXT_STEP
-                        // boundary (t+1, the fresh-obs step), never on the done step
-                        // t, so the terminal observation stays labelled with the
-                        // episode that just ended.
-                        let mut episode_ids = vec![String::new(); num_envs];
+                        // Validate the per-lane NEXT_STEP lane lifecycle BEFORE
+                        // mutating anything. A contract violation must leave the
+                        // tracker (and the interrupted buffer) untouched so the
+                        // error is side-effect-free: the step is refused whole
+                        // rather than half-applied, and re-stepping reports the
+                        // same violation against consistent state. (A `Kind::Error`
+                        // payload does not by itself tear down the stream.)
+                        if let Some(e) = validate_step_lanes(&ok, num_envs, next_step, &tracker) {
+                            tracing::error!(error = %e, "env step contract violation");
+                            Some(join_response::Kind::Error(env_error_to_proto(e)))
+                        } else {
+                            // Validated: every lane takes a legal transition.
+                            // Episodes interrupted by a replacing reset surface
+                            // here so their accounting is not lost.
+                            let mut completed_episodes = tracker.drain_interrupted();
+                            let shared_info = decode_info_struct(ok.infos.as_ref());
 
-                        for (env_idx, episode_id) in episode_ids.iter_mut().enumerate() {
-                            let terminated = ok
-                                .terminated_mask
-                                .get(env_idx)
-                                .map(|&b| b != 0)
-                                .unwrap_or(false);
-                            let truncated = ok
-                                .truncated_mask
-                                .get(env_idx)
-                                .map(|&b| b != 0)
-                                .unwrap_or(false);
-                            let done = terminated || truncated;
-                            let was_active = tracker.active_episode_id(env_idx as i32).is_some();
-
-                            if was_active {
-                                // A real action-step on a running lane: its reward counts.
+                            // Per-lane episode ids. The id flips only at the
+                            // NEXT_STEP boundary (t+1, the fresh-obs step), never
+                            // on the done step t, so the terminal observation
+                            // stays labelled with the episode that just ended.
+                            let mut episode_ids = vec![String::new(); num_envs];
+                            for (env_idx, episode_id) in episode_ids.iter_mut().enumerate() {
+                                let terminated = lane_bit(&ok.terminated_mask, env_idx);
+                                let truncated = lane_bit(&ok.truncated_mask, env_idx);
+                                let done = terminated || truncated;
                                 let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                                tracker.record_step(env_idx as i32, reward);
+                                let lane = env_idx as i32;
 
-                                if done {
-                                    // Done step t: complete the episode. The terminal obs
-                                    // belongs to the OLD episode, so episode_ids keeps the
-                                    // completed id; the new id (if any) rolls at t+1.
-                                    if let Some(metadata) = tracker.complete_episode(
-                                        env_idx as i32,
-                                        terminated,
-                                        truncated,
-                                        extract_env_final_info(
-                                            shared_info.as_ref(),
-                                            env_idx,
-                                            num_envs,
-                                        ),
-                                    ) {
-                                        *episode_id = metadata.episode_id.clone();
-                                        completed_episodes.push(metadata);
+                                match tracker.lane_state(lane) {
+                                    LaneState::Active => {
+                                        // A real action-step on a running lane: reward counts.
+                                        tracker.record_step(lane, reward);
+                                        if done {
+                                            // Done step t: complete the episode. The terminal
+                                            // obs belongs to the OLD episode, so episode_ids
+                                            // keeps the completed id; any new id rolls at t+1.
+                                            if let Some(metadata) = tracker.complete_episode(
+                                                lane,
+                                                terminated,
+                                                truncated,
+                                                extract_env_final_info(
+                                                    shared_info.as_ref(),
+                                                    env_idx,
+                                                    num_envs,
+                                                ),
+                                            ) {
+                                                *episode_id = metadata.episode_id.clone();
+                                                completed_episodes.push(metadata);
+                                            }
+                                            // Under NEXT_STEP the env owes this lane a fresh
+                                            // autoreset observation next step; mark it so that
+                                            // step is recognised as the roll.
+                                            if next_step {
+                                                tracker.expect_autoreset(lane);
+                                            }
+                                        } else {
+                                            *episode_id = tracker
+                                                .active_episode_id(lane)
+                                                .unwrap_or_default()
+                                                .to_string();
+                                        }
                                     }
-                                } else {
-                                    *episode_id = tracker
-                                        .active_episode_id(env_idx as i32)
-                                        .unwrap_or_default()
-                                        .to_string();
+                                    LaneState::PendingAutoreset => {
+                                        // Validated as the fresh autoreset observation
+                                        // (non-terminal, reward 0). Roll the new episode
+                                        // (step 0); not a reward-bearing step, so no
+                                        // record_step; gym reseeds autoreset from entropy
+                                        // (seed None).
+                                        *episode_id = tracker.start_episode(lane, None);
+                                    }
+                                    LaneState::Idle => {
+                                        // DISABLED only (validation rejects an Idle NEXT_STEP
+                                        // lane): an inactive lane awaits an explicit reset —
+                                        // leave its id empty, never a phantom episode.
+                                    }
                                 }
-                            } else if autoreset_mode == AutoresetMode::NextStep && !done {
-                                // Fresh-obs step t+1: the env auto-reset this lane and is
-                                // delivering the first observation of a new episode. Roll
-                                // the new id now (step 0). This is NOT a reward-bearing
-                                // step, so do not record_step; gym reseeds autoreset from
-                                // entropy (seed None).
-                                let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
-                                if reward != 0.0 {
-                                    // The autoreset obs is assumed to carry reward 0. A
-                                    // non-zero reward here would belong to the fresh
-                                    // episode if recorded, corrupting it — surface the
-                                    // anomaly but drop the value.
-                                    tracing::warn!(
-                                        env_index = env_idx,
-                                        reward,
-                                        "non-zero reward on a NEXT_STEP autoreset observation is being dropped"
-                                    );
-                                }
-                                *episode_id = tracker.start_episode(env_idx as i32, None);
-                            } else if autoreset_mode == AutoresetMode::NextStep
-                                && !was_active
-                                && done
-                            {
-                                // A NEXT_STEP lane that is inactive yet reports a terminal
-                                // fresh-obs step is unsupported: the completion cannot be
-                                // attributed to any episode. Leave the id empty (as before)
-                                // but make the dropped completion visible.
-                                tracing::warn!(
-                                    env_index = env_idx,
-                                    "NEXT_STEP env reported a terminal fresh-obs step for an inactive lane; this is unsupported and the completion is dropped"
-                                );
                             }
-                            // else: a DISABLED lane awaiting an explicit reset (or another
-                            // inactive lane) — leave the id empty.
-                        }
 
-                        ok.completed_episodes = completed_episodes;
-                        ok.episode_ids = episode_ids;
-                        let obs_bytes = space_value_len(ok.observation.as_ref());
-                        let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
-                        tracing::trace!(
-                            obs_bytes,
-                            info_bytes,
-                            completed_episodes = ok.completed_episodes.len(),
-                            "env step completed"
-                        );
-                        Some(join_response::Kind::Step(ok))
+                            ok.completed_episodes = completed_episodes;
+                            ok.episode_ids = episode_ids;
+                            let obs_bytes = space_value_len(ok.observation.as_ref());
+                            let info_bytes =
+                                ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
+                            tracing::trace!(
+                                obs_bytes,
+                                info_bytes,
+                                completed_episodes = ok.completed_episodes.len(),
+                                "env step completed"
+                            );
+                            Some(join_response::Kind::Step(ok))
+                        }
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "env step failed");
@@ -663,6 +681,129 @@ async fn handle_env_request<E: Environment>(
         "env join response prepared"
     );
     response
+}
+
+/// Validate an explicit partial reset (`ResetRequest.env_indices`) before it
+/// reaches the env or the episode tracker. A full reset (empty `env_indices`)
+/// is always allowed. For a partial reset every lane must be in `0..num_envs`
+/// and unique, and `seeds` — being positionally aligned to `env_indices` — must
+/// either be empty or match its length. Duplicates and length mismatches are
+/// rejected rather than deduped/truncated: the intent is ambiguous and silently
+/// guessing would start phantom or seed-misaligned episodes.
+fn validate_partial_reset(
+    partial: bool,
+    env_indices: &[i32],
+    seeds: &[i64],
+    num_envs: usize,
+) -> Result<(), String> {
+    if !partial {
+        return Ok(());
+    }
+    if !seeds.is_empty() && seeds.len() != env_indices.len() {
+        return Err(format!(
+            "partial reset: seeds length {} does not match env_indices length {} \
+             (provide one seed per reset lane, or none)",
+            seeds.len(),
+            env_indices.len(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(env_indices.len());
+    for &idx in env_indices {
+        if idx < 0 {
+            return Err(format!("partial reset: negative env_index {idx}"));
+        }
+        if idx as usize >= num_envs {
+            return Err(format!(
+                "partial reset: env_index {idx} out of range for num_envs {num_envs}"
+            ));
+        }
+        if !seen.insert(idx) {
+            return Err(format!("partial reset: duplicate env_index {idx}"));
+        }
+    }
+    Ok(())
+}
+
+/// Read lane `idx`'s flag from a per-lane byte mask, treating a missing entry as
+/// `false`. Vector widths are validated up front by [`validate_step_lanes`], so a
+/// missing entry only occurs for an intentionally-empty (all-false) mask.
+fn lane_bit(mask: &[u8], idx: usize) -> bool {
+    mask.get(idx).map(|&b| b != 0).unwrap_or(false)
+}
+
+/// Validate a `StepResponse` against the per-lane NEXT_STEP autoreset contract
+/// BEFORE any tracker mutation, returning the first violation as a
+/// non-recoverable `Internal` error (or `None` if the step is legal).
+///
+/// Two classes of violation are caught:
+/// - **Malformed width:** each per-lane vector (`rewards`, `terminated_mask`,
+///   `truncated_mask`) must be either empty (interpreted as all-false / reward 0)
+///   or exactly `num_envs` long. A partial-width vector is rejected so it cannot
+///   silently read missing lanes as not-done / reward-0 and mask a real
+///   completion or reward.
+/// - **Illegal NEXT_STEP transition:** a `PendingAutoreset` lane must deliver a
+///   fresh (non-terminal) reward-0 observation, and an `Idle` lane must not be
+///   stepped at all (it was never reset, or reported a stray terminal). This
+///   replaces the old behaviour of fabricating a phantom episode or silently
+///   dropping the reward/completion.
+fn validate_step_lanes(
+    ok: &rlmesh_proto::env::v1::StepResponse,
+    num_envs: usize,
+    next_step: bool,
+    tracker: &EpisodeTracker,
+) -> Option<EnvError> {
+    let internal =
+        |message: String| Some(EnvError::new(crate::error::EnvErrorCode::Internal, message));
+
+    for (label, len) in [
+        ("rewards", ok.rewards.len()),
+        ("terminated_mask", ok.terminated_mask.len()),
+        ("truncated_mask", ok.truncated_mask.len()),
+    ] {
+        if len != 0 && len != num_envs {
+            return internal(format!(
+                "StepResponse.{label} has length {len}, which is neither empty nor the env's lane \
+                 count {num_envs}; a partial per-lane vector would silently mask lanes"
+            ));
+        }
+    }
+
+    if !next_step {
+        return None;
+    }
+
+    for env_idx in 0..num_envs {
+        let done = lane_bit(&ok.terminated_mask, env_idx) || lane_bit(&ok.truncated_mask, env_idx);
+        let reward = ok.rewards.get(env_idx).copied().unwrap_or(0.0);
+        match tracker.lane_state(env_idx as i32) {
+            LaneState::PendingAutoreset => {
+                if done {
+                    return internal(format!(
+                        "NEXT_STEP lane {env_idx} reported a terminal step where its autoreset \
+                         observation was expected; after a completion the env must deliver one \
+                         fresh (non-terminal) observation"
+                    ));
+                }
+                if reward != 0.0 {
+                    return internal(format!(
+                        "NEXT_STEP lane {env_idx} carried a non-zero reward ({reward}) on its \
+                         autoreset observation; the fresh observation after a completion must \
+                         carry reward 0"
+                    ));
+                }
+            }
+            LaneState::Idle => {
+                return internal(format!(
+                    "NEXT_STEP lane {env_idx} was stepped with no active episode and no pending \
+                     autoreset; reset the lane before stepping it, and the env may only autoreset \
+                     the step after a completion"
+                ));
+            }
+            LaneState::Active => {}
+        }
+    }
+
+    None
 }
 
 fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'static str {
@@ -1336,8 +1477,16 @@ mod tests {
             } else {
                 vec![0u8, 0u8]
             };
+            // Lane 0's autoreset fresh observation lands at n==1 (the step after
+            // its n==0 termination). A real NEXT_STEP env reports reward 0 on
+            // that fresh obs; lane 1 keeps stepping normally.
+            let rewards = if n == 1 {
+                vec![0.0, 1.0]
+            } else {
+                vec![1.0, 1.0]
+            };
             Ok(StepResponse {
-                rewards: vec![1.0, 1.0],
+                rewards,
                 terminated_mask,
                 truncated_mask: vec![0u8, 0u8],
                 ..Default::default()
@@ -1429,6 +1578,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn partial_reset_rejects_invalid_env_indices() {
+        // ResetRequest.env_indices arrives straight off the wire, so the server
+        // must reject out-of-range, negative, duplicate, and seed-misaligned
+        // lanes BEFORE touching the env or the tracker. Silently deduping or
+        // truncating would start phantom or seed-misaligned episodes.
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        use rlmesh_proto::env::v1::{
+            EnvErrorCode as ProtoEnvErrorCode, JoinRequest, ResetRequest as ProtoResetRequest,
+            join_request, join_response,
+        };
+
+        // num_envs == 2.
+        let env = Arc::new(Mutex::new(TerminatingVectorEnv::new()));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = |env_indices: Vec<i32>, seeds: Vec<i64>| JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                env_indices,
+                seeds,
+                ..Default::default()
+            })),
+            request_id: "partial".to_string(),
+        };
+
+        let expect_invalid = |resp: super::JoinResponse, needle: &str| match resp.kind {
+            Some(join_response::Kind::Error(e)) => {
+                assert_eq!(
+                    e.code,
+                    ProtoEnvErrorCode::InvalidAction as i32,
+                    "invalid partial reset must report InvalidAction, got code {} ({})",
+                    e.code,
+                    e.message,
+                );
+                assert!(
+                    e.message.contains(needle),
+                    "error message {:?} should mention {:?}",
+                    e.message,
+                    needle,
+                );
+            }
+            other => panic!("expected error response, got {other:?}"),
+        };
+
+        // Out of range: lane 2 does not exist for num_envs == 2.
+        expect_invalid(
+            super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone()).await,
+            "out of range",
+        );
+        // Negative lane.
+        expect_invalid(
+            super::handle_env_request(reset(vec![-1], vec![]), env.clone(), tracker.clone()).await,
+            "negative",
+        );
+        // Duplicate lane.
+        expect_invalid(
+            super::handle_env_request(reset(vec![0, 0], vec![]), env.clone(), tracker.clone())
+                .await,
+            "duplicate",
+        );
+        // Seeds present but misaligned with env_indices (2 lanes, 1 seed).
+        expect_invalid(
+            super::handle_env_request(reset(vec![0, 1], vec![7]), env.clone(), tracker.clone())
+                .await,
+            "seeds length",
+        );
+
+        // A rejected partial reset must not have started any tracked episode.
+        let tracker = tracker.lock().await;
+        assert!(
+            tracker.active_episode_id(0).is_none() && tracker.active_episode_id(1).is_none(),
+            "a rejected partial reset must not start any episode"
+        );
+    }
+
+    #[tokio::test]
     async fn next_step_rolls_episode_id_at_t_plus_1_not_at_done_step() {
         // BLOCKER-1 regression guard. Under NEXT_STEP the env returns the
         // terminal obs at the done step `t` and the fresh obs at `t+1`. The
@@ -1489,5 +1715,366 @@ mod tests {
             tp1.episode_ids[0], old_id,
             "the fresh obs at t+1 carries a NEW episode id"
         );
+    }
+
+    /// A vector env that replays a pre-scripted sequence of `StepResponse`s so a
+    /// test can drive exact terminated/truncated/reward shapes per step. Once the
+    /// script is exhausted it yields the default (all-zero, non-terminal) step.
+    struct ScriptedVectorEnv {
+        contract: SpaceEnvContract,
+        steps: std::collections::VecDeque<StepResponse>,
+    }
+
+    impl ScriptedVectorEnv {
+        fn new(
+            num_envs: usize,
+            mode: rlmesh_spaces::AutoresetMode,
+            steps: Vec<StepResponse>,
+        ) -> Self {
+            let space = SpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: "scripted".to_string(),
+                    autoreset_mode: mode,
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: num_envs as u32,
+                },
+                steps: steps.into(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Environment for ScriptedVectorEnv {
+        fn observation_space(&self) -> &SpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &SpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            self.contract.num_envs as usize
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
+            Ok(self.steps.pop_front().unwrap_or_default())
+        }
+        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
+
+    fn step_resp(rewards: Vec<f64>, terminated: Vec<u8>, truncated: Vec<u8>) -> StepResponse {
+        StepResponse {
+            rewards,
+            terminated_mask: terminated,
+            truncated_mask: truncated,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn next_step_nonzero_reward_on_autoreset_obs_is_an_error() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        // Terminal at s1, then a fresh-obs step carrying reward 3.0 — the
+        // autoreset observation must be reward 0, so this is a hard error rather
+        // than a silently dropped reward.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                step_resp(vec![1.0], vec![1], vec![0]),
+                step_resp(vec![3.0], vec![0], vec![0]),
+            ],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        // Done step: completes lane 0 and marks it pending-autoreset.
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
+        // Fresh-obs step with a non-zero reward: hard error.
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        match resp.kind {
+            Some(join_response::Kind::Error(e)) => assert!(
+                e.message.contains("non-zero reward"),
+                "expected a reward-on-autoreset error, got: {}",
+                e.message
+            ),
+            other => panic!("expected error response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_step_terminal_when_autoreset_expected_is_an_error() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        // Terminal at s1, then terminal AGAIN at s2 — the env never delivered the
+        // fresh autoreset observation. A sticky-terminal env must fail loud, not
+        // silently drop the second completion.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                step_resp(vec![1.0], vec![1], vec![0]),
+                step_resp(vec![0.0], vec![1], vec![0]),
+            ],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        match resp.kind {
+            Some(join_response::Kind::Error(e)) => assert!(
+                e.message
+                    .contains("terminal step where its autoreset observation was expected"),
+                "expected a terminal-when-autoreset-expected error, got: {}",
+                e.message
+            ),
+            other => panic!("expected error response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_step_step_before_reset_is_an_error() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{JoinRequest, join_request, join_response};
+        use tokio::sync::Mutex;
+
+        // No reset: lane 0 is Idle. Stepping a NEXT_STEP lane with no active
+        // episode and no pending autoreset is a hard error — the old behaviour
+        // fabricated a phantom episode here.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![step_resp(vec![1.0], vec![0], vec![0])],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let step = JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: "s1".to_string(),
+        };
+        let resp = super::handle_env_request(step, env.clone(), tracker.clone()).await;
+        match resp.kind {
+            Some(join_response::Kind::Error(e)) => assert!(
+                e.message
+                    .contains("no active episode and no pending autoreset"),
+                "expected a step-before-reset error, got: {}",
+                e.message
+            ),
+            other => panic!("expected error response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn next_step_cycles_cleanly_through_multiple_episodes() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        // s1 normal, s2 terminal (completes A), s3 fresh obs (rolls B),
+        // s4 terminal (completes B), s5 fresh obs (rolls C). Two completions
+        // total, three distinct episode ids, no phantom episodes.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            1,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                step_resp(vec![1.0], vec![0], vec![0]),
+                step_resp(vec![1.0], vec![1], vec![0]),
+                step_resp(vec![0.0], vec![0], vec![0]),
+                step_resp(vec![1.0], vec![1], vec![0]),
+                step_resp(vec![0.0], vec![0], vec![0]),
+            ],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        let step_ok = |r: super::JoinResponse| match r.kind {
+            Some(join_response::Kind::Step(ok)) => ok,
+            other => panic!("expected step response, got {other:?}"),
+        };
+
+        let _ = step_ok(super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await);
+        let s2 = step_ok(super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await);
+        assert_eq!(s2.completed_episodes.len(), 1, "episode A completes at s2");
+        let id_a = s2.completed_episodes[0].episode_id.clone();
+
+        let s3 = step_ok(super::handle_env_request(step("s3"), env.clone(), tracker.clone()).await);
+        assert!(
+            s3.completed_episodes.is_empty(),
+            "no completion on the roll"
+        );
+        let id_b = s3.episode_ids[0].clone();
+        assert!(!id_b.is_empty() && id_b != id_a, "s3 rolls a new episode B");
+
+        let s4 = step_ok(super::handle_env_request(step("s4"), env.clone(), tracker.clone()).await);
+        assert_eq!(s4.completed_episodes.len(), 1, "episode B completes at s4");
+        assert_eq!(s4.completed_episodes[0].episode_id, id_b);
+
+        let s5 = step_ok(super::handle_env_request(step("s5"), env.clone(), tracker.clone()).await);
+        assert!(s5.completed_episodes.is_empty());
+        let id_c = s5.episode_ids[0].clone();
+        assert!(!id_c.is_empty() && id_c != id_b, "s5 rolls a new episode C");
+    }
+
+    #[tokio::test]
+    async fn next_step_contract_violation_is_side_effect_free() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        // A violation on ANY lane must abort the whole step without mutating the
+        // tracker — earlier lanes must not be half-completed. num_envs=2: lane 1
+        // is driven into PendingAutoreset, then a step reports lane 0 terminal
+        // (which would complete it) AND lane 1 terminal-when-autoreset-expected
+        // (a violation). The step must error with lane 0 left untouched.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            2,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            vec![
+                // s1: lane 1 terminates -> completes, becomes pending-autoreset.
+                step_resp(vec![1.0, 1.0], vec![0, 1], vec![0, 0]),
+                // s2: lane 0 terminal (would complete) + lane 1 terminal again
+                //     (pending-autoreset violation) -> the whole step must error.
+                step_resp(vec![1.0, 0.0], vec![1, 1], vec![0, 0]),
+            ],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let step = |id: &str| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: id.to_string(),
+        };
+        // s1 puts lane 1 into pending-autoreset.
+        let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
+
+        // Snapshot lane 0's episode id before the violating step.
+        let lane0_before = {
+            let t = tracker.lock().await;
+            t.active_episode_id(0).map(|s| s.to_string())
+        };
+        assert!(
+            lane0_before.is_some(),
+            "lane 0 is active before the violating step"
+        );
+
+        // s2 violates on lane 1; the whole step must error.
+        let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
+        assert!(
+            matches!(resp.kind, Some(join_response::Kind::Error(_))),
+            "a violating step must return an error"
+        );
+
+        // Lane 0 must NOT have been completed or rolled: same active episode.
+        let t = tracker.lock().await;
+        assert_eq!(
+            t.lane_state(0),
+            super::super::episode::LaneState::Active,
+            "lane 0 stays active — the aborted step did not half-apply"
+        );
+        assert_eq!(
+            t.active_episode_id(0).map(|s| s.to_string()),
+            lane0_before,
+            "lane 0's episode is untouched by the aborted step"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_rejects_partial_width_masks() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        // A per-lane vector that is neither empty nor full-width is rejected so a
+        // missing lane cannot be silently read as not-done / reward-0.
+        let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
+            2,
+            rlmesh_spaces::AutoresetMode::NextStep,
+            // terminated_mask has length 1 for a 2-lane env: partial width.
+            vec![step_resp(vec![1.0, 1.0], vec![0], vec![0, 0])],
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+
+        let reset = JoinRequest {
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            request_id: "r".to_string(),
+        };
+        let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
+        let step = JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest::default())),
+            request_id: "s1".to_string(),
+        };
+        let resp = super::handle_env_request(step, env.clone(), tracker.clone()).await;
+        match resp.kind {
+            Some(join_response::Kind::Error(e)) => assert!(
+                e.message.contains("neither empty nor"),
+                "expected a partial-width error, got: {}",
+                e.message
+            ),
+            other => panic!("expected error response, got {other:?}"),
+        }
     }
 }
