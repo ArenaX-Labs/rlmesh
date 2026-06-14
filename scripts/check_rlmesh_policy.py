@@ -20,7 +20,8 @@ VERSION_RE = re.compile(
     r"(?:\+[A-Za-z0-9.-]+)?$",
     re.IGNORECASE,
 )
-STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str = "(?P<value>[^"]+)";')
+STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
 STR_SLICE_CONST_RE = re.compile(
     r"pub const (?P<name>[A-Z0-9_]+): &\[&str\]\s*=\s*&\[(?P<values>[^\]]*)\];",
     re.DOTALL,
@@ -119,6 +120,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
 
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol, workflow))
     errors.extend(_validate_workflow_editions(repo_root, workflow, release))
+    errors.extend(_validate_adapters(repo_root))
     errors.extend(
         _validate_api_surface(
             repo_root, api_surface, artifact_ids, release, package_family
@@ -197,6 +199,29 @@ def _artifact_version(
     raise ValueError(f"unsupported ecosystem {artifact.ecosystem}")
 
 
+def _validate_adapters(repo_root: Path) -> list[str]:
+    errors: list[str] = []
+    keys = repo_root / "crates/rlmesh-adapters/src/keys.rs"
+    if not keys.exists():
+        return [f"adapter metadata keys file missing: {keys}"]
+    text = keys.read_text(encoding="utf-8")
+    # The version-stamped metadata key string, not any source-module path, is the
+    # adapter spec-format discriminator, so guard the v1 token here. A v2 bump
+    # must be deliberate and keep reading v1.
+    for const in ("ENV_METADATA_KEY", "MODEL_METADATA_KEY"):
+        match = re.search(rf'{const}: &str = "(?P<value>[^"]+)"', text)
+        if match is None:
+            errors.append(f"{keys}: missing {const}")
+        elif not match.group("value").startswith("rlmesh.adapters.v1."):
+            errors.append(
+                f"{keys}: {const} is {match.group('value')!r}; the adapter spec format is v1"
+            )
+    vectors = repo_root / "crates/rlmesh-adapters/conformance/v1"
+    if not vectors.is_dir():
+        errors.append(f"adapter conformance vectors missing: {vectors}")
+    return errors
+
+
 def _validate_protocol_and_workflow(
     repo_root: Path, protocol: dict[str, Any], workflow: dict[str, Any]
 ) -> list[str]:
@@ -223,6 +248,30 @@ def _validate_protocol_and_workflow(
             errors.append(f"{manifest_key} must be a string")
             continue
         if constants.get(name) != value:
+            errors.append(
+                f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
+            )
+
+    # The current edition's status + spec checksum constants must match its
+    # manifest entry (which _validate_workflow_editions verifies against the spec
+    # file), keeping the content-pin the runtime ships honest with the contract.
+    current_edition = workflow.get("current_edition")
+    editions = workflow.get("editions")
+    current_entry = editions.get(current_edition, {}) if isinstance(editions, dict) else {}
+    edition_consts = {
+        "CURRENT_WORKFLOW_EDITION_STATUS": (
+            f'[workflow.editions."{current_edition}"].status',
+            current_entry.get("status"),
+        ),
+        "CURRENT_WORKFLOW_EDITION_SPEC_SHA256": (
+            f'[workflow.editions."{current_edition}"].spec_sha256',
+            current_entry.get("spec_sha256"),
+        ),
+    }
+    for name, (manifest_key, value) in edition_consts.items():
+        if not isinstance(value, str):
+            errors.append(f"{manifest_key} must be a string")
+        elif constants.get(name) != value:
             errors.append(
                 f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
             )
@@ -310,6 +359,25 @@ def _validate_workflow_editions(
                 "seal the edition first"
             )
 
+        # Sealing is a stable-only act: a sealed edition records the stable
+        # (non-prerelease) version that sealed it and is retained forever, so a
+        # newer build keeps offering it to still negotiate with an older peer.
+        # Provisional editions carry no sealed_in and may change freely.
+        sealed_in = entry.get("sealed_in")
+        if status == "sealed":
+            if not isinstance(sealed_in, str) or not STABLE_VERSION_RE.match(sealed_in):
+                errors.append(
+                    f"{prefix}.sealed_in must be the stable (non-prerelease) version "
+                    "that sealed the edition"
+                )
+            if edition not in (supported if isinstance(supported, list) else []):
+                errors.append(
+                    f"{prefix}: a sealed edition must stay in [workflow].supported_editions "
+                    "(retained forever, never pruned)"
+                )
+        elif sealed_in is not None:
+            errors.append(f"{prefix}.sealed_in is only recorded once the edition is sealed")
+
         spec = entry.get("spec")
         if not isinstance(spec, str):
             errors.append(f"{prefix}.spec must be a string path")
@@ -319,19 +387,21 @@ def _validate_workflow_editions(
             errors.append(f"{prefix}.spec does not exist: {spec}")
             continue
 
+        # Every edition records its spec checksum: provisional editions are
+        # content-pinned (peers interoperate only on a matching contract), and a
+        # sealed edition's checksum is its frozen identity. Either way it must
+        # match the spec file on disk.
         spec_sha256 = entry.get("spec_sha256")
-        if status == "sealed":
-            if not isinstance(spec_sha256, str):
-                errors.append(f"{prefix}.spec_sha256 is required once sealed")
-            else:
-                actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
-                if actual != spec_sha256:
-                    errors.append(
-                        f"{prefix}: sealed spec {spec} was modified "
-                        f"(sha256 {actual}, manifest declares {spec_sha256})"
-                    )
-        elif spec_sha256 is not None:
-            errors.append(f"{prefix}.spec_sha256 is only recorded when sealed")
+        if not isinstance(spec_sha256, str):
+            errors.append(f"{prefix}.spec_sha256 is required (content-pin)")
+        else:
+            actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+            if actual != spec_sha256:
+                noun = "sealed" if status == "sealed" else "provisional"
+                errors.append(
+                    f"{prefix}: {noun} spec {spec} sha256 is {actual}, "
+                    f"manifest declares {spec_sha256}"
+                )
 
     return errors
 

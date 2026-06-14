@@ -61,8 +61,8 @@ impl Scalar {
     ///
     /// Integer dtypes compare as integers (`Uint64` in the unsigned domain,
     /// every other integer dtype in the signed domain). Float dtypes compare as
-    /// floats. The mixed case — a `Float` bound against an `Int` value, which
-    /// the Box builder allows (e.g. `scalar(-100.0, 100.0).dtype(Int16)`) — is
+    /// floats. The mixed case, a `Float` bound against an `Int` value that the
+    /// Box builder allows (e.g. `scalar(-100.0, 100.0).dtype(Int16)`), is
     /// compared *exactly*, never by truncating either side: an integer `i`
     /// compares against a float `f` by their true real-number values.
     ///
@@ -112,8 +112,8 @@ enum IntOperand {
 /// the wrong answer at the edges. Instead we cast the *float* down to the
 /// integer domain via `floor`, which is exact: `floor(f)` is a (possibly
 /// out-of-range) integer, and `f` lies in `[floor(f), floor(f) + 1)`. Comparing
-/// `i` against `floor(f)` in the integer domain — with the fractional part of
-/// `f` breaking the tie at equality — is therefore exact.
+/// `i` against `floor(f)` in the integer domain, with the fractional part of
+/// `f` breaking the tie at equality, is therefore exact.
 fn cmp_float_int(f: f64, i: IntOperand) -> Option<Ordering> {
     if f.is_nan() {
         return None;
@@ -223,7 +223,7 @@ pub fn check_int_in_dtype_range(value: i64, dtype: DType) -> Result<(), ScalarEr
 }
 
 /// Reject an unsigned-integer bound that does not fit `dtype`'s exact integer
-/// range. `Uint64` accepts the full `u64`; signed dtypes additionally reject
+/// range. `Uint64` accepts the full `u64`; signed dtypes also reject
 /// values above their (non-negative) maximum. Float dtypes accept any `u64`.
 pub fn check_uint_in_dtype_range(value: u64, dtype: DType) -> Result<(), ScalarError> {
     if dtype == DType::Unspecified {
@@ -295,13 +295,13 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
             Scalar::Int(value) => value as u8,
             Scalar::Float(value) => value as u8,
         }),
-        DType::Int8 => out.extend_from_slice(&(int_value(value) as i8).to_le_bytes()),
-        DType::Int16 => out.extend_from_slice(&(int_value(value) as i16).to_le_bytes()),
-        DType::Int32 => out.extend_from_slice(&(int_value(value) as i32).to_le_bytes()),
-        DType::Int64 => out.extend_from_slice(&int_value(value).to_le_bytes()),
-        DType::Uint16 => out.extend_from_slice(&(int_value(value) as u16).to_le_bytes()),
-        DType::Uint32 => out.extend_from_slice(&(int_value(value) as u32).to_le_bytes()),
-        DType::Uint64 => out.extend_from_slice(&(int_value(value) as u64).to_le_bytes()),
+        DType::Int8 => out.extend_from_slice(&(value.as_i64() as i8).to_le_bytes()),
+        DType::Int16 => out.extend_from_slice(&(value.as_i64() as i16).to_le_bytes()),
+        DType::Int32 => out.extend_from_slice(&(value.as_i64() as i32).to_le_bytes()),
+        DType::Int64 => out.extend_from_slice(&value.as_i64().to_le_bytes()),
+        DType::Uint16 => out.extend_from_slice(&(value.as_i64() as u16).to_le_bytes()),
+        DType::Uint32 => out.extend_from_slice(&(value.as_i64() as u32).to_le_bytes()),
+        DType::Uint64 => out.extend_from_slice(&(value.as_i64() as u64).to_le_bytes()),
         DType::Float16 => out.extend_from_slice(&f16::from_f64(float_value(value)).to_le_bytes()),
         DType::Bfloat16 => out.extend_from_slice(&bf16::from_f64(float_value(value)).to_le_bytes()),
         DType::Float32 => out.extend_from_slice(&(float_value(value) as f32).to_le_bytes()),
@@ -310,19 +310,9 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
     }
 }
 
-fn int_value(value: Scalar) -> i64 {
-    value.as_i64()
-}
-
 fn float_value(value: Scalar) -> f64 {
     match value {
-        Scalar::Bool(value) => {
-            if value {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        Scalar::Bool(value) => f64::from(u8::from(value)),
         Scalar::Int(value) => value as f64,
         Scalar::Float(value) => value,
     }

@@ -22,8 +22,12 @@ message HandshakeRequest {
   // the highest mutual edition; an empty intersection fails the handshake.
   repeated string supported_workflow_editions = 6;
 
-  reserved 5;
-  reserved "workflow_edition";
+  // Client's pin for its build-time edition: SHA-256 of the spec document plus
+  // lifecycle status ("provisional" | "sealed"). For provisional editions, the
+  // server rejects a handshake when this checksum differs from its own. Older
+  // clients that omit these fields fail closed.
+  string offered_edition_spec_sha256 = 7;
+  string offered_edition_status = 8;
 }
 
 message HandshakeResponse {
@@ -39,8 +43,16 @@ message HandshakeResponse {
   // Edition governing this session; empty when compatible is false.
   string selected_workflow_edition = 8;
 
-  reserved 6;
-  reserved "workflow_edition";
+  // Server package version, used to name the peer in diagnostics for
+  // provisional-edition mismatches.
+  string server_version = 9;
+
+  // SHA-256 of the selected edition's spec document plus lifecycle status
+  // ("provisional" | "sealed"). Provisional editions interoperate only when
+  // both peers carry the same checksum. Both fields are empty when compatible is
+  // false.
+  string selected_edition_spec_sha256 = 10;
+  string selected_edition_status = 11;
 }
 
 message ShutdownRequest {

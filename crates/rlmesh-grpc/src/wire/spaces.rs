@@ -32,8 +32,10 @@ pub fn env_contract_from_proto(
         metadata: spec.metadata.map(meta_map_from_proto),
         render_mode: spec.render_mode,
         num_envs: spec.num_envs,
-        // proto UNSPECIFIED (and any unknown value) decodes to Disabled.
-        autoreset_mode: native::AutoresetMode::from(spec.autoreset_mode),
+        // proto UNSPECIFIED/DISABLED decode to Disabled; an unknown mode is
+        // rejected loudly rather than silently folded.
+        autoreset_mode: native::AutoresetMode::try_from(spec.autoreset_mode)
+            .map_err(|e| ProtocolError::DecodeError(e.to_string()))?,
     })
 }
 
@@ -401,6 +403,25 @@ fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autoreset_mode_native_and_proto_agree() {
+        use rlmesh_proto::env::v1::AutoresetMode as Proto;
+        use rlmesh_spaces::AutoresetMode as Native;
+        // Known values decode identically; proto UNSPECIFIED (0) and DISABLED (3)
+        // both map to the native DISABLED safe default.
+        assert_eq!(Native::try_from(0), Ok(Native::Disabled));
+        assert_eq!(Native::try_from(1), Ok(Native::NextStep));
+        assert_eq!(Native::try_from(2), Ok(Native::SameStep));
+        assert_eq!(Native::try_from(3), Ok(Native::Disabled));
+        assert_eq!(Proto::try_from(0), Ok(Proto::Unspecified));
+        assert_eq!(Proto::try_from(1), Ok(Proto::NextStep));
+        // Both reject the same unknown values loudly; no silent fold.
+        for unknown in [4, 5, 99, -1] {
+            assert!(Native::try_from(unknown).is_err());
+            assert!(Proto::try_from(unknown).is_err());
+        }
+    }
 
     #[test]
     fn test_dtype_proto_roundtrip() {

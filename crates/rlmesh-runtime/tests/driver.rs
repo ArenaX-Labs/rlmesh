@@ -1,3 +1,8 @@
+//! Behavioral fingerprint for workflow edition 2026.06: these lifecycle
+//! assertions are the edition contract (episode accounting, per-lane autoreset,
+//! request/response ordering). Changing observable behavior here changes the
+//! edition; see docs/editions/2026.06.md.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -534,6 +539,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
         env_component_id: "env-1".to_string(),
         model_component_id: "model-1".to_string(),
         env_id: "TestEnv-v0".to_string(),
+        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             observation_space: Some(SpaceSpec::default()),
             action_space: Some(SpaceSpec::default()),
@@ -561,7 +567,7 @@ fn bytes_value(value: MessageBytes) -> SpaceValue {
 /// A NEXT_STEP vector env with a per-lane terminal schedule. It mimics the env
 /// server's output: a lane terminates at its scheduled step (terminal obs keeps
 /// the old episode id), then auto-resets on the FOLLOWING step (fresh obs, new
-/// id, reward 0) — never requiring a driver-issued reset.
+/// id, reward 0), never requiring a driver-issued reset.
 #[derive(Clone)]
 struct VectorTestEnv {
     reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
@@ -643,7 +649,7 @@ impl RuntimeEnv for VectorTestEnv {
                     });
                     self.pending_autoreset[lane] = true;
                 }
-                // The terminal obs keeps the OLD id; an ongoing step keeps the
+                // The terminal obs keeps the old id; an ongoing step keeps the
                 // active id. Neither is a roll.
                 episode_ids[lane] = id;
             }
@@ -677,6 +683,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         env_component_id: "env-vec".to_string(),
         model_component_id: "model-vec".to_string(),
         env_id: "VectorTestEnv-v0".to_string(),
+        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             observation_space: Some(SpaceSpec::default()),
             action_space: Some(SpaceSpec::default()),
@@ -695,7 +702,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
 #[tokio::test]
 async fn next_step_vector_env_completes_lanes_independently_without_whole_vector_reset() {
     // The headline regression. With num_envs=4, NEXT_STEP, and variable-length
-    // episodes, the driver must NEVER issue a reset after the cold start — the env
+    // episodes, the driver must never issue a reset after the cold start; the env
     // auto-resets each lane itself. Previously any single lane completing fired a
     // whole-vector reset that cut every other lane's episode short.
     let env = VectorTestEnv::new(vec![2, 3, 2, 4]);

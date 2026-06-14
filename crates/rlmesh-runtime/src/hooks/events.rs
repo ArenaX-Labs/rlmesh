@@ -64,17 +64,6 @@ pub enum LogLevel {
     Error,
 }
 
-impl LogLevel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LogLevel::Debug => "debug",
-            LogLevel::Info => "info",
-            LogLevel::Warn => "warn",
-            LogLevel::Error => "error",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeStartedEvent {
     pub session_id: String,
@@ -162,9 +151,9 @@ pub struct TimingSummary {
 /// Kind of a non-duration metric reported via [`MetricSummary`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
-    /// `OperationMetric::ByteCount` — a byte gauge/counter sample.
+    /// `OperationMetric::ByteCount`: a byte gauge/counter sample.
     ByteCount,
-    /// `OperationMetric::Number` — a generic numeric gauge sample.
+    /// `OperationMetric::Number`: a generic numeric gauge sample.
     Number,
 }
 

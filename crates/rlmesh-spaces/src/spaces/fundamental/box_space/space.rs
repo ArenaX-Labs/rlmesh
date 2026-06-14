@@ -18,7 +18,6 @@ enum PendingBounds {
     IntUniform { low: i64, high: i64 },
     IntTensor { low: Vec<i64>, high: Vec<i64> },
     UintUniform { low: u64, high: u64 },
-    UintTensor { low: Vec<u64>, high: Vec<u64> },
 }
 
 #[must_use = "a space builder does nothing until .build() is called"]
@@ -84,16 +83,6 @@ impl BoxSpaceBuilder {
         }
     }
 
-    /// Per-element unsigned-integer bounds (row-major), carried as dtype-typed
-    /// bytes. Defaults to `Uint64`.
-    pub fn uint_tensor(low: Vec<u64>, high: Vec<u64>, shape: impl Into<Vec<i64>>) -> Self {
-        Self {
-            shape: shape.into(),
-            dtype: DType::Uint64,
-            bounds: PendingBounds::UintTensor { low, high },
-        }
-    }
-
     pub fn dtype(mut self, dtype: DType) -> Self {
         self.dtype = dtype;
         self
@@ -119,12 +108,6 @@ impl BoxSpaceBuilder {
                 BoxBounds::TypedUniform(TypedUniformBounds {
                     low: encode_uint_bound(&[low], dtype)?,
                     high: encode_uint_bound(&[high], dtype)?,
-                })
-            }
-            PendingBounds::UintTensor { low, high } => {
-                BoxBounds::TypedElementwise(TypedElementwiseBounds {
-                    low: encode_uint_bound(&low, dtype)?,
-                    high: encode_uint_bound(&high, dtype)?,
                 })
             }
         };

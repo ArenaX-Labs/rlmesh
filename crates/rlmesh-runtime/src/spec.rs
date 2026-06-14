@@ -17,6 +17,9 @@ pub struct RuntimeSessionSpec {
     pub env_component_id: String,
     pub model_component_id: String,
     pub env_id: String,
+    /// Workflow edition negotiated at the env handshake. The runtime refuses an
+    /// edition it was not built to drive (see [`RuntimeSessionSpec::validate`]).
+    pub workflow_edition: String,
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
@@ -51,6 +54,26 @@ impl RuntimeSessionSpec {
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
         }
+        // The runtime drives exactly the workflow edition it was built for; a
+        // session negotiated under any other edition is refused rather than run
+        // under 2026.06 semantics it never agreed to.
+        if self.workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
+            return Err(format!(
+                "runtime cannot drive workflow edition {:?}; this build implements {:?}",
+                self.workflow_edition,
+                rlmesh_proto::CURRENT_WORKFLOW_EDITION
+            ));
+        }
+        // An autoreset mode this build does not understand (e.g. a newer peer's
+        // mode) must fail loudly at session setup, never silently fold to
+        // DISABLED and change lifecycle semantics.
+        if AutoresetMode::try_from(self.env_contract.autoreset_mode).is_err() {
+            return Err(format!(
+                "unknown autoreset mode {} on the wire; this build supports \
+                 UNSPECIFIED, NEXT_STEP, SAME_STEP, DISABLED only",
+                self.env_contract.autoreset_mode
+            ));
+        }
         // SAME_STEP is reserved on the wire but not yet driven by the runtime:
         // the driver currently aliases NEXT_STEP|SAME_STEP to a purely
         // observational path, while the env server never rolls SAME_STEP episode
@@ -66,7 +89,7 @@ impl RuntimeSessionSpec {
         // Vectorized sessions require NEXT_STEP autoreset: the env resets each
         // done lane itself, so the driver never needs per-lane reset. DISABLED
         // (and the UNSPECIFIED default) would require resetting just the done
-        // lanes, which stock gymnasium vector envs cannot do — there is no
+        // lanes, which stock gymnasium vector envs cannot do. There is no
         // partial-reset API, and a full reset clobbers the still-running lanes.
         // Reject the combination up front instead of failing mid-run the first
         // time lanes terminate at different steps. A future in-house vector
@@ -306,6 +329,7 @@ mod tests {
             env_component_id: "env".to_string(),
             model_component_id: "model".to_string(),
             env_id: "env-id".to_string(),
+            workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             env_contract: EnvContract {
                 observation_space: Some(SpaceSpec::default()),
                 action_space: Some(SpaceSpec::default()),
@@ -318,6 +342,21 @@ mod tests {
             close_env_on_end: true,
             limits: RuntimeLimits::default(),
         }
+    }
+
+    #[test]
+    fn validate_rejects_an_edition_the_runtime_cannot_drive() {
+        let mut spec = valid_spec();
+        spec.workflow_edition = "2099.01".to_string();
+        let error = spec.validate().unwrap_err();
+        assert!(
+            error.contains("2099.01") && error.contains("cannot drive"),
+            "expected an edition-refusal error, got: {error}"
+        );
+
+        // The edition the build implements is accepted.
+        spec.workflow_edition = rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string();
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

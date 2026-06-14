@@ -113,9 +113,9 @@ mod address;
 mod bound;
 pub mod env;
 mod error;
-pub mod lifecycle;
 pub mod model;
 pub mod prelude;
+pub mod serve_options;
 mod single;
 pub mod spaces;
 
@@ -125,12 +125,12 @@ pub use env::{
     RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest, StepResult,
 };
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
-pub use lifecycle::ServeOptions;
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
     ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,
     RunLocalOptions, ServeModelOptions, encode_action,
 };
+pub use serve_options::ServeOptions;
 pub use single::{SingleEnv, SingleEnvAdapter};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 

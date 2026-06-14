@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::looks_like_full_git_sha;
 use crate::source::HfSourceRef;
 
 pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
@@ -40,9 +41,9 @@ pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
 }
 
 /// Reject revisions that git could misinterpret. The exact-ref query already
-/// prevents glob expansion, but we additionally reject option-looking and
+/// prevents glob expansion, but we also reject option-looking and
 /// glob-bearing revisions defensively so a hostile ref name can never be
-/// reparsed as a `git` flag (e.g. `--upload-pack=...`).
+/// reparsed as a `git` flag (e.g. `--upload-pack=<cmd>`).
 fn validate_revision(revision: &str) -> Result<()> {
     if revision.starts_with('-') {
         bail!("revision must not start with '-': '{revision}'");
@@ -176,13 +177,10 @@ fn hf_git_url(repo: &str) -> String {
     format!("https://huggingface.co/{repo}")
 }
 
-fn looks_like_full_git_sha(value: &str) -> bool {
-    value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_full_git_sha, parse_ls_remote_unique, validate_revision};
+    use super::{parse_ls_remote_unique, validate_revision};
+    use crate::looks_like_full_git_sha;
 
     #[test]
     fn detects_full_git_shas() {

@@ -19,8 +19,9 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
+    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS,
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    negotiate_workflow_edition, supported_workflow_editions,
+    check_provisional_edition_pin, evaluate_handshake, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -65,14 +66,7 @@ impl BoundModelServer {
             .serve(self.router, self.shutdown, self.drain_timeout)
             .await;
         let close_result = close_model(self.handler, self.close_timeout).await;
-        match (serve_result, close_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(err)) => Err(err),
-            (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
-                "model server failed: {serve_err}; close hook failed: {close_err}"
-            ))),
-        }
+        crate::error::join_results(serve_result, close_result, "model server failed")
     }
 }
 
@@ -179,19 +173,34 @@ where
     ) -> std::result::Result<Response<HandshakeResponse>, Status> {
         self.authenticate(&request)?;
         let request = request.into_inner();
-        let protocol_compatible = rlmesh_proto::is_protocol_generation_compatible(
+        let compat = evaluate_handshake(
             &request.protocol_generation,
-            PROTOCOL_GENERATION,
+            &request.supported_workflow_editions,
         );
-        let selected_edition = negotiate_workflow_edition(&request.supported_workflow_editions);
-        let compatible = protocol_compatible && selected_edition.is_some();
+        // Symmetric provisional-pin check: the client verifies our pin on the
+        // response, and we verify the client's pin here. An old client that
+        // omits it fails closed.
+        let pin_error = if compat.is_compatible() {
+            check_provisional_edition_pin(
+                compat.selected_edition.unwrap_or_default(),
+                &request.offered_edition_status,
+                &request.offered_edition_spec_sha256,
+                &request.client_version,
+            )
+            .err()
+        } else {
+            None
+        };
+        let compatible = compat.is_compatible() && pin_error.is_none();
         Ok(Response::new(HandshakeResponse {
             compatible,
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
-            } else if !protocol_compatible {
+            } else if let Some(err) = pin_error {
+                err
+            } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
                     request.protocol_generation, PROTOCOL_GENERATION
@@ -217,11 +226,22 @@ where
                 capabilities::MODEL_CONCURRENT_PREDICT_V1,
             ]),
             selected_workflow_edition: if compatible {
-                selected_edition.unwrap_or_default().to_string()
+                compat.selected_edition.unwrap_or_default().to_string()
             } else {
                 String::new()
             },
             supported_workflow_editions: supported_workflow_editions(),
+            server_version: env!("CARGO_PKG_VERSION").to_string(),
+            selected_edition_spec_sha256: if compatible {
+                CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string()
+            } else {
+                String::new()
+            },
+            selected_edition_status: if compatible {
+                CURRENT_WORKFLOW_EDITION_STATUS.to_string()
+            } else {
+                String::new()
+            },
         }))
     }
 
@@ -529,8 +549,8 @@ async fn handle_predict<H: ModelHandler + 'static>(
 /// # Bounded growth
 ///
 /// A keyed request (`ConfigureRoute` / `Predict` / `CloseRoute`) always replaces
-/// its route's tail so the next request on that route — including a
-/// `ConfigureRoute` that *reopens* a key after `CloseRoute` — chains correctly
+/// its route's tail so the next request on that route, including a
+/// `ConfigureRoute` that *reopens* a key after `CloseRoute`, chains correctly
 /// after the in-flight predecessor. A `CloseRoute` is the typical last request
 /// on a route, so without pruning its fired tail would linger forever and a
 /// long-lived stream cycling fresh `session_id:route_id` keys per episode would
@@ -576,8 +596,8 @@ impl RouteTails {
         (RequestGate::All(prev), done_tx)
     }
 
-    /// Drop tails whose receiver has already completed — the sender fired or was
-    /// dropped — meaning that route's last enqueued request has finished. A fired
+    /// Drop tails whose receiver has already completed, meaning the sender fired
+    /// or was dropped and that route's last enqueued request has finished. A fired
     /// `oneshot::Receiver` resolves immediately, so reaping it never relaxes
     /// ordering: a route reopened after its tail was reaped had its predecessor
     /// already complete, hence nothing left to wait on.
@@ -631,7 +651,7 @@ impl RequestGate {
 ///
 /// `ConfigureRoute` / `Predict` / `CloseRoute` are keyed by their
 /// `session_id:route_id`; whole-session `Close` and malformed requests (missing
-/// context or ids) return `None` — `Close` is handled as an all-routes barrier
+/// context or ids) return `None`. `Close` is handled as an all-routes barrier
 /// by the caller, and ungated malformed requests still produce an in-band error.
 fn join_request_route_key(request: &JoinRequest) -> Option<String> {
     let context = match request.kind.as_ref()? {
@@ -766,12 +786,14 @@ mod tests {
         HandshakeRequest {
             protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "client".to_string(),
-            client_version: "0.1.0-beta.2".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
             capabilities: Default::default(),
             supported_workflow_editions: offered_editions
                 .iter()
                 .map(|edition| edition.to_string())
                 .collect(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         }
     }
 
@@ -794,6 +816,34 @@ mod tests {
             assert_eq!(
                 response.supported_workflow_editions,
                 supported_workflow_editions()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_mismatched_provisional_pin() {
+        let server = test_server();
+
+        // A client offering the current provisional edition with a different
+        // (or absent) spec checksum must be refused, even though protocol and
+        // edition negotiation otherwise succeed.
+        for bad_pin in ["deadbeef".to_string(), String::new()] {
+            let mut request = handshake_request(&[CURRENT_WORKFLOW_EDITION]);
+            request.offered_edition_spec_sha256 = bad_pin.clone();
+
+            let response = ModelServiceTrait::handshake(&server, Request::new(request))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(
+                !response.compatible,
+                "mismatched pin {bad_pin:?} must be rejected"
+            );
+            assert!(
+                response.error_message.contains("provisional"),
+                "unexpected error for pin {bad_pin:?}: {}",
+                response.error_message
             );
         }
     }
@@ -885,7 +935,7 @@ mod tests {
     #[tokio::test]
     async fn route_tails_reopen_after_reaped_close_is_ungated() {
         // If the CloseRoute already completed *and* was reaped, a reopen on the
-        // same key has nothing to wait on — ordering is still correct because the
+        // same key has nothing to wait on; ordering is still correct because the
         // predecessor genuinely finished.
         let mut tails = RouteTails::new();
         let key = "session:route";

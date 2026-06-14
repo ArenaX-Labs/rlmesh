@@ -170,10 +170,13 @@ impl From<SpaceType> for i32 {
 
 /// Per-lane autoreset convention an environment follows (mirrors the proto
 /// `AutoresetMode` and gymnasium's `AutoresetMode`). There is intentionally no
-/// `Unspecified` variant: the proto `UNSPECIFIED` (and any unknown value)
-/// decodes to `Disabled`, the safe explicit-reset default.
+/// `Unspecified` variant: the proto `UNSPECIFIED` (0) decodes to `Disabled`, the
+/// safe explicit-reset default. Unknown values are not folded to a default;
+/// [`AutoresetMode::try_from`] rejects them so a newer peer's mode this build
+/// does not understand fails loudly instead of silently changing lifecycle
+/// semantics.
 ///
-/// The numeric discriminants here MUST stay in sync with the proto
+/// The numeric discriminants here must stay in sync with the proto
 /// `AutoresetMode` (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3); the
 /// `autoreset_mode_i32_roundtrip` test below locks this so future drift fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -190,14 +193,28 @@ pub enum AutoresetMode {
     Disabled = 3,
 }
 
-impl From<i32> for AutoresetMode {
-    fn from(value: i32) -> Self {
+/// Error from [`AutoresetMode::try_from`] when an i32 names no known mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownAutoresetMode(pub i32);
+
+impl std::fmt::Display for UnknownAutoresetMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown autoreset mode {}", self.0)
+    }
+}
+
+impl std::error::Error for UnknownAutoresetMode {}
+
+impl TryFrom<i32> for AutoresetMode {
+    type Error = UnknownAutoresetMode;
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            1 => Self::NextStep,
-            2 => Self::SameStep,
-            // 0 (proto UNSPECIFIED), 3 (DISABLED), and any unknown value decode
-            // to Disabled — the safe, explicit-reset default.
-            _ => Self::Disabled,
+            1 => Ok(Self::NextStep),
+            2 => Ok(Self::SameStep),
+            // proto UNSPECIFIED (0) and DISABLED (3) both decode to the safe
+            // explicit-reset default; anything else is rejected loudly.
+            0 | 3 => Ok(Self::Disabled),
+            other => Err(UnknownAutoresetMode(other)),
         }
     }
 }
@@ -233,13 +250,16 @@ mod tests {
         assert_eq!(i32::from(AutoresetMode::SameStep), 2);
         assert_eq!(i32::from(AutoresetMode::Disabled), 3);
 
-        // i32 -> native, including proto UNSPECIFIED (0) and unknown values
-        // decoding to Disabled by design.
-        assert_eq!(AutoresetMode::from(0), AutoresetMode::Disabled);
-        assert_eq!(AutoresetMode::from(1), AutoresetMode::NextStep);
-        assert_eq!(AutoresetMode::from(2), AutoresetMode::SameStep);
-        assert_eq!(AutoresetMode::from(3), AutoresetMode::Disabled);
-        assert_eq!(AutoresetMode::from(99), AutoresetMode::Disabled);
+        // i32 -> native: proto UNSPECIFIED (0) and DISABLED (3) decode to the
+        // safe Disabled default; 1/2 to their modes.
+        assert_eq!(AutoresetMode::try_from(0), Ok(AutoresetMode::Disabled));
+        assert_eq!(AutoresetMode::try_from(1), Ok(AutoresetMode::NextStep));
+        assert_eq!(AutoresetMode::try_from(2), Ok(AutoresetMode::SameStep));
+        assert_eq!(AutoresetMode::try_from(3), Ok(AutoresetMode::Disabled));
+
+        // An unknown value is rejected loudly, never folded to a default.
+        assert_eq!(AutoresetMode::try_from(99), Err(UnknownAutoresetMode(99)));
+        assert!(AutoresetMode::try_from(-1).is_err());
 
         // Every native variant round-trips through i32 and back.
         for v in [
@@ -247,7 +267,7 @@ mod tests {
             AutoresetMode::SameStep,
             AutoresetMode::Disabled,
         ] {
-            assert_eq!(AutoresetMode::from(i32::from(v)), v);
+            assert_eq!(AutoresetMode::try_from(i32::from(v)), Ok(v));
         }
     }
 }

@@ -16,15 +16,17 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, supported_workflow_editions,
+    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS, PROTOCOL_GENERATION,
+    SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map, check_provisional_edition_pin,
+    is_protocol_generation_supported, supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
 use crate::states::ClientState;
 
-use super::protocol::{join_request_kind_name, proto_error_to_env_error};
 use super::stream::spawn_response_pump;
+use super::wire::{join_request_kind_name, proto_error_to_env_error};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvHandshake {
@@ -33,6 +35,9 @@ pub struct EnvHandshake {
     pub server_protocol_generation: String,
     pub workflow_edition: String,
     pub supported_workflow_editions: Vec<String>,
+    /// Optional features the server advertised (advisory; query with
+    /// [`rlmesh_proto::has_capability`]).
+    pub capabilities: std::collections::HashMap<String, String>,
 }
 
 /// Environment client that connects to an EnvService server.
@@ -166,6 +171,20 @@ impl EnvClient {
         if !res.compatible {
             return Err(ProtocolError::HandshakeFailed(res.error_message).into());
         }
+        check_provisional_edition_pin(
+            &res.selected_workflow_edition,
+            &res.selected_edition_status,
+            &res.selected_edition_spec_sha256,
+            &res.server_version,
+        )
+        .map_err(ProtocolError::HandshakeFailed)?;
+        if !is_protocol_generation_supported(&res.server_protocol_generation) {
+            return Err(ProtocolError::HandshakeFailed(format!(
+                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                res.server_protocol_generation
+            ))
+            .into());
+        }
 
         let env_contract = res.env_contract.ok_or_else(|| {
             GrpcError::from(ProtocolError::HandshakeFailed(
@@ -182,6 +201,7 @@ impl EnvClient {
             server_protocol_generation: res.server_protocol_generation,
             workflow_edition: res.selected_workflow_edition,
             supported_workflow_editions: res.supported_workflow_editions,
+            capabilities: res.capabilities,
         };
         self.state = ClientState::Ready;
 
@@ -200,6 +220,8 @@ impl EnvClient {
                 capabilities::SPACES_CORE_V1,
             ]),
             supported_workflow_editions: supported_workflow_editions(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         };
 
         Ok(self
@@ -302,7 +324,7 @@ impl EnvClient {
     ///
     /// This ends the **session**, not the **server**: the served environment
     /// detaches the session and remains available for a subsequent client to
-    /// connect and run a new session. It does not stop the server process — use
+    /// connect and run a new session. It does not stop the server process; use
     /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
@@ -311,7 +333,7 @@ impl EnvClient {
         // exclusive session slot, so there is nothing to close remotely. Opening
         // a fresh Join here just to close it would race any *other* client's
         // active session and earn a FailedPrecondition from the server's
-        // join_active CAS — exactly the lockout the lazy Join stream exists to
+        // join_active CAS, exactly the lockout the lazy Join stream exists to
         // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
         if self.request_tx.is_none() || self.response_rx.is_none() {
             self.close_local();
@@ -370,7 +392,7 @@ impl EnvClient {
     /// Tear down the local session state without a Close round-trip.
     ///
     /// Dropping the Join stream releases the server's exclusive session slot
-    /// once the server observes the stream end — if an operation is still
+    /// once the server observes the stream end. If an operation is still
     /// draining server-side, the slot frees only after it completes, so an
     /// immediate reconnect can still be rejected briefly. The server completes
     /// this session's in-flight episodes as truncated; their metadata is not
@@ -390,7 +412,7 @@ impl EnvClient {
 
     /// Open the Join stream on first use. The stream is the env's exclusive
     /// session slot (the server admits one Join at a time), so it is acquired
-    /// lazily on the first streaming operation rather than at handshake —
+    /// lazily on the first streaming operation rather than at handshake;
     /// an idle connected client must not lock other clients out of the env.
     async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
         if self.request_tx.is_none() || self.response_rx.is_none() {
@@ -476,7 +498,7 @@ impl EnvClient {
                         message = %status.message(),
                         "env join stream returned an error status"
                     );
-                    return Err(super::protocol::status_to_grpc_error(status));
+                    return Err(super::wire::status_to_grpc_error(status));
                 }
             };
             if response.request_id == request_id {
@@ -495,7 +517,6 @@ impl EnvClient {
     fn ensure_ready(&self) -> Result<(), GrpcError> {
         match self.state {
             ClientState::Ready => Ok(()),
-            ClientState::Disconnected => Err(ClientError::NotConnected.into()),
             ClientState::Connected => Err(ClientError::NotHandshaked.into()),
             ClientState::Closed => Err(ClientError::NotConnected.into()),
         }
@@ -533,13 +554,74 @@ mod tests {
     };
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
+        MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, supported_workflow_editions,
     };
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Endpoint;
     use tonic::{Request, Response, Status};
+
+    use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec as NativeSpaceSpec};
+
+    /// A no-op single-lane env used by the integration-style server tests below.
+    struct PlainEnv {
+        contract: SpaceEnvContract,
+    }
+
+    impl PlainEnv {
+        fn new(id: &str) -> Self {
+            let space = NativeSpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: id.to_string(),
+                    autoreset_mode: Default::default(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 1,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::env::Environment for PlainEnv {
+        fn observation_space(&self) -> &NativeSpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &NativeSpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            1
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(
+            &mut self,
+            _req: ResetRequest,
+        ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(
+            &mut self,
+            _req: StepRequest,
+        ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+            Ok(StepResponse::default())
+        }
+        async fn render(
+            &mut self,
+            _req: RenderRequest,
+        ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
 
     #[test]
     fn validate_env_contract_requires_spaces() {
@@ -693,7 +775,7 @@ mod tests {
     #[tokio::test]
     async fn close_on_never_used_client_is_local_only_and_opens_no_join() {
         // A client that handshook but never ran an operation has no Join stream.
-        // close() must not open one just to tear it down — that would race any
+        // close() must not open one just to tear it down; that would race any
         // other client's active session (server join_active CAS). It should
         // short-circuit to a local-only close.
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
@@ -724,64 +806,9 @@ mod tests {
         use crate::env::server::GrpcEnvServer;
         use crate::lifecycle::{ServeOptions, ShutdownTrigger};
         use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
 
-        struct PlainEnv {
-            contract: SpaceEnvContract,
-        }
-        #[async_trait::async_trait]
-        impl crate::env::Environment for PlainEnv {
-            fn observation_space(&self) -> &SpaceSpec {
-                self.contract.observation_space.as_ref().unwrap()
-            }
-            fn action_space(&self) -> &SpaceSpec {
-                self.contract.action_space.as_ref().unwrap()
-            }
-            fn num_envs(&self) -> usize {
-                1
-            }
-            fn env_contract(&self) -> &SpaceEnvContract {
-                &self.contract
-            }
-            async fn reset(
-                &mut self,
-                _req: ResetRequest,
-            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
-                Ok(ResetResponse::default())
-            }
-            async fn step(
-                &mut self,
-                _req: StepRequest,
-            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
-                Ok(StepResponse::default())
-            }
-            async fn render(
-                &mut self,
-                _req: RenderRequest,
-            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
-                Ok(RenderResponse::default())
-            }
-            async fn close(
-                &mut self,
-            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
-                Ok(CloseResponse::default())
-            }
-        }
-
-        let space = SpaceSpec::default();
-        let env = PlainEnv {
-            contract: SpaceEnvContract {
-                id: "plain-env".to_string(),
-                autoreset_mode: Default::default(),
-                action_space: Some(space.clone()),
-                observation_space: Some(space),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
-            },
-        };
         let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
-            env,
+            PlainEnv::new("plain-env"),
             ShutdownTrigger::new(),
             ServeOptions::default(),
             None,
@@ -855,6 +882,7 @@ mod tests {
                 server_protocol_generation: PROTOCOL_GENERATION.to_string(),
                 min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
                 selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+                selected_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
                 supported_workflow_editions: supported_workflow_editions(),
                 env_contract: Some(EnvContract {
                     observation_space: Some(SpaceSpec::default()),
@@ -891,68 +919,13 @@ mod tests {
         use crate::env::server::GrpcEnvServer;
         use crate::lifecycle::{ServeOptions, ShutdownTrigger};
         use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
 
-        struct TokenEnv {
-            contract: SpaceEnvContract,
-        }
-        #[async_trait::async_trait]
-        impl crate::env::Environment for TokenEnv {
-            fn observation_space(&self) -> &SpaceSpec {
-                self.contract.observation_space.as_ref().unwrap()
-            }
-            fn action_space(&self) -> &SpaceSpec {
-                self.contract.action_space.as_ref().unwrap()
-            }
-            fn num_envs(&self) -> usize {
-                1
-            }
-            fn env_contract(&self) -> &SpaceEnvContract {
-                &self.contract
-            }
-            async fn reset(
-                &mut self,
-                _req: ResetRequest,
-            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
-                Ok(ResetResponse::default())
-            }
-            async fn step(
-                &mut self,
-                _req: StepRequest,
-            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
-                Ok(StepResponse::default())
-            }
-            async fn render(
-                &mut self,
-                _req: RenderRequest,
-            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
-                Ok(RenderResponse::default())
-            }
-            async fn close(
-                &mut self,
-            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
-                Ok(CloseResponse::default())
-            }
-        }
-
-        let space = SpaceSpec::default();
-        let env = TokenEnv {
-            contract: SpaceEnvContract {
-                id: "token-env".to_string(),
-                autoreset_mode: Default::default(),
-                action_space: Some(space.clone()),
-                observation_space: Some(space),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
-            },
-        };
         let options = ServeOptions {
             token: Some("s3cret".to_string()),
             ..Default::default()
         };
         let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
-            env,
+            PlainEnv::new("token-env"),
             ShutdownTrigger::new(),
             options,
             None,

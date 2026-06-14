@@ -47,6 +47,7 @@ where
         env_component_id: "local-env".to_string(),
         model_component_id: "local-model".to_string(),
         env_id,
+        workflow_edition: handshake.workflow_edition,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed,
@@ -93,11 +94,6 @@ impl EnvClientRuntimeEnv {
     /// Wrap a connected (and handshaked) env client.
     pub fn new(client: rlmesh_grpc::EnvClient) -> Self {
         Self { inner: client }
-    }
-
-    /// Borrow the underlying client.
-    pub fn client(&self) -> &rlmesh_grpc::EnvClient {
-        &self.inner
     }
 
     /// Consume the adapter and return the underlying client.
@@ -163,7 +159,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// adapter decodes the runtime's predict request into a
 /// [`ModelObservation`](crate::ModelObservation),
 /// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
-/// each `predict`, and re-encodes the action — the same choreography the
+/// each `predict`, and re-encodes the action, matching the choreography the
 /// in-process `run_local` path performs.
 ///
 /// It borrows the handler mutably so the caller retains ownership (e.g. to run

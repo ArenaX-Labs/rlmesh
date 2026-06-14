@@ -11,6 +11,12 @@ enum DType {
   D_TYPE_FLOAT16 = 5;
   D_TYPE_FLOAT32 = 6;
   D_TYPE_FLOAT64 = 7;
+  D_TYPE_INT8 = 8;
+  D_TYPE_INT16 = 9;
+  D_TYPE_UINT16 = 10;
+  D_TYPE_UINT32 = 11;
+  D_TYPE_UINT64 = 12;
+  D_TYPE_BFLOAT16 = 13;
 }
 
 message VectorInt {

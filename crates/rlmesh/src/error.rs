@@ -121,6 +121,20 @@ impl Error {
     }
 }
 
+/// Combine a primary result with a close-hook result. If both fail, fold them
+/// into one [`Error::Internal`] prefixed with `ctx` ("<ctx>: <a>; close hook
+/// failed: <b>").
+pub(crate) fn join_results(a: Result<()>, b: Result<()>, ctx: &str) -> Result<()> {
+    match (a, b) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(err)) => Err(err),
+        (Err(a_err), Err(b_err)) => Err(Error::Internal(format!(
+            "{ctx}: {a_err}; close hook failed: {b_err}"
+        ))),
+    }
+}
+
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -233,7 +247,6 @@ impl From<rlmesh_grpc::error::Error> for Error {
             }),
             rlmesh_grpc::error::Error::Timeout(duration) => Self::Timeout(duration),
             rlmesh_grpc::error::Error::Cancelled(message) => Self::Internal(message),
-            rlmesh_grpc::error::Error::Server(error) => Self::Server(error.to_string()),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),

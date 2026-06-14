@@ -1,6 +1,8 @@
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map,
+    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS, PROTOCOL_GENERATION,
+    SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map, check_provisional_edition_pin,
     core::v1::OperationTelemetry,
+    is_protocol_generation_supported,
     model::v1::{
         CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
         JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, ShutdownResponse,
@@ -8,6 +10,7 @@ use rlmesh_proto::{
     },
     supported_workflow_editions,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -18,9 +21,9 @@ use crate::error::{Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::normalize_tcp_session_address;
 use crate::states::ClientState;
 
-use super::protocol::{join_request_kind_name, model_error_to_grpc_error};
 use super::stream::{PendingResponses, spawn_response_pump};
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
+use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 
 /// Client for a ModelService server's Join bidi stream.
 ///
@@ -49,6 +52,7 @@ pub struct ModelClient {
     pending: PendingResponses,
     request_counter: Arc<AtomicU64>,
     last_telemetry: Option<OperationTelemetry>,
+    server_capabilities: HashMap<String, String>,
 }
 
 impl ModelClient {
@@ -74,6 +78,7 @@ impl ModelClient {
             pending: Default::default(),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
+            server_capabilities: HashMap::new(),
         })
     }
 
@@ -98,6 +103,17 @@ impl ModelClient {
         self.last_telemetry.take()
     }
 
+    /// Whether the server advertised that it pipelines Join-stream predicts
+    /// (`rlmesh.model.concurrent_predict.v1`). Advisory: overlapping predicts via
+    /// [`predict_concurrent`](Self::predict_concurrent) work either way, but
+    /// serialize behind the handler when this is false.
+    pub fn server_pipelines_predict(&self) -> bool {
+        rlmesh_proto::has_capability(
+            &self.server_capabilities,
+            capabilities::MODEL_CONCURRENT_PREDICT_V1,
+        )
+    }
+
     pub async fn handshake(&mut self) -> Result<(), GrpcError> {
         if self.state != ClientState::Connected {
             return Err(crate::error::ClientError::NotConnected.into());
@@ -112,6 +128,8 @@ impl ModelClient {
                 capabilities::SPACES_CORE_V1,
             ]),
             supported_workflow_editions: supported_workflow_editions(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         })?;
 
         let response = self
@@ -124,6 +142,21 @@ impl ModelClient {
         if !response.compatible {
             return Err(ProtocolError::HandshakeFailed(response.error_message).into());
         }
+        check_provisional_edition_pin(
+            &response.selected_workflow_edition,
+            &response.selected_edition_status,
+            &response.selected_edition_spec_sha256,
+            &response.server_version,
+        )
+        .map_err(ProtocolError::HandshakeFailed)?;
+        if !is_protocol_generation_supported(&response.server_protocol_generation) {
+            return Err(ProtocolError::HandshakeFailed(format!(
+                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                response.server_protocol_generation
+            ))
+            .into());
+        }
+        self.server_capabilities = response.capabilities;
 
         self.setup_join_stream().await?;
         self.state = ClientState::Ready;
@@ -387,7 +420,7 @@ impl ModelClient {
                 Err(crate::error::status_to_grpc_error(status))
             }
             Err(_) => {
-                // The pump dropped our sender without sending — the stream closed.
+                // The pump dropped our sender without sending; the stream closed.
                 tracing::error!(
                     request_id = %request_id,
                     request_kind,
@@ -401,7 +434,6 @@ impl ModelClient {
     fn ensure_ready(&self) -> Result<(), GrpcError> {
         match self.state {
             ClientState::Ready => Ok(()),
-            ClientState::Disconnected => Err(crate::error::ClientError::NotConnected.into()),
             ClientState::Connected => Err(crate::error::ClientError::NotHandshaked.into()),
             ClientState::Closed => Err(crate::error::ClientError::NotConnected.into()),
         }
@@ -449,6 +481,7 @@ mod tests {
             pending: Arc::clone(&pending),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
+            server_capabilities: HashMap::new(),
         };
         (client, request_rx, pending)
     }

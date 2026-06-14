@@ -469,7 +469,7 @@ def test_describe_mentions_zero_fill_for_absent_optional_roles():
 
 def test_role_constants_match_rust_crate():
     """Roles are single-sourced from the crate; this catches a role added
-    to ``v1/roles/*.rs`` but not exposed through the binding's table."""
+    to ``roles/*.rs`` but not exposed through the binding's table."""
     import re
     from pathlib import Path
 
@@ -478,7 +478,6 @@ def test_role_constants_match_rust_crate():
         / "crates"
         / "rlmesh-adapters"
         / "src"
-        / "v1"
         / "roles"
     )
     rust_roles: dict[str, str] = {}
@@ -1824,8 +1823,8 @@ def test_scalar_reshape_survives_serialization_and_resolve():
 
 
 def test_resolve_from_contract_passes_check_inverse():
-    # A non-invertible CustomEncoding must be skippable through the contract
-    # path too, not only through resolve().
+    # A non-invertible CustomEncoding must be skippable through both the contract
+    # path and resolve().
     env = _rot_obs_env()
     contract: Any = SimpleNamespace(
         metadata=env.tags.to_metadata(),

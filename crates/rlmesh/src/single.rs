@@ -3,7 +3,7 @@ use crate::{CloseResult, Env, ResetRequest, ResetResult, StepRequest, StepResult
 /// A single (non-vectorized) environment.
 ///
 /// Implement this when your environment steps exactly one sub-environment at a
-/// time — its `reset`/`step` use the scalar single-env request family under
+/// time; its `reset`/`step` use the scalar single-env request family under
 /// [`spaces::request`](crate::spaces::request) (`seed: Option`, `action:
 /// Option`) rather than the vectorized [`Env`] batches. Wrap an implementation
 /// in [`SingleEnvAdapter`] to get an [`Env`] you can host with
@@ -49,7 +49,7 @@ pub trait SingleEnv: Send + Sync {
 /// wraps the single observation/reward back into one-element batches on the way
 /// out.
 ///
-/// A vector of one is the canonical server-side truth — "single env" is just the
+/// A vector of one is the canonical server-side truth. "single env" is just the
 /// client-side un-batching view. A single/scalar env carries `DISABLED` autoreset
 /// (it has no `metadata["autoreset_mode"]`), so the runtime resets it explicitly;
 /// the per-lane `on_lane_reset` event covers its single lane. Collapsing the
@@ -73,11 +73,6 @@ impl<E> SingleEnvAdapter<E> {
     /// Borrow the wrapped environment.
     pub fn inner(&self) -> &E {
         &self.inner
-    }
-
-    /// Mutably borrow the wrapped environment.
-    pub fn inner_mut(&mut self) -> &mut E {
-        &mut self.inner
     }
 }
 

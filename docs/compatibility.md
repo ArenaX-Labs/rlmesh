@@ -38,7 +38,9 @@ now use a recursive, raw-bytes `SpaceValueNode` encoding instead of base64-in-`S
 episodes rather than reporting a fabricated `0`. The protocol generation stays `rlmesh.protocol.v1`
 (the surface is still beta-mutable before the stable release), and the checked-in public baseline
 tracks the current surface, so peers must run the same beta release. The generation seals with the
-stable release, after which any such change requires a new generation.
+stable release; after that, the same kind of change requires a new generation. Provisional workflow
+editions are content-pinned during handshake: peers exchange the edition spec checksum, and
+mismatched beta builds fail at connect instead of diverging mid-session.
 
 ## Framework Version Floors
 
@@ -71,8 +73,8 @@ an ndarray. Compute, slicing, and broadcasting belong to the frameworks; RLMesh 
 metadata between them and the wire.
 
 - Zero-copy is asymmetric: exporting (`memoryview`, `__dlpack__`, framework views) is zero-copy;
-  importing (`Tensor(...)`, `Tensor.from_dlpack`) currently always copies. Zero-copy import is
-  planned.
+  importing (constructing `Tensor`, `Tensor.from_dlpack`) currently always copies. Zero-copy import
+  is planned.
 - Integer precision: Box bounds carry dtype-typed bytes for integer/boolean dtypes (a single scalar
   for uniform bounds, one per element otherwise, little-endian in the space's dtype), and
   containment compares in the dtype's native domain, so `int64`/`uint64` bounds and values are exact

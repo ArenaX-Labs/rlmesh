@@ -57,3 +57,49 @@ pub(super) fn validate_predict_route(context: &PredictContext) -> Result<(), Grp
 pub(super) fn decode_error(message: impl Into<String>) -> GrpcError {
     GrpcError::Protocol(ProtocolError::DecodeError(message.into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use rlmesh_proto::model::v1::{PredictContext, PredictSlot};
+
+    use super::validate_predict_route;
+
+    fn route_context() -> PredictContext {
+        PredictContext {
+            session_id: "session-1".to_string(),
+            route_id: "route-1".to_string(),
+            request_id: "request-1".to_string(),
+            slots: vec![PredictSlot {
+                episode_id: "episode-1".to_string(),
+                env_index: 0,
+                step: 3,
+                reset: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn model_predict_request_accepts_route_context() {
+        validate_predict_route(&route_context()).unwrap();
+    }
+
+    #[test]
+    fn model_predict_request_rejects_empty_route_slots() {
+        let mut route = route_context();
+        route.slots.clear();
+
+        let err = validate_predict_route(&route).unwrap_err();
+
+        assert!(err.to_string().contains("at least one slot"));
+    }
+
+    #[test]
+    fn model_predict_request_rejects_incomplete_slots() {
+        let mut route = route_context();
+        route.slots[0].episode_id.clear();
+
+        let err = validate_predict_route(&route).unwrap_err();
+
+        assert!(err.to_string().contains("missing episode_id"));
+    }
+}

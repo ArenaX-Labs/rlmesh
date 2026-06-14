@@ -9,8 +9,16 @@ use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::proto_value::{decode_proto_value, encode_proto_value};
 use super::scalars::{decode_int_sequence, decode_scalar, encode_int_sequence, encode_scalar};
+
+fn encode_proto_value(value: &Value) -> Vec<u8> {
+    value.encode_to_vec()
+}
+
+fn decode_proto_value(bytes: &[u8]) -> Result<Value, ProtocolError> {
+    Value::decode(bytes)
+        .map_err(|err| ProtocolError::DecodeError(format!("failed to decode value payload: {err}")))
+}
 
 pub(super) fn encode_space_value<'v>(
     value: &'v native::SpaceValue,
@@ -98,7 +106,7 @@ pub fn decode_space_value_bytes(
 
 /// Encode one space value as a recursive `SpaceValueNode`. Leaf arms carry the
 /// same exact raw encoding used at the top level (raw little-endian bytes for
-/// tensor-shaped leaves, exact int64 for Discrete) — no base64, no f64.
+/// tensor-shaped leaves, exact int64 for Discrete), with no base64 or f64.
 pub(super) fn encode_value_node(
     value: &native::SpaceValue,
     space: &native::SpaceSpec,
@@ -115,7 +123,7 @@ pub(super) fn encode_value_node(
         }
         native::SpaceValue::MultiBinary(_) | native::SpaceValue::MultiDiscrete(_) => {
             // These arms always encode into a fresh Vec, so into_owned() is a
-            // move and Bytes::from is refcount-only — no copy.
+            // move and Bytes::from is refcount-only, with no copy.
             NodeKind::Multi(encode_space_value(value, space)?.into_owned().into())
         }
         native::SpaceValue::Discrete(value) => NodeKind::Discrete(*value),
@@ -155,7 +163,7 @@ pub(super) fn encode_value_node(
 /// The tensor's element bytes as a wire-ready [`Bytes`].
 ///
 /// A contiguous tensor shares its refcounted [`Storage`](native::Storage)
-/// with the message — no element bytes are copied until the node tree is
+/// with the message. No element bytes are copied until the node tree is
 /// serialized. Non-contiguous layouts gather into a fresh buffer, which
 /// `Bytes` then adopts without a further copy.
 fn tensor_wire_bytes(tensor: &native::Tensor) -> Bytes {

@@ -23,4 +23,5 @@ pub use types::{
     AutoresetMode, BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract,
     MultiBinaryDims, MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec,
     SpaceType, TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
+    UnknownAutoresetMode,
 };
