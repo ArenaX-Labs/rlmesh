@@ -119,3 +119,9 @@ jobs:
 
       - name: Rust package verification
         run: mise run --skip-tools release:rust:package
+
+      - name: C/C++ package verification (pkg-config + CMake find_package)
+        env:
+          CC: clang
+          CXX: clang++
+        run: mise run --skip-tools test:cxx:pkg

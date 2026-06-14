@@ -55,18 +55,29 @@ Libs: -L\${libdir} -lrlmesh_capi
 Libs.private: -lpthread -ldl -lm
 EOF
 
-# 5. CMake config-version (numeric ABI version; SameMajorVersion compatibility).
-cat > "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" <<EOF
-set(PACKAGE_VERSION "$abi")
+# 5. CMake config-version with real SameMajorVersion compatibility: a different
+#    major is an ABI break and must be rejected (CMake's canonical template).
+cat > "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" <<'EOF'
+set(PACKAGE_VERSION "@ABI@")
 if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
   set(PACKAGE_VERSION_COMPATIBLE FALSE)
 else()
-  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_VERSION MATCHES "^([0-9]+)\\.")
+    set(CVF_VERSION_MAJOR "${CMAKE_MATCH_1}")
+  else()
+    set(CVF_VERSION_MAJOR "${PACKAGE_VERSION}")
+  endif()
+  if(PACKAGE_FIND_VERSION_MAJOR STREQUAL CVF_VERSION_MAJOR)
+    set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  else()
+    set(PACKAGE_VERSION_COMPATIBLE FALSE)
+  endif()
   if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
     set(PACKAGE_VERSION_EXACT TRUE)
   endif()
 endif()
 EOF
+sed -i "s/@ABI@/$abi/" "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake"
 
 # 6. The CMake config itself is a committed template (static text, nothing to
 #    interpolate) — copied verbatim so it stays reviewable as a normal source file.
