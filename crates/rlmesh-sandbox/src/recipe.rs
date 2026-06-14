@@ -38,8 +38,9 @@ const ENV_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_env";
 const MODEL_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_model";
 
 /// The container ENTRYPOINT for a recipe kind: env recipes serve an environment,
-/// model recipes serve/drive a policy.
-fn entrypoint_for(kind: &str) -> String {
+/// model recipes serve/drive a policy. `pub(crate)` so the gym/hf preamble in
+/// `docker.rs` single-sources the env entrypoint through here too.
+pub(crate) fn entrypoint_for(kind: &str) -> String {
     let module = if kind == "model" { MODEL_BOOTSTRAP } else { ENV_BOOTSTRAP };
     format!("ENTRYPOINT [\"python\", \"-m\", \"{module}\"]")
 }
@@ -253,6 +254,11 @@ pub struct Setup {
     pub env: BTreeMap<String, String>,
     /// File writes.
     pub files: Vec<FileWrite>,
+    /// Allowlist of `setup.env` keys a member may override at runtime via
+    /// `RLMESH_PARAMS_JSON`. Runtime-only: the deriver ignores it and it is
+    /// excluded from `build_hash` (it lives under the runtime `setup` phase), so
+    /// one image serves every declared member. Appended last for golden stability.
+    pub params: Vec<String>,
 }
 
 /// Registration imports (gym/hf only).
@@ -392,6 +398,9 @@ pub(crate) fn derive_dockerfile(
     out.push_str(&format!("FROM {base}\n\n"));
 
     // ENV block: standard vars, then gpu caps, then build.env, then PYTHONPATH.
+    // RLMESH_PORT is the canonical bind port; RLMESH_ENV_PORT is the deprecated
+    // alias the bootstraps still read after it.
+    out.push_str(&format!("ENV RLMESH_PORT={CONTAINER_PORT}\n"));
     out.push_str(&format!("ENV RLMESH_ENV_PORT={CONTAINER_PORT}\n"));
     out.push_str("ENV PYTHONUNBUFFERED=1\n");
     if build.gpu {
@@ -499,6 +508,13 @@ pub(crate) fn derive_dockerfile(
         ));
         out.push_str(&format!("USER {uid}\n\n"));
     }
+
+    // Self-describing image: bake the recipe's runtime half so the entrypoint can
+    // load it with no inline payload. `write_build_context` stages this file as a
+    // Dockerfile sibling (NEVER under build.project.src -- its content must stay
+    // out of the build-context digest, or one-image-many-members breaks).
+    out.push_str(&format!("COPY recipe.json {WORKDIR}/recipe.json\n"));
+    out.push_str(&format!("ENV RLMESH_RECIPE_PATH={WORKDIR}/recipe.json\n\n"));
 
     out.push_str(&format!("EXPOSE {CONTAINER_PORT}\n"));
     out.push_str(&entrypoint_for(&recipe.kind));

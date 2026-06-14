@@ -795,6 +795,35 @@ mod tests {
     }
 
     #[test]
+    fn build_hash_is_stable_across_recipe_setup() {
+        // setup.env / setup.params are runtime member-selection knobs: applied at
+        // `docker run` and baked into recipe.json, but NOT part of the build. They
+        // must not change build_hash, or one-image-many-members breaks (each LIBERO
+        // task would rebuild the image). Pins the property A1's baked recipe relies on.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "gym", "env_id": "E-v0"},
+            "build": {"base": "python@sha256:abc"},
+        });
+        let mut with_setup = base.clone();
+        with_setup["setup"] = serde_json::json!({
+            "env": {"LIBERO_TASK": "libero_10/3"},
+            "params": ["LIBERO_TASK", "LIBERO_SEED"],
+        });
+        let bare = EffectiveSandboxSpec::resolve(
+            recipe_source(base, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        let parameterized = EffectiveSandboxSpec::resolve(
+            recipe_source(with_setup, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(bare.build_hash, parameterized.build_hash);
+    }
+
+    #[test]
     fn public_errors_are_typed_and_discriminable() {
         // num_envs == 0 must surface as a typed InvalidOption, not a stringly error.
         let err = EffectiveSandboxSpec::resolve(

@@ -334,6 +334,16 @@ impl DockerBackend {
             }
         }
 
+        // Bake the recipe's runtime half as a Dockerfile sibling (NOT under
+        // project/), so the derived `COPY recipe.json` makes the image
+        // self-describing without the recipe content entering project.src's digest.
+        if let Some(recipe) = &spec.recipe {
+            let json = serde_json::to_string(&runtime_document(recipe)?)
+                .context("failed to serialize baked recipe.json")?;
+            fs::write(tempdir.path().join("recipe.json"), json)
+                .context("failed to stage baked recipe.json")?;
+        }
+
         let dockerfile = render_dockerfile(spec)?;
         fs::write(tempdir.path().join("Dockerfile"), dockerfile)
             .context("failed to write generated Dockerfile")?;
@@ -580,6 +590,7 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
+ENV RLMESH_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV RLMESH_ENV_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
@@ -588,11 +599,12 @@ WORKDIR /opt/rlmesh\n\
 \n\
 RUN sh -lc {}\n\n\
 EXPOSE {DEFAULT_CONTAINER_PORT}\n\
-ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
+{}\n",
         spec.base_image,
         source_copy,
         package_copy,
         shell_quote(&package_command),
+        crate::recipe::entrypoint_for("env"),
     ))
 }
 
