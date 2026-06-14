@@ -60,6 +60,7 @@ fn test_session_spec() -> RuntimeSessionSpec {
         env_component_id: "env".to_string(),
         model_component_id: "model".to_string(),
         env_id: "test-env".to_string(),
+        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: Default::default(),
         num_envs: 1,
         base_seed: None,

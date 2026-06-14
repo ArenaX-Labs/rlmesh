@@ -17,6 +17,9 @@ pub struct RuntimeSessionSpec {
     pub env_component_id: String,
     pub model_component_id: String,
     pub env_id: String,
+    /// Workflow edition negotiated at the env handshake. The runtime refuses an
+    /// edition it was not built to drive (see [`RuntimeSessionSpec::validate`]).
+    pub workflow_edition: String,
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
@@ -50,6 +53,16 @@ impl RuntimeSessionSpec {
         }
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
+        }
+        // The runtime drives exactly the workflow edition it was built for; a
+        // session negotiated under any other edition is refused rather than run
+        // under 2026.06 semantics it never agreed to.
+        if self.workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
+            return Err(format!(
+                "runtime cannot drive workflow edition {:?}; this build implements {:?}",
+                self.workflow_edition,
+                rlmesh_proto::CURRENT_WORKFLOW_EDITION
+            ));
         }
         // An autoreset mode this build does not understand (e.g. a newer peer's
         // mode) must fail loudly at session setup, never silently fold to
@@ -316,6 +329,7 @@ mod tests {
             env_component_id: "env".to_string(),
             model_component_id: "model".to_string(),
             env_id: "env-id".to_string(),
+            workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             env_contract: EnvContract {
                 observation_space: Some(SpaceSpec::default()),
                 action_space: Some(SpaceSpec::default()),
@@ -328,6 +342,21 @@ mod tests {
             close_env_on_end: true,
             limits: RuntimeLimits::default(),
         }
+    }
+
+    #[test]
+    fn validate_rejects_an_edition_the_runtime_cannot_drive() {
+        let mut spec = valid_spec();
+        spec.workflow_edition = "2099.01".to_string();
+        let error = spec.validate().unwrap_err();
+        assert!(
+            error.contains("2099.01") && error.contains("cannot drive"),
+            "expected an edition-refusal error, got: {error}"
+        );
+
+        // The edition the build implements is accepted.
+        spec.workflow_edition = rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string();
+        assert!(spec.validate().is_ok());
     }
 
     #[test]

@@ -47,6 +47,7 @@ where
         env_component_id: "local-env".to_string(),
         model_component_id: "local-model".to_string(),
         env_id,
+        workflow_edition: handshake.workflow_edition,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
         base_seed,

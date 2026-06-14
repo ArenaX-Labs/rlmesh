@@ -1,3 +1,8 @@
+//! Behavioral fingerprint for workflow edition 2026.06: these lifecycle
+//! assertions ARE the edition contract (episode accounting, per-lane autoreset,
+//! request/response ordering). Changing observable behavior here changes the
+//! edition — see docs/editions/2026.06.md.
+
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -534,6 +539,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
         env_component_id: "env-1".to_string(),
         model_component_id: "model-1".to_string(),
         env_id: "TestEnv-v0".to_string(),
+        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             observation_space: Some(SpaceSpec::default()),
             action_space: Some(SpaceSpec::default()),
@@ -677,6 +683,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         env_component_id: "env-vec".to_string(),
         model_component_id: "model-vec".to_string(),
         env_id: "VectorTestEnv-v0".to_string(),
+        workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             observation_space: Some(SpaceSpec::default()),
             action_space: Some(SpaceSpec::default()),
