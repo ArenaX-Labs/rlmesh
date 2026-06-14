@@ -40,3 +40,6 @@ target/
 .agents/
 .codex/
 .claude/
+
+# Proposal / design scratch lives in the workspace cabinet, never in-repo
+docs/proposals/
