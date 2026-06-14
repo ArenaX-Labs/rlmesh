@@ -30,8 +30,8 @@ pub(crate) fn space_value_to_py_neutral<'py>(
     space_value_to_py(py, value, space, &array_leaf_to_py_neutral)
 }
 
-// Encodes the array-like leaves (Box, MultiBinary, MultiDiscrete) — the only
-// thing that differs between the backend-aware and neutral (always-native) paths.
+// Encodes the array-like leaves (Box, MultiBinary, MultiDiscrete); only the leaf
+// behavior differs between the backend-aware and neutral (always-native) paths.
 type LeafEncoder<'py> = dyn Fn(Python<'py>, &SpaceValue, &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;
 
 // Shared scalar/composite dispatch parameterized by the leaf encoder.

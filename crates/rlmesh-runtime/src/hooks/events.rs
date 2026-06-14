@@ -151,9 +151,9 @@ pub struct TimingSummary {
 /// Kind of a non-duration metric reported via [`MetricSummary`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetricKind {
-    /// `OperationMetric::ByteCount` — a byte gauge/counter sample.
+    /// `OperationMetric::ByteCount`: a byte gauge/counter sample.
     ByteCount,
-    /// `OperationMetric::Number` — a generic numeric gauge sample.
+    /// `OperationMetric::Number`: a generic numeric gauge sample.
     Number,
 }
 

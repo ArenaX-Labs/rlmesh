@@ -1823,8 +1823,8 @@ def test_scalar_reshape_survives_serialization_and_resolve():
 
 
 def test_resolve_from_contract_passes_check_inverse():
-    # A non-invertible CustomEncoding must be skippable through the contract
-    # path too, not only through resolve().
+    # A non-invertible CustomEncoding must be skippable through both the contract
+    # path and resolve().
     env = _rot_obs_env()
     contract: Any = SimpleNamespace(
         metadata=env.tags.to_metadata(),

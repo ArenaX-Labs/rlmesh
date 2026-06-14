@@ -870,9 +870,9 @@ fn predict_join_request(route_id: &str, request_id: &str, step: i64) -> JoinRequ
 async fn pipelined_requests_complete_out_of_order() {
     // Under option (a) the handler mutex is held across `predict`, so two
     // *predicts* serialize at the handler. Pipelining still removes head-of-line
-    // blocking for work that does NOT touch the handler: `ConfigureRoute` only
+    // blocking for work that does not touch the handler: `ConfigureRoute` only
     // mutates the route table. A configure sent *after* a slow in-flight predict
-    // therefore completes *first* — that is the out-of-order guarantee the
+    // therefore completes *first*. That is the out-of-order guarantee the
     // server delivers and that the single-flight design could not.
     let handler = OrderingHandler {
         slow_delay: Duration::from_millis(300),
@@ -956,7 +956,7 @@ async fn pipelined_predicts_preserve_per_route_order() {
         Some(join_response::Kind::ConfigureRoute(_))
     ));
 
-    // Two predicts on the SAME route: the first is slow (step 0, reset), the
+    // Two predicts on the same route: the first is slow (step 0, reset), the
     // second fast (step 1). Per-route order must keep predict step 0 before 1.
     req_tx
         .send(predict_join_request("r", "p0", 0))

@@ -36,7 +36,7 @@ pub struct RecipeSourceRef {
 }
 
 impl EnvironmentSourceRef {
-    /// Parse a sandbox source reference (`gym://...`, `hf://...`, or a bare
+    /// Parse a sandbox source reference (`gym://<id>`, `hf://<repo>`, or a bare
     /// gymnasium env id).
     pub fn parse(value: &str) -> std::result::Result<Self, SandboxError> {
         Self::parse_inner(value).map_err(SandboxError::invalid_source)

@@ -171,11 +171,12 @@ impl From<SpaceType> for i32 {
 /// Per-lane autoreset convention an environment follows (mirrors the proto
 /// `AutoresetMode` and gymnasium's `AutoresetMode`). There is intentionally no
 /// `Unspecified` variant: the proto `UNSPECIFIED` (0) decodes to `Disabled`, the
-/// safe explicit-reset default. An unknown value is NOT folded to a default —
-/// [`AutoresetMode::try_from`] rejects it so a newer peer's mode this build does
-/// not understand fails loudly instead of silently changing lifecycle semantics.
+/// safe explicit-reset default. Unknown values are not folded to a default;
+/// [`AutoresetMode::try_from`] rejects them so a newer peer's mode this build
+/// does not understand fails loudly instead of silently changing lifecycle
+/// semantics.
 ///
-/// The numeric discriminants here MUST stay in sync with the proto
+/// The numeric discriminants here must stay in sync with the proto
 /// `AutoresetMode` (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3); the
 /// `autoreset_mode_i32_roundtrip` test below locks this so future drift fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

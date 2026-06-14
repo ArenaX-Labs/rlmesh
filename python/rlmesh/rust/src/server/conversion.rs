@@ -46,13 +46,12 @@ pub(super) fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
 /// is either a gymnasium `AutoresetMode` enum (whose `.value` is one of
 /// `"NextStep"`/`"SameStep"`/`"Disabled"`) or that plain string.
 ///
-/// An *absent* key (or no metadata at all) defaults to `Disabled` — a
-/// scalar/custom env naturally needs explicit reset. A *present* value is held
-/// to the contract: an explicit `None`, a non-string, or an unrecognized string
-/// raises `ValueError` rather than silently downgrading to `Disabled`, which
-/// would double-reset a mislabeled self-autoresetting env. `SameStep` is reserved
-/// in the protocol but not yet honored by the runtime, so it too is rejected
-/// (fail loud rather than mishandle timing).
+/// An absent key, or no metadata at all, defaults to `Disabled`; a scalar/custom
+/// env naturally needs explicit reset. A present value is held to the contract:
+/// an explicit `None`, a non-string, or an unrecognized string raises
+/// `ValueError` rather than silently downgrading to `Disabled`, which would
+/// double-reset a mislabeled self-autoresetting env. `SameStep` is reserved in
+/// the protocol but not yet honored by the runtime, so it is rejected too.
 pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
     if !obj.hasattr("metadata")? {
         return Ok(AutoresetMode::Disabled);
@@ -61,10 +60,9 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
     if metadata.is_none() {
         return Ok(AutoresetMode::Disabled);
     }
-    // A missing key (or a non-subscriptable metadata) defaults to Disabled — a
-    // scalar/custom env legitimately omits it. But a key that is *present* and
-    // explicitly `None` is a deliberate value held to the contract, not the same
-    // as "absent": fail loud rather than silently downgrade to Disabled.
+    // A missing key or non-subscriptable metadata defaults to Disabled; a
+    // scalar/custom env legitimately omits it. A present key with `None` is a
+    // deliberate value held to the contract, not the same as absent.
     let mode_obj = match metadata.get_item("autoreset_mode") {
         Err(_) => return Ok(AutoresetMode::Disabled),
         Ok(value) if value.is_none() => {
@@ -79,8 +77,7 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
 
     // A gymnasium AutoresetMode enum carries the canonical string in `.value`;
     // a wire-degraded value is already a plain string. The key is present (past
-    // the get_item guard), so a non-string value is a contract violation: fail
-    // loud rather than collapse to "" and silently downgrade to DISABLED.
+    // the get_item guard), so a non-string value is a contract violation.
     let non_string_err = || {
         PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "metadata[\"autoreset_mode\"] must be a gymnasium AutoresetMode enum or one of \
@@ -103,9 +100,9 @@ pub(super) fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<Autorese
             "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
              construct the environment with NEXT_STEP or DISABLED autoreset",
         )),
-        // Present but an unrecognized string — a typo or a mode this runtime
-        // does not know. Erroring beats silently downgrading to DISABLED, which
-        // would double-reset a self-autoresetting env.
+        // Present but unrecognized: either a typo or a mode this runtime does
+        // not know. Erroring beats silently downgrading to DISABLED, which would
+        // double-reset a self-autoresetting env.
         other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
              AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\""

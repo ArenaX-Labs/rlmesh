@@ -178,8 +178,8 @@ where
             &request.supported_workflow_editions,
         );
         // Symmetric provisional-pin check: the client verifies our pin on the
-        // response, we verify the client's here. An old client that omits it
-        // (empty checksum) fails closed.
+        // response, and we verify the client's pin here. An old client that
+        // omits it fails closed.
         let pin_error = if compat.is_compatible() {
             check_provisional_edition_pin(
                 compat.selected_edition.unwrap_or_default(),
@@ -549,8 +549,8 @@ async fn handle_predict<H: ModelHandler + 'static>(
 /// # Bounded growth
 ///
 /// A keyed request (`ConfigureRoute` / `Predict` / `CloseRoute`) always replaces
-/// its route's tail so the next request on that route — including a
-/// `ConfigureRoute` that *reopens* a key after `CloseRoute` — chains correctly
+/// its route's tail so the next request on that route, including a
+/// `ConfigureRoute` that *reopens* a key after `CloseRoute`, chains correctly
 /// after the in-flight predecessor. A `CloseRoute` is the typical last request
 /// on a route, so without pruning its fired tail would linger forever and a
 /// long-lived stream cycling fresh `session_id:route_id` keys per episode would
@@ -596,8 +596,8 @@ impl RouteTails {
         (RequestGate::All(prev), done_tx)
     }
 
-    /// Drop tails whose receiver has already completed — the sender fired or was
-    /// dropped — meaning that route's last enqueued request has finished. A fired
+    /// Drop tails whose receiver has already completed, meaning the sender fired
+    /// or was dropped and that route's last enqueued request has finished. A fired
     /// `oneshot::Receiver` resolves immediately, so reaping it never relaxes
     /// ordering: a route reopened after its tail was reaped had its predecessor
     /// already complete, hence nothing left to wait on.
@@ -651,7 +651,7 @@ impl RequestGate {
 ///
 /// `ConfigureRoute` / `Predict` / `CloseRoute` are keyed by their
 /// `session_id:route_id`; whole-session `Close` and malformed requests (missing
-/// context or ids) return `None` — `Close` is handled as an all-routes barrier
+/// context or ids) return `None`. `Close` is handled as an all-routes barrier
 /// by the caller, and ungated malformed requests still produce an in-band error.
 fn join_request_route_key(request: &JoinRequest) -> Option<String> {
     let context = match request.kind.as_ref()? {
@@ -935,7 +935,7 @@ mod tests {
     #[tokio::test]
     async fn route_tails_reopen_after_reaped_close_is_ungated() {
         // If the CloseRoute already completed *and* was reaped, a reopen on the
-        // same key has nothing to wait on — ordering is still correct because the
+        // same key has nothing to wait on; ordering is still correct because the
         // predecessor genuinely finished.
         let mut tails = RouteTails::new();
         let key = "session:route";

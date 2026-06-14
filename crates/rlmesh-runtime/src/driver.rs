@@ -473,12 +473,12 @@ where
             }
 
             // Mode-aware next observation. The reflexive "any lane completed =>
-            // reset the whole vector" trigger is gone — that was the category
+            // reset the whole vector" trigger is gone. That was the category
             // error that cut healthy lanes short.
             let (next_obs, phase, is_reset_msg) = match self.autoreset_mode() {
                 // NEXT_STEP (and the unreachable SAME_STEP): the env auto-resets a
                 // done lane itself and the rolled episode ids already arrived via
-                // observe_episode_ids above. The driver is purely observational —
+                // observe_episode_ids above. The driver is purely observational;
                 // it never resets on the hot path.
                 AutoresetMode::NextStep | AutoresetMode::SameStep => (
                     step_observation.clone(),
@@ -488,7 +488,7 @@ where
                 // DISABLED (and the single-env default): the env does not
                 // autoreset, so restart the lanes that just completed. When every
                 // lane completed this is a whole-vector reset (also the num_envs==1
-                // path); a strict subset uses a per-lane seeded reset_subset — the
+                // path); a strict subset uses a per-lane seeded reset_subset, the
                 // controlled / reproducible path.
                 AutoresetMode::Unspecified | AutoresetMode::Disabled => {
                     let mut done_lanes: Vec<i32> = step_ok

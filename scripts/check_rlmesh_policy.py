@@ -205,9 +205,9 @@ def _validate_adapters(repo_root: Path) -> list[str]:
     if not keys.exists():
         return [f"adapter metadata keys file missing: {keys}"]
     text = keys.read_text(encoding="utf-8")
-    # The version-stamped metadata key string — not any source-module path — is
-    # the adapter spec-format discriminator, so guard the v1 token here. A v2 bump
-    # must be deliberate (and keep reading v1).
+    # The version-stamped metadata key string, not any source-module path, is the
+    # adapter spec-format discriminator, so guard the v1 token here. A v2 bump
+    # must be deliberate and keep reading v1.
     for const in ("ENV_METADATA_KEY", "MODEL_METADATA_KEY"):
         match = re.search(rf'{const}: &str = "(?P<value>[^"]+)"', text)
         if match is None:

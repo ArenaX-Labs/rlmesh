@@ -114,7 +114,7 @@ enum Libc {
 
 /// Compatibility constraints derived from a base image: the Python
 /// `(major, minor)` version and the libc. Derived by parsing the image
-/// reference robustly rather than substring-sniffing.
+/// reference from delimited tokens rather than substring matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ImageCompat {
     python: (u32, u32),
@@ -406,7 +406,7 @@ mod tests {
             parse_image_python_version("myimg:python3.11-cuda"),
             Some((3, 11))
         );
-        // A coincidental "3.10" inside an unrelated version must NOT be read as
+        // A coincidental "3.10" inside an unrelated version must not be read as
         // the Python version.
         assert_eq!(
             parse_image_python_version("nvidia/cuda:12.3.10-runtime-ubuntu22.04"),

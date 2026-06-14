@@ -41,9 +41,9 @@ pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
 }
 
 /// Reject revisions that git could misinterpret. The exact-ref query already
-/// prevents glob expansion, but we additionally reject option-looking and
+/// prevents glob expansion, but we also reject option-looking and
 /// glob-bearing revisions defensively so a hostile ref name can never be
-/// reparsed as a `git` flag (e.g. `--upload-pack=...`).
+/// reparsed as a `git` flag (e.g. `--upload-pack=<cmd>`).
 fn validate_revision(revision: &str) -> Result<()> {
     if revision.starts_with('-') {
         bail!("revision must not start with '-': '{revision}'");

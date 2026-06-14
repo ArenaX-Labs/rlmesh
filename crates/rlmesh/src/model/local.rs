@@ -159,7 +159,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// adapter decodes the runtime's predict request into a
 /// [`ModelObservation`](crate::ModelObservation),
 /// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
-/// each `predict`, and re-encodes the action — the same choreography the
+/// each `predict`, and re-encodes the action, matching the choreography the
 /// in-process `run_local` path performs.
 ///
 /// It borrows the handler mutably so the caller retains ownership (e.g. to run

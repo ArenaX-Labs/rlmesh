@@ -331,7 +331,7 @@ mod status_mapping_tests {
             }
             other => panic!("expected structured Status error, got {other:?}"),
         }
-        // It must NOT be misreported as a connect failure.
+        // It must not be misreported as a connect failure.
         let error = status_to_grpc_error(Status::new(Code::Unimplemented, "x"));
         assert!(!error.to_string().contains("failed to connect"));
     }

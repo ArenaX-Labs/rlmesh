@@ -24,7 +24,7 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
     })
 }
 
-// Encodes a non-composite batch — the only thing that differs between the
+// Encodes a non-composite batch; only the leaf behavior differs between the
 // backend-aware and neutral encoders.
 type BatchLeafEncoder<'py> =
     dyn Fn(Python<'py>, &[SpaceValue], &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;

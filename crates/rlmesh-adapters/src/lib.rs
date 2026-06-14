@@ -12,8 +12,8 @@
 //!
 //! Within v1 the JSON format evolves additively only (new optional fields with
 //! defaults). The wire version is the `rlmesh.adapters.v1.*` metadata key, not
-//! the source layout: a breaking spec-format change bumps that key to v2 (with a
-//! dual-read of v1), independent of how the Rust modules are organized. The
+//! the source layout. A breaking spec-format change bumps that key to v2 while
+//! still dual-reading v1, independent of how the Rust modules are organized. The
 //! [`v1`] facade is only a stable import path; the implementation sits flat at
 //! the crate root.
 

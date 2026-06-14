@@ -85,7 +85,7 @@ impl DockerBackend {
     ) -> Result<StartedContainer> {
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
         // The bootstrap payload carries runtime-only parameters (kwargs,
-        // num_envs, vectorization_mode, ...). It is delivered at `docker run`
+        // num_envs, vectorization_mode, and similar settings). It is delivered at `docker run`
         // time via an env var rather than baked into the image, so changing a
         // runtime parameter never rebuilds the image or invalidates the pip
         // install layer.
@@ -634,16 +634,15 @@ fn format_startup_failure_report(
 
 /// Recursively copy a file or directory tree from `src` to `dest`.
 ///
-/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: a child
-/// entry is classified by its own `entry.file_type()` (which reports the LINK
-/// itself, never dereferencing or erroring on a dangling/looping target), and a
-/// symlink child is skipped outright -- not copied, not recursed into. This
-/// keeps a link that points outside the tree from leaking foreign bytes into the
-/// image and stops a cyclic/dangling link from aborting the build. `fs::metadata`
-/// is used ONLY to classify the passed-in root, so an explicitly-named src that
-/// is itself a symlink-to-dir is still honored; every CHILD is filtered before
-/// any recursion, so metadata never runs on a link. `hash_path_tree` in lib.rs
-/// makes the identical skip decision so the staged bytes equal the hashed bytes.
+/// Symlink children are skipped for safety and consistency. A child entry is
+/// classified by its own `entry.file_type()`, which reports the link itself
+/// without dereferencing or erroring on a dangling/looping target. The symlink
+/// is not copied or recursed into, which keeps an outward link from leaking
+/// foreign bytes into the image and stops cyclic/dangling links from aborting the
+/// build. `fs::metadata` is used only to classify the passed-in root, so an
+/// explicitly named `src` that is itself a symlink-to-dir is still honored; every
+/// child is filtered before recursion. `hash_path_tree` in lib.rs makes the same
+/// skip decision so the staged bytes equal the hashed bytes.
 /// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
 /// (a guarded, canonicalized glob), not by silently following links here.
 fn copy_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
@@ -1141,8 +1140,8 @@ mod tests {
         // Only a successful inspect reporting a terminal state confirms exit.
         assert!(confirmed_terminal_summary(Ok(Some(exited))).is_some());
         assert!(confirmed_terminal_summary(Ok(Some(running))).is_none());
-        // A transient inspect error or a not-yet-found container must NOT abort
-        // the readiness wait (it would tear down a healthy container).
+        // A transient inspect error or a not-yet-found container must not abort
+        // the readiness wait; that would tear down a healthy container.
         assert!(confirmed_terminal_summary(Ok(None)).is_none());
         assert!(
             confirmed_terminal_summary(Err(anyhow!("docker inspect failed: daemon busy")))

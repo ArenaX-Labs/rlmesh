@@ -111,7 +111,7 @@ impl SandboxOptions {
 ///
 /// Dropping this without recording `container_id` leaks a running container, so
 /// it is `#[must_use]`. It is `#[non_exhaustive]` so future fields (extra
-/// container metadata, ports, ...) can be added without breaking callers that
+/// container metadata and ports can be added without breaking callers that
 /// read fields by name.
 #[derive(Debug, Clone)]
 #[must_use = "dropping a RunResult without its container_id leaks the started container"]
@@ -414,9 +414,9 @@ fn is_allowlisted_index(url: &str) -> bool {
     ALLOWED.iter().any(|prefix| index_url_matches(url, prefix))
 }
 
-/// Whether `url` is the allowlisted `prefix` itself or a path UNDER it, anchored
+/// Whether `url` is the allowlisted `prefix` itself or a path under it, anchored
 /// at a real `/` boundary so a sibling/look-alike host cannot slip through. An
-/// unanchored `starts_with` would let `https://pypi.nvidia.com.evil.example/...`
+/// unanchored `starts_with` would let `https://pypi.nvidia.com.evil.example/simple`
 /// match `https://pypi.nvidia.com`; requiring the next char be `/` (or end of
 /// string) closes that bypass.
 fn index_url_matches(url: &str, prefix: &str) -> bool {
@@ -497,7 +497,7 @@ fn resolve_source(source: &EnvironmentSourceRef) -> Result<source::ResolvedEnvir
 /// Build the sandbox image and start a container for `source`.
 ///
 /// This is a synchronous convenience wrapper around [`start_env_async`]. It
-/// MUST NOT be called from within an existing tokio runtime: it creates its
+/// must not be called from within an existing tokio runtime: it creates its
 /// own runtime internally and will panic ("Cannot start a runtime from within
 /// a runtime") if one is already active. From async code, call
 /// [`start_env_async`] directly.
@@ -689,7 +689,7 @@ mod tests {
     fn build_hash_keys_recipe_provenance() {
         // The deriver emits a different Dockerfile by provenance (a Remote recipe
         // skips the implicit unpinned gymnasium), so two specs with a byte-identical
-        // build phase but different provenance must NOT share an image tag -- else
+        // build phase but different provenance must not share an image tag; otherwise
         // ensure_image would reuse the wrong (Installed/Remote) Dockerfile.
         let document = serde_json::json!({
             "name": "a/b",
@@ -1043,7 +1043,7 @@ mod tests {
             "https://download.pytorch.org/whl/cu124"
         ));
         // A look-alike host that merely has the allowlisted entry as a string
-        // prefix must NOT match (the bypass this fix closes).
+        // prefix must not match (the bypass this fix closes).
         assert!(!is_allowlisted_index(
             "https://pypi.nvidia.com.evil.example/simple"
         ));
@@ -1058,7 +1058,7 @@ mod tests {
         assert!(requirement_is_version_pinned(
             "torch==2.0.0 ; os_name == 'posix'"
         ));
-        // An unpinned package whose ONLY `==` lives in an environment marker must
+        // An unpinned package whose only `==` lives in an environment marker must
         // be rejected (the bypass this fix closes).
         assert!(!requirement_is_version_pinned("torch ; os_name == 'posix'"));
         assert!(!requirement_is_version_pinned("torch"));

@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(Native::try_from(3), Ok(Native::Disabled));
         assert_eq!(Proto::try_from(0), Ok(Proto::Unspecified));
         assert_eq!(Proto::try_from(1), Ok(Proto::NextStep));
-        // Both reject the same unknown values loudly — no silent fold.
+        // Both reject the same unknown values loudly; no silent fold.
         for unknown in [4, 5, 99, -1] {
             assert!(Native::try_from(unknown).is_err());
             assert!(Proto::try_from(unknown).is_err());

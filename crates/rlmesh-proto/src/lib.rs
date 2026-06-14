@@ -12,11 +12,11 @@ pub const PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 
 /// Protocol generations this build can speak, oldest ([`MIN_SUPPORTED_PROTOCOL_GENERATION`])
-/// to newest ([`PROTOCOL_GENERATION`]). A peer is wire-compatible iff its generation is in
-/// this window. Introducing a new generation appends it and bumps `PROTOCOL_GENERATION`;
-/// dropping an old one raises `MIN_SUPPORTED_PROTOCOL_GENERATION` (monotonic — never lower it
-/// past a still-deployed generation). While the window holds one generation, compatibility is
-/// exact equality.
+/// to newest ([`PROTOCOL_GENERATION`]). A peer is wire-compatible only when its
+/// generation is inside this window. Adding a generation appends it and bumps
+/// `PROTOCOL_GENERATION`; dropping one raises `MIN_SUPPORTED_PROTOCOL_GENERATION`.
+/// Do not lower it past a generation that may still be deployed. While the
+/// window holds one generation, compatibility is exact equality.
 pub const SUPPORTED_PROTOCOL_GENERATIONS: &[&str] = &[PROTOCOL_GENERATION];
 
 /// Current workflow semantics edition.
@@ -31,22 +31,22 @@ pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] = &[CURRENT_WORKFLOW_EDITION];
 /// identified by its string alone). Mirrors `rlmesh.toml`.
 pub const CURRENT_WORKFLOW_EDITION_STATUS: &str = "provisional";
 
-/// SHA-256 of [`CURRENT_WORKFLOW_EDITION`]'s spec document. While the edition is
-/// provisional, two peers interoperate only if their spec checksums match, so a
-/// mutable dev contract cannot silently diverge between differently-built peers.
-/// Cross-checked against the file and `rlmesh.toml` by `check_rlmesh_policy.py`.
+/// SHA-256 of [`CURRENT_WORKFLOW_EDITION`]'s spec document. Provisional editions
+/// interoperate only when both peers report this checksum. That keeps the
+/// still-mutable contract from silently diverging across beta builds.
+/// `check_rlmesh_policy.py` cross-checks this value against the file and
+/// `rlmesh.toml`.
 pub const CURRENT_WORKFLOW_EDITION_SPEC_SHA256: &str =
     "c03b0c916521485492aa02507cacb7888a0752fc72860e53231296de4a27007f";
 
 /// Stable capability names exchanged during handshake.
 ///
-/// Capabilities are advisory: a present key means the named optional feature is
-/// available, an absent key means it is not. They gate optional, meaning-
-/// preserving features and never change the meaning of an interaction (that is an
-/// edition or generation change). House rule: any new field whose absence an
-/// older peer would silently mishandle is paired with a capability the emitter
-/// checks (via [`has_capability`]) before sending — if absence would be *wrong*
-/// rather than merely less-rich, it is an edition, not a capability.
+/// Capabilities are advisory. A present key means the named optional feature is
+/// available; an absent key means it is not. They cover optional features that
+/// preserve interaction semantics. A feature that changes meaning belongs in an
+/// edition or generation. House rule: when an older peer would mishandle an
+/// absent field, the emitter checks a capability before sending it; if absence
+/// changes semantics, use an edition.
 pub mod capabilities {
     /// Core environment handshake and Join stream.
     pub const ENV_SERVICE_V1: &str = "rlmesh.env.service.v1";
@@ -61,8 +61,8 @@ pub mod capabilities {
     /// (pipelined predict): responses arrive in completion order rather than
     /// strict arrival order, while per-route lifecycle ordering is preserved.
     ///
-    /// Advisory only and never an edition change — the wire messages are
-    /// identical (every response still mirrors its `request_id`). A client uses
+    /// Advisory only; this is not an edition change. The wire messages are
+    /// identical: every response still mirrors its `request_id`. A client uses
     /// it to decide whether overlapping multiple predicts on one connection will
     /// actually pipeline (capability present) or serialize behind the handler
     /// (capability absent). See `docs/editions/2026.06.md`.
@@ -87,8 +87,8 @@ pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
 /// Returns the highest edition both peers support; the zero-padded `YYYY.MM`
 /// format makes lexicographic order chronological. `None` means there is no
 /// mutual edition and the handshake must report `compatible = false`. Only
-/// explicitly supported editions are eligible — unknown editions in the offer
-/// are ignored, never accepted on the assumption they are compatible.
+/// explicitly supported editions are eligible. Unknown editions in the offer are
+/// ignored, never accepted on the assumption they are compatible.
 pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
     SUPPORTED_WORKFLOW_EDITIONS
         .iter()
@@ -99,9 +99,8 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
 
 /// The outcome of evaluating a client handshake offer against this build.
 ///
-/// Produced by [`evaluate_handshake`], the single source of truth for the
-/// session-compatibility decision shared by the env and model servers — so a
-/// careless edit cannot flip interop on one service only.
+/// Produced by [`evaluate_handshake`]. Env and model servers use this same
+/// result, so compatibility cannot drift between services.
 #[derive(Debug, Clone, Copy)]
 pub struct HandshakeCompatibility {
     /// Whether the client's protocol generation can speak to this server.
@@ -117,8 +116,8 @@ impl HandshakeCompatibility {
     }
 }
 
-/// Evaluate a client's handshake offer — its protocol generation and the
-/// workflow editions it can operate under — against this build's support.
+/// Evaluate a client's handshake offer against this build's supported protocol
+/// generation and workflow editions.
 pub fn evaluate_handshake(
     client_protocol_generation: &str,
     offered_workflow_editions: &[String],
@@ -132,17 +131,18 @@ pub fn evaluate_handshake(
     }
 }
 
-/// Verify a provisional edition's content pin against a peer's handshake response.
+/// Verify a provisional edition's content pin against peer handshake metadata.
 ///
-/// The selected edition is content-pinned when *either* this build or the peer
-/// treats it as provisional — including a peer that omits the status/checksum
-/// fields entirely, which must not slip through as if unpinned. The peer's
-/// `spec_sha256` must then equal this build's [`CURRENT_WORKFLOW_EDITION_SPEC_SHA256`];
-/// a mismatch (or an absent checksum) means the two builds carry different
-/// (still-mutable) contracts under the same edition string and must not
-/// interoperate. A sealed edition both sides agree on is identified by its string
-/// alone. The error names both builds so an operator can tell which side is the
-/// stale beta.
+/// The selected edition is pinned when this build or the peer treats it as
+/// provisional. That includes older peers that omit status/checksum fields; they
+/// fail as unpinned instead of slipping through.
+///
+/// In pinned mode, the peer's `spec_sha256` must equal this build's
+/// [`CURRENT_WORKFLOW_EDITION_SPEC_SHA256`]. A mismatch or absent checksum means
+/// two beta builds carry different mutable contracts under the same edition
+/// string, so they cannot interoperate. A sealed edition that both peers
+/// recognize is identified by its string alone. The error includes both build
+/// versions so operators can spot the stale beta.
 pub fn check_provisional_edition_pin(
     selected_edition: &str,
     peer_status: &str,
@@ -159,10 +159,9 @@ pub fn check_provisional_edition_pin(
     }
     let this_version = env!("CARGO_PKG_VERSION");
     Err(format!(
-        "provisional workflow edition {selected_edition} differs between peers \
-         (dev contract not frozen): this build {this_version}{this_tag} spec {this_sha} \
-         vs peer {peer_version}{peer_tag} spec {peer_sha}; provisional editions \
-         interoperate only between identical builds — run matching releases",
+        "provisional workflow edition {selected_edition} checksum differs between peers: \
+         this build {this_version}{this_tag} spec {this_sha} vs peer \
+         {peer_version}{peer_tag} spec {peer_sha}; run matching releases",
         this_tag = prerelease_tag(this_version),
         peer_tag = prerelease_tag(peer_version),
         this_sha = short_sha(CURRENT_WORKFLOW_EDITION_SPEC_SHA256),

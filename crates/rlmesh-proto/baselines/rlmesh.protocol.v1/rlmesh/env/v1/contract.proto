@@ -5,10 +5,9 @@ package rlmesh.env.v1;
 import "rlmesh/spaces/v1/meta.proto";
 import "rlmesh/spaces/v1/spaces.proto";
 
-// Per-lane autoreset convention an environment follows. Mirrors gymnasium's
-// AutoresetMode. UNSPECIFIED decodes as DISABLED (explicit reset only) — a
-// gym-derived contract sets NEXT_STEP explicitly because gym writes the mode
-// into its metadata.
+// Per-lane autoreset convention. Mirrors gymnasium's AutoresetMode.
+// UNSPECIFIED decodes as DISABLED (explicit reset only). Gym-derived contracts
+// set NEXT_STEP explicitly because gym writes the mode into metadata.
 enum AutoresetMode {
   AUTORESET_MODE_UNSPECIFIED = 0;
   // Terminal obs + `terminated` at step t; the env internally resets the done
@@ -30,9 +29,8 @@ message EnvContract {
   rlmesh.spaces.v1.MetaMap metadata = 4;
   string render_mode = 5;
   uint32 num_envs = 6;
-  // Per-lane autoreset convention the runtime honors. Derived at construction
-  // from the env's metadata["autoreset_mode"]; UNSPECIFIED is treated as
-  // DISABLED. (Determinism is runtime/route-owned and is intentionally not a
-  // field here.)
+  // Autoreset mode the runtime uses for each lane. Derived at construction from
+  // the env's metadata["autoreset_mode"]. UNSPECIFIED is treated as DISABLED.
+  // Determinism stays owned by the runtime/route and is not a field here.
   AutoresetMode autoreset_mode = 7;
 }

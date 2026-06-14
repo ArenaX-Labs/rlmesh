@@ -89,7 +89,7 @@ impl RuntimeSessionSpec {
         // Vectorized sessions require NEXT_STEP autoreset: the env resets each
         // done lane itself, so the driver never needs per-lane reset. DISABLED
         // (and the UNSPECIFIED default) would require resetting just the done
-        // lanes, which stock gymnasium vector envs cannot do — there is no
+        // lanes, which stock gymnasium vector envs cannot do. There is no
         // partial-reset API, and a full reset clobbers the still-running lanes.
         // Reject the combination up front instead of failing mid-run the first
         // time lanes terminate at different steps. A future in-house vector

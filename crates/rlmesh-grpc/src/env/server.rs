@@ -227,8 +227,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let compat = evaluate_handshake(&req.protocol_generation, &req.supported_workflow_editions);
         // Provisional editions interoperate only between matching builds. The
         // client verifies our pin on the response; we verify the client's pin
-        // here so the check is symmetric — an old client that omits it (empty
-        // checksum) fails closed.
+        // here as the symmetric check. An old client that omits it fails closed.
         let pin_error = if compat.is_compatible() {
             check_provisional_edition_pin(
                 compat.selected_edition.unwrap_or_default(),
@@ -376,7 +375,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
 
                 // TODO(#6): a non-recoverable `Kind::Error` (e.g. a NEXT_STEP
                 // lane-contract violation from handle_env_request) is delivered to
-                // the client but does NOT end the stream — only a send failure or
+                // the client but does not end the stream. Only a send failure or
                 // a Close breaks this loop, so a lenient client can keep stepping.
                 // Tracker state stays consistent, so this is a transport-policy
                 // decision deferred to its own change.
@@ -598,7 +597,7 @@ async fn handle_env_request<E: Environment>(
                                         tracker.record_step(lane, reward);
                                         if done {
                                             // Done step t: complete the episode. The terminal
-                                            // obs belongs to the OLD episode, so episode_ids
+                                            // obs belongs to the old episode, so episode_ids
                                             // keeps the completed id; any new id rolls at t+1.
                                             if let Some(metadata) = tracker.complete_episode(
                                                 lane,
@@ -636,8 +635,8 @@ async fn handle_env_request<E: Environment>(
                                     }
                                     LaneState::Idle => {
                                         // DISABLED only (validation rejects an Idle NEXT_STEP
-                                        // lane): an inactive lane awaits an explicit reset —
-                                        // leave its id empty, never a phantom episode.
+                                        // lane): an inactive lane awaits an explicit reset; leave
+                                        // its id empty, never a phantom episode.
                                     }
                                 }
                             }
@@ -713,8 +712,8 @@ async fn handle_env_request<E: Environment>(
 /// Validate an explicit partial reset (`ResetRequest.env_indices`) before it
 /// reaches the env or the episode tracker. A full reset (empty `env_indices`)
 /// is always allowed. For a partial reset every lane must be in `0..num_envs`
-/// and unique, and `seeds` — being positionally aligned to `env_indices` — must
-/// either be empty or match its length. Duplicates and length mismatches are
+/// and unique. Because `seeds` is positionally aligned to `env_indices`, it must
+/// either be empty or match that length. Duplicates and length mismatches are
 /// rejected rather than deduped/truncated: the intent is ambiguous and silently
 /// guessing would start phantom or seed-misaligned episodes.
 fn validate_partial_reset(
@@ -1250,13 +1249,13 @@ mod tests {
         let first_res = first.await.unwrap();
         let second_res = second.await.unwrap();
 
-        // The first call returned a Timeout error to the client...
+        // The first call returned a Timeout error to the client.
         assert!(matches!(
             first_res.kind,
             Some(join_response::Kind::Error(ref e))
                 if e.code == rlmesh_proto::env::v1::EnvErrorCode::Timeout as i32
         ));
-        // ...but the orphaned op was drained, and the second ran without overlap.
+        // The orphaned op was drained, and the second ran without overlap.
         assert!(matches!(
             second_res.kind,
             Some(join_response::Kind::Step(_))
@@ -1633,7 +1632,7 @@ mod tests {
         // BLOCKER-1 regression guard. Under NEXT_STEP the env returns the
         // terminal obs at the done step `t` and the fresh obs at `t+1`. The
         // server must roll the episode id at `t+1` (so the terminal obs stays
-        // labelled with the episode that ended), NOT at the done step.
+        // labelled with the episode that ended), not at the done step.
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
@@ -1665,8 +1664,8 @@ mod tests {
             other => panic!("expected step response, got {other:?}"),
         };
 
-        // Done step t: lane 0 terminates. The terminal obs keeps the OLD id; the
-        // id has NOT rolled yet.
+        // Done step t: lane 0 terminates. The terminal obs keeps the old id; the
+        // id has not rolled yet.
         let t = step_ok(super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await);
         assert_eq!(t.completed_episodes.len(), 1, "lane 0 completes at t");
         let old_id = t.completed_episodes[0].episode_id.clone();
@@ -1702,7 +1701,7 @@ mod tests {
         };
         use tokio::sync::Mutex;
 
-        // Terminal at s1, then a fresh-obs step carrying reward 3.0 — the
+        // Terminal at s1, then a fresh-obs step carrying reward 3.0. The
         // autoreset observation must be reward 0, so this is a hard error rather
         // than a silently dropped reward.
         let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
@@ -1748,7 +1747,7 @@ mod tests {
         };
         use tokio::sync::Mutex;
 
-        // Terminal at s1, then terminal AGAIN at s2 — the env never delivered the
+        // Terminal at s1, then terminal again at s2. The env never delivered the
         // fresh autoreset observation. A sticky-terminal env must fail loud, not
         // silently drop the second completion.
         let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
@@ -1791,7 +1790,7 @@ mod tests {
         use tokio::sync::Mutex;
 
         // No reset: lane 0 is Idle. Stepping a NEXT_STEP lane with no active
-        // episode and no pending autoreset is a hard error — the old behaviour
+        // episode and no pending autoreset is a hard error. The old behavior
         // fabricated a phantom episode here.
         let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
             1,
@@ -1887,10 +1886,10 @@ mod tests {
         };
         use tokio::sync::Mutex;
 
-        // A violation on ANY lane must abort the whole step without mutating the
-        // tracker — earlier lanes must not be half-completed. num_envs=2: lane 1
+        // A violation on any lane must abort the whole step without mutating the
+        // tracker; earlier lanes must not be half-completed. num_envs=2: lane 1
         // is driven into PendingAutoreset, then a step reports lane 0 terminal
-        // (which would complete it) AND lane 1 terminal-when-autoreset-expected
+        // (which would complete it) and lane 1 terminal-when-autoreset-expected
         // (a violation). The step must error with lane 0 left untouched.
         let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
             2,
@@ -1934,12 +1933,12 @@ mod tests {
             "a violating step must return an error"
         );
 
-        // Lane 0 must NOT have been completed or rolled: same active episode.
+        // Lane 0 must not have been completed or rolled: same active episode.
         let t = tracker.lock().await;
         assert_eq!(
             t.lane_state(0),
             super::super::episode::LaneState::Active,
-            "lane 0 stays active — the aborted step did not half-apply"
+            "lane 0 stays active; the aborted step did not half-apply"
         );
         assert_eq!(
             t.active_episode_id(0).map(|s| s.to_string()),

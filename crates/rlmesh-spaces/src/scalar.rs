@@ -61,8 +61,8 @@ impl Scalar {
     ///
     /// Integer dtypes compare as integers (`Uint64` in the unsigned domain,
     /// every other integer dtype in the signed domain). Float dtypes compare as
-    /// floats. The mixed case — a `Float` bound against an `Int` value, which
-    /// the Box builder allows (e.g. `scalar(-100.0, 100.0).dtype(Int16)`) — is
+    /// floats. The mixed case, a `Float` bound against an `Int` value that the
+    /// Box builder allows (e.g. `scalar(-100.0, 100.0).dtype(Int16)`), is
     /// compared *exactly*, never by truncating either side: an integer `i`
     /// compares against a float `f` by their true real-number values.
     ///
@@ -112,8 +112,8 @@ enum IntOperand {
 /// the wrong answer at the edges. Instead we cast the *float* down to the
 /// integer domain via `floor`, which is exact: `floor(f)` is a (possibly
 /// out-of-range) integer, and `f` lies in `[floor(f), floor(f) + 1)`. Comparing
-/// `i` against `floor(f)` in the integer domain — with the fractional part of
-/// `f` breaking the tie at equality — is therefore exact.
+/// `i` against `floor(f)` in the integer domain, with the fractional part of
+/// `f` breaking the tie at equality, is therefore exact.
 fn cmp_float_int(f: f64, i: IntOperand) -> Option<Ordering> {
     if f.is_nan() {
         return None;
@@ -223,7 +223,7 @@ pub fn check_int_in_dtype_range(value: i64, dtype: DType) -> Result<(), ScalarEr
 }
 
 /// Reject an unsigned-integer bound that does not fit `dtype`'s exact integer
-/// range. `Uint64` accepts the full `u64`; signed dtypes additionally reject
+/// range. `Uint64` accepts the full `u64`; signed dtypes also reject
 /// values above their (non-negative) maximum. Float dtypes accept any `u64`.
 pub fn check_uint_in_dtype_range(value: u64, dtype: DType) -> Result<(), ScalarError> {
     if dtype == DType::Unspecified {

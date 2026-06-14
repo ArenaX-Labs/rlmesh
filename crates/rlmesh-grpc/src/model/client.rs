@@ -420,7 +420,7 @@ impl ModelClient {
                 Err(crate::error::status_to_grpc_error(status))
             }
             Err(_) => {
-                // The pump dropped our sender without sending — the stream closed.
+                // The pump dropped our sender without sending; the stream closed.
                 tracing::error!(
                     request_id = %request_id,
                     request_kind,
