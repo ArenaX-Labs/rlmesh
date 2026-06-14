@@ -12,6 +12,14 @@ use crate::value::dtype::RlmeshDType;
 #[repr(transparent)]
 pub struct RlmeshContract(pub(crate) EnvContract);
 
+impl RlmeshContract {
+    /// # Safety
+    /// `ptr` must be NULL or a valid `*const RlmeshContract` outliving `'a`.
+    unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a EnvContract> {
+        unsafe { ptr.cast::<EnvContract>().as_ref() }
+    }
+}
+
 /// An opaque space specification.
 #[repr(transparent)]
 pub struct RlmeshSpaceSpec(pub(crate) SpaceSpec);
@@ -35,14 +43,14 @@ pub unsafe extern "C" fn rlmesh_contract_action_space(
 /// The contract's batch size (`num_envs`), or 0 if `contract` is NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_contract_num_envs(contract: *const RlmeshContract) -> u32 {
-    unsafe { contract.cast::<EnvContract>().as_ref() }.map_or(0, |contract| contract.num_envs)
+    unsafe { RlmeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
 }
 
 fn space_ptr(
     contract: *const RlmeshContract,
     pick: impl FnOnce(&EnvContract) -> Option<&SpaceSpec>,
 ) -> *const RlmeshSpaceSpec {
-    match unsafe { contract.cast::<EnvContract>().as_ref() } {
+    match unsafe { RlmeshContract::as_ref(contract) } {
         Some(contract) => {
             pick(contract).map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
         }

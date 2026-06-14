@@ -22,19 +22,14 @@ pub const RLMESH_TENSOR_FLAG_READ_ONLY: u64 = 1;
 pub struct RlmeshTensor {
     /// Element 0 (aligned, but do not assume 256-byte alignment).
     pub data: *mut c_void,
-    /// Number of dimensions.
     pub ndim: i32,
     /// Dimension sizes, length `ndim`.
     pub shape: *const i64,
     /// Element-count strides, or NULL for row-major contiguous.
     pub strides: *const i64,
-    /// Element data type.
     pub dtype: RlmeshDType,
-    /// Device type (`RLMESH_DEVICE_CPU`).
     pub device_type: i32,
-    /// Device ordinal (0 on CPU).
     pub device_id: i32,
-    /// Bit flags (`RLMESH_TENSOR_FLAG_READ_ONLY`).
     pub flags: u64,
     /// Producer-owned context dropped by `deleter`; NULL for a borrowed view.
     pub manager_ctx: *mut c_void,

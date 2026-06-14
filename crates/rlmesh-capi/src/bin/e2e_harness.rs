@@ -1,9 +1,6 @@
-//! End-to-end loopback harness: serve a trivial environment, run a compiled C or
-//! C++ model binary against it, and assert it completes an episode.
-//!
-//! Run by `mise run test:cxx` — `e2e_harness <model-binary>`. It is a binary, not
-//! a `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
-//! The model binary is invoked as `<bin> <tcp-address> 1` (one episode).
+//! End-to-end loopback harness: serve a trivial environment, then run a compiled
+//! C/C++ model binary (`<bin> <tcp-address> 1`) against it. A binary, not a
+//! `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
 #![allow(clippy::print_stderr)]
 
 use std::process::{Command, ExitCode};
@@ -12,8 +9,7 @@ use async_trait::async_trait;
 use rlmesh::spaces;
 
 /// A minimal single environment: a uint8 `Box[1]` obs/action, one step per
-/// episode (reset → 0, step → 1 then terminated). Copied from the proven fixture
-/// in `crates/rlmesh/src/model/tests.rs`.
+/// episode (reset → 0, step → 1 then terminated).
 struct SmokeEnv {
     obs_space: spaces::SpaceSpec,
     action_space: spaces::SpaceSpec,

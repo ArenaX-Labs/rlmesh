@@ -1,4 +1,4 @@
-//! Round-trip tests exercising the FFI value bridge + codec against the real
+//! Round-trip tests exercising the FFI value handle + codec against the real
 //! core, without a live server.
 #![allow(unsafe_code)] // exercising the raw FFI surface directly.
 
@@ -12,18 +12,22 @@ use crate::codec::{
     RlmeshBytes, rlmesh_bytes_free, rlmesh_decode_batch, rlmesh_encode_batch, rlmesh_values_free,
 };
 use crate::spaces::RlmeshSpaceSpec;
-use crate::value::bridge::{
+use crate::value::dtype::RlmeshDType;
+use crate::value::handle::{
     RlmeshValue, rlmesh_value_as_discrete, rlmesh_value_as_tensor, rlmesh_value_as_text,
     rlmesh_value_box, rlmesh_value_discrete, rlmesh_value_free, rlmesh_value_text,
 };
-use crate::value::dtype::RlmeshDType;
 use crate::value::tensor::RlmeshTensor;
 
 /// Encode one value, decode it back, and run `check` on the single decoded value.
 fn round_trip(spec: &SpaceSpec, value: *mut RlmeshValue, check: impl FnOnce(*const RlmeshValue)) {
     let spec_ptr = std::ptr::from_ref(spec).cast::<RlmeshSpaceSpec>();
     let values: [*const RlmeshValue; 1] = [value];
-    let mut encoded = RlmeshBytes::empty();
+    let mut encoded = RlmeshBytes {
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    };
     assert_eq!(
         unsafe { rlmesh_encode_batch(values.as_ptr(), 1, spec_ptr, &mut encoded) },
         RlmeshStatus::Ok
@@ -57,6 +61,8 @@ const F32: RlmeshDType = RlmeshDType {
     lanes: 1,
 };
 
+const HEADER: &str = include_str!("../include/rlmesh.h");
+
 fn box_spec() -> SpaceSpec {
     BoxSpaceBuilder::unbounded(vec![2, 2])
         .dtype(DType::Float32)
@@ -80,64 +86,34 @@ fn tensor_view(data: &[f32], shape: &[i64]) -> RlmeshTensor {
 }
 
 #[test]
-fn box_value_round_trips_through_the_codec() {
+fn box_value_round_trips() {
     let spec = box_spec();
-    let spec_ptr = std::ptr::from_ref(&spec).cast::<RlmeshSpaceSpec>();
-
     let data: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
     let shape: [i64; 2] = [2, 2];
     let view = tensor_view(&data, &shape);
-
     let value = unsafe { rlmesh_value_box(&view) };
     assert!(!value.is_null(), "rlmesh_value_box returned null");
-
-    // Encode the action value to wire bytes.
-    let values: [*const RlmeshValue; 1] = [value];
-    let mut encoded = RlmeshBytes::empty();
-    let status = unsafe { rlmesh_encode_batch(values.as_ptr(), 1, spec_ptr, &mut encoded) };
-    assert_eq!(status, RlmeshStatus::Ok);
-    assert!(encoded.len > 0);
-
-    // Decode them back (one sub-env).
-    let mut decoded: *mut *mut RlmeshValue = std::ptr::null_mut();
-    let mut count = 0usize;
-    let status = unsafe {
-        rlmesh_decode_batch(
-            encoded.data,
-            encoded.len,
-            spec_ptr,
-            &mut decoded,
-            &mut count,
-        )
-    };
-    assert_eq!(status, RlmeshStatus::Ok);
-    assert_eq!(count, 1);
-
-    // Read the tensor back and confirm the bytes survived the trip.
-    let first = unsafe { *decoded };
-    let mut out = RlmeshTensor {
-        data: std::ptr::null_mut(),
-        ndim: 0,
-        shape: std::ptr::null(),
-        strides: std::ptr::null(),
-        dtype: F32,
-        device_type: 0,
-        device_id: 0,
-        flags: 0,
-        manager_ctx: std::ptr::null_mut(),
-        deleter: None,
-    };
-    let status = unsafe { rlmesh_value_as_tensor(first, &mut out) };
-    assert_eq!(status, RlmeshStatus::Ok);
-    assert_eq!(out.ndim, 2);
-    let recovered = unsafe { std::slice::from_raw_parts(out.data.cast::<f32>(), 4) };
-    assert_eq!(recovered, &data);
-
-    unsafe {
-        rlmesh_values_free(decoded, count);
-        rlmesh_bytes_free(encoded);
-        rlmesh_value_free(value);
-    }
+    round_trip(&spec, value, |decoded| {
+        let mut out = RlmeshTensor {
+            data: std::ptr::null_mut(),
+            ndim: 0,
+            shape: std::ptr::null(),
+            strides: std::ptr::null(),
+            dtype: F32,
+            device_type: 0,
+            device_id: 0,
+            flags: 0,
+            manager_ctx: std::ptr::null_mut(),
+            deleter: None,
+        };
+        assert_eq!(
+            unsafe { rlmesh_value_as_tensor(decoded, &mut out) },
+            RlmeshStatus::Ok
+        );
+        assert_eq!(out.ndim, 2);
+        let recovered = unsafe { std::slice::from_raw_parts(out.data.cast::<f32>(), 4) };
+        assert_eq!(recovered, &data);
+    });
 }
 
 #[test]
@@ -158,10 +134,9 @@ fn discrete_value_round_trips() {
 
 #[test]
 fn header_abi_version_macros_match_crate() {
-    let header = include_str!("../include/rlmesh.h");
     let macro_value = |name: &str| -> String {
         let prefix = format!("#define {name} ");
-        header
+        HEADER
             .lines()
             .find_map(|line| line.strip_prefix(prefix.as_str()))
             .map(|rest| rest.trim().to_string())
@@ -186,10 +161,9 @@ fn header_dtype_macros_match_core() {
     // The header's `RLMESH_<NAME>` dtype macros are hand-authored; assert each
     // `RLMESH_DTYPE_INIT(code, bits, lanes)` triple still matches what core's
     // `RlmeshDType::from_core` produces, so the C constants can't silently drift.
-    let header = include_str!("../include/rlmesh.h");
     let triple = |name: &str| -> RlmeshDType {
         let prefix = format!("#define {name} RLMESH_DTYPE_INIT(");
-        let rest = header
+        let rest = HEADER
             .lines()
             .find_map(|line| line.trim().strip_prefix(prefix.as_str()))
             .unwrap_or_else(|| panic!("dtype macro {name} present in header"));

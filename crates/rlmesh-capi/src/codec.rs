@@ -11,7 +11,7 @@ use rlmesh_spaces::{BinaryPayload, SpaceSpec, SpaceValue, contains};
 
 use crate::abi::status::{CapiError, RlmeshStatus, guard};
 use crate::spaces::RlmeshSpaceSpec;
-use crate::value::bridge::{RlmeshValue, into_handle};
+use crate::value::handle::{RlmeshValue, into_handle};
 
 /// An owned byte buffer produced by the capi (e.g. `rlmesh_encode_batch`). Free
 /// with `rlmesh_bytes_free`.
@@ -19,7 +19,6 @@ use crate::value::bridge::{RlmeshValue, into_handle};
 pub struct RlmeshBytes {
     /// Buffer start, or NULL when empty.
     pub data: *mut u8,
-    /// Length in bytes.
     pub len: usize,
     /// Allocation capacity (do not modify).
     pub cap: usize,
@@ -34,13 +33,6 @@ impl RlmeshBytes {
         };
         std::mem::forget(bytes);
         out
-    }
-    pub(crate) fn empty() -> Self {
-        Self {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        }
     }
     /// # Safety
     /// `self` must originate from `from_vec` and not have been freed.

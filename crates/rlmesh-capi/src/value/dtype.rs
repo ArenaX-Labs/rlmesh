@@ -11,28 +11,37 @@ use rlmesh_spaces::tensor::{DLPackType, dlpack_type, dtype_from_dlpack};
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct RlmeshDType {
-    /// `DLDataTypeCode`.
     pub code: u8,
-    /// Element width in bits.
     pub bits: u8,
-    /// Vector lanes; always 1 for RLMesh tensors.
     pub lanes: u16,
+}
+
+impl From<DLPackType> for RlmeshDType {
+    fn from(t: DLPackType) -> Self {
+        Self {
+            code: t.code,
+            bits: t.bits,
+            lanes: t.lanes,
+        }
+    }
+}
+
+impl From<RlmeshDType> for DLPackType {
+    fn from(t: RlmeshDType) -> Self {
+        Self {
+            code: t.code,
+            bits: t.bits,
+            lanes: t.lanes,
+        }
+    }
 }
 
 impl RlmeshDType {
     pub(crate) fn from_core(dtype: DType) -> Option<Self> {
-        dlpack_type(dtype).map(|t| Self {
-            code: t.code,
-            bits: t.bits,
-            lanes: t.lanes,
-        })
+        dlpack_type(dtype).map(Into::into)
     }
     pub(crate) fn to_core(self) -> Option<DType> {
-        dtype_from_dlpack(DLPackType {
-            code: self.code,
-            bits: self.bits,
-            lanes: self.lanes,
-        })
+        dtype_from_dlpack(self.into())
     }
 }
 

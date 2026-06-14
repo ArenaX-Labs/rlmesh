@@ -20,19 +20,12 @@ pub struct RlmeshValue(pub(crate) SpaceValue);
 #[repr(i32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RlmeshValueKind {
-    /// Continuous tensor.
     Box = 1,
-    /// Single integer.
     Discrete = 2,
-    /// Boolean array.
     MultiBinary = 3,
-    /// Integer array.
     MultiDiscrete = 4,
-    /// String.
     Text = 5,
-    /// Named children.
     Dict = 10,
-    /// Ordered children.
     Tuple = 11,
 }
 
@@ -138,7 +131,6 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RlmeshTensor) -> *mut R
     })
 }
 
-/// Construct a `Discrete` value.
 #[unsafe(no_mangle)]
 pub extern "C" fn rlmesh_value_discrete(value: i64) -> *mut RlmeshValue {
     into_handle(SpaceValue::Discrete(value))

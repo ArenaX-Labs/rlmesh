@@ -46,11 +46,9 @@ pub type RlmeshLaneFn =
 pub struct RlmeshRouteSlot {
     /// Episode this slot belongs to (NUL-terminated).
     pub episode_id: *const c_char,
-    /// Sub-environment index.
     pub env_index: i32,
-    /// Step within the episode.
     pub step: i64,
-    /// Whether this is the first step of a new episode.
+    /// First step of a new episode.
     pub reset: bool,
 }
 
@@ -60,21 +58,17 @@ pub struct RlmeshRouteSlot {
 pub struct RlmeshObservation {
     /// Encoded observation payload, or NULL.
     pub observation: *const u8,
-    /// Length of `observation`.
     pub observation_len: usize,
     /// Spaces/metadata to decode/encode against, or NULL on an unconfigured route.
     pub contract: *const RlmeshContract,
-    /// Batch size for this route.
     pub num_envs: u32,
-    /// Session id (NUL-terminated).
+    /// NUL-terminated.
     pub session_id: *const c_char,
-    /// Route id (NUL-terminated).
+    /// NUL-terminated.
     pub route_id: *const c_char,
-    /// Request id (NUL-terminated).
+    /// NUL-terminated.
     pub request_id: *const c_char,
-    /// Per-sub-env slots.
     pub slots: *const RlmeshRouteSlot,
-    /// Number of `slots`.
     pub num_slots: usize,
 }
 
@@ -87,11 +81,8 @@ pub struct RlmeshModelVtable {
     pub struct_size: usize,
     /// Required: map an observation to an encoded action.
     pub predict: Option<RlmeshPredictFn>,
-    /// A single lane's episode rolled.
     pub on_lane_reset: Option<RlmeshLaneFn>,
-    /// An episode ended.
     pub on_episode_end: Option<RlmeshLaneFn>,
-    /// The worker is shutting down.
     pub on_close: Option<RlmeshLifecycleFn>,
 }
 
@@ -115,14 +106,6 @@ pub unsafe extern "C" fn rlmesh_callback_set_error(message: *const c_char, recov
 struct UserData(*mut c_void);
 // SAFETY: the C author guarantees `user_data` is thread-migration-safe.
 unsafe impl Send for UserData {}
-
-impl UserData {
-    /// The raw pointer. A by-value method so a closure captures the whole
-    /// (`Send`) `UserData`, not the bare `*mut c_void` field.
-    fn raw(self) -> *mut c_void {
-        self.0
-    }
-}
 
 /// An owned model handle: the callback vtable plus a tokio runtime.
 pub struct RlmeshModel {
@@ -152,6 +135,8 @@ impl ModelHandler for CModelHandler {
         let slots = observation.route.slots;
 
         let bytes = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, Error> {
+            // Capture the whole (`Send`) `UserData`, not just the bare pointer field.
+            let user_data = user_data;
             let session = cstring(&session_id);
             let route = cstring(&route_id);
             let request = cstring(&request_id);
@@ -185,11 +170,15 @@ impl ModelHandler for CModelHandler {
                 num_slots: slot_views.len(),
             };
 
-            let mut out = RlmeshBytes::empty();
+            let mut out = RlmeshBytes {
+                data: std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            };
             // Clear first so a decline that doesn't set an error can't report a
             // stale message left on this reused pool thread (B3).
             clear_last_error();
-            let status = unsafe { predict(user_data.raw(), &view, &mut out) };
+            let status = unsafe { predict(user_data.0, &view, &mut out) };
             if status == 0 {
                 Ok(unsafe { out.into_vec() })
             } else {
@@ -239,9 +228,13 @@ impl ModelHandler for CModelHandler {
             return Ok(());
         };
         let user_data = self.user_data;
-        tokio::task::spawn_blocking(move || unsafe { callback(user_data.raw()) })
-            .await
-            .map_err(|err| Error::Internal(format!("on_close task panicked: {err}")))
+        tokio::task::spawn_blocking(move || {
+            // Capture the whole (`Send`) `UserData`, not just the bare pointer field.
+            let user_data = user_data;
+            unsafe { callback(user_data.0) };
+        })
+        .await
+        .map_err(|err| Error::Internal(format!("on_close task panicked: {err}")))
     }
 }
 
@@ -256,8 +249,10 @@ async fn lane_callback(
         return Ok(());
     };
     tokio::task::spawn_blocking(move || {
+        // Capture the whole (`Send`) `UserData`, not just the bare pointer field.
+        let user_data = user_data;
         let id = cstring(&episode_id);
-        unsafe { callback(user_data.raw(), id.as_ptr(), env_index) };
+        unsafe { callback(user_data.0, id.as_ptr(), env_index) };
     })
     .await
     .map_err(|err| Error::Internal(format!("{phase} task panicked: {err}")))
