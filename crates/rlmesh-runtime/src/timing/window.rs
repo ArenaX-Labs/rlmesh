@@ -38,10 +38,6 @@ pub(crate) struct TelemetryWindowAccumulator {
     total_env_step_samples: DurationReservoir,
     round_trip_samples: Vec<Duration>,
     total_round_trip_samples: DurationReservoir,
-    reconnects: u64,
-    total_reconnects: u64,
-    drops: u64,
-    total_drops: u64,
 }
 
 impl Default for TelemetryWindowAccumulator {
@@ -65,10 +61,6 @@ impl Default for TelemetryWindowAccumulator {
             total_env_step_samples: DurationReservoir::default(),
             round_trip_samples: Vec::new(),
             total_round_trip_samples: DurationReservoir::default(),
-            reconnects: 0,
-            total_reconnects: 0,
-            drops: 0,
-            total_drops: 0,
         }
     }
 }
@@ -286,8 +278,6 @@ impl TelemetryWindowAccumulator {
             round_trip_ms_p50: percentile_ms(&self.round_trip_samples, 0.50),
             round_trip_ms_p95: percentile_ms(&self.round_trip_samples, 0.95),
             round_trip_ms_p99: percentile_ms(&self.round_trip_samples, 0.99),
-            reconnects: self.reconnects,
-            drops: self.drops,
         };
         self.reset();
         Some(event)
@@ -331,8 +321,6 @@ impl TelemetryWindowAccumulator {
             round_trip_ms_p50: percentile_ms(self.total_round_trip_samples.samples(), 0.50),
             round_trip_ms_p95: percentile_ms(self.total_round_trip_samples.samples(), 0.95),
             round_trip_ms_p99: percentile_ms(self.total_round_trip_samples.samples(), 0.99),
-            reconnects: self.total_reconnects,
-            drops: self.total_drops,
         })
     }
 
@@ -363,8 +351,6 @@ impl TelemetryWindowAccumulator {
         self.model_wait_samples.clear();
         self.env_step_samples.clear();
         self.round_trip_samples.clear();
-        self.reconnects = 0;
-        self.drops = 0;
     }
 }
 

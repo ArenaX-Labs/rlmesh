@@ -13,183 +13,30 @@ use rlmesh_proto::model::v1::{CloseRouteRequest, PredictRequest, PredictResponse
 use rlmesh_proto::spaces::v1::SpaceValue;
 use tokio_util::sync::CancellationToken;
 
-use crate::episodes::EpisodeRecord;
 use crate::hooks::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, LogEvent, LogLevel,
-    NoopRuntimeHooks, ObservationEmittedEvent, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
+    ObservationEmittedEvent, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
+    SessionStartedEvent, StepCompletedEvent,
 };
-use crate::route::requests::RequestPhase;
 use crate::spec::{RuntimeReport, RuntimeSessionSpec};
-use crate::state::{RouteSnapshot, RouteState, StartedEpisode};
+use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
 use crate::timing::{RuntimeTiming, StepTimingSample};
 
-/// Type-erased structured error preserved as the `#[source]` of RPC failures.
-pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+mod error;
 
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum RuntimeError {
-    #[error("invalid runtime session spec: {0}")]
-    InvalidSpec(String),
+pub use error::RuntimeError;
 
-    #[error(
-        "{operation} timed out on route {route_id} component {component_id} at runtime step {step} after {timeout:?}"
-    )]
-    OperationTimeout {
-        route_id: String,
-        component_id: String,
-        operation: &'static str,
-        step: i64,
-        timeout: Duration,
-    },
-
-    #[error("route {route_id} cancelled at runtime step {step}: {reason}")]
-    RouteCancelled {
-        route_id: String,
-        step: i64,
-        reason: String,
-    },
-
-    #[error(
-        "environment {operation} failed at runtime step {step}: {message}. If the source is 'transport error: connection closed', the environment server exited, crashed, or received SIGTERM before replying; inspect the environment container logs immediately before the runtime error timestamp"
-    )]
-    EnvRpc {
-        operation: &'static str,
-        step: i64,
-        message: String,
-        /// Whether the underlying transport error is retryable. Captured at
-        /// construction by the adapter, which owns the structured error.
-        recoverable: bool,
-        /// The structured underlying error, preserved so callers can downcast
-        /// or inspect the chain. `rlmesh-runtime` does not depend on
-        /// `rlmesh-grpc`, so the concrete type is erased here.
-        #[source]
-        source: Option<BoxError>,
-    },
-
-    #[error("model endpoint {component_id} request failed: {message}")]
-    ModelRpc {
-        component_id: String,
-        message: String,
-        /// Whether the underlying error is retryable. Captured at construction.
-        recoverable: bool,
-        #[source]
-        source: Option<BoxError>,
-    },
-
-    #[error(
-        "model endpoint {component_id} returned mismatched route identity for request {request_id}"
-    )]
-    ModelRouteMismatch {
-        component_id: String,
-        request_id: String,
-    },
-
-    #[error("protocol error: {0}")]
-    Protocol(String),
-
-    #[error("runtime hook failed: {0}")]
-    Hook(HookError),
-}
-
-impl RuntimeError {
-    pub fn operation_timeout(
-        route_id: impl Into<String>,
-        component_id: impl Into<String>,
-        operation: &'static str,
-        step: i64,
-        timeout: Duration,
-    ) -> Self {
-        Self::OperationTimeout {
-            route_id: route_id.into(),
-            component_id: component_id.into(),
-            operation,
-            step,
-            timeout,
+/// Sends `$event` to the best-effort hook `$method`, logging any failure and
+/// keeping the route moving.
+macro_rules! fan_out_event {
+    ($self:ident, $method:ident, $event:expr) => {
+        if let Err(err) = $self.hooks.$method($event).await {
+            tracing::warn!(
+                concat!("runtime hook ", stringify!($method), " failed: {}"),
+                err
+            );
         }
-    }
-
-    pub fn route_cancelled(
-        route_id: impl Into<String>,
-        step: i64,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self::RouteCancelled {
-            route_id: route_id.into(),
-            step,
-            reason: reason.into(),
-        }
-    }
-
-    /// Constructs an [`EnvRpc`](Self::EnvRpc) error, capturing the underlying
-    /// error's recoverability and preserving it as a structured `#[source]`.
-    pub fn env_rpc<E>(operation: &'static str, step: i64, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::env_rpc_with_recoverability(operation, step, false, source)
-    }
-
-    /// Constructs an [`EnvRpc`](Self::EnvRpc) error with an explicit
-    /// recoverability flag (e.g. from `GrpcError::is_recoverable`), preserving
-    /// the structured source.
-    pub fn env_rpc_with_recoverability<E>(
-        operation: &'static str,
-        step: i64,
-        recoverable: bool,
-        source: E,
-    ) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::EnvRpc {
-            operation,
-            step,
-            message: source.to_string(),
-            recoverable,
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Constructs a [`ModelRpc`](Self::ModelRpc) error, preserving the
-    /// structured source. Recoverability defaults to `false`.
-    pub fn model_rpc<E>(component_id: impl Into<String>, source: E) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::model_rpc_with_recoverability(component_id, false, source)
-    }
-
-    /// Constructs a [`ModelRpc`](Self::ModelRpc) error with an explicit
-    /// recoverability flag, preserving the structured source.
-    pub fn model_rpc_with_recoverability<E>(
-        component_id: impl Into<String>,
-        recoverable: bool,
-        source: E,
-    ) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::ModelRpc {
-            component_id: component_id.into(),
-            message: source.to_string(),
-            recoverable,
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Whether this error is recoverable (retryable).
-    ///
-    /// For RPC failures this reflects the recoverability captured from the
-    /// underlying transport error at construction. All other variants are
-    /// treated as non-recoverable.
-    pub fn is_recoverable(&self) -> bool {
-        match self {
-            Self::EnvRpc { recoverable, .. } | Self::ModelRpc { recoverable, .. } => *recoverable,
-            _ => false,
-        }
-    }
+    };
 }
 
 pub struct RuntimeEnvReset {
@@ -270,27 +117,40 @@ where
         }
     }
 
-    pub fn without_hooks(spec: RuntimeSessionSpec, env: E, model: M) -> Self {
-        Self::new(spec, env, model, Arc::new(NoopRuntimeHooks))
+    fn reset_seeds(&self, reset_generation: u64) -> Vec<i64> {
+        self.seeds_for(reset_generation, 0..self.spec.num_envs)
     }
 
-    fn reset_seeds(&self, reset_generation: u64) -> Vec<i64> {
-        self.spec
-            .base_seed
-            .map(|base_seed| {
-                (0..self.spec.num_envs)
-                    .map(|env_index| {
-                        deterministic_reset_seed(
-                            base_seed,
-                            &self.spec.session_id,
-                            &self.spec.route_id,
-                            reset_generation,
-                            env_index,
-                        )
-                    })
-                    .collect()
+    /// Deterministic seeds for a partial (`reset_subset`) reset, positionally
+    /// aligned to `env_indices`. Empty when no base seed is configured.
+    fn reset_subset_seeds(&self, reset_generation: u64, env_indices: &[i32]) -> Vec<i64> {
+        self.seeds_for(
+            reset_generation,
+            env_indices.iter().map(|&index| index as usize),
+        )
+    }
+
+    /// Deterministic per-lane reset seeds for `env_indices`, positionally
+    /// aligned. Empty when no base seed is configured.
+    fn seeds_for(
+        &self,
+        reset_generation: u64,
+        env_indices: impl Iterator<Item = usize>,
+    ) -> Vec<i64> {
+        let Some(base_seed) = self.spec.base_seed else {
+            return Vec::new();
+        };
+        env_indices
+            .map(|env_index| {
+                deterministic_reset_seed(
+                    base_seed,
+                    &self.spec.session_id,
+                    &self.spec.route_id,
+                    reset_generation,
+                    env_index,
+                )
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Per-lane autoreset convention declared by the served env's contract.
@@ -298,28 +158,6 @@ where
     fn autoreset_mode(&self) -> AutoresetMode {
         AutoresetMode::try_from(self.spec.env_contract.autoreset_mode)
             .unwrap_or(AutoresetMode::Unspecified)
-    }
-
-    /// Deterministic seeds for a partial (`reset_subset`) reset, positionally
-    /// aligned to `env_indices`. Empty when no base seed is configured.
-    fn reset_subset_seeds(&self, reset_generation: u64, env_indices: &[i32]) -> Vec<i64> {
-        self.spec
-            .base_seed
-            .map(|base_seed| {
-                env_indices
-                    .iter()
-                    .map(|&env_index| {
-                        deterministic_reset_seed(
-                            base_seed,
-                            &self.spec.session_id,
-                            &self.spec.route_id,
-                            reset_generation,
-                            env_index as usize,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {
@@ -366,7 +204,15 @@ where
         cancellation: &CancellationToken,
     ) -> Result<RuntimeReport, RuntimeError> {
         let mut timings = RuntimeTiming::default();
-        self.invoke_session_started(state, &self.spec.env_id).await;
+        fan_out_event!(
+            self,
+            session_started,
+            SessionStartedEvent {
+                session_id: state.session_id().to_string(),
+                route: state.route_context(),
+                env_id: self.spec.env_id.clone(),
+            }
+        );
 
         let reset_started = Instant::now();
         let mut reset_generation = 0_u64;
@@ -397,21 +243,26 @@ where
         timings
             .window
             .record_operation_telemetry(state.env_component_id(), reset_ok.telemetry.as_ref());
-        self.invoke_log(
-            state,
-            LogLevel::Info,
-            format!(
-                "env reset complete in {:.0}ms ({} episode(s) ready)",
-                reset_latency.as_secs_f64() * 1000.0,
-                reset_ok
-                    .response
-                    .episode_ids
-                    .iter()
-                    .filter(|value| !value.is_empty())
-                    .count()
-            ),
-        )
-        .await;
+        fan_out_event!(
+            self,
+            log,
+            LogEvent {
+                session_id: state.session_id().to_string(),
+                route: state.route_context(),
+                level: LogLevel::Info,
+                message: format!(
+                    "env reset complete in {:.0}ms ({} episode(s) ready)",
+                    reset_latency.as_secs_f64() * 1000.0,
+                    reset_ok
+                        .response
+                        .episode_ids
+                        .iter()
+                        .filter(|value| !value.is_empty())
+                        .count()
+                ),
+                source: Some("runtime".to_string()),
+            }
+        );
 
         let reset_observation = value_bytes(reset_ok.response.observation.as_ref())?;
         let started_episodes = state.start_episodes(reset_ok.response.episode_ids, false);
@@ -426,7 +277,7 @@ where
             .await?;
         reset_event.observation = transformed_reset_observation.clone();
         reset_msg.observation = transformed_reset_observation.map(bytes_value);
-        self.invoke_observation_emitted(reset_event).await;
+        fan_out_event!(self, observation_emitted, reset_event);
 
         let mut pending_observation_msg = reset_msg;
 
@@ -490,7 +341,7 @@ where
                 .as_ref()
                 .map(|action| action.data.len())
                 .unwrap_or_default();
-            self.invoke_action_received(action_event.clone()).await;
+            fan_out_event!(self, action_received, action_event.clone());
 
             let env_step_started = Instant::now();
             let step_timeout = self.spec.limits.env_step_timeout;
@@ -540,23 +391,26 @@ where
 
             state.record_step();
             let step_snapshot = state.snapshot();
-            self.invoke_step_completed(StepCompletedEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                episode_id: step_snapshot.episode_id.clone(),
-                episode_record_id: step_snapshot.episode_record_id.clone(),
-                step: step_snapshot.step,
-                env_index: step_snapshot.env_index,
-                rewards: step_ok.response.rewards.clone(),
-            })
-            .await;
+            fan_out_event!(
+                self,
+                step_completed,
+                StepCompletedEvent {
+                    session_id: state.session_id().to_string(),
+                    route: state.route_context(),
+                    episode_id: step_snapshot.episode_id.clone(),
+                    episode_record_id: step_snapshot.episode_record_id.clone(),
+                    step: step_snapshot.step,
+                    env_index: step_snapshot.env_index,
+                    rewards: step_ok.response.rewards.clone(),
+                }
+            );
 
             if let Some(event) = timings.maybe_emit_window(
                 state.session_id(),
                 state.route_context(),
                 self.spec.limits.telemetry_window,
             ) {
-                self.invoke_telemetry_window(event).await;
+                fan_out_event!(self, telemetry_window, event);
             }
 
             if !step_ok.response.episode_ids.is_empty() {
@@ -585,23 +439,27 @@ where
             {
                 if let Some(event) = timings.flush_window(state.session_id(), state.route_context())
                 {
-                    self.invoke_telemetry_window(event).await;
+                    fan_out_event!(self, telemetry_window, event);
                 }
                 if let Some(event) =
                     timings.telemetry_summary(state.session_id(), state.route_context())
                 {
-                    self.invoke_telemetry_summary(event).await;
+                    fan_out_event!(self, telemetry_summary, event);
                 }
                 let close_request = state.close_route_request("completed requested episodes");
                 self.shutdown_terminal_route(state, "completed requested episodes", close_request)
                     .await;
-                self.invoke_session_ended(
-                    state,
-                    "completed requested episodes",
-                    state.total_steps(),
-                    state.total_episodes(),
-                )
-                .await;
+                fan_out_event!(
+                    self,
+                    session_ended,
+                    SessionEndedEvent {
+                        session_id: state.session_id().to_string(),
+                        route: state.route_context(),
+                        reason: "completed requested episodes".to_string(),
+                        total_steps: state.total_steps(),
+                        total_episodes: state.total_episodes(),
+                    }
+                );
                 timings.log_summary(state.total_steps(), state.total_episodes());
                 return Ok(RuntimeReport {
                     session_id: state.session_id().to_string(),
@@ -715,8 +573,7 @@ where
             // Emit the transformed observation actually sent to the model, for
             // both step and reset observations, so hooks always see the same
             // payload model.predict receives.
-            self.invoke_observation_emitted(outgoing_observation_event)
-                .await;
+            fan_out_event!(self, observation_emitted, outgoing_observation_event);
 
             pending_observation_msg = obs_msg;
         }
@@ -783,83 +640,49 @@ where
         RuntimeError::route_cancelled(state.route_id(), step, self.cancellation_reason.as_str())
     }
 
-    async fn invoke_session_started(&self, state: &RouteState, env_id: &str) {
-        if let Err(err) = self
-            .hooks
-            .session_started(SessionStartedEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                env_id: env_id.to_string(),
-            })
-            .await
-        {
-            tracing::warn!("runtime hook session_started failed: {err}");
-        }
-    }
-
     async fn invoke_started_episodes(&self, state: &RouteState, episodes: Vec<StartedEpisode>) {
         for episode in episodes {
-            self.invoke_episode_started(state, &episode.episode_id, &episode.record)
-                .await;
-        }
-    }
-
-    async fn invoke_episode_started(
-        &self,
-        state: &RouteState,
-        episode_id: &str,
-        record: &EpisodeRecord,
-    ) {
-        if let Err(err) = self
-            .hooks
-            .episode_started(EpisodeStartedEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                episode_id: episode_id.to_string(),
-                episode_record_id: record.record_id.clone(),
-                episode_index: record.index,
-                env_index: record.env_index,
-                started_from_auto_reset: record.started_from_auto_reset,
-            })
-            .await
-        {
-            tracing::warn!("runtime hook episode_started failed: {err}");
+            let record = &episode.record;
+            fan_out_event!(
+                self,
+                episode_started,
+                EpisodeStartedEvent {
+                    session_id: state.session_id().to_string(),
+                    route: state.route_context(),
+                    episode_id: episode.episode_id.clone(),
+                    episode_record_id: record.record_id.clone(),
+                    episode_index: record.index,
+                    env_index: record.env_index,
+                    started_from_auto_reset: record.started_from_auto_reset,
+                }
+            );
         }
     }
 
     async fn emit_completed_episodes(&self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
         for completed in episodes {
             let record = state.complete_episode(&completed.episode_id);
-            self.invoke_episode_completed(EpisodeCompletedEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                episode_id: completed.episode_id.clone(),
-                episode_record_id: record
-                    .as_ref()
-                    .map(|record| record.record_id.clone())
-                    .unwrap_or_default(),
-                episode_index: record.as_ref().map_or(0, |record| record.index),
-                env_index: completed.env_index,
-                step_count: completed.step_count,
-                cumulative_reward: completed.cumulative_reward,
-                terminated: completed.terminated,
-                truncated: completed.truncated,
-                duration_ms: completed.duration_ms,
-                final_info: completed.final_info.clone(),
-            })
-            .await;
-        }
-    }
-
-    async fn invoke_episode_completed(&self, event: EpisodeCompletedEvent) {
-        if let Err(err) = self.hooks.episode_completed(event).await {
-            tracing::warn!("runtime hook episode_completed failed: {err}");
-        }
-    }
-
-    async fn invoke_action_received(&self, event: ActionReceivedEvent) {
-        if let Err(err) = self.hooks.action_received(event).await {
-            tracing::warn!("runtime hook action_received failed: {err}");
+            fan_out_event!(
+                self,
+                episode_completed,
+                EpisodeCompletedEvent {
+                    session_id: state.session_id().to_string(),
+                    route: state.route_context(),
+                    episode_id: completed.episode_id.clone(),
+                    episode_record_id: record
+                        .as_ref()
+                        .map(|record| record.record_id.clone())
+                        .unwrap_or_default(),
+                    episode_index: record.as_ref().map_or(0, |record| record.index),
+                    env_index: completed.env_index,
+                    step_count: completed.step_count,
+                    cumulative_reward: completed.cumulative_reward,
+                    terminated: completed.terminated,
+                    truncated: completed.truncated,
+                    duration_ms: completed.duration_ms,
+                    final_info: completed.final_info.clone(),
+                }
+            );
         }
     }
 
@@ -876,18 +699,6 @@ where
         }
     }
 
-    async fn invoke_step_completed(&self, event: StepCompletedEvent) {
-        if let Err(err) = self.hooks.step_completed(event).await {
-            tracing::warn!("runtime hook step_completed failed: {err}");
-        }
-    }
-
-    async fn invoke_observation_emitted(&self, event: ObservationEmittedEvent) {
-        if let Err(err) = self.hooks.observation_emitted(event).await {
-            tracing::warn!("runtime hook observation_emitted failed: {err}");
-        }
-    }
-
     async fn invoke_transform_observation(
         &self,
         event: ObservationEmittedEvent,
@@ -898,56 +709,6 @@ where
                 tracing::warn!("runtime hook transform_observation failed: {err}");
                 Err(RuntimeError::Hook(err))
             }
-        }
-    }
-
-    async fn invoke_telemetry_window(&self, event: TelemetryWindowEvent) {
-        if let Err(err) = self.hooks.telemetry_window(event).await {
-            tracing::warn!("runtime hook telemetry_window failed: {err}");
-        }
-    }
-
-    async fn invoke_telemetry_summary(&self, event: TelemetrySummaryEvent) {
-        if let Err(err) = self.hooks.telemetry_summary(event).await {
-            tracing::warn!("runtime hook telemetry_summary failed: {err}");
-        }
-    }
-
-    async fn invoke_log(&self, state: &RouteState, level: LogLevel, message: impl Into<String>) {
-        if let Err(err) = self
-            .hooks
-            .log(LogEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                level,
-                message: message.into(),
-                source: Some("runtime".to_string()),
-            })
-            .await
-        {
-            tracing::warn!("runtime hook log failed: {err}");
-        }
-    }
-
-    async fn invoke_session_ended(
-        &self,
-        state: &RouteState,
-        reason: &str,
-        total_steps: i64,
-        total_episodes: i64,
-    ) {
-        if let Err(err) = self
-            .hooks
-            .session_ended(SessionEndedEvent {
-                session_id: state.session_id().to_string(),
-                route: state.route_context(),
-                reason: reason.to_string(),
-                total_steps,
-                total_episodes,
-            })
-            .await
-        {
-            tracing::warn!("runtime hook session_ended failed: {err}");
         }
     }
 

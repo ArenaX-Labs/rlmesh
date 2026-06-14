@@ -9,7 +9,6 @@ pub mod hooks;
 pub mod spec;
 
 mod episodes;
-mod route;
 mod state;
 mod timing;
 
@@ -18,11 +17,10 @@ pub use driver::{
     RuntimeModelPrediction,
 };
 pub use hooks::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    LogEvent, LogLevel, MetricKind, MetricSummary, ModelConnectedEvent, NoopRuntimeHooks,
-    ObservationEmittedEvent, RuntimeHookChain, RuntimeHooks, RuntimeRouteContext,
-    SessionEndedEvent, SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
-    TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError, LogEvent, LogLevel,
+    MetricKind, MetricSummary, NoopRuntimeHooks, ObservationEmittedEvent, RuntimeHooks,
+    RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 

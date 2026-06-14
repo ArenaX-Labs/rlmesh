@@ -46,11 +46,6 @@ pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
     client.trim() == PROTOCOL_GENERATION && server.trim() == PROTOCOL_GENERATION
 }
 
-/// Return whether a workflow edition is supported.
-pub fn is_workflow_edition_supported(edition: &str) -> bool {
-    SUPPORTED_WORKFLOW_EDITIONS.contains(&edition.trim())
-}
-
 /// Select the workflow edition governing a session from a peer's offer.
 ///
 /// Returns the highest edition both peers support; the zero-padded `YYYY.MM`
@@ -79,18 +74,6 @@ pub fn capability_map(names: &[&str]) -> HashMap<String, String> {
     names
         .iter()
         .map(|name| ((*name).to_string(), "true".to_string()))
-        .collect()
-}
-
-/// Return missing required capability names.
-pub fn missing_required_capabilities<'a>(
-    required: &[&'a str],
-    offered: &HashMap<String, String>,
-) -> Vec<&'a str> {
-    required
-        .iter()
-        .copied()
-        .filter(|name| !offered.contains_key(*name))
         .collect()
 }
 
@@ -128,9 +111,8 @@ pub mod model {
 mod tests {
     use super::{
         CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        SUPPORTED_WORKFLOW_EDITIONS, capabilities, capability_map,
-        is_protocol_generation_compatible, is_workflow_edition_supported,
-        missing_required_capabilities, negotiate_workflow_edition, supported_workflow_editions,
+        SUPPORTED_WORKFLOW_EDITIONS, is_protocol_generation_compatible, negotiate_workflow_edition,
+        supported_workflow_editions,
     };
 
     fn offer(editions: &[&str]) -> Vec<String> {
@@ -165,20 +147,11 @@ mod tests {
 
     #[test]
     fn current_workflow_edition_is_supported() {
-        assert!(is_workflow_edition_supported(CURRENT_WORKFLOW_EDITION));
         assert_eq!(SUPPORTED_WORKFLOW_EDITIONS, &[CURRENT_WORKFLOW_EDITION]);
         assert_eq!(
             supported_workflow_editions(),
             vec![CURRENT_WORKFLOW_EDITION.to_string()]
         );
-    }
-
-    #[test]
-    fn unknown_workflow_edition_is_not_supported() {
-        assert!(!is_workflow_edition_supported(""));
-        assert!(!is_workflow_edition_supported("2026"));
-        assert!(!is_workflow_edition_supported("2026.11"));
-        assert!(!is_workflow_edition_supported("2027.01"));
     }
 
     #[test]
@@ -210,20 +183,6 @@ mod tests {
         assert_eq!(
             negotiate_workflow_edition(&offer(&["2026.11", "2027.01"])),
             None
-        );
-    }
-
-    #[test]
-    fn capability_helpers_report_missing_required_features() {
-        let offered = capability_map(&[capabilities::ENV_SERVICE_V1, capabilities::SPACES_CORE_V1]);
-
-        assert_eq!(
-            missing_required_capabilities(&[capabilities::ENV_SERVICE_V1], &offered),
-            Vec::<&str>::new()
-        );
-        assert_eq!(
-            missing_required_capabilities(&[capabilities::MODEL_SERVICE_V1], &offered),
-            vec![capabilities::MODEL_SERVICE_V1]
         );
     }
 }
