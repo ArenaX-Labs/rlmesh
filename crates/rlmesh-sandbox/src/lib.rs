@@ -41,6 +41,13 @@ pub struct SandboxOptions {
     /// inputs. Delivered at `docker run` time, never baked, so they do not enter
     /// the build hash (one image serves every checkpoint).
     pub mounts: Vec<(String, String)>,
+    /// Opt-in memory ceiling for the build. `None` builds via the default docker
+    /// builder (today's behaviour). A docker size string (e.g. `"20g"`) or the
+    /// literal `"auto"` routes the build through a bounded `docker-container`
+    /// buildx builder so an OOM is a clean cgroup-local build failure instead of
+    /// a host freeze. Host-relative, never baked, so it stays out of the build
+    /// hash -- the same exclusion as `mounts`.
+    pub build_memory: Option<String>,
 }
 
 impl Default for SandboxOptions {
@@ -57,6 +64,7 @@ impl Default for SandboxOptions {
             allow_unpinned_hf: false,
             context_root: None,
             mounts: Vec::new(),
+            build_memory: None,
         }
     }
 }
@@ -94,6 +102,19 @@ impl SandboxOptions {
             .or_else(|| std::env::var("RLMESH_SANDBOX_BASE_IMAGE").ok())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_BASE_IMAGE.to_string())
+    }
+
+    /// The requested build memory ceiling: field, else
+    /// `RLMESH_SANDBOX_BUILD_MEMORY`, else `None`. The raw value (a docker size
+    /// string or the literal `"auto"`/`"off"`) is interpreted by the docker
+    /// backend; this only applies the field-over-env precedence, mirroring
+    /// [`resolved_base_image`](Self::resolved_base_image).
+    pub fn resolved_build_memory(&self) -> Option<String> {
+        self.build_memory
+            .clone()
+            .or_else(|| std::env::var("RLMESH_SANDBOX_BUILD_MEMORY").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
     }
 
     fn resolved_rlmesh_package(&self, base_image: &str) -> Result<ResolvedRlmeshPackage> {
@@ -146,6 +167,9 @@ pub(crate) struct EffectiveSandboxSpec {
     pub recipe: Option<recipe::Recipe>,
     /// The recipe author's source-tree root, for `ProjectInstall` staging.
     pub context_root: Option<PathBuf>,
+    /// Opt-in build memory ceiling (see [`SandboxOptions::build_memory`]).
+    /// Excluded from `build_hash` -- host-relative, never baked into the image.
+    pub build_memory: Option<String>,
     pub build_hash: String,
 }
 
@@ -180,6 +204,7 @@ impl EffectiveSandboxSpec {
             _ => None,
         };
         let context_root = options.context_root.clone();
+        let build_memory = options.resolved_build_memory();
 
         let recipe_base = recipe.as_ref().and_then(|r| r.build.base.clone());
         let base_image = match recipe_base {
@@ -256,6 +281,7 @@ impl EffectiveSandboxSpec {
             vectorization_mode,
             recipe,
             context_root,
+            build_memory,
             build_hash,
         })
     }

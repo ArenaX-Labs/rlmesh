@@ -70,6 +70,7 @@ class SandboxModel:
         artifacts: Sequence[ArtifactInput] = (),
         trust_remote_code: bool = False,
         allow_unpinned_hf: bool = False,
+        build_memory: str | None = None,
     ) -> None:
         import json
 
@@ -92,6 +93,7 @@ class SandboxModel:
             allow_unpinned_hf=allow_unpinned_hf,
             context_root=context_root,
             mounts_json=json.dumps(mounts) if mounts else None,
+            build_memory=build_memory,
         )
         self._address = info["address"]
         self._container_id = info["container_id"]

@@ -64,11 +64,34 @@ impl DockerBackend {
         let tempdir = tempfile::tempdir().context("failed to create sandbox build context")?;
         self.write_build_context(spec, &tempdir)?;
 
-        let output = Command::new("docker")
-            .args(["build", "-t", &image_tag, "."])
-            .current_dir(tempdir.path())
-            .output()
-            .context("failed to invoke docker build")?;
+        // Opt-in: when a build memory ceiling is requested, route the build
+        // through a bounded `docker-container` buildx builder so an OOM is a
+        // clean cgroup-local build failure instead of a host freeze. Wrapping the
+        // `docker` CLI in a systemd scope does NOT work -- the build runs in the
+        // daemon's own cgroup (system.slice), a sibling of the CLI, so only a
+        // builder whose cgroup contains the work can bound it. Without a ceiling
+        // we keep the default builder (today's behaviour).
+        let build_memory = match spec.build_memory.as_deref() {
+            Some(raw) => resolve_build_memory(raw)?,
+            None => None,
+        };
+        let output = match &build_memory {
+            Some(memory) => {
+                let builder = ensure_bounded_builder(memory)?;
+                Command::new("docker")
+                    .args([
+                        "buildx", "build", "--builder", &builder, "--load", "-t", &image_tag, ".",
+                    ])
+                    .current_dir(tempdir.path())
+                    .output()
+                    .context("failed to invoke docker buildx build")?
+            }
+            None => Command::new("docker")
+                .args(["build", "-t", &image_tag, "."])
+                .current_dir(tempdir.path())
+                .output()
+                .context("failed to invoke docker build")?,
+        };
         if !output.status.success() {
             bail!("docker build failed:\n{}", command_output(&output));
         }
@@ -641,6 +664,158 @@ fn command_output(output: &std::process::Output) -> String {
     sections.join("\n")
 }
 
+/// Fixed cushion left for the already-running host (desktop + services) when
+/// `build_memory="auto"` computes the ceiling. The box is never idle, so a
+/// percentage cap would still co-exhaust with the desktop -- the trap that froze
+/// the host. Leave a flat headroom instead.
+const BUILD_MEMORY_HEADROOM: u64 = 8 * 1024 * 1024 * 1024;
+/// Floor so a small box still gets a usable (if tight) build ceiling.
+const BUILD_MEMORY_FLOOR: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Interpret a requested `build_memory` value into a concrete `--driver-opt
+/// memory=` value, or `None` to use the default builder. `"auto"` sizes a
+/// ceiling from host RAM; `"off"`/`"none"`/`"unbounded"`/empty opt out; a docker
+/// size string (e.g. `"20g"`) passes through. A non-size string (typo) errors up
+/// front rather than failing confusingly inside `docker buildx create`.
+fn resolve_build_memory(raw: &str) -> Result<Option<String>> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "off" | "none" | "unbounded" => Ok(None),
+        "auto" => Ok(Some(auto_build_memory())),
+        _ => {
+            let value = raw.trim();
+            if is_docker_size(value) {
+                Ok(Some(value.to_string()))
+            } else {
+                bail!(
+                    "build_memory must be a docker size like \"20g\", or \"auto\"/\"off\"; got {value:?}"
+                )
+            }
+        }
+    }
+}
+
+/// Whether `value` is a docker memory size: a positive decimal with an optional
+/// `b`/`k`/`m`/`g`/`t` unit (case-insensitive, optional trailing `b`). Gates the
+/// passthrough above so a typo can't produce a degenerate builder name or a
+/// late, opaque docker error.
+fn is_docker_size(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    let without_b = lower.strip_suffix('b').unwrap_or(&lower);
+    let number = without_b
+        .strip_suffix(['k', 'm', 'g', 't'])
+        .unwrap_or(without_b);
+    !number.is_empty() && number.parse::<f64>().is_ok_and(|n| n > 0.0)
+}
+
+fn auto_build_memory() -> String {
+    let total = host_total_ram_bytes().unwrap_or(BUILD_MEMORY_FLOOR + BUILD_MEMORY_HEADROOM);
+    bounded_build_memory(total).to_string()
+}
+
+fn bounded_build_memory(total_ram: u64) -> u64 {
+    total_ram
+        .saturating_sub(BUILD_MEMORY_HEADROOM)
+        .max(BUILD_MEMORY_FLOOR)
+}
+
+/// Total physical RAM in bytes: `/proc/meminfo` on Linux, else `sysctl
+/// hw.memsize` on macOS. `None` when neither is readable.
+///
+/// macOS caveat: `hw.memsize` is HOST RAM, but a docker build runs in a Linux VM
+/// whose (smaller) RAM is the real ceiling, so an `"auto"` cap here can land
+/// above the VM size. That is safe -- the VM already contains an OOM, so the
+/// host can't freeze and an over-high cap is merely inert. On macOS prefer an
+/// explicit `build_memory` (or raise the VM's memory) over `"auto"`.
+fn host_total_ram_bytes() -> Option<u64> {
+    proc_meminfo_total().or_else(sysctl_memsize)
+}
+
+fn proc_meminfo_total() -> Option<u64> {
+    fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
+}
+
+fn sysctl_memsize() -> Option<u64> {
+    let output = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// The per-ceiling builder name, e.g. `rlmesh-build-20g`. Encoding the cap in
+/// the name keeps a re-requested ceiling stable (reused builder, warm cache)
+/// while a changed ceiling lands a fresh builder. Old ones are stopped
+/// containers costing only disk; clean up with `docker buildx rm`.
+fn builder_name(memory: &str) -> String {
+    let suffix: String = memory
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("rlmesh-build-{suffix}")
+}
+
+/// Inspect-or-create a bounded `docker-container` buildx builder. `memory-swap
+/// == memory` disables swap inside the builder so the cap is a hard wall (prompt
+/// cgroup OOM-kill, no thrash). Returns the builder name to build through.
+fn ensure_bounded_builder(memory: &str) -> Result<String> {
+    let name = builder_name(memory);
+    if builder_exists(&name)? {
+        return Ok(name);
+    }
+    let output = Command::new("docker")
+        .args([
+            "buildx",
+            "create",
+            "--name",
+            &name,
+            "--driver",
+            "docker-container",
+            "--driver-opt",
+            &format!("memory={memory}"),
+            "--driver-opt",
+            &format!("memory-swap={memory}"),
+        ])
+        .output()
+        .context("failed to create bounded docker buildx builder")?;
+    if !output.status.success() {
+        // A concurrent build may have created the builder between our inspect
+        // and create. Re-inspect rather than parse docker's version-varying
+        // error text: if it now exists, the race resolved in our favour.
+        if builder_exists(&name)? {
+            return Ok(name);
+        }
+        bail!(
+            "failed to create bounded docker buildx builder:\n{}",
+            command_output(&output)
+        );
+    }
+    Ok(name)
+}
+
+fn builder_exists(name: &str) -> Result<bool> {
+    Ok(Command::new("docker")
+        .args(["buildx", "inspect", name])
+        .output()
+        .context("failed to inspect docker buildx builder")?
+        .status
+        .success())
+}
+
 fn format_startup_failure_report(
     container_id: &str,
     container_name: &str,
@@ -999,11 +1174,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
-        confirmed_terminal_summary, copy_tree, current_pid_namespace_id, docker_run_args,
-        format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
-        parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
-        render_dockerfile, shell_quote, tail_text,
+        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness, bounded_build_memory,
+        builder_name, confirmed_terminal_summary, copy_tree, current_pid_namespace_id,
+        docker_run_args, format_startup_failure_report, is_docker_size, is_orphan,
+        owner_pid_liveness, parse_container_state, parse_owned_containers, parse_published_port,
+        pid_is_alive, render_bootstrap_json, render_dockerfile, resolve_build_memory, shell_quote,
+        tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -1035,6 +1211,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         }
     }
@@ -1058,6 +1235,39 @@ mod tests {
         // image, so runtime-only parameter changes never invalidate the build.
         assert!(!dockerfile.contains("COPY bootstrap.json"));
         assert!(!dockerfile.contains("bootstrap.json"));
+    }
+
+    #[test]
+    fn build_memory_resolution_ceiling_and_builder_name() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // Headroom math (the trap that froze the host): leave 8 GiB for the
+        // loaded desktop; clamp small boxes up to the 4 GiB floor, never 0.
+        assert_eq!(bounded_build_memory(32 * GIB), 24 * GIB);
+        assert_eq!(bounded_build_memory(8 * GIB), 4 * GIB);
+        assert_eq!(bounded_build_memory(0), 4 * GIB);
+
+        // Opt-out keywords -> no builder; a size string passes through; "auto"
+        // expands to a concrete byte count.
+        assert_eq!(resolve_build_memory("off").unwrap(), None);
+        assert_eq!(resolve_build_memory("").unwrap(), None);
+        assert_eq!(resolve_build_memory("20g").unwrap().as_deref(), Some("20g"));
+        assert!(
+            resolve_build_memory("auto")
+                .unwrap()
+                .is_some_and(|m| m.parse::<u64>().is_ok())
+        );
+        // A typo'd size is rejected up front, not handed to docker.
+        for bad in ["garbage", ";;;", "20 g", "-5g", "0"] {
+            assert!(resolve_build_memory(bad).is_err(), "{bad} should be rejected");
+        }
+
+        // is_docker_size accepts the forms docker accepts and nothing else.
+        assert!(["20g", "2048m", "1.5g", "1073741824", "512k", "1t"].iter().all(|s| is_docker_size(s)));
+        assert!(!["", "g", "0", "-5g", "garbage", "20 g", "b"].iter().any(|s| is_docker_size(s)));
+
+        // Builder name encodes the cap and is a valid buildx name.
+        assert_eq!(builder_name("20g"), "rlmesh-build-20g");
+        assert_eq!(builder_name("25769803776"), "rlmesh-build-25769803776");
     }
 
     #[test]
@@ -1394,6 +1604,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1445,6 +1656,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1504,6 +1716,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: Some(parsed),
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         }
     }

@@ -16,7 +16,7 @@ use rlmesh_sandbox::{
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None, mounts_json: str | None = None) -> SandboxRunInfo: ...
+def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None, mounts_json: str | None = None, build_memory: str | None = None) -> SandboxRunInfo: ...
 "#
     )
 )]
@@ -37,7 +37,8 @@ def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_pack
         recipe_json = None,
         recipe_provenance = None,
         context_root = None,
-        mounts_json = None
+        mounts_json = None,
+        build_memory = None
     )
 )]
 pub fn sandbox_start_env(
@@ -56,6 +57,7 @@ pub fn sandbox_start_env(
     recipe_provenance: Option<&str>,
     context_root: Option<&str>,
     mounts_json: Option<&str>,
+    build_memory: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let source = source.to_string();
     let base_image = base_image.map(str::to_owned);
@@ -66,6 +68,7 @@ pub fn sandbox_start_env(
     let recipe_json = recipe_json.map(str::to_owned);
     let recipe_provenance = recipe_provenance.map(str::to_owned);
     let context_root = context_root.map(PathBuf::from);
+    let build_memory = build_memory.map(str::to_owned);
     let mounts = parse_mounts_json(mounts_json)?;
     let vectorization_mode = VectorizationMode::parse(vectorization_mode)
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -89,6 +92,7 @@ pub fn sandbox_start_env(
                 allow_unpinned_hf,
                 context_root,
                 mounts,
+                build_memory,
             },
         )
         .map_err(|err| err.to_string())?;

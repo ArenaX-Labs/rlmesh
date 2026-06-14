@@ -220,6 +220,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         allow_unpinned_hf: bool = False,
         num_envs: int = 1,
         vectorization_mode: str | None = None,
+        build_memory: str | None = None,
         task: str | None = None,
         config: Mapping[str, object] | str | PathLike[str] | None = None,
         capabilities: Sequence[str] | None = None,
@@ -251,6 +252,7 @@ class SandboxSessionBase(Generic[RemoteT]):
             allow_unpinned_hf=allow_unpinned_hf,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
+            build_memory=build_memory,
             gym_make_kwargs=gym_make_kwargs,
         )
         try:
@@ -370,6 +372,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         imports: Sequence[str] | None = None,
         trust_remote_code: bool = False,
         allow_unpinned_hf: bool = False,
+        build_memory: str | None = None,
         task: str | None = None,
         config: Mapping[str, object] | str | PathLike[str] | None = None,
         capabilities: Sequence[str] | None = None,
@@ -389,6 +392,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
             allow_unpinned_hf=allow_unpinned_hf,
             num_envs=1,
             vectorization_mode=None,
+            build_memory=build_memory,
             task=task,
             config=config,
             capabilities=capabilities,
@@ -507,6 +511,7 @@ class SandboxVectorEnvBase(
         imports: Sequence[str] | None = None,
         trust_remote_code: bool = False,
         allow_unpinned_hf: bool = False,
+        build_memory: str | None = None,
         task: str | None = None,
         config: Mapping[str, object] | str | PathLike[str] | None = None,
         capabilities: Sequence[str] | None = None,
@@ -525,6 +530,7 @@ class SandboxVectorEnvBase(
             allow_unpinned_hf=allow_unpinned_hf,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
+            build_memory=build_memory,
             task=task,
             config=config,
             capabilities=capabilities,
@@ -783,6 +789,7 @@ def _start_sandbox(
     allow_unpinned_hf: bool,
     num_envs: int,
     vectorization_mode: str | None,
+    build_memory: str | None = None,
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
     display, recipe_json, provenance, context_root = _resolve_recipe_source(
@@ -824,6 +831,7 @@ def _start_sandbox(
             vectorization_mode=vectorization_mode,
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,
+            build_memory=build_memory,
             **recipe_kwargs,
         ),
     )
