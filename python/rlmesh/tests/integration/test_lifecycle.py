@@ -936,7 +936,7 @@ def test_model_run_close_env_requests_shutdown(monkeypatch: pytest.MonkeyPatch) 
     finally:
         server.shutdown()
 
-    assert shutdown_reasons == ["local model run complete"]
+    assert shutdown_reasons == ["model run complete"]
 
 
 def test_model_lifecycle_callbacks_are_zero_argument() -> None:

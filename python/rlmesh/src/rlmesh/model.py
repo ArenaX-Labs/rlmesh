@@ -1,8 +1,8 @@
-"""Shared Python model wrapper."""
+"""Shared Python model wrapper: construct from any source, eval against an env, serve."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast
 
 from ._values import ValueBridge
@@ -11,6 +11,9 @@ from .types import Value
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
 
+    from .models._eval import RunResult
+    from .recipes._schema import ArtifactInput
+
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 LifecycleCallback = Callable[[], None]
@@ -18,50 +21,82 @@ PredictFn = Callable[[ObsT], ActT]
 
 
 class ModelBase(Generic[ObsT, ActT]):
-    """Wrap a Python prediction function as an RLMesh model worker.
+    """A model: a predict callable, or the ``ModelRecipe`` it is built from.
 
-    A model worker receives observations from an RLMesh environment endpoint,
-    calls ``predict_fn`` once per observation, and returns the encoded action to
-    the runtime loop.
+    ``run(env, seeds=...)`` drives the model against an env and returns a typed
+    :class:`RunResult` -- it resolves the adapter from the env's published tags and
+    this model's spec, so ``predict`` works in the model's own input/output format
+    with no per-env glue. ``serve()`` hosts the model as an endpoint for the runtime
+    to dial.
 
     Args:
-        predict_fn: Callable that maps one decoded observation to one action.
-        on_reset: Optional callback invoked when the environment resets.
-        on_episode_end: Optional callback invoked when an episode ends.
-        on_close: Optional callback invoked when the model worker closes.
+        source: A predict callable, a ``ModelRecipe`` (class or instance), a
+            ``kind='model'`` Recipe, or a registered model name. A recipe carries
+            its own spec, lifecycle, and weight mounts.
+        spec: Optional :class:`rlmesh.adapters.ModelSpec` for a callable source
+            (a recipe declares its own); makes this an *adapted* model.
+        on_reset / on_episode_end / on_close: Optional lifecycle callbacks.
+        artifacts / load_kwargs: Per-run overrides applied when ``source`` is a
+            recipe constructed in-process.
+        trust_entrypoints: Allow ``module:callable`` custom-input entrypoints in a
+            spec to be imported during adapter resolution.
 
     Examples:
         >>> from rlmesh.numpy import Model
-        >>> model = Model(lambda observation: 0)
-        >>> model.run("127.0.0.1:5555", max_episodes=1)
+        >>> result = Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0])
+        >>> result.mean_reward
+        0.0
     """
 
     _bridge: ClassVar[ValueBridge]
+    #: Framework remote-env client used when ``run`` is given a bare address.
+    _remote_env_cls: ClassVar[type | None] = None
 
     def __init__(
         self,
-        predict_fn: PredictFn[ObsT, ActT],
+        source: Callable[..., object] | object,
         *,
+        spec: object | None = None,
         on_reset: LifecycleCallback | None = None,
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
+        artifacts: Sequence[ArtifactInput] = (),
+        load_kwargs: Mapping[str, object] | None = None,
+        trust_entrypoints: bool = False,
     ) -> None:
         self._bridge.ensure_available()
+        from .models._eval import coerce_model
+
+        predict, resolved_spec, coerced_reset, coerced_close, policy = coerce_model(
+            source,
+            spec=spec,
+            artifacts=tuple(artifacts),
+            load_kwargs=dict(load_kwargs) if load_kwargs else None,
+        )
+        self._raw_predict = cast("PredictFn[ObsT, ActT]", predict)
+        self._spec = resolved_spec
+        self._policy = policy
+        self._on_reset = on_reset if on_reset is not None else coerced_reset
+        self._on_close = on_close if on_close is not None else coerced_close
         self._on_episode_end = on_episode_end
-        self._on_close = on_close
-        self._install_worker(predict_fn, on_reset)
+        self._trust_entrypoints = trust_entrypoints
+        # The native worker (serve/run_local) wraps the raw predict for a plain
+        # model. An adapted (spec'd) model resolves its adapter only at run(env),
+        # so its worker is a fail-loud placeholder -- run() does the adapting.
+        worker_predict = self._raw_predict if resolved_spec is None else _unwired
+        self._install_worker(worker_predict, self._on_reset)
+
+    @property
+    def spec(self) -> object | None:
+        """The model's content: a ``ModelSpec``, ``DELEGATED``, or ``None``."""
+        return self._spec
 
     def _install_worker(
         self,
         predict_fn: PredictFn[ObsT, ActT],
         on_reset: LifecycleCallback | None,
     ) -> None:
-        """Build (or rebuild) the native model worker around ``predict_fn``.
-
-        Subclasses that resolve their predict wrapper lazily -- e.g. an
-        adapter bound to an environment only at ``run`` time -- call this to
-        install the final worker before running.
-        """
+        """Build the native model worker around ``predict_fn`` (the serve path)."""
         try:
             from rlmesh._rlmesh import PyModel
         except ImportError as e:  # pragma: no cover - import guard
@@ -79,98 +114,83 @@ class ModelBase(Generic[ObsT, ActT]):
             on_close=self._on_close,
         )
 
-    def run_local(self, env_address: str, *, token: str = "") -> None:
-        """Run against a remote environment endpoint until interrupted.
+    def run(
+        self,
+        env_or_address: object,
+        *,
+        seeds: Sequence[int] | None = None,
+        max_episodes: int | None = None,
+        instruction: str | None = None,
+        close_env: bool = False,
+        token: str = "",
+    ) -> RunResult:
+        """Drive this model against an env and return a :class:`RunResult`.
 
-        Args:
-            env_address: Environment endpoint address.
-            token: Optional endpoint token.
+        Resolves the adapter from the env's tags and this model's spec, then runs a
+        per-episode loop. ``seeds`` gives a per-episode seed and sets the episode
+        count unless ``max_episodes`` is given; ``instruction`` is written into the
+        model's text inputs each episode. ``env_or_address`` is an env object
+        exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an object with an
+        ``address``, or a bare address string the loop dials.
         """
+        from .models._eval import evaluate
+
+        return evaluate(
+            self._raw_predict,
+            self._spec,
+            env_or_address,
+            seeds=seeds,
+            max_episodes=max_episodes,
+            instruction=instruction,
+            close_env=close_env,
+            token=token,
+            on_reset=self._on_reset,
+            on_episode_end=self._on_episode_end,
+            on_close=self._on_close,
+            trust_entrypoints=self._trust_entrypoints,
+            remote_env_cls=type(self)._remote_env_cls,
+        )
+
+    def serve(
+        self, address: str, *, token: str = "", options: ServeOptions | None = None
+    ) -> None:
+        """Host this model as an endpoint (blocking).
+
+        A spec-less model serves directly. A spec'd model must be driven with
+        ``run(env)``: its adapter resolves from an env contract, which a passive
+        endpoint only sees on dial-in (not implemented), so serving the raw predict
+        would silently skip the spec's transforms.
+        """
+        from .adapters import ModelSpec
+
+        if isinstance(self._spec, ModelSpec):
+            raise NotImplementedError(
+                "serve() cannot host a spec'd model yet: its adapter resolves from "
+                "an env contract, which a served endpoint only sees on dial-in (not "
+                "implemented). Drive it with Model(model).run(env), or use "
+                "spec=DELEGATED if the model adapts its own observations."
+            )
+        self._worker.serve(address, token, options)
+
+    def run_local(self, env_address: str, *, token: str = "") -> None:
+        """Native worker loop against a remote env, until interrupted (no metrics)."""
         self._worker.run_local(env_address, token)
 
     def run_local_for_episodes(
         self, env_address: str, *, token: str = "", max_episodes: int
     ) -> None:
-        """Run against a remote environment endpoint for a fixed episode count.
-
-        Args:
-            env_address: Environment endpoint address.
-            token: Optional endpoint token.
-            max_episodes: Number of episodes to run before returning.
-        """
+        """Native worker loop against a remote env for a fixed episode count (no metrics)."""
         self._worker.run_local_for_episodes(env_address, token, max_episodes)
-
-    def serve(
-        self, address: str, *, token: str = "", options: ServeOptions | None = None
-    ) -> None:
-        """Serve this model as a model endpoint.
-
-        Args:
-            address: Address where the model endpoint should listen.
-            token: Optional endpoint token.
-            options: Optional serve lifecycle options.
-        """
-        self._worker.serve(address, token, options)
-
-    def run(
-        self,
-        env_or_address: object,
-        *,
-        token: str = "",
-        max_episodes: int | None = None,
-        close_env: bool = False,
-    ) -> None:
-        """Run the model against an environment object or address.
-
-        Args:
-            env_or_address: Remote environment object or endpoint address.
-            token: Optional endpoint token.
-            max_episodes: Optional number of episodes to run before returning.
-            close_env: If ``True``, request environment shutdown after the run.
-        """
-        address = _env_address(env_or_address)
-        if max_episodes is None:
-            self._worker.run_local(address, token)
-        else:
-            self._worker.run_local_for_episodes(address, token, max_episodes)
-        if close_env:
-            _shutdown_env(env_or_address, address)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
 
 
-def _env_address(env_or_address: object) -> str:
-    if isinstance(env_or_address, str):
-        return env_or_address
-    address = getattr(env_or_address, "_address", None)
-    if isinstance(address, str):
-        return address
-    # Accept ``address`` exposed as a property or plain string attribute
-    # (as on rlmesh's own EnvServer) in addition to a callable ``address()``.
-    address_attr = getattr(env_or_address, "address", None)
-    if isinstance(address_attr, str):
-        return address_attr
-    if callable(address_attr):
-        value = address_attr()
-        if isinstance(value, str):
-            return value
-    raise TypeError("Model.run() expects a remote env object or address string")
-
-
-def _shutdown_env(env_or_address: object, address: str) -> None:
-    shutdown = getattr(env_or_address, "shutdown", None)
-    if callable(shutdown):
-        try:
-            shutdown("local model run complete")
-        except TypeError:
-            # Some wrappers (e.g. EnvServer.shutdown()) take no reason argument.
-            shutdown()
-        return
-
-    from rlmesh._rlmesh import PyEnvClient
-
-    PyEnvClient(address).shutdown("local model run complete")
+def _unwired(_observation: object) -> object:
+    raise RuntimeError(
+        "this model has a spec; its adapter resolves from the env contract. Drive "
+        "it with .run(env) passing an env object, not serve()/run_local()."
+    )
 
 
 __all__ = ["LifecycleCallback", "ModelBase", "PredictFn"]

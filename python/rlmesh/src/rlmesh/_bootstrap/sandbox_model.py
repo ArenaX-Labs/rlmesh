@@ -41,8 +41,8 @@ def main(
     document = expect_mapping(spec.get("document"), "bootstrap spec.document")
 
     try:
-        import rlmesh
         from rlmesh._bootstrap.entrypoint import resolve_entrypoint
+        from rlmesh.numpy import Model
         from rlmesh.recipes import Recipe
         from rlmesh.recipes._schema import PyMake
 
@@ -52,7 +52,7 @@ def main(
             return 2
         load = resolve_entrypoint(recipe.make.entrypoint, label="model bootstrap entrypoint")
         policy = load()
-        server = rlmesh.ModelServer(policy)
+        server = Model(policy)
 
         env_address = os.environ.get("RLMESH_ENV_ADDRESS")
         if env_address:

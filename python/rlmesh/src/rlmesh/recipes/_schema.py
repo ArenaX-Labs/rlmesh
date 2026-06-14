@@ -645,7 +645,7 @@ class ArtifactInput:
     A ``uri`` is fetched by the rlmesh artifact resolver into a content-addressed cache
     (root ``$RLMESH_CACHE_DIR``, default ``~/.cache/rlmesh/artifacts``); ``local_dir``
     overrides with an explicit host dir for the local (non-sandbox) path. ``None`` uri
-    means the mount is bound at run time (a ``SandboxModel``/``ModelServer`` launch arg).
+    means the mount is bound at run time (a ``SandboxModel``/``Model`` launch arg).
     """
 
     name: str

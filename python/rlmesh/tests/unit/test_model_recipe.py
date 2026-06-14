@@ -1,4 +1,4 @@
-"""ModelRecipe + ModelServer: authoring, projection, and the local eval loop.
+"""ModelRecipe + Model: authoring, projection, and the local eval loop.
 
 These classes are defined at module level (not in a fixture/local scope) so
 ``to_recipe()``'s import-safety guard is satisfied, exactly like EnvRecipe.
@@ -27,10 +27,10 @@ from rlmesh.models import (
     DELEGATED,
     ArtifactInput,
     ModelRecipe,
-    ModelServer,
     RunResult,
     construct_authored_model,
 )
+from rlmesh.numpy import Model
 from rlmesh.recipes import Build, PipInstall, Recipe, RecipeValidationError
 
 _SPEC = ModelSpec(
@@ -223,11 +223,11 @@ def test_artifact_override_wins(tmp_path: Any) -> None:
     assert policy.ckpt_dir == str(other)
 
 
-# ── the local eval loop (ModelServer.run returns a typed RunResult) ──────────
+# ── the local eval loop (Model.run returns a typed RunResult) ──────────
 
 
 def test_model_server_run_returns_runresult_and_wires_lifecycle() -> None:
-    server = ModelServer(LoopPolicy)
+    server = Model(LoopPolicy)
     env = _LoopEnv(horizon=4)
     result = server.run(env, seeds=[1, 2, 3], close_env=True)
 
@@ -246,7 +246,7 @@ def test_model_server_run_returns_runresult_and_wires_lifecycle() -> None:
 
 def test_run_seeds_threaded_to_env() -> None:
     env = _LoopEnv(horizon=2)
-    ModelServer(LoopPolicy).run(env, seeds=[7])
+    Model(LoopPolicy).run(env, seeds=[7])
     assert env.last_seed == 7
 
 
@@ -254,14 +254,14 @@ def test_run_seeds_threaded_to_env() -> None:
 
 
 def test_spec_none_against_untagged_env_runs() -> None:
-    result = ModelServer(LoopPolicy).run(_LoopEnv(horizon=2))
+    result = Model(LoopPolicy).run(_LoopEnv(horizon=2))
     assert result.num_episodes == 1
 
 
 def test_spec_none_against_tagged_env_fails_loud() -> None:
     tagged = _LoopEnv(contract=_Contract(metadata=dict(_TAGS.to_metadata())))
     with pytest.raises(AdapterResolutionError, match="spec=None"):
-        ModelServer(LoopPolicy).run(tagged)
+        Model(LoopPolicy).run(tagged)
 
 
 def test_delegated_skips_resolution_even_when_tagged() -> None:
@@ -275,7 +275,7 @@ def test_delegated_skips_resolution_even_when_tagged() -> None:
             return observation
 
     tagged = _LoopEnv(horizon=2, contract=_Contract(metadata=dict(_TAGS.to_metadata())))
-    result = ModelServer(SelfAdapt).run(tagged)
+    result = Model(SelfAdapt).run(tagged)
     assert result.num_episodes == 1
 
 
@@ -284,7 +284,7 @@ def test_delegated_skips_resolution_even_when_tagged() -> None:
 
 def test_register_class_and_run_by_name() -> None:
     rlmesh.register(LoopPolicy, overwrite=True)
-    result = ModelServer("policy/loop").run(_LoopEnv(horizon=3))
+    result = Model("policy/loop").run(_LoopEnv(horizon=3))
     assert result.total_steps == 3
 
 
@@ -324,20 +324,13 @@ def test_flat_hf_form_projects_importable_recipe() -> None:
     assert hasattr(reg, cls_name)
 
 
-def test_serve_bind_address_resolution() -> None:
-    assert ModelServer(LoopPolicy, "1.2.3.4:9")._bind_address(None) == "1.2.3.4:9"
-    assert ModelServer(LoopPolicy, host="h", port=5)._bind_address(None) == "h:5"
-    assert ModelServer(LoopPolicy, path="/tmp/s")._bind_address(None) == "unix:///tmp/s"
-    assert ModelServer(LoopPolicy)._bind_address("over:1") == "over:1"
-
-
 # ── the REAL adapter path end-to-end (resolve + transform in the loop) ───────
 
 
 class _TaggedEnv:
     """A steppable env with real gymnasium spaces + published tags.
 
-    Exercises the full O(N+M) path: ModelServer resolves the adapter from this
+    Exercises the full O(N+M) path: Model resolves the adapter from this
     env's tags x the model's spec, then transform_obs/transform_action wrap predict.
     """
 
@@ -396,7 +389,7 @@ class AdaptedPolicy(ModelRecipe):
 
 
 def test_model_server_resolves_and_runs_real_adapter() -> None:
-    server = ModelServer(AdaptedPolicy)
+    server = Model(AdaptedPolicy)
     env = _TaggedEnv(horizon=3)
     result = server.run(env)
     assert result.num_episodes == 1
@@ -427,7 +420,7 @@ def test_instruction_seam_delivers_text_to_model() -> None:
             captured.append(observation.get("task"))
             return np.array([0.0], dtype="float32")
 
-    server = ModelServer(WithText)
+    server = Model(WithText)
     server.run(_TaggedEnv(horizon=2), instruction="pick up the red block")
     assert captured and all(c == "pick up the red block" for c in captured)
 

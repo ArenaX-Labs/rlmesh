@@ -1201,18 +1201,6 @@ def test_tag_without_validation_skips_the_check() -> None:
     assert adapt.EnvTags.from_metadata(env.metadata) == bad
 
 
-def test_model_spec_run_requires_an_env_object() -> None:
-    from rlmesh.numpy import Model
-
-    def predict(payload: dict[str, Any]) -> Any:
-        return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
-
-    model = Model(predict, spec=SMOLVLA)
-    # A bare address carries no contract to resolve the adapter from.
-    with pytest.raises(TypeError, match="env_contract"):
-        model.run("127.0.0.1:5555", max_episodes=1)
-
-
 def test_negative_u32_fields_are_rejected_at_construction() -> None:
     with pytest.raises(ValueError, match="width must be non-negative"):
         adapt.ImageInput("image", width=-1)
@@ -1371,7 +1359,12 @@ def test_stateful_adapter_rejected_on_vector_env() -> None:
         action_space=env.action_space,
         num_envs=2,
     )
-    fake_env: Any = SimpleNamespace(env_contract=contract)
+    # A steppable env-like object; adapter resolution fails before any step.
+    fake_env: Any = SimpleNamespace(
+        env_contract=contract,
+        reset=lambda **_kw: ({}, {}),
+        step=lambda _action: ({}, 0.0, True, False, {}),
+    )
 
     def predict(payload: dict[str, Any]) -> Any:
         return np.zeros(SMOLVLA.action.dim, dtype=np.float32)

@@ -5,7 +5,6 @@
       "EnvServer",
       "Model",
       "ModelRecipe",
-      "ModelServer",
       "Recipe",
       "RemoteEnv",
       "RemoteVectorEnv",
@@ -100,7 +99,7 @@
         "members": {
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -113,9 +112,13 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "ModelRecipe": {
@@ -170,25 +173,6 @@
             "signature": "to_recipe()"
           }
         },
-        "stability": "Stable"
-      },
-      "ModelServer": {
-        "kind": "class",
-        "members": {
-          "run": {
-            "kind": "function",
-            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '')"
-          },
-          "serve": {
-            "kind": "function",
-            "signature": "serve(address: str | None = None, *, token: str = '')"
-          },
-          "spec": {
-            "kind": "property",
-            "signature": "property spec: object | None"
-          }
-        },
-        "signature": "ModelServer(source: Callable[..., Any] | type[ModelRecipe] | ModelRecipe | Recipe | str, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: object | None = None, options: object | None = None, spec: object | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False)",
         "stability": "Stable"
       },
       "Recipe": {
@@ -743,7 +727,7 @@
         "members": {
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -756,9 +740,13 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -1126,7 +1114,7 @@
         "members": {
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -1139,9 +1127,13 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: object | None"
           }
         },
-        "signature": "ModelBase(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None)",
+        "signature": "ModelBase(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False)",
         "stability": "Stable"
       },
       "PredictFn": {
@@ -1171,7 +1163,7 @@
         "members": {
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -1184,9 +1176,13 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(predict_fn: Callable[..., Any], *, spec: ModelSpec | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False)",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -2511,7 +2507,7 @@
         "members": {
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -2524,9 +2520,13 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {

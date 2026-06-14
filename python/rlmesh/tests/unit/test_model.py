@@ -3,62 +3,50 @@ from __future__ import annotations
 import pytest
 
 
-def test_env_address_accepts_private_address_attr() -> None:
-    from rlmesh.model import _env_address
+def test_connect_uses_an_env_like_object_directly() -> None:
+    from rlmesh.models._eval import _connect
 
-    class Remote:
-        _address = "tcp://127.0.0.1:5555"
+    class Env:
+        env_contract = "contract"
 
-    assert _env_address(Remote()) == "tcp://127.0.0.1:5555"
+        def reset(self) -> None: ...
+        def step(self, action: object) -> None: ...
 
-
-def test_env_address_accepts_address_property() -> None:
-    from rlmesh.model import _env_address
-
-    class ServerLike:
-        @property
-        def address(self) -> str:
-            return "tcp://127.0.0.1:6000"
-
-    assert _env_address(ServerLike()) == "tcp://127.0.0.1:6000"
+    env = Env()
+    client, contract, owns = _connect(env, "", None)
+    assert client is env
+    assert contract == "contract"
+    assert owns is False  # caller-owned env objects are not closed by the loop
 
 
-def test_env_address_accepts_plain_address_attr() -> None:
-    from rlmesh.model import _env_address
+def test_connect_rejects_unsupported() -> None:
+    from rlmesh.models._eval import _connect
 
-    class Holder:
-        def __init__(self) -> None:
-            self.address = "tcp://127.0.0.1:7000"
-
-    assert _env_address(Holder()) == "tcp://127.0.0.1:7000"
+    with pytest.raises(TypeError, match="env object, a remote-env object, or an address"):
+        _connect(object(), "", None)
 
 
-def test_env_address_accepts_callable_address() -> None:
-    from rlmesh.model import _env_address
-
-    class Native:
-        def address(self) -> str:
-            return "tcp://127.0.0.1:8000"
-
-    assert _env_address(Native()) == "tcp://127.0.0.1:8000"
-
-
-def test_env_address_rejects_unsupported() -> None:
-    from rlmesh.model import _env_address
-
-    with pytest.raises(TypeError, match="remote env object or address string"):
-        _env_address(object())
-
-
-def test_shutdown_env_falls_back_to_no_arg_shutdown() -> None:
-    from rlmesh.model import _shutdown_env
+def test_shutdown_passes_a_reason_when_accepted() -> None:
+    from rlmesh.models._eval import _shutdown
 
     calls: list[tuple[object, ...]] = []
 
-    class ServerLike:
+    class WithReason:
+        def shutdown(self, reason: str) -> None:
+            calls.append((reason,))
+
+    _shutdown(WithReason())
+    assert calls == [("model run complete",)]
+
+
+def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
+    from rlmesh.models._eval import _shutdown
+
+    calls: list[tuple[object, ...]] = []
+
+    class NoReason:
         def shutdown(self) -> None:
             calls.append(())
 
-    _shutdown_env(ServerLike(), "tcp://127.0.0.1:6000")
-
+    _shutdown(NoReason())
     assert calls == [()]

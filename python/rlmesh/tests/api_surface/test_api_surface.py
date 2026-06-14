@@ -9,7 +9,6 @@ def test_root_namespace_is_small() -> None:
         "EnvServer",
         "Model",
         "ModelRecipe",
-        "ModelServer",
         "Recipe",
         "RemoteEnv",
         "RemoteVectorEnv",
