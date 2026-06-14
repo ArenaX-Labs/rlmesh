@@ -12,6 +12,19 @@ pub struct RuntimeRouteContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvConnectedEvent {
+    pub session_id: String,
+    pub route: RuntimeRouteContext,
+    pub env_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelConnectedEvent {
+    pub session_id: String,
+    pub route: RuntimeRouteContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartedEvent {
     pub session_id: String,
     pub route: RuntimeRouteContext,
@@ -183,6 +196,8 @@ pub struct TelemetryWindowEvent {
     pub round_trip_ms_p50: Option<f64>,
     pub round_trip_ms_p95: Option<f64>,
     pub round_trip_ms_p99: Option<f64>,
+    pub reconnects: u64,
+    pub drops: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,4 +223,6 @@ pub struct TelemetrySummaryEvent {
     pub round_trip_ms_p50: Option<f64>,
     pub round_trip_ms_p95: Option<f64>,
     pub round_trip_ms_p99: Option<f64>,
+    pub reconnects: u64,
+    pub drops: u64,
 }

@@ -278,6 +278,8 @@ impl TelemetryWindowAccumulator {
             round_trip_ms_p50: percentile_ms(&self.round_trip_samples, 0.50),
             round_trip_ms_p95: percentile_ms(&self.round_trip_samples, 0.95),
             round_trip_ms_p99: percentile_ms(&self.round_trip_samples, 0.99),
+            reconnects: 0,
+            drops: 0,
         };
         self.reset();
         Some(event)
@@ -321,6 +323,8 @@ impl TelemetryWindowAccumulator {
             round_trip_ms_p50: percentile_ms(self.total_round_trip_samples.samples(), 0.50),
             round_trip_ms_p95: percentile_ms(self.total_round_trip_samples.samples(), 0.95),
             round_trip_ms_p99: percentile_ms(self.total_round_trip_samples.samples(), 0.99),
+            reconnects: 0,
+            drops: 0,
         })
     }
 

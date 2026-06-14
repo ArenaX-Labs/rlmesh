@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use rlmesh_proto::common::v1::MessageBytes;
 
 use super::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
-    ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
-    StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
+    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
+    ModelConnectedEvent, ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent,
+    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +24,14 @@ impl RuntimeHooks for NoopRuntimeHooks {}
 pub trait RuntimeHooks: Send + Sync {
     // Lifecycle/progress/telemetry/log hooks are best-effort. The runtime logs
     // failures from these hooks and keeps the route moving.
+    async fn env_connected(&self, _event: EnvConnectedEvent) -> Result<(), HookError> {
+        Ok(())
+    }
+
+    async fn model_connected(&self, _event: ModelConnectedEvent) -> Result<(), HookError> {
+        Ok(())
+    }
+
     async fn session_started(&self, _event: SessionStartedEvent) -> Result<(), HookError> {
         Ok(())
     }
