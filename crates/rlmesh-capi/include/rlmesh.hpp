@@ -88,9 +88,11 @@ class Tensor {
     for (int32_t i = 0; i < raw_.ndim; ++i) n *= static_cast<size_t>(raw_.shape[i]);
     return n;
   }
+  /// Flat element pointer for `[0, numel())` — valid only when `is_contiguous()`;
+  /// nullptr for a strided view (walk `shape()`/`strides()` instead).
   template <class T>
   const T* as() const {
-    return static_cast<const T*>(raw_.data);
+    return is_contiguous() ? static_cast<const T*>(raw_.data) : nullptr;
   }
 
  private:
