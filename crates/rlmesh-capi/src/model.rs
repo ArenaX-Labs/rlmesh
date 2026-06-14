@@ -258,6 +258,73 @@ async fn lane_callback(
     .map_err(|err| Error::Internal(format!("{phase} task panicked: {err}")))
 }
 
+/// Read field `T` at `offset` only when `struct_size` covers it (else None), so a
+/// caller that compiled against a smaller header is never read past.
+///
+/// # Safety
+/// `base` points at the caller's vtable allocation of at least `struct_size` bytes.
+unsafe fn vtable_field<T: Copy>(base: *const u8, struct_size: usize, offset: usize) -> Option<T> {
+    (struct_size >= offset.saturating_add(std::mem::size_of::<T>()))
+        .then(|| unsafe { base.add(offset).cast::<T>().read_unaligned() })
+}
+
+/// Read the caller's vtable honoring its `struct_size` (append-only contract):
+/// callbacks past `struct_size` are absent, not garbage read out of bounds.
+///
+/// # Safety
+/// `ptr` is non-NULL and points at a vtable whose first `struct_size` bytes are valid.
+unsafe fn read_vtable(ptr: *const RlmeshModelVtable) -> Result<RlmeshModelVtable, CapiError> {
+    let base = ptr.cast::<u8>();
+    // struct_size is the first repr(C) field (offset 0); the caller set it.
+    let struct_size = unsafe { (*ptr).struct_size };
+    if struct_size == 0 {
+        return Err(CapiError::invalid_arg("vtable struct_size is 0"));
+    }
+    let predict = match unsafe {
+        vtable_field::<Option<RlmeshPredictFn>>(
+            base,
+            struct_size,
+            std::mem::offset_of!(RlmeshModelVtable, predict),
+        )
+    } {
+        None => {
+            return Err(CapiError::invalid_arg(
+                "vtable struct_size too small for predict",
+            ));
+        }
+        Some(None) => return Err(CapiError::invalid_arg("vtable predict is null")),
+        some => some.flatten(),
+    };
+    Ok(RlmeshModelVtable {
+        struct_size,
+        predict,
+        on_lane_reset: unsafe {
+            vtable_field::<Option<RlmeshLaneFn>>(
+                base,
+                struct_size,
+                std::mem::offset_of!(RlmeshModelVtable, on_lane_reset),
+            )
+        }
+        .flatten(),
+        on_episode_end: unsafe {
+            vtable_field::<Option<RlmeshLaneFn>>(
+                base,
+                struct_size,
+                std::mem::offset_of!(RlmeshModelVtable, on_episode_end),
+            )
+        }
+        .flatten(),
+        on_close: unsafe {
+            vtable_field::<Option<RlmeshLifecycleFn>>(
+                base,
+                struct_size,
+                std::mem::offset_of!(RlmeshModelVtable, on_close),
+            )
+        }
+        .flatten(),
+    })
+}
+
 /// Create a model from a callback vtable. `predict` and `struct_size` are
 /// required.
 ///
@@ -270,21 +337,17 @@ pub unsafe extern "C" fn rlmesh_model_new(
     out: *mut *mut RlmeshModel,
 ) -> RlmeshStatus {
     guard(|| {
-        let vtable =
-            unsafe { vtable.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null vtable"))?;
-        if vtable.struct_size == 0 {
-            return Err(CapiError::invalid_arg("vtable struct_size is 0"));
+        if vtable.is_null() {
+            return Err(CapiError::invalid_arg("null vtable"));
         }
-        if vtable.predict.is_none() {
-            return Err(CapiError::invalid_arg("vtable predict is null"));
-        }
+        let vtable = unsafe { read_vtable(vtable) }?;
         let out = unsafe { out.as_mut() }.ok_or_else(|| CapiError::invalid_arg("null out"))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|err| CapiError::internal(format!("failed to build runtime: {err}")))?;
         let model = Box::new(RlmeshModel {
-            vtable: *vtable,
+            vtable,
             user_data: UserData(user_data),
             runtime,
         });

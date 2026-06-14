@@ -37,7 +37,10 @@ impl RlmeshBytes {
     /// # Safety
     /// `self` must originate from `from_vec` and not have been freed.
     pub(crate) unsafe fn into_vec(self) -> Vec<u8> {
-        if self.data.is_null() {
+        // A capi buffer always satisfies cap >= len > 0; a foreign or corrupted
+        // out_action (cap < len, or empty) would make Vec::from_raw_parts UB, so
+        // it is leaked rather than reclaimed into an invalid Vec.
+        if self.data.is_null() || self.cap == 0 || self.cap < self.len {
             Vec::new()
         } else {
             unsafe { Vec::from_raw_parts(self.data, self.len, self.cap) }

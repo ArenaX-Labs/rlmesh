@@ -5,7 +5,7 @@
 
 use rlmesh_spaces::{EnvContract, SpaceSpec};
 
-use crate::abi::status::{CapiError, RlmeshStatus, guard};
+use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_value};
 use crate::value::dtype::RlmeshDType;
 
 /// An opaque environment contract (spaces, id, num_envs, autoreset).
@@ -43,19 +43,23 @@ pub unsafe extern "C" fn rlmesh_contract_action_space(
 /// The contract's batch size (`num_envs`), or 0 if `contract` is NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_contract_num_envs(contract: *const RlmeshContract) -> u32 {
-    unsafe { RlmeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
+    guard_value(0, || {
+        unsafe { RlmeshContract::as_ref(contract) }.map_or(0, |contract| contract.num_envs)
+    })
 }
 
 fn space_ptr(
     contract: *const RlmeshContract,
     pick: impl FnOnce(&EnvContract) -> Option<&SpaceSpec>,
 ) -> *const RlmeshSpaceSpec {
-    match unsafe { RlmeshContract::as_ref(contract) } {
-        Some(contract) => {
-            pick(contract).map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
+    guard_value(std::ptr::null(), || {
+        match unsafe { RlmeshContract::as_ref(contract) } {
+            Some(contract) => {
+                pick(contract).map_or(std::ptr::null(), |spec| (spec as *const SpaceSpec).cast())
+            }
+            None => std::ptr::null(),
         }
-        None => std::ptr::null(),
-    }
+    })
 }
 
 fn spec_ref<'a>(spec: *const RlmeshSpaceSpec) -> Option<&'a SpaceSpec> {
@@ -65,25 +69,36 @@ fn spec_ref<'a>(spec: *const RlmeshSpaceSpec) -> Option<&'a SpaceSpec> {
 /// The space kind as a `SpaceType` discriminant (Box=1 … Tuple=11), or 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_type(spec: *const RlmeshSpaceSpec) -> i32 {
-    spec_ref(spec).map_or(0, |spec| spec.space_type() as i32)
+    guard_value(0, || {
+        spec_ref(spec).map_or(0, |spec| spec.space_type() as i32)
+    })
 }
 
 /// The space's element dtype (`{0,0,0}` if unset/unsupported).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_dtype(spec: *const RlmeshSpaceSpec) -> RlmeshDType {
-    spec_ref(spec)
-        .and_then(|spec| RlmeshDType::from_core(spec.dtype))
-        .unwrap_or(RlmeshDType {
+    guard_value(
+        RlmeshDType {
             code: 0,
             bits: 0,
             lanes: 0,
-        })
+        },
+        || {
+            spec_ref(spec)
+                .and_then(|spec| RlmeshDType::from_core(spec.dtype))
+                .unwrap_or(RlmeshDType {
+                    code: 0,
+                    bits: 0,
+                    lanes: 0,
+                })
+        },
+    )
 }
 
 /// The space's rank (number of dimensions), or 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_space_ndim(spec: *const RlmeshSpaceSpec) -> usize {
-    spec_ref(spec).map_or(0, |spec| spec.shape.len())
+    guard_value(0, || spec_ref(spec).map_or(0, |spec| spec.shape.len()))
 }
 
 /// Copy the space's shape into `out` (capacity `cap`).

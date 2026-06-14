@@ -2,7 +2,7 @@
 //! core, without a live server.
 #![allow(unsafe_code)] // exercising the raw FFI surface directly.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 use rlmesh_spaces::spaces::{BoxSpaceBuilder, DiscreteBuilder, TextBuilder};
 use rlmesh_spaces::{DType, SpaceSpec};
@@ -15,7 +15,8 @@ use crate::spaces::RlmeshSpaceSpec;
 use crate::value::dtype::RlmeshDType;
 use crate::value::handle::{
     RlmeshValue, rlmesh_value_as_discrete, rlmesh_value_as_tensor, rlmesh_value_as_text,
-    rlmesh_value_box, rlmesh_value_discrete, rlmesh_value_free, rlmesh_value_text,
+    rlmesh_value_box, rlmesh_value_dict, rlmesh_value_dict_get, rlmesh_value_discrete,
+    rlmesh_value_free, rlmesh_value_text,
 };
 use crate::value::tensor::RlmeshTensor;
 
@@ -212,4 +213,30 @@ fn text_value_round_trips() {
         let recovered = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
         assert_eq!(recovered, text.as_bytes());
     });
+}
+
+#[test]
+fn dict_get_rejects_null_key() {
+    let key = c"only";
+    let keys: [*const c_char; 1] = [key.as_ptr()];
+    let values: [*mut RlmeshValue; 1] = [rlmesh_value_discrete(7)];
+    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 1) };
+    assert!(!dict.is_null());
+    // A NULL key must return NULL, never dereference it.
+    assert!(unsafe { rlmesh_value_dict_get(dict, std::ptr::null()) }.is_null());
+    assert!(!unsafe { rlmesh_value_dict_get(dict, key.as_ptr()) }.is_null());
+    unsafe { rlmesh_value_free(dict) };
+}
+
+#[test]
+fn dict_with_a_null_child_takes_no_ownership() {
+    // `[valid, NULL]` must fail without adopting `keep`, so the caller still owns
+    // it — freeing it here is a single valid free (the pre-fix code adopted then
+    // freed children on the error path, making this a double free).
+    let keep = rlmesh_value_discrete(1);
+    let keys: [*const c_char; 2] = [c"a".as_ptr(), c"b".as_ptr()];
+    let values: [*mut RlmeshValue; 2] = [keep, std::ptr::null_mut()];
+    let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 2) };
+    assert!(dict.is_null());
+    unsafe { rlmesh_value_free(keep) };
 }

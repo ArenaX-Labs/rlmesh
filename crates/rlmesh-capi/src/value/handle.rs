@@ -9,7 +9,7 @@ use rlmesh_spaces::{SpaceValue, Tensor, dtype_size};
 
 use super::dtype::RlmeshDType;
 use super::tensor::{RLMESH_DEVICE_CPU, RLMESH_TENSOR_FLAG_READ_ONLY, RlmeshTensor};
-use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_ptr};
+use crate::abi::status::{CapiError, RlmeshStatus, guard, guard_ptr, guard_value};
 
 /// An owned RLMesh value. `repr(transparent)` over `SpaceValue` so a borrowed
 /// child (`&SpaceValue`) can be handed out as `*const RlmeshValue`.
@@ -38,17 +38,19 @@ fn value_ref<'a>(value: *const RlmeshValue) -> Result<&'a SpaceValue, CapiError>
 /// The kind of `value`. `value` must be non-NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_kind(value: *const RlmeshValue) -> RlmeshValueKind {
-    match unsafe { value.cast::<SpaceValue>().as_ref() } {
-        Some(SpaceValue::Box(_)) => RlmeshValueKind::Box,
-        Some(SpaceValue::Discrete(_)) => RlmeshValueKind::Discrete,
-        Some(SpaceValue::MultiBinary(_)) => RlmeshValueKind::MultiBinary,
-        Some(SpaceValue::MultiDiscrete(_)) => RlmeshValueKind::MultiDiscrete,
-        Some(SpaceValue::Text(_)) => RlmeshValueKind::Text,
-        Some(SpaceValue::Dict(_)) => RlmeshValueKind::Dict,
-        // A null pointer cannot signal an error through this return type; the
-        // contract requires `value` to be non-NULL. Fall through to Tuple.
-        Some(SpaceValue::Tuple(_)) | None => RlmeshValueKind::Tuple,
-    }
+    guard_value(RlmeshValueKind::Tuple, || {
+        match unsafe { value.cast::<SpaceValue>().as_ref() } {
+            Some(SpaceValue::Box(_)) => RlmeshValueKind::Box,
+            Some(SpaceValue::Discrete(_)) => RlmeshValueKind::Discrete,
+            Some(SpaceValue::MultiBinary(_)) => RlmeshValueKind::MultiBinary,
+            Some(SpaceValue::MultiDiscrete(_)) => RlmeshValueKind::MultiDiscrete,
+            Some(SpaceValue::Text(_)) => RlmeshValueKind::Text,
+            Some(SpaceValue::Dict(_)) => RlmeshValueKind::Dict,
+            // A null pointer cannot signal an error through this return type; the
+            // contract requires `value` to be non-NULL. Fall through to Tuple.
+            Some(SpaceValue::Tuple(_)) | None => RlmeshValueKind::Tuple,
+        }
+    })
 }
 
 /// Fill `out` with a borrowed tensor view of a `Box` value (valid while `value`
@@ -210,11 +212,11 @@ pub unsafe extern "C" fn rlmesh_value_multi_discrete(
 /// The element count of a `MultiBinary`/`MultiDiscrete` value, else 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_array_len(value: *const RlmeshValue) -> usize {
-    match unsafe { value.cast::<SpaceValue>().as_ref() } {
+    guard_value(0, || match unsafe { value.cast::<SpaceValue>().as_ref() } {
         Some(SpaceValue::MultiBinary(v)) => v.len(),
         Some(SpaceValue::MultiDiscrete(v)) => v.len(),
         _ => 0,
-    }
+    })
 }
 
 /// Copy a `MultiDiscrete` value's integers into `out` (capacity `cap`).
@@ -266,11 +268,11 @@ pub unsafe extern "C" fn rlmesh_value_copy_multi_binary(
 /// The child count of a `Dict`/`Tuple` value, else 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_value_len(value: *const RlmeshValue) -> usize {
-    match unsafe { value.cast::<SpaceValue>().as_ref() } {
+    guard_value(0, || match unsafe { value.cast::<SpaceValue>().as_ref() } {
         Some(SpaceValue::Tuple(items)) => items.len(),
         Some(SpaceValue::Dict(map)) => map.len(),
         _ => 0,
-    }
+    })
 }
 
 /// Borrow a `Tuple` child by index (valid while `value` lives), or NULL.
@@ -279,12 +281,14 @@ pub unsafe extern "C" fn rlmesh_value_tuple_get(
     value: *const RlmeshValue,
     index: usize,
 ) -> *const RlmeshValue {
-    match unsafe { value.cast::<SpaceValue>().as_ref() } {
-        Some(SpaceValue::Tuple(items)) => items.get(index).map_or(std::ptr::null(), |child| {
-            (child as *const SpaceValue).cast()
-        }),
-        _ => std::ptr::null(),
-    }
+    guard_value(std::ptr::null(), || {
+        match unsafe { value.cast::<SpaceValue>().as_ref() } {
+            Some(SpaceValue::Tuple(items)) => items.get(index).map_or(std::ptr::null(), |child| {
+                (child as *const SpaceValue).cast()
+            }),
+            _ => std::ptr::null(),
+        }
+    })
 }
 
 /// Borrow a `Dict` child by key (valid while `value` lives), or NULL.
@@ -293,14 +297,19 @@ pub unsafe extern "C" fn rlmesh_value_dict_get(
     value: *const RlmeshValue,
     key: *const c_char,
 ) -> *const RlmeshValue {
-    let Some(SpaceValue::Dict(map)) = (unsafe { value.cast::<SpaceValue>().as_ref() }) else {
-        return std::ptr::null();
-    };
-    let Ok(key) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return std::ptr::null();
-    };
-    map.get(key).map_or(std::ptr::null(), |child| {
-        (child as *const SpaceValue).cast()
+    guard_value(std::ptr::null(), || {
+        if key.is_null() {
+            return std::ptr::null();
+        }
+        let Some(SpaceValue::Dict(map)) = (unsafe { value.cast::<SpaceValue>().as_ref() }) else {
+            return std::ptr::null();
+        };
+        let Ok(key) = (unsafe { CStr::from_ptr(key) }).to_str() else {
+            return std::ptr::null();
+        };
+        map.get(key).map_or(std::ptr::null(), |child| {
+            (child as *const SpaceValue).cast()
+        })
     })
 }
 
@@ -333,15 +342,23 @@ pub unsafe extern "C" fn rlmesh_value_dict(
         } else {
             unsafe { std::slice::from_raw_parts(keys, n) }
         };
+        // Decode and validate every key BEFORE taking ownership of any child, so an
+        // invalid key leaves all children owned by the caller (no double-free).
+        let keys: Vec<String> = key_slice
+            .iter()
+            .map(|&key| {
+                if key.is_null() {
+                    return Err(CapiError::invalid_arg("null dict key"));
+                }
+                unsafe { CStr::from_ptr(key) }
+                    .to_str()
+                    .map(str::to_owned)
+                    .map_err(|_| CapiError::invalid_value("dict key must be UTF-8"))
+            })
+            .collect::<Result<_, _>>()?;
         let children = take_children(values, n)?;
-        let mut map = std::collections::BTreeMap::new();
-        for (key, child) in key_slice.iter().zip(children) {
-            let key = unsafe { CStr::from_ptr(*key) }
-                .to_str()
-                .map_err(|_| CapiError::invalid_value("dict key must be UTF-8"))?
-                .to_owned();
-            map.insert(key, child);
-        }
+        let map: std::collections::BTreeMap<String, SpaceValue> =
+            keys.into_iter().zip(children).collect();
         Ok(into_handle(SpaceValue::Dict(map)))
     })
 }
@@ -403,12 +420,13 @@ fn take_children(
     } else {
         unsafe { std::slice::from_raw_parts(children, n) }
     };
-    let mut out = Vec::with_capacity(n);
-    for &child in slice {
-        if child.is_null() {
-            return Err(CapiError::invalid_arg("null child value"));
-        }
-        out.push(unsafe { Box::from_raw(child) }.0);
+    // Validate every pointer BEFORE adopting any, so a NULL anywhere leaves all
+    // children owned by the caller (all-or-nothing transfer; no partial free).
+    if slice.iter().any(|&child| child.is_null()) {
+        return Err(CapiError::invalid_arg("null child value"));
     }
-    Ok(out)
+    Ok(slice
+        .iter()
+        .map(|&child| unsafe { Box::from_raw(child) }.0)
+        .collect())
 }

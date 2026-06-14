@@ -143,6 +143,21 @@ where
     }
 }
 
+/// Panic boundary for value-returning exports (no status channel): on a panic,
+/// record it as the last error and return `default` instead of unwinding into C.
+pub(crate) fn guard_value<T, F>(default: T, f: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(value) => value,
+        Err(payload) => {
+            store_last_error(&panic_message(payload), false);
+            default
+        }
+    }
+}
+
 /// Valid until the next RLMesh call on this thread; NULL if none. Read only
 /// after a nonzero status.
 #[unsafe(no_mangle)]
