@@ -21,7 +21,7 @@ pub(super) fn apply_image(
     plan: &ImagePlan,
     raw_obs: &BTreeMap<String, Value>,
 ) -> Result<Value, ApplyError> {
-    let mut image = decode_image(lookup(raw_obs, &plan.env_key)?)?;
+    let mut image = decode_image(lookup(raw_obs, &plan.env_key)?, plan.src_range)?;
     image = to_layout(&image, plan.src_layout, ImageLayout::Hwc)?;
     if plan.flip {
         image = flip_180(&image)?;
@@ -37,9 +37,10 @@ pub(super) fn apply_image(
 /// Return an HWC uint8 tensor from a raw observation value.
 ///
 /// The pipeline operates on 8-bit pixels; the source is converted without
-/// truncation-casting (a `[0, 1]` float image is scaled, not floored to
-/// black).
-pub fn decode_image(value: &Value) -> Result<Tensor, ApplyError> {
+/// truncation-casting. A float image is mapped from its declared `src_range`
+/// into `[0, 255]` (a `[0, 1]` image is scaled, a `[0, 255]` image passes
+/// through), so it is neither floored to black nor saturated to white.
+pub fn decode_image(value: &Value, src_range: Option<(f64, f64)>) -> Result<Tensor, ApplyError> {
     let Value::Tensor(tensor) = value else {
         return Err(ApplyError::new(
             "expected an image array observation value (encoded image bytes \
@@ -49,7 +50,7 @@ pub fn decode_image(value: &Value) -> Result<Tensor, ApplyError> {
     };
     Ok(value::tensor_from_u8(
         tensor.shape().to_vec(),
-        value::to_u8_pixels(tensor),
+        value::to_u8_pixels(tensor, src_range),
     ))
 }
 
@@ -280,15 +281,36 @@ mod tests {
         // A normalized [0, 1] float image must scale into 8-bit, not floor to
         // an all-black image.
         let image = Value::Tensor(value::tensor_from_f32(vec![2, 2, 1], &[0.0, 0.4, 0.6, 1.0]));
-        let decoded = decode_image(&image).expect("decode");
+        let decoded = decode_image(&image, Some((0.0, 1.0))).expect("decode");
         assert_eq!(decoded.dtype(), DType::Uint8);
         assert_eq!(decoded.to_contiguous_bytes().as_ref(), [0u8, 102, 153, 255]);
     }
 
     #[test]
+    fn decode_passes_through_byte_range_float_images() {
+        // A float image already in [0, 255] must NOT be scaled by 255 (which
+        // would saturate every pixel > 1 to white); the declared byte range
+        // maps through unchanged.
+        let image = Value::Tensor(value::tensor_from_f32(
+            vec![2, 2, 1],
+            &[0.0, 64.0, 200.0, 255.0],
+        ));
+        let decoded = decode_image(&image, Some((0.0, 255.0))).expect("decode");
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [0u8, 64, 200, 255]);
+    }
+
+    #[test]
+    fn decode_assumes_normalized_for_unbounded_float_images() {
+        // With no declared range the [0, 1] assumption is kept (back-compat).
+        let image = Value::Tensor(value::tensor_from_f32(vec![1, 1, 2], &[0.0, 1.0]));
+        let decoded = decode_image(&image, None).expect("decode");
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [0u8, 255]);
+    }
+
+    #[test]
     fn decode_passes_through_uint8_images() {
         let image = Value::Tensor(value::tensor_from_u8(vec![1, 1, 3], vec![10, 20, 30]));
-        let decoded = decode_image(&image).expect("decode");
+        let decoded = decode_image(&image, Some((0.0, 255.0))).expect("decode");
         assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30]);
     }
 

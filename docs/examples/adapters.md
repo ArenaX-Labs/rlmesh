@@ -47,14 +47,16 @@ uv run eval.py --model xvla --env libero          # a single pairing
 vla_adapters/
 ├── eval.py            # generic harness: --model X --env Y, any pairing
 ├── models/            # one ModelSpec per checkpoint (smolvla, xvla, act)
-├── envs/              # one EnvTags + spaces per environment (libero, simpler-bridge)
+├── envs/              # one EnvTags + spaces per environment (libero, metaworld, simpler-bridge)
 └── overrides/         # complete adapter overwrites for special pairings
 ```
 
-Three model files and two environment files already cover six combinations; adding a third
-environment makes nine without touching any model code. The example also demonstrates the escape
-hatches — a stateful `AdapterBase` subclass for an ACT-style chunking policy, and a pair override —
-and the live path against a served endpoint:
+Three model files and three environment files cover nine combinations; adding a fourth environment
+makes twelve without touching any model code. `metaworld` is the flat-observation case: its
+proprioception is a single `Box` vector split by a `StateLayout`, so the same specs that pair with
+the Dict envs resolve against it unchanged. The example also demonstrates the escape hatches — a
+stateful `AdapterBase` subclass for an ACT-style chunking policy, and a pair override — and the live
+path against a served endpoint:
 
 ```bash
 uv run eval.py --model smolvla --env libero --address 127.0.0.1:5555

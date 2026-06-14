@@ -11,7 +11,7 @@ from typing import Literal, TypeAlias
 from ..._rlmesh import ROTATION_DIMS
 
 RotationEncoding: TypeAlias = Literal[
-    "quat_xyzw", "quat_wxyz", "axis_angle", "rot6d", "euler_xyz"
+    "quat_xyzw", "quat_wxyz", "axis_angle", "rot6d", "rot6d_rowmajor", "euler_xyz"
 ]
 
 __all__ = ["ROTATION_DIMS", "RotationEncoding"]

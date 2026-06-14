@@ -21,4 +21,9 @@ pub struct EnvImage {
     /// Pixel width of the image, derived from the observation space.
     #[serde(default)]
     pub width: u32,
+    /// Source pixel value range `(low, high)` projected from the space's
+    /// uniform finite bounds, used to map a float image into 8-bit pixels.
+    /// `None` when the space is unbounded or non-uniform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_range: Option<(f64, f64)>,
 }

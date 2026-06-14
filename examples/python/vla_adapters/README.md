@@ -23,12 +23,13 @@ vla_adapters/
 │   └── xvla.py           # X-VLA: rot6d proprio, 20-dim single/bimanual EE6D action
 └── envs/
     ├── __init__.py       # ENVS registry (one line per environment)
-    ├── libero.py         # two cameras, xyzw quat, flat obs keys
+    ├── libero.py         # two cameras, xyzw quat, one obs key per quantity
+    ├── metaworld.py      # cameras + a flat Box proprio leaf split by a StateLayout
     └── simpler_bridge.py # one camera, wxyz quat, nested obs keys
 ```
 
-3 model files + 2 env files already cover 6 combinations; adding a third env makes that 9 without
-touching any model code. With bespoke adapters the same coverage is N x M hand-written classes.
+3 model files + 3 env files cover 9 combinations without touching any model code. With bespoke
+adapters the same coverage is N x M hand-written classes.
 
 There are two custom-adapter escape hatches, used at different scopes:
 
@@ -97,6 +98,34 @@ It can now be evaluated on every registered env. A different fine-tune of the sa
 
 Better still, serve the env with `rlmesh.EnvServer(env, tags=TAGS)` so remote clients discover the
 tags from the handshake (via `resolve_from_contract`) and need no registry entry at all.
+
+### Flat (non-Dict) observations
+
+Some envs return a single flat `Box` vector instead of a dict, with fixed index ranges carrying
+distinct meaning (e.g. Metaworld). Tag it with a `StateLayout` passed directly as `observation`
+(mirroring `action` being one `ActionLayout`), splitting the vector into role fields in order:
+
+```python
+TAGS = adapt.EnvTags(
+    observation=adapt.StateLayout(
+        adapt.StateField(adapt.EEF_POS, 3),
+        adapt.StateField(adapt.GRIPPER_POS, 1),
+        adapt.StateField(dim=2),               # role-less = skip these dims
+        adapt.StateField(adapt.JOINT_POS, 4),
+    ),
+    action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_DELTA_POS, 4)),
+)
+```
+
+Field widths must sum to the leaf width; offsets are implied by order. Every model still matches
+purely by role, so the same model spec resolves against this env and a dict env with no change. The
+fixed indices live on the env side, where they belong.
+
+`envs/metaworld.py` is the runnable version. It is mixed rather than fully flat: a `StateLayout`
+tags a flat `proprio` leaf inside a `Dict` that also carries the cameras the VLA specs need, so the
+same `smolvla`/`act`/`xvla` specs pair with it. Run `uv run eval.py --env metaworld` and read
+`describe()` — each field prints the slice it reads, e.g. `proprio[3:7] (quat_xyzw->rot6d_rowmajor)`
+for X-VLA.
 
 ## When the built-in vocabulary is not enough
 

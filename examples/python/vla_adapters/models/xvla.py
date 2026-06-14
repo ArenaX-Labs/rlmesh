@@ -1,10 +1,13 @@
 """X-VLA: a model with very different conventions from SmolVLA.
 
 X-VLA wants 256x256 images, rot6d proprio in a 20-dim state, and it emits a
-20-dim EE6D action that envs cannot consume directly. The 20-dim layout is
-a unified single/bimanual convention: dims 1-10 are the first arm, dims
-11-20 the second. Rather than hardcoding dims 11-20 as zero padding (which
-would bake in a single-arm assumption), the spec declares their real
+20-dim EE6D action that envs cannot consume directly. Both its proprio and its
+action rotations use ``rot6d_rowmajor``, the row-major flattening of the
+matrix's first two columns (``m[:, :2].reshape(6)``) that this checkpoint was
+trained on, distinct from the standard column-concatenated ``rot6d``. The
+20-dim layout is a unified single/bimanual convention: dims 1-10 are the first
+arm, dims 11-20 the second. Rather than hardcoding dims 11-20 as zero padding
+(which would bake in a single-arm assumption), the spec declares their real
 meaning -- second-arm components, ``optional`` on the state side -- and the
 resolver derives the per-env behavior: against a single-arm env the
 second-arm proprio resolves to zero fill and the second-arm action dims are
@@ -27,10 +30,12 @@ SPEC = adapt.ModelSpec(
             "state",
             components=(
                 adapt.StateComponent(adapt.EEF_POS, dim=3),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d"),
+                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
                 adapt.StateComponent(adapt.GRIPPER_POS, dim=1),
                 adapt.StateComponent(adapt.EEF_POS_2, dim=3, optional=True),
-                adapt.StateComponent(adapt.EEF_ROT_2, encoding="rot6d", optional=True),
+                adapt.StateComponent(
+                    adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True
+                ),
                 adapt.StateComponent(adapt.GRIPPER_POS_2, dim=1, optional=True),
             ),
             pad_to=20,
@@ -39,14 +44,14 @@ SPEC = adapt.ModelSpec(
         adapt.TextInput("instruction"),
     ),
     action=adapt.ActionLayout(
-        components=(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS_2, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
+        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        adapt.ActionComponent(adapt.ACTION_DELTA_POS_2, dim=3),
+        adapt.ActionComponent(
+            adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"
         ),
+        adapt.ActionComponent(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
     ),
 )
 

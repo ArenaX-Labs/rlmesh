@@ -58,5 +58,6 @@ pub(super) fn plan_image(
         dtype: model_input.dtype.clone(),
         normalize: model_input.normalize,
         lead_dims: model_input.lead_dims,
+        src_range: env_image.value_range,
     })
 }

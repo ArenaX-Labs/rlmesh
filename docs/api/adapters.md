@@ -59,6 +59,22 @@ the handshake alone.
    :exclude-members: __init__, __new__
 ```
 
+For a flat numeric leaf whose fixed index ranges carry distinct meaning, tag it with a
+{class}`~rlmesh.adapters.StateLayout` of {class}`~rlmesh.adapters.StateField` slices instead of a
+`StateTag`. See {doc}`../user-guide/adapters` for the model-matches-by-role contract.
+
+```{eval-rst}
+.. autoclass:: rlmesh.adapters.StateLayout
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.adapters.StateField
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
 ```{eval-rst}
 .. autoclass:: rlmesh.adapters.TextTag
    :class-doc-from: class
@@ -158,4 +174,6 @@ package (single-sourced from the native crate), including the domain-agnostic ro
 `IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS` (with bimanual `_2` variants) and their
 `ACTION_*` counterparts. Rotation widths follow the declared encoding;
 `rlmesh.adapters.ROTATION_DIMS` maps each encoding (`quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`,
-`euler_xyz`) to its dimension count.
+`rot6d_rowmajor`, `euler_xyz`) to its dimension count. `rot6d` is the standard 6D rotation (the
+matrix's first two columns concatenated); `rot6d_rowmajor` is the same two columns flattened
+row-major, for checkpoints trained on that interleaving.

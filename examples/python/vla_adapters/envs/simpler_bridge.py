@@ -25,11 +25,9 @@ TAGS = adapt.EnvTags(
         "task_instruction": adapt.TextTag(),
     },
     action=adapt.ActionLayout(
-        components=(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-        ),
+        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )

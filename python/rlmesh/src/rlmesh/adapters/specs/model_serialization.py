@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, cast
 
+from .custom_encoding import CustomEncoding
 from .model_inputs import (
     EntrypointCustomInput,
     ImageInput,
@@ -45,6 +46,14 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             image["stack"] = item.stack
         return image
     if isinstance(item, StateInput):
+        for component in item.components:
+            if isinstance(component.encoding, CustomEncoding):
+                raise ValueError(
+                    f"state input {item.key!r} uses a CustomEncoding, whose "
+                    "host-side transforms cannot be serialized; resolve it "
+                    "locally (the model spec need not travel), or add the "
+                    "encoding to the native vocabulary for a shared convention"
+                )
         return {
             "type": "state",
             "key": item.key,
@@ -61,7 +70,8 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             ],
             "pad_to": item.pad_to,
             "dtype": item.dtype,
-            "reshape": list(item.reshape) if item.reshape else None,
+            # `()` is a valid 0-D scalar target; only None means "no reshape".
+            "reshape": list(item.reshape) if item.reshape is not None else None,
             "container": item.container,
         }
     if isinstance(item, TextInput):

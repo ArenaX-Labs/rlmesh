@@ -9,7 +9,7 @@ from typing import Any
 import gymnasium as gym
 import rlmesh.adapters as adapt
 
-from . import act, smolvla, xvla
+from . import act, geovla, smolvla, xvla
 
 # An escape-hatch adapter factory: given an env's tags and spaces,
 # return a custom adapter (for models whose deployment needs stateful logic
@@ -37,6 +37,7 @@ class ModelEntry:
 
 MODELS: dict[str, ModelEntry] = {
     "act": ModelEntry(act.SPEC, act.load_predict_fn, act.make_adapter),
+    "geovla": ModelEntry(geovla.SPEC, geovla.load_predict_fn),
     "smolvla": ModelEntry(smolvla.SPEC, smolvla.load_predict_fn),
     "xvla": ModelEntry(xvla.SPEC, xvla.load_predict_fn),
 }

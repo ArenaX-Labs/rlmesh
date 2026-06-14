@@ -74,7 +74,21 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
     let in_dim = cursor;
 
     let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.components.len());
+    let mut seen_env_roles: BTreeMap<&str, ()> = BTreeMap::new();
     for env_component in &env.components {
+        if seen_env_roles
+            .insert(env_component.role.as_str(), ())
+            .is_some()
+        {
+            // Mirror the model-side dedup above (and the env-side StateLayout
+            // role check): a role repeated in the env layout would resolve
+            // every copy against the same model slice, building the env action
+            // by repetition instead of a real mapping.
+            return Err(err(
+                ErrorCode::Duplicate,
+                format!("duplicate env action role {}", quoted(&env_component.role)),
+            ));
+        }
         let Some(&(start, model_component)) = offsets.get(&env_component.role) else {
             return Err(err(
                 ErrorCode::MissingRole,

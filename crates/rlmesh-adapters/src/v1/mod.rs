@@ -28,6 +28,6 @@ pub use space_view::{SpaceView, SpaceViewKind};
 pub use spec::{
     ActionComponent, ActionLayout, CustomInput, EnvFeature, EnvFeatures, EnvImage, EnvState,
     EnvTags, EnvText, ImageInput, ImageLayout, ImageTag, ModelInput, ModelSpec, ObsTag,
-    RotationEncoding, StateComponent, StateContainer, StateInput, StateTag, TextContainer,
-    TextInput, TextTag,
+    RotationEncoding, StateComponent, StateContainer, StateField, StateInput, StateLayout,
+    StateTag, TextContainer, TextInput, TextTag,
 };

@@ -66,6 +66,27 @@ pub(super) fn apply_state(
             continue;
         }
         let mut value = numeric_vector(lookup(raw_obs, &piece.env_key)?)?;
+        // Slice the env field out of its leaf, before any rotation or
+        // model-side index/dim. Only a StateLayout field sets src_offset; a
+        // whole-leaf state leaves it None and reads the entire runtime value.
+        if let Some(offset) = piece.src_offset {
+            let start = offset as usize;
+            let end = piece
+                .src_dim
+                .map_or(value.len(), |dim| start + dim as usize);
+            // The slice was validated against the space width at resolve time;
+            // a runtime value shorter than that is an env contract violation.
+            // Erroring beats silently feeding the model a truncated field.
+            if end > value.len() {
+                return Err(ApplyError::new(format!(
+                    "state layout field '{}' needs indices [{start}, {end}) but the \
+                     runtime observation has only {} elements",
+                    piece.env_key,
+                    value.len()
+                )));
+            }
+            value = value[start..end].to_vec();
+        }
         if let (Some(src), Some(dst)) = (piece.src_encoding, piece.dst_encoding)
             && src != dst
         {
@@ -125,6 +146,8 @@ mod tests {
             model_key: "state".to_owned(),
             pieces: vec![StatePiece {
                 env_key: "gripper".to_owned(),
+                src_offset: None,
+                src_dim: None,
                 src_encoding: None,
                 dst_encoding: None,
                 dim: None,
@@ -150,5 +173,42 @@ mod tests {
         assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
         assert!(values[1].abs() < 1e-6, "{values:?}");
         assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");
+    }
+
+    #[test]
+    fn slices_a_layout_field_out_of_a_flat_leaf() {
+        // A flat width-8 obs; the gripper field is at offset 3, width 1, then a
+        // model index picks element 0 of that field.
+        let plan = StatePlan {
+            model_key: "state".to_owned(),
+            pieces: vec![StatePiece {
+                env_key: ".".to_owned(),
+                src_offset: Some(3),
+                src_dim: Some(1),
+                src_encoding: None,
+                dst_encoding: None,
+                dim: None,
+                index: Some(0),
+                src_range: None,
+                dst_range: None,
+                zero_fill: false,
+            }],
+            pad_to: None,
+            dtype: "float32".to_owned(),
+            reshape: None,
+            container: StateContainer::Array,
+        };
+        let mut raw = BTreeMap::new();
+        raw.insert(
+            ".".to_owned(),
+            Value::Tensor(value::tensor_from_f32(
+                vec![8],
+                &[0.0, 0.1, 0.2, 0.9, 0.4, 0.5, 0.6, 0.7],
+            )),
+        );
+        let Value::Tensor(out) = apply_state(&plan, &raw).expect("apply") else {
+            panic!("expected a tensor");
+        };
+        assert_eq!(value::to_f32_vec(&out), vec![0.9]);
     }
 }

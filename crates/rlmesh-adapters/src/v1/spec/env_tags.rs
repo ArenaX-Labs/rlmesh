@@ -46,24 +46,42 @@ pub struct TextTag {
     pub role: String,
 }
 
+/// One contiguous field of a flat numeric observation leaf.
+///
+/// The observation-side mirror of [`ActionComponent`](super::action::ActionComponent):
+/// a slice of `dim` elements carrying a `role`, with offsets implied by order
+/// within a [`StateLayout`]. A field with no `role` is a *skip* — it advances
+/// the offset and contributes to the layout's width but produces no feature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateField {
+    #[serde(default)]
+    pub role: Option<String>,
+    pub dim: u32,
+    #[serde(default)]
+    pub encoding: Option<RotationEncoding>,
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+}
+
+/// An ordered split of one flat numeric observation leaf into role fields.
+///
+/// The observation-side mirror of [`ActionLayout`](super::action::ActionLayout):
+/// fields are laid out in order, offsets accumulate, and `join` requires the
+/// field widths to sum to the leaf width. Use it when an env returns a flat
+/// `Box` whose fixed index ranges carry distinct semantics (e.g. Metaworld).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StateLayout {
+    pub fields: Vec<StateField>,
+}
+
 /// One observation tag, tagged by the kind of space leaf it describes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ObsTag {
     Image(ImageTag),
     State(StateTag),
+    Layout(StateLayout),
     Text(TextTag),
-}
-
-impl ObsTag {
-    /// The semantic role this tag assigns.
-    pub fn role(&self) -> &str {
-        match self {
-            ObsTag::Image(image) => &image.role,
-            ObsTag::State(state) => &state.role,
-            ObsTag::Text(text) => &text.role,
-        }
-    }
 }
 
 /// The env-side tags: a sparse map from observation key-path to its

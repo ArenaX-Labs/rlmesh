@@ -16,6 +16,13 @@ pub(super) fn describe_state(plan: &StatePlan) -> String {
             continue;
         }
         let mut note = piece.env_key.clone();
+        // A StateLayout field reads a fixed `[offset, offset+width)` slice of a
+        // flat leaf; show it so the split is visible. A whole-leaf state leaves
+        // src_offset None and reads the entire value.
+        if let Some(offset) = piece.src_offset {
+            let width = piece.src_dim.expect("layout fields carry src_dim");
+            let _ = write!(note, "[{offset}:{}]", offset + width);
+        }
         if piece.src_encoding != piece.dst_encoding {
             let src = piece
                 .src_encoding
@@ -28,7 +35,11 @@ pub(super) fn describe_state(plan: &StatePlan) -> String {
         if let Some(index) = piece.index {
             let _ = write!(note, "[{index}]");
         } else if let Some(dim) = piece.dim {
-            let _ = write!(note, "[:{dim}]");
+            // The env slice above already states a layout field's width; only
+            // note a model-side truncation when it narrows that slice further.
+            if piece.src_dim != Some(dim) {
+                let _ = write!(note, "[:{dim}]");
+            }
         }
         if let (Some(src), Some(dst)) = (piece.src_range, piece.dst_range) {
             let _ = write!(

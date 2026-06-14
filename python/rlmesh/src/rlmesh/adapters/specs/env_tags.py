@@ -32,6 +32,7 @@ from .serialization import (
     opt_layout,
     opt_range,
     require_mapping,
+    require_sequence,
     require_str,
 )
 
@@ -59,8 +60,10 @@ class StateTag:
     Attributes:
         role: Semantic role used for matching, e.g. ``proprio/eef_pos``.
         encoding: Rotation encoding when the role is a rotation.
-        range: Optional ``(low, high)`` value range; overrides any range
-            the space's bounds would otherwise imply.
+        range: Optional ``(low, high)`` value range, supplying the bounds where
+            the space leaves this leaf unbounded. If the space declares finite
+            bounds that disagree with it, resolution errors rather than
+            silently overriding them.
     """
 
     role: str = JOINT_POS
@@ -79,7 +82,100 @@ class TextTag:
     role: str = INSTRUCTION
 
 
-ObsTag: TypeAlias = ImageTag | StateTag | TextTag
+@dataclass(frozen=True)
+class StateField:
+    """One contiguous field of a flat numeric observation leaf.
+
+    The observation-side mirror of
+    :class:`~rlmesh.adapters.ActionComponent`: a slice of ``dim`` elements
+    carrying a ``role``, with offsets implied by order within a
+    :class:`StateLayout`. A field with no ``role`` is a *skip* -- it advances
+    the offset but produces no feature, used to step over elements the model
+    never consumes.
+
+    Attributes:
+        role: Semantic role matched against model state components, or None
+            to skip this slice.
+        dim: Number of elements this field occupies.
+        encoding: Rotation encoding when the field is a rotation.
+        range: Optional ``(low, high)`` value range for this field's slice,
+            supplying the bounds where the space leaves it unbounded. If the
+            space declares finite bounds for the slice that disagree with it,
+            resolution errors rather than silently overriding them.
+    """
+
+    role: str | None = None
+    dim: int = 0
+    encoding: RotationEncoding | None = None
+    range: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.dim < 1:
+            raise ValueError(f"StateField.dim must be >= 1, got {self.dim}")
+        if self.role is None and (self.encoding is not None or self.range is not None):
+            raise ValueError(
+                "StateField with no role is a skip and cannot carry an "
+                "encoding or range"
+            )
+
+
+@dataclass(frozen=True, init=False)
+class StateLayout:
+    """An ordered split of one flat numeric observation leaf into role fields.
+
+    The observation-side mirror of :class:`~rlmesh.adapters.ActionLayout`:
+    fields are laid out in order, offsets accumulate, and the native ``join``
+    requires the field widths to sum to the leaf width. Use it when an env
+    returns a flat ``Box`` whose fixed index ranges carry distinct semantics
+    (e.g. Metaworld)::
+
+        StateLayout(StateField(EEF_POS, 3), StateField(GRIPPER, 1))
+
+    Attributes:
+        fields: State fields in vector order.
+    """
+
+    fields: tuple[StateField, ...]
+
+    def __init__(self, *fields: StateField) -> None:
+        if not fields:
+            raise ValueError("StateLayout needs at least one StateField")
+        roles = [field.role for field in fields if field.role is not None]
+        if len(roles) != len(set(roles)):
+            raise ValueError("StateLayout declares a role more than once")
+        object.__setattr__(self, "fields", tuple(fields))
+
+
+ObsTag: TypeAlias = ImageTag | StateTag | StateLayout | TextTag
+
+# A bare tag/layout means "the observation is one leaf"; a mapping tags each
+# key of a Dict observation. The bare form mirrors ``action`` being one layout.
+ObsTags: TypeAlias = Mapping[str, ObsTag] | ObsTag
+
+
+def _state_field_to_dict(field: StateField) -> dict[str, Any]:
+    return {
+        "role": field.role,
+        "dim": field.dim,
+        "encoding": field.encoding,
+        "range": list(field.range) if field.range else None,
+    }
+
+
+def _state_field_from_dict(item: object) -> StateField:
+    data = as_mapping(item, "state field")
+    role = data.get("role")
+    if role is not None and not isinstance(role, str):
+        raise ValueError("state field role must be a string or null")
+    raw_dim = data.get("dim", 0)
+    # A missing or null dim flows through as 0 so StateField raises the clean
+    # "dim must be >= 1" error rather than a raw TypeError from int(None).
+    return StateField(
+        role=role,
+        dim=int(raw_dim) if raw_dim is not None else 0,
+        encoding=opt_encoding(data.get("encoding"), "state field"),
+        range=opt_range(data.get("range"), "state field"),
+    )
 
 
 def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
@@ -97,6 +193,11 @@ def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
             "role": tag.role,
             "encoding": tag.encoding,
             "range": list(tag.range) if tag.range else None,
+        }
+    if isinstance(tag, StateLayout):
+        return {
+            "type": "layout",
+            "fields": [_state_field_to_dict(field) for field in tag.fields],
         }
     return {"type": "text", "role": tag.role}
 
@@ -117,23 +218,44 @@ def obs_tag_from_dict(item: object) -> ObsTag:
             encoding=opt_encoding(data.get("encoding"), "state tag"),
             range=opt_range(data.get("range"), "state tag"),
         )
+    if kind == "layout":
+        return StateLayout(
+            *(
+                _state_field_from_dict(field)
+                for field in require_sequence(data, "fields")
+            )
+        )
     if kind == "text":
         return TextTag(role=require_str(data, "role", "text tag"))
     raise ValueError(f"unknown observation tag type {kind!r}")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class EnvTags:
     """Declarative tags of an environment's observation and action.
 
+    ``observation`` is either a mapping from observation path to its tag
+    (dotted paths traverse nested ``Dict`` spaces), or -- when the observation
+    is a single leaf -- a bare tag/layout, mirroring ``action`` being one
+    layout. A bare tag is normalized to ``{".": tag}``, where ``"."`` is the
+    reserved path for the flat/root observation, so the stored ``observation``
+    is always a mapping.
+
     Attributes:
-        observation: Observation tags keyed by observation path
-            (dotted paths traverse nested ``Dict`` spaces).
+        observation: Observation tags keyed by observation path (always a
+            mapping after construction; a bare tag is normalized to ``"."``).
         action: Layout of the action vector accepted by ``step``.
     """
 
     observation: Mapping[str, ObsTag]
     action: ActionLayout
+
+    def __init__(self, observation: ObsTags, action: ActionLayout) -> None:
+        normalized: Mapping[str, ObsTag] = (
+            observation if isinstance(observation, Mapping) else {".": observation}
+        )
+        object.__setattr__(self, "observation", normalized)
+        object.__setattr__(self, "action", action)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of these tags."""
@@ -188,6 +310,9 @@ __all__ = [
     "EnvTags",
     "ImageTag",
     "ObsTag",
+    "ObsTags",
+    "StateField",
+    "StateLayout",
     "StateTag",
     "TextTag",
     "obs_tag_from_dict",

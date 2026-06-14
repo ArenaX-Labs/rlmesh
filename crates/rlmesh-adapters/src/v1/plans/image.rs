@@ -15,4 +15,8 @@ pub struct ImagePlan {
     pub dtype: String,
     pub normalize: bool,
     pub lead_dims: u32,
+    /// Source pixel value range `(low, high)` from the env image's space, used
+    /// to map a float image into 8-bit. `None` when the space is unbounded
+    /// (the image is then assumed normalized `[0, 1]`).
+    pub src_range: Option<(f64, f64)>,
 }

@@ -7,6 +7,7 @@ from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
 
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
+from .custom_encoding import CustomEncoding
 from .layouts import ImageLayout
 from .rotations import RotationEncoding
 from .serialization import check_non_negative
@@ -99,7 +100,7 @@ class StateComponent:
     """
 
     role: str
-    encoding: RotationEncoding | None = None
+    encoding: RotationEncoding | CustomEncoding | None = None
     dim: int | None = None
     index: int | None = None
     optional: bool = False
@@ -135,14 +136,14 @@ class StateInput:
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
     role: InitVar[str | None] = None
-    encoding: InitVar[RotationEncoding | None] = None
+    encoding: InitVar[RotationEncoding | CustomEncoding | None] = None
     dim: InitVar[int | None] = None
     index: InitVar[int | None] = None
 
     def __post_init__(
         self,
         role: str | None,
-        encoding: RotationEncoding | None,
+        encoding: RotationEncoding | CustomEncoding | None,
         dim: int | None,
         index: int | None,
     ) -> None:

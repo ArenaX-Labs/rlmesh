@@ -40,6 +40,8 @@ pub(super) fn plan_state(
             if component.optional {
                 pieces.push(StatePiece {
                     env_key: String::new(),
+                    src_offset: None,
+                    src_dim: None,
                     src_encoding: None,
                     dst_encoding: None,
                     dim: Some(zero_fill_width(component, &model_input.key)?),
@@ -134,6 +136,12 @@ pub(super) fn plan_state(
         }
         pieces.push(StatePiece {
             env_key: env_state.key.clone(),
+            src_offset: env_state.slice_offset,
+            // src_dim is the slice width, meaningful only for a layout field
+            // (where slice_offset is set); a whole-leaf state leaves it None so
+            // the documented "used only when src_offset is set" invariant holds
+            // (env_state.dim there is the advisory space width, not a slice).
+            src_dim: env_state.slice_offset.and(env_state.dim),
             src_encoding: env_state.encoding,
             dst_encoding: component.encoding,
             dim: component.dim,

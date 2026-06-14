@@ -185,6 +185,16 @@ fn decode_value(encoded: &Bound<'_, PyAny>) -> PyResult<Value> {
 ///
 /// Decoding the whole observation would let an unused — possibly
 /// unencodable — env key abort a step the model does not even depend on.
+/// The top-level observation entry a (possibly dotted) plan key lives under.
+/// The reserved `"."` denotes the flat/root observation and is its own
+/// top-level key, not a dotted path to split.
+fn top_level_key(key: &str) -> &str {
+    if key == "." {
+        return ".";
+    }
+    key.split('.').next().unwrap_or(key)
+}
+
 fn decode_referenced_obs(
     encoded: &Bound<'_, PyAny>,
     referenced: &BTreeSet<String>,
@@ -198,10 +208,7 @@ fn decode_referenced_obs(
     }
     // Referenced keys may be dotted (nested Dict paths); decode the whole
     // top-level entry that contains each.
-    let top_level: BTreeSet<&str> = referenced
-        .iter()
-        .map(|key| key.split('.').next().unwrap_or(key.as_str()))
-        .collect();
+    let top_level: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
     let entries = tuple.get_item(1)?;
     let dict = entries.cast::<PyDict>()?;
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
@@ -288,8 +295,7 @@ impl PyAdapterPlan {
     fn referenced_obs_keys(&self) -> Vec<String> {
         let mut keys: BTreeSet<String> = BTreeSet::new();
         for key in self.adapter.referenced_obs_keys() {
-            let top = key.split('.').next().unwrap_or(&key).to_owned();
-            keys.insert(top);
+            keys.insert(top_level_key(&key).to_owned());
         }
         keys.into_iter().collect()
     }

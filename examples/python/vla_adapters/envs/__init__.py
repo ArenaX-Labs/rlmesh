@@ -9,7 +9,7 @@ from typing import Any
 import gymnasium as gym
 import rlmesh.adapters as adapt
 
-from . import libero, simpler_bridge
+from . import libero, metaworld, simpler_bridge
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,12 @@ ENVS: dict[str, EnvEntry] = {
         libero.OBSERVATION_SPACE,
         libero.ACTION_SPACE,
         libero.sample_obs,
+    ),
+    "metaworld": EnvEntry(
+        metaworld.TAGS,
+        metaworld.OBSERVATION_SPACE,
+        metaworld.ACTION_SPACE,
+        metaworld.sample_obs,
     ),
     "simpler-bridge": EnvEntry(
         simpler_bridge.TAGS,

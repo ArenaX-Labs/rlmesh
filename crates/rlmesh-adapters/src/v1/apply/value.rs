@@ -78,19 +78,29 @@ fn is_integer(dtype: DType) -> bool {
     )
 }
 
-/// Convert any tensor to 8-bit pixels without truncation: float images are
-/// treated as normalized `[0, 1]` and scaled into `[0, 255]`; other dtypes
-/// are rounded and clamped to the 8-bit range.
-pub fn to_u8_pixels(tensor: &Tensor) -> Vec<u8> {
+/// Convert any tensor to 8-bit pixels without truncation. A float image is
+/// mapped from its declared source range `src_range` into the pipeline's
+/// canonical `[0, 255]`: a unit `[0, 1]` image scales by 255, a byte-range
+/// `[0, 255]` image passes through unchanged. With no declared range (an
+/// unbounded space) a float image is assumed normalized `[0, 1]`. Integer
+/// dtypes carry raw pixel magnitudes and are only rounded and clamped.
+pub fn to_u8_pixels(tensor: &Tensor, src_range: Option<(f64, f64)>) -> Vec<u8> {
     let dtype = tensor.dtype();
     if dtype == DType::Uint8 {
         return tensor.to_contiguous_bytes().into_owned();
     }
-    let scale = !is_integer(dtype);
+    let float = !is_integer(dtype);
     to_f64_vec(tensor)
         .into_iter()
         .map(|value| {
-            let value = if scale { value * 255.0 } else { value };
+            let value = if float {
+                match src_range {
+                    Some((low, high)) if high > low => (value - low) / (high - low) * 255.0,
+                    _ => value * 255.0,
+                }
+            } else {
+                value
+            };
             value.round_ties_even().clamp(0.0, 255.0) as u8
         })
         .collect()

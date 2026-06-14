@@ -63,7 +63,12 @@ impl ResolvedAdapter {
                     }
                 }
                 ObsPlan::Text(text) => {
-                    keys.insert(text.env_key.clone());
+                    // A default-only text input has no env key (it never looks
+                    // one up); reporting "" would make a caller try to encode a
+                    // non-existent top-level key.
+                    if !text.env_key.is_empty() {
+                        keys.insert(text.env_key.clone());
+                    }
                 }
                 ObsPlan::Custom(_) => {}
             }
