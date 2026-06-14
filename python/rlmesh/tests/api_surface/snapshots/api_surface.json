@@ -1150,6 +1150,7 @@
       "RemoteVectorEnv",
       "SandboxEnv",
       "SandboxInfo",
+      "SandboxModel",
       "SandboxVectorEnv",
       "asarray",
       "from_array",
@@ -1430,6 +1431,25 @@
           }
         },
         "signature": "SandboxInfo(requested_source: str, resolved_source: str, address: str, container_id: str)",
+        "stability": "Stable"
+      },
+      "SandboxModel": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "container_id": {
+            "kind": "property",
+            "signature": "property container_id: str"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown() -> None"
+          }
+        },
+        "signature": "SandboxModel(source: object, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: Sequence[str] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False)",
         "stability": "Stable"
       },
       "SandboxVectorEnv": {

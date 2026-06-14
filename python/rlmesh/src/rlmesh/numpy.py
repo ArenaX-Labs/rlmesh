@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final, overloa
 
 from ._frameworks import FrameworkBridge
 from ._rlmesh import Tensor
+from ._sandbox_model import SandboxModel
 from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
 from .model import LifecycleCallback, ModelBase, PredictFn
@@ -453,6 +454,7 @@ __all__ = [
     "RemoteVectorEnv",
     "SandboxEnv",
     "SandboxInfo",
+    "SandboxModel",
     "SandboxVectorEnv",
     "asarray",
     "from_array",

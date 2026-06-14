@@ -90,6 +90,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxInfo",
+        "SandboxModel",
         "SandboxVectorEnv",
         "asarray",
         "from_array",

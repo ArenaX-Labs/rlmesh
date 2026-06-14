@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rlmesh_grpc::EnvClient;
+use rlmesh_grpc::{EnvClient, ModelClient};
 use serde::Serialize;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -118,7 +118,13 @@ impl DockerBackend {
             }
         };
         let address = format!("tcp://127.0.0.1:{host_port}");
-        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
+        let is_model = spec
+            .recipe
+            .as_ref()
+            .is_some_and(|recipe| recipe.kind == "model");
+        if let Err(err) =
+            wait_for_ready(&address, &container_id, Duration::from_secs(30), is_model).await
+        {
             let report = self.startup_failure_report(&container_id, &container_name, &err);
             let _ = self.stop_container(&container_id);
             return Err(report);
@@ -432,13 +438,26 @@ struct RecipeBootstrapSpec {
     vectorization_mode: String,
 }
 
-async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_ready(
+    address: &str,
+    container_id: &str,
+    timeout: Duration,
+    is_model: bool,
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
 
     loop {
         let probe = tokio::time::timeout(READY_PROBE_TIMEOUT, async {
-            let mut client = EnvClient::connect(address).await?;
-            client.handshake().await?;
+            // A model container serves ModelService; an env container serves
+            // EnvService. Probe with the matching handshake so readiness reflects
+            // the service the recipe's kind actually brings up.
+            if is_model {
+                let mut client = ModelClient::connect(address, "").await?;
+                client.handshake().await?;
+            } else {
+                let mut client = EnvClient::connect(address).await?;
+                client.handshake().await?;
+            }
             Ok::<_, rlmesh_grpc::error::Error>(())
         })
         .await;

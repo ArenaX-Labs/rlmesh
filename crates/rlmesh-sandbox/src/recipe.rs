@@ -34,7 +34,15 @@ use crate::{RecipeProvenance, ResolvedRlmeshPackage, hex, shell_quote};
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
-const ENTRYPOINT: &str = "ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]";
+const ENV_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_env";
+const MODEL_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_model";
+
+/// The container ENTRYPOINT for a recipe kind: env recipes serve an environment,
+/// model recipes serve/drive a policy.
+fn entrypoint_for(kind: &str) -> String {
+    let module = if kind == "model" { MODEL_BOOTSTRAP } else { ENV_BOOTSTRAP };
+    format!("ENTRYPOINT [\"python\", \"-m\", \"{module}\"]")
+}
 
 /// The build-context subdirectory a `ProjectInstall` source tree is staged into;
 /// the deriver `COPY`s from here and `write_build_context` populates it.
@@ -285,6 +293,13 @@ pub struct Recipe {
     /// The schema version.
     #[serde(default = "default_recipe_version")]
     pub recipe_version: u32,
+    /// The recipe kind ("env" or "model"); selects the container entrypoint.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+}
+
+fn default_kind() -> String {
+    "env".to_string()
 }
 
 impl Recipe {
@@ -349,7 +364,7 @@ pub(crate) fn derive_dockerfile(
         }
         let mut out = body.trim_end().to_string();
         out.push_str("\n\n");
-        out.push_str(ENTRYPOINT);
+        out.push_str(&entrypoint_for(&recipe.kind));
         out.push('\n');
         return Ok(out);
     }
@@ -486,7 +501,7 @@ pub(crate) fn derive_dockerfile(
     }
 
     out.push_str(&format!("EXPOSE {CONTAINER_PORT}\n"));
-    out.push_str(ENTRYPOINT);
+    out.push_str(&entrypoint_for(&recipe.kind));
     out.push('\n');
     Ok(out)
 }
@@ -1128,6 +1143,20 @@ mod tests {
             &[],
             RecipeProvenance::Installed,
         )
+    }
+
+    #[test]
+    fn model_recipe_gets_the_model_entrypoint() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"policy/x","kind":"model","build":{},"make":{"kind":"py","entrypoint":"m:C._rlmesh_load","kwargs":{}}}"#,
+        )
+        .expect("model recipe parses");
+        let dockerfile = derive(&recipe).expect("derives");
+        assert!(
+            dockerfile.contains("rlmesh._bootstrap.sandbox_model"),
+            "a model recipe should use the model bootstrap, got:\n{dockerfile}"
+        );
+        assert!(!dockerfile.contains("sandbox_env"));
     }
 
     #[test]
