@@ -23,11 +23,14 @@
 //! escape hatch for a non-Debian base today.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Context as _, Result as AnyResult};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::{RecipeProvenance, ResolvedRlmeshPackage};
+use crate::{RecipeProvenance, ResolvedRlmeshPackage, hex, shell_quote};
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
@@ -289,11 +292,6 @@ impl Recipe {
     pub fn from_json(payload: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(payload)
     }
-}
-
-/// Quote a token for safe single-argument use in a `/bin/sh` command.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 /// Reject control characters; every other character is neutralized by
@@ -857,6 +855,89 @@ pub fn resolve_includes(
             IncludeMatch { path, relative }
         })
         .collect())
+}
+
+/// Compute a content digest of the recipe's `ProjectInstall` source tree (7.1A),
+/// resolved against `context_root`. Returns None when there is nothing to stage.
+pub(crate) fn recipe_content_digest(
+    recipe: Option<&Recipe>,
+    context_root: Option<&Path>,
+) -> AnyResult<Option<String>> {
+    let Some(recipe) = recipe else {
+        return Ok(None);
+    };
+    let Some(project) = &recipe.build.project else {
+        return Ok(None);
+    };
+    let Some(root) = context_root else {
+        anyhow::bail!("recipe ProjectInstall requires a context_root to stage from");
+    };
+    let src = root.join(&project.src);
+    let mut hasher = Sha256::new();
+    hash_path_tree(&src, &src, &mut hasher)?;
+
+    // Fold in each `include` glob match too, keyed by its staged layout, so
+    // editing an included asset rebuilds the image. resolve_includes returns the
+    // SAME entries copy_tree stages, in the same sorted order, so the digest
+    // tracks exactly the bytes that ship.
+    let includes = resolve_includes(&src, root, &project.include)
+        .with_context(|| format!("failed to resolve project includes under {}", src.display()))?;
+    for include in includes {
+        // Distinguish an include subtree from the main tree by its layout key.
+        hasher.update(b"include\0");
+        hasher.update(include.relative.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        hash_path_tree(&include.path, &include.path, &mut hasher)?;
+    }
+
+    Ok(Some(hex(&hasher.finalize())))
+}
+
+/// Hash a file or directory tree deterministically: for each file (in sorted
+/// relative-path order) the relative path and its bytes are folded in, so the
+/// digest tracks content, not just paths (mirrors Docker's COPY-layer cache key).
+///
+/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: each child
+/// is classified by its own `entry.file_type()` (which reports the LINK itself,
+/// never dereferencing or erroring on a dangling/looping target) and a symlink
+/// child is dropped before it is sorted, hashed, or recursed into. `copy_tree`
+/// in docker.rs makes the identical skip decision so the *exact* set of bytes
+/// this hashes matches the set staged into the image. `fs::metadata` is used
+/// ONLY to classify the passed-in root; every CHILD is filtered first, so it
+/// never runs on a link and cannot abort on a cycle or a dangling target.
+/// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
+/// (a guarded, canonicalized glob), not by silently following links here.
+fn hash_path_tree(root: &Path, path: &Path, hasher: &mut Sha256) -> AnyResult<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.is_dir() {
+        let mut entries: Vec<PathBuf> = fs::read_dir(path)
+            .with_context(|| format!("failed to read dir {}", path.display()))?
+            // Skip symlink children identically to copy_tree: file_type() reports
+            // the link itself, so a dangling/cyclic/escaping link is dropped
+            // without ever dereferencing it.
+            .filter_map(|entry| match entry {
+                Ok(entry) => match entry.file_type() {
+                    Ok(file_type) if file_type.is_symlink() => None,
+                    Ok(_) => Some(Ok(entry.path())),
+                    Err(err) => Some(Err(err)),
+                },
+                Err(err) => Some(Err(err)),
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        entries.sort();
+        for entry in entries {
+            hash_path_tree(root, &entry, hasher)?;
+        }
+    } else if metadata.is_file() {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0u8]);
+        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(())
 }
 
 /// Recursively match `segments` against the directory `current`, collecting
@@ -1659,5 +1740,106 @@ mod tests {
         // The real file is matched; the escaping link's foreign `.txt` target is
         // not staged and neither link aborts the descent.
         assert_eq!(relatives, vec![PathBuf::from("real/a.txt")]);
+    }
+
+    #[test]
+    fn content_digest_tracks_file_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), b"print(1)").unwrap();
+        let recipe = Recipe::from_json(
+            &serde_json::json!({"name":"a","build":{"project":{"src":"."}}}).to_string(),
+        )
+        .unwrap();
+        let first = recipe_content_digest(Some(&recipe), Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        std::fs::write(dir.path().join("a.py"), b"print(2)").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "editing staged content must change the digest"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_digest_skips_symlinks_and_is_stable_under_cycle_or_dangling() {
+        // hash_path_tree and copy_tree make the IDENTICAL skip decision: a
+        // symlink within the tree is not hashed (so it never leaks out-of-tree
+        // bytes into the digest), and a cyclic/dangling link does not abort the
+        // hash. Editing a symlink TARGET reachable only through the link leaves
+        // the digest unchanged -- such assets must be carried via `include`, not
+        // by silently following links.
+        let target_root = tempfile::tempdir().unwrap();
+        let real = target_root.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("data.bin"), b"v1").unwrap();
+
+        let src_dir = tempfile::tempdir().unwrap();
+        std::fs::write(src_dir.path().join("kept.py"), b"print(1)").unwrap();
+        // A symlinked dir whose target lives OUTSIDE src (reachable only through
+        // the link), a directory self-link (cycle), and a dangling link.
+        std::os::unix::fs::symlink(&real, src_dir.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(".", src_dir.path().join("cycle")).unwrap();
+        std::os::unix::fs::symlink(
+            src_dir.path().join("does-not-exist"),
+            src_dir.path().join("dangling"),
+        )
+        .unwrap();
+
+        let recipe = Recipe::from_json(
+            &serde_json::json!({"name":"a","build":{"project":{"src":"."}}}).to_string(),
+        )
+        .unwrap();
+        // The cyclic/dangling links must not abort the hash.
+        let first = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
+            .unwrap()
+            .unwrap();
+        // Editing the symlink TARGET must NOT change the digest: the link entry
+        // is skipped, exactly as copy_tree skips staging it.
+        std::fs::write(real.join("data.bin"), b"v2-longer").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(src_dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first, second,
+            "a skipped symlink's target must not affect the digest"
+        );
+    }
+
+    #[test]
+    fn content_digest_tracks_include_glob_assets_above_src() {
+        // An `include`d asset ABOVE src (a sibling not carried by the src-tree
+        // copy/hash) must still be folded into the digest, so editing it rebuilds
+        // the image. Using an above-src asset isolates the include logic: the
+        // src-tree hash alone would NOT cover it.
+        let dir = tempfile::tempdir().unwrap();
+        let context_root = dir.path();
+        std::fs::create_dir_all(context_root.join("pkg")).unwrap();
+        std::fs::write(context_root.join("pkg/code.py"), b"code").unwrap();
+        std::fs::create_dir_all(context_root.join("assets")).unwrap();
+        std::fs::write(context_root.join("assets/scene.json"), b"a").unwrap();
+
+        let recipe = Recipe::from_json(
+            &serde_json::json!({
+                "name":"a",
+                "build":{"project":{"src":"pkg","include":["../assets/**"]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let first = recipe_content_digest(Some(&recipe), Some(context_root))
+            .unwrap()
+            .unwrap();
+        std::fs::write(context_root.join("assets/scene.json"), b"changed-longer").unwrap();
+        let second = recipe_content_digest(Some(&recipe), Some(context_root))
+            .unwrap()
+            .unwrap();
+        assert_ne!(
+            first, second,
+            "editing an included above-src asset must change the digest"
+        );
     }
 }

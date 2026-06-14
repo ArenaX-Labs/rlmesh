@@ -91,14 +91,6 @@ impl EnvironmentSourceRef {
             Self::Recipe(source) => sanitize_slug(&source.name),
         }
     }
-
-    pub fn requested_display(&self) -> String {
-        self.to_string()
-    }
-
-    pub fn resolved_display(&self) -> String {
-        self.to_string()
-    }
 }
 
 impl fmt::Display for EnvironmentSourceRef {
@@ -221,7 +213,6 @@ impl fmt::Display for ResolvedEnvironmentSourceRef {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ResolvedHfSourceRef {
     pub repo: String,
-    pub requested_revision: Option<String>,
     pub resolved_revision: String,
     pub suite: Option<String>,
     pub task: Option<String>,

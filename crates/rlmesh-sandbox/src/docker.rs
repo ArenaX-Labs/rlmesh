@@ -9,7 +9,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 use crate::source::ResolvedEnvironmentSourceRef;
-use crate::{EffectiveSandboxSpec, EnvironmentSourceRef, hf};
+use crate::{EffectiveSandboxSpec, EnvironmentSourceRef, hf, shell_quote};
 
 const DEFAULT_CONTAINER_PORT: u16 = 50051;
 const READY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -601,10 +601,6 @@ fn validate_dockerfile_token(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
 fn command_output(output: &std::process::Output) -> String {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -991,9 +987,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dockerfile_installs_rlmesh_gymnasium_and_packages() {
-        let spec = EffectiveSandboxSpec {
+    /// A baseline CartPole gym spec; tests override only the fields they exercise
+    /// via `..gym_spec()`.
+    fn gym_spec() -> EffectiveSandboxSpec {
+        EffectiveSandboxSpec {
             schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
             requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
@@ -1001,7 +998,7 @@ mod tests {
             }),
             base_image: "python:3.12-slim".to_string(),
             rlmesh_package: pip_rlmesh_package(),
-            packages: vec!["pygame".to_string()],
+            packages: vec![],
             imports: vec![],
             kwargs: BTreeMap::new(),
             num_envs: 1,
@@ -1009,6 +1006,14 @@ mod tests {
             recipe: None,
             context_root: None,
             build_hash: "abcdef0123456789".to_string(),
+        }
+    }
+
+    #[test]
+    fn dockerfile_installs_rlmesh_gymnasium_and_packages() {
+        let spec = EffectiveSandboxSpec {
+            packages: vec!["pygame".to_string()],
+            ..gym_spec()
         };
 
         let dockerfile = render_dockerfile(&spec).unwrap();
@@ -1108,21 +1113,10 @@ mod tests {
         let mut kwargs = BTreeMap::new();
         kwargs.insert("render_mode".to_string(), json!("rgb_array"));
         let spec = EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
-            requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
-            resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
-                env_id: "CartPole-v1".to_string(),
-            }),
-            base_image: "python:3.12-slim".to_string(),
-            rlmesh_package: pip_rlmesh_package(),
-            packages: vec![],
-            imports: vec![],
             kwargs,
             num_envs: 4,
             vectorization_mode: VectorizationMode::Async,
-            recipe: None,
-            context_root: None,
-            build_hash: "abcdef0123456789".to_string(),
+            ..gym_spec()
         };
 
         let json = render_bootstrap_json(&spec).unwrap();
@@ -1329,7 +1323,6 @@ mod tests {
             requested_source: EnvironmentSourceRef::parse("hf://org/repo@main:suite").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Hf(ResolvedHfSourceRef {
                 repo: "org/repo".to_string(),
-                requested_revision: Some("main".to_string()),
                 resolved_revision: "0123456789abcdef0123456789abcdef01234567".to_string(),
                 suite: Some("suite".to_string()),
                 task: None,
@@ -1356,26 +1349,13 @@ mod tests {
     #[test]
     fn dockerfile_copies_and_installs_rlmesh_wheel_package() {
         let spec = EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
-            requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
-            resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
-                env_id: "CartPole-v1".to_string(),
-            }),
-            base_image: "python:3.12-slim".to_string(),
             rlmesh_package: ResolvedRlmeshPackage::Wheel {
                 source_path: "/tmp/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl".into(),
                 install_path: "/opt/rlmesh/packages/rlmesh-0.1.0b2-cp311-abi3-manylinux_x86_64.whl"
                     .to_string(),
                 sha256: "abc".to_string(),
             },
-            packages: vec![],
-            imports: vec![],
-            kwargs: BTreeMap::new(),
-            num_envs: 1,
-            vectorization_mode: VectorizationMode::Sync,
-            recipe: None,
-            context_root: None,
-            build_hash: "abcdef0123456789".to_string(),
+            ..gym_spec()
         };
 
         let dockerfile = render_dockerfile(&spec).unwrap();
@@ -1394,7 +1374,6 @@ mod tests {
             requested_source: EnvironmentSourceRef::parse("hf://org/repo@main:suite/0").unwrap(),
             resolved_source: ResolvedEnvironmentSourceRef::Hf(ResolvedHfSourceRef {
                 repo: "org/repo".to_string(),
-                requested_revision: Some("main".to_string()),
                 resolved_revision: "0123456789abcdef0123456789abcdef01234567".to_string(),
                 suite: Some("suite".to_string()),
                 task: Some("0".to_string()),
@@ -1430,21 +1409,9 @@ mod tests {
         let mut kwargs = BTreeMap::new();
         kwargs.insert("render_mode".to_string(), json!("rgb_array"));
         let spec = EffectiveSandboxSpec {
-            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
-            requested_source: EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
-            resolved_source: ResolvedEnvironmentSourceRef::Gym(GymSourceRef {
-                env_id: "CartPole-v1".to_string(),
-            }),
-            base_image: "python:3.11-slim".to_string(),
-            rlmesh_package: pip_rlmesh_package(),
-            packages: vec![],
             imports: vec!["my_envs".to_string()],
             kwargs,
-            num_envs: 1,
-            vectorization_mode: VectorizationMode::Sync,
-            recipe: None,
-            context_root: None,
-            build_hash: "abcdef0123456789".to_string(),
+            ..gym_spec()
         };
 
         match &spec.resolved_source {
@@ -1535,125 +1502,67 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn copy_tree_skips_a_symlinked_directory() {
+    fn copy_tree_skips_every_symlink_kind_without_aborting() {
         use std::fs;
+        use std::os::unix::fs::symlink;
 
-        // A symlinked directory inside the source tree is SKIPPED (its real
-        // target is still staged under its own name, but the link entry is not).
-        let src_root = tempfile::tempdir().unwrap();
-        let real_dir = src_root.path().join("real");
-        fs::create_dir_all(&real_dir).unwrap();
-        fs::write(real_dir.join("asset.txt"), b"payload").unwrap();
-        std::os::unix::fs::symlink(&real_dir, src_root.path().join("link")).unwrap();
-
-        let dest = tempfile::tempdir().unwrap();
-        let out = dest.path().join("staged");
-        copy_tree(src_root.path(), &out).expect("a symlinked dir must be skipped, not error");
-
-        // The real directory is staged; the symlink name is NOT.
-        assert_eq!(
-            fs::read(out.join("real/asset.txt")).unwrap(),
-            b"payload".to_vec()
-        );
-        assert!(
-            !out.join("link").exists(),
-            "the symlinked dir must not be staged"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_tree_skips_a_symlinked_file() {
-        use std::fs;
-
-        let src_root = tempfile::tempdir().unwrap();
-        fs::write(src_root.path().join("target.txt"), b"hello").unwrap();
-        std::os::unix::fs::symlink(
-            src_root.path().join("target.txt"),
-            src_root.path().join("alias.txt"),
-        )
-        .unwrap();
-
-        let dest = tempfile::tempdir().unwrap();
-        let out = dest.path().join("staged");
-        copy_tree(src_root.path(), &out).expect("a symlinked file must be skipped, not error");
-
-        // The real file is staged; the symlink alias is NOT.
-        assert_eq!(fs::read(out.join("target.txt")).unwrap(), b"hello".to_vec());
-        assert!(
-            !out.join("alias.txt").exists(),
-            "the symlinked file must not be staged"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_tree_does_not_abort_on_a_cyclic_symlink() {
-        use std::fs;
-
-        // A directory self-link (link -> .) would make a follow-links walker hit
-        // a FilesystemLoop and abort; skipping the link entry stages cleanly.
-        let src_root = tempfile::tempdir().unwrap();
-        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
-        std::os::unix::fs::symlink(".", src_root.path().join("link")).unwrap();
-
-        let dest = tempfile::tempdir().unwrap();
-        let out = dest.path().join("staged");
-        copy_tree(src_root.path(), &out).expect("a cyclic symlink must not abort the copy");
-
-        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
-        assert!(!out.join("link").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_tree_does_not_abort_on_a_dangling_symlink() {
-        use std::fs;
-
-        // A dangling link (-> a nonexistent target) would make a follow-links
-        // walker hit NotFound and abort; skipping the link entry stages cleanly.
-        let src_root = tempfile::tempdir().unwrap();
-        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
-        std::os::unix::fs::symlink(
-            src_root.path().join("does-not-exist"),
-            src_root.path().join("link"),
-        )
-        .unwrap();
-
-        let dest = tempfile::tempdir().unwrap();
-        let out = dest.path().join("staged");
-        copy_tree(src_root.path(), &out).expect("a dangling symlink must not abort the copy");
-
-        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
-        assert!(!out.join("link").exists());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_tree_does_not_stage_an_escaping_symlink() {
-        use std::fs;
-
-        // A link to a file OUTSIDE the staged root must not leak that file into
-        // the image: the link entry is skipped, so its target is absent.
+        // copy_tree must SKIP a symlink child of any kind -- never copying the
+        // link, never following it -- so a real (kept) file always stages while
+        // the link name never does: a symlinked dir/file does not duplicate its
+        // target, a cyclic/dangling link does not abort the walk, and an escaping
+        // link does not leak an out-of-tree target into the image.
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
 
-        let src_root = tempfile::tempdir().unwrap();
-        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
-        std::os::unix::fs::symlink(
-            outside.path().join("secret.txt"),
-            src_root.path().join("leak"),
-        )
-        .unwrap();
+        // (kind, build the `link` entry under `src`).
+        type Case<'a> = (&'a str, &'a dyn Fn(&std::path::Path));
+        let cases: [Case; 5] = [
+            ("symlinked-dir", &|src| {
+                let real = src.join("real");
+                fs::create_dir_all(&real).unwrap();
+                fs::write(real.join("asset.txt"), b"payload").unwrap();
+                symlink(&real, src.join("link")).unwrap();
+            }),
+            ("symlinked-file", &|src| {
+                fs::write(src.join("target.txt"), b"hello").unwrap();
+                symlink(src.join("target.txt"), src.join("link")).unwrap();
+            }),
+            ("cyclic", &|src| symlink(".", src.join("link")).unwrap()),
+            ("dangling", &|src| {
+                symlink(src.join("does-not-exist"), src.join("link")).unwrap()
+            }),
+            ("escaping", &|src| {
+                symlink(outside.path().join("secret.txt"), src.join("link")).unwrap()
+            }),
+        ];
 
-        let dest = tempfile::tempdir().unwrap();
-        let out = dest.path().join("staged");
-        copy_tree(src_root.path(), &out).expect("an escaping symlink must not abort the copy");
+        for (kind, build_link) in cases {
+            let src_root = tempfile::tempdir().unwrap();
+            fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+            build_link(src_root.path());
 
-        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
-        assert!(
-            !out.join("leak").exists(),
-            "an out-of-tree symlink target must not be staged"
-        );
+            let dest = tempfile::tempdir().unwrap();
+            let out = dest.path().join("staged");
+            copy_tree(src_root.path(), &out)
+                .unwrap_or_else(|e| panic!("a {kind} symlink must not abort the copy: {e}"));
+
+            assert_eq!(
+                fs::read(out.join("keep.txt")).unwrap(),
+                b"keep".to_vec(),
+                "{kind}: the real file must stage"
+            );
+            assert!(
+                !out.join("link").exists(),
+                "{kind}: the symlink entry must not be staged"
+            );
+            // A real (non-link) sibling dir adjacent to a skipped symlink must
+            // still stage under its own name; skipping the link must not skip it.
+            if kind == "symlinked-dir" {
+                assert_eq!(
+                    fs::read(out.join("real/asset.txt")).unwrap(),
+                    b"payload".to_vec()
+                );
+            }
+        }
     }
 }

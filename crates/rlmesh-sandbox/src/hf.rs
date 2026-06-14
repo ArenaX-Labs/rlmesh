@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::looks_like_full_git_sha;
 use crate::source::HfSourceRef;
 
 pub(crate) fn resolve_revision(source: &HfSourceRef) -> Result<String> {
@@ -176,13 +177,10 @@ fn hf_git_url(repo: &str) -> String {
     format!("https://huggingface.co/{repo}")
 }
 
-fn looks_like_full_git_sha(value: &str) -> bool {
-    value.len() == 40 && value.chars().all(|ch| ch.is_ascii_hexdigit())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_full_git_sha, parse_ls_remote_unique, validate_revision};
+    use super::{parse_ls_remote_unique, validate_revision};
+    use crate::looks_like_full_git_sha;
 
     #[test]
     fn detects_full_git_shas() {
