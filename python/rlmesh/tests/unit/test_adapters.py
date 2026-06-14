@@ -272,6 +272,14 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
     np.testing.assert_allclose(result, [-1.0], rtol=1e-6)
 
 
+def test_action_component_positional_binary_is_unchanged() -> None:
+    # scale/invert/threshold are appended after binary, so the old positional
+    # layout (role, dim, encoding, range, binary) keeps its meaning.
+    c = adapt.ActionComponent(adapt.ACTION_GRIPPER, 1, None, None, True)
+    assert c.binary is True
+    assert c.scale is None and c.invert is False and c.threshold is None
+
+
 # ---------------------------------------------------------------------------
 # OpenVLA
 # ---------------------------------------------------------------------------

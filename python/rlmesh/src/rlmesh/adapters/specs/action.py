@@ -38,10 +38,12 @@ class ActionComponent:
     dim: int
     encoding: RotationEncoding | CustomEncoding | None = None
     range: tuple[float, float] | None = None
+    binary: bool = False
+    # Appended after binary so the existing positional layout (..., range, binary)
+    # is unchanged; these are keyword-only in practice.
     scale: float | None = None
     invert: bool = False
     threshold: float | None = None
-    binary: bool = False
 
     def __post_init__(self) -> None:
         check_non_negative(self.dim, "ActionComponent.dim")

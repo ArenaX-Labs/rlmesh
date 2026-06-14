@@ -476,3 +476,22 @@ def test_local_dir_mounts_missing_dir_fails_loud(tmp_path: Any) -> None:
     inputs = (ArtifactInput("weights", "/t", local_dir=str(tmp_path / "nope")),)
     with pytest.raises(FileNotFoundError, match="local_dir is not a directory"):
         local_dir_mounts(inputs)
+
+
+def test_local_dir_mounts_rejects_unknown_override(tmp_path: Any) -> None:
+    from rlmesh.recipes._artifacts import local_dir_mounts
+    from rlmesh.recipes._schema import ArtifactInput
+
+    inputs = (ArtifactInput("weights", "/rlmesh/input/model/weights"),)
+    stray = ArtifactInput("typo", "/x", local_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="matches no declared input"):
+        local_dir_mounts(inputs, (stray,))
+
+
+def test_local_dir_mounts_rejects_unsafe_target(tmp_path: Any) -> None:
+    from rlmesh.recipes._artifacts import local_dir_mounts
+    from rlmesh.recipes._schema import ArtifactInput
+
+    inputs = (ArtifactInput("weights", "/rlmesh/../etc", local_dir=str(tmp_path)),)
+    with pytest.raises(ValueError, match="absolute container path without"):
+        local_dir_mounts(inputs)

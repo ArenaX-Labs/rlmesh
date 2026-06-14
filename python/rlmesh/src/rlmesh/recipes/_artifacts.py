@@ -102,19 +102,37 @@ def local_dir_mounts(
     on the host, before the container starts. The mount is read-only; the host
     directory must be readable by the sandbox's non-root container user.
     """
-    override_dir = {o.name: o.local_dir for o in overrides if o.local_dir is not None}
+    declared_names = {declared.name for declared in inputs}
+    override_dir: dict[str, str] = {}
+    for override in overrides:
+        # An override for a name the recipe never declared would silently do
+        # nothing (the container's recipe has no such input to mount onto), so
+        # reject it rather than ignore it.
+        if override.name not in declared_names:
+            raise ValueError(
+                f"artifacts override {override.name!r} matches no declared input "
+                f"({sorted(declared_names) or ['<none>']}); it would not be mounted"
+            )
+        if override.local_dir is not None:
+            override_dir[override.name] = override.local_dir
     mounts: list[tuple[str, str]] = []
     for declared in inputs:
         local_dir = override_dir.get(declared.name, declared.local_dir)
         if local_dir is None:
             continue
+        target = declared.target_path
+        if not target.startswith("/") or ".." in Path(target).parts:
+            raise ValueError(
+                f"ArtifactInput {declared.name!r} target_path must be an absolute "
+                f"container path without '..': {target!r}"
+            )
         host = Path(local_dir).expanduser()
         if not host.is_dir():
             raise FileNotFoundError(
                 f"ArtifactInput {declared.name!r} local_dir is not a directory: {host} "
                 "(it is bind-mounted into the sandbox at run time)"
             )
-        mounts.append((str(host.resolve()), declared.target_path))
+        mounts.append((str(host.resolve()), target))
     return mounts
 
 
