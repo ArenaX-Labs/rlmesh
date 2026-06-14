@@ -105,8 +105,15 @@ pub unsafe extern "C" fn rlmesh_value_box(tensor: *const RlmeshTensor) -> *mut R
             .dtype
             .to_core()
             .ok_or_else(|| CapiError::invalid_value("unsupported dtype"))?;
-        let shape =
-            unsafe { std::slice::from_raw_parts(tensor.shape, tensor.ndim as usize) }.to_vec();
+        let shape: Vec<i64> = if tensor.ndim == 0 {
+            // A scalar carries no dims; shape may be NULL (an empty C++ vector's
+            // data()), and from_raw_parts(NULL, 0) is UB — so do not form a slice.
+            Vec::new()
+        } else if tensor.shape.is_null() {
+            return Err(CapiError::invalid_arg("null shape"));
+        } else {
+            unsafe { std::slice::from_raw_parts(tensor.shape, tensor.ndim as usize) }.to_vec()
+        };
         let numel = shape
             .iter()
             .try_fold(1usize, |acc, &dim| {

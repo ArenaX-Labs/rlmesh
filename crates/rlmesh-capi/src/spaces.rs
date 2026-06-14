@@ -116,6 +116,9 @@ pub unsafe extern "C" fn rlmesh_space_copy_shape(
         if spec.shape.is_empty() {
             return Ok(());
         }
+        if out.is_null() {
+            return Err(CapiError::invalid_arg("null out"));
+        }
         let dst = unsafe { std::slice::from_raw_parts_mut(out, spec.shape.len()) };
         dst.copy_from_slice(&spec.shape);
         Ok(())

@@ -11,7 +11,7 @@ use crate::abi::status::RlmeshStatus;
 use crate::codec::{
     RlmeshBytes, rlmesh_bytes_free, rlmesh_decode_batch, rlmesh_encode_batch, rlmesh_values_free,
 };
-use crate::spaces::RlmeshSpaceSpec;
+use crate::spaces::{RlmeshSpaceSpec, rlmesh_space_copy_shape};
 use crate::value::dtype::RlmeshDType;
 use crate::value::handle::{
     RlmeshValue, rlmesh_value_as_discrete, rlmesh_value_as_tensor, rlmesh_value_as_text,
@@ -239,4 +239,37 @@ fn dict_with_a_null_child_takes_no_ownership() {
     let dict = unsafe { rlmesh_value_dict(keys.as_ptr(), values.as_ptr(), 2) };
     assert!(dict.is_null());
     unsafe { rlmesh_value_free(keep) };
+}
+
+#[test]
+fn box_accepts_scalar_with_null_shape() {
+    // A scalar Box (ndim == 0) may carry shape == NULL; constructing it must not
+    // form a slice from the null pointer.
+    let scalar: f32 = 4.0;
+    let view = RlmeshTensor {
+        data: std::ptr::from_ref(&scalar) as *mut c_void,
+        ndim: 0,
+        shape: std::ptr::null(),
+        strides: std::ptr::null(),
+        dtype: F32,
+        device_type: 1,
+        device_id: 0,
+        flags: 0,
+        manager_ctx: std::ptr::null_mut(),
+        deleter: None,
+    };
+    let value = unsafe { rlmesh_value_box(&view) };
+    assert!(!value.is_null(), "scalar box with null shape must succeed");
+    unsafe { rlmesh_value_free(value) };
+}
+
+#[test]
+fn space_copy_shape_rejects_null_out() {
+    let spec = box_spec();
+    let spec_ptr = std::ptr::from_ref(&spec).cast::<RlmeshSpaceSpec>();
+    // A NULL out with ample capacity for a non-empty shape must error, not deref.
+    assert_eq!(
+        unsafe { rlmesh_space_copy_shape(spec_ptr, std::ptr::null_mut(), 8) },
+        RlmeshStatus::InvalidArgument
+    );
 }
