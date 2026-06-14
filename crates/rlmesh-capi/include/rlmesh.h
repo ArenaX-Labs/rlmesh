@@ -217,9 +217,9 @@ typedef struct RlmeshModelVtable {
 typedef struct RlmeshModel RlmeshModel;
 
 RlmeshStatus rlmesh_model_new(const RlmeshModelVtable* vtable, void* user_data, RlmeshModel** out);
-RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* env_address, const char* token);
+RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* env_address);
 RlmeshStatus rlmesh_model_run_local_for_episodes(RlmeshModel* model, const char* env_address,
-                                                 const char* token, uint64_t max_episodes);
+                                                 uint64_t max_episodes);
 void rlmesh_model_free(RlmeshModel* model);
 
 #ifdef __cplusplus

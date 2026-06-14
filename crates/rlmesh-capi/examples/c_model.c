@@ -82,9 +82,9 @@ int main(int argc, char** argv) {
   printf("connecting to %s ...\n", address);
   RlmeshStatus status;
   if (argc > 2) {
-    status = rlmesh_model_run_local_for_episodes(model, address, "", strtoull(argv[2], NULL, 10));
+    status = rlmesh_model_run_local_for_episodes(model, address, strtoull(argv[2], NULL, 10));
   } else {
-    status = rlmesh_model_run_local(model, address, "");
+    status = rlmesh_model_run_local(model, address);
   }
   rlmesh_model_free(model);
 

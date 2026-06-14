@@ -254,7 +254,7 @@ class Model {
   /// Drive against a remote environment until it ends. Blocking.
   Status run_local(std::string_view env_address) {
     std::string address(env_address);
-    RlmeshStatus status = rlmesh_model_run_local(model_, address.c_str(), "");
+    RlmeshStatus status = rlmesh_model_run_local(model_, address.c_str());
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }
@@ -263,7 +263,7 @@ class Model {
   Status run_local(std::string_view env_address, uint64_t max_episodes) {
     std::string address(env_address);
     RlmeshStatus status =
-        rlmesh_model_run_local_for_episodes(model_, address.c_str(), "", max_episodes);
+        rlmesh_model_run_local_for_episodes(model_, address.c_str(), max_episodes);
     if (status != RLMESH_OK) return Error::from_last(status);
     return ok();
   }

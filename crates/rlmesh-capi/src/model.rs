@@ -359,14 +359,13 @@ pub unsafe extern "C" fn rlmesh_model_new(
 /// Drive the model against a remote environment until it ends. Blocking.
 ///
 /// # Safety
-/// `model` must be a live handle; `env_address`/`token` valid C strings or NULL.
+/// `model` must be a live handle; `env_address` a valid C string or NULL.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rlmesh_model_run_local(
     model: *mut RlmeshModel,
     env_address: *const c_char,
-    token: *const c_char,
 ) -> RlmeshStatus {
-    run_local(model, env_address, token, None)
+    run_local(model, env_address, None)
 }
 
 /// Drive the model against a remote environment for `max_episodes`. Blocking.
@@ -377,16 +376,14 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
 pub unsafe extern "C" fn rlmesh_model_run_local_for_episodes(
     model: *mut RlmeshModel,
     env_address: *const c_char,
-    token: *const c_char,
     max_episodes: u64,
 ) -> RlmeshStatus {
-    run_local(model, env_address, token, Some(max_episodes))
+    run_local(model, env_address, Some(max_episodes))
 }
 
 fn run_local(
     model: *mut RlmeshModel,
     env_address: *const c_char,
-    _token: *const c_char,
     max_episodes: Option<u64>,
 ) -> RlmeshStatus {
     guard(|| {
