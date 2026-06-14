@@ -7,7 +7,7 @@ use prost::Message;
 use rlmesh_proto::common::v1::MessageBytes;
 use rlmesh_proto::core::v1::OperationTelemetry;
 use rlmesh_proto::env::v1::{
-    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
+    AutoresetMode, EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::model::v1::{CloseRouteRequest, PredictRequest, PredictResponse};
 use rlmesh_proto::spaces::v1::SpaceValue;
@@ -293,6 +293,35 @@ where
             .unwrap_or_default()
     }
 
+    /// Per-lane autoreset convention declared by the served env's contract.
+    /// `UNSPECIFIED` is treated as `DISABLED` (explicit reset only).
+    fn autoreset_mode(&self) -> AutoresetMode {
+        AutoresetMode::try_from(self.spec.env_contract.autoreset_mode)
+            .unwrap_or(AutoresetMode::Unspecified)
+    }
+
+    /// Deterministic seeds for a partial (`reset_subset`) reset, positionally
+    /// aligned to `env_indices`. Empty when no base seed is configured.
+    fn reset_subset_seeds(&self, reset_generation: u64, env_indices: &[i32]) -> Vec<i64> {
+        self.spec
+            .base_seed
+            .map(|base_seed| {
+                env_indices
+                    .iter()
+                    .map(|&env_index| {
+                        deterministic_reset_seed(
+                            base_seed,
+                            &self.spec.session_id,
+                            &self.spec.route_id,
+                            reset_generation,
+                            env_index as usize,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {
         self.run_with_cancellation(CancellationToken::new()).await
     }
@@ -359,6 +388,7 @@ where
                 seeds: reset_seeds,
                 options: None,
                 timeout_ms: reset_timeout_ms,
+                env_indices: Vec::new(),
             }),
         )
         .await?;
@@ -479,6 +509,7 @@ where
                 self.env.step(StepRequest {
                     action: action_event.action.map(bytes_value),
                     timeout_ms: step_timeout_ms,
+                    env_indices: Vec::new(),
                 }),
             )
             .await?;
@@ -541,6 +572,12 @@ where
             self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
                 .await;
 
+            // Under NEXT_STEP, the final episode completes at its done step `t`
+            // and this early-return fires before the `t+1` roll. So the
+            // model-side `on_episode_end` for the final episode is not delivered
+            // at `t+1`; instead it fires via the close-time `finish_lifecycle`
+            // sweep during shutdown. Asymmetric versus mid-run episodes, but the
+            // callback is not lost.
             if self
                 .spec
                 .max_episodes
@@ -574,47 +611,97 @@ where
                 });
             }
 
-            let need_reset = !step_ok.response.completed_episodes.is_empty();
-            let (next_obs, phase, is_reset_msg) = if need_reset {
-                let reset_started = Instant::now();
-                reset_generation += 1;
-                let step = state.snapshot().step;
-                let reset_timeout = self.spec.limits.env_reset_timeout;
-                let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms();
-                let reset_seeds = self.reset_seeds(reset_generation);
-                let reset_ok = await_runtime_operation(
-                    cancellation,
-                    reset_timeout,
-                    RuntimeError::operation_timeout(
-                        state.route_id(),
-                        state.env_component_id(),
-                        "env.reset",
-                        step,
-                        reset_timeout,
-                    ),
-                    self.cancelled_error(state, step),
-                    self.env.reset(ResetRequest {
-                        seeds: reset_seeds,
-                        options: None,
-                        timeout_ms: reset_timeout_ms,
-                    }),
-                )
-                .await?;
-                timings.reset.record(reset_started.elapsed());
-                timings.window.record_operation_telemetry(
-                    state.env_component_id(),
-                    reset_ok.telemetry.as_ref(),
-                );
-                let next_obs = value_bytes(reset_ok.response.observation.as_ref())?;
-                let started_episodes = state.start_episodes(reset_ok.response.episode_ids, true);
-                self.invoke_started_episodes(state, started_episodes).await;
-                (next_obs, RequestPhase::ResetObservation, true)
-            } else {
-                (
+            // Mode-aware next observation. The reflexive "any lane completed =>
+            // reset the whole vector" trigger is gone — that was the category
+            // error that cut healthy lanes short.
+            let (next_obs, phase, is_reset_msg) = match self.autoreset_mode() {
+                // NEXT_STEP (and the unreachable SAME_STEP): the env auto-resets a
+                // done lane itself and the rolled episode ids already arrived via
+                // observe_episode_ids above. The driver is purely observational —
+                // it never resets on the hot path.
+                AutoresetMode::NextStep | AutoresetMode::SameStep => (
                     step_observation.clone(),
                     RequestPhase::StepObservation,
                     false,
-                )
+                ),
+                // DISABLED (and the single-env default): the env does not
+                // autoreset, so restart the lanes that just completed. When every
+                // lane completed this is a whole-vector reset (also the num_envs==1
+                // path); a strict subset uses a per-lane seeded reset_subset — the
+                // controlled / reproducible path.
+                AutoresetMode::Unspecified | AutoresetMode::Disabled => {
+                    let mut done_lanes: Vec<i32> = step_ok
+                        .response
+                        .completed_episodes
+                        .iter()
+                        .map(|metadata| metadata.env_index)
+                        .collect();
+                    // completed_episodes can carry duplicate env_index entries
+                    // (e.g. drained interrupted episodes), which would inflate
+                    // the lane count and misfire the whole_vector decision below.
+                    // Dedupe so the count reflects distinct lanes. Sorting is
+                    // safe: reset_subset_seeds is derived FROM done_lanes (so
+                    // seeds stay positionally aligned) and env_indices is
+                    // done_lanes.clone().
+                    done_lanes.sort_unstable();
+                    done_lanes.dedup();
+                    if done_lanes.is_empty() {
+                        (
+                            step_observation.clone(),
+                            RequestPhase::StepObservation,
+                            false,
+                        )
+                    } else {
+                        let reset_started = Instant::now();
+                        reset_generation += 1;
+                        let step = state.snapshot().step;
+                        let reset_timeout = self.spec.limits.env_reset_timeout;
+                        let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms();
+                        let whole_vector = done_lanes.len() == self.spec.num_envs;
+                        let (reset_seeds, env_indices) = if whole_vector {
+                            (self.reset_seeds(reset_generation), Vec::new())
+                        } else {
+                            (
+                                self.reset_subset_seeds(reset_generation, &done_lanes),
+                                done_lanes.clone(),
+                            )
+                        };
+                        let reset_ok = await_runtime_operation(
+                            cancellation,
+                            reset_timeout,
+                            RuntimeError::operation_timeout(
+                                state.route_id(),
+                                state.env_component_id(),
+                                "env.reset",
+                                step,
+                                reset_timeout,
+                            ),
+                            self.cancelled_error(state, step),
+                            self.env.reset(ResetRequest {
+                                seeds: reset_seeds,
+                                options: None,
+                                timeout_ms: reset_timeout_ms,
+                                env_indices,
+                            }),
+                        )
+                        .await?;
+                        timings.reset.record(reset_started.elapsed());
+                        timings.window.record_operation_telemetry(
+                            state.env_component_id(),
+                            reset_ok.telemetry.as_ref(),
+                        );
+                        let next_obs = value_bytes(reset_ok.response.observation.as_ref())?;
+                        // Whole-vector reset starts every lane; a partial reset
+                        // rolls only the lanes whose id actually changed.
+                        let started_episodes = if whole_vector {
+                            state.start_episodes(reset_ok.response.episode_ids, true)
+                        } else {
+                            state.observe_episode_ids(reset_ok.response.episode_ids)
+                        };
+                        self.invoke_started_episodes(state, started_episodes).await;
+                        (next_obs, RequestPhase::ResetObservation, true)
+                    }
+                }
             };
 
             let mut obs_msg = state.predict_request(next_obs.clone(), phase);

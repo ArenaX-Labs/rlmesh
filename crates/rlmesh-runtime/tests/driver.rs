@@ -386,6 +386,7 @@ impl RuntimeEnv for TestEnv {
                     .into_iter()
                     .collect(),
                 episode_ids: vec![],
+                env_indices: vec![],
             },
             telemetry: None,
         })
@@ -555,4 +556,178 @@ fn payload<const N: usize>(data: [u8; N]) -> MessageBytes {
 
 fn bytes_value(value: MessageBytes) -> SpaceValue {
     SpaceValue { bytes: Some(value) }
+}
+
+/// A NEXT_STEP vector env with a per-lane terminal schedule. It mimics the env
+/// server's output: a lane terminates at its scheduled step (terminal obs keeps
+/// the old episode id), then auto-resets on the FOLLOWING step (fresh obs, new
+/// id, reward 0) — never requiring a driver-issued reset.
+#[derive(Clone)]
+struct VectorTestEnv {
+    reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
+    closed: Arc<AtomicBool>,
+    terminal_after: Vec<usize>,
+    lane_step: Vec<usize>,
+    lane_episode: Vec<usize>,
+    pending_autoreset: Vec<bool>,
+}
+
+impl VectorTestEnv {
+    fn new(terminal_after: Vec<usize>) -> Self {
+        let n = terminal_after.len();
+        Self {
+            reset_seeds: Arc::new(Mutex::new(Vec::new())),
+            closed: Arc::new(AtomicBool::new(false)),
+            terminal_after,
+            lane_step: vec![0; n],
+            lane_episode: vec![0; n],
+            pending_autoreset: vec![false; n],
+        }
+    }
+
+    fn episode_id(lane: usize, episode: usize) -> String {
+        format!("ep-{lane}-{episode}")
+    }
+}
+
+#[async_trait]
+impl RuntimeEnv for VectorTestEnv {
+    async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError> {
+        self.reset_seeds
+            .lock()
+            .expect("reset seed recorder lock poisoned")
+            .push(request.seeds);
+        let n = self.terminal_after.len();
+        self.lane_step = vec![0; n];
+        self.lane_episode = vec![0; n];
+        self.pending_autoreset = vec![false; n];
+        let episode_ids = (0..n).map(|lane| Self::episode_id(lane, 0)).collect();
+        Ok(RuntimeEnvReset {
+            response: ResetResponse {
+                observation: Some(bytes_value(payload([0]))),
+                infos: None,
+                episode_ids,
+            },
+            telemetry: None,
+        })
+    }
+
+    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+        let n = self.terminal_after.len();
+        let mut rewards = vec![1.0; n];
+        let mut terminated_mask = vec![0u8; n];
+        let mut completed_episodes = Vec::new();
+        let mut episode_ids = vec![String::new(); n];
+
+        for lane in 0..n {
+            if self.pending_autoreset[lane] {
+                // t+1: the env auto-resets this lane and delivers the fresh obs of
+                // a new episode (step 0, reward 0, terminated=false).
+                self.pending_autoreset[lane] = false;
+                self.lane_episode[lane] += 1;
+                self.lane_step[lane] = 0;
+                rewards[lane] = 0.0;
+                episode_ids[lane] = Self::episode_id(lane, self.lane_episode[lane]);
+            } else {
+                self.lane_step[lane] += 1;
+                let id = Self::episode_id(lane, self.lane_episode[lane]);
+                if self.lane_step[lane] >= self.terminal_after[lane] {
+                    terminated_mask[lane] = 1;
+                    completed_episodes.push(EpisodeMetadata {
+                        episode_id: id.clone(),
+                        env_index: lane as i32,
+                        step_count: self.lane_step[lane] as i64,
+                        cumulative_reward: self.lane_step[lane] as f64,
+                        terminated: true,
+                        ..Default::default()
+                    });
+                    self.pending_autoreset[lane] = true;
+                }
+                // The terminal obs keeps the OLD id; an ongoing step keeps the
+                // active id. Neither is a roll.
+                episode_ids[lane] = id;
+            }
+        }
+
+        Ok(RuntimeEnvStep {
+            response: StepResponse {
+                observation: Some(bytes_value(payload([0]))),
+                rewards,
+                terminated_mask,
+                truncated_mask: vec![0u8; n],
+                infos: None,
+                completed_episodes,
+                episode_ids,
+                env_indices: vec![],
+            },
+            telemetry: None,
+        })
+    }
+
+    async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
+        self.closed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
+    RuntimeSessionSpec {
+        session_id: "session-vec".to_string(),
+        route_id: "route-vec".to_string(),
+        env_component_id: "env-vec".to_string(),
+        model_component_id: "model-vec".to_string(),
+        env_id: "VectorTestEnv-v0".to_string(),
+        env_contract: EnvContract {
+            observation_space: Some(SpaceSpec::default()),
+            action_space: Some(SpaceSpec::default()),
+            num_envs: num_envs as u32,
+            autoreset_mode: rlmesh_proto::env::v1::AutoresetMode::NextStep as i32,
+            ..Default::default()
+        },
+        num_envs,
+        base_seed: None,
+        max_episodes: Some(max_episodes),
+        close_env_on_end: true,
+        limits: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn next_step_vector_env_completes_lanes_independently_without_whole_vector_reset() {
+    // The headline regression. With num_envs=4, NEXT_STEP, and variable-length
+    // episodes, the driver must NEVER issue a reset after the cold start — the env
+    // auto-resets each lane itself. Previously any single lane completing fired a
+    // whole-vector reset that cut every other lane's episode short.
+    let env = VectorTestEnv::new(vec![2, 3, 2, 4]);
+    let model = TestModel::default();
+    let report = RuntimeDriver::new(
+        vector_spec(4, 8),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    // Exactly one env.reset over the whole run: the initial cold start.
+    assert_eq!(
+        env.reset_seeds
+            .lock()
+            .expect("reset seed recorder lock poisoned")
+            .len(),
+        1,
+        "driver must reset only once (cold start), never on a lane completion"
+    );
+    // Lanes completed episodes independently until the episode budget.
+    assert!(
+        report.total_episodes >= 8,
+        "expected >= 8 episodes across lanes, got {}",
+        report.total_episodes
+    );
+    // One predict per driver step: no stalled lanes.
+    assert_eq!(
+        model.predicts.load(Ordering::SeqCst) as i64,
+        report.total_steps
+    );
 }

@@ -48,6 +48,13 @@ pub trait SingleEnv: Send + Sync {
 /// batched env-layer one: it unwraps the first seed/action on the way in and
 /// wraps the single observation/reward back into one-element batches on the way
 /// out.
+///
+/// A vector of one is the canonical server-side truth — "single env" is just the
+/// client-side un-batching view. A single/scalar env carries `DISABLED` autoreset
+/// (it has no `metadata["autoreset_mode"]`), so the runtime resets it explicitly;
+/// the per-lane `on_lane_reset` event covers its single lane. Collapsing the
+/// remaining single/vector construction fork (`uses_single_env_api`) is a later,
+/// non-breaking internal change.
 pub struct SingleEnvAdapter<E> {
     inner: E,
 }

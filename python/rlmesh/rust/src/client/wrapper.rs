@@ -192,6 +192,8 @@ impl ClientCore {
                 seeds,
                 options,
                 timeout_ms,
+                // Whole-vector reset; partial reset is not exposed on this path.
+                env_indices: Vec::new(),
             }))
         })
     }

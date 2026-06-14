@@ -182,6 +182,16 @@ impl RouteState {
         for (index, slot) in self.slots.iter_mut().enumerate() {
             let episode_id = episode_ids.get(index).cloned().unwrap_or_default();
             let episode_record_id = record_ids.get(index).cloned().unwrap_or_default();
+            // Did this lane's episode id flip? A NEXT_STEP autoreset rolls the id
+            // on a single lane at t+1; only that lane's step counter must reset.
+            let rolled = {
+                let previous_id = slot
+                    .episode
+                    .as_ref()
+                    .map(|episode| episode.episode_id.as_str())
+                    .unwrap_or("");
+                !episode_id.is_empty() && episode_id != previous_id
+            };
             slot.episode = if episode_id.is_empty() {
                 None
             } else {
@@ -193,7 +203,9 @@ impl RouteState {
                     started_from_auto_reset,
                 })
             };
-            if reset_steps {
+            // `reset_steps` force-resets every lane (a whole-vector reset); `rolled`
+            // resets only the lane whose id changed (per-lane autoreset).
+            if reset_steps || rolled {
                 slot.step = 0;
                 slot.reset = true;
             }

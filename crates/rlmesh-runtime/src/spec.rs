@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use rlmesh_proto::env::v1::EnvContract;
+use rlmesh_proto::env::v1::{AutoresetMode, EnvContract};
 use rlmesh_proto::spaces::v1::SpaceSpec;
 use serde::{Deserialize, Serialize};
 
@@ -42,12 +42,6 @@ impl RuntimeSessionSpec {
         if self.num_envs == 0 {
             return Err("runtime num_envs must be greater than zero".to_string());
         }
-        if self.num_envs > 1 {
-            return Err(
-                "runtime num_envs greater than one is not supported until per-lane reset is available"
-                    .to_string(),
-            );
-        }
         if self.env_contract.observation_space.is_none() {
             return Err("runtime env_contract is missing observation_space".to_string());
         }
@@ -56,6 +50,35 @@ impl RuntimeSessionSpec {
         }
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
+        }
+        // SAME_STEP is reserved on the wire but not yet driven by the runtime:
+        // the driver currently aliases NEXT_STEP|SAME_STEP to a purely
+        // observational path, while the env server never rolls SAME_STEP episode
+        // ids -> done lanes would stall. Reject it here so it cannot reach the
+        // runtime under a false assumption of support.
+        if self.env_contract.autoreset_mode == AutoresetMode::SameStep as i32 {
+            return Err(
+                "SAME_STEP autoreset is reserved but not yet supported by the runtime; \
+                 construct the env with NEXT_STEP or DISABLED autoreset"
+                    .to_string(),
+            );
+        }
+        // Vectorized sessions require NEXT_STEP autoreset: the env resets each
+        // done lane itself, so the driver never needs per-lane reset. DISABLED
+        // (and the UNSPECIFIED default) would require resetting just the done
+        // lanes, which stock gymnasium vector envs cannot do — there is no
+        // partial-reset API, and a full reset clobbers the still-running lanes.
+        // Reject the combination up front instead of failing mid-run the first
+        // time lanes terminate at different steps. A future in-house vector
+        // engine with per-lane reset will lift this gate. (SAME_STEP is already
+        // rejected above, so the only mode that passes here is NEXT_STEP.)
+        if self.num_envs > 1 && self.env_contract.autoreset_mode != AutoresetMode::NextStep as i32 {
+            return Err(
+                "vectorized runtime sessions (num_envs > 1) require NEXT_STEP autoreset; \
+                 DISABLED autoreset needs per-lane reset, which is unavailable for stock \
+                 gymnasium vector envs. Use NEXT_STEP autoreset, or run with num_envs == 1."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -270,7 +293,7 @@ mod duration_millis {
 mod tests {
     use std::time::Duration;
 
-    use rlmesh_proto::env::v1::EnvContract;
+    use rlmesh_proto::env::v1::{AutoresetMode, EnvContract};
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
@@ -316,14 +339,48 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_vectorized_runtime_sessions() {
+    fn validate_accepts_vectorized_next_step_runtime_sessions() {
+        // num_envs > 1 is supported with NEXT_STEP autoreset: the env resets each
+        // done lane itself, so the driver never needs per-lane reset.
         let mut spec = valid_spec();
-        spec.num_envs = 2;
-        spec.env_contract.num_envs = 2;
+        spec.num_envs = 4;
+        spec.env_contract.num_envs = 4;
+        spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
+
+        assert!(spec.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_disabled_vectorized_sessions() {
+        // DISABLED (and the UNSPECIFIED default) with num_envs > 1 needs per-lane
+        // reset, which stock gymnasium vector envs cannot do. Reject up front
+        // rather than failing mid-run on the first staggered termination.
+        for mode in [AutoresetMode::Disabled, AutoresetMode::Unspecified] {
+            let mut spec = valid_spec();
+            spec.num_envs = 4;
+            spec.env_contract.num_envs = 4;
+            spec.env_contract.autoreset_mode = mode as i32;
+
+            let error = spec.validate().unwrap_err();
+            assert!(
+                error.contains("NEXT_STEP"),
+                "expected a NEXT_STEP-guidance rejection for {mode:?}, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_same_step_autoreset() {
+        // SAME_STEP is reserved but unsupported; validation must reject it so it
+        // cannot reach the runtime and stall lanes.
+        let mut spec = valid_spec();
+        spec.env_contract.autoreset_mode = AutoresetMode::SameStep as i32;
 
         let error = spec.validate().unwrap_err();
-
-        assert!(error.contains("per-lane reset"));
+        assert!(
+            error.contains("SAME_STEP"),
+            "expected SAME_STEP rejection, got: {error}"
+        );
     }
 
     #[test]

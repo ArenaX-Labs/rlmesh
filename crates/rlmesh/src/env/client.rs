@@ -131,6 +131,10 @@ impl RemoteEnv {
                 seeds: req.seeds,
                 options: req.options.as_ref().map(meta_map_to_proto),
                 timeout_ms: req.timeout_ms,
+                // Forward the requested lanes: empty = whole-vector reset; a
+                // non-empty list is a partial reset the server routes to
+                // reset_subset (honored only by envs that support it).
+                env_indices: req.env_indices,
             })
             .await
             .map_err(Error::from)?;
@@ -173,6 +177,8 @@ impl RemoteEnv {
                         .map_err(protocol_error_to_error)?,
                 )),
                 timeout_ms: req.timeout_ms,
+                // Full-width step; subset-stepping is reserved-but-deferred.
+                env_indices: Vec::new(),
             })
             .await
             .map_err(Error::from)?;

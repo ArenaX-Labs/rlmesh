@@ -168,6 +168,46 @@ impl From<SpaceType> for i32 {
     }
 }
 
+/// Per-lane autoreset convention an environment follows (mirrors the proto
+/// `AutoresetMode` and gymnasium's `AutoresetMode`). There is intentionally no
+/// `Unspecified` variant: the proto `UNSPECIFIED` (and any unknown value)
+/// decodes to `Disabled`, the safe explicit-reset default.
+///
+/// The numeric discriminants here MUST stay in sync with the proto
+/// `AutoresetMode` (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3); the
+/// `autoreset_mode_i32_roundtrip` test below locks this so future drift fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(i32)]
+pub enum AutoresetMode {
+    /// Terminal obs at step `t`; the env internally resets the done lane and
+    /// delivers the fresh obs at `t+1`.
+    NextStep = 1,
+    /// Reset obs delivered in the same step the lane reports done. Reserved;
+    /// not honored by the runtime yet.
+    SameStep = 2,
+    /// No autoreset; a done lane stays inactive until an explicit reset.
+    #[default]
+    Disabled = 3,
+}
+
+impl From<i32> for AutoresetMode {
+    fn from(value: i32) -> Self {
+        match value {
+            1 => Self::NextStep,
+            2 => Self::SameStep,
+            // 0 (proto UNSPECIFIED), 3 (DISABLED), and any unknown value decode
+            // to Disabled — the safe, explicit-reset default.
+            _ => Self::Disabled,
+        }
+    }
+}
+
+impl From<AutoresetMode> for i32 {
+    fn from(value: AutoresetMode) -> Self {
+        value as i32
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EnvContract {
     pub id: String,
@@ -176,4 +216,38 @@ pub struct EnvContract {
     pub metadata: Option<crate::meta::MetaMap>,
     pub render_mode: String,
     pub num_envs: u32,
+    /// Per-lane autoreset convention the runtime honors. Derived at construction
+    /// from the env's `metadata["autoreset_mode"]`; defaults to `Disabled`.
+    pub autoreset_mode: AutoresetMode,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autoreset_mode_i32_roundtrip() {
+        // Native -> i32 discriminants, locked to the proto AutoresetMode values
+        // (UNSPECIFIED=0, NEXT_STEP=1, SAME_STEP=2, DISABLED=3).
+        assert_eq!(i32::from(AutoresetMode::NextStep), 1);
+        assert_eq!(i32::from(AutoresetMode::SameStep), 2);
+        assert_eq!(i32::from(AutoresetMode::Disabled), 3);
+
+        // i32 -> native, including proto UNSPECIFIED (0) and unknown values
+        // decoding to Disabled by design.
+        assert_eq!(AutoresetMode::from(0), AutoresetMode::Disabled);
+        assert_eq!(AutoresetMode::from(1), AutoresetMode::NextStep);
+        assert_eq!(AutoresetMode::from(2), AutoresetMode::SameStep);
+        assert_eq!(AutoresetMode::from(3), AutoresetMode::Disabled);
+        assert_eq!(AutoresetMode::from(99), AutoresetMode::Disabled);
+
+        // Every native variant round-trips through i32 and back.
+        for v in [
+            AutoresetMode::NextStep,
+            AutoresetMode::SameStep,
+            AutoresetMode::Disabled,
+        ] {
+            assert_eq!(AutoresetMode::from(i32::from(v)), v);
+        }
+    }
 }

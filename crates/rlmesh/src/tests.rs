@@ -26,6 +26,7 @@ impl DummyEnv {
         let action_space = spaces::spaces::DiscreteBuilder::new(2).build().unwrap();
         let env_contract = spaces::EnvContract {
             id: "DummyEnv-v1".to_string(),
+            autoreset_mode: Default::default(),
             observation_space: Some(obs_space.clone()),
             action_space: Some(action_space.clone()),
             metadata: None,

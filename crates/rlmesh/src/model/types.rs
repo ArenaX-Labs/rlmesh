@@ -119,3 +119,15 @@ pub struct ModelEpisodeEnd {
     /// Index of the sub-environment that produced the episode.
     pub env_index: i32,
 }
+
+/// Notification that a single lane's episode rolled, passed to
+/// [`ModelHandler::on_lane_reset`](crate::ModelHandler::on_lane_reset). Unlike
+/// the whole-observation `on_reset`, this carries the `env_index` so a stateful
+/// policy/adapter can reset exactly the lane whose episode began.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelLaneReset {
+    /// Identifier of the new episode that began on this lane.
+    pub episode_id: String,
+    /// Index of the sub-environment whose episode rolled.
+    pub env_index: i32,
+}

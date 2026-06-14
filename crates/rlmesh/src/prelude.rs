@@ -12,8 +12,8 @@ pub use crate::spaces::BinaryPayload;
 pub use crate::{
     BindAddress, BoundEnvServer, BoundModelServer, CloseRequest, CloseResult, ConnectAddress, Env,
     EnvContract, EnvRuntimeError, EnvServer, EnvironmentError, Error, ErrorCode, ModelEpisodeEnd,
-    ModelHandler, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker, RemoteEnv,
-    RenderFrame, RenderRequest, RenderResult, ResetRequest, ResetResult, RunLocalOptions,
-    ServeModelOptions, ServeOptions, SingleEnv, SingleEnvAdapter, SpaceSpec, SpaceValue,
-    StepRequest, StepResult,
+    ModelHandler, ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,
+    RemoteEnv, RenderFrame, RenderRequest, RenderResult, ResetRequest, ResetResult,
+    RunLocalOptions, ServeModelOptions, ServeOptions, SingleEnv, SingleEnvAdapter, SpaceSpec,
+    SpaceValue, StepRequest, StepResult,
 };

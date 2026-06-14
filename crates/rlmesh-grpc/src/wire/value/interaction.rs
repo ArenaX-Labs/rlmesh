@@ -15,6 +15,8 @@ pub fn reset_request_to_proto(
         seeds: request.seed.into_iter().collect(),
         options: request.options.as_ref().map(meta_map_to_proto),
         timeout_ms: request.timeout_ms,
+        // Whole-vector reset; partial reset threads through reset_subset (A3).
+        env_indices: Vec::new(),
     })
 }
 
@@ -40,6 +42,8 @@ pub fn step_request_to_proto(
             .map(|value| encode_value(value, action_space))
             .transpose()?,
         timeout_ms: request.timeout_ms,
+        // Full-width step; subset-stepping is reserved-but-deferred.
+        env_indices: Vec::new(),
     })
 }
 
@@ -117,6 +121,8 @@ pub fn step_result_to_proto(
         infos: result.info.as_ref().map(meta_map_to_proto),
         completed_episodes: vec![],
         episode_ids: vec![],
+        // Full-width response; partial-width is reserved-but-deferred.
+        env_indices: vec![],
     })
 }
 

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use super::types::{ModelEpisodeEnd, ModelObservation};
+use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation};
 use crate::{Result, spaces};
 
 /// User policy plus episode lifecycle hooks.
@@ -33,10 +33,35 @@ pub trait ModelHandler: Send {
     /// handshake capability advertises this pipelining to clients.
     async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload>;
 
-    /// Called when a new episode begins, before its first `predict`.
+    /// Called when an episode begins, before its first `predict`.
     ///
-    /// Defaults to a no-op. Use it to reset per-episode policy state.
+    /// Defaults to a no-op. For a single (non-vectorized) env, use it to reset
+    /// per-episode policy state.
+    ///
+    /// # Vectorized envs: fires on *any* lane's reset, not just whole-vector
+    ///
+    /// Under a vectorized env this hook fires whenever **any** lane's episode
+    /// rolls — at the initial reset and at every NEXT_STEP autoreset boundary —
+    /// receiving the whole-batch observation, **not** only when all lanes reset
+    /// together. A handler that clears *all* lanes' policy state here will wipe
+    /// the still-running lanes each time a single lane rolls, corrupting their
+    /// in-flight episodes.
+    ///
+    /// So a stateful vectorized model must reset per-lane state in
+    /// [`on_lane_reset`](ModelHandler::on_lane_reset) (which carries the
+    /// `env_index` of the lane that rolled) and treat `on_reset` only as a coarse
+    /// "something reset" signal. Restricting `on_reset` to fire only on a true
+    /// whole-vector reset is a deliberate semantic change deferred to a future
+    /// release; until then, prefer `on_lane_reset` for per-lane affinity.
     async fn on_reset(&mut self, _observation: &ModelObservation) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called when a single lane's episode rolls (a per-lane reset edge),
+    /// carrying the `env_index`. Fires once per lane whose episode id changed —
+    /// at the initial reset and at each NEXT_STEP autoreset boundary. Defaults
+    /// to a no-op; a stateful per-lane adapter resets exactly that lane's state.
+    async fn on_lane_reset(&mut self, _event: ModelLaneReset) -> Result<()> {
         Ok(())
     }
 

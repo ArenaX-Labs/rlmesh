@@ -12,7 +12,9 @@ mod worker;
 pub use handler::ModelHandler;
 pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use server::BoundModelServer;
-pub use types::{ModelEpisodeEnd, ModelObservation, ModelRouteContext, ModelRouteSlot};
+pub use types::{
+    ModelEpisodeEnd, ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot,
+};
 pub use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 
 use crate::Result;

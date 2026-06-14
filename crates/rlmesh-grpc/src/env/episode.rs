@@ -1,6 +1,6 @@
 //! Episode tracking for evaluation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -83,9 +83,35 @@ impl Episode {
 /// interruptions.
 const MAX_INTERRUPTED_EPISODES: usize = 100;
 
+/// The lifecycle state of a single lane, used by the step handler to enforce
+/// the NEXT_STEP autoreset contract instead of inferring it from `was_active`.
+///
+/// A lane is in exactly one of these states at any time:
+/// - [`Active`](LaneState::Active): a tracked episode is running.
+/// - [`PendingAutoreset`](LaneState::PendingAutoreset): the lane completed under
+///   NEXT_STEP and the env owes it exactly one fresh autoreset observation on
+///   the next step (see [`EpisodeTracker::expect_autoreset`]).
+/// - [`Idle`](LaneState::Idle): no active episode and none expected — awaiting an
+///   explicit reset (the normal DISABLED post-completion state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneState {
+    /// A tracked episode is running on this lane.
+    Active,
+    /// The lane completed under NEXT_STEP and a fresh autoreset observation is
+    /// expected on the next step.
+    PendingAutoreset,
+    /// No active episode and no pending autoreset.
+    Idle,
+}
+
 /// Manages episode tracking for all environments.
 pub struct EpisodeTracker {
     active: HashMap<i32, Episode>,
+    /// Lanes that completed under NEXT_STEP and are awaiting their fresh
+    /// autoreset observation on the next step. Disjoint from `active`: a lane is
+    /// inserted here only after its episode completes and is cleared when the
+    /// autoreset rolls the next episode (or an explicit reset starts one).
+    pending_autoreset: HashSet<i32>,
     /// Episodes interrupted by a replacing reset, awaiting the next drain.
     /// Bounded by [`MAX_INTERRUPTED_EPISODES`] with oldest-first eviction.
     interrupted: Vec<EpisodeMetadata>,
@@ -99,6 +125,7 @@ impl EpisodeTracker {
     pub fn new() -> Self {
         Self {
             active: HashMap::new(),
+            pending_autoreset: HashSet::new(),
             interrupted: Vec::new(),
             interrupted_dropped: 0,
         }
@@ -143,6 +170,10 @@ impl EpisodeTracker {
     pub fn start_episode(&mut self, env_index: i32, seed: Option<i64>) -> String {
         let episode = Episode::new(env_index, seed);
         let episode_id = episode.id.clone();
+
+        // Starting an episode (autoreset roll or explicit reset) discharges any
+        // pending-autoreset expectation for this lane.
+        self.pending_autoreset.remove(&env_index);
 
         // A reset can legitimately interrupt an in-flight episode (manual
         // vector reset, runtime reset racing a lane autoreset). Complete the
@@ -209,6 +240,9 @@ impl EpisodeTracker {
             let metadata = episode.complete(false, true, None);
             completed.push(metadata);
         }
+        // Pending lanes have no active episode left to complete; clear the
+        // expectations so a fresh session starts clean.
+        self.pending_autoreset.clear();
 
         completed
     }
@@ -218,6 +252,32 @@ impl EpisodeTracker {
         self.active
             .get(&env_index)
             .map(|episode| episode.id.as_str())
+    }
+
+    /// The lifecycle state of a lane: [`Active`](LaneState::Active) if a tracked
+    /// episode is running, [`PendingAutoreset`](LaneState::PendingAutoreset) if
+    /// it completed under NEXT_STEP and owes a fresh autoreset observation, else
+    /// [`Idle`](LaneState::Idle). `active` takes precedence so a lane is never
+    /// reported pending while an episode is running.
+    pub fn lane_state(&self, env_index: i32) -> LaneState {
+        if self.active.contains_key(&env_index) {
+            LaneState::Active
+        } else if self.pending_autoreset.contains(&env_index) {
+            LaneState::PendingAutoreset
+        } else {
+            LaneState::Idle
+        }
+    }
+
+    /// Mark a lane as expecting a fresh autoreset observation on the next step.
+    ///
+    /// Call this immediately after [`complete_episode`](Self::complete_episode)
+    /// for a NEXT_STEP env: the lane is now inactive, and its next step must be
+    /// the env's fresh (non-terminal, reward-0) autoreset observation, at which
+    /// point [`start_episode`](Self::start_episode) rolls the next episode and
+    /// clears the expectation.
+    pub fn expect_autoreset(&mut self, env_index: i32) {
+        self.pending_autoreset.insert(env_index);
     }
 }
 
@@ -258,6 +318,54 @@ mod tests {
         assert!(!metadata.truncated);
 
         assert_eq!(active_count(&tracker), 0);
+    }
+
+    #[test]
+    fn lane_state_tracks_active_pending_and_idle() {
+        let mut tracker = EpisodeTracker::new();
+
+        // An unknown lane starts Idle.
+        assert_eq!(tracker.lane_state(0), LaneState::Idle);
+
+        // Starting an episode makes it Active.
+        tracker.start_episode(0, None);
+        assert_eq!(tracker.lane_state(0), LaneState::Active);
+
+        // Completing it returns to Idle (no autoreset expected by default —
+        // this is the DISABLED post-completion state).
+        tracker.complete_episode(0, true, false, None);
+        assert_eq!(tracker.lane_state(0), LaneState::Idle);
+
+        // Under NEXT_STEP the handler marks the lane pending after completion.
+        tracker.start_episode(0, None);
+        tracker.complete_episode(0, true, false, None);
+        tracker.expect_autoreset(0);
+        assert_eq!(tracker.lane_state(0), LaneState::PendingAutoreset);
+
+        // The fresh autoreset roll discharges the expectation and re-activates.
+        tracker.start_episode(0, None);
+        assert_eq!(tracker.lane_state(0), LaneState::Active);
+    }
+
+    #[test]
+    fn active_episode_takes_precedence_over_pending_autoreset() {
+        let mut tracker = EpisodeTracker::new();
+        tracker.start_episode(0, None);
+        // Defensive: even if a stale expectation is set, an active episode wins.
+        tracker.expect_autoreset(0);
+        assert_eq!(tracker.lane_state(0), LaneState::Active);
+    }
+
+    #[test]
+    fn complete_all_clears_pending_autoreset() {
+        let mut tracker = EpisodeTracker::new();
+        tracker.start_episode(0, None);
+        tracker.complete_episode(0, true, false, None);
+        tracker.expect_autoreset(0);
+        assert_eq!(tracker.lane_state(0), LaneState::PendingAutoreset);
+
+        let _ = tracker.complete_all("close");
+        assert_eq!(tracker.lane_state(0), LaneState::Idle);
     }
 
     #[test]
