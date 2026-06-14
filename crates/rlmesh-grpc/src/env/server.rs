@@ -29,7 +29,7 @@ use rlmesh_proto::env::v1::{
 use rlmesh_proto::{
     CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS,
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    evaluate_handshake, supported_workflow_editions,
+    check_provisional_edition_pin, evaluate_handshake, supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -225,7 +225,22 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         );
 
         let compat = evaluate_handshake(&req.protocol_generation, &req.supported_workflow_editions);
-        let compatible = compat.is_compatible();
+        // Provisional editions interoperate only between matching builds. The
+        // client verifies our pin on the response; we verify the client's pin
+        // here so the check is symmetric — an old client that omits it (empty
+        // checksum) fails closed.
+        let pin_error = if compat.is_compatible() {
+            check_provisional_edition_pin(
+                compat.selected_edition.unwrap_or_default(),
+                &req.offered_edition_status,
+                &req.offered_edition_spec_sha256,
+                &req.client_version,
+            )
+            .err()
+        } else {
+            None
+        };
+        let compatible = compat.is_compatible() && pin_error.is_none();
 
         let env_contract = if compatible {
             let env = self.env.lock().await;
@@ -242,6 +257,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
+            } else if let Some(err) = pin_error {
+                err
             } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
@@ -950,7 +967,8 @@ mod tests {
         ResetResponse, StepRequest, StepResponse,
     };
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
+        CURRENT_WORKFLOW_EDITION_STATUS, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
         capabilities, supported_workflow_editions,
     };
     use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
@@ -1028,6 +1046,33 @@ mod tests {
         .expect("no-token server accepts requests")
         .into_inner();
         assert!(response.compatible);
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_mismatched_provisional_pin() {
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
+
+        // Protocol and edition negotiation succeed, but a differing (or absent)
+        // client spec checksum must still fail the provisional handshake.
+        for bad_pin in ["deadbeef".to_string(), String::new()] {
+            let mut request = handshake_request(PROTOCOL_GENERATION, &[CURRENT_WORKFLOW_EDITION]);
+            request.offered_edition_spec_sha256 = bad_pin.clone();
+
+            let response = EnvService::handshake(&server, Request::new(request))
+                .await
+                .expect("handshake returns a response")
+                .into_inner();
+
+            assert!(
+                !response.compatible,
+                "mismatched pin {bad_pin:?} must be rejected"
+            );
+            assert!(
+                response.error_message.contains("provisional"),
+                "unexpected error for pin {bad_pin:?}: {}",
+                response.error_message
+            );
+        }
     }
 
     fn contract(
@@ -1157,6 +1202,8 @@ mod tests {
                 .iter()
                 .map(|edition| edition.to_string())
                 .collect(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         }
     }
 

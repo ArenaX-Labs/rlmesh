@@ -14,6 +14,13 @@ message HandshakeRequest {
   // Every workflow edition the client can operate under. The server selects
   // the highest mutual edition; an empty intersection fails the handshake.
   repeated string supported_workflow_editions = 6;
+
+  // The client's pin for the edition it was built against: SHA-256 of the spec
+  // document and its lifecycle status ("provisional" | "sealed"). The server
+  // rejects a provisional handshake whose checksum does not match its own
+  // build; older clients that omit these fail closed.
+  string offered_edition_spec_sha256 = 7;
+  string offered_edition_status = 8;
 }
 
 message HandshakeResponse {

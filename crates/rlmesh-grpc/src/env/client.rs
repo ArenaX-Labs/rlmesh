@@ -16,8 +16,9 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
-    check_provisional_edition_pin, is_protocol_generation_supported, supported_workflow_editions,
+    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS, PROTOCOL_GENERATION,
+    SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map, check_provisional_edition_pin,
+    is_protocol_generation_supported, supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
@@ -219,6 +220,8 @@ impl EnvClient {
                 capabilities::SPACES_CORE_V1,
             ]),
             supported_workflow_editions: supported_workflow_editions(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         };
 
         Ok(self

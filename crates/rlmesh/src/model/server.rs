@@ -21,7 +21,7 @@ use rlmesh_proto::model::v1::{
 use rlmesh_proto::{
     CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS,
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    evaluate_handshake, supported_workflow_editions,
+    check_provisional_edition_pin, evaluate_handshake, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -177,13 +177,29 @@ where
             &request.protocol_generation,
             &request.supported_workflow_editions,
         );
-        let compatible = compat.is_compatible();
+        // Symmetric provisional-pin check: the client verifies our pin on the
+        // response, we verify the client's here. An old client that omits it
+        // (empty checksum) fails closed.
+        let pin_error = if compat.is_compatible() {
+            check_provisional_edition_pin(
+                compat.selected_edition.unwrap_or_default(),
+                &request.offered_edition_status,
+                &request.offered_edition_spec_sha256,
+                &request.client_version,
+            )
+            .err()
+        } else {
+            None
+        };
+        let compatible = compat.is_compatible() && pin_error.is_none();
         Ok(Response::new(HandshakeResponse {
             compatible,
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
+            } else if let Some(err) = pin_error {
+                err
             } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
@@ -776,6 +792,8 @@ mod tests {
                 .iter()
                 .map(|edition| edition.to_string())
                 .collect(),
+            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
+            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
         }
     }
 
@@ -798,6 +816,34 @@ mod tests {
             assert_eq!(
                 response.supported_workflow_editions,
                 supported_workflow_editions()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_mismatched_provisional_pin() {
+        let server = test_server();
+
+        // A client offering the current provisional edition with a different
+        // (or absent) spec checksum must be refused, even though protocol and
+        // edition negotiation otherwise succeed.
+        for bad_pin in ["deadbeef".to_string(), String::new()] {
+            let mut request = handshake_request(&[CURRENT_WORKFLOW_EDITION]);
+            request.offered_edition_spec_sha256 = bad_pin.clone();
+
+            let response = ModelServiceTrait::handshake(&server, Request::new(request))
+                .await
+                .unwrap()
+                .into_inner();
+
+            assert!(
+                !response.compatible,
+                "mismatched pin {bad_pin:?} must be rejected"
+            );
+            assert!(
+                response.error_message.contains("provisional"),
+                "unexpected error for pin {bad_pin:?}: {}",
+                response.error_message
             );
         }
     }
