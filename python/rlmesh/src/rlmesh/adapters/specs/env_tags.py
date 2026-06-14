@@ -1,4 +1,4 @@
-"""The environment-side IO tags: sparse semantics over the env spaces.
+"""The environment-side tags: sparse semantics over the env spaces.
 
 An environment tags its observation entries and action layout with
 *semantic roles* and the few facts the spaces cannot express (image axis

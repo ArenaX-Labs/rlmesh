@@ -211,7 +211,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
     one action. RLMesh handles value encoding at the runtime boundary.
 
     Pass ``spec=`` to make this an *adapted* model: at :meth:`run` time the
-    environment's published IO annotations (from its contract) and the model
+    environment's published env tags (from its contract) and the model
     spec are resolved into an adapter, which preprocesses observations into the
     model's input format and postprocesses its actions back into the env's
     format. ``predict_fn`` then works in the model's own format, with no
@@ -221,7 +221,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
     Args:
         predict_fn: Callable that maps one observation to one action. With
             ``spec=``, it works in the model's declared input/output format.
-        spec: Optional model IO spec (:class:`rlmesh.adapters.ModelSpec`) that
+        spec: Optional model spec (:class:`rlmesh.adapters.ModelSpec`) that
             turns this into an adapted model.
         on_reset: Optional callback invoked when the environment resets. With
             ``spec=``, the resolved adapter's ``reset`` is chained in.
@@ -317,7 +317,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         When this model was built with ``spec=``, ``env_or_address`` must be an
         environment object exposing ``env_contract`` (e.g.
         :class:`rlmesh.numpy.RemoteEnv`): the adapter is resolved from the env's
-        published annotations and the model spec, then wired around the
+        published env tags and the model spec, then wired around the
         prediction function before the run begins.
 
         Args:

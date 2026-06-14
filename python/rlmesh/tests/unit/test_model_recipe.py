@@ -1,0 +1,389 @@
+"""ModelRecipe + ModelServer: authoring, projection, and the local eval loop.
+
+These classes are defined at module level (not in a fixture/local scope) so
+``to_recipe()``'s import-safety guard is satisfied, exactly like EnvRecipe.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+import pytest
+import rlmesh
+from rlmesh.adapters import (
+    ACTION_GRIPPER,
+    IMAGE_PRIMARY,
+    ActionComponent,
+    ActionLayout,
+    AdapterResolutionError,
+    EnvTags,
+    ImageInput,
+    ImageTag,
+    ModelSpec,
+    TextInput,
+)
+from rlmesh.models import (
+    DELEGATED,
+    ArtifactInput,
+    ModelRecipe,
+    ModelServer,
+    RunResult,
+    construct_authored_model,
+)
+from rlmesh.recipes import Build, PipInstall, Recipe, RecipeValidationError
+
+_SPEC = ModelSpec(
+    inputs=(ImageInput("image", role=IMAGE_PRIMARY, size=8),),
+    action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+)
+_TAGS = EnvTags(
+    observation={"image": ImageTag()},
+    action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+)
+
+
+class TinyPolicy(ModelRecipe):
+    """A spec'd policy used for projection/serde (one class IS the policy)."""
+
+    name = "policy/tiny"
+    build = Build(pip=[PipInstall(["numpy"])])
+    spec = _SPEC
+
+    def load(self) -> None:
+        self._loaded = True
+
+    def predict(self, observation: Any) -> Any:
+        return np.array([0.5], dtype="float32")
+
+
+class LoopPolicy(ModelRecipe):
+    """A spec-less policy (no adapter) used to drive the local eval loop."""
+
+    name = "policy/loop"
+    spec = None
+
+    def load(self) -> None:
+        self._reset_calls = 0
+        self._closed = False
+
+    def predict(self, observation: Any) -> Any:
+        return np.array([0.5], dtype="float32")
+
+    def reset(self) -> None:
+        self._reset_calls += 1
+
+    def close(self) -> None:
+        self._closed = True
+
+
+class InlinePolicy(ModelRecipe):
+    """A local-only spec (InlineCustomInput) -- cannot be projected/sandboxed."""
+
+    name = "policy/inline"
+
+    def load(self) -> None: ...
+
+    def predict(self, observation: Any) -> Any:
+        return observation
+
+
+# InlineCustomInput holds an in-process callable, so the spec is local-only.
+def _inline_spec() -> ModelSpec:
+    from rlmesh.adapters import InlineCustomInput
+
+    return ModelSpec(
+        inputs=(InlineCustomInput("x", lambda obs: obs),),
+        action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+    )
+
+
+InlinePolicy.spec = _inline_spec()
+
+
+class _Contract:
+    def __init__(self, metadata: dict[str, Any] | None = None, num_envs: int = 1) -> None:
+        self.metadata = metadata or {}
+        self.num_envs = num_envs
+
+
+class _LoopEnv:
+    """A tiny in-process env (reset/step/env_contract) for the eval-loop test."""
+
+    def __init__(self, horizon: int = 4, contract: _Contract | None = None) -> None:
+        self.horizon = horizon
+        self.t = 0
+        self.resets = 0
+        self.closed = False
+        self.last_seed: int | None = None
+        self._contract = contract if contract is not None else _Contract()
+
+    @property
+    def env_contract(self) -> _Contract:
+        return self._contract
+
+    def reset(self, *, seed: int | None = None) -> tuple[dict[str, int], dict[str, Any]]:
+        self.t = 0
+        self.resets += 1
+        self.last_seed = seed
+        return {"obs": 0}, {}
+
+    def step(self, action: Any) -> tuple[dict[str, int], float, bool, bool, dict[str, Any]]:
+        self.t += 1
+        terminated = self.t >= self.horizon
+        return {"obs": self.t}, 1.0, terminated, False, {}
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# ── projection / serde ──────────────────────────────────────────────────────
+
+
+def test_to_recipe_is_model_kind() -> None:
+    recipe = TinyPolicy.to_recipe()
+    assert recipe.kind == "model"
+    assert recipe.name == "policy/tiny"
+    assert recipe.make is not None
+    assert recipe.make.entrypoint.endswith(":TinyPolicy._rlmesh_load")
+    # at authoring, recipe.adapter holds the ModelSpec INSTANCE...
+    assert recipe.adapter is _SPEC
+    # ...which serializes to a BARE dict (not the to_metadata wrapper)
+    assert set(recipe.to_dict()["adapter"]) == {"inputs", "action"}
+
+
+def test_recipe_json_round_trip() -> None:
+    recipe = TinyPolicy.to_recipe()
+    back = type(recipe).from_json(recipe.to_json())
+    assert back.kind == "model"
+    assert back.name == recipe.name
+    # from_dict rehydrates adapter as a raw Mapping equal to the projected dict
+    assert back.adapter == recipe.to_dict()["adapter"]
+
+
+def test_recipe_inputs_are_model_only() -> None:
+    with pytest.raises(RecipeValidationError, match="model-only"):
+        Recipe(name="x/y", kind="env", inputs=(ArtifactInput("w", "/w"),))
+
+
+def test_local_only_spec_rejected_at_projection() -> None:
+    with pytest.raises(RecipeValidationError, match="local-only"):
+        InlinePolicy.to_recipe()
+
+
+# ── construction (load populates self; the instance IS the policy) ───────────
+
+
+def test_construct_authored_model_runs_load() -> None:
+    policy = construct_authored_model(TinyPolicy)
+    assert isinstance(policy, TinyPolicy)
+    assert policy._loaded is True
+    out = policy.predict({"image": np.zeros((8, 8, 3), dtype="uint8")})
+    assert out.tolist() == [0.5]
+
+
+def test_input_path_unknown_raises() -> None:
+    policy = construct_authored_model(TinyPolicy)
+    with pytest.raises(RecipeValidationError, match="no such ArtifactInput"):
+        policy.input_path("missing")
+
+
+def test_artifact_input_local_dir_resolves(tmp_path: Any) -> None:
+    class WithWeights(ModelRecipe):
+        name = "policy/with-weights"
+        inputs = (ArtifactInput("ckpt", "/weights", local_dir=str(tmp_path)),)
+
+        def load(self) -> None:
+            self.ckpt_dir = self.input_path("ckpt")
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    policy = construct_authored_model(WithWeights)
+    assert policy.ckpt_dir == str(tmp_path)
+
+
+def test_artifact_override_wins(tmp_path: Any) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+
+    class WithWeights(ModelRecipe):
+        name = "policy/override"
+        inputs = (ArtifactInput("ckpt", "/weights", local_dir=str(tmp_path)),)
+
+        def load(self) -> None:
+            self.ckpt_dir = self.input_path("ckpt")
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    policy = construct_authored_model(
+        WithWeights, artifacts=(ArtifactInput("ckpt", "/weights", local_dir=str(other)),)
+    )
+    assert policy.ckpt_dir == str(other)
+
+
+# ── the local eval loop (ModelServer.run returns a typed RunResult) ──────────
+
+
+def test_model_server_run_returns_runresult_and_wires_lifecycle() -> None:
+    server = ModelServer(LoopPolicy)
+    env = _LoopEnv(horizon=4)
+    result = server.run(env, seeds=[1, 2, 3], close_env=True)
+
+    assert isinstance(result, RunResult)
+    assert result.num_episodes == 3
+    assert result.total_steps == 12  # 3 episodes x 4 steps
+    assert result.mean_reward == pytest.approx(4.0)
+    assert all(e.terminated for e in result.episodes)
+    assert [e.seed for e in result.episodes] == [1, 2, 3]
+    # the policy's per-episode reset() fired once per episode; close() fired once
+    assert server._policy._reset_calls == 3
+    assert server._policy._closed is True
+    assert env.resets == 3
+    assert env.closed is True  # close_env=True
+
+
+def test_run_seeds_threaded_to_env() -> None:
+    env = _LoopEnv(horizon=2)
+    ModelServer(LoopPolicy).run(env, seeds=[7])
+    assert env.last_seed == 7
+
+
+# ── spec=None vs DELEGATED (loud failure, FINAL_API_SPEC §12 B9) ─────────────
+
+
+def test_spec_none_against_untagged_env_runs() -> None:
+    result = ModelServer(LoopPolicy).run(_LoopEnv(horizon=2))
+    assert result.num_episodes == 1
+
+
+def test_spec_none_against_tagged_env_fails_loud() -> None:
+    tagged = _LoopEnv(contract=_Contract(metadata=dict(_TAGS.to_metadata())))
+    with pytest.raises(AdapterResolutionError, match="spec=None"):
+        ModelServer(LoopPolicy).run(tagged)
+
+
+def test_delegated_skips_resolution_even_when_tagged() -> None:
+    class SelfAdapt(ModelRecipe):
+        name = "policy/self-adapt"
+        spec = DELEGATED
+
+        def load(self) -> None: ...
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    tagged = _LoopEnv(horizon=2, contract=_Contract(metadata=dict(_TAGS.to_metadata())))
+    result = ModelServer(SelfAdapt).run(tagged)
+    assert result.num_episodes == 1
+
+
+# ── registration + name-based construction ──────────────────────────────────
+
+
+def test_register_class_and_run_by_name() -> None:
+    rlmesh.register(LoopPolicy, overwrite=True)
+    result = ModelServer("policy/loop").run(_LoopEnv(horizon=3))
+    assert result.total_steps == 3
+
+
+# ── the REAL adapter path end-to-end (resolve + transform in the loop) ───────
+
+
+class _TaggedEnv:
+    """A steppable env with real gymnasium spaces + published tags.
+
+    Exercises the full O(N+M) path: ModelServer resolves the adapter from this
+    env's tags x the model's spec, then transform_obs/transform_action wrap predict.
+    """
+
+    def __init__(self, horizon: int = 3) -> None:
+        import gymnasium as gym
+
+        self.horizon = horizon
+        self.t = 0
+        self._obs_space = gym.spaces.Dict(
+            {"image": gym.spaces.Box(low=0, high=255, shape=(16, 16, 3), dtype=np.uint8)}
+        )
+        self._action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        tags = EnvTags(
+            observation={"image": ImageTag(role=IMAGE_PRIMARY)},
+            action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+        )
+        self._contract = _Contract(metadata=dict(tags.to_metadata()))
+        # the resolver reads spaces off the contract
+        self._contract.observation_space = self._obs_space
+        self._contract.action_space = self._action_space
+        self.seen_payload_keys: set[str] = set()
+
+    @property
+    def env_contract(self) -> _Contract:
+        return self._contract
+
+    def reset(self, *, seed: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+        self.t = 0
+        return {"image": np.zeros((16, 16, 3), dtype=np.uint8)}, {}
+
+    def step(self, action: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+        self.t += 1
+        # the action must be the ENV-format action: a length-1 array in [-1, 1]
+        arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        assert arr.shape == (1,)
+        terminated = self.t >= self.horizon
+        return {"image": np.zeros((16, 16, 3), dtype=np.uint8)}, 1.0, terminated, False, {}
+
+
+class AdaptedPolicy(ModelRecipe):
+    """A spec'd policy: predict sees the MODEL-format payload (image resized to 8x8)."""
+
+    name = "policy/adapted"
+    spec = ModelSpec(
+        inputs=(ImageInput("image", role=IMAGE_PRIMARY, size=8),),
+        action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+    )
+
+    def load(self) -> None:
+        self.shapes: list[tuple[int, ...]] = []
+
+    def predict(self, observation: Any) -> Any:
+        # the adapter resized the env's 16x16 image to the model's declared 8x8
+        self.shapes.append(np.asarray(observation["image"]).shape)
+        return np.array([0.3], dtype="float32")
+
+
+def test_model_server_resolves_and_runs_real_adapter() -> None:
+    server = ModelServer(AdaptedPolicy)
+    env = _TaggedEnv(horizon=3)
+    result = server.run(env)
+    assert result.num_episodes == 1
+    assert result.total_steps == 3
+    # predict saw the MODEL-format observation: image resized to the declared 8x8
+    assert server._policy.shapes
+    assert all(shape[:2] == (8, 8) for shape in server._policy.shapes)
+
+
+def test_instruction_seam_delivers_text_to_model() -> None:
+    captured: list[str] = []
+
+    class WithText(ModelRecipe):
+        name = "policy/with-text"
+        # TextInput carries a default so resolve() succeeds when the env does not
+        # tag text; run(instruction=) overrides it per episode (the language seam).
+        spec = ModelSpec(
+            inputs=(
+                ImageInput("image", role=IMAGE_PRIMARY, size=8),
+                TextInput("task", default=""),
+            ),
+            action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+        )
+
+        def load(self) -> None: ...
+
+        def predict(self, observation: Any) -> Any:
+            captured.append(observation.get("task"))
+            return np.array([0.0], dtype="float32")
+
+    server = ModelServer(WithText)
+    server.run(_TaggedEnv(horizon=2), instruction="pick up the red block")
+    assert captured and all(c == "pick up the red block" for c in captured)

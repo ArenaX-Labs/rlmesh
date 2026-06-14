@@ -97,7 +97,7 @@ class Env(NamedTuple):
     action_space: gym.spaces.Space[Any]
 
 
-def resolve(env: Env, model: adapt.ModelSpec, **kwargs: Any) -> adapt.IOAdapter:
+def resolve(env: Env, model: adapt.ModelSpec, **kwargs: Any) -> adapt.Adapter:
     return adapt.resolve(env.tags, env.obs_space, env.action_space, model, **kwargs)
 
 

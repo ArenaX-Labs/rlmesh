@@ -56,7 +56,7 @@ class EnvServer:
         transport: Explicit transport selector.
         options: Optional serve lifecycle options controlling remote shutdown,
             idle shutdown, drain timeout, and close timeout.
-        tags: Optional adapter IO tags
+        tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
             metadata, so a model client can resolve an adapter from the

@@ -1,4 +1,4 @@
-"""The model-side IO spec: expected input payload plus the action output."""
+"""The model-side spec: expected input payload plus the action output."""
 
 from __future__ import annotations
 

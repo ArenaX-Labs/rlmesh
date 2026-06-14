@@ -47,7 +47,7 @@ class CustomEncoding:
             ``"module:callable"`` entrypoint string. None when action-only.
         to_base: ``custom -> base``, used when the encoding tags an action
             component. A callable or entrypoint string. None when obs-only.
-        name: Display name surfaced in :meth:`IOAdapter.describe`.
+        name: Display name surfaced in :meth:`Adapter.describe`.
     """
 
     base: RotationEncoding

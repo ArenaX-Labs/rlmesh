@@ -1,4 +1,4 @@
-"""Generalized env-to-model IO adapters (experimental).
+"""Generalized env-to-model adapters (experimental).
 
 Instead of writing one bespoke adapter per environment/model pair,
 environments *tag* their observation and action spaces once with
@@ -8,7 +8,7 @@ preprocessing/postprocessing for any pair by matching semantic roles::
 
     env tags ──┐                              ┌── model spec
     (roles +   │   resolve() matches by role  │   (full payload +
-     a few     ├──────────────► IOAdapter ◄───┤    action layout)
+     a few     ├───────────────► Adapter ◄────┤    action layout)
      facts)    │   widths/dtypes from spaces  │
     obs/action │                              │
       spaces ──┘                              └── transform_obs / transform_action
@@ -54,7 +54,7 @@ This package requires NumPy (install ``rlmesh[numpy]``). Encoded image
 bytes (PNG/JPEG) in observations are decoded natively -- no Pillow.
 """
 
-from .adapter import AdapterBase, IOAdapter
+from .adapter import Adapter, AdapterBase
 from .constants import (
     ACTION_DELTA_POS,
     ACTION_DELTA_POS_2,
@@ -131,6 +131,7 @@ __all__ = [
     "ROTATION_DIMS",
     "ActionComponent",
     "ActionLayout",
+    "Adapter",
     "AdapterBase",
     "AdapterResolutionError",
     "CustomEncoding",
@@ -159,3 +160,17 @@ __all__ = [
     "resolve_from_contract",
     "tag",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """Deprecation shim: ``IOAdapter`` was renamed to ``Adapter`` (FINAL_API_SPEC §4.1)."""
+    if name == "IOAdapter":
+        import warnings
+
+        warnings.warn(
+            "rlmesh.adapters.IOAdapter is deprecated; use rlmesh.adapters.Adapter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return Adapter
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

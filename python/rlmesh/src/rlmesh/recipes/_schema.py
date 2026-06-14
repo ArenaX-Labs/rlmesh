@@ -27,9 +27,15 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
+
+if TYPE_CHECKING:
+    # Typing-only: the core never depends on the adapters layer at runtime
+    # (``from __future__ import annotations`` keeps the annotation a string).
+    from rlmesh.adapters import EnvTags, ModelSpec
 
 __all__ = [
+    "ArtifactInput",
     "Build",
     "Fetch",
     "FileWrite",
@@ -40,12 +46,22 @@ __all__ = [
     "ProjectInstall",
     "PyMake",
     "Recipe",
+    "RecipeKind",
     "RecipeValidationError",
     "Requires",
+    "RuntimeReserved",
     "Setup",
 ]
 
-RECIPE_VERSION: Final = 1
+# Bumped 1 -> 2 with the kind/inputs/runtime/adapter additions (FINAL_API_SPEC §2.2).
+# Back-compat is by serde alias + defaults, so v1 and v2 documents are wire-compatible;
+# the bump is a soft signal, not a hard gate.
+RECIPE_VERSION: Final = 2
+
+# The single discriminator that distinguishes an env recipe document from a model
+# recipe document. Selects the container ENTRYPOINT/bootstrap and gates a small set
+# of cross-kind validations. Deliberately excluded from build_hash (FINAL_API_SPEC §7.6).
+RecipeKind = Literal["env", "model"]
 
 
 def _empty_json_map() -> dict[str, object]:
@@ -626,6 +642,109 @@ class Requires:
         )
 
 
+# ─────────────────────── model-recipe additions ───────────────────────
+
+_ARTIFACT_URI_SCHEMES: Final = ("hf://", "gs://", "s3://", "https://", "http://", "file://")
+
+
+@dataclass(frozen=True)
+class ArtifactInput:
+    """A runtime weight/asset mount for a model recipe (FINAL_API_SPEC §4.4).
+
+    Weights are ALWAYS a runtime mount -- never ``build.fetch``, never baked into the
+    image. ``build_hash`` excludes runtime params, so one image serves every checkpoint.
+    Resolve the mounted path inside ``load()`` via ``ModelRecipe.input_path(name)``.
+
+    A ``uri`` is fetched by the rlmesh artifact resolver into a content-addressed cache
+    (root ``$RLMESH_CACHE_DIR``, default ``~/.cache/rlmesh/artifacts``); ``local_dir``
+    overrides with an explicit host dir for the local (non-sandbox) path. ``None`` uri
+    means the mount is bound at run time (a ``SandboxModel``/``ModelServer`` launch arg).
+    """
+
+    name: str
+    target_path: str
+    uri: str | None = None
+    local_dir: str | None = None
+    include: Sequence[str] = ()
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate the handle name, mount path, uri scheme, and include globs."""
+        _check_token(
+            _require_str(self.name, "ArtifactInput.name"), _RECIPE_NAME, "ArtifactInput.name"
+        )
+        _check_token(
+            _require_str(self.target_path, "ArtifactInput.target_path"),
+            _POSIX_PATH,
+            "ArtifactInput.target_path",
+        )
+        if self.uri is not None:
+            uri = _require_str(self.uri, "ArtifactInput.uri")
+            if not uri.startswith(_ARTIFACT_URI_SCHEMES):
+                raise RecipeValidationError(
+                    f"ArtifactInput.uri {uri!r} must use one of {_ARTIFACT_URI_SCHEMES}"
+                )
+        includes = _as_str_tuple(self.include, "ArtifactInput.include")
+        for glob in includes:
+            _check_include_glob(glob, "ArtifactInput.include")
+        object.__setattr__(self, "include", includes)
+
+
+@dataclass(frozen=True)
+class RuntimeReserved:
+    """Reserved, inert home for every deferred feature (FINAL_API_SPEC §8).
+
+    Every default is ``None`` (a no-op today); populating any field later is additive
+    and excluded from ``build_hash``. Serializes to absent/null when empty, so existing
+    env recipe JSON and build hashes stay byte-identical. Lives on ``Recipe.runtime``.
+    """
+
+    # action chunking -- a MODEL fact vs a pinned eval knob vs the loop mode
+    chunk_size: int | None = None
+    execute_horizon: int | None = None
+    loop_mode: Literal["step", "chunk", "receding", "open_loop"] | None = None
+    # batching / scheduling -- opt-in is the industry standard
+    batching: Literal["off", "utilization", "fusion"] | None = None
+    max_batch: int | None = None
+    # eval-determinism mode
+    determinism: Literal["off", "seeded", "strict"] | None = None
+    # multi-modal perturbation taxonomy (a JSON bag until/unless it earns a schema)
+    perturbation: Mapping[str, object] | None = None
+    # the §6.2 compromise: per-lane stateful-adapter affinity
+    lane_affinity: bool | None = None
+
+    def __post_init__(self) -> None:
+        """Clean the perturbation bag to JSON scalars (the only non-scalar field)."""
+        if self.perturbation is not None:
+            object.__setattr__(
+                self,
+                "perturbation",
+                _clean_json_kwargs(self.perturbation, "RuntimeReserved.perturbation"),
+            )
+
+    def is_empty(self) -> bool:
+        """True when every field is ``None`` (the default, inert state)."""
+        return all(getattr(self, f.name) is None for f in fields(self))
+
+    def to_dict(self) -> dict[str, object] | None:
+        """JSON form, or ``None`` when empty (so the recipe envelope omits the key)."""
+        if self.is_empty():
+            return None
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object] | None) -> RuntimeReserved:
+        """Rehydrate from JSON, ignoring unknown keys (forward-compat)."""
+        if not data:
+            return cls()
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
 # ─────────────────────────── the envelope ───────────────────────────
 
 
@@ -646,12 +765,18 @@ class Recipe:
     setup: Setup = field(default_factory=Setup)
     requires: Requires = field(default_factory=Requires)
     summary: str | None = None
-    # Forward field (registry-spec section 11): a recipe-launched env publishes
-    # its adapter EnvAnnotations. Carried opaquely here (the EnvAnnotations type
-    # lives in the adapters layer); published via annotate(env, annotations),
-    # which runs join() against the real spaces and fails loud.
-    annotations: Mapping[str, object] | None = None
+    # The published adapter content: an env recipe's EnvTags or a model recipe's
+    # ModelSpec (or a raw JSON Mapping after from_dict). Renamed from ``annotations``
+    # (read-aliased for back-compat, FINAL_API_SPEC §9). A dataclass instance is
+    # accepted at construction and lazily type-checked against ``kind`` in
+    # __post_init__; serde flattens it to a bare JSON dict.
+    adapter: EnvTags | ModelSpec | Mapping[str, object] | None = None
     recipe_version: int = RECIPE_VERSION
+    # ── appended, keyword-friendly, defaulted (never inserted mid-list: positional
+    #    construction + the Rust serde golden order stay stable) ──
+    kind: RecipeKind = "env"
+    inputs: tuple[ArtifactInput, ...] = ()
+    runtime: RuntimeReserved = field(default_factory=RuntimeReserved)
 
     def __post_init__(self) -> None:
         """Validate the name and enforce the cross-cutting PyMake import rule."""
@@ -668,12 +793,38 @@ class Recipe:
                 "requires.imports is forbidden for PyMake; the py factory body owns "
                 "its own import sequence (spec 7.1D)"
             )
-        if self.annotations is not None:
-            object.__setattr__(
-                self,
-                "annotations",
-                _clean_json_kwargs(self.annotations, "Recipe.annotations"),
+
+        # Cross-kind rules (FINAL_API_SPEC §2.2).
+        if self.kind == "model":
+            if not (self.make is None or isinstance(self.make, PyMake)):
+                raise RecipeValidationError(
+                    "a model recipe's make must be a PyMake (to ModelRecipe._rlmesh_load) "
+                    "or None; gym/hf factories are env-only"
+                )
+        elif self.inputs:
+            raise RecipeValidationError(
+                "Recipe.inputs (weight mounts) are model-only; got kind='env'"
             )
+        object.__setattr__(self, "inputs", tuple(self.inputs))
+
+        # adapter: a raw Mapping is JSON-cleaned; a dataclass instance is type-checked
+        # against the kind (and serialized to a bare dict later, FINAL_API_SPEC §5).
+        adapter = self.adapter
+        if adapter is None:
+            pass
+        elif isinstance(adapter, Mapping):
+            object.__setattr__(
+                self, "adapter", _clean_json_kwargs(adapter, "Recipe.adapter")
+            )
+        else:
+            from rlmesh.adapters import EnvTags, ModelSpec
+
+            expected = EnvTags if self.kind == "env" else ModelSpec
+            if not isinstance(adapter, expected):
+                raise RecipeValidationError(
+                    f"Recipe.adapter must be a {expected.__name__} for kind={self.kind!r}; "
+                    f"got {type(adapter).__name__}"
+                )
 
     # ─────────────────────────── serde ───────────────────────────
 
@@ -686,10 +837,11 @@ class Recipe:
             "setup": _setup_to_dict(self.setup),
             "requires": {"imports": list(self.requires.imports)},
             "summary": self.summary,
-            "annotations": dict(self.annotations)
-            if self.annotations is not None
-            else None,
+            "adapter": _adapter_to_dict(self.adapter),
             "recipe_version": self.recipe_version,
+            "kind": self.kind,
+            "inputs": [_artifact_to_dict(a) for a in self.inputs],
+            "runtime": _runtime_to_dict(self.runtime),
         }
 
     def to_json(self) -> str:
@@ -711,10 +863,15 @@ class Recipe:
             setup=_setup_from_dict(payload.get("setup")),
             requires=Requires(imports=_str_list(_get(payload, "requires", "imports"))),
             summary=_opt_str(payload.get("summary"), "summary"),
-            annotations=_opt_map(payload.get("annotations")),
+            # read-alias: documents serialized before the rename carry "annotations"
+            # (FINAL_API_SPEC §9.3). New documents emit "adapter".
+            adapter=_opt_map(payload.get("adapter", payload.get("annotations"))),
             recipe_version=_expect_int(
                 payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
             ),
+            kind=_recipe_kind_from(payload.get("kind")),
+            inputs=tuple(_artifact_from_dict(a) for a in (payload.get("inputs") or ())),
+            runtime=RuntimeReserved.from_dict(_opt_map(payload.get("runtime"))),
         )
 
     @classmethod
@@ -727,6 +884,72 @@ class Recipe:
 
 
 # ─────────────────────────── serde helpers ───────────────────────────
+
+
+def _recipe_kind_from(value: object) -> RecipeKind:
+    """Coerce a JSON ``kind`` to the sealed literal; absent/None defaults to ``env``."""
+    if value is None:
+        return "env"
+    if value not in ("env", "model"):
+        raise RecipeValidationError(
+            f"Recipe.kind must be 'env' or 'model', got {value!r}"
+        )
+    return cast("RecipeKind", value)
+
+
+def _adapter_to_dict(adapter: object) -> dict[str, object] | None:
+    """Serialize ``Recipe.adapter`` to a BARE JSON dict.
+
+    A raw Mapping passes through verbatim; a dataclass (``EnvTags``/``ModelSpec``)
+    serializes via its ``to_dict()`` -- NOT ``to_metadata()`` (that double-nests under
+    the wire key; the recipe envelope carries the bare spec, FINAL_API_SPEC §5).
+    """
+    if adapter is None:
+        return None
+    if isinstance(adapter, Mapping):
+        return dict(adapter)
+    to_dict = getattr(adapter, "to_dict", None)
+    if callable(to_dict):
+        result = to_dict()
+        if isinstance(result, Mapping):
+            return dict(result)
+    raise RecipeValidationError(
+        f"Recipe.adapter must be a Mapping or expose to_dict(); "
+        f"got {type(adapter).__name__}"
+    )
+
+
+def _artifact_to_dict(artifact: ArtifactInput) -> dict[str, object]:
+    """Serialize one runtime weight mount; omit None/empty optionals."""
+    data: dict[str, object] = {
+        "name": artifact.name,
+        "target_path": artifact.target_path,
+        "required": artifact.required,
+    }
+    if artifact.uri is not None:
+        data["uri"] = artifact.uri
+    if artifact.local_dir is not None:
+        data["local_dir"] = artifact.local_dir
+    if artifact.include:
+        data["include"] = list(artifact.include)
+    return data
+
+
+def _artifact_from_dict(value: object) -> ArtifactInput:
+    data = _require_map(value, "ArtifactInput")
+    return ArtifactInput(
+        name=_expect_str(data.get("name"), "ArtifactInput.name"),
+        target_path=_expect_str(data.get("target_path"), "ArtifactInput.target_path"),
+        uri=_opt_str(data.get("uri"), "ArtifactInput.uri"),
+        local_dir=_opt_str(data.get("local_dir"), "ArtifactInput.local_dir"),
+        include=_str_list(data.get("include")),
+        required=_expect_bool(data.get("required"), "ArtifactInput.required", True),
+    )
+
+
+def _runtime_to_dict(runtime: RuntimeReserved) -> dict[str, object] | None:
+    """The reserved-features struct serializes to ``None`` when inert (FINAL_API_SPEC §8)."""
+    return runtime.to_dict()
 
 
 def _make_to_dict(make: Make | None) -> dict[str, object] | None:

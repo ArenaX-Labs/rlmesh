@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from .._bootstrap.entrypoint import resolve_entrypoint
 from .._rlmesh import ROTATION_DIMS, adapters_resolve
-from .adapter import ActEncShim, IOAdapter, ObsEncShim
+from .adapter import ActEncShim, Adapter, ObsEncShim
 from .constants import ENV_METADATA_KEY
 from .errors import AdapterResolutionError
 from .specs import (
@@ -256,7 +256,7 @@ def _model_wire(
     string is gated on ``trust_entrypoints`` and imported here; an
     in-process callable stays here and is referenced by a ``host:<key>``
     placeholder. Either way the native plan keeps the input as a hole that
-    :class:`IOAdapter` fills from the raw observation.
+    :class:`Adapter` fills from the raw observation.
     """
     customs: dict[str, ObsTransform] = {}
     wire_inputs: list[dict[str, Any]] = []
@@ -296,8 +296,8 @@ def resolve(
     *,
     trust_entrypoints: bool = False,
     check_inverse: bool = True,
-) -> IOAdapter:
-    """Derive an :class:`IOAdapter` for an env/model pair.
+) -> Adapter:
+    """Derive an :class:`Adapter` for an env/model pair.
 
     Args:
         env_tags: The environment's observation/action tags.
@@ -339,7 +339,7 @@ def resolve(
         for model_input in shadow.inputs
         if isinstance(model_input, ImageInput) and model_input.stack > 1
     }
-    return IOAdapter(plan, customs, stacks, obs_shims, act_shims)
+    return Adapter(plan, customs, stacks, obs_shims, act_shims)
 
 
 def resolve_from_contract(
@@ -348,8 +348,8 @@ def resolve_from_contract(
     *,
     trust_entrypoints: bool = False,
     check_inverse: bool = True,
-) -> IOAdapter:
-    """Derive an :class:`IOAdapter` from an env contract and a model spec.
+) -> Adapter:
+    """Derive an :class:`Adapter` from an env contract and a model spec.
 
     Reads the env's tags from its contract metadata (published under
     :data:`ENV_METADATA_KEY` by a server set up with

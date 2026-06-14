@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import os
 import warnings
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 from rlmesh._bootstrap.env import (
@@ -141,22 +140,24 @@ def build(
             "inside a sandbox; run it via the sandbox path"
         )
 
-    if recipe.annotations is not None:
-        _publish_annotations(env, recipe.annotations)
+    if recipe.adapter is not None and recipe.kind == "env":
+        _publish_env_tags(env, recipe.adapter)
 
     return cast("EnvLike", env)
 
 
-def _publish_annotations(env: object, annotations: Mapping[str, object]) -> None:
-    """Publish adapter annotations for a recipe-launched env (forward path).
+def _publish_env_tags(env: object, adapter: object) -> None:
+    """Publish a recipe-launched env's :class:`EnvTags` (forward path, FINAL_API_SPEC §7.1).
 
-    Registry-spec section 11: this runs ``join()`` against the env's real spaces
-    and fails loud. The adapters layer is resolved dynamically so the recipe layer
-    does not hard-depend on it (it lives in a separate, later-merged module). Until
-    that module lands, publishing degrades gracefully: a missing ``rlmesh.adapters``
-    is warned about once and skipped, so a recipe with annotations still constructs.
-    Errors raised by ``annotate()`` itself (once adapters *is* importable) still
-    propagate -- only the missing-module case is tolerated.
+    This runs ``join()`` against the env's real spaces and fails loud. The adapters
+    layer is resolved dynamically so the recipe layer does not hard-depend on it.
+    A missing ``rlmesh.adapters`` is warned about once and skipped, so a recipe with
+    an adapter block still constructs; errors raised by ``tag()`` itself (once adapters
+    *is* importable) still propagate.
+
+    Note: ``EnvRecipe.to_recipe()`` does not populate ``recipe.adapter`` -- env tags
+    normally ride ``tag()``/``EnvServer(tags=)`` -- so this path is usually inert, but
+    the read site must be correct and crash-free.
     """
     import importlib
 
@@ -164,11 +165,14 @@ def _publish_annotations(env: object, annotations: Mapping[str, object]) -> None
         adapters = importlib.import_module("rlmesh.adapters")
     except ImportError:
         warnings.warn(
-            "rlmesh.adapters is not available; skipping recipe annotation publishing "
-            "(annotations will be enforced once the adapters layer lands)",
+            "rlmesh.adapters is not available; skipping recipe env-tag publishing "
+            "(env tags will be enforced once the adapters layer lands)",
             RuntimeWarning,
             stacklevel=2,
         )
         return
-    annotate = adapters.annotate
-    annotate(env, annotations)
+    env_tags_cls = adapters.EnvTags
+    # ``recipe.adapter`` is a raw JSON Mapping after from_dict, or an EnvTags instance
+    # when constructed in-process. Rehydrate the former before publishing.
+    tags = adapter if isinstance(adapter, env_tags_cls) else env_tags_cls.from_dict(adapter)
+    adapters.tag(env, tags)

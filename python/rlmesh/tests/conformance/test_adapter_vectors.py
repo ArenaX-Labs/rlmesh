@@ -107,7 +107,7 @@ def assert_value(actual: Any, expected: dict[str, Any], atol: float) -> None:
     )
 
 
-def resolve_case(case: dict[str, Any]) -> adapt.IOAdapter:
+def resolve_case(case: dict[str, Any]) -> adapt.Adapter:
     tags = adapt.EnvTags.from_dict(case["env_tags"])
     model_spec = adapt.ModelSpec.from_dict(case["model_spec"])
     obs_space = gym_space_from_view(case["observation_space"])

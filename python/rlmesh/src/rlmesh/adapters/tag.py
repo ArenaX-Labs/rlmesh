@@ -1,4 +1,4 @@
-"""The ``tag`` verb: attach env IO tags to an environment.
+"""The ``tag`` verb: attach env tags to an environment.
 
 Tagging an environment publishes its :class:`EnvTags` in the
 env's ``metadata`` mapping (under :data:`ENV_METADATA_KEY`). A server built
@@ -21,7 +21,7 @@ EnvT = TypeVar("EnvT")
 
 
 def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
-    """Attach IO tags to ``env`` and return it (for chaining).
+    """Attach env tags to ``env`` and return it (for chaining).
 
     The tags are merged into ``env.metadata`` under
     :data:`ENV_METADATA_KEY`, leaving any existing metadata intact.

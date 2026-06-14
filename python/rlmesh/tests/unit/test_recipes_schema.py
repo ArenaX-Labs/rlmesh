@@ -106,7 +106,9 @@ def test_from_dict_is_lenient_about_missing_keys() -> None:
     assert recipe.build == Build()
     assert recipe.setup == Setup()
     assert recipe.requires.imports == ()
-    assert recipe.recipe_version == 1
+    # Bumped 1 -> 2 with the kind/inputs/runtime/adapter additions (FINAL_API_SPEC §2.2);
+    # an absent recipe_version still defaults to the current version.
+    assert recipe.recipe_version == 2
 
 
 def test_kwargs_must_be_json_only() -> None:
