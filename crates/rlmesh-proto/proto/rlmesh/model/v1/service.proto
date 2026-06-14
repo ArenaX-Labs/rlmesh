@@ -39,6 +39,16 @@ message HandshakeResponse {
   // Edition governing this session; empty when compatible is false.
   string selected_workflow_edition = 8;
 
+  // Server package version, for diagnostics (e.g. naming which peer is a beta
+  // build on a provisional-edition mismatch).
+  string server_version = 9;
+
+  // SHA-256 of the selected edition's spec document and its lifecycle status
+  // ("provisional" | "sealed"). A provisional edition interoperates only between
+  // peers carrying the same checksum; both are empty when compatible is false.
+  string selected_edition_spec_sha256 = 10;
+  string selected_edition_status = 11;
+
   reserved 6;
   reserved "workflow_edition";
 }

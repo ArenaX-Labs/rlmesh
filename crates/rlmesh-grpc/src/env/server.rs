@@ -269,6 +269,10 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 String::new()
             },
             supported_workflow_editions: supported_workflow_editions(),
+            server_version: env!("CARGO_PKG_VERSION").to_string(),
+            // Populated in the provisional content-pin stage.
+            selected_edition_spec_sha256: String::new(),
+            selected_edition_status: String::new(),
         };
 
         Ok(Response::new(res))
