@@ -156,8 +156,11 @@ where
     /// Per-lane autoreset convention declared by the served env's contract.
     /// `UNSPECIFIED` is treated as `DISABLED` (explicit reset only).
     fn autoreset_mode(&self) -> AutoresetMode {
+        // Unknown modes are rejected at RuntimeSessionSpec::validate() (run before
+        // the loop); a value that still fails to decode falls back to the safe
+        // explicit-reset DISABLED rather than silently aliasing a newer mode.
         AutoresetMode::try_from(self.spec.env_contract.autoreset_mode)
-            .unwrap_or(AutoresetMode::Unspecified)
+            .unwrap_or(AutoresetMode::Disabled)
     }
 
     pub async fn run(self) -> Result<RuntimeReport, RuntimeError> {

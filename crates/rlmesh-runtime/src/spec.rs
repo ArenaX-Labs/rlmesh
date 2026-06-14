@@ -51,6 +51,16 @@ impl RuntimeSessionSpec {
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
         }
+        // An autoreset mode this build does not understand (e.g. a newer peer's
+        // mode) must fail loudly at session setup, never silently fold to
+        // DISABLED and change lifecycle semantics.
+        if AutoresetMode::try_from(self.env_contract.autoreset_mode).is_err() {
+            return Err(format!(
+                "unknown autoreset mode {} on the wire; this build supports \
+                 UNSPECIFIED, NEXT_STEP, SAME_STEP, DISABLED only",
+                self.env_contract.autoreset_mode
+            ));
+        }
         // SAME_STEP is reserved on the wire but not yet driven by the runtime:
         // the driver currently aliases NEXT_STEP|SAME_STEP to a purely
         // observational path, while the env server never rolls SAME_STEP episode
