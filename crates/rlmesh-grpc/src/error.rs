@@ -66,31 +66,16 @@ impl Error {
 pub fn status_to_grpc_error(status: tonic::Status) -> Error {
     use tonic::Code;
 
+    let code = status.code();
     let message = status.message().to_string();
-    match status.code() {
-        // Retryable / transport-ish conditions.
+    match code {
         Code::Unavailable | Code::ResourceExhausted | Code::Aborted => {
             Error::Transport(TransportError::Unavailable(message))
         }
-        // No duration is available on a server-reported deadline, so keep the
-        // structured code (recoverable) instead of fabricating Timeout(0ns).
-        Code::DeadlineExceeded => Error::Transport(TransportError::Status {
-            code: status.code(),
-            message,
-        }),
         Code::Cancelled => Error::Cancelled(message),
-        Code::Unauthenticated | Code::PermissionDenied => {
-            Error::Transport(TransportError::Status {
-                code: status.code(),
-                message,
-            })
-        }
-        // Everything else (Unimplemented, Internal, InvalidArgument, ...) is a
-        // permanent protocol/server error; keep the structured code.
-        _ => Error::Transport(TransportError::Status {
-            code: status.code(),
-            message,
-        }),
+        // Everything else keeps the structured code. DeadlineExceeded stays
+        // recoverable without fabricating a Timeout(0ns) duration.
+        _ => Error::Transport(TransportError::Status { code, message }),
     }
 }
 
@@ -148,17 +133,9 @@ pub enum ProtocolError {
     #[error("decode error: {0}")]
     DecodeError(String),
 
-    /// Invalid message type
-    #[error("invalid message type: {0}")]
-    InvalidMessageType(String),
-
     /// Handshake failed
     #[error("handshake failed: {0}")]
     HandshakeFailed(String),
-
-    /// Protocol generation mismatch
-    #[error("protocol generation mismatch: server={server}, client={client}")]
-    ProtocolGenerationMismatch { server: String, client: String },
 
     /// Unexpected message
     #[error("unexpected message: expected {expected}, got {actual}")]
@@ -224,12 +201,6 @@ impl EnvError {
             is_recoverable,
             debug_info: None,
         }
-    }
-
-    /// Add debug information.
-    pub fn with_debug(mut self, debug: impl Into<String>) -> Self {
-        self.debug_info = Some(debug.into());
-        self
     }
 }
 
@@ -349,17 +320,9 @@ pub enum ClientError {
     #[error("not connected")]
     NotConnected,
 
-    /// Already connected
-    #[error("already connected")]
-    AlreadyConnected,
-
     /// Handshake not completed
     #[error("handshake not completed")]
     NotHandshaked,
-
-    /// Connection failed
-    #[error("connection failed: {0}")]
-    ConnectionFailed(String),
 }
 
 /// Result type alias for rlmesh-grpc operations.

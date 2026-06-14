@@ -23,8 +23,8 @@ use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportErro
 use crate::helpers::address::parse_env_connect_target;
 use crate::states::ClientState;
 
-use super::protocol::{join_request_kind_name, proto_error_to_env_error};
 use super::stream::spawn_response_pump;
+use super::wire::{join_request_kind_name, proto_error_to_env_error};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvHandshake {
@@ -476,7 +476,7 @@ impl EnvClient {
                         message = %status.message(),
                         "env join stream returned an error status"
                     );
-                    return Err(super::protocol::status_to_grpc_error(status));
+                    return Err(super::wire::status_to_grpc_error(status));
                 }
             };
             if response.request_id == request_id {
@@ -495,7 +495,6 @@ impl EnvClient {
     fn ensure_ready(&self) -> Result<(), GrpcError> {
         match self.state {
             ClientState::Ready => Ok(()),
-            ClientState::Disconnected => Err(ClientError::NotConnected.into()),
             ClientState::Connected => Err(ClientError::NotHandshaked.into()),
             ClientState::Closed => Err(ClientError::NotConnected.into()),
         }
@@ -540,6 +539,67 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Endpoint;
     use tonic::{Request, Response, Status};
+
+    use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec as NativeSpaceSpec};
+
+    /// A no-op single-lane env used by the integration-style server tests below.
+    struct PlainEnv {
+        contract: SpaceEnvContract,
+    }
+
+    impl PlainEnv {
+        fn new(id: &str) -> Self {
+            let space = NativeSpaceSpec::default();
+            Self {
+                contract: SpaceEnvContract {
+                    id: id.to_string(),
+                    autoreset_mode: Default::default(),
+                    action_space: Some(space.clone()),
+                    observation_space: Some(space),
+                    metadata: None,
+                    render_mode: String::new(),
+                    num_envs: 1,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::env::Environment for PlainEnv {
+        fn observation_space(&self) -> &NativeSpaceSpec {
+            self.contract.observation_space.as_ref().unwrap()
+        }
+        fn action_space(&self) -> &NativeSpaceSpec {
+            self.contract.action_space.as_ref().unwrap()
+        }
+        fn num_envs(&self) -> usize {
+            1
+        }
+        fn env_contract(&self) -> &SpaceEnvContract {
+            &self.contract
+        }
+        async fn reset(
+            &mut self,
+            _req: ResetRequest,
+        ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
+            Ok(ResetResponse::default())
+        }
+        async fn step(
+            &mut self,
+            _req: StepRequest,
+        ) -> std::result::Result<StepResponse, crate::error::EnvError> {
+            Ok(StepResponse::default())
+        }
+        async fn render(
+            &mut self,
+            _req: RenderRequest,
+        ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
+            Ok(RenderResponse::default())
+        }
+        async fn close(&mut self) -> std::result::Result<CloseResponse, crate::error::EnvError> {
+            Ok(CloseResponse::default())
+        }
+    }
 
     #[test]
     fn validate_env_contract_requires_spaces() {
@@ -724,64 +784,9 @@ mod tests {
         use crate::env::server::GrpcEnvServer;
         use crate::lifecycle::{ServeOptions, ShutdownTrigger};
         use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
 
-        struct PlainEnv {
-            contract: SpaceEnvContract,
-        }
-        #[async_trait::async_trait]
-        impl crate::env::Environment for PlainEnv {
-            fn observation_space(&self) -> &SpaceSpec {
-                self.contract.observation_space.as_ref().unwrap()
-            }
-            fn action_space(&self) -> &SpaceSpec {
-                self.contract.action_space.as_ref().unwrap()
-            }
-            fn num_envs(&self) -> usize {
-                1
-            }
-            fn env_contract(&self) -> &SpaceEnvContract {
-                &self.contract
-            }
-            async fn reset(
-                &mut self,
-                _req: ResetRequest,
-            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
-                Ok(ResetResponse::default())
-            }
-            async fn step(
-                &mut self,
-                _req: StepRequest,
-            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
-                Ok(StepResponse::default())
-            }
-            async fn render(
-                &mut self,
-                _req: RenderRequest,
-            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
-                Ok(RenderResponse::default())
-            }
-            async fn close(
-                &mut self,
-            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
-                Ok(CloseResponse::default())
-            }
-        }
-
-        let space = SpaceSpec::default();
-        let env = PlainEnv {
-            contract: SpaceEnvContract {
-                id: "plain-env".to_string(),
-                autoreset_mode: Default::default(),
-                action_space: Some(space.clone()),
-                observation_space: Some(space),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
-            },
-        };
         let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
-            env,
+            PlainEnv::new("plain-env"),
             ShutdownTrigger::new(),
             ServeOptions::default(),
             None,
@@ -891,68 +896,13 @@ mod tests {
         use crate::env::server::GrpcEnvServer;
         use crate::lifecycle::{ServeOptions, ShutdownTrigger};
         use rlmesh_proto::env::v1::env_service_server::EnvServiceServer;
-        use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
 
-        struct TokenEnv {
-            contract: SpaceEnvContract,
-        }
-        #[async_trait::async_trait]
-        impl crate::env::Environment for TokenEnv {
-            fn observation_space(&self) -> &SpaceSpec {
-                self.contract.observation_space.as_ref().unwrap()
-            }
-            fn action_space(&self) -> &SpaceSpec {
-                self.contract.action_space.as_ref().unwrap()
-            }
-            fn num_envs(&self) -> usize {
-                1
-            }
-            fn env_contract(&self) -> &SpaceEnvContract {
-                &self.contract
-            }
-            async fn reset(
-                &mut self,
-                _req: ResetRequest,
-            ) -> std::result::Result<ResetResponse, crate::error::EnvError> {
-                Ok(ResetResponse::default())
-            }
-            async fn step(
-                &mut self,
-                _req: StepRequest,
-            ) -> std::result::Result<StepResponse, crate::error::EnvError> {
-                Ok(StepResponse::default())
-            }
-            async fn render(
-                &mut self,
-                _req: RenderRequest,
-            ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
-                Ok(RenderResponse::default())
-            }
-            async fn close(
-                &mut self,
-            ) -> std::result::Result<CloseResponse, crate::error::EnvError> {
-                Ok(CloseResponse::default())
-            }
-        }
-
-        let space = SpaceSpec::default();
-        let env = TokenEnv {
-            contract: SpaceEnvContract {
-                id: "token-env".to_string(),
-                autoreset_mode: Default::default(),
-                action_space: Some(space.clone()),
-                observation_space: Some(space),
-                metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
-            },
-        };
         let options = ServeOptions {
             token: Some("s3cret".to_string()),
             ..Default::default()
         };
         let service = EnvServiceServer::new(GrpcEnvServer::new_with_options(
-            env,
+            PlainEnv::new("token-env"),
             ShutdownTrigger::new(),
             options,
             None,

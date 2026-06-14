@@ -1,9 +1,9 @@
 pub mod client;
 mod environment;
 mod episode;
-mod protocol;
 mod server;
 mod stream;
+mod wire;
 
 pub use client::{EnvClient, EnvHandshake};
 pub use environment::{

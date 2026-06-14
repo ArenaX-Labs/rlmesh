@@ -1,9 +1,6 @@
 pub mod client;
-mod protocol;
 mod stream;
 mod validation;
-
-#[cfg(test)]
-mod validation_tests;
+mod wire;
 
 pub use client::ModelClient;

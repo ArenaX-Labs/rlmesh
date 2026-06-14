@@ -551,7 +551,7 @@ async fn handle_env_request<E: Environment>(
                             // Episodes interrupted by a replacing reset surface
                             // here so their accounting is not lost.
                             let mut completed_episodes = tracker.drain_interrupted();
-                            let shared_info = decode_info_struct(ok.infos.as_ref());
+                            let shared_info = ok.infos.clone();
 
                             // Per-lane episode ids. The id flips only at the
                             // NEXT_STEP boundary (t+1, the fresh-obs step), never
@@ -861,10 +861,6 @@ fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> us
         .unwrap_or(0)
 }
 
-fn decode_info_struct(info: Option<&MetaMap>) -> Option<MetaMap> {
-    info.cloned()
-}
-
 fn operation_telemetry(operation: &str, endpoint_total: Duration) -> OperationTelemetry {
     OperationTelemetry {
         operation: operation.to_string(),
@@ -962,7 +958,7 @@ mod tests {
             ..Default::default()
         };
         let server = GrpcEnvServer::new_with_options(
-            HandshakeOnlyEnv::default(),
+            ScriptedVectorEnv::handshake_only(),
             ShutdownTrigger::new(),
             options,
             None,
@@ -1010,7 +1006,7 @@ mod tests {
     #[tokio::test]
     async fn handshake_without_token_is_unauthenticated_by_default() {
         // A server with no configured token accepts unauthenticated requests.
-        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
         let response = EnvService::handshake(
             &server,
             Request::new(handshake_request(
@@ -1024,59 +1020,120 @@ mod tests {
         assert!(response.compatible);
     }
 
-    struct HandshakeOnlyEnv {
-        contract: SpaceEnvContract,
+    fn contract(
+        id: &str,
+        num_envs: u32,
+        autoreset_mode: rlmesh_spaces::AutoresetMode,
+    ) -> SpaceEnvContract {
+        let space = SpaceSpec::default();
+        SpaceEnvContract {
+            id: id.to_string(),
+            autoreset_mode,
+            action_space: Some(space.clone()),
+            observation_space: Some(space),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs,
+        }
     }
 
-    impl Default for HandshakeOnlyEnv {
-        fn default() -> Self {
-            let space = SpaceSpec::default();
+    /// A probe that asserts `step` is never entered concurrently and counts the
+    /// steps that ran to completion (with a configurable per-step delay).
+    #[derive(Clone)]
+    struct ConcurrencyProbe {
+        step_delay: std::time::Duration,
+        in_op: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        overlap_detected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        completed_steps: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// The single env mock used across these tests. It replays a pre-scripted
+    /// sequence of `StepResponse`s (yielding the default all-zero step once the
+    /// script is exhausted), or runs a [`ConcurrencyProbe`] step when one is set.
+    struct ScriptedVectorEnv {
+        contract: SpaceEnvContract,
+        steps: std::collections::VecDeque<StepResponse>,
+        probe: Option<ConcurrencyProbe>,
+    }
+
+    impl ScriptedVectorEnv {
+        fn new(
+            num_envs: usize,
+            mode: rlmesh_spaces::AutoresetMode,
+            steps: Vec<StepResponse>,
+        ) -> Self {
             Self {
-                contract: SpaceEnvContract {
-                    id: "handshake-only".to_string(),
-                    autoreset_mode: Default::default(),
-                    action_space: Some(space.clone()),
-                    observation_space: Some(space),
-                    metadata: None,
-                    render_mode: String::new(),
-                    num_envs: 1,
-                },
+                contract: contract("scripted", num_envs as u32, mode),
+                steps: steps.into(),
+                probe: None,
             }
+        }
+
+        /// A handshake-only env: 1 lane, no scripted steps.
+        fn handshake_only() -> Self {
+            Self::new(1, Default::default(), vec![])
+        }
+
+        fn concurrency_probe(step_delay: std::time::Duration) -> Self {
+            let mut env = Self::new(1, Default::default(), vec![]);
+            env.probe = Some(ConcurrencyProbe {
+                step_delay,
+                in_op: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                overlap_detected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                completed_steps: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            });
+            env
         }
     }
 
     #[async_trait]
-    impl Environment for HandshakeOnlyEnv {
+    impl Environment for ScriptedVectorEnv {
         fn observation_space(&self) -> &SpaceSpec {
             self.contract.observation_space.as_ref().unwrap()
         }
-
         fn action_space(&self) -> &SpaceSpec {
             self.contract.action_space.as_ref().unwrap()
         }
-
         fn num_envs(&self) -> usize {
-            1
+            self.contract.num_envs as usize
         }
-
         fn env_contract(&self) -> &SpaceEnvContract {
             &self.contract
         }
-
         async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
-            unreachable!("handshake test does not call reset")
+            Ok(ResetResponse::default())
         }
-
         async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
-            unreachable!("handshake test does not call step")
+            if let Some(probe) = &self.probe {
+                use std::sync::atomic::Ordering;
+                let probe = probe.clone();
+                let handle = tokio::spawn(async move {
+                    if probe.in_op.swap(true, Ordering::SeqCst) {
+                        probe.overlap_detected.store(true, Ordering::SeqCst);
+                    }
+                    tokio::time::sleep(probe.step_delay).await;
+                    probe.in_op.store(false, Ordering::SeqCst);
+                    probe.completed_steps.fetch_add(1, Ordering::SeqCst);
+                });
+                let _ = handle.await;
+                return Ok(StepResponse::default());
+            }
+            Ok(self.steps.pop_front().unwrap_or_default())
         }
-
         async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
-            unreachable!("handshake test does not call render")
+            Ok(RenderResponse::default())
         }
-
         async fn close(&mut self) -> Result<CloseResponse, EnvError> {
-            unreachable!("handshake test does not call close")
+            Ok(CloseResponse::default())
+        }
+    }
+
+    fn step_resp(rewards: Vec<f64>, terminated: Vec<u8>, truncated: Vec<u8>) -> StepResponse {
+        StepResponse {
+            rewards,
+            terminated_mask: terminated,
+            truncated_mask: truncated,
+            ..Default::default()
         }
     }
 
@@ -1093,78 +1150,6 @@ mod tests {
         }
     }
 
-    /// An env whose `step` sleeps and asserts it is never entered concurrently.
-    struct SlowConcurrencyEnv {
-        contract: SpaceEnvContract,
-        step_delay: std::time::Duration,
-        in_op: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        overlap_detected: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        completed_steps: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl SlowConcurrencyEnv {
-        fn new(step_delay: std::time::Duration) -> Self {
-            let space = SpaceSpec::default();
-            Self {
-                contract: SpaceEnvContract {
-                    id: "slow".to_string(),
-                    autoreset_mode: Default::default(),
-                    action_space: Some(space.clone()),
-                    observation_space: Some(space),
-                    metadata: None,
-                    render_mode: String::new(),
-                    num_envs: 1,
-                },
-                step_delay,
-                in_op: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                overlap_detected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                completed_steps: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Environment for SlowConcurrencyEnv {
-        fn observation_space(&self) -> &SpaceSpec {
-            self.contract.observation_space.as_ref().unwrap()
-        }
-        fn action_space(&self) -> &SpaceSpec {
-            self.contract.action_space.as_ref().unwrap()
-        }
-        fn num_envs(&self) -> usize {
-            1
-        }
-        fn env_contract(&self) -> &SpaceEnvContract {
-            &self.contract
-        }
-        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
-            Ok(ResetResponse::default())
-        }
-        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
-            use std::sync::atomic::Ordering;
-            let in_op = self.in_op.clone();
-            let overlap = self.overlap_detected.clone();
-            let completed = self.completed_steps.clone();
-            let delay = self.step_delay;
-            let handle = tokio::spawn(async move {
-                if in_op.swap(true, Ordering::SeqCst) {
-                    overlap.store(true, Ordering::SeqCst);
-                }
-                tokio::time::sleep(delay).await;
-                in_op.store(false, Ordering::SeqCst);
-                completed.fetch_add(1, Ordering::SeqCst);
-            });
-            let _ = handle.await;
-            Ok(StepResponse::default())
-        }
-        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
-            Ok(RenderResponse::default())
-        }
-        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
-            Ok(CloseResponse::default())
-        }
-    }
-
     #[tokio::test]
     async fn timed_out_step_drains_before_next_request_runs() {
         use std::sync::Arc;
@@ -1173,9 +1158,10 @@ mod tests {
 
         use rlmesh_proto::env::v1::{JoinRequest, join_request, join_response};
 
-        let env = SlowConcurrencyEnv::new(std::time::Duration::from_millis(200));
-        let overlap = env.overlap_detected.clone();
-        let completed = env.completed_steps.clone();
+        let env = ScriptedVectorEnv::concurrency_probe(std::time::Duration::from_millis(200));
+        let probe = env.probe.clone().unwrap();
+        let overlap = probe.overlap_detected;
+        let completed = probe.completed_steps;
         let env = Arc::new(Mutex::new(env));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
@@ -1242,7 +1228,7 @@ mod tests {
         let server = tokio::spawn(async move {
             tonic::transport::Server::builder()
                 .add_service(EnvServiceServer::new(GrpcEnvServer::new(
-                    HandshakeOnlyEnv::default(),
+                    ScriptedVectorEnv::handshake_only(),
                 )))
                 .serve_with_shutdown(addr, async {
                     let _ = shutdown_rx.await;
@@ -1303,7 +1289,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_reports_protocol_edition_and_capabilities() {
-        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 
         let response = EnvService::handshake(
             &server,
@@ -1342,7 +1328,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_rejects_unsupported_protocol_generation() {
-        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 
         let response = EnvService::handshake(
             &server,
@@ -1363,7 +1349,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_selects_highest_mutual_edition_from_offer() {
-        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 
         let response = EnvService::handshake(
             &server,
@@ -1383,7 +1369,7 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_rejects_offer_without_mutual_edition() {
-        let server = GrpcEnvServer::new(HandshakeOnlyEnv::default());
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 
         for offer in [&[][..], &["2026"][..], &["2026.11", "2027.01"][..]] {
             let response = EnvService::handshake(
@@ -1413,91 +1399,18 @@ mod tests {
     }
 
     /// A 2-lane vector env whose first step terminates lane 0 and whose later
-    /// steps never terminate, modelling a non-autoresetting vector env (e.g.
-    /// gymnasium `AutoresetMode::DISABLED`) that keeps accepting steps.
-    struct TerminatingVectorEnv {
-        contract: SpaceEnvContract,
-        step_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl TerminatingVectorEnv {
-        fn with_mode(autoreset_mode: rlmesh_spaces::AutoresetMode) -> Self {
-            let space = SpaceSpec::default();
-            Self {
-                contract: SpaceEnvContract {
-                    id: "terminating".to_string(),
-                    autoreset_mode,
-                    action_space: Some(space.clone()),
-                    observation_space: Some(space),
-                    metadata: None,
-                    render_mode: String::new(),
-                    num_envs: 2,
-                },
-                step_count: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        /// DISABLED: a done lane stays inactive until an explicit reset.
-        fn new() -> Self {
-            Self::with_mode(rlmesh_spaces::AutoresetMode::Disabled)
-        }
-
-        /// NEXT_STEP: the env auto-resets a done lane and delivers its fresh obs
-        /// (terminated=false) on the following step — exactly what this mock's
-        /// step sequence already produces (terminal at n==0, fresh at n>=1).
-        fn next_step() -> Self {
-            Self::with_mode(rlmesh_spaces::AutoresetMode::NextStep)
-        }
-    }
-
-    #[async_trait]
-    impl Environment for TerminatingVectorEnv {
-        fn observation_space(&self) -> &SpaceSpec {
-            self.contract.observation_space.as_ref().unwrap()
-        }
-        fn action_space(&self) -> &SpaceSpec {
-            self.contract.action_space.as_ref().unwrap()
-        }
-        fn num_envs(&self) -> usize {
-            2
-        }
-        fn env_contract(&self) -> &SpaceEnvContract {
-            &self.contract
-        }
-        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
-            Ok(ResetResponse::default())
-        }
-        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
-            let n = self
-                .step_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            // Lane 0 terminates on the first step only; lane 1 never terminates.
-            let terminated_mask = if n == 0 {
-                vec![1u8, 0u8]
-            } else {
-                vec![0u8, 0u8]
-            };
-            // Lane 0's autoreset fresh observation lands at n==1 (the step after
-            // its n==0 termination). A real NEXT_STEP env reports reward 0 on
-            // that fresh obs; lane 1 keeps stepping normally.
-            let rewards = if n == 1 {
-                vec![0.0, 1.0]
-            } else {
-                vec![1.0, 1.0]
-            };
-            Ok(StepResponse {
-                rewards,
-                terminated_mask,
-                truncated_mask: vec![0u8, 0u8],
-                ..Default::default()
-            })
-        }
-        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
-            Ok(RenderResponse::default())
-        }
-        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
-            Ok(CloseResponse::default())
-        }
+    /// steps never terminate, modelling a non-autoresetting vector env that
+    /// keeps accepting steps. Lane 0's fresh autoreset obs (reward 0) lands at
+    /// the step after its termination; lane 1 keeps stepping normally.
+    fn terminating_env(mode: rlmesh_spaces::AutoresetMode) -> ScriptedVectorEnv {
+        ScriptedVectorEnv::new(
+            2,
+            mode,
+            vec![
+                step_resp(vec![1.0, 1.0], vec![1, 0], vec![0, 0]),
+                step_resp(vec![0.0, 1.0], vec![0, 0], vec![0, 0]),
+            ],
+        )
     }
 
     #[tokio::test]
@@ -1510,7 +1423,9 @@ mod tests {
             JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
         };
 
-        let env = Arc::new(Mutex::new(TerminatingVectorEnv::new()));
+        let env = Arc::new(Mutex::new(terminating_env(
+            rlmesh_spaces::AutoresetMode::Disabled,
+        )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         // Reset both lanes.
@@ -1592,7 +1507,9 @@ mod tests {
         };
 
         // num_envs == 2.
-        let env = Arc::new(Mutex::new(TerminatingVectorEnv::new()));
+        let env = Arc::new(Mutex::new(terminating_env(
+            rlmesh_spaces::AutoresetMode::Disabled,
+        )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = |env_indices: Vec<i32>, seeds: Vec<i64>| JoinRequest {
@@ -1667,7 +1584,9 @@ mod tests {
             JoinRequest, ResetRequest as ProtoResetRequest, join_request, join_response,
         };
 
-        let env = Arc::new(Mutex::new(TerminatingVectorEnv::next_step()));
+        let env = Arc::new(Mutex::new(terminating_env(
+            rlmesh_spaces::AutoresetMode::NextStep,
+        )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let _ = super::handle_env_request(
@@ -1715,73 +1634,6 @@ mod tests {
             tp1.episode_ids[0], old_id,
             "the fresh obs at t+1 carries a NEW episode id"
         );
-    }
-
-    /// A vector env that replays a pre-scripted sequence of `StepResponse`s so a
-    /// test can drive exact terminated/truncated/reward shapes per step. Once the
-    /// script is exhausted it yields the default (all-zero, non-terminal) step.
-    struct ScriptedVectorEnv {
-        contract: SpaceEnvContract,
-        steps: std::collections::VecDeque<StepResponse>,
-    }
-
-    impl ScriptedVectorEnv {
-        fn new(
-            num_envs: usize,
-            mode: rlmesh_spaces::AutoresetMode,
-            steps: Vec<StepResponse>,
-        ) -> Self {
-            let space = SpaceSpec::default();
-            Self {
-                contract: SpaceEnvContract {
-                    id: "scripted".to_string(),
-                    autoreset_mode: mode,
-                    action_space: Some(space.clone()),
-                    observation_space: Some(space),
-                    metadata: None,
-                    render_mode: String::new(),
-                    num_envs: num_envs as u32,
-                },
-                steps: steps.into(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Environment for ScriptedVectorEnv {
-        fn observation_space(&self) -> &SpaceSpec {
-            self.contract.observation_space.as_ref().unwrap()
-        }
-        fn action_space(&self) -> &SpaceSpec {
-            self.contract.action_space.as_ref().unwrap()
-        }
-        fn num_envs(&self) -> usize {
-            self.contract.num_envs as usize
-        }
-        fn env_contract(&self) -> &SpaceEnvContract {
-            &self.contract
-        }
-        async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResponse, EnvError> {
-            Ok(ResetResponse::default())
-        }
-        async fn step(&mut self, _req: StepRequest) -> Result<StepResponse, EnvError> {
-            Ok(self.steps.pop_front().unwrap_or_default())
-        }
-        async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
-            Ok(RenderResponse::default())
-        }
-        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
-            Ok(CloseResponse::default())
-        }
-    }
-
-    fn step_resp(rewards: Vec<f64>, terminated: Vec<u8>, truncated: Vec<u8>) -> StepResponse {
-        StepResponse {
-            rewards,
-            terminated_mask: terminated,
-            truncated_mask: truncated,
-            ..Default::default()
-        }
     }
 
     #[tokio::test]

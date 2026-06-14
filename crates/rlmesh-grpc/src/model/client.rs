@@ -18,9 +18,9 @@ use crate::error::{Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::normalize_tcp_session_address;
 use crate::states::ClientState;
 
-use super::protocol::{join_request_kind_name, model_error_to_grpc_error};
 use super::stream::{PendingResponses, spawn_response_pump};
 use super::validation::{decode_error, route_request_id, validate_predict_route, validate_route};
+use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 
 /// Client for a ModelService server's Join bidi stream.
 ///
@@ -401,7 +401,6 @@ impl ModelClient {
     fn ensure_ready(&self) -> Result<(), GrpcError> {
         match self.state {
             ClientState::Ready => Ok(()),
-            ClientState::Disconnected => Err(crate::error::ClientError::NotConnected.into()),
             ClientState::Connected => Err(crate::error::ClientError::NotHandshaked.into()),
             ClientState::Closed => Err(crate::error::ClientError::NotConnected.into()),
         }

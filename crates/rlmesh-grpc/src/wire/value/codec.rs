@@ -9,8 +9,16 @@ use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::proto_value::{decode_proto_value, encode_proto_value};
 use super::scalars::{decode_int_sequence, decode_scalar, encode_int_sequence, encode_scalar};
+
+fn encode_proto_value(value: &Value) -> Vec<u8> {
+    value.encode_to_vec()
+}
+
+fn decode_proto_value(bytes: &[u8]) -> Result<Value, ProtocolError> {
+    Value::decode(bytes)
+        .map_err(|err| ProtocolError::DecodeError(format!("failed to decode value payload: {err}")))
+}
 
 pub(super) fn encode_space_value<'v>(
     value: &'v native::SpaceValue,

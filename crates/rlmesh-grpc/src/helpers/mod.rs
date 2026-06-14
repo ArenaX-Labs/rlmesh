@@ -6,6 +6,3 @@ pub use address::{
     parse_bind_target, parse_env_connect_target,
 };
 pub use auth::{bearer_token_matches, constant_time_eq};
-
-#[cfg(test)]
-mod address_tests;

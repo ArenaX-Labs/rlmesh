@@ -1,4 +1,3 @@
-pub mod model;
 pub mod spaces;
 pub mod value;
 

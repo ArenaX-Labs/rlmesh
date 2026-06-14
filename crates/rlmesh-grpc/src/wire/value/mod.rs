@@ -9,7 +9,6 @@ mod batch;
 mod codec;
 mod interaction;
 mod payload;
-mod proto_value;
 mod scalars;
 
 #[cfg(test)]
