@@ -38,7 +38,7 @@ impl<E: Env> WireEnvAdapter<E> {
         &self,
         result: ResetResult,
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
-        validate_observation_count(&result.observations, self.inner.num_envs())?;
+        validate_count(&result.observations, self.inner.num_envs(), "observations")?;
 
         let observations =
             encode_batched_partial_values(&result.observations, self.inner.observation_space())
@@ -131,10 +131,10 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .map_err(gym_error_to_env_error)?;
 
         let env_count = self.inner.num_envs();
-        validate_observation_count(&result.observations, env_count)?;
-        validate_bool_count(&result.terminated, env_count, "terminated")?;
-        validate_bool_count(&result.truncated, env_count, "truncated")?;
-        validate_f64_count(&result.rewards, env_count, "rewards")?;
+        validate_count(&result.observations, env_count, "observations")?;
+        validate_count(&result.terminated, env_count, "terminated values")?;
+        validate_count(&result.truncated, env_count, "truncated values")?;
+        validate_count(&result.rewards, env_count, "rewards values")?;
 
         let observations =
             encode_batched_partial_values(&result.observations, self.inner.observation_space())
@@ -272,24 +272,8 @@ pub(super) fn validate_action_count(
     ))
 }
 
-pub(super) fn validate_observation_count(
-    observations: &[spaces::SpaceValue],
-    num_envs: usize,
-) -> std::result::Result<(), EnvError> {
-    if observations.len() == num_envs {
-        return Ok(());
-    }
-    Err(EnvError::new(
-        EnvErrorCode::Internal,
-        format!(
-            "env returned {} observations for {num_envs} envs",
-            observations.len()
-        ),
-    ))
-}
-
-pub(super) fn validate_bool_count(
-    values: &[bool],
+pub(super) fn validate_count<T>(
+    values: &[T],
     num_envs: usize,
     label: &str,
 ) -> std::result::Result<(), EnvError> {
@@ -298,27 +282,7 @@ pub(super) fn validate_bool_count(
     }
     Err(EnvError::new(
         EnvErrorCode::Internal,
-        format!(
-            "env returned {} {label} values for {num_envs} envs",
-            values.len()
-        ),
-    ))
-}
-
-pub(super) fn validate_f64_count(
-    values: &[f64],
-    num_envs: usize,
-    label: &str,
-) -> std::result::Result<(), EnvError> {
-    if values.len() == num_envs {
-        return Ok(());
-    }
-    Err(EnvError::new(
-        EnvErrorCode::Internal,
-        format!(
-            "env returned {} {label} values for {num_envs} envs",
-            values.len()
-        ),
+        format!("env returned {} {label} for {num_envs} envs", values.len()),
     ))
 }
 
@@ -333,7 +297,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
-    use crate::{BindAddress, ServeOptions};
+    use crate::{BindAddress, Result, ServeOptions};
 
     use super::super::{
         CloseResult, EnvServer, RemoteEnv, RenderResult, ResetRequest, ResetResult, StepResult,
@@ -470,6 +434,42 @@ mod tests {
         }
     }
 
+    /// Reserve an ephemeral TCP port and free it, so a server can rebind it.
+    async fn reserve_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        port
+    }
+
+    /// Connect to a starting env server, retrying until it is listening.
+    async fn connect_with_retry(
+        address: &str,
+        server: &tokio::task::JoinHandle<Result<()>>,
+    ) -> RemoteEnv {
+        loop {
+            match RemoteEnv::connect(address).await {
+                Ok(client) => break client,
+                Err(err) if !server.is_finished() => {
+                    let _ = err;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => panic!("environment server did not start: {err}"),
+            }
+        }
+    }
+
+    /// Await a serve task that should exit cleanly after a shutdown request.
+    async fn shutdown_and_join(server: tokio::task::JoinHandle<Result<()>>) {
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn wire_adapter_roundtrips_batched_reset_and_step() {
         let mut env = WireEnvAdapter::new(DummyEnv::new());
@@ -555,11 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn served_env_close_detaches_and_shutdown_stops_server() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let port = reserve_port().await;
 
         let closes = Arc::new(AtomicUsize::new(0));
         let server_closes = Arc::clone(&closes);
@@ -579,16 +575,7 @@ mod tests {
         });
 
         let address = format!("tcp://127.0.0.1:{port}");
-        let mut client = loop {
-            match RemoteEnv::connect(&address).await {
-                Ok(client) => break client,
-                Err(err) if !server.is_finished() => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(err) => panic!("environment server did not start: {err}"),
-            }
-        };
+        let mut client = connect_with_retry(&address, &server).await;
 
         let _ = client
             .reset(ResetRequest {
@@ -610,22 +597,14 @@ mod tests {
         let _ = second_client.reset(ResetRequest::default()).await.unwrap();
         assert!(second_client.shutdown("test shutdown").await.unwrap());
 
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
 
         assert_eq!(closes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn detached_session_episodes_do_not_bleed_into_the_next_session() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let port = reserve_port().await;
 
         let server = tokio::spawn(async move {
             EnvServer::new(DummyEnv::new())
@@ -643,16 +622,7 @@ mod tests {
         });
 
         let address = format!("tcp://127.0.0.1:{port}");
-        let mut first = loop {
-            match RemoteEnv::connect(&address).await {
-                Ok(client) => break client,
-                Err(err) if !server.is_finished() => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(err) => panic!("environment server did not start: {err}"),
-            }
-        };
+        let mut first = connect_with_retry(&address, &server).await;
 
         // Start episodes, then abandon the session without a graceful Close.
         let _ = first
@@ -691,11 +661,7 @@ mod tests {
         }
 
         assert!(second.shutdown("test shutdown").await.unwrap());
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
     }
 
     #[cfg(unix)]
@@ -731,23 +697,10 @@ mod tests {
         });
 
         let address = format!("unix://{}", socket_path.display());
-        let mut client = loop {
-            match RemoteEnv::connect(&address).await {
-                Ok(client) => break client,
-                Err(err) if !server.is_finished() => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                Err(err) => panic!("environment server did not start over stale socket: {err}"),
-            }
-        };
+        let mut client = connect_with_retry(&address, &server).await;
 
         assert!(client.shutdown("test shutdown").await.unwrap());
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
 
         // The socket file is unlinked after shutdown so a re-serve would succeed.
         assert!(
@@ -759,11 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_serve_options_token_is_enforced_by_the_server() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        let port = reserve_port().await;
 
         let addr = BindAddress::Tcp {
             host: "127.0.0.1".to_string(),
@@ -818,11 +767,7 @@ mod tests {
         authed.handshake().await.expect("authorized handshake");
         assert!(authed.shutdown("test shutdown").await.unwrap().accepted);
 
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
     }
 
     #[tokio::test]
@@ -868,11 +813,7 @@ mod tests {
         }
 
         assert!(client.shutdown("done").await.unwrap());
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
     }
 
     #[tokio::test]
@@ -907,11 +848,7 @@ mod tests {
         let _ = client.reset(ResetRequest::default()).await.unwrap();
         assert!(client.shutdown("test shutdown").await.unwrap());
 
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
     }
 
     #[tokio::test]
@@ -960,10 +897,6 @@ mod tests {
             .await
             .unwrap();
         assert!(client.shutdown("done").await.unwrap());
-        tokio::time::timeout(Duration::from_secs(2), server)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        shutdown_and_join(server).await;
     }
 }

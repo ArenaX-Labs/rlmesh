@@ -4,7 +4,8 @@ use rlmesh_grpc::env::Environment;
 use rlmesh_grpc::lifecycle::{await_close_with_timeout, start_idle_shutdown};
 use tokio::sync::Mutex;
 
-use super::{Env, WireEnvAdapter};
+use super::Env;
+use super::wire::WireEnvAdapter;
 use crate::bound::BoundListener;
 use crate::{BindAddress, EnvironmentError, Error, Result, ServeOptions};
 
@@ -87,17 +88,6 @@ impl<E: Env + 'static> EnvServer<E> {
     pub async fn serve_with_options(self, addr: BindAddress, options: ServeOptions) -> Result<()> {
         self.bind_with_options(addr, options).await?.serve().await
     }
-
-    /// Convenience wrapper around [`serve`](EnvServer::serve) for a
-    /// [`SocketAddr`](std::net::SocketAddr) TCP bind target.
-    pub async fn serve_tcp(self, addr: impl Into<std::net::SocketAddr>) -> Result<()> {
-        let addr = addr.into();
-        self.serve(BindAddress::Tcp {
-            host: addr.ip().to_string(),
-            port: addr.port(),
-        })
-        .await
-    }
 }
 
 /// An [`EnvServer`] that has bound its listener but not yet started serving.
@@ -129,14 +119,7 @@ impl BoundEnvServer {
             .serve(self.router, self.shutdown, self.drain_timeout)
             .await;
         let close_result = close_env(self.env, self.close_timeout).await;
-        match (serve_result, close_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(err)) => Err(err),
-            (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
-                "environment server failed: {serve_err}; close hook failed: {close_err}"
-            ))),
-        }
+        crate::error::join_results(serve_result, close_result, "environment server failed")
     }
 }
 

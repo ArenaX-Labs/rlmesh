@@ -9,7 +9,7 @@ use super::types::{
 };
 use super::wire::{
     proto_episode_metadata_to_public, protocol_error_to_error, validate_action_count,
-    validate_bool_count, validate_f64_count, validate_observation_count,
+    validate_count,
 };
 use crate::{ConnectAddress, Error, Result, spaces};
 
@@ -144,7 +144,7 @@ impl RemoteEnv {
         let observations =
             decode_batched_partial_values(observation_payload.as_ref(), &observation_space)
                 .map_err(protocol_error_to_error)?;
-        validate_observation_count(&observations, self.num_envs)
+        validate_count(&observations, self.num_envs, "observations")
             .map_err(|error| Error::Environment(error.into()))?;
 
         Ok(ResetResult {
@@ -206,13 +206,13 @@ impl RemoteEnv {
             .map_err(protocol_error_to_error)?;
 
         let env_count = self.num_envs;
-        validate_observation_count(&observations, env_count)
+        validate_count(&observations, env_count, "observations")
             .map_err(|error| Error::Environment(error.into()))?;
-        validate_bool_count(&terminated, env_count, "terminated")
+        validate_count(&terminated, env_count, "terminated values")
             .map_err(|error| Error::Environment(error.into()))?;
-        validate_bool_count(&truncated, env_count, "truncated")
+        validate_count(&truncated, env_count, "truncated values")
             .map_err(|error| Error::Environment(error.into()))?;
-        validate_f64_count(&response.rewards, env_count, "rewards")
+        validate_count(&response.rewards, env_count, "rewards values")
             .map_err(|error| Error::Environment(error.into()))?;
 
         Ok(StepResult {

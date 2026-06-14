@@ -65,14 +65,7 @@ impl BoundModelServer {
             .serve(self.router, self.shutdown, self.drain_timeout)
             .await;
         let close_result = close_model(self.handler, self.close_timeout).await;
-        match (serve_result, close_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(err)) => Err(err),
-            (Err(serve_err), Err(close_err)) => Err(Error::Internal(format!(
-                "model server failed: {serve_err}; close hook failed: {close_err}"
-            ))),
-        }
+        crate::error::join_results(serve_result, close_result, "model server failed")
     }
 }
 

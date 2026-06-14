@@ -1,4 +1,4 @@
-//! Server lifecycle options shared by the env and model servers.
+//! Transport serve options shared by the env and model servers.
 
 use std::time::Duration;
 

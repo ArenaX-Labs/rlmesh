@@ -142,14 +142,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
         )
         .await;
         let close_result = self.handler.on_close().await;
-        match (result, close_result) {
-            (Ok(_), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(_), Err(err)) => Err(err),
-            (Err(run_err), Err(close_err)) => Err(Error::Internal(format!(
-                "local model run failed: {run_err}; close hook failed: {close_err}"
-            ))),
-        }
+        crate::error::join_results(result, close_result, "local model run failed")
     }
 
     /// Serve the handler as a model endpoint (blocking).

@@ -74,11 +74,6 @@ impl<E> SingleEnvAdapter<E> {
     pub fn inner(&self) -> &E {
         &self.inner
     }
-
-    /// Mutably borrow the wrapped environment.
-    pub fn inner_mut(&mut self) -> &mut E {
-        &mut self.inner
-    }
 }
 
 #[async_trait::async_trait]

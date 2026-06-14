@@ -82,9 +82,18 @@ struct SmokeEnv {
     obs_space: spaces::SpaceSpec,
     action_space: spaces::SpaceSpec,
     env_contract: spaces::EnvContract,
+    reset_seeds: Option<Arc<Mutex<Vec<Option<i64>>>>>,
 }
 
 impl SmokeEnv {
+    /// A smoke env that records the reset seed it was asked to use into `sink`.
+    fn recording(sink: Arc<Mutex<Vec<Option<i64>>>>) -> Self {
+        Self {
+            reset_seeds: Some(sink),
+            ..Self::new()
+        }
+    }
+
     fn new() -> Self {
         let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(0.0, 255.0, vec![1])
             .dtype(spaces::DType::Uint8)
@@ -107,6 +116,7 @@ impl SmokeEnv {
             obs_space,
             action_space,
             env_contract,
+            reset_seeds: None,
         }
     }
 }
@@ -127,8 +137,11 @@ impl crate::SingleEnv for SmokeEnv {
 
     async fn reset(
         &mut self,
-        _req: spaces::request::ResetRequest,
+        req: spaces::request::ResetRequest,
     ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
+        if let Some(seeds) = &self.reset_seeds {
+            seeds.lock().await.push(req.seed);
+        }
         Ok(spaces::request::ResetResult {
             observation: Some(spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
@@ -168,55 +181,6 @@ impl crate::SingleEnv for SmokeEnv {
     }
 }
 
-/// A single-env that records the reset seed it was asked to use, and ends each
-/// episode after one step so a bounded run terminates promptly.
-struct SeedRecordingEnv {
-    inner: SmokeEnv,
-    reset_seeds: Arc<Mutex<Vec<Option<i64>>>>,
-}
-
-#[async_trait]
-impl crate::SingleEnv for SeedRecordingEnv {
-    fn observation_space(&self) -> &spaces::SpaceSpec {
-        crate::SingleEnv::observation_space(&self.inner)
-    }
-    fn action_space(&self) -> &spaces::SpaceSpec {
-        crate::SingleEnv::action_space(&self.inner)
-    }
-    fn env_contract(&self) -> &spaces::EnvContract {
-        crate::SingleEnv::env_contract(&self.inner)
-    }
-
-    async fn reset(
-        &mut self,
-        req: spaces::request::ResetRequest,
-    ) -> std::result::Result<spaces::request::ResetResult, spaces::EnvRuntimeError> {
-        self.reset_seeds.lock().await.push(req.seed);
-        crate::SingleEnv::reset(&mut self.inner, req).await
-    }
-
-    async fn step(
-        &mut self,
-        req: spaces::request::StepRequest,
-    ) -> std::result::Result<spaces::request::StepResult, spaces::EnvRuntimeError> {
-        crate::SingleEnv::step(&mut self.inner, req).await
-    }
-
-    async fn render(
-        &mut self,
-        req: spaces::RenderRequest,
-    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
-        crate::SingleEnv::render(&mut self.inner, req).await
-    }
-
-    async fn close(
-        &mut self,
-        req: spaces::CloseRequest,
-    ) -> std::result::Result<spaces::request::CloseResult, spaces::EnvRuntimeError> {
-        crate::SingleEnv::close(&mut self.inner, req).await
-    }
-}
-
 struct SmokeModel {
     predicts: Arc<AtomicUsize>,
     closes: Arc<AtomicUsize>,
@@ -235,44 +199,31 @@ impl ModelHandler for SmokeModel {
     }
 }
 
-#[tokio::test]
-#[ignore = "requires local socket bind support"]
-async fn run_local_smoke_uses_in_process_model() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-    let env_address = format!("tcp://{}", listener.local_addr().unwrap());
-    let env_server = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(rlmesh_grpc::env::env_service(
-                crate::env::WireEnvAdapter::new(crate::SingleEnvAdapter::new(SmokeEnv::new())),
-            ))
-            .serve_with_incoming(TcpListenerStream::new(listener))
-            .await
-            .unwrap()
-    });
+/// Spawn a bound model server, returning its resolved port and the serve task.
+fn spawn_bound_server(bound: BoundModelServer) -> (u16, tokio::task::JoinHandle<Result<()>>) {
+    let port = match bound.local_addr().clone() {
+        BindAddress::Tcp { port, .. } => port,
+        other => panic!("expected tcp bind address, got {other:?}"),
+    };
+    assert_ne!(port, 0, "port 0 must resolve to a real port");
+    let server = tokio::spawn(async move { bound.serve().await });
+    (port, server)
+}
 
-    let predicts = Arc::new(AtomicUsize::new(0));
-    let closes = Arc::new(AtomicUsize::new(0));
-    ModelWorker::new(SmokeModel {
-        predicts: Arc::clone(&predicts),
-        closes: Arc::clone(&closes),
-    })
-    .run_local_async(RunLocalOptions::new(ConnectAddress::Tcp(env_address)).for_episodes(1))
-    .await
-    .unwrap();
-
-    assert!(predicts.load(Ordering::SeqCst) >= 1);
-    assert_eq!(closes.load(Ordering::SeqCst), 1);
-    env_server.abort();
+/// Await a serve task that should exit cleanly after a shutdown request.
+async fn shutdown_and_join(server: tokio::task::JoinHandle<Result<()>>) {
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
 async fn user_set_base_seed_reaches_the_env_reset_seeds() {
     async fn run_with_base_seed(base_seed: Option<i64>) -> Vec<Option<i64>> {
         let reset_seeds = Arc::new(Mutex::new(Vec::new()));
-        let env = SeedRecordingEnv {
-            inner: SmokeEnv::new(),
-            reset_seeds: Arc::clone(&reset_seeds),
-        };
+        let env = SmokeEnv::recording(Arc::clone(&reset_seeds));
         // Bind first so the listener is accepting before run_local connects.
         let bound = crate::EnvServer::new(crate::SingleEnvAdapter::new(env))
             .bind(BindAddress::Tcp {
@@ -644,11 +595,7 @@ async fn served_model_close_detaches_and_shutdown_runs_close_hook_once() {
     let shutdown = second.shutdown("test complete").await.unwrap();
     assert!(shutdown.accepted);
 
-    tokio::time::timeout(Duration::from_secs(2), server)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    shutdown_and_join(server).await;
 
     assert_eq!(predicts.load(Ordering::SeqCst), 0);
     assert_eq!(closes.load(Ordering::SeqCst), 1);
@@ -716,13 +663,7 @@ async fn model_bind_resolves_port_zero_before_serving() {
     .unwrap();
 
     // The OS-assigned port is known before serving begins.
-    let port = match bound.local_addr().clone() {
-        BindAddress::Tcp { port, .. } => port,
-        other => panic!("expected tcp bind address, got {other:?}"),
-    };
-    assert_ne!(port, 0, "port 0 must resolve to a real port");
-
-    let server = tokio::spawn(async move { bound.serve().await });
+    let (port, server) = spawn_bound_server(bound);
 
     // No poll-connect race: the resolved address is immediately usable.
     let address = format!("tcp://127.0.0.1:{port}");
@@ -733,11 +674,7 @@ async fn model_bind_resolves_port_zero_before_serving() {
     let shutdown = client.shutdown("test complete").await.unwrap();
     assert!(shutdown.accepted);
 
-    tokio::time::timeout(Duration::from_secs(2), server)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    shutdown_and_join(server).await;
     assert_eq!(closes.load(Ordering::SeqCst), 1);
 }
 
@@ -766,11 +703,7 @@ async fn served_model_reports_grpc_health_serving() {
     )
     .await
     .unwrap();
-    let port = match bound.local_addr().clone() {
-        BindAddress::Tcp { port, .. } => port,
-        other => panic!("expected tcp bind address, got {other:?}"),
-    };
-    let server = tokio::spawn(async move { bound.serve().await });
+    let (port, server) = spawn_bound_server(bound);
 
     // The standard health service requires no route token (it is a distinct
     // gRPC service from ModelService) and reports overall health = SERVING.
@@ -794,11 +727,7 @@ async fn served_model_reports_grpc_health_serving() {
             .await
             .unwrap();
     assert!(client.shutdown("done").await.unwrap().accepted);
-    tokio::time::timeout(Duration::from_secs(2), server)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    shutdown_and_join(server).await;
 }
 
 /// A handler whose `predict` latency is controlled per-request by the slot
@@ -875,11 +804,7 @@ async fn bound_ordering_server(
         )
         .await
         .unwrap();
-    let port = match bound.local_addr().clone() {
-        BindAddress::Tcp { port, .. } => port,
-        other => panic!("expected tcp bind address, got {other:?}"),
-    };
-    let server = tokio::spawn(async move { bound.serve().await });
+    let (port, server) = spawn_bound_server(bound);
 
     let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
         .unwrap()
@@ -1148,11 +1073,7 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
         )
         .await
         .unwrap();
-    let port = match bound.local_addr().clone() {
-        BindAddress::Tcp { port, .. } => port,
-        other => panic!("expected tcp bind address, got {other:?}"),
-    };
-    let server = tokio::spawn(async move { bound.serve().await });
+    let (port, server) = spawn_bound_server(bound);
 
     let address = format!("tcp://127.0.0.1:{port}");
     let mut client = rlmesh_grpc::ModelClient::connect(&address, "tok")
@@ -1236,11 +1157,7 @@ async fn pipelined_idle_activity_stays_balanced() {
         )
         .await
         .unwrap();
-    let port = match bound.local_addr().clone() {
-        BindAddress::Tcp { port, .. } => port,
-        other => panic!("expected tcp bind address, got {other:?}"),
-    };
-    let server = tokio::spawn(async move { bound.serve().await });
+    let (port, server) = spawn_bound_server(bound);
 
     {
         let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))

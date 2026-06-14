@@ -121,6 +121,20 @@ impl Error {
     }
 }
 
+/// Combine a primary result with a close-hook result. If both fail, fold them
+/// into one [`Error::Internal`] prefixed with `ctx` ("<ctx>: <a>; close hook
+/// failed: <b>").
+pub(crate) fn join_results(a: Result<()>, b: Result<()>, ctx: &str) -> Result<()> {
+    match (a, b) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) => Err(err),
+        (Ok(()), Err(err)) => Err(err),
+        (Err(a_err), Err(b_err)) => Err(Error::Internal(format!(
+            "{ctx}: {a_err}; close hook failed: {b_err}"
+        ))),
+    }
+}
+
 impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {

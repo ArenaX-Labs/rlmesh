@@ -95,11 +95,6 @@ impl EnvClientRuntimeEnv {
         Self { inner: client }
     }
 
-    /// Borrow the underlying client.
-    pub fn client(&self) -> &rlmesh_grpc::EnvClient {
-        &self.inner
-    }
-
     /// Consume the adapter and return the underlying client.
     pub fn into_inner(self) -> rlmesh_grpc::EnvClient {
         self.inner
