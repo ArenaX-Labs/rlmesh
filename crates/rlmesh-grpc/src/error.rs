@@ -31,10 +31,6 @@ pub enum Error {
     #[error("cancelled: {0}")]
     Cancelled(String),
 
-    /// Server error
-    #[error("server error: {0}")]
-    Server(#[from] ServerError),
-
     /// Client error
     #[error("client error: {0}")]
     Client(#[from] ClientError),
@@ -289,27 +285,6 @@ impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
             ProtoCode::Closed => ModelErrorCode::Closed,
         }
     }
-}
-
-/// Server-specific errors.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum ServerError {
-    /// Server already running
-    #[error("server already running")]
-    AlreadyRunning,
-
-    /// Server not running
-    #[error("server not running")]
-    NotRunning,
-
-    /// Failed to start server
-    #[error("failed to start: {0}")]
-    StartFailed(String),
-
-    /// Environment error during request handling
-    #[error("environment error: {0}")]
-    Environment(#[from] EnvError),
 }
 
 /// Client-specific errors.

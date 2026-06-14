@@ -247,7 +247,6 @@ impl From<rlmesh_grpc::error::Error> for Error {
             }),
             rlmesh_grpc::error::Error::Timeout(duration) => Self::Timeout(duration),
             rlmesh_grpc::error::Error::Cancelled(message) => Self::Internal(message),
-            rlmesh_grpc::error::Error::Server(error) => Self::Server(error.to_string()),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),
