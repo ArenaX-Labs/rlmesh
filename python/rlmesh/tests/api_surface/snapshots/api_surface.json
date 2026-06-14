@@ -12,6 +12,7 @@
       "ServeOptions",
       "Tensor",
       "__version__",
+      "adapters",
       "make",
       "models",
       "recipes",
@@ -500,6 +501,10 @@
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = package_version('rlmesh')",
+        "stability": "Stable"
+      },
+      "adapters": {
+        "kind": "module",
         "stability": "Stable"
       },
       "make": {

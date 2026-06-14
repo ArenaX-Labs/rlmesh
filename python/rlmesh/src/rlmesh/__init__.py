@@ -5,6 +5,7 @@ from importlib.metadata import version as package_version
 from typing import Any
 
 from . import _rlmesh as _rlmesh
+from . import adapters as adapters
 from . import models as models
 from . import recipes as recipes
 from . import serving as serving
@@ -54,6 +55,7 @@ __all__ = [
     "ServeOptions",
     "Tensor",
     "__version__",
+    "adapters",
     "make",
     "models",
     "recipes",
