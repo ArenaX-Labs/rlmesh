@@ -1,9 +1,10 @@
-//! Python exception types and error conversions.
+//! Python exception types, error conversions, and payload-size accounting.
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyConnectionError, PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use rlmesh::{EnvironmentError, Error, ErrorCode};
+use rlmesh_spaces::SpaceValue;
 
 // Custom exception types for RLMesh-specific errors
 create_exception!(
@@ -49,7 +50,7 @@ pub fn to_py_err(err: Error) -> PyErr {
 
 /// Convert environment error to Python exception.
 fn env_error_to_py(err: EnvironmentError) -> PyErr {
-    let msg = format!("[{}] {}", format_error_code(err.code), err.message);
+    let msg = format!("[{}] {}", err.code, err.message);
 
     match err.code {
         ErrorCode::Timeout => PyTimeoutError::new_err(msg),
@@ -65,22 +66,6 @@ fn env_error_to_py(err: EnvironmentError) -> PyErr {
         _ => EnvironmentException::new_err(msg),
     }
 }
-/// Format error code for display.
-fn format_error_code(code: ErrorCode) -> &'static str {
-    match code {
-        ErrorCode::Unspecified => "UNSPECIFIED",
-        ErrorCode::Timeout => "TIMEOUT",
-        ErrorCode::InvalidAction => "INVALID_ACTION",
-        ErrorCode::NotReady => "NOT_READY",
-        ErrorCode::Busy => "BUSY",
-        ErrorCode::Internal => "INTERNAL",
-        ErrorCode::Crashed => "CRASHED",
-        ErrorCode::Cancelled => "CANCELLED",
-        ErrorCode::Closed => "CLOSED",
-        // rlmesh::ErrorCode is #[non_exhaustive].
-        _ => "UNKNOWN",
-    }
-}
 
 /// Register exception types with the Python module.
 pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -93,17 +78,27 @@ pub fn register_exceptions(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
+/// Byte size of a single space value's payload (profiling).
+pub(crate) fn space_value_size(value: &SpaceValue) -> usize {
+    match value {
+        SpaceValue::Box(value) => value.nbytes(),
+        SpaceValue::Discrete(_) => std::mem::size_of::<i64>(),
+        SpaceValue::MultiBinary(values) => values.len(),
+        SpaceValue::MultiDiscrete(values) => values.len() * std::mem::size_of::<i64>(),
+        SpaceValue::Text(value) => value.len(),
+        SpaceValue::Dict(values) => values.values().map(space_value_size).sum(),
+        SpaceValue::Tuple(values) => values.iter().map(space_value_size).sum(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_error_code_formatting() {
-        assert_eq!(format_error_code(ErrorCode::Timeout), "TIMEOUT");
-        assert_eq!(
-            format_error_code(ErrorCode::InvalidAction),
-            "INVALID_ACTION"
-        );
-        assert_eq!(format_error_code(ErrorCode::Closed), "CLOSED");
+    fn env_error_code_formats_with_label() {
+        assert_eq!(ErrorCode::Timeout.to_string(), "TIMEOUT");
+        assert_eq!(ErrorCode::InvalidAction.to_string(), "INVALID_ACTION");
+        assert_eq!(ErrorCode::Closed.to_string(), "CLOSED");
     }
 }

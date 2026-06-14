@@ -62,7 +62,7 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
 
-    types::errors::register_exceptions(m)?;
+    types::register_exceptions(m)?;
     spaces::register_classes(m)?;
     m.add_class::<lifecycle::PyServeOptions>()?;
 

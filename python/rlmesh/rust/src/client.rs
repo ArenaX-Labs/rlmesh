@@ -19,8 +19,7 @@ use crate::spaces::{
     py_any_to_space_value_with_backend, space_value_to_py_neutral, tensor_from_shape,
 };
 use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
-use crate::types::errors::to_py_err;
-use crate::types::value_size::observation_size;
+use crate::types::{space_value_size, to_py_err};
 
 /// Interval for polling Python signals during blocked RPCs.
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -97,7 +96,7 @@ impl ClientCore {
     /// Payload size when profiling is active.
     fn measure(&self, value: Option<&rlmesh_spaces::SpaceValue>) -> usize {
         if self.profiler.is_enabled() {
-            observation_size(value)
+            value.map_or(0, space_value_size)
         } else {
             0
         }
@@ -278,50 +277,146 @@ enum RpcOutcome<T> {
     TimedOut,
 }
 
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh")]
-pub struct PyEnvClient {
-    core: ClientCore,
+/// Emits a `PyEnvClient`/`PyVectorEnvClient` pyclass: the struct, the methods
+/// shared by both facades (connect/handshake/spaces/render/close/shutdown), and
+/// the `$extra` methods that differ (reset/step, plus `num_envs` on the vector
+/// facade). `render`/`render_packet`/`render_bundle` are projections of one
+/// render RPC.
+macro_rules! client_class {
+    ($Class:ident, $role:literal, { $($extra:tt)* }) => {
+        #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+        #[pyclass(module = "rlmesh._rlmesh")]
+        pub struct $Class {
+            core: ClientCore,
+        }
+
+        #[pymethods]
+        impl $Class {
+            #[new]
+            #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
+            fn new(
+                address: &str,
+                connect_timeout_seconds: Option<f64>,
+                request_timeout_seconds: Option<f64>,
+            ) -> PyResult<Self> {
+                Ok(Self {
+                    core: ClientCore::connect(
+                        $role,
+                        address,
+                        connect_timeout_seconds,
+                        request_timeout_seconds,
+                    )?,
+                })
+            }
+
+            fn address(&self) -> String {
+                self.core.address.clone()
+            }
+
+            fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+                let _span = self.core.span("handshake");
+                self.core.env_contract_py(py)
+            }
+
+            fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+                Ok(make_space(py, &self.core.observation_space)?
+                    .into_any()
+                    .unbind())
+            }
+
+            fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+                Ok(make_space(py, &self.core.action_space)?.into_any().unbind())
+            }
+
+            #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+            fn render(
+                &mut self,
+                py: Python<'_>,
+                env_index: usize,
+                timeout_seconds: Option<f64>,
+            ) -> PyResult<Py<PyAny>> {
+                let _span = self.core.span("render");
+                let timeout = self.core.resolve_timeout(timeout_seconds)?;
+                let frame =
+                    self.core
+                        .render_message(py, env_index, "client.render.rpc", timeout)?;
+                match frame {
+                    Some(frame) => Ok(decode_render_frame(py, &frame)?.into_any().unbind()),
+                    None => Ok(py.None()),
+                }
+            }
+
+            #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+            fn render_packet(
+                &mut self,
+                py: Python<'_>,
+                env_index: usize,
+                timeout_seconds: Option<f64>,
+            ) -> PyResult<Py<PyAny>> {
+                let _span = self.core.span("render_packet");
+                let timeout = self.core.resolve_timeout(timeout_seconds)?;
+                let frame = self.core.render_message(
+                    py,
+                    env_index,
+                    "client.render_packet.rpc",
+                    timeout,
+                )?;
+                match frame {
+                    Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
+                    None => Ok(py.None()),
+                }
+            }
+
+            #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
+            fn render_bundle(
+                &mut self,
+                py: Python<'_>,
+                env_index: usize,
+                timeout_seconds: Option<f64>,
+            ) -> PyResult<Py<PyAny>> {
+                let _span = self.core.span("render_bundle");
+                let timeout = self.core.resolve_timeout(timeout_seconds)?;
+                let frame = self.core.render_message(
+                    py,
+                    env_index,
+                    "client.render_bundle.rpc",
+                    timeout,
+                )?;
+                let (frame_value, packet) = match frame {
+                    Some(frame) => (
+                        decode_render_frame(py, &frame)?.into_any().unbind(),
+                        PyBytes::new(py, render_packet(&frame)).into_any().unbind(),
+                    ),
+                    None => (py.None(), py.None()),
+                };
+                Ok(PyTuple::new(py, [frame_value.bind(py), packet.bind(py)])?
+                    .into_any()
+                    .unbind())
+            }
+
+            fn close(&mut self, py: Python<'_>) -> PyResult<()> {
+                let _span = self.core.span("close");
+                self.core.close_rpc(py)
+            }
+
+            #[pyo3(signature = (reason="owner shutdown"))]
+            fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
+                let _span = self.core.span("shutdown");
+                self.core.shutdown_rpc(py, reason.to_string())
+            }
+
+            $($extra)*
+        }
+
+        impl Drop for $Class {
+            fn drop(&mut self) {
+                self.core.profiler.log_summary_once();
+            }
+        }
+    };
 }
 
-#[pymethods]
-impl PyEnvClient {
-    #[new]
-    #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
-    fn new(
-        address: &str,
-        connect_timeout_seconds: Option<f64>,
-        request_timeout_seconds: Option<f64>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            core: ClientCore::connect(
-                "env_client",
-                address,
-                connect_timeout_seconds,
-                request_timeout_seconds,
-            )?,
-        })
-    }
-
-    fn address(&self) -> String {
-        self.core.address.clone()
-    }
-
-    fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("handshake");
-        self.core.env_contract_py(py)
-    }
-
-    fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.core.observation_space)?
-            .into_any()
-            .unbind())
-    }
-
-    fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.core.action_space)?.into_any().unbind())
-    }
-
+client_class!(PyEnvClient, "env_client", {
     #[pyo3(signature = (seeds=None, options=None, *, timeout_seconds=None))]
     fn reset(
         &mut self,
@@ -411,120 +506,9 @@ impl PyEnvClient {
         let _ = total_guard.finish(action_bytes_len + obs_bytes_len + info_bytes_len);
         Ok(tuple.into_any().unbind())
     }
+});
 
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result = self
-            .core
-            .render_message(py, env_index, "client.render.rpc", timeout)?;
-        match result {
-            Some(message) => Ok(decode_render_frame(py, &message)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
-    }
-
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render_packet(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render_packet");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result =
-            self.core
-                .render_message(py, env_index, "client.render_packet.rpc", timeout)?;
-        match result {
-            Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
-            None => Ok(py.None()),
-        }
-    }
-
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render_bundle(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render_bundle");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result =
-            self.core
-                .render_message(py, env_index, "client.render_bundle.rpc", timeout)?;
-        render_bundle_py(py, result)
-    }
-
-    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let _span = self.core.span("close");
-        self.core.close_rpc(py)
-    }
-
-    #[pyo3(signature = (reason="owner shutdown"))]
-    fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
-        let _span = self.core.span("shutdown");
-        self.core.shutdown_rpc(py, reason.to_string())
-    }
-}
-
-impl Drop for PyEnvClient {
-    fn drop(&mut self) {
-        self.core.profiler.log_summary_once();
-    }
-}
-
-#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
-#[pyclass(module = "rlmesh._rlmesh")]
-pub struct PyVectorEnvClient {
-    core: ClientCore,
-}
-
-#[pymethods]
-impl PyVectorEnvClient {
-    #[new]
-    #[pyo3(signature = (address, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
-    fn new(
-        address: &str,
-        connect_timeout_seconds: Option<f64>,
-        request_timeout_seconds: Option<f64>,
-    ) -> PyResult<Self> {
-        Ok(Self {
-            core: ClientCore::connect(
-                "vector_env_client",
-                address,
-                connect_timeout_seconds,
-                request_timeout_seconds,
-            )?,
-        })
-    }
-
-    fn address(&self) -> String {
-        self.core.address.clone()
-    }
-
-    fn handshake(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("handshake");
-        self.core.env_contract_py(py)
-    }
-
-    fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.core.observation_space)?
-            .into_any()
-            .unbind())
-    }
-
-    fn action_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Ok(make_space(py, &self.core.action_space)?.into_any().unbind())
-    }
-
+client_class!(PyVectorEnvClient, "vector_env_client", {
     fn num_envs(&self) -> usize {
         self.core.num_envs
     }
@@ -607,75 +591,7 @@ impl PyVectorEnvClient {
         .into_any()
         .unbind())
     }
-
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result = self
-            .core
-            .render_message(py, env_index, "client.render.rpc", timeout)?;
-        match result {
-            Some(message) => Ok(decode_render_frame(py, &message)?.into_any().unbind()),
-            None => Ok(py.None()),
-        }
-    }
-
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render_packet(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render_packet");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result =
-            self.core
-                .render_message(py, env_index, "client.render_packet.rpc", timeout)?;
-        match result {
-            Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
-            None => Ok(py.None()),
-        }
-    }
-
-    #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-    fn render_bundle(
-        &mut self,
-        py: Python<'_>,
-        env_index: usize,
-        timeout_seconds: Option<f64>,
-    ) -> PyResult<Py<PyAny>> {
-        let _span = self.core.span("render_bundle");
-        let timeout = self.core.resolve_timeout(timeout_seconds)?;
-        let result =
-            self.core
-                .render_message(py, env_index, "client.render_bundle.rpc", timeout)?;
-        render_bundle_py(py, result)
-    }
-
-    fn close(&mut self, py: Python<'_>) -> PyResult<()> {
-        let _span = self.core.span("close");
-        self.core.close_rpc(py)
-    }
-
-    #[pyo3(signature = (reason="owner shutdown"))]
-    fn shutdown(&mut self, py: Python<'_>, reason: &str) -> PyResult<bool> {
-        let _span = self.core.span("shutdown");
-        self.core.shutdown_rpc(py, reason.to_string())
-    }
-}
-
-impl Drop for PyVectorEnvClient {
-    fn drop(&mut self) {
-        self.core.profiler.log_summary_once();
-    }
-}
+});
 
 #[cfg(feature = "stub-gen")]
 submit! {
@@ -785,26 +701,6 @@ fn info_to_pydict<'py>(
     match info {
         Some(info) => meta_map_to_pydict(py, info),
         None => Ok(pyo3::types::PyDict::new(py)),
-    }
-}
-
-fn render_bundle_py(py: Python<'_>, result: Option<NativeRenderFrame>) -> PyResult<Py<PyAny>> {
-    match result {
-        Some(frame) => {
-            let frame_value = decode_render_frame(py, &frame)?.into_any().unbind();
-            let packet = PyBytes::new(py, render_packet(&frame));
-            Ok(
-                PyTuple::new(py, [frame_value.bind(py).as_any(), packet.as_any()])?
-                    .into_any()
-                    .unbind(),
-            )
-        }
-        None => Ok(PyTuple::new(
-            py,
-            [py.None().bind(py).as_any(), py.None().bind(py).as_any()],
-        )?
-        .into_any()
-        .unbind()),
     }
 }
 

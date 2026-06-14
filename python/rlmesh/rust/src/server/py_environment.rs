@@ -1,11 +1,8 @@
 //! PyEnvironment - Rust adapter for Python gymnasium environments.
 
 use async_trait::async_trait;
-use image::ColorType;
-use image::ImageEncoder;
-use image::codecs::png::PngEncoder;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::PyDict;
 use rlmesh::{
     CloseResult as EnvCloseResult, Env as RLMeshEnv, ResetRequest as EnvResetRequest,
     ResetResult as EnvResetResult, StepRequest as EnvStepRequest, StepResult as EnvStepResult,
@@ -14,22 +11,25 @@ use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
 use rlmesh_spaces::spaces::SpaceSpec;
 use rlmesh_spaces::{
-    AutoresetMode, CloseRequest, CloseRequest as SingleCloseRequest,
-    CloseResult as SingleCloseResult, EnvContract, MetaMap, RenderFrame as NativeRenderFrame,
-    RenderRequest, RenderRequest as SingleRenderRequest, RenderResult,
-    RenderResult as SingleRenderResult, ResetRequest as SingleResetRequest,
-    ResetResult as SingleResetResult, StepRequest as SingleStepRequest,
-    StepResult as SingleStepResult,
+    CloseRequest, CloseRequest as SingleCloseRequest, CloseResult as SingleCloseResult,
+    EnvContract, RenderFrame as NativeRenderFrame, RenderRequest,
+    RenderRequest as SingleRenderRequest, RenderResult, RenderResult as SingleRenderResult,
+    ResetRequest as SingleResetRequest, ResetResult as SingleResetResult,
+    StepRequest as SingleStepRequest, StepResult as SingleStepResult,
 };
 use std::sync::Arc;
 
+use super::conversion::{
+    derive_autoreset_mode, encode_render_png, extract_optional_meta_attr, extract_render_mode,
+    normalize_reset_result, normalize_single_step_result, normalize_vector_step_result,
+};
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_with_backend, meta_map_to_pydict,
     py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
     py_any_to_space_value_with_backend, space_value_to_py_with_backend,
 };
 use crate::telemetry::ProfileCollector;
-use crate::types::value_size::space_value_size as native_value_size;
+use crate::types::space_value_size as native_value_size;
 
 /// A Rust wrapper around a Python gymnasium environment.
 ///
@@ -195,107 +195,6 @@ pub fn build_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
     }
 }
 
-fn extract_optional_meta_attr(
-    obj: &Bound<'_, PyAny>,
-    attr_name: &str,
-) -> PyResult<Option<MetaMap>> {
-    if !obj.hasattr(attr_name)? {
-        return Ok(None);
-    }
-
-    let value = obj.getattr(attr_name)?;
-    if value.is_none() {
-        return Ok(None);
-    }
-
-    Ok(Some(py_any_to_meta_map(&value)?))
-}
-
-fn extract_render_mode(obj: &Bound<'_, PyAny>) -> PyResult<String> {
-    if !obj.hasattr("render_mode")? {
-        return Ok(String::new());
-    }
-
-    let value = obj.getattr("render_mode")?;
-    if value.is_none() {
-        return Ok(String::new());
-    }
-
-    value.extract::<String>()
-}
-
-/// Derive the per-lane autoreset convention from the env's
-/// `metadata["autoreset_mode"]` (gymnasium vector envs always set it). The value
-/// is either a gymnasium `AutoresetMode` enum (whose `.value` is one of
-/// `"NextStep"`/`"SameStep"`/`"Disabled"`) or that plain string.
-///
-/// An *absent* key (or no metadata at all) defaults to `Disabled` — a
-/// scalar/custom env naturally needs explicit reset. A *present* value is held
-/// to the contract: an explicit `None`, a non-string, or an unrecognized string
-/// raises `ValueError` rather than silently downgrading to `Disabled`, which
-/// would double-reset a mislabeled self-autoresetting env. `SameStep` is reserved
-/// in the protocol but not yet honored by the runtime, so it too is rejected
-/// (fail loud rather than mishandle timing).
-fn derive_autoreset_mode(obj: &Bound<'_, PyAny>) -> PyResult<AutoresetMode> {
-    if !obj.hasattr("metadata")? {
-        return Ok(AutoresetMode::Disabled);
-    }
-    let metadata = obj.getattr("metadata")?;
-    if metadata.is_none() {
-        return Ok(AutoresetMode::Disabled);
-    }
-    // A missing key (or a non-subscriptable metadata) defaults to Disabled — a
-    // scalar/custom env legitimately omits it. But a key that is *present* and
-    // explicitly `None` is a deliberate value held to the contract, not the same
-    // as "absent": fail loud rather than silently downgrade to Disabled.
-    let mode_obj = match metadata.get_item("autoreset_mode") {
-        Err(_) => return Ok(AutoresetMode::Disabled),
-        Ok(value) if value.is_none() => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "metadata[\"autoreset_mode\"] is present but None; set it to a gymnasium \
-                 AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\", or omit the \
-                 key entirely to default to DISABLED",
-            ));
-        }
-        Ok(value) => value,
-    };
-
-    // A gymnasium AutoresetMode enum carries the canonical string in `.value`;
-    // a wire-degraded value is already a plain string. The key is present (past
-    // the get_item guard), so a non-string value is a contract violation: fail
-    // loud rather than collapse to "" and silently downgrade to DISABLED.
-    let non_string_err = || {
-        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "metadata[\"autoreset_mode\"] must be a gymnasium AutoresetMode enum or one of \
-             \"NextStep\"/\"SameStep\"/\"Disabled\", got {mode_obj:?}"
-        ))
-    };
-    let mode_str: String = if mode_obj.hasattr("value")? {
-        mode_obj
-            .getattr("value")?
-            .extract()
-            .map_err(|_| non_string_err())?
-    } else {
-        mode_obj.extract().map_err(|_| non_string_err())?
-    };
-
-    match mode_str.as_str() {
-        "NextStep" => Ok(AutoresetMode::NextStep),
-        "Disabled" => Ok(AutoresetMode::Disabled),
-        "SameStep" => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-            "SAME_STEP autoreset mode is not yet supported by the rlmesh runtime; \
-             construct the environment with NEXT_STEP or DISABLED autoreset",
-        )),
-        // Present but an unrecognized string — a typo or a mode this runtime
-        // does not know. Erroring beats silently downgrading to DISABLED, which
-        // would double-reset a self-autoresetting env.
-        other => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "unrecognized metadata[\"autoreset_mode\"] {other:?}; expected a gymnasium \
-             AutoresetMode enum or one of \"NextStep\"/\"SameStep\"/\"Disabled\""
-        ))),
-    }
-}
-
 fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     match error.code {
         EnvErrorCode::InvalidAction => EnvRuntimeError::InvalidValue(error.message),
@@ -303,193 +202,23 @@ fn env_error_to_runtime_error(error: EnvError) -> EnvRuntimeError {
     }
 }
 
-type SingleStepResultParts<'py> = (Bound<'py, PyAny>, f64, bool, bool, Bound<'py, PyAny>);
-type VectorStepResultParts<'py> = (
-    Bound<'py, PyAny>,
-    Vec<f64>,
-    Vec<bool>,
-    Vec<bool>,
-    Bound<'py, PyAny>,
-);
-
-fn normalize_reset_result<'py>(
-    py: Python<'py>,
-    result: Bound<'py, PyAny>,
-    observation_space: &SpaceSpec,
-) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-    if let Ok(tuple) = result.cast::<PyTuple>()
-        && tuple.len() == 2
-    {
-        let info = tuple.get_item(1)?;
-        if info.is_none() || info.cast::<PyDict>().is_ok() {
-            let obs = tuple.get_item(0)?;
-            if !is_tuple_space(observation_space)
-                || py_any_to_space_value_with_backend(
-                    py,
-                    &obs,
-                    observation_space,
-                    ValueBackend::Auto,
-                )
-                .is_ok()
-            {
-                return Ok((obs, info));
-            }
-        }
-    }
-
-    Ok((result, PyDict::new(py).into_any()))
+/// Run `work` on a blocking thread under the GIL, mapping a join panic or a
+/// `PyErr` through `into_err`. Wraps the `spawn_blocking` + `Python::attach` +
+/// double `map_err` boilerplate every reset/step/render/close body shares.
+async fn spawn_py<T, E, W, M>(phase: &str, work: W, into_err: M) -> Result<T, E>
+where
+    T: Send + 'static,
+    W: FnOnce(Python<'_>) -> PyResult<T> + Send + 'static,
+    M: Fn(String) -> E,
+{
+    tokio::task::spawn_blocking(move || Python::attach(work))
+        .await
+        .map_err(|e| into_err(format!("{phase} task panicked: {e}")))?
+        .map_err(|e: PyErr| into_err(format!("{phase} failed: {e}")))
 }
 
-fn is_tuple_space(space: &SpaceSpec) -> bool {
-    matches!(
-        space.spec.as_ref(),
-        Some(rlmesh_spaces::spaces::SpaceKind::Tuple(_))
-    )
-}
-
-fn normalize_single_step_result<'py>(
-    result: Bound<'py, PyAny>,
-) -> PyResult<SingleStepResultParts<'py>> {
-    let tuple = result.cast::<PyTuple>()?;
-    match tuple.len() {
-        5 => Ok((
-            tuple.get_item(0)?,
-            tuple.get_item(1)?.extract::<f64>()?,
-            tuple.get_item(2)?.extract::<bool>()?,
-            tuple.get_item(3)?.extract::<bool>()?,
-            tuple.get_item(4)?,
-        )),
-        4 => {
-            let done = tuple.get_item(2)?.extract::<bool>()?;
-            let info = tuple.get_item(3)?;
-            let truncated = done && legacy_single_truncated(&info)?;
-            Ok((
-                tuple.get_item(0)?,
-                tuple.get_item(1)?.extract::<f64>()?,
-                done && !truncated,
-                truncated,
-                info,
-            ))
-        }
-        len => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "env.step() must return 4 legacy Gym values or 5 Gymnasium values, got {len}"
-        ))),
-    }
-}
-
-fn normalize_vector_step_result<'py>(
-    result: Bound<'py, PyAny>,
-    num_envs: usize,
-) -> PyResult<VectorStepResultParts<'py>> {
-    let tuple = result.cast::<PyTuple>()?;
-    match tuple.len() {
-        5 => Ok((
-            tuple.get_item(0)?,
-            tuple.get_item(1)?.extract::<Vec<f64>>()?,
-            tuple.get_item(2)?.extract::<Vec<bool>>()?,
-            tuple.get_item(3)?.extract::<Vec<bool>>()?,
-            tuple.get_item(4)?,
-        )),
-        4 => {
-            let done = tuple.get_item(2)?.extract::<Vec<bool>>()?;
-            let info = tuple.get_item(3)?;
-            let truncated = legacy_vector_truncated(&info, num_envs)?;
-            let terminated = done
-                .iter()
-                .zip(truncated.iter())
-                .map(|(done, truncated)| *done && !*truncated)
-                .collect();
-            Ok((
-                tuple.get_item(0)?,
-                tuple.get_item(1)?.extract::<Vec<f64>>()?,
-                terminated,
-                truncated,
-                info,
-            ))
-        }
-        len => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "env.step() must return 4 legacy Gym values or 5 Gymnasium values, got {len}"
-        ))),
-    }
-}
-
-fn legacy_single_truncated(info: &Bound<'_, PyAny>) -> PyResult<bool> {
-    if let Ok(dict) = info.cast::<PyDict>()
-        && let Some(value) = dict.get_item("TimeLimit.truncated")?
-    {
-        return value.extract::<bool>();
-    }
-    Ok(false)
-}
-
-fn legacy_vector_truncated(info: &Bound<'_, PyAny>, num_envs: usize) -> PyResult<Vec<bool>> {
-    if let Ok(dict) = info.cast::<PyDict>()
-        && let Some(value) = dict.get_item("TimeLimit.truncated")?
-    {
-        if let Ok(values) = value.extract::<Vec<bool>>() {
-            return Ok(values);
-        }
-        if value.hasattr("tolist")? {
-            return value.call_method0("tolist")?.extract::<Vec<bool>>();
-        }
-        if let Ok(value) = value.extract::<bool>() {
-            return Ok(vec![value; num_envs]);
-        }
-    }
-    Ok(vec![false; num_envs])
-}
-
-fn encode_render_png(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u8>>> {
-    if value.is_none() {
-        return Ok(None);
-    }
-
-    let numpy = py.import("numpy")?;
-    let mut array = if value.hasattr("tobytes")? && value.hasattr("shape")? {
-        value.clone()
-    } else {
-        numpy.call_method1("array", (value,))?
-    };
-
-    array = array.call_method1("astype", ("uint8",))?;
-    let shape = array.getattr("shape")?.extract::<Vec<usize>>()?;
-    let bytes = array.call_method0("tobytes")?.extract::<Vec<u8>>()?;
-
-    let (width, height, color_type, data) = match shape.as_slice() {
-        [height, width, 3] => (*width as u32, *height as u32, ColorType::Rgb8, bytes),
-        [height, width, 4] => (*width as u32, *height as u32, ColorType::Rgba8, bytes),
-        [3, height, width] => (
-            *width as u32,
-            *height as u32,
-            ColorType::Rgb8,
-            chw_to_hwc(bytes, 3, *height, *width),
-        ),
-        [4, height, width] => (
-            *width as u32,
-            *height as u32,
-            ColorType::Rgba8,
-            chw_to_hwc(bytes, 4, *height, *width),
-        ),
-        [height, width] => (*width as u32, *height as u32, ColorType::L8, bytes),
-        _ => return Ok(None),
-    };
-
-    let mut encoded = Vec::new();
-    PngEncoder::new(&mut encoded)
-        .write_image(&data, width, height, color_type.into())
-        .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
-    Ok(Some(encoded))
-}
-
-fn chw_to_hwc(bytes: Vec<u8>, channels: usize, height: usize, width: usize) -> Vec<u8> {
-    let plane = height * width;
-    let mut out = Vec::with_capacity(bytes.len());
-    for index in 0..plane {
-        for channel in 0..channels {
-            out.push(bytes[channel * plane + index]);
-        }
-    }
-    out
+fn internal_env_err(message: String) -> EnvError {
+    EnvError::new(EnvErrorCode::Internal, message)
 }
 
 impl PyEnvironment {
@@ -507,8 +236,9 @@ impl PyEnvironment {
         let options = req.options;
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        let (observation, info) = spawn_py(
+            "reset",
+            move |py| {
                 let env_ref = env.bind(py);
                 let kwargs = PyDict::new(py);
                 if let Some(seed) = seed {
@@ -539,21 +269,11 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok::<_, PyErr>((observation, info))
-            })
-        })
-        .await
-        .map_err(|e| {
-            EnvError::new(
-                EnvErrorCode::Internal,
-                format!("reset task panicked: {}", e),
-            )
-        })?
-        .map_err(|e: PyErr| {
-            EnvError::new(EnvErrorCode::Internal, format!("reset failed: {}", e))
-        })?;
-
-        let (observation, info) = result;
+                Ok((observation, info))
+            },
+            internal_env_err,
+        )
+        .await?;
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
 
@@ -576,8 +296,9 @@ impl PyEnvironment {
         let action_size = action.as_ref().map(native_value_size).unwrap_or(0);
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        let (observation, reward, terminated, truncated, info) = spawn_py(
+            "step",
+            move |py| {
                 let env_ref = env.bind(py);
 
                 let decode_guard = profiler.start("server.step.decode_action");
@@ -615,14 +336,11 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok::<_, PyErr>((observation, reward, terminated, truncated, info))
-            })
-        })
-        .await
-        .map_err(|e| EnvError::new(EnvErrorCode::Internal, format!("step task panicked: {}", e)))?
-        .map_err(|e: PyErr| EnvError::new(EnvErrorCode::Internal, format!("step failed: {}", e)))?;
-
-        let (observation, reward, terminated, truncated, info) = result;
+                Ok((observation, reward, terminated, truncated, info))
+            },
+            internal_env_err,
+        )
+        .await?;
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
 
@@ -655,8 +373,9 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        let result = spawn_py(
+            "render",
+            move |py| {
                 let env_ref = env.bind(py);
                 if env_ref.hasattr("render")? {
                     let call_guard = profiler.start("server.render.python_call");
@@ -667,22 +386,14 @@ impl PyEnvironment {
                     let encoded = encode_render_png(py, &frame)?;
                     let encoded_len = encoded.as_ref().map(|raw| raw.len()).unwrap_or(0);
                     let _ = encode_guard.finish(encoded_len);
-                    return Ok::<_, PyErr>(encoded);
+                    return Ok(encoded);
                 }
 
-                Ok::<_, PyErr>(None)
-            })
-        })
-        .await
-        .map_err(|e| {
-            EnvError::new(
-                EnvErrorCode::Internal,
-                format!("render task panicked: {}", e),
-            )
-        })?
-        .map_err(|e: PyErr| {
-            EnvError::new(EnvErrorCode::Internal, format!("render failed: {}", e))
-        })?;
+                Ok(None)
+            },
+            internal_env_err,
+        )
+        .await?;
 
         let frame_bytes = result.as_ref().map(|raw| raw.len()).unwrap_or(0);
         let _ = total_guard.finish(frame_bytes);
@@ -703,25 +414,18 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        spawn_py(
+            "close",
+            move |py| {
                 let env_ref = env.bind(py);
                 let call_guard = profiler.start("server.close.python_call");
                 env_ref.call_method0("close")?;
                 let _ = call_guard.finish(0);
-                Ok::<_, PyErr>(())
-            })
-        })
-        .await
-        .map_err(|e| {
-            EnvError::new(
-                EnvErrorCode::Internal,
-                format!("close task panicked: {}", e),
-            )
-        })?
-        .map_err(|e: PyErr| {
-            EnvError::new(EnvErrorCode::Internal, format!("close failed: {}", e))
-        })?;
+                Ok(())
+            },
+            internal_env_err,
+        )
+        .await?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
@@ -741,8 +445,9 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        let (observations, info, obs_bytes) = spawn_py(
+            "reset",
+            move |py| {
                 let env_ref = env.bind(py);
                 let kwargs = PyDict::new(py);
                 if !seeds.is_empty() {
@@ -779,14 +484,11 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok::<_, PyErr>((observations, info, obs_bytes))
-            })
-        })
-        .await
-        .map_err(|e| EnvRuntimeError::Runtime(format!("reset task panicked: {e}")))?
-        .map_err(|e: PyErr| EnvRuntimeError::Runtime(format!("reset failed: {e}")))?;
-
-        let (observations, info, obs_bytes) = result;
+                Ok((observations, info, obs_bytes))
+            },
+            EnvRuntimeError::Runtime,
+        )
+        .await?;
         let _ = total_guard.finish(obs_bytes);
 
         Ok(EnvResetResult {
@@ -814,60 +516,59 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
-                let env_ref = env.bind(py);
+        let (observations, rewards, terminated, truncated, info, action_bytes, obs_bytes) =
+            spawn_py(
+                "step",
+                move |py| {
+                    let env_ref = env.bind(py);
 
-                let decode_guard = profiler.start("server.step.decode_action");
-                let action = batched_space_values_to_py_with_backend(
-                    py,
-                    &actions,
-                    &action_space,
-                    ValueBackend::Auto,
-                )?;
-                let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
-                let _ = decode_guard.finish(action_bytes);
+                    let decode_guard = profiler.start("server.step.decode_action");
+                    let action = batched_space_values_to_py_with_backend(
+                        py,
+                        &actions,
+                        &action_space,
+                        ValueBackend::Auto,
+                    )?;
+                    let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
+                    let _ = decode_guard.finish(action_bytes);
 
-                let call_guard = profiler.start("server.step.python_call");
-                let result = env_ref.call_method1("step", (&action,))?;
-                let _ = call_guard.finish(0);
+                    let call_guard = profiler.start("server.step.python_call");
+                    let result = env_ref.call_method1("step", (&action,))?;
+                    let _ = call_guard.finish(0);
 
-                let (obs, rewards, terminated, truncated, info) =
-                    normalize_vector_step_result(result, num_envs)?;
+                    let (obs, rewards, terminated, truncated, info) =
+                        normalize_vector_step_result(result, num_envs)?;
 
-                let encode_guard = profiler.start("server.step.encode_obs");
-                let observations = py_any_to_batched_space_values_with_backend(
-                    py,
-                    &obs,
-                    &observation_space,
-                    num_envs,
-                    ValueBackend::Auto,
-                )?;
-                let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
-                let _ = encode_guard.finish(obs_bytes);
+                    let encode_guard = profiler.start("server.step.encode_obs");
+                    let observations = py_any_to_batched_space_values_with_backend(
+                        py,
+                        &obs,
+                        &observation_space,
+                        num_envs,
+                        ValueBackend::Auto,
+                    )?;
+                    let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
+                    let _ = encode_guard.finish(obs_bytes);
 
-                let info = if info.is_none() {
-                    None
-                } else {
-                    Some(py_any_to_meta_map(&info)?)
-                };
+                    let info = if info.is_none() {
+                        None
+                    } else {
+                        Some(py_any_to_meta_map(&info)?)
+                    };
 
-                Ok::<_, PyErr>((
-                    observations,
-                    rewards,
-                    terminated,
-                    truncated,
-                    info,
-                    action_bytes,
-                    obs_bytes,
-                ))
-            })
-        })
-        .await
-        .map_err(|e| EnvRuntimeError::Runtime(format!("step task panicked: {e}")))?
-        .map_err(|e: PyErr| EnvRuntimeError::Runtime(format!("step failed: {e}")))?;
-
-        let (observations, rewards, terminated, truncated, info, action_bytes, obs_bytes) = result;
+                    Ok((
+                        observations,
+                        rewards,
+                        terminated,
+                        truncated,
+                        info,
+                        action_bytes,
+                        obs_bytes,
+                    ))
+                },
+                EnvRuntimeError::Runtime,
+            )
+            .await?;
         let _ = total_guard.finish(action_bytes + obs_bytes);
 
         Ok(EnvStepResult {
@@ -890,8 +591,9 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        let result = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        let result = spawn_py(
+            "render",
+            move |py| {
                 let env_ref = env.bind(py);
 
                 if env_ref.hasattr("render")? {
@@ -903,15 +605,14 @@ impl PyEnvironment {
                     let encoded = encode_render_png(py, &frame)?;
                     let encoded_len = encoded.as_ref().map(|raw| raw.len()).unwrap_or(0);
                     let _ = encode_guard.finish(encoded_len);
-                    return Ok::<_, PyErr>(encoded);
+                    return Ok(encoded);
                 }
 
-                Ok::<_, PyErr>(None)
-            })
-        })
-        .await
-        .map_err(|e| EnvRuntimeError::Runtime(format!("render task panicked: {e}")))?
-        .map_err(|e: PyErr| EnvRuntimeError::Runtime(format!("render failed: {e}")))?;
+                Ok(None)
+            },
+            EnvRuntimeError::Runtime,
+        )
+        .await?;
 
         let frame_bytes = result.as_ref().map(|raw| raw.len()).unwrap_or(0);
         let _ = total_guard.finish(frame_bytes);
@@ -930,18 +631,18 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        tokio::task::spawn_blocking(move || {
-            Python::attach(|py| {
+        spawn_py(
+            "close",
+            move |py| {
                 let env_ref = env.bind(py);
                 let call_guard = profiler.start("server.close.python_call");
                 env_ref.call_method0("close")?;
                 let _ = call_guard.finish(0);
-                Ok::<_, PyErr>(())
-            })
-        })
-        .await
-        .map_err(|e| EnvRuntimeError::Runtime(format!("close task panicked: {e}")))?
-        .map_err(|e: PyErr| EnvRuntimeError::Runtime(format!("close failed: {e}")))?;
+                Ok(())
+            },
+            EnvRuntimeError::Runtime,
+        )
+        .await?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
@@ -1067,255 +768,5 @@ impl RLMeshEnv for PyVectorEnv {
 
     async fn close(&mut self, req: CloseRequest) -> Result<EnvCloseResult, EnvRuntimeError> {
         self.0.close_vector(req).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rlmesh_spaces::spaces::{DiscreteBuilder, TupleSpaceBuilder};
-
-    fn discrete_space() -> SpaceSpec {
-        DiscreteBuilder::new(8).build().unwrap()
-    }
-
-    fn tuple_two_space() -> SpaceSpec {
-        TupleSpaceBuilder::new()
-            .with(DiscreteBuilder::new(8).build().unwrap())
-            .with(DiscreteBuilder::new(8).build().unwrap())
-            .build()
-            .unwrap()
-    }
-
-    #[test]
-    fn legacy_reset_obs_only_gets_empty_info() {
-        Python::attach(|py| {
-            let result = 7i64.into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
-
-            assert_eq!(obs.extract::<i64>().unwrap(), 7);
-            assert!(info.cast::<PyDict>().unwrap().is_empty());
-        });
-    }
-
-    #[test]
-    fn modern_reset_tuple_preserves_info() {
-        Python::attach(|py| {
-            let info = PyDict::new(py);
-            info.set_item("seed", 123).unwrap();
-            let result = (7i64, info).into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result, &discrete_space()).unwrap();
-
-            assert_eq!(obs.extract::<i64>().unwrap(), 7);
-            assert_eq!(
-                info.cast::<PyDict>()
-                    .unwrap()
-                    .get_item("seed")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<i64>()
-                    .unwrap(),
-                123
-            );
-        });
-    }
-
-    #[test]
-    fn modern_reset_splits_two_tuple_observation_space() {
-        Python::attach(|py| {
-            let info = PyDict::new(py);
-            info.set_item("seed", 123).unwrap();
-            let result = ((7i64, 3i64), info).into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
-
-            let obs_tuple = obs.cast::<PyTuple>().unwrap();
-            assert_eq!(obs_tuple.len(), 2);
-            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
-            assert_eq!(obs_tuple.get_item(1).unwrap().extract::<i64>().unwrap(), 3);
-            assert_eq!(
-                info.cast::<PyDict>()
-                    .unwrap()
-                    .get_item("seed")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<i64>()
-                    .unwrap(),
-                123
-            );
-        });
-    }
-
-    #[test]
-    fn legacy_obs_only_two_tuple_is_not_split_for_tuple_space() {
-        Python::attach(|py| {
-            let second = PyDict::new(py);
-            second.set_item("pos", 1).unwrap();
-            let result = (7i64, second).into_pyobject(py).unwrap().into_any();
-            let (obs, info) = normalize_reset_result(py, result, &tuple_two_space()).unwrap();
-
-            let obs_tuple = obs.cast::<PyTuple>().unwrap();
-            assert_eq!(obs_tuple.len(), 2);
-            assert_eq!(obs_tuple.get_item(0).unwrap().extract::<i64>().unwrap(), 7);
-            assert!(info.cast::<PyDict>().unwrap().is_empty());
-        });
-    }
-
-    #[test]
-    fn legacy_single_step_done_can_map_to_truncated() {
-        Python::attach(|py| {
-            let info = PyDict::new(py);
-            info.set_item("TimeLimit.truncated", true).unwrap();
-            let result = (1i64, 1.0f64, true, info)
-                .into_pyobject(py)
-                .unwrap()
-                .into_any();
-            let (obs, reward, terminated, truncated, _info) =
-                normalize_single_step_result(result).unwrap();
-
-            assert_eq!(obs.extract::<i64>().unwrap(), 1);
-            assert_eq!(reward, 1.0);
-            assert!(!terminated);
-            assert!(truncated);
-        });
-    }
-
-    #[test]
-    fn legacy_vector_step_done_maps_each_time_limit_flag() {
-        Python::attach(|py| {
-            let info = PyDict::new(py);
-            info.set_item("TimeLimit.truncated", vec![true, false])
-                .unwrap();
-            let result = (vec![1i64, 1], vec![1.0f64, 2.0], vec![true, true], info)
-                .into_pyobject(py)
-                .unwrap()
-                .into_any();
-            let (_obs, rewards, terminated, truncated, _info) =
-                normalize_vector_step_result(result, 2).unwrap();
-
-            assert_eq!(rewards, vec![1.0, 2.0]);
-            assert_eq!(terminated, vec![false, true]);
-            assert_eq!(truncated, vec![true, false]);
-        });
-    }
-
-    /// Build a gymnasium-like env whose `metadata["autoreset_mode"]` is `value`
-    /// (or omit the key entirely when `value` is None).
-    fn env_with_mode<'py>(py: Python<'py>, value: Option<Bound<'py, PyAny>>) -> Bound<'py, PyAny> {
-        let metadata = PyDict::new(py);
-        if let Some(v) = value {
-            metadata.set_item("autoreset_mode", v).unwrap();
-        }
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("metadata", metadata).unwrap();
-        py.import("types")
-            .unwrap()
-            .getattr("SimpleNamespace")
-            .unwrap()
-            .call((), Some(&kwargs))
-            .unwrap()
-    }
-
-    /// A gymnasium `AutoresetMode` enum stand-in: an object exposing `.value`.
-    fn enum_like<'py>(py: Python<'py>, value: Bound<'py, PyAny>) -> Bound<'py, PyAny> {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("value", value).unwrap();
-        py.import("types")
-            .unwrap()
-            .getattr("SimpleNamespace")
-            .unwrap()
-            .call((), Some(&kwargs))
-            .unwrap()
-    }
-
-    fn pystr<'py>(py: Python<'py>, s: &str) -> Bound<'py, PyAny> {
-        s.into_pyobject(py).unwrap().into_any()
-    }
-
-    #[test]
-    fn autoreset_mode_accepts_enum_and_plain_string() {
-        Python::attach(|py| {
-            // gymnasium enum: the canonical string lives in `.value`
-            let env = env_with_mode(py, Some(enum_like(py, pystr(py, "NextStep"))));
-            assert_eq!(
-                derive_autoreset_mode(&env).unwrap(),
-                AutoresetMode::NextStep
-            );
-
-            // wire-degraded plain string
-            let env = env_with_mode(py, Some(pystr(py, "Disabled")));
-            assert_eq!(
-                derive_autoreset_mode(&env).unwrap(),
-                AutoresetMode::Disabled
-            );
-        });
-    }
-
-    #[test]
-    fn autoreset_mode_defaults_disabled_when_absent() {
-        Python::attach(|py| {
-            // metadata present but no autoreset_mode key
-            let env = env_with_mode(py, None);
-            assert_eq!(
-                derive_autoreset_mode(&env).unwrap(),
-                AutoresetMode::Disabled
-            );
-
-            // no metadata attribute at all (scalar/custom env)
-            let scalar = 7i64.into_pyobject(py).unwrap().into_any();
-            assert_eq!(
-                derive_autoreset_mode(&scalar).unwrap(),
-                AutoresetMode::Disabled
-            );
-        });
-    }
-
-    #[test]
-    fn autoreset_mode_rejects_present_none() {
-        Python::attach(|py| {
-            // Key present but explicitly None: a deliberate value held to the
-            // contract, distinct from an absent key. It must error, not silently
-            // downgrade to DISABLED.
-            let env = env_with_mode(py, Some(py.None().into_bound(py)));
-            assert!(
-                derive_autoreset_mode(&env).is_err(),
-                "a present autoreset_mode=None must error, not downgrade to DISABLED"
-            );
-        });
-    }
-
-    #[test]
-    fn autoreset_mode_rejects_present_non_string() {
-        Python::attach(|py| {
-            // a bare int: present, not a string, no `.value`
-            let env = env_with_mode(py, Some(1i64.into_pyobject(py).unwrap().into_any()));
-            assert!(
-                derive_autoreset_mode(&env).is_err(),
-                "a present non-string autoreset_mode must error, not downgrade to DISABLED"
-            );
-
-            // an enum-like whose `.value` is itself non-string
-            let env = env_with_mode(
-                py,
-                Some(enum_like(py, 1i64.into_pyobject(py).unwrap().into_any())),
-            );
-            assert!(derive_autoreset_mode(&env).is_err());
-        });
-    }
-
-    #[test]
-    fn autoreset_mode_rejects_unknown_and_same_step() {
-        Python::attach(|py| {
-            let env = env_with_mode(py, Some(pystr(py, "Bogus")));
-            assert!(
-                derive_autoreset_mode(&env).is_err(),
-                "an unrecognized autoreset_mode string must error, not downgrade to DISABLED"
-            );
-
-            let env = env_with_mode(py, Some(pystr(py, "SameStep")));
-            assert!(
-                derive_autoreset_mode(&env).is_err(),
-                "SAME_STEP is reserved but not yet supported -> error"
-            );
-        });
     }
 }

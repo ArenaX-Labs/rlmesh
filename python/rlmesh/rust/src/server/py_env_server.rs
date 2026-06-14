@@ -27,7 +27,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 use super::py_environment::{PyServerEnv, build_server_env};
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::env_contract_to_py;
-use crate::types::errors::to_py_err;
+use crate::types::to_py_err;
 
 enum BoundListener {
     Tcp(TcpListener),

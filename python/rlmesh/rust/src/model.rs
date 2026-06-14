@@ -21,7 +21,7 @@ use crate::spaces::{
     space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
-use crate::types::errors::to_py_err;
+use crate::types::to_py_err;
 
 struct PyModelHandler {
     predict_fn: Py<PyAny>,
