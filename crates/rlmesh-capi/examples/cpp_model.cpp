@@ -1,10 +1,8 @@
-// A C++ model driving a remote RLMesh environment (connection shape #1).
+// A C++ model driving a remote RLMesh environment — the rlmesh.hpp wrapper, plus
+// a roundtrip through Observation::decode.
 //
-//   c++ -std=c++17 -I<include> model.cpp -lrlmesh_capi -o cpp_model
+//   c++ -std=c++17 -I<include> cpp_model.cpp -lrlmesh_capi -o cpp_model
 //   ./cpp_model tcp://127.0.0.1:50051
-//
-// The policy reads the observation, then emits a zero action sized to the
-// environment's action space — a placeholder for real control code.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +13,6 @@
 
 namespace {
 
-// A trivial "zero policy": build an all-zeros action matching the action space.
 rlmesh::Result<rlmesh::Value> zero_policy(const rlmesh::Observation& obs) {
   const RlmeshSpaceSpec* action = obs.action_space();
   if (action == nullptr) {
@@ -23,7 +20,7 @@ rlmesh::Result<rlmesh::Value> zero_policy(const rlmesh::Observation& obs) {
   }
 
   switch (rlmesh_space_type(action)) {
-    case 1: {  // Box: zeros of the right shape/dtype.
+    case 1: {
       RlmeshDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       std::vector<int64_t> shape(ndim);
@@ -35,7 +32,7 @@ rlmesh::Result<rlmesh::Value> zero_policy(const rlmesh::Observation& obs) {
       std::vector<uint8_t> zeros(numel * rlmesh_dtype_size(dtype), 0);
       return rlmesh::Value::box(zeros.data(), dtype, std::move(shape));
     }
-    case 2:  // Discrete: action 0.
+    case 2:
       return rlmesh::Value::discrete(0);
     default:
       return rlmesh::Error(RLMESH_ERR_INVALID_VALUE, "example handles Box/Discrete only", false);
@@ -52,7 +49,6 @@ int main(int argc, char** argv) {
   if (argc > 2) episodes = std::strtoull(argv[2], nullptr, 10);
 
   auto model = rlmesh::Model::from_predict([](const rlmesh::Observation& obs) {
-    // A real policy would decode and run inference; we just demonstrate access:
     if (auto batch = obs.decode(); batch && batch.value().size() > 0) {
       if (auto tensor = batch.value().tensor_at(0)) {
         std::printf("obs: %d-D tensor, %zu elements\n", tensor.value().ndim(),

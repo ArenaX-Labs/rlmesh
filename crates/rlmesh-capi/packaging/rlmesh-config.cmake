@@ -1,10 +1,6 @@
-# rlmesh-config.cmake — find_package(rlmesh CONFIG) for the prebuilt RLMesh C/C++ ABI.
-#
-# Defines the IMPORTED target rlmesh::rlmesh over the shipped cdylib. This file never
-# builds rlmesh; it points an imported library at lib/librlmesh_capi.so already in the
-# package. Relocatable: every path is derived from this file's own location, so the
-# unpacked tarball works wherever it lives. Shipped verbatim by `mise run pack:capi`
-# alongside the generated rlmesh-config-version.cmake.
+# find_package(rlmesh CONFIG) for the prebuilt RLMesh C/C++ ABI. Never builds
+# rlmesh — points an IMPORTED target at the cdylib already in the package. Every
+# path derives from this file's own location, so the unpacked tarball is relocatable.
 
 get_filename_component(_rlmesh_root "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 include(CMakeFindDependencyMacro)

@@ -1,6 +1,4 @@
-# Formatting for the rlmesh-capi C ABI header, C++ wrapper, and examples.
-# Google base (2-space, left-pointer) with a 100-column limit to match the repo's
-# Rust/Python line width. The formatter owns the style — like rustfmt / ruff.
+# 100-column limit to match the repo's Rust/Python line width.
 BasedOnStyle: Google
 ColumnLimit: 100
 IndentWidth: 2

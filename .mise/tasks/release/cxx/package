@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-#MISE description="Assemble a local LibTorch-style C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple"
+#MISE description="Assemble a local C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple"
 #MISE dir="{{ config_root }}"
 
-# LOCAL packaging only — host triple, no CI / publish / cross-compile. We ASSEMBLE
-# prebuilt artifacts (the cargo-built cdylib + staticlib and the hand-authored
-# headers) and generate the metadata that points consumers at them; CMake is never
-# run as a build system here.
+# Local packaging only — host triple, no CI / publish / cross-compile. Assembles
+# prebuilt artifacts (cargo-built cdylib + staticlib, hand-authored headers) and the
+# metadata pointing consumers at them; CMake is never run as a build system here.
 set -euo pipefail
 
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
 
-# Marketing version (dir/tarball name) is the workspace package version; the numeric
-# ABI triple (CMake compat + .pc Version) drops the -beta suffix to match the header
-# macros / rlmesh_abi_version_*() getters — CMake can't compare a pre-release string.
+# The ABI version (CMake compat + .pc Version) drops the -beta suffix because
+# CMake/pkg-config can't compare a pre-release string; the package dir/tarball keeps
+# the full marketing version.
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"   # 0.1.0-beta.2
 abi="${version%%-*}"                                                     # 0.1.0
 triple="$(rustc -vV | sed -n 's/host: //p')"                            # x86_64-unknown-linux-gnu

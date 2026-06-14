@@ -1,35 +1,28 @@
 #!/usr/bin/env bash
-#MISE description="Build the local C/C++ package (pack:capi), then build the C++ smoke against the INSTALLED package (pkg-config + find_package) and run it end-to-end vs a live env"
-#MISE dir="{{ config_root }}"
-
-# Proves the VENDORING story against the produced package, not the source tree: a
-# consumer that knows only the unpacked tarball builds cpp_model and runs an episode
-# over real gRPC. The pkg-config leg always runs (zig + pkg-config, both local); the
-# find_package leg runs when cmake is on PATH. This is a local/release check — it is
-# deliberately NOT wired into the `test` / `check` aggregates (no CI gate).
+# Builds the C++ smoke against the INSTALLED package, not the source tree: a
+# consumer that knows only the unpacked tarball builds cpp_model and runs an
+# episode over real gRPC. Local/release check — deliberately not in the `test` /
+# `check` aggregates. The pkg-config leg always runs; find_package runs if cmake
+# is on PATH.
 set -euo pipefail
 
-# Compiler is overridable (CI could use clang++); $CXX may carry args ("zig c++"),
-# so it is left unquoted where it is invoked.
 CXX="${CXX:-zig c++}"
-# zig's bundled libc++ emits -Wnullability-completeness noise on <variant> etc.; this
-# smoke isn't a -Werror gate (test:cxx is), so just keep the output clean for zig.
+# zig's bundled libc++ emits -Wnullability-completeness noise on <variant> etc.;
+# this smoke isn't a -Werror gate (test:cxx is), so just keep zig output clean.
 quiet=()
 case "$CXX" in *zig*) quiet=(-Wno-nullability-completeness -Wno-unused-command-line-argument) ;; esac
 
-# 1. Produce the package and locate the tarball.
-mise run pack:capi
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-triple="$(rustc -vV | sed -n 's/host: //p')"
-name="rlmesh-${version}-${triple}"
-tarball="target/capi-pkg/$name.tar.gz"
+# 1. Produce the package, then locate it by globbing its single tarball.
+mise run release:cxx:package
+tarball="$(echo target/capi-pkg/rlmesh-*.tar.gz)"
+name="$(basename "$tarball" .tar.gz)"
 
 # 2. Unpack into a throwaway dir — the consumer sees only this tree.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 tar -C "$tmp" -xzf "$tarball"
 pkg="$tmp/$name"
-src="crates/rlmesh-capi/examples/cpp_model/model.cpp"
+src="crates/rlmesh-capi/examples/cpp_model.cpp"
 
 # The e2e harness binds a live SmokeEnv and drives "<bin> <addr> 1" (one episode).
 cargo build -p rlmesh-capi --bin e2e_harness
@@ -53,4 +46,4 @@ if command -v cmake >/dev/null 2>&1; then
 else
   echo "==> cmake not found — skipping find_package leg (pkg-config leg proved the package)"
 fi
-echo "==> test:cxx-pkg OK"
+echo "==> test:cxx:pkg OK"

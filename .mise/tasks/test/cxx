@@ -3,12 +3,9 @@
 #MISE dir="{{ config_root }}"
 
 # The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
-# hand-authored header + the wrapper are otherwise compiled by nothing.
-#
-# zig builds the rlmesh *library* (and cross-compiles the release artifacts); the
-# *consumer surface* is validated with whatever $CC/$CXX point at — industry-standard
-# clang/gcc in CI (preinstalled there), with zig's bundled clang as the zero-setup
-# local default (this box has no g++/clang++).
+# hand-authored header + the wrapper are otherwise compiled by nothing. zig builds
+# the library; the consumer surface is validated with whatever $CC/$CXX point at —
+# clang/gcc in CI, zig's bundled clang as the zero-setup local default.
 set -euo pipefail
 
 repo_root="$PWD"
@@ -35,8 +32,8 @@ case "$CXX" in *zig*) cxx_quiet=(-Wno-unused-command-line-argument -Wno-nullabil
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# 1. Build the cdylib + the end-to-end harness (one cargo invocation builds both).
-cargo build -p rlmesh-capi --bin e2e_harness
+# 1. Build the cdylib (the consumer links it) + the end-to-end harness.
+cargo build -p rlmesh-capi --lib --bin e2e_harness
 
 # 2. Typecheck the public surface in BOTH languages (the basedpyright analogue):
 #    a compile catches C-vs-C++ / extern "C" divergence in the header.
@@ -51,9 +48,9 @@ printf '#include <rlmesh.hpp>\n' |
 echo "==> build the C and C++ model smokes"
 link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
 $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/c_model/model.c "${link[@]}" -o "$target/c_model_smoke"
+  crates/rlmesh-capi/examples/c_model.c "${link[@]}" -o "$target/c_model_smoke"
 $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
-  crates/rlmesh-capi/examples/cpp_model/model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
+  crates/rlmesh-capi/examples/cpp_model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
 
 # 4. Run each smoke against a live env over real gRPC (the pytest analogue).
 echo "==> C model end-to-end vs a live env"

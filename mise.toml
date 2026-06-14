@@ -107,11 +107,11 @@ run = "uv run ruff format --check"
 
 [tasks."fmt:cxx"]
 description = "Format the C/C++ bindings (clang-format)"
-run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*/*.c*"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/c_model.c crates/rlmesh-capi/examples/cpp_model.cpp"
 
 [tasks."fmt:check:cxx"]
 description = "Check the C/C++ binding formatting"
-run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*/*.c*"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/c_model.c crates/rlmesh-capi/examples/cpp_model.cpp"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -271,6 +271,13 @@ depends = [
 [tasks."test"]
 description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
 depends = ["test:rust", "test:python", "test:cxx"]
+
+# A sibling of the test:cxx file task; can't be a file at test/cxx/pkg because
+# test/cxx is itself a file, so it lives as a referenced script.
+[tasks."test:cxx:pkg"]
+description = "Build the C/C++ package (release:cxx:package), then build the C++ smoke against the INSTALLED package (pkg-config + find_package) and run it end-to-end vs a live env"
+dir = "{{ config_root }}"
+file = "scripts/test-cxx-pkg.sh"
 
 [tasks."test:rust"]
 description = "Run Rust workspace tests"

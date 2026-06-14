@@ -1,17 +1,15 @@
-/* A pure-C model driving a remote RLMesh environment (connection shape #1, no C++).
+/* A pure-C model driving a remote RLMesh environment — rlmesh.h as valid C11,
+ * the C ABI without the C++ wrapper.
  *
- *   zig cc -std=c11 -I<include> model.c -lrlmesh_capi -o c_model
+ *   zig cc -std=c11 -I<include> c_model.c -lrlmesh_capi -o c_model
  *   ./c_model tcp://127.0.0.1:50051 [episodes]
- *
- * Proves rlmesh.h is valid C11 and the C ABI works without the C++ wrapper. The
- * policy emits an all-zeros action sized to the environment's action space. */
+ */
 #include <rlmesh.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/* Zero policy: build an all-zeros action matching the action space, encode it. */
 static RlmeshStatus predict(void* user_data, const RlmeshObservation* obs,
                             RlmeshBytes* out_action) {
   (void)user_data;
@@ -24,7 +22,7 @@ static RlmeshStatus predict(void* user_data, const RlmeshObservation* obs,
 
   RlmeshValue* value = NULL;
   switch (rlmesh_space_type(action)) {
-    case 1: { /* Box: zeros of the right shape/dtype. */
+    case 1: {
       RlmeshDType dtype = rlmesh_space_dtype(action);
       size_t ndim = rlmesh_space_ndim(action);
       int64_t shape[16];
@@ -51,7 +49,7 @@ static RlmeshStatus predict(void* user_data, const RlmeshObservation* obs,
       free(zeros);
       break;
     }
-    case 2: /* Discrete: action 0. */
+    case 2:
       value = rlmesh_value_discrete(0);
       break;
     default:

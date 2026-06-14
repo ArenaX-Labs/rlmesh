@@ -67,10 +67,9 @@ jobs:
       - name: Unit and integration tests
         run: mise run --skip-tools test
 
-      # The `test` aggregate above runs the C/C++ bindings under zig (libc++).
-      # Re-run the consumer surface under the compilers consumers actually use —
-      # both preinstalled on the runner. (MSVC follows with the Windows artifact.)
-      - name: C/C++ bindings — industry-standard compilers
+      # The `test` aggregate above runs the C/C++ bindings under zig (libc++);
+      # re-run the consumer surface under the clang/gcc consumers actually use.
+      - name: C/C++ bindings — clang and gcc
         run: |
           CC=clang CXX=clang++ mise run --skip-tools test:cxx
           CC=gcc CXX=g++ mise run --skip-tools test:cxx
