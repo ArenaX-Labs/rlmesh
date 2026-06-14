@@ -2,7 +2,7 @@
 //!
 //! These `serde` structs are the canonical parse of the recipe wire format; the
 //! Python `rlmesh.recipes` dataclasses are typed views with the identical JSON
-//! shape (snake_case keys, a `kind`-tagged `make` union). [`derive_dockerfile`]
+//! shape (snake_case keys, a `kind`-tagged `make` union). `derive_dockerfile`
 //! implements the build-field -> Dockerfile-instruction contract (spec section
 //! 5A): the neutral conformance surface a non-Python deriver (a future capi
 //! consumer) must reproduce, guarded by golden-file tests.
@@ -18,7 +18,7 @@
 //! build context under [`PROJECT_CONTEXT_DIR`] by the caller.
 //!
 //! System packages (`system`/`system_runtime`) are installed with **apt**, so a
-//! structured build targets a **Debian/Ubuntu** base; [`render_system_packages`] is
+//! structured build targets a **Debian/Ubuntu** base; `render_system_packages` is
 //! the single point to generalize to another distro, and `build.dockerfile` is the
 //! escape hatch for a non-Debian base today.
 
@@ -168,7 +168,7 @@ impl Default for ProjectInstall {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Build {
-    /// `FROM` image (None -> [`DEFAULT_BASE_IMAGE`]).
+    /// `FROM` image (None -> [`crate::DEFAULT_BASE_IMAGE`]).
     pub base: Option<String>,
     /// Registry reuse: the name of a recipe whose build is inlined.
     pub from_recipe: Option<String>,

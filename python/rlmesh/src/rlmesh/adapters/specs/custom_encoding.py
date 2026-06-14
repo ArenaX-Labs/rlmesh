@@ -23,11 +23,13 @@ from ..._rlmesh import ROTATION_DIMS
 from .rotations import RotationEncoding
 
 if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
     from ...numpy import NumpyArray
 
 # One arm of a custom encoding: an in-process callable, or a ``module:callable``
 # entrypoint string (imported only under ``resolve(..., trust_entrypoints=True)``).
-RotationTransform: TypeAlias = Callable[["NumpyArray"], "NumpyArray"]
+RotationTransform: TypeAlias = Callable[["NumpyArray"], "ArrayLike"]
 
 
 @dataclass(frozen=True)
