@@ -61,6 +61,41 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
         .max()
 }
 
+/// The outcome of evaluating a client handshake offer against this build.
+///
+/// Produced by [`evaluate_handshake`], the single source of truth for the
+/// session-compatibility decision shared by the env and model servers — so a
+/// careless edit cannot flip interop on one service only.
+#[derive(Debug, Clone, Copy)]
+pub struct HandshakeCompatibility {
+    /// Whether the client's protocol generation can speak to this server.
+    pub protocol_compatible: bool,
+    /// The negotiated workflow edition, or `None` if there is no mutual edition.
+    pub selected_edition: Option<&'static str>,
+}
+
+impl HandshakeCompatibility {
+    /// Whether the session may proceed: protocol compatible and a mutual edition.
+    pub fn is_compatible(&self) -> bool {
+        self.protocol_compatible && self.selected_edition.is_some()
+    }
+}
+
+/// Evaluate a client's handshake offer — its protocol generation and the
+/// workflow editions it can operate under — against this build's support.
+pub fn evaluate_handshake(
+    client_protocol_generation: &str,
+    offered_workflow_editions: &[String],
+) -> HandshakeCompatibility {
+    HandshakeCompatibility {
+        protocol_compatible: is_protocol_generation_compatible(
+            client_protocol_generation,
+            PROTOCOL_GENERATION,
+        ),
+        selected_edition: negotiate_workflow_edition(offered_workflow_editions),
+    }
+}
+
 /// Return supported workflow editions as owned strings for protobuf messages.
 pub fn supported_workflow_editions() -> Vec<String> {
     SUPPORTED_WORKFLOW_EDITIONS
@@ -111,8 +146,8 @@ pub mod model {
 mod tests {
     use super::{
         CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        SUPPORTED_WORKFLOW_EDITIONS, is_protocol_generation_compatible, negotiate_workflow_edition,
-        supported_workflow_editions,
+        SUPPORTED_WORKFLOW_EDITIONS, evaluate_handshake, is_protocol_generation_compatible,
+        negotiate_workflow_edition, supported_workflow_editions,
     };
 
     fn offer(editions: &[&str]) -> Vec<String> {
@@ -184,5 +219,28 @@ mod tests {
             negotiate_workflow_edition(&offer(&["2026.11", "2027.01"])),
             None
         );
+    }
+
+    #[test]
+    fn evaluate_handshake_decides_session_compatibility() {
+        let current = evaluate_handshake(PROTOCOL_GENERATION, &offer(&[CURRENT_WORKFLOW_EDITION]));
+        assert!(current.protocol_compatible);
+        assert_eq!(current.selected_edition, Some(CURRENT_WORKFLOW_EDITION));
+        assert!(current.is_compatible());
+
+        // Protocol matches but the client predates edition negotiation.
+        let no_editions = evaluate_handshake(PROTOCOL_GENERATION, &[]);
+        assert!(no_editions.protocol_compatible);
+        assert_eq!(no_editions.selected_edition, None);
+        assert!(!no_editions.is_compatible());
+
+        // Protocol matches but there is no mutual edition.
+        assert!(!evaluate_handshake(PROTOCOL_GENERATION, &offer(&["2099.01"])).is_compatible());
+
+        // A protocol mismatch is never compatible, even with a valid edition.
+        let bad_protocol =
+            evaluate_handshake("rlmesh.protocol.v2", &offer(&[CURRENT_WORKFLOW_EDITION]));
+        assert!(!bad_protocol.protocol_compatible);
+        assert!(!bad_protocol.is_compatible());
     }
 }

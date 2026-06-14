@@ -16,7 +16,6 @@ use crate::error::EnvError;
 use rlmesh_proto::env::v1::{EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode};
 
 pub use rlmesh_proto::PROTOCOL_GENERATION;
-pub(crate) use rlmesh_proto::is_protocol_generation_compatible;
 
 pub(crate) fn env_error_to_proto(e: EnvError) -> ProtoEnvError {
     ProtoEnvError {

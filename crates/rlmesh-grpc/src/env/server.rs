@@ -28,10 +28,10 @@ use rlmesh_proto::env::v1::{
 };
 use rlmesh_proto::{
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    negotiate_workflow_edition, supported_workflow_editions,
+    evaluate_handshake, supported_workflow_editions,
 };
 
-use super::{env_error_to_proto, is_protocol_generation_compatible};
+use super::env_error_to_proto;
 
 /// Run an environment operation under a deadline, then drain it before the next
 /// request may access the same environment.
@@ -223,10 +223,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             req.supported_workflow_editions.join(", ")
         );
 
-        let protocol_compatible =
-            is_protocol_generation_compatible(&req.protocol_generation, PROTOCOL_GENERATION);
-        let selected_edition = negotiate_workflow_edition(&req.supported_workflow_editions);
-        let compatible = protocol_compatible && selected_edition.is_some();
+        let compat = evaluate_handshake(&req.protocol_generation, &req.supported_workflow_editions);
+        let compatible = compat.is_compatible();
 
         let env_contract = if compatible {
             let env = self.env.lock().await;
@@ -243,7 +241,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
-            } else if !protocol_compatible {
+            } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
                     req.protocol_generation, PROTOCOL_GENERATION
@@ -266,7 +264,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             ]),
             env_contract,
             selected_workflow_edition: if compatible {
-                selected_edition.unwrap_or_default().to_string()
+                compat.selected_edition.unwrap_or_default().to_string()
             } else {
                 String::new()
             },

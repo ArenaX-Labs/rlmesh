@@ -20,7 +20,7 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::{
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    negotiate_workflow_edition, supported_workflow_editions,
+    evaluate_handshake, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -172,19 +172,18 @@ where
     ) -> std::result::Result<Response<HandshakeResponse>, Status> {
         self.authenticate(&request)?;
         let request = request.into_inner();
-        let protocol_compatible = rlmesh_proto::is_protocol_generation_compatible(
+        let compat = evaluate_handshake(
             &request.protocol_generation,
-            PROTOCOL_GENERATION,
+            &request.supported_workflow_editions,
         );
-        let selected_edition = negotiate_workflow_edition(&request.supported_workflow_editions);
-        let compatible = protocol_compatible && selected_edition.is_some();
+        let compatible = compat.is_compatible();
         Ok(Response::new(HandshakeResponse {
             compatible,
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
-            } else if !protocol_compatible {
+            } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
                     request.protocol_generation, PROTOCOL_GENERATION
@@ -210,7 +209,7 @@ where
                 capabilities::MODEL_CONCURRENT_PREDICT_V1,
             ]),
             selected_workflow_edition: if compatible {
-                selected_edition.unwrap_or_default().to_string()
+                compat.selected_edition.unwrap_or_default().to_string()
             } else {
                 String::new()
             },
