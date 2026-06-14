@@ -67,7 +67,44 @@ def load_env_from_spec(spec: Mapping[str, object]) -> object:
         return load_gym_env(spec)
     if kind == "hf":
         return load_hf_env(spec)
+    if kind == "recipe":
+        return load_recipe_env(spec)
     raise ValueError(f"unsupported bootstrap kind: {kind}")
+
+
+def load_recipe_env(spec: Mapping[str, object]) -> object:
+    """Construct an environment from a recipe bootstrap spec.
+
+    The build phase already shaped the image; this runs the recipe's runtime half
+    (setup + make) in-container via ``rlmesh.recipes.build``. Imported lazily to
+    avoid a recipes <-> bootstrap import cycle.
+    """
+    from rlmesh.recipes import Recipe, build
+
+    document = expect_mapping(spec.get("document"), "bootstrap spec.document")
+    num_envs = _expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = _expect_vectorization_mode(
+        spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
+    )
+    recipe = Recipe.from_dict(document)
+    return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
+
+
+class RecipeConstructionError(RuntimeError, ImportError):
+    """Raised when a recipe's factory entrypoint cannot be loaded.
+
+    Wraps the import/attribute/not-callable boundary of resolving a
+    ``module:callable`` factory, naming the entrypoint and pointing at
+    ``rlmesh.recipes.check``. Errors raised *inside* a successfully-loaded factory
+    are not wrapped.
+
+    It subclasses both ``RuntimeError`` and ``ImportError`` so the nicer message is
+    raised while existing ``except ImportError`` callers of the public
+    ``rlmesh.serving.load_env_entrypoint`` still catch the common bad-entrypoint
+    case (which previously raised a raw ``ImportError``/``AttributeError``/
+    ``TypeError``/``ValueError``). The MRO is well-defined -- both bases derive from
+    ``Exception`` -- so ``raise``/``isinstance`` behave normally.
+    """
 
 
 def load_env_entrypoint(
@@ -76,8 +113,15 @@ def load_env_entrypoint(
     kwargs: Mapping[str, object] | None = None,
 ) -> EnvLike:
     """Load an environment from a ``module:callable`` factory entrypoint."""
-    import_packages(package_names)
-    factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    try:
+        import_packages(package_names)
+        factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise RecipeConstructionError(
+            f"could not load env entrypoint {entrypoint!r}: {exc}. Run "
+            "rlmesh.recipes.check(recipe) to validate the entrypoint shape without "
+            "importing dependencies."
+        ) from exc
     env = factory(**dict(kwargs or {}))
     if not looks_like_env(env):
         raise TypeError(
@@ -477,6 +521,7 @@ def _mapping_to_kwargs(value: object, label: str) -> dict[str, object]:
 
 
 __all__ = [
+    "RecipeConstructionError",
     "expect_mapping",
     "import_gym_modules",
     "import_packages",
@@ -487,6 +532,7 @@ __all__ = [
     "load_gym_env",
     "load_hf_env",
     "load_module_from_path",
+    "load_recipe_env",
     "looks_like_env",
     "make_gym_environment",
     "normalize_hf_env",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from .client import Transport, normalize_bind_address
 from .specs import EnvContract
@@ -17,8 +17,27 @@ except ImportError as e:
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import ServeOptions
+    from rlmesh.recipes import EnvRecipe, Recipe
 
 EnvLike = BaseEnvLike[Any, Any] | VectorEnvLike[Any, Any, Any]
+
+
+def _coerce_env(env: EnvLike | Recipe | type[EnvRecipe]) -> EnvLike:
+    """Build a recipe (or project + build an EnvRecipe) into an env, else pass through."""
+    from rlmesh.recipes import Recipe as _Recipe
+    from rlmesh.recipes import build
+    from rlmesh.recipes._authoring import EnvRecipe, construct_authored, is_env_recipe
+
+    if is_env_recipe(env):
+        return construct_authored(env)
+    if isinstance(env, EnvRecipe):
+        raise TypeError(
+            "pass the EnvRecipe subclass (EnvServer(MyEnv)), not an instance "
+            "(EnvServer(MyEnv()))"
+        )
+    if isinstance(env, _Recipe):
+        return build(env)
+    return cast("EnvLike", env)
 
 
 class EnvServer:
@@ -61,7 +80,7 @@ class EnvServer:
 
     def __init__(
         self,
-        env: EnvLike,
+        env: EnvLike | Recipe | type[EnvRecipe],
         address: str | None = None,
         *,
         host: str | None = None,
@@ -70,6 +89,7 @@ class EnvServer:
         transport: Transport | None = None,
         options: ServeOptions | None = None,
     ) -> None:
+        env = _coerce_env(env)
         normalized_address = normalize_bind_address(
             address,
             host=host,

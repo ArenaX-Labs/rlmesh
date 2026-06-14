@@ -200,34 +200,34 @@ def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
 
 
 def test_load_env_entrypoint_rejects_malformed_entrypoint() -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
 
-    with pytest.raises(ValueError, match="module:callable"):
+    with pytest.raises(RecipeConstructionError, match="module:callable"):
         load_env_entrypoint("fake_env_module")
 
 
 def test_load_env_entrypoint_rejects_missing_callable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
     monkeypatch.setitem(sys.modules, "fake_env_module", module)
 
-    with pytest.raises(AttributeError, match="could not resolve"):
+    with pytest.raises(RecipeConstructionError, match="could not resolve"):
         load_env_entrypoint("fake_env_module:missing")
 
 
 def test_load_env_entrypoint_rejects_non_callable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
     module.value = object()  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "fake_env_module", module)
 
-    with pytest.raises(TypeError, match="did not resolve to a callable"):
+    with pytest.raises(RecipeConstructionError, match="did not resolve to a callable"):
         load_env_entrypoint("fake_env_module:value")
 
 
@@ -386,3 +386,43 @@ def test_parse_entrypoint_rejects_missing_callable() -> None:
 
     with pytest.raises(ValueError, match="module:callable"):
         parse_entrypoint("fake_model_module")
+
+
+def test_recipe_construction_error_is_catchable_as_import_error() -> None:
+    # load_env_entrypoint is public (rlmesh.serving.load_env_entrypoint) and used to
+    # raise a raw ImportError/AttributeError/TypeError/ValueError. The wrapper must
+    # stay catchable by an old-style `except ImportError` so callers do not break.
+    from rlmesh._bootstrap.env import RecipeConstructionError
+
+    assert issubclass(RecipeConstructionError, ImportError)
+    assert issubclass(RecipeConstructionError, RuntimeError)
+
+
+def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
+    # A bad entrypoint that previously surfaced a raw ImportError must still be
+    # catchable as ImportError even though it is now a RecipeConstructionError.
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+
+    with pytest.raises(ImportError) as excinfo:
+        load_env_entrypoint("fake_env_module")
+    assert isinstance(excinfo.value, RecipeConstructionError)
+
+
+def test_load_env_entrypoint_does_not_wrap_factory_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # RecipeConstructionError wraps ONLY the import/resolve boundary; an error
+    # raised inside a successfully-resolved factory must propagate raw.
+    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+
+    module = ModuleType("fake_env_module")
+
+    def boom(**_kwargs: object) -> object:
+        raise RuntimeError("boom-from-make")
+
+    module.boom = boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_env_module", module)
+
+    with pytest.raises(RuntimeError, match="boom-from-make") as excinfo:
+        load_env_entrypoint("fake_env_module:boom")
+    assert not isinstance(excinfo.value, RecipeConstructionError)

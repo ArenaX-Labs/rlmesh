@@ -50,7 +50,7 @@ impl DockerBackend {
     pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
         let image_tag = format!(
             "rlmesh-sandbox-{}:{}",
-            spec.slug(),
+            spec.image_slug(),
             &spec.build_hash[..12.min(spec.build_hash.len())]
         );
 
@@ -90,12 +90,14 @@ impl DockerBackend {
         // runtime parameter never rebuilds the image or invalidates the pip
         // install layer.
         let bootstrap_json = render_bootstrap_json(spec)?;
+        let gpu = spec.recipe.as_ref().is_some_and(|recipe| recipe.build.gpu);
         let output = Command::new("docker")
             .args(docker_run_args(
                 &container_name,
                 &artifact.image_id,
                 &bootstrap_json,
                 std::process::id(),
+                gpu,
             ))
             .output()
             .context("failed to start docker container")?;
@@ -272,6 +274,35 @@ impl DockerBackend {
             )?;
         }
 
+        // Stage the recipe author's ProjectInstall tree into the build context
+        // under the dir the deriver COPYs from. Rejected for Remote provenance
+        // upstream (validate_recipe_build) since there is no host tree to read.
+        if let Some(recipe) = &spec.recipe
+            && let Some(project) = &recipe.build.project
+        {
+            let root = spec.context_root.as_ref().ok_or_else(|| {
+                anyhow!("recipe ProjectInstall requires a context_root to stage from")
+            })?;
+            let src = root.join(&project.src);
+            let dest = tempdir.path().join(crate::recipe::PROJECT_CONTEXT_DIR);
+            copy_tree(&src, &dest)
+                .with_context(|| format!("failed to stage project tree {}", src.display()))?;
+
+            // Also stage each `include` glob match (extra non-code assets, e.g.
+            // `../assets/**` siblings above src), preserving its staged layout so
+            // the single `COPY {PROJECT_CONTEXT_DIR}` carries them. The same
+            // matches are folded into the build hash by recipe_content_digest.
+            let includes = crate::recipe::resolve_includes(&src, root, &project.include)
+                .with_context(|| {
+                    format!("failed to resolve project includes under {}", src.display())
+                })?;
+            for include in includes {
+                copy_tree(&include.path, &dest.join(&include.relative)).with_context(|| {
+                    format!("failed to stage project include {}", include.path.display())
+                })?;
+            }
+        }
+
         let dockerfile = render_dockerfile(spec)?;
         fs::write(tempdir.path().join("Dockerfile"), dockerfile)
             .context("failed to write generated Dockerfile")?;
@@ -320,11 +351,12 @@ struct BootstrapConfigFile {
 enum BootstrapSpec {
     Gym(GymBootstrapSpec),
     Hf(HfBootstrapSpec),
+    Recipe(RecipeBootstrapSpec),
 }
 
 impl BootstrapSpec {
-    fn from_effective_spec(spec: &EffectiveSandboxSpec) -> Self {
-        match &spec.resolved_source {
+    fn from_effective_spec(spec: &EffectiveSandboxSpec) -> Result<Self> {
+        Ok(match &spec.resolved_source {
             ResolvedEnvironmentSourceRef::Gym(source) => Self::Gym(GymBootstrapSpec {
                 env_id: source.env_id.clone(),
                 imports: spec.imports.clone(),
@@ -341,8 +373,34 @@ impl BootstrapSpec {
                 num_envs: spec.num_envs,
                 vectorization_mode: spec.vectorization_mode.as_str().to_string(),
             }),
-        }
+            ResolvedEnvironmentSourceRef::Recipe(_) => {
+                let recipe = spec
+                    .recipe
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("recipe source missing its parsed recipe"))?;
+                Self::Recipe(RecipeBootstrapSpec {
+                    // Only the runtime phase (setup/make/requires/annotations)
+                    // rides the payload; the build phase already shaped the image
+                    // and must not re-ship.
+                    document: runtime_document(recipe)?,
+                    num_envs: spec.num_envs,
+                    vectorization_mode: spec.vectorization_mode.as_str().to_string(),
+                })
+            }
+        })
     }
+}
+
+/// Serialize a recipe's runtime half (build phase stripped) for the bootstrap
+/// payload. The container has already been built, so re-shipping the build keys
+/// would only bloat the payload.
+fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
+    let mut value =
+        serde_json::to_value(recipe).context("failed to serialize recipe bootstrap document")?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("build");
+    }
+    Ok(value)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,6 +419,15 @@ struct HfBootstrapSpec {
     task: Option<String>,
     imports: Vec<String>,
     kwargs: std::collections::BTreeMap<String, serde_json::Value>,
+    num_envs: usize,
+    vectorization_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecipeBootstrapSpec {
+    /// The recipe's runtime half (setup/make/requires/annotations); the build
+    /// phase is stripped because it already shaped the image.
+    document: serde_json::Value,
     num_envs: usize,
     vectorization_mode: String,
 }
@@ -427,9 +494,34 @@ fn confirmed_terminal_summary(inspected: Result<Option<ContainerState>>) -> Opti
 fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     validate_dockerfile_token("base_image", &spec.base_image)?;
 
+    // A recipe source drives the Dockerfile through the language-neutral deriver
+    // (the §5A contract); gym/hf use the fixed preamble below. The deriver is fed
+    // the upstream-resolved base image, rlmesh package, and extra packages (the
+    // same values the build hash covers) rather than re-deriving them, plus the
+    // recipe's provenance so it can skip the implicit unpinned gymnasium for a
+    // Remote recipe (which the reproducibility gate forces fully-pinned).
+    if let Some(recipe) = &spec.recipe {
+        let provenance = match &spec.requested_source {
+            EnvironmentSourceRef::Recipe(reference) => reference.provenance,
+            // gym/hf never reach the deriver (no recipe), but a recipe spec must
+            // carry a Recipe source; treat any other source as the trusted,
+            // gymnasium-injecting path rather than silently dropping it.
+            _ => crate::RecipeProvenance::Installed,
+        };
+        return crate::recipe::derive_dockerfile(
+            recipe,
+            &spec.base_image,
+            &spec.rlmesh_package,
+            &spec.packages,
+            provenance,
+        )
+        .map_err(|err| anyhow!("failed to derive recipe Dockerfile: {err}"));
+    }
+
     let source_copy = match &spec.resolved_source {
         ResolvedEnvironmentSourceRef::Gym(_) => "",
         ResolvedEnvironmentSourceRef::Hf(_) => "COPY source /opt/rlmesh/source\n",
+        ResolvedEnvironmentSourceRef::Recipe(_) => "",
     };
     let package_copy = if spec.rlmesh_package.source_path().is_some() {
         "COPY packages /opt/rlmesh/packages\n"
@@ -464,7 +556,7 @@ ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
 /// `RLMESH_BOOTSTRAP_JSON` env var.
 fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
     serde_json::to_string(&BootstrapConfigFile {
-        spec: BootstrapSpec::from_effective_spec(spec),
+        spec: BootstrapSpec::from_effective_spec(spec)?,
     })
     .context("failed to serialize sandbox bootstrap payload")
 }
@@ -544,11 +636,51 @@ fn format_startup_failure_report(
     )
 }
 
+/// Recursively copy a file or directory tree from `src` to `dest`.
+///
+/// Symlinks WITHIN the tree are SKIPPED, for safety and consistency: a child
+/// entry is classified by its own `entry.file_type()` (which reports the LINK
+/// itself, never dereferencing or erroring on a dangling/looping target), and a
+/// symlink child is skipped outright -- not copied, not recursed into. This
+/// keeps a link that points outside the tree from leaking foreign bytes into the
+/// image and stops a cyclic/dangling link from aborting the build. `fs::metadata`
+/// is used ONLY to classify the passed-in root, so an explicitly-named src that
+/// is itself a symlink-to-dir is still honored; every CHILD is filtered before
+/// any recursion, so metadata never runs on a link. `hash_path_tree` in lib.rs
+/// makes the identical skip decision so the staged bytes equal the hashed bytes.
+/// Linked/out-of-tree assets are carried explicitly via `ProjectInstall::include`
+/// (a guarded, canonicalized glob), not by silently following links here.
+fn copy_tree(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let metadata =
+        fs::metadata(src).with_context(|| format!("failed to stat {}", src.display()))?;
+    if metadata.is_dir() {
+        fs::create_dir_all(dest).with_context(|| format!("failed to create {}", dest.display()))?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            // Skip symlink children identically to hash_path_tree: file_type()
+            // reports the link itself, so a dangling/cyclic/escaping link is
+            // skipped without ever dereferencing it.
+            if entry.file_type()?.is_symlink() {
+                continue;
+            }
+            copy_tree(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+    } else {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dest)
+            .with_context(|| format!("failed to copy {} to {}", src.display(), dest.display()))?;
+    }
+    Ok(())
+}
+
 fn docker_run_args(
     container_name: &str,
     image_id: &str,
     bootstrap_json: &str,
     owner_pid: u32,
+    gpu: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -570,6 +702,16 @@ fn docker_run_args(
         args.extend([
             "--label".to_string(),
             format!("{OWNER_PID_NS_LABEL_KEY}={pid_namespace}"),
+        ]);
+    }
+    if gpu {
+        // GPU access is via the nvidia runtime, not Linux capabilities, so it
+        // coexists with the --cap-drop ALL / no-new-privileges hardening above.
+        args.extend([
+            "--gpus".to_string(),
+            "all".to_string(),
+            "--env".to_string(),
+            "NVIDIA_VISIBLE_DEVICES=all".to_string(),
         ]);
     }
     args.extend([
@@ -832,7 +974,7 @@ mod tests {
 
     use super::{
         BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
-        confirmed_terminal_summary, current_pid_namespace_id, docker_run_args,
+        confirmed_terminal_summary, copy_tree, current_pid_namespace_id, docker_run_args,
         format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
         parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
         render_dockerfile, shell_quote, tail_text,
@@ -864,6 +1006,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -883,7 +1027,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -895,7 +1039,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -904,7 +1048,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -916,7 +1060,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_stamp_owner_pid_label() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         // The owner-pid label must be present so the reaper can tell a live
         // owner's container apart from an orphan.
@@ -932,7 +1076,7 @@ mod tests {
         let Some(pid_namespace) = current_pid_namespace_id() else {
             return;
         };
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
 
         assert!(
             args.iter()
@@ -948,6 +1092,7 @@ mod tests {
             "sha256:abc",
             "{\"spec\":{\"kind\":\"gym\"}}",
             4242,
+            false,
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -975,6 +1120,8 @@ mod tests {
             kwargs,
             num_envs: 4,
             vectorization_mode: VectorizationMode::Async,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1194,6 +1341,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1224,6 +1373,8 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1255,10 +1406,13 @@ mod tests {
             kwargs: BTreeMap::new(),
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
-        let BootstrapSpec::Hf(bootstrap) = BootstrapSpec::from_effective_spec(&spec) else {
+        let BootstrapSpec::Hf(bootstrap) = BootstrapSpec::from_effective_spec(&spec).unwrap()
+        else {
             panic!("expected HF bootstrap spec");
         };
 
@@ -1288,14 +1442,218 @@ mod tests {
             kwargs,
             num_envs: 1,
             vectorization_mode: VectorizationMode::Sync,
+            recipe: None,
+            context_root: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
         match &spec.resolved_source {
             ResolvedEnvironmentSourceRef::Gym(source) => assert_eq!(source.env_id, "CartPole-v1"),
-            ResolvedEnvironmentSourceRef::Hf(_) => panic!("expected gym source"),
+            _ => panic!("expected gym source"),
         }
         assert_eq!(spec.imports, vec!["my_envs"]);
         assert_eq!(spec.kwargs["render_mode"], json!("rgb_array"));
+    }
+
+    fn recipe_spec(document: serde_json::Value) -> EffectiveSandboxSpec {
+        let parsed = crate::recipe::Recipe::from_json(&document.to_string()).unwrap();
+        let reference = crate::RecipeSourceRef {
+            name: "acme/env".to_string(),
+            document,
+            provenance: crate::RecipeProvenance::Installed,
+        };
+        EffectiveSandboxSpec {
+            schema_version: crate::BOOTSTRAP_SCHEMA_VERSION,
+            requested_source: EnvironmentSourceRef::Recipe(reference.clone()),
+            resolved_source: ResolvedEnvironmentSourceRef::Recipe(reference),
+            base_image: parsed
+                .build
+                .base
+                .clone()
+                .unwrap_or_else(|| crate::DEFAULT_BASE_IMAGE.to_string()),
+            rlmesh_package: pip_rlmesh_package(),
+            packages: vec![],
+            imports: vec![],
+            kwargs: BTreeMap::new(),
+            num_envs: 1,
+            vectorization_mode: VectorizationMode::Sync,
+            recipe: Some(parsed),
+            context_root: None,
+            build_hash: "abcdef0123456789".to_string(),
+        }
+    }
+
+    #[test]
+    fn docker_run_args_add_gpu_flags_iff_gpu() {
+        let without = docker_run_args("n", "img", "{}", 1, false);
+        assert!(!without.iter().any(|arg| arg == "--gpus"));
+
+        let with = docker_run_args("n", "img", "{}", 1, true);
+        let idx = with.iter().position(|arg| arg == "--gpus").expect("--gpus");
+        assert_eq!(with[idx + 1], "all");
+        assert!(with.iter().any(|arg| arg == "NVIDIA_VISIBLE_DEVICES=all"));
+        // GPU access must not weaken the existing hardening.
+        assert!(with.iter().any(|arg| arg == "--cap-drop"));
+    }
+
+    #[test]
+    fn recipe_spec_renders_via_the_deriver() {
+        let spec = recipe_spec(json!({
+            "name": "acme/env",
+            "make": {"kind": "gym", "env_id": "CartPole-v1"},
+            "build": {"pip": [{"packages": ["pygame"]}]}
+        }));
+        let dockerfile = render_dockerfile(&spec).unwrap();
+        assert!(dockerfile.contains("FROM python:3.11-slim"));
+        assert!(dockerfile.contains("'pygame'"));
+        assert!(
+            dockerfile
+                .contains("ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]")
+        );
+    }
+
+    #[test]
+    fn recipe_bootstrap_strips_the_build_phase() {
+        let spec = recipe_spec(json!({
+            "name": "acme/env",
+            "make": {"kind": "gym", "env_id": "CartPole-v1"},
+            "build": {"pip": [{"packages": ["pygame"]}]},
+            "setup": {"env": {"K": "V"}}
+        }));
+        let BootstrapSpec::Recipe(bootstrap) = BootstrapSpec::from_effective_spec(&spec).unwrap()
+        else {
+            panic!("expected recipe bootstrap spec");
+        };
+        let object = bootstrap.document.as_object().unwrap();
+        assert!(
+            !object.contains_key("build"),
+            "build phase must not re-ship"
+        );
+        assert!(object.contains_key("make"));
+        assert!(object.contains_key("setup"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_a_symlinked_directory() {
+        use std::fs;
+
+        // A symlinked directory inside the source tree is SKIPPED (its real
+        // target is still staged under its own name, but the link entry is not).
+        let src_root = tempfile::tempdir().unwrap();
+        let real_dir = src_root.path().join("real");
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::write(real_dir.join("asset.txt"), b"payload").unwrap();
+        std::os::unix::fs::symlink(&real_dir, src_root.path().join("link")).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a symlinked dir must be skipped, not error");
+
+        // The real directory is staged; the symlink name is NOT.
+        assert_eq!(
+            fs::read(out.join("real/asset.txt")).unwrap(),
+            b"payload".to_vec()
+        );
+        assert!(
+            !out.join("link").exists(),
+            "the symlinked dir must not be staged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_skips_a_symlinked_file() {
+        use std::fs;
+
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("target.txt"), b"hello").unwrap();
+        std::os::unix::fs::symlink(
+            src_root.path().join("target.txt"),
+            src_root.path().join("alias.txt"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a symlinked file must be skipped, not error");
+
+        // The real file is staged; the symlink alias is NOT.
+        assert_eq!(fs::read(out.join("target.txt")).unwrap(), b"hello".to_vec());
+        assert!(
+            !out.join("alias.txt").exists(),
+            "the symlinked file must not be staged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_abort_on_a_cyclic_symlink() {
+        use std::fs;
+
+        // A directory self-link (link -> .) would make a follow-links walker hit
+        // a FilesystemLoop and abort; skipping the link entry stages cleanly.
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(".", src_root.path().join("link")).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a cyclic symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(!out.join("link").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_abort_on_a_dangling_symlink() {
+        use std::fs;
+
+        // A dangling link (-> a nonexistent target) would make a follow-links
+        // walker hit NotFound and abort; skipping the link entry stages cleanly.
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(
+            src_root.path().join("does-not-exist"),
+            src_root.path().join("link"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("a dangling symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(!out.join("link").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_tree_does_not_stage_an_escaping_symlink() {
+        use std::fs;
+
+        // A link to a file OUTSIDE the staged root must not leak that file into
+        // the image: the link entry is skipped, so its target is absent.
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), b"secret").unwrap();
+
+        let src_root = tempfile::tempdir().unwrap();
+        fs::write(src_root.path().join("keep.txt"), b"keep").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            src_root.path().join("leak"),
+        )
+        .unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let out = dest.path().join("staged");
+        copy_tree(src_root.path(), &out).expect("an escaping symlink must not abort the copy");
+
+        assert_eq!(fs::read(out.join("keep.txt")).unwrap(), b"keep".to_vec());
+        assert!(
+            !out.join("leak").exists(),
+            "an out-of-tree symlink target must not be staged"
+        );
     }
 }

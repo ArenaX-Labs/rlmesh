@@ -37,7 +37,9 @@ Use that boundary to:
 
 - run a model against an environment without merging their dependency stacks;
 - run multiple environment endpoints at the same time;
-- reuse existing Gymnasium registrations, wrappers, and environment objects with small changes.
+- reuse existing Gymnasium registrations, wrappers, and environment objects with small changes;
+- name an environment's construction as a {doc}`recipe <user-guide/recipes>` and rebuild it the same
+  way locally or in a sandbox.
 
 SAI examples appear where they demonstrate optional environment packages. The RLMesh docs focus on
 the open-source framework and the protocol boundary it exposes.
@@ -62,6 +64,7 @@ user-guide/serving-environments
 user-guide/remote-clients
 user-guide/backends
 user-guide/sandbox
+user-guide/recipes
 ```
 
 ```{toctree}

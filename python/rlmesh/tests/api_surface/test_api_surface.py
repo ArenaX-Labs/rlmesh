@@ -5,13 +5,18 @@ def test_root_namespace_is_small() -> None:
     import rlmesh
 
     assert rlmesh.__all__ == [
+        "EnvRecipe",
         "EnvServer",
         "Model",
+        "Recipe",
         "RemoteEnv",
         "RemoteVectorEnv",
         "ServeOptions",
         "Tensor",
         "__version__",
+        "make",
+        "recipes",
+        "register",
         "serving",
         "spaces",
         "types",

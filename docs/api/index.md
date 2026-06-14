@@ -11,6 +11,7 @@ Use this when you need exact imports, methods, and backend behavior.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`models`: model worker wrappers.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
+- {doc}`recipes`: experimental environment recipes and the registry.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
 - {doc}`types`: structural protocols and shared value aliases.
 
@@ -35,4 +36,5 @@ jax
 spaces
 types
 sandbox
+recipes
 ```

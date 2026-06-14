@@ -75,6 +75,15 @@ pub enum SandboxError {
         /// Human-readable description of the docker failure.
         message: String,
     },
+
+    /// A recipe's build phase was rejected by the provenance/trust gate (e.g. a
+    /// `Remote` recipe with unpinned fetches, an unpinned `build.pip`, or
+    /// `build.commands`).
+    #[error("recipe build policy violation: {message}")]
+    RecipeBuildPolicy {
+        /// Human-readable description of the policy violation.
+        message: String,
+    },
 }
 
 impl SandboxError {
@@ -110,6 +119,12 @@ impl SandboxError {
 
     pub(crate) fn container_startup(err: impl std::fmt::Display) -> Self {
         Self::ContainerStartup {
+            message: err.to_string(),
+        }
+    }
+
+    pub(crate) fn recipe_build_policy(err: impl std::fmt::Display) -> Self {
+        Self::RecipeBuildPolicy {
             message: err.to_string(),
         }
     }
