@@ -90,16 +90,12 @@ def build(
     apply_setup(recipe.setup)
 
     if isinstance(make, GymMake):
-        # Registration side effects -- gym only.
         import_packages(recipe.requires.imports)
         gym_modules = import_gym_modules()
         if not gym_modules:
             raise ImportError(
                 "gymnasium or gym must be installed to build a gym recipe"
             )
-        # Mirror load_gym_env: try every module in preference order, moving on when
-        # one cannot find the env id, so an env registered only in legacy gym still
-        # resolves when gymnasium is also installed.
         errors: list[tuple[str, Exception]] = []
         env = None
         for gym_module in gym_modules:
@@ -123,11 +119,6 @@ def build(
                 f"failed to create gym environment {make.env_id!r} with {names}"
             ) from (errors[0][1] if errors else None)
     elif isinstance(make, PyMake):
-        # NO pre-import: the factory body is the sole import sequencer. The loader
-        # imports only the (empty) package list, then resolves and calls the factory.
-        # A single env (num_envs == 1) is fine regardless of vectorization_mode --
-        # there is no vectorization with one env, and the bootstrap always passes
-        # vectorization_mode="sync". Only a genuine vector request is rejected.
         if num_envs != 1:
             raise TypeError(
                 "num_envs/vectorization_mode apply to gym sources only; a py factory "
@@ -172,7 +163,5 @@ def _publish_env_tags(env: object, adapter: object) -> None:
         )
         return
     env_tags_cls = adapters.EnvTags
-    # ``recipe.adapter`` is a raw JSON Mapping after from_dict, or an EnvTags instance
-    # when constructed in-process. Rehydrate the former before publishing.
     tags = adapter if isinstance(adapter, env_tags_cls) else env_tags_cls.from_dict(adapter)
     adapters.tag(env, tags)

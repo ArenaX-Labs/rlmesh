@@ -81,7 +81,6 @@ class RecipeValidationError(ValueError):
     """
 
 
-# ─────────────────────────── token validators (spec 7.1C) ───────────────────────────
 # Per-field allowlists, each with its own legal charset. The *primary* safety
 # boundary is exec-form argument passing in the renderer; these allowlists are
 # belt-and-suspenders that reject shell metacharacters, newlines, and option
@@ -171,7 +170,6 @@ def _check_pip_package(value: str, field_name: str) -> None:
         )
 
 
-# ─────────────────────────── JSON-only kwargs (spec 7.1B) ───────────────────────────
 # ``kwargs`` are inherited by the Rust serde boundary as serde_json::Value, so
 # they must be JSON-only. Scalars are checked by *exact* type (not isinstance) so
 # numpy scalars -- np.float64 subclasses float -- are rejected, not silently cast.
@@ -241,9 +239,6 @@ def _as_str_tuple(value: Sequence[str], field_name: str) -> tuple[str, ...]:
             f"pass [{value!r}] for a single entry"
         )
     return tuple(_require_str(item, f"{field_name}[]") for item in value)
-
-
-# ─────────────────────────── PHASE 3: make -- the factory ───────────────────────────
 
 
 @dataclass(frozen=True)
@@ -334,9 +329,6 @@ class HfMake:
 
 
 Make = GymMake | PyMake | HfMake
-
-
-# ─────────────────────────── PHASE 1: build -- derives the Dockerfile ───────────────────────────
 
 
 @dataclass(frozen=True)
@@ -544,7 +536,7 @@ class Build:
         )
         object.__setattr__(self, "env", _clean_str_map(self.env, "Build.env"))
 
-        # spec 7.1H: the verbatim-Dockerfile trapdoor is mutually exclusive with
+        # The verbatim-Dockerfile trapdoor is mutually exclusive with
         # every field that only affects the *derived* Dockerfile. The Rust deriver's
         # verbatim trapdoor emits the body as-is and IGNORES the resolved base_image
         # and installer, so base/installer/env/pythonpath/run_as would be silently
@@ -578,9 +570,6 @@ class Build:
                     "pythonpath/run_as/installer); put those directives in the "
                     "verbatim Dockerfile body"
                 )
-
-
-# ─────────────────────────── PHASE 2: setup -- construct-time DATA only ───────────────────────────
 
 
 @dataclass(frozen=True)
@@ -641,8 +630,6 @@ class Requires:
             self, "imports", _as_str_tuple(self.imports, "Requires.imports")
         )
 
-
-# ─────────────────────── model-recipe additions ───────────────────────
 
 _ARTIFACT_URI_SCHEMES: Final = ("hf://", "gs://", "s3://", "https://", "http://", "file://")
 
@@ -745,9 +732,6 @@ class RuntimeReserved:
         return cls(**{k: v for k, v in data.items() if k in known})
 
 
-# ─────────────────────────── the envelope ───────────────────────────
-
-
 @dataclass(frozen=True)
 class Recipe:
     """An inert environment recipe.
@@ -772,8 +756,8 @@ class Recipe:
     # __post_init__; serde flattens it to a bare JSON dict.
     adapter: EnvTags | ModelSpec | Mapping[str, object] | None = None
     recipe_version: int = RECIPE_VERSION
-    # ── appended, keyword-friendly, defaulted (never inserted mid-list: positional
-    #    construction + the Rust serde golden order stay stable) ──
+    # Appended, keyword-friendly, defaulted; never inserted mid-list so positional
+    # construction + the Rust serde golden order stay stable.
     kind: RecipeKind = "env"
     inputs: tuple[ArtifactInput, ...] = ()
     runtime: RuntimeReserved = field(default_factory=RuntimeReserved)
@@ -787,7 +771,7 @@ class Recipe:
             )
         _check_token(name, _RECIPE_NAME, "Recipe.name")
 
-        # spec 7.1D: requires.imports is a hard error for PyMake.
+        # requires.imports is a hard error for PyMake.
         if isinstance(self.make, PyMake) and self.requires.imports:
             raise RecipeValidationError(
                 "requires.imports is forbidden for PyMake; the py factory body owns "
@@ -825,8 +809,6 @@ class Recipe:
                     f"Recipe.adapter must be a {expected.__name__} for kind={self.kind!r}; "
                     f"got {type(adapter).__name__}"
                 )
-
-    # ─────────────────────────── serde ───────────────────────────
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical JSON-shaped mapping for this recipe."""
@@ -888,9 +870,6 @@ class Recipe:
 
         loaded: object = json.loads(payload)
         return cls.from_dict(_require_map(loaded, "recipe JSON"))
-
-
-# ─────────────────────────── serde helpers ───────────────────────────
 
 
 def _recipe_kind_from(value: object) -> RecipeKind:
@@ -1151,9 +1130,6 @@ def _setup_from_dict(value: object) -> Setup:
             )
         )
     return Setup(env=_str_str_map(value.get("env")), files=tuple(files))
-
-
-# ─────────────────────────── primitive JSON coercion ───────────────────────────
 
 
 def _expect_str(value: object, label: str) -> str:

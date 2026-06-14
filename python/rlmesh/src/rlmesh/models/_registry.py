@@ -20,8 +20,6 @@ from ..recipes._schema import ArtifactInput
 
 __all__ = ["lookup_model_class", "register"]
 
-# name -> live ModelRecipe subclass, so ModelServer(name) constructs in-process
-# (the local path) without importing by entrypoint string.
 _MODEL_CLASSES: dict[str, type[ModelRecipe]] = {}
 
 
@@ -116,8 +114,6 @@ def _flat_model_class(
     class_name = _class_name(name)
 
     if hf is not None:
-        # Auto-declare the weights mount; a per-run artifacts= override replaces it
-        # by name, so swapping the checkpoint at launch takes effect.
         rev = f"@{revision}" if revision else ""
         weights = ArtifactInput(
             "weights", "/rlmesh/input/model/weights", uri=f"hf://{hf}{rev}"
@@ -125,7 +121,6 @@ def _flat_model_class(
         inputs = _merge_by_name((weights,), artifacts)
 
         def load_fn(self: ModelRecipe) -> None:
-            # Load from the mount the resolver materialized, not a second download.
             self._policy = hf_load(  # type: ignore[attr-defined]
                 hf,
                 revision=revision,
@@ -157,8 +152,6 @@ def _flat_model_class(
         "__qualname__": class_name,
     }
     cls = type(class_name, (ModelRecipe,), namespace)
-    # Bind the class into this module so its projected entrypoint imports in a fresh
-    # process or sandbox; the in-process path uses _MODEL_CLASSES directly.
     setattr(sys.modules[__name__], class_name, cls)
     return cls
 

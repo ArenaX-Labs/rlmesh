@@ -245,7 +245,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         unchanged so the existing Rust batching path handles it.
         """
         bridge = self._bridge
-        # The identity (rlmesh-native) bridge has no array leaves to fast-path.
         if bridge.name == "rlmesh":
             return actions
         if self._space_spec("action").kind in ("dict", "tuple", "text"):

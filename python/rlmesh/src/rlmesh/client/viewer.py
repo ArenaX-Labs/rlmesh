@@ -201,7 +201,6 @@ class ViewerMixin:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
-            # Wait until the pipe is writable again (or the timeout elapses).
             _, writable, _ = select.select([], [fileno], [], remaining)
             if not writable:
                 return False

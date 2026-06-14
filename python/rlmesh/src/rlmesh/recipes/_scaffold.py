@@ -22,7 +22,6 @@ __all__ = [
     "scaffold_recipe",
 ]
 
-# Markers in a dependency set that imply a CUDA/Isaac GPU build.
 _GPU_MARKERS = ("isaacsim", "isaaclab", "cuda", "torch")
 _DEFAULT_GPU_BASE = "nvidia/cuda:12.4.1-runtime-ubuntu22.04"
 _PKG_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
