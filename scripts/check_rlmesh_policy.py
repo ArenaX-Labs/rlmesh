@@ -20,6 +20,7 @@ VERSION_RE = re.compile(
     r"(?:\+[A-Za-z0-9.-]+)?$",
     re.IGNORECASE,
 )
+STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
 STR_SLICE_CONST_RE = re.compile(
     r"pub const (?P<name>[A-Z0-9_]+): &\[&str\]\s*=\s*&\[(?P<values>[^\]]*)\];",
@@ -333,6 +334,25 @@ def _validate_workflow_editions(
                 f"{prefix}: stable releases must not ship provisional editions; "
                 "seal the edition first"
             )
+
+        # Sealing is a stable-only act: a sealed edition records the stable
+        # (non-prerelease) version that sealed it and is retained forever, so a
+        # newer build keeps offering it to still negotiate with an older peer.
+        # Provisional editions carry no sealed_in and may change freely.
+        sealed_in = entry.get("sealed_in")
+        if status == "sealed":
+            if not isinstance(sealed_in, str) or not STABLE_VERSION_RE.match(sealed_in):
+                errors.append(
+                    f"{prefix}.sealed_in must be the stable (non-prerelease) version "
+                    "that sealed the edition"
+                )
+            if edition not in (supported if isinstance(supported, list) else []):
+                errors.append(
+                    f"{prefix}: a sealed edition must stay in [workflow].supported_editions "
+                    "(retained forever, never pruned)"
+                )
+        elif sealed_in is not None:
+            errors.append(f"{prefix}.sealed_in is only recorded once the edition is sealed")
 
         spec = entry.get("spec")
         if not isinstance(spec, str):

@@ -48,16 +48,22 @@ a schedule.
 
 ## Support Window
 
-Servers and clients each support a set of editions. During the beta the supported set may be pruned
-to the current edition only. A deprecation window for older editions will be chosen when a second
-edition is first minted.
+A sealed edition is retained forever. Once a stable release seals an edition, every later release —
+including betas developing the next edition — keeps offering and accepting it, so a newer build
+still negotiates it with an older peer. Sealed editions are never pruned; that retention is what
+preserves newer-to-older interoperability. A provisional edition (one no stable release has sealed)
+may be changed or dropped freely, since it is content-pinned and interoperates only between
+identical builds.
 
 ## Enforcement
 
 `rlmesh.toml` records every known edition under `[workflow.editions."<edition>"]` with its `status`
-(`provisional` or `sealed`) and `spec` path; sealed editions also record `spec_sha256`.
-`scripts/check_rlmesh_policy.py` verifies that spec documents exist, that sealed specs match their
-recorded checksum, and that stable releases ship no provisional editions.
+(`provisional` or `sealed`), `spec` path, and `spec_sha256`; a sealed edition also records
+`sealed_in`, the stable release that sealed it. `scripts/check_rlmesh_policy.py` verifies that spec
+documents exist and match their recorded checksum, that the `rlmesh-proto` constants agree with the
+manifest, that stable releases ship no provisional editions, that a sealed edition was sealed by a
+stable (non-prerelease) version and stays in the supported set, and that
+`SUPPORTED_WORKFLOW_EDITIONS` matches the manifest.
 
 ```{toctree}
 :maxdepth: 1
