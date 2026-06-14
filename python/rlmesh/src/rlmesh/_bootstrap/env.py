@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import importlib.util
 import inspect
+import json
+import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -14,6 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 from rlmesh._bootstrap.entrypoint import resolve_entrypoint
 
 if TYPE_CHECKING:
+    from rlmesh.recipes import Recipe
     from rlmesh.server import EnvLike
 
 
@@ -60,19 +64,130 @@ def load_environment(
     raise ImportError(msg)
 
 
-def load_env_from_spec(spec: Mapping[str, object]) -> object:
-    """Load an environment from a sandbox bootstrap spec."""
+class BootstrapUsageError(ValueError):
+    """Bad sandbox-bootstrap CLI usage (argv vs env-var source mismatch)."""
+
+
+def resolve_bootstrap_spec(argv: Sequence[str], *, prog: str) -> Mapping[str, object]:
+    """Resolve the bootstrap spec from its source, in precedence order.
+
+    ``RLMESH_BOOTSTRAP_JSON`` (inline payload, wins) > ``RLMESH_RECIPE_PATH`` (the
+    baked self-describing recipe.json) > a ``bootstrap.json`` path passed as the
+    sole argument. The first and last carry a ``{"spec": ...}`` payload; the baked
+    recipe.json is a bare recipe document, wrapped here into a ``kind="recipe"``
+    spec (its ``num_envs``/``vectorization_mode`` come from the flat
+    ``RLMESH_NUM_ENVS``/``RLMESH_VECTORIZATION_MODE`` vars, applied by the caller).
+    """
+    inline = os.environ.get("RLMESH_BOOTSTRAP_JSON")
+    if inline is not None:
+        if argv:
+            raise BootstrapUsageError(
+                f"usage: {prog} (set RLMESH_BOOTSTRAP_JSON, no arguments)"
+            )
+        payload = expect_mapping(cast(object, json.loads(inline)), "bootstrap payload")
+        return expect_mapping(payload.get("spec"), "bootstrap spec")
+
+    recipe_path = os.environ.get("RLMESH_RECIPE_PATH")
+    if recipe_path is not None:
+        if argv:
+            raise BootstrapUsageError(
+                f"usage: {prog} (set RLMESH_RECIPE_PATH, no arguments)"
+            )
+        document = cast(
+            object, json.loads(Path(recipe_path).read_text(encoding="utf-8"))
+        )
+        return {
+            "kind": "recipe",
+            "document": expect_mapping(document, "recipe document"),
+        }
+
+    if len(argv) != 1:
+        raise BootstrapUsageError(
+            f"usage: {prog} <bootstrap.json> "
+            "(or set RLMESH_BOOTSTRAP_JSON / RLMESH_RECIPE_PATH)"
+        )
+    payload = expect_mapping(
+        cast(object, json.loads(Path(argv[0]).read_text(encoding="utf-8"))),
+        "bootstrap payload",
+    )
+    return expect_mapping(payload.get("spec"), "bootstrap spec")
+
+
+def member_params_from_env() -> tuple[dict[str, object], dict[str, object]]:
+    """Parse ``RLMESH_PARAMS_JSON`` into ``(setup_env, kwargs)`` (empty when unset).
+
+    The member selector ``{"setup_env": {...}, "kwargs": {...}}`` is layered over a
+    recipe's ``setup.env`` (declared keys only) and ``make.kwargs`` at startup, so
+    one image serves any declared member.
+    """
+    raw = os.environ.get("RLMESH_PARAMS_JSON")
+    if not raw:
+        return {}, {}
+    data = expect_mapping(cast(object, json.loads(raw)), "RLMESH_PARAMS_JSON")
+    return (
+        _mapping_to_kwargs(data.get("setup_env"), "RLMESH_PARAMS_JSON.setup_env"),
+        _mapping_to_kwargs(data.get("kwargs"), "RLMESH_PARAMS_JSON.kwargs"),
+    )
+
+
+def apply_member_params(
+    recipe: Recipe,
+    *,
+    setup_env: Mapping[str, object] | None = None,
+    kwargs: Mapping[str, object] | None = None,
+) -> Recipe:
+    """Layer the member selector over a recipe, returning a new frozen recipe.
+
+    ``setup_env`` overrides ``setup.env`` only for keys the recipe DECLARES in
+    ``setup.params``; undeclared keys are silently ignored -- the managed shim
+    deliberately emits extra selector keys that stay as flat env. ``kwargs`` merges
+    over ``make.kwargs``.
+    """
+    new = recipe
+    if setup_env:
+        setup = new.setup
+        declared = set(setup.params)
+        applied = {
+            key: str(value) for key, value in setup_env.items() if key in declared
+        }
+        if applied:
+            merged = {**setup.env, **applied}
+            new = dataclasses.replace(new, setup=dataclasses.replace(setup, env=merged))
+    if kwargs and new.make is not None:
+        merged_kwargs = {**dict(new.make.kwargs), **kwargs}
+        new = dataclasses.replace(
+            new, make=dataclasses.replace(new.make, kwargs=merged_kwargs)
+        )
+    return new
+
+
+def load_env_from_spec(
+    spec: Mapping[str, object],
+    *,
+    setup_env: Mapping[str, object] | None = None,
+    kwargs: Mapping[str, object] | None = None,
+) -> object:
+    """Load an environment from a sandbox bootstrap spec.
+
+    ``setup_env``/``kwargs`` are the parsed ``RLMESH_PARAMS_JSON`` member selector;
+    they apply to recipe sources only (gym/hf sources predate it and ignore them).
+    """
     kind = _expect_str(spec.get("kind"), "bootstrap spec.kind")
     if kind == "gym":
         return load_gym_env(spec)
     if kind == "hf":
         return load_hf_env(spec)
     if kind == "recipe":
-        return load_recipe_env(spec)
+        return load_recipe_env(spec, setup_env=setup_env, kwargs=kwargs)
     raise ValueError(f"unsupported bootstrap kind: {kind}")
 
 
-def load_recipe_env(spec: Mapping[str, object]) -> object:
+def load_recipe_env(
+    spec: Mapping[str, object],
+    *,
+    setup_env: Mapping[str, object] | None = None,
+    kwargs: Mapping[str, object] | None = None,
+) -> object:
     """Construct an environment from a recipe bootstrap spec.
 
     The build phase already shaped the image; this runs the recipe's runtime half
@@ -86,7 +201,9 @@ def load_recipe_env(spec: Mapping[str, object]) -> object:
     vectorization_mode = _expect_vectorization_mode(
         spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
     )
-    recipe = Recipe.from_dict(document)
+    recipe = apply_member_params(
+        Recipe.from_dict(document), setup_env=setup_env, kwargs=kwargs
+    )
     return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
 
 
@@ -521,7 +638,9 @@ def _mapping_to_kwargs(value: object, label: str) -> dict[str, object]:
 
 
 __all__ = [
+    "BootstrapUsageError",
     "RecipeConstructionError",
+    "apply_member_params",
     "expect_mapping",
     "import_gym_modules",
     "import_packages",
@@ -535,6 +654,8 @@ __all__ = [
     "load_recipe_env",
     "looks_like_env",
     "make_gym_environment",
+    "member_params_from_env",
     "normalize_hf_env",
+    "resolve_bootstrap_spec",
     "select_mapping_item",
 ]

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
-from pathlib import Path
 from typing import cast
 
-from .env import expect_mapping, load_env_from_spec
+from .env import (
+    BootstrapUsageError,
+    load_env_from_spec,
+    member_params_from_env,
+    resolve_bootstrap_spec,
+)
 
 
 def main(
@@ -18,47 +21,51 @@ def main(
 ) -> int:
     """Serve a sandbox environment from a bootstrap payload.
 
-    The payload is supplied either inline via the ``RLMESH_BOOTSTRAP_JSON``
-    environment variable (the sandbox runner delivers runtime-only parameters
-    this way so they never need to be baked into the image) or, for backward
-    compatibility, as a path to a JSON file passed as the sole argument.
+    The recipe is resolved (in precedence order) from inline
+    ``RLMESH_BOOTSTRAP_JSON``, the baked ``RLMESH_RECIPE_PATH`` recipe.json, or a
+    ``bootstrap.json`` path argument. ``RLMESH_PARAMS_JSON`` selects a member and
+    ``RLMESH_NUM_ENVS``/``RLMESH_VECTORIZATION_MODE`` set the eval shape at run time.
     """
     argv = sys.argv[1:] if argv is None else argv
 
-    inline = os.environ.get("RLMESH_BOOTSTRAP_JSON")
-    if inline is not None:
-        if argv:
-            print(
-                f"usage: {prog} (set RLMESH_BOOTSTRAP_JSON, no arguments)",
-                file=sys.stderr,
-            )
-            return 2
-        raw = inline
-    else:
-        if len(argv) != 1:
-            print(
-                f"usage: {prog} <bootstrap.json> (or set RLMESH_BOOTSTRAP_JSON)",
-                file=sys.stderr,
-            )
-            return 2
-        raw = Path(argv[0]).read_text(encoding="utf-8")
+    try:
+        spec = dict(resolve_bootstrap_spec(argv, prog=prog))
+    except BootstrapUsageError as exc:
+        print(exc, file=sys.stderr)
+        return 2
 
-    payload_data = cast(object, json.loads(raw))
-    payload = expect_mapping(payload_data, "bootstrap payload")
-    spec = expect_mapping(payload.get("spec"), "bootstrap spec")
+    # Flat eval knobs override whatever the spec carried (gym/hf/recipe all read
+    # num_envs/vectorization_mode from the spec).
+    num_envs = os.environ.get("RLMESH_NUM_ENVS")
+    if num_envs:
+        spec["num_envs"] = int(num_envs)
+    vectorization_mode = os.environ.get("RLMESH_VECTORIZATION_MODE")
+    if vectorization_mode:
+        spec["vectorization_mode"] = vectorization_mode
+
+    setup_env, kwargs = member_params_from_env()
 
     try:
         from rlmesh import EnvServer
         from rlmesh.server import EnvLike as ServedEnv
 
-        env = cast(ServedEnv, load_env_from_spec(spec))
-        # Canonical bind contract: RLMESH_ENV_ADDRESS (a full bind address) takes
-        # precedence; RLMESH_ENV_PORT remains a port-only fallback on 0.0.0.0.
-        address = os.environ.get("RLMESH_ENV_ADDRESS")
+        env = cast(
+            ServedEnv, load_env_from_spec(spec, setup_env=setup_env, kwargs=kwargs)
+        )
+        # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
+        # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
+        # deprecated aliases read after the new names.
+        address = os.environ.get("RLMESH_ADDRESS") or os.environ.get(
+            "RLMESH_ENV_ADDRESS"
+        )
         if address:
             server = EnvServer(env, address)
         else:
-            port = int(os.environ.get("RLMESH_ENV_PORT", "50051"))
+            port = int(
+                os.environ.get("RLMESH_PORT")
+                or os.environ.get("RLMESH_ENV_PORT")
+                or "50051"
+            )
             server = EnvServer(env, host="0.0.0.0", port=port)
         print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()

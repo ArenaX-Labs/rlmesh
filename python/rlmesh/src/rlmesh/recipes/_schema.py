@@ -605,11 +605,18 @@ class Setup:
 
     env: Mapping[str, str] = field(default_factory=_empty_str_map)
     files: Sequence[FileWrite] = ()
+    # Allowlist of setup.env keys a member may override at runtime via
+    # RLMESH_PARAMS_JSON; build-hash-excluded, so one image serves every member.
+    params: Sequence[str] = ()
 
     def __post_init__(self) -> None:
-        """Validate env var names and normalize the file-write sequence."""
+        """Validate env var names / params and normalize the file-write sequence."""
         object.__setattr__(self, "env", _clean_str_map(self.env, "Setup.env"))
         object.__setattr__(self, "files", tuple(self.files))
+        params = _as_str_tuple(self.params, "Setup.params")
+        for name in params:
+            _check_token(name, _ENV_NAME, "Setup.params[]")
+        object.__setattr__(self, "params", params)
 
 
 @dataclass(frozen=True)
@@ -631,7 +638,14 @@ class Requires:
         )
 
 
-_ARTIFACT_URI_SCHEMES: Final = ("hf://", "gs://", "s3://", "https://", "http://", "file://")
+_ARTIFACT_URI_SCHEMES: Final = (
+    "hf://",
+    "gs://",
+    "s3://",
+    "https://",
+    "http://",
+    "file://",
+)
 
 
 @dataclass(frozen=True)
@@ -658,7 +672,9 @@ class ArtifactInput:
     def __post_init__(self) -> None:
         """Validate the handle name, mount path, uri scheme, and include globs."""
         _check_token(
-            _require_str(self.name, "ArtifactInput.name"), _RECIPE_NAME, "ArtifactInput.name"
+            _require_str(self.name, "ArtifactInput.name"),
+            _RECIPE_NAME,
+            "ArtifactInput.name",
         )
         _check_token(
             _require_str(self.target_path, "ArtifactInput.target_path"),
@@ -853,7 +869,7 @@ class Recipe:
             requires=Requires(imports=_str_list(_get(payload, "requires", "imports"))),
             summary=_opt_str(payload.get("summary"), "summary"),
             # read-alias: documents serialized before the rename carry "annotations"
-            #. New documents emit "adapter".
+            # . New documents emit "adapter".
             adapter=_opt_map(payload.get("adapter", payload.get("annotations"))),
             recipe_version=_expect_int(
                 payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
@@ -1047,6 +1063,7 @@ def _setup_to_dict(setup: Setup) -> dict[str, object]:
             {"path": fw.path, "contents": fw.contents, "if_absent": fw.if_absent}
             for fw in setup.files
         ],
+        "params": list(setup.params),
     }
 
 
@@ -1129,7 +1146,11 @@ def _setup_from_dict(value: object) -> Setup:
                 ),
             )
         )
-    return Setup(env=_str_str_map(value.get("env")), files=tuple(files))
+    return Setup(
+        env=_str_str_map(value.get("env")),
+        files=tuple(files),
+        params=_str_list(value.get("params")),
+    )
 
 
 def _expect_str(value: object, label: str) -> str:

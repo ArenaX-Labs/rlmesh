@@ -426,3 +426,67 @@ def test_load_env_entrypoint_does_not_wrap_factory_errors(
     with pytest.raises(RuntimeError, match="boom-from-make") as excinfo:
         load_env_entrypoint("fake_env_module:boom")
     assert not isinstance(excinfo.value, RecipeConstructionError)
+
+
+def test_apply_member_params_applies_declared_and_ignores_undeclared() -> None:
+    # RLMESH_PARAMS_JSON.setup_env overrides only keys the recipe DECLARES in
+    # setup.params; undeclared keys (the shim emits extras as flat env) are dropped.
+    # kwargs merge over make.kwargs. The frozen recipe is replaced, not mutated.
+    from rlmesh._bootstrap.env import apply_member_params
+    from rlmesh.recipes import Recipe
+    from rlmesh.recipes._schema import GymMake, Setup
+
+    recipe = Recipe(
+        name="a/b",
+        make=GymMake(env_id="E-v0"),
+        setup=Setup(env={"LIBERO_TASK": "default"}, params=("LIBERO_TASK",)),
+    )
+    updated = apply_member_params(
+        recipe,
+        setup_env={"LIBERO_TASK": "libero_10/3", "LIBERO_CAMERA_WIDTH": "256"},
+        kwargs={"render_mode": "rgb_array"},
+    )
+
+    assert updated.setup.env["LIBERO_TASK"] == "libero_10/3"
+    assert "LIBERO_CAMERA_WIDTH" not in updated.setup.env
+    assert isinstance(updated.make, GymMake)
+    assert updated.make.kwargs == {"render_mode": "rgb_array"}
+    assert recipe.setup.env["LIBERO_TASK"] == "default"
+
+
+def test_resolve_bootstrap_spec_reads_baked_recipe_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A self-describing image: RLMESH_RECIPE_PATH points at a bare recipe doc, which
+    # is wrapped into a kind="recipe" spec.
+    from rlmesh._bootstrap.env import resolve_bootstrap_spec
+
+    recipe_json = tmp_path / "recipe.json"
+    recipe_json.write_text(
+        '{"name":"a/b","make":{"kind":"gym","env_id":"E-v0"}}', encoding="utf-8"
+    )
+    monkeypatch.delenv("RLMESH_BOOTSTRAP_JSON", raising=False)
+    monkeypatch.setenv("RLMESH_RECIPE_PATH", str(recipe_json))
+
+    spec = resolve_bootstrap_spec([], prog="x")
+
+    assert spec["kind"] == "recipe"
+    document = spec["document"]
+    assert isinstance(document, dict)
+    assert document["name"] == "a/b"
+
+
+def test_resolve_bootstrap_spec_inline_wins_over_baked(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Locked precedence: inline RLMESH_BOOTSTRAP_JSON wins over a baked recipe.json.
+    from rlmesh._bootstrap.env import resolve_bootstrap_spec
+
+    monkeypatch.setenv("RLMESH_RECIPE_PATH", str(tmp_path / "unread.json"))
+    monkeypatch.setenv(
+        "RLMESH_BOOTSTRAP_JSON", '{"spec":{"kind":"gym","env_id":"E-v0"}}'
+    )
+
+    spec = resolve_bootstrap_spec([], prog="x")
+
+    assert spec["kind"] == "gym"
