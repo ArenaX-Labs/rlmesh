@@ -1,11 +1,11 @@
 """Runtime artifact mounts: the resolver, the rlmesh cache, ``hf_load``, ``input_path``.
 
-Weights are ALWAYS a runtime mount (FINAL_API_SPEC §4.4) -- never baked into the
-image. This module resolves a declared :class:`ArtifactInput` to a concrete local
-path, backed by a single content-addressed cache rooted at ``$RLMESH_CACHE_DIR``
-(default ``~/.cache/rlmesh/artifacts``, XDG-aware). ``hf_load``'s no-``local_dir``
-path resolves through this SAME cache -- never the ambient ``HF_HOME`` -- so a repo
-downloaded once serves every run, local and sandboxed alike.
+A model's weights are a runtime mount, never baked into its image. This module
+resolves a declared :class:`ArtifactInput` to a local path, backed by one
+content-addressed cache under ``$RLMESH_CACHE_DIR`` (default
+``~/.cache/rlmesh/artifacts``, XDG-aware). ``hf_load`` without ``local_dir``
+resolves through that same cache rather than the ambient ``HF_HOME``, so a repo
+downloaded once serves every run, local or sandboxed.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 __all__ = ["cache_root", "enter_recipe_context", "hf_load", "input_path", "resolve_inputs"]
 
-# The recipe whose load() is currently running, so the module-level input_path()
-# convenience can find its mounts (mirrors self.input_path()).
+# The recipe whose load() is running, so the module-level input_path() can find
+# its mounts without an explicit self.
 _CURRENT_RECIPE: contextvars.ContextVar[ModelRecipe | None] = contextvars.ContextVar(
     "rlmesh_current_recipe", default=None
 )
@@ -33,7 +33,7 @@ _HF_SCHEME = "hf://"
 
 
 def cache_root() -> Path:
-    """The rlmesh artifact-cache root (``$RLMESH_CACHE_DIR`` or an XDG default)."""
+    """The rlmesh artifact-cache root: ``$RLMESH_CACHE_DIR`` or an XDG default."""
     explicit = os.environ.get("RLMESH_CACHE_DIR")
     if explicit:
         return Path(explicit).expanduser()
@@ -53,11 +53,10 @@ def enter_recipe_context(instance: ModelRecipe) -> Iterator[None]:
 
 
 def input_path(name: str) -> str:
-    """Resolve a declared ``ArtifactInput`` name to its local path (module-level form).
+    """Resolve a declared ``ArtifactInput`` name to its local path.
 
-    Convenience for use inside ``load()`` -- equivalent to ``self.input_path(name)``.
-    Only valid while a ``ModelRecipe.load()`` is running (it reads the recipe bound
-    by :func:`enter_recipe_context`).
+    The module-level form of ``self.input_path(name)``, valid only while a
+    ``ModelRecipe.load()`` is running.
     """
     recipe = _CURRENT_RECIPE.get()
     if recipe is None:
@@ -76,14 +75,11 @@ def resolve_inputs(
 ) -> dict[str, str]:
     """Resolve every declared mount to a local path, keyed by name.
 
-    In-container: each mount is already materialized at ``target_path`` by the
-    bootstrap, so the path is ``target_path``. Locally: ``local_dir`` wins, else
-    the ``uri`` is resolved through the rlmesh cache. A required mount that cannot
-    be resolved raises; an optional one is skipped.
-
-    ``overrides`` are per-run mounts (``ModelServer``/``SandboxModel`` ``artifacts=``):
-    one matching a declared ``name`` replaces it (checkpoint selection -- the launch
-    arg wins, FINAL_API_SPEC §4.4); a new name adds a mount.
+    In a container, each mount is already materialized at its ``target_path``.
+    Locally, ``local_dir`` wins, else the ``uri`` resolves through the cache; a
+    required mount that cannot be resolved raises, an optional one is skipped.
+    An override matching a declared name replaces it (the run-time checkpoint
+    selection wins); a new name adds a mount.
     """
     override_by_name = {a.name: a for a in overrides}
     resolved: dict[str, str] = {}
@@ -118,7 +114,6 @@ def _resolve_one(artifact: ArtifactInput, *, in_container: bool) -> str | None:
 
 
 def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
-    """Resolve a mount uri to a local directory in the rlmesh cache."""
     if uri.startswith("file://"):
         return uri[len("file://") :]
     if uri.startswith(_HF_SCHEME):
@@ -133,7 +128,6 @@ def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
 def _snapshot_hf(
     repo: str, revision: str | None, *, allow_patterns: list[str] | None = None
 ) -> str:
-    """Download an HF repo snapshot into the rlmesh cache and return the local dir."""
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:  # pragma: no cover - optional dep
@@ -162,15 +156,13 @@ def hf_load(
     local_dir: str | None = None,
     **kwargs: Any,
 ) -> Any:
-    """Batteries-included HuggingFace load -- the one-liner you call inside ``load()``.
+    """Load a HuggingFace policy from inside ``load()``.
 
-    NOT a factory arm: just a helper (FINAL_API_SPEC §3.4). ``loader`` is an explicit
-    ``module:Class`` string (declare-do-not-detect), e.g. ``"transformers:AutoModel"``
-    or ``"lerobot:SmolVLAPolicy"``. When ``local_dir`` is set (the ArtifactInput-mount
-    case) weights load from that dir and ``repo`` is only a loader hint; otherwise
-    ``repo@revision`` is resolved through the rlmesh artifact cache (not ``HF_HOME``).
-
-    Returns the model, or ``(model, processor)`` when ``processor`` is requested.
+    ``loader`` is an explicit ``module:Class`` string, e.g.
+    ``"transformers:AutoModel"`` or ``"lerobot:SmolVLAPolicy"``. With ``local_dir``
+    set, weights load from that directory and ``repo`` is only a loader hint;
+    otherwise ``repo@revision`` resolves through the rlmesh cache. Returns the
+    model, or ``(model, processor)`` when ``processor`` is given.
     """
     source = local_dir if local_dir is not None else _snapshot_hf(repo, revision)
     model = _from_pretrained(loader, source, trust_remote_code=trust_remote_code, **kwargs)

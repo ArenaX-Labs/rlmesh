@@ -163,7 +163,7 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    """Deprecation shim: ``IOAdapter`` was renamed to ``Adapter`` (FINAL_API_SPEC §4.1)."""
+    """Deprecation shim: ``IOAdapter`` was renamed to ``Adapter``."""
     if name == "IOAdapter":
         import warnings
 

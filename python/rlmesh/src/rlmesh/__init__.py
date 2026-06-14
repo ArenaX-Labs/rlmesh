@@ -32,7 +32,7 @@ def register(source: Any, **kwargs: Any) -> Any:
 
     Routes to the env registry (``EnvRecipe``/``Recipe``/``gym=``/``factory=``) or
     the model registry (``ModelRecipe``/``hf=``/``load=``/``spec=``). The keyword
-    sets are disjoint (FINAL_API_SPEC §6.5), so dispatch is unambiguous.
+    sets are disjoint, so dispatch is unambiguous.
     """
     is_model = _is_model_recipe(source) or any(
         key in kwargs for key in ("hf", "load", "spec")

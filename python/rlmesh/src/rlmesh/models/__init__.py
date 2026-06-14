@@ -1,20 +1,16 @@
 """Model recipes: author a policy and its construction document in one class.
 
-The model-side sibling of ``rlmesh.recipes`` (FINAL_API_SPEC §3). The headline
-authoring surface is :class:`ModelRecipe` -- one class IS the policy: set
-``name``/``build``/``spec``/``inputs``, write ``load()`` (build the model into
-``self``) and ``predict()``, and optionally ``reset()``/``close()``. Connect it to
-an env with :class:`ModelServer`, the consumer-side mirror of ``EnvServer``.
-
-Surface (~mirrors ``rlmesh.recipes`` / ``EnvServer`` one-to-one):
+The model-side sibling of ``rlmesh.recipes``. :class:`ModelRecipe` is the policy:
+set ``name``/``build``/``spec``/``inputs``, write ``load()`` and ``predict()``,
+and optionally ``reset()``/``close()``. :class:`ModelServer` connects it to an env.
 
 * :class:`ModelRecipe` -- author a policy.
-* :class:`ModelServer` -- serve it / drive it against an env (returns a
+* :class:`ModelServer` -- serve it, or drive it against an env (returns a
   :class:`RunResult`).
 * :class:`ArtifactInput` / :func:`input_path` -- runtime weight mounts.
-* :func:`hf_load` -- the HuggingFace one-liner you call inside ``load()``.
-* :func:`register` -- register a model by class or flat ``hf=``/``load=`` sugar.
-* :data:`DELEGATED` -- the "this model self-adapts, do not resolve" sentinel.
+* :func:`hf_load` -- load a HuggingFace policy inside ``load()``.
+* :func:`register` -- register a model by class or flat ``hf=``/``load=``.
+* :data:`DELEGATED` -- the self-adapting-model sentinel.
 """
 
 from __future__ import annotations

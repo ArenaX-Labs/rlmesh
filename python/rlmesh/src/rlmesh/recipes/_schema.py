@@ -53,14 +53,14 @@ __all__ = [
     "Setup",
 ]
 
-# Bumped 1 -> 2 with the kind/inputs/runtime/adapter additions (FINAL_API_SPEC §2.2).
+# Bumped 1 -> 2 with the kind/inputs/runtime/adapter additions.
 # Back-compat is by serde alias + defaults, so v1 and v2 documents are wire-compatible;
 # the bump is a soft signal, not a hard gate.
 RECIPE_VERSION: Final = 2
 
 # The single discriminator that distinguishes an env recipe document from a model
 # recipe document. Selects the container ENTRYPOINT/bootstrap and gates a small set
-# of cross-kind validations. Deliberately excluded from build_hash (FINAL_API_SPEC §7.6).
+# of cross-kind validations. Deliberately excluded from build_hash.
 RecipeKind = Literal["env", "model"]
 
 
@@ -649,7 +649,7 @@ _ARTIFACT_URI_SCHEMES: Final = ("hf://", "gs://", "s3://", "https://", "http://"
 
 @dataclass(frozen=True)
 class ArtifactInput:
-    """A runtime weight/asset mount for a model recipe (FINAL_API_SPEC §4.4).
+    """A runtime weight/asset mount for a model recipe.
 
     Weights are ALWAYS a runtime mount -- never ``build.fetch``, never baked into the
     image. ``build_hash`` excludes runtime params, so one image serves every checkpoint.
@@ -692,7 +692,7 @@ class ArtifactInput:
 
 @dataclass(frozen=True)
 class RuntimeReserved:
-    """Reserved, inert home for every deferred feature (FINAL_API_SPEC §8).
+    """Reserved, inert home for every deferred feature.
 
     Every default is ``None`` (a no-op today); populating any field later is additive
     and excluded from ``build_hash``. Serializes to absent/null when empty, so existing
@@ -710,7 +710,7 @@ class RuntimeReserved:
     determinism: Literal["off", "seeded", "strict"] | None = None
     # multi-modal perturbation taxonomy (a JSON bag until/unless it earns a schema)
     perturbation: Mapping[str, object] | None = None
-    # the §6.2 compromise: per-lane stateful-adapter affinity
+    # per-lane stateful-adapter affinity
     lane_affinity: bool | None = None
 
     def __post_init__(self) -> None:
@@ -767,7 +767,7 @@ class Recipe:
     summary: str | None = None
     # The published adapter content: an env recipe's EnvTags or a model recipe's
     # ModelSpec (or a raw JSON Mapping after from_dict). Renamed from ``annotations``
-    # (read-aliased for back-compat, FINAL_API_SPEC §9). A dataclass instance is
+    # (read-aliased for back-compat). A dataclass instance is
     # accepted at construction and lazily type-checked against ``kind`` in
     # __post_init__; serde flattens it to a bare JSON dict.
     adapter: EnvTags | ModelSpec | Mapping[str, object] | None = None
@@ -794,7 +794,7 @@ class Recipe:
                 "its own import sequence (spec 7.1D)"
             )
 
-        # Cross-kind rules (FINAL_API_SPEC §2.2).
+        # Cross-kind rules.
         if self.kind == "model":
             if not (self.make is None or isinstance(self.make, PyMake)):
                 raise RecipeValidationError(
@@ -808,7 +808,7 @@ class Recipe:
         object.__setattr__(self, "inputs", tuple(self.inputs))
 
         # adapter: a raw Mapping is JSON-cleaned; a dataclass instance is type-checked
-        # against the kind (and serialized to a bare dict later, FINAL_API_SPEC §5).
+        # against the kind (and serialized to a bare dict later).
         adapter = self.adapter
         if adapter is None:
             pass
@@ -843,7 +843,7 @@ class Recipe:
             # off "annotations"; emit it too so a recipe that round-trips through the
             # current Rust core does not lose its published tags before the in-container
             # publish path runs. Removed once the Rust field is renamed with a serde
-            # alias (FINAL_API_SPEC §7.4/§9.3). `from_dict` reads "adapter" first.
+            # alias. `from_dict` reads "adapter" first.
             "annotations": adapter,
             "recipe_version": self.recipe_version,
             "kind": self.kind,
@@ -871,7 +871,7 @@ class Recipe:
             requires=Requires(imports=_str_list(_get(payload, "requires", "imports"))),
             summary=_opt_str(payload.get("summary"), "summary"),
             # read-alias: documents serialized before the rename carry "annotations"
-            # (FINAL_API_SPEC §9.3). New documents emit "adapter".
+            #. New documents emit "adapter".
             adapter=_opt_map(payload.get("adapter", payload.get("annotations"))),
             recipe_version=_expect_int(
                 payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
@@ -909,7 +909,7 @@ def _adapter_to_dict(adapter: object) -> dict[str, object] | None:
 
     A raw Mapping passes through verbatim; a dataclass (``EnvTags``/``ModelSpec``)
     serializes via its ``to_dict()`` -- NOT ``to_metadata()`` (that double-nests under
-    the wire key; the recipe envelope carries the bare spec, FINAL_API_SPEC §5).
+    the wire key; the recipe envelope carries the bare spec).
     """
     if adapter is None:
         return None
@@ -955,7 +955,7 @@ def _artifact_from_dict(value: object) -> ArtifactInput:
 
 
 def _runtime_to_dict(runtime: RuntimeReserved) -> dict[str, object] | None:
-    """The reserved-features struct serializes to ``None`` when inert (FINAL_API_SPEC §8)."""
+    """The reserved-features struct serializes to ``None`` when inert."""
     return runtime.to_dict()
 
 

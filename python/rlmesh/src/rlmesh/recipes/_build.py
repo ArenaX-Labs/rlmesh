@@ -147,7 +147,7 @@ def build(
 
 
 def _publish_env_tags(env: object, adapter: object) -> None:
-    """Publish a recipe-launched env's :class:`EnvTags` (forward path, FINAL_API_SPEC §7.1).
+    """Publish a recipe-launched env's :class:`EnvTags` (the forward path).
 
     This runs ``join()`` against the env's real spaces and fails loud. The adapters
     layer is resolved dynamically so the recipe layer does not hard-depend on it.

@@ -1,18 +1,17 @@
 """Class-style authoring: subclass ``ModelRecipe`` to define a policy.
 
-The model-side sibling of :class:`EnvRecipe`. The headline shape is that **one
-class IS the policy** (FINAL_API_SPEC §3.2): set the recipe DATA
-(``name``/``build``/``setup``/``spec``/``inputs``), then write ``load()`` (build
-the model into ``self``) and ``predict()`` (one observation -> one action). The
-instance lives as the policy for the whole eval. ``reset()`` (per-episode) and
-``close()`` (teardown) are optional hooks.
+The model-side sibling of :class:`EnvRecipe`. One class is the policy: set the
+recipe data (``name``/``build``/``setup``/``spec``/``inputs``), then write
+``load()`` to build the model into ``self`` and ``predict()`` to map one
+observation to one action. The instance lives as the policy for the whole eval;
+``reset()`` and ``close()`` are optional hooks.
 
-The projection (:meth:`ModelRecipe.to_recipe`) is execution-free and import-safe,
-exactly like ``EnvRecipe.to_recipe``: it reads class attributes and computes the
-``module:Class._rlmesh_load`` entrypoint string without importing the model's
-heavy dependencies. Put every heavy import inside ``load()``.
+``to_recipe()`` projects the class to an inert :class:`Recipe` without importing
+the model's dependencies -- it reads class attributes and computes the
+``module:Class._rlmesh_load`` entrypoint string. Keep every heavy import inside
+``load()``.
 
-Because a method's return annotation is evaluated at class-definition time, every
+A method's return annotation is evaluated at class-definition time, so every
 module defining a ``ModelRecipe`` subclass must start with
 ``from __future__ import annotations``.
 """
@@ -37,17 +36,15 @@ __all__ = [
     "is_model_recipe",
 ]
 
-#: The classmethod the projected entrypoint resolves to; runs the load lifecycle.
 _LOAD = "_rlmesh_load"
 
 
 class _Delegated:
-    """Sentinel: this model adapts its own observations -- do NOT resolve an adapter.
+    """Sentinel: the model adapts its own observations, so do not resolve an adapter.
 
-    Distinct from ``spec=None`` (FINAL_API_SPEC §12, blocker B9): ``None`` means
-    "no spec given" and, against a *tagged* env, is treated as a likely bug (the
-    server fails loud); ``DELEGATED`` is the explicit, sanctioned "I self-adapt"
-    contract (e.g. GR00T's internal modality transform).
+    ``spec=None`` means no spec was given, and against a tagged env that is treated
+    as a likely bug. ``DELEGATED`` is the explicit "I self-adapt" contract for a
+    model like GR00T that runs its own modality transform.
     """
 
     _instance: ClassVar[_Delegated | None] = None
@@ -61,7 +58,6 @@ class _Delegated:
         return "DELEGATED"
 
 
-#: Public sentinel for ``ModelRecipe.spec`` / ``ModelServer(spec=)``.
 DELEGATED = _Delegated()
 
 
@@ -92,60 +88,58 @@ class ModelRecipe:
 
         rlmesh.register(SmolVLA)
 
-    The class is referenced by name from the container; only ``load()``/
-    ``predict()``/``reset()``/``close()`` run there, and only the inert projected
-    recipe travels.
+    The container references the class by name; only ``load()``/``predict()``/
+    ``reset()``/``close()`` run there, and only the inert projected recipe travels.
     """
 
-    #: ``namespace/name`` identity. Required to register/serve/sandbox.
+    #: ``namespace/name`` identity. Required to register, serve, or sandbox.
     name: ClassVar[str]
-    #: The build phase (image). Shared phase-1 vocabulary with ``EnvRecipe``.
+    #: The build phase. Shares the phase-1 vocabulary with ``EnvRecipe``.
     build: ClassVar[Build] = Build()
-    #: Construct-time DATA (env vars, files), applied before ``load()``.
+    #: Construct-time data (env vars, files), applied before ``load()``.
     setup: ClassVar[Setup] = Setup()
-    #: The full model-side adapter content. ``None`` = no adaptation; ``DELEGATED``
-    #: = the model self-adapts (do not resolve); a ``ModelSpec`` = resolve against
-    #: the env's tags.
+    #: The model's adapter content. ``None`` for no adaptation, ``DELEGATED`` when
+    #: the model self-adapts, or a ``ModelSpec`` to resolve against the env's tags.
     spec: ClassVar[Any] = None
-    #: Runtime weight/asset mounts (FINAL_API_SPEC §4.4). Never baked into the image.
+    #: Runtime weight/asset mounts. Never baked into the image.
     inputs: ClassVar[tuple[ArtifactInput, ...]] = ()
 
     def load(self) -> None:
-        """Build the model INTO ``self``. Heavy imports here; runs once per process.
+        """Build the model into ``self``, with heavy imports here; runs once per process.
 
-        Resolve mounted weights with ``self.input_path(name)``. No return value:
-        ``self`` IS the policy.
+        Resolve mounted weights with ``self.input_path(name)``. There is no return
+        value -- ``self`` is the policy.
         """
         raise NotImplementedError(
             f"{type(self).__name__} must define load(self) -> None"
         )
 
     def predict(self, observation: Any) -> Any:
-        """Map one (already adapter-transformed) observation to one action.
+        """Map one observation to one action.
 
-        With a ``spec``, ``observation`` is in the model's declared input format
-        (the resolved adapter has already transformed it). Subclasses must override.
+        With a ``spec``, the observation arrives in the model's declared input
+        format because the resolved adapter has already transformed it. Subclasses
+        must override.
         """
         raise NotImplementedError(
             f"{type(self).__name__} must define predict(self, observation)"
         )
 
     def reset(self) -> None:
-        """Optional per-episode hook (e.g. clear an internal action-chunk queue).
+        """Per-episode hook, run before the policy sees the first observation.
 
-        Invoked at every episode boundary by the runtime, before the policy sees
-        the first observation of the episode. The default is a no-op.
+        Use it to clear per-episode state such as an internal action-chunk queue.
+        The default does nothing.
         """
 
     def close(self) -> None:
-        """Optional teardown: release the GPU model / handles. No-op default."""
+        """Release the model and any handles. The default does nothing."""
 
     def input_path(self, name: str) -> str:
         """Resolve a declared :class:`ArtifactInput` mount by name to its local path.
 
-        Call inside ``load()``. The path points at the in-container mount
-        (``target_path``) under the sandbox, or the resolved host/cache path under
-        the local in-process path.
+        Call it inside ``load()``. The path is the in-container mount under the
+        sandbox, or the resolved host/cache path locally.
         """
         resolved: dict[str, str] = getattr(self, "_rlmesh_resolved_inputs", {})
         try:
@@ -159,23 +153,21 @@ class ModelRecipe:
 
     @classmethod
     def _rlmesh_load(cls) -> ModelRecipe:
-        """The lifecycle the projected recipe entrypoint runs (in-container).
+        """The in-container lifecycle the projected entrypoint runs.
 
-        Mirror of ``EnvRecipe._rlmesh_construct``. Takes NO kwargs: weights ride
-        ``ArtifactInput`` mounts (materialized by the bootstrap before this runs),
-        not load kwargs. Instantiates, resolves mounts to their ``target_path``,
-        runs ``load()``, and returns the loaded instance (which IS the policy).
+        Takes no kwargs: weights ride ``ArtifactInput`` mounts the bootstrap has
+        already materialized. Instantiates, resolves the mounts, runs ``load()``,
+        and returns the loaded policy.
         """
         return construct_authored_model(cls, in_container=True)
 
     @classmethod
     def to_recipe(cls) -> Recipe:
-        """Project this class to an inert ``Recipe(kind='model')`` (executes nothing).
+        """Project this class to an inert ``Recipe(kind='model')``, executing nothing.
 
-        Reads ``name``/``build``/``setup``/``spec``/``inputs`` and computes the
-        ``module:Class._rlmesh_load`` entry string. Raises if the class is not
-        importable by that path (defined in ``__main__`` or a local scope), or if
-        the ``spec`` is local-only (carries an ``InlineCustomInput``/``CustomEncoding``).
+        Raises if the class is not importable by ``module:Class`` (defined in
+        ``__main__`` or a local scope), or if the ``spec`` is local-only (it carries
+        an ``InlineCustomInput`` or ``CustomEncoding``).
         """
         name = cls.__dict__.get("name")
         if not isinstance(name, str) or not name:
@@ -220,18 +212,13 @@ class ModelRecipe:
 
 
 def _reject_local_only_spec(spec: ModelSpec) -> None:
-    """Raise a clear error for a spec that cannot cross the wire (FINAL_API_SPEC §3.3).
+    """Reject a spec that cannot cross the wire, before the generic ValueError.
 
-    An ``InlineCustomInput`` (in-process callable) or a ``CustomEncoding`` inside a
-    ``StateInput`` makes the spec local-only: it cannot be projected to a ``Recipe``
-    or sandboxed. Raise *before* the generic ``ModelSpec.to_dict()`` ValueError so
-    the message points at the fix.
+    An ``InlineCustomInput`` holds an in-process callable, and a ``CustomEncoding``
+    inside a ``StateInput`` holds host-side transforms; either makes the spec
+    local-only, so it cannot be projected to a ``Recipe`` or sandboxed.
     """
-    from rlmesh.adapters import (
-        CustomEncoding,
-        InlineCustomInput,
-        StateInput,
-    )
+    from rlmesh.adapters import CustomEncoding, InlineCustomInput, StateInput
 
     for inp in spec.inputs:
         if isinstance(inp, InlineCustomInput):
@@ -292,16 +279,12 @@ def construct_authored_model(
     load_kwargs: dict[str, object] | None = None,
     artifacts: Sequence[ArtifactInput] = (),
 ) -> ModelRecipe:
-    """Construct a ``ModelRecipe`` IN-PROCESS (or in-container), returning the policy.
+    """Construct a ``ModelRecipe`` in-process (or in-container) and return the policy.
 
-    Mirror of ``construct_authored``. Applies ``setup``, resolves the declared
-    ``inputs`` mounts (to ``target_path`` in-container, or the host/cache path
-    locally), instantiates, runs ``load()``, and returns the loaded instance.
-
-    ``load_kwargs`` (FINAL_API_SPEC §12, edge 14) lets one recipe serve multiple
-    construction-time configurations (e.g. GR00T ``embodiment_tag``) without a
-    per-variant recipe; they are forwarded to ``load(**load_kwargs)`` when the
-    subclass's ``load`` accepts them.
+    Applies ``setup``, resolves the declared ``inputs`` mounts, instantiates, runs
+    ``load()``, and returns the loaded instance. ``load_kwargs`` lets one recipe
+    serve several construction-time configurations (such as a GR00T
+    ``embodiment_tag``) without a per-variant recipe.
     """
     from ._build import apply_setup
 

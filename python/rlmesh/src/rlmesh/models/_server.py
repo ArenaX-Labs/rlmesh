@@ -1,11 +1,10 @@
-"""``ModelServer`` -- serve a policy or drive it against an env (the consumer side).
+"""``ModelServer`` -- serve a policy, or drive it against an env.
 
-The model-side mirror of ``EnvServer``, but NOT a symmetric publisher: a model is
-the CONSUMER of the env contract (FINAL_API_SPEC §6.2). ``run(env)`` dials an env,
-pulls its contract, resolves the adapter from the env's tags x this model's spec,
-and runs a transparent per-episode eval loop that returns a typed :class:`RunResult`
-(FINAL_API_SPEC §12, blocker B5). ``serve()`` hosts a model endpoint for the runtime
-to dial.
+The model-side mirror of ``EnvServer``, with one asymmetry: a model consumes the
+env contract rather than publishing its own. ``run(env)`` dials an env, pulls its
+contract, resolves the adapter from the env's tags and this model's spec, and runs
+a per-episode eval loop that returns a typed :class:`RunResult`. ``serve()`` hosts
+a model endpoint for the runtime to dial.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from ..recipes._schema import ArtifactInput, Recipe
 
 __all__ = ["EpisodeResult", "ModelServer", "RunResult"]
 
-# A hard cap so a non-terminating env cannot hang the loop forever.
+# Bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
 
 
@@ -43,7 +42,7 @@ class EpisodeResult:
 
 @dataclass(frozen=True)
 class RunResult:
-    """The typed result of a ``ModelServer.run`` eval (replaces the shipped ``None``)."""
+    """The result of a ``ModelServer.run`` eval."""
 
     episodes: tuple[EpisodeResult, ...] = ()
 
@@ -63,7 +62,7 @@ class RunResult:
 
     @property
     def success_rate(self) -> float:
-        """Fraction of episodes that terminated (vs truncated) -- a coarse proxy."""
+        """Fraction of episodes that terminated rather than truncated."""
         if not self.episodes:
             return 0.0
         return sum(1 for e in self.episodes if e.terminated) / len(self.episodes)
@@ -76,7 +75,7 @@ class RunResult:
 
 
 class ModelServer:
-    """Serve a policy, or drive it against an env. The consumer-side mirror of ``EnvServer``."""
+    """Serve a policy, or drive it against an env."""
 
     def __init__(
         self,
@@ -115,14 +114,9 @@ class ModelServer:
 
     @property
     def spec(self) -> object | None:
-        """The model-side content (a ``ModelSpec``, ``DELEGATED``, or ``None``).
-
-        There is NO ``model_contract``: a model consumes the env contract, it does
-        not publish one (FINAL_API_SPEC §6.4).
-        """
+        """The model's content: a ``ModelSpec``, ``DELEGATED``, or ``None``."""
         return self._spec
 
-    # ── topology A: the model dials the env (local / one-shot driver) ──
     def run(
         self,
         env_or_address: object,
@@ -133,14 +127,13 @@ class ModelServer:
         close_env: bool = False,
         token: str = "",
     ) -> RunResult:
-        """Drive this policy AGAINST an env and return a typed :class:`RunResult`.
+        """Drive this policy against an env and return a :class:`RunResult`.
 
-        Pulls the ``EnvContract``, resolves the adapter (env tags x this model's
-        spec), then runs a per-episode loop: reset env + adapter + ``policy.reset()``,
-        step until terminated/truncated, collect the result. ``seeds`` gives a
-        per-episode seed (its length sets the episode count unless ``max_episodes``
-        is given). ``instruction`` is delivered to the model's text inputs per
-        episode (the language seam, FINAL_API_SPEC §12 blocker B2).
+        Resolves the adapter from the env's tags and this model's spec, then runs a
+        per-episode loop: reset env, adapter, and policy; step until the episode
+        ends; collect the result. ``seeds`` gives a per-episode seed, and its length
+        sets the episode count unless ``max_episodes`` is given. ``instruction`` is
+        written into the model's text inputs each episode.
         """
         client, contract, owns_client = _connect(env_or_address, token)
         adapter = self._resolve_adapter(contract)
@@ -156,11 +149,8 @@ class ModelServer:
         finally:
             if self._on_close is not None:
                 self._on_close()
-            # Shut down the remote env BEFORE closing the local client connection.
-            # When we own the client (an address/EnvServer was given), shutdown rides
-            # the client (which can signal the remote); a directly-passed env is shut
-            # down directly. A bare address string has no shutdown method, so routing
-            # through the client is what actually stops the remote.
+            # Stop the remote env before closing the local connection. When we own
+            # the client, shutdown rides it (a bare address string has no shutdown).
             if close_env:
                 _shutdown(client if owns_client else env_or_address)
             if owns_client:
@@ -211,7 +201,7 @@ class ModelServer:
 
         spec = self._spec
         if spec is DELEGATED:
-            return None  # the model self-adapts; do not resolve
+            return None
         metadata = getattr(contract, "metadata", None) or {}
         tagged = EnvTags.from_metadata(metadata) is not None
         if spec is None:
@@ -219,7 +209,7 @@ class ModelServer:
                 raise AdapterResolutionError(
                     "the env publishes adapter tags but this model has spec=None; "
                     "pass spec=<ModelSpec> to adapt, or spec=DELEGATED if the model "
-                    "adapts its own observations (FINAL_API_SPEC §12 B9)"
+                    "adapts its own observations"
                 )
             return None
         adapter = resolve_from_contract(
@@ -234,15 +224,12 @@ class ModelServer:
             )
         return adapter
 
-    # ── topology B: the model is dialed (served endpoint) ──
     def serve(self, address: str | None = None, *, token: str = "") -> None:
         """Host this policy as a model endpoint (blocking).
 
-        Delegates to the native ``rlmesh.numpy.Model`` worker, honoring the
-        constructor's bind parameters (``host``/``port``/``path``/``address``) and
-        ``options``. A plain (spec=None) model serves directly; an adapted (spec=)
-        served model resolves against the env contract the runtime delivers via
-        ``ConfigureRoute`` -- the sandboxed served path, wired by the runtime, not here.
+        Binds at ``address``, else the constructor's ``host``/``port``/``path``,
+        and forwards ``options``. A spec-less model serves directly; a model with a
+        spec resolves against the env contract the runtime delivers when it dials in.
         """
         from ..numpy import Model
 
@@ -268,22 +255,14 @@ def _coerce_model(
     artifacts: tuple[ArtifactInput, ...],
     load_kwargs: dict[str, object] | None,
 ) -> tuple[Callable[[Any], Any], object | None, Callable[[], None] | None, Callable[[], None] | None, Any]:
-    """Resolve a source into (predict_fn, spec, on_reset, on_close, policy).
-
-    Only the bare-callable arm is genuine reuse of ``numpy.Model``; the recipe arms
-    construct the policy in-process (FINAL_API_SPEC §6.2).
-    """
-    # A ModelRecipe instance (already constructed).
+    """Resolve a source into (predict_fn, spec, on_reset, on_close, policy)."""
     if isinstance(source, ModelRecipe):
         return _bind_policy(source, spec)
-    # A ModelRecipe subclass -> construct in-process.
     if is_model_recipe(source):
         policy = construct_authored_model(
             source, in_container=False, load_kwargs=load_kwargs, artifacts=artifacts
         )
         return _bind_policy(policy, spec)
-    # A registered name -> prefer the live class (local in-process path), else the
-    # stored kind="model" Recipe; or a kind="model" Recipe directly.
     recipe: Recipe | None = None
     if isinstance(source, str):
         from ._registry import lookup_model_class
@@ -307,7 +286,6 @@ def _coerce_model(
             )
         policy = _construct_from_recipe(recipe, load_kwargs=load_kwargs, artifacts=artifacts)
         return _bind_policy(policy, spec)
-    # A bare predict callable.
     if callable(source):
         return source, spec, None, None, None
     raise TypeError(
@@ -326,7 +304,11 @@ def _bind_policy(
 def _construct_from_recipe(
     recipe: Recipe, *, load_kwargs: dict[str, object] | None, artifacts: tuple[ArtifactInput, ...]
 ) -> ModelRecipe:
-    """Construct a policy from an inert kind='model' Recipe via its PyMake entrypoint."""
+    """Construct a policy from an inert model recipe via its ``module:Class`` entrypoint.
+
+    Per-run ``artifacts`` and ``load_kwargs`` apply because construction runs the
+    in-process path, with the class's own ``inputs`` providing the declared mounts.
+    """
     from .._bootstrap.entrypoint import resolve_entrypoint
     from ..recipes._schema import PyMake
 
@@ -335,9 +317,6 @@ def _construct_from_recipe(
         raise TypeError(
             f"model recipe {recipe.name!r} has no PyMake entrypoint to construct from"
         )
-    # The entrypoint is "module:Class._rlmesh_load"; resolve the CLASS, then run the
-    # in-process construction so per-run artifacts/load_kwargs apply. The class's own
-    # cls.inputs carry the declared mounts; artifacts override them by name.
     cls_path = make.entrypoint.rsplit(".", 1)[0]
     cls = resolve_entrypoint(cls_path, label="model recipe class")
     if not is_model_recipe(cls):
@@ -365,11 +344,8 @@ def _episode_count(seeds: Sequence[int] | None, max_episodes: int | None) -> int
     return 1
 
 
-# ── env-client plumbing (works for an EnvServer address, a RemoteEnv, or a bare env) ──
-
-
 def _connect(target: object, token: str) -> tuple[Any, Any, bool]:
-    """Return (client, contract, owns_client) for an EnvServer | address | env-like."""
+    """Return (client, contract, owns_client) for an EnvServer, address, or env-like."""
     if isinstance(target, str):
         client = _remote_env(target)
         return client, client.env_contract, True
@@ -411,11 +387,10 @@ def _close(client: Any) -> None:
 
 
 def _shutdown(target: object) -> None:
-    """Close/shutdown the driven env: an EnvServer exposes shutdown(), a plain env close().
+    """Stop the driven env via ``shutdown()`` or ``close()``.
 
-    A reason argument is passed when the callable accepts one (decided by binding the
-    signature, NOT by catching a TypeError from the call -- so an unrelated TypeError
-    raised inside the callable is never masked).
+    Whether a reason argument is passed is decided by binding the signature, so an
+    unrelated ``TypeError`` raised inside the callable is never swallowed.
     """
     import inspect
 

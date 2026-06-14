@@ -1,10 +1,10 @@
 """Model registration: the class form + the flat ``hf=``/``load=`` sugar.
 
-Registers a model by name into the shared recipe registry (so ``resolve(name)``
-sees both kinds, FINAL_API_SPEC §6.5) AND keeps the live ``ModelRecipe`` subclass
-so the local in-process path can construct it without an entrypoint round-trip.
-Env keywords (``gym=``/``factory=``) and model keywords (``hf=``/``load=``/``spec=``)
-are disjoint, so a registration is unambiguously one kind.
+Registers a model by name into the shared recipe registry, so ``resolve(name)``
+sees both kinds, and keeps the live ``ModelRecipe`` subclass so the in-process
+path can construct it without an entrypoint round-trip. Env keywords
+(``gym=``/``factory=``) and model keywords (``hf=``/``load=``/``spec=``) are
+disjoint, so a registration is unambiguously one kind.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def register(
       ``kind='model'`` recipe and keeps the live class.
     * **Flat ``hf=``** -- ``register("policy/x", hf="org/repo", spec=SPEC,
       loader="lerobot:SmolVLAPolicy")``: synthesizes a ``ModelRecipe`` whose
-      ``load()`` calls :func:`hf_load`. The rung-1 one-liner.
+      ``load()`` calls :func:`hf_load`.
     * **Flat ``load=``** -- ``register("policy/x", load="mod:make_policy", spec=SPEC)``:
       synthesizes a ``ModelRecipe`` whose ``load()`` calls the named factory.
     """
@@ -116,9 +116,8 @@ def _flat_model_class(
     class_name = _class_name(name)
 
     if hf is not None:
-        # Auto-declare the weights mount (FINAL_API_SPEC §6.5); a per-run artifact
-        # override (ModelServer/SandboxModel artifacts=) replaces it by name, so the
-        # documented "launch-arg wins" checkpoint swap actually takes effect.
+        # Auto-declare the weights mount; a per-run artifacts= override replaces it
+        # by name, so swapping the checkpoint at launch takes effect.
         rev = f"@{revision}" if revision else ""
         weights = ArtifactInput(
             "weights", "/rlmesh/input/model/weights", uri=f"hf://{hf}{rev}"
@@ -158,9 +157,8 @@ def _flat_model_class(
         "__qualname__": class_name,
     }
     cls = type(class_name, (ModelRecipe,), namespace)
-    # Bind the synthesized class into THIS module so the projected entrypoint
-    # ``rlmesh.models._registry:<Class>._rlmesh_load`` imports in a fresh process /
-    # sandbox (the local path uses the live class in _MODEL_CLASSES directly).
+    # Bind the class into this module so its projected entrypoint imports in a fresh
+    # process or sandbox; the in-process path uses _MODEL_CLASSES directly.
     setattr(sys.modules[__name__], class_name, cls)
     return cls
 
