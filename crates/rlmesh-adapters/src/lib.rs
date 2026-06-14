@@ -10,10 +10,12 @@
 //! the conformance vectors under this crate's `conformance/` directory;
 //! every implementation and binding must pass them.
 //!
-//! Within v1 the JSON format evolves additively only (new optional fields
-//! with defaults); breaking changes would ship as a `v2` module and metadata
-//! key. The version lives in the [`v1`] facade and the `rlmesh.adapters.v1.*`
-//! metadata keys; the implementation sits flat at the crate root.
+//! Within v1 the JSON format evolves additively only (new optional fields with
+//! defaults). The wire version is the `rlmesh.adapters.v1.*` metadata key, not
+//! the source layout: a breaking spec-format change bumps that key to v2 (with a
+//! dual-read of v1), independent of how the Rust modules are organized. The
+//! [`v1`] facade is only a stable import path; the implementation sits flat at
+//! the crate root.
 
 mod apply;
 mod describe;

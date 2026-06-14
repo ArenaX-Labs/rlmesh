@@ -50,6 +50,15 @@ role = "core"
 publish = true
 
 [[artifact]]
+id = "cargo:rlmesh-adapters"
+ecosystem = "cargo"
+name = "rlmesh-adapters"
+manifest = "crates/rlmesh-adapters/Cargo.toml"
+version = "0.1.0-beta.2"
+role = "core"
+publish = true
+
+[[artifact]]
 id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"

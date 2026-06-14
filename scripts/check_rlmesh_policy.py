@@ -120,6 +120,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
 
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol, workflow))
     errors.extend(_validate_workflow_editions(repo_root, workflow, release))
+    errors.extend(_validate_adapters(repo_root))
     errors.extend(
         _validate_api_surface(
             repo_root, api_surface, artifact_ids, release, package_family
@@ -196,6 +197,29 @@ def _artifact_version(
         raise ValueError("missing package version")
 
     raise ValueError(f"unsupported ecosystem {artifact.ecosystem}")
+
+
+def _validate_adapters(repo_root: Path) -> list[str]:
+    errors: list[str] = []
+    keys = repo_root / "crates/rlmesh-adapters/src/keys.rs"
+    if not keys.exists():
+        return [f"adapter metadata keys file missing: {keys}"]
+    text = keys.read_text(encoding="utf-8")
+    # The version-stamped metadata key string — not any source-module path — is
+    # the adapter spec-format discriminator, so guard the v1 token here. A v2 bump
+    # must be deliberate (and keep reading v1).
+    for const in ("ENV_METADATA_KEY", "MODEL_METADATA_KEY"):
+        match = re.search(rf'{const}: &str = "(?P<value>[^"]+)"', text)
+        if match is None:
+            errors.append(f"{keys}: missing {const}")
+        elif not match.group("value").startswith("rlmesh.adapters.v1."):
+            errors.append(
+                f"{keys}: {const} is {match.group('value')!r}; the adapter spec format is v1"
+            )
+    vectors = repo_root / "crates/rlmesh-adapters/conformance/v1"
+    if not vectors.is_dir():
+        errors.append(f"adapter conformance vectors missing: {vectors}")
+    return errors
 
 
 def _validate_protocol_and_workflow(
