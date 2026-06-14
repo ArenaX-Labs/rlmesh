@@ -27,8 +27,40 @@ def authored_module(tmp_path: Path) -> Iterator[str]:
             """
             from __future__ import annotations
 
+            import gymnasium as _gym
+            import numpy as _np
             import rlmesh
+            from rlmesh.adapters import (
+                ACTION_GRIPPER, IMAGE_PRIMARY, ActionComponent, ActionLayout,
+                EnvTags, ImageTag,
+            )
             from rlmesh.recipes import Build, PipInstall, ProjectInstall
+
+            _TAGS = EnvTags(
+                observation={"img": ImageTag(role=IMAGE_PRIMARY)},
+                action=ActionLayout(ActionComponent(ACTION_GRIPPER, dim=2)),
+            )
+
+            class _TaggedStub:
+                observation_space = _gym.spaces.Dict({"img": _gym.spaces.Box(0, 255, (8, 8, 3), _np.uint8)})
+                action_space = _gym.spaces.Box(-1, 1, (2,), _np.float32)
+                metadata: dict = {}
+                def reset(self, *, seed=None, options=None):
+                    return {"img": _np.zeros((8, 8, 3), _np.uint8)}, {}
+                def step(self, action):
+                    return {"img": _np.zeros((8, 8, 3), _np.uint8)}, 0.0, False, False, {}
+
+            class Tagged(rlmesh.EnvRecipe):
+                name = "test/tagged"
+                tags = _TAGS
+                def make(self, **kwargs):
+                    return _TaggedStub()
+
+            class TaggedConflict(rlmesh.EnvRecipe):
+                name = "test/tagged-conflict"
+                tags = _TAGS
+                def make(self, **kwargs):
+                    return rlmesh.adapters.tag(_TaggedStub(), _TAGS)
 
             class Heavy(rlmesh.EnvRecipe):
                 name = "acme/heavy"
@@ -118,6 +150,35 @@ def test_check_is_dependency_free(authored_module: str) -> None:
     heavy = _module(authored_module).Heavy  # type: ignore[attr-defined]
     recipes.check(heavy.to_recipe())  # round-trip + entrypoint shape; imports nothing
     heavy.check()  # the classmethod shorthand
+
+
+def test_class_tags_project_onto_recipe_adapter(authored_module: str) -> None:
+    module = _module(authored_module)
+    tagged = module.Tagged  # type: ignore[attr-defined]
+    recipe = tagged.to_recipe()
+    # The env-side mirror of ModelRecipe.spec: declared tags ride recipe.adapter.
+    assert recipe.adapter is module._TAGS  # type: ignore[attr-defined]
+    assert recipe.kind == "env"
+    # A tag-less recipe leaves adapter empty (byte-stable for existing recipes).
+    assert module.Cart.to_recipe().adapter is None  # type: ignore[attr-defined]
+
+
+def test_class_tags_published_on_constructed_env(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes._authoring import construct_authored
+
+    tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
+    env = construct_authored(tagged)
+    # The framework attached the declared tags, so the served env publishes them.
+    assert EnvTags.from_metadata(env.metadata) is not None
+
+
+def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> None:
+    from rlmesh.recipes._authoring import construct_authored
+
+    conflict = _module(authored_module).TaggedConflict  # type: ignore[attr-defined]
+    with pytest.raises(RecipeValidationError, match="one place"):
+        construct_authored(conflict)
 
 
 def test_to_recipe_rejects_local_class() -> None:

@@ -20,7 +20,7 @@ that machine. **Every module defining an ``EnvRecipe`` subclass must start with*
 from __future__ import annotations
 
 import inspect
-from typing import TYPE_CHECKING, ClassVar, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
 
 from ._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
 
@@ -68,6 +68,13 @@ class EnvRecipe:
     build: ClassVar[Build] = Build()
     #: Construct-time DATA (env vars, files), applied before ``make()``.
     setup: ClassVar[Setup] = Setup()
+    #: The published env contract -- the env-side mirror of ``ModelRecipe.spec``.
+    #: An ``EnvTags`` the framework attaches to the env ``make()`` returns, so the
+    #: served env publishes them and the recipe declares its contract statically
+    #: (projected onto ``recipe.adapter``). Leave ``None`` and call
+    #: ``rlmesh.adapters.tag(env, ...)`` inside ``make()`` for tags that depend on
+    #: how the env was constructed.
+    tags: ClassVar[Any] = None
 
     def prepare(self) -> None:
         """Optional construct-time CODE hook, run once before ``make()`` on this instance.
@@ -102,7 +109,7 @@ class EnvRecipe:
         """The lifecycle the projected recipe entrypoint runs: prepare then make."""
         instance = _instantiate(cls)
         instance.prepare()
-        return instance.make(**kwargs)
+        return _apply_class_tags(cls, instance.make(**kwargs))
 
     @classmethod
     def to_recipe(cls, **make_kwargs: object) -> Recipe:
@@ -138,6 +145,7 @@ class EnvRecipe:
             make=PyMake(entrypoint=entrypoint, kwargs=make_kwargs),
             build=cls.build,
             setup=cls.setup,
+            adapter=cls.tags,
         )
 
     @classmethod
@@ -216,4 +224,25 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
             f"{cls.__qualname__}.make(...) did not return an environment with "
             "reset(...) and step(...)"
         )
-    return env
+    return _apply_class_tags(cls, env)
+
+
+def _apply_class_tags(cls: type[EnvRecipe], env: EnvLike) -> EnvLike:
+    """Publish the recipe's declared ``tags`` on the constructed env.
+
+    The env-side mirror of how a resolved model carries its spec: a class-level
+    ``tags`` is attached to ``make()``'s return so the served env's contract
+    publishes it. A recipe that also tags inside ``make()`` is a double
+    declaration, so fail loud rather than silently let one win.
+    """
+    tags = cls.tags
+    if tags is None:
+        return env
+    from rlmesh.adapters import EnvTags, tag
+
+    if EnvTags.from_metadata(getattr(env, "metadata", None) or {}) is not None:
+        raise RecipeValidationError(
+            f"{cls.__qualname__} declares class-level tags= and make() also tagged "
+            "the env; declare the tags in one place, not both"
+        )
+    return tag(env, tags)

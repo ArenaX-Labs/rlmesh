@@ -48,6 +48,10 @@
             "kind": "attribute",
             "signature": "setup: Setup"
           },
+          "tags": {
+            "kind": "attribute",
+            "signature": "tags: Any"
+          },
           "to_recipe": {
             "kind": "function",
             "signature": "to_recipe(**make_kwargs: object)"
