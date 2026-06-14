@@ -26,18 +26,28 @@ def action_layout_to_dict(layout: ActionLayout) -> dict[str, Any]:
                 "locally, or add the encoding to the native vocabulary"
             )
     return {
-        "components": [
-            {
-                "role": component.role,
-                "dim": component.dim,
-                "encoding": component.encoding,
-                "range": list(component.range) if component.range else None,
-                "binary": component.binary,
-            }
-            for component in layout.components
-        ],
+        "components": [_component_to_dict(component) for component in layout.components],
         "clip": list(layout.clip) if layout.clip else None,
     }
+
+
+def _component_to_dict(component: ActionComponent) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "role": component.role,
+        "dim": component.dim,
+        "encoding": component.encoding,
+        "range": list(component.range) if component.range else None,
+        "binary": component.binary,
+    }
+    # scale/invert/threshold are additive env-side corrections: emit only when
+    # set, so layouts that do not use them serialize byte-identically to before.
+    if component.scale is not None:
+        out["scale"] = component.scale
+    if component.invert:
+        out["invert"] = True
+    if component.threshold is not None:
+        out["threshold"] = component.threshold
+    return out
 
 
 def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
@@ -54,6 +64,9 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
                 dim=int(raw_dim) if raw_dim is not None else 0,
                 encoding=opt_encoding(item.get("encoding"), "action component"),
                 range=opt_range(item.get("range"), "action component"),
+                scale=_opt_float(item.get("scale")),
+                invert=bool(item.get("invert", False)),
+                threshold=_opt_float(item.get("threshold")),
                 binary=bool(item.get("binary", False)),
             )
         )
@@ -61,6 +74,10 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
         *components,
         clip=opt_range(data.get("clip"), "action layout"),
     )
+
+
+def _opt_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
 
 
 __all__ = ["action_layout_from_dict", "action_layout_to_dict"]

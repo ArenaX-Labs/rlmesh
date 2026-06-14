@@ -246,6 +246,32 @@ def test_smolvla_action_passthrough_with_clip():
     np.testing.assert_allclose(result, np.clip(raw, -1.0, 1.0), rtol=1e-6)
 
 
+def test_env_gripper_invert_and_binary_flips_model_sign():
+    # The env declares its gripper actuator is sign-flipped from the model's
+    # convention; the resolved adapter applies the flip and binary snap, in place
+    # of a hand-rolled invert_gripper_action escape hatch on the model side.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag()},
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(
+                    adapt.ACTION_GRIPPER, dim=1, invert=True, binary=True
+                ),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(1, low=-1.0, high=1.0),
+    )
+    model = adapt.ModelSpec(
+        inputs=(adapt.TextInput("instruction"),),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = resolve(env, model)
+    # The model says "close" (+0.8); the env's opposite sign + binary snap to -1.
+    result = adapter.transform_action(np.array([0.8], dtype=np.float32))
+    np.testing.assert_allclose(result, [-1.0], rtol=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # OpenVLA
 # ---------------------------------------------------------------------------

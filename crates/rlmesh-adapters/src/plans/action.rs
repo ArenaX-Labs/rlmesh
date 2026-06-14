@@ -12,6 +12,11 @@ pub struct ActionSegment {
     pub dst_encoding: Option<RotationEncoding>,
     pub src_range: Option<(f64, f64)>,
     pub dst_range: Option<(f64, f64)>,
+    /// Env-side scalar corrections, applied after rotation/range bridging in the
+    /// order scale, invert, threshold, then `binarize`.
+    pub scale: Option<f64>,
+    pub invert: bool,
+    pub threshold: Option<f64>,
     pub binarize: bool,
     pub out_dim: u32,
 }

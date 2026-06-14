@@ -117,6 +117,11 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             } else {
                 env_component.range
             },
+            // The env owns its actuator convention, so its corrections drive the
+            // segment; a model that ships against many envs declares none.
+            scale: env_component.scale,
+            invert: env_component.invert,
+            threshold: env_component.threshold,
             binarize: env_component.binary || model_component.binary,
             out_dim: env_component.dim,
         });
