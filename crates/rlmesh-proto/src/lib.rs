@@ -171,7 +171,11 @@ pub fn check_provisional_edition_pin(
 }
 
 fn short_sha(sha: &str) -> &str {
-    &sha[..sha.len().min(12)]
+    // peer_spec_sha256 is untrusted wire input: slice on a char boundary, not a byte index
+    match sha.char_indices().nth(12) {
+        Some((idx, _)) => &sha[..idx],
+        None => sha,
+    }
 }
 
 fn prerelease_tag(version: &str) -> &'static str {
@@ -244,6 +248,17 @@ mod tests {
 
     fn offer(editions: &[&str]) -> Vec<String> {
         editions.iter().map(|edition| edition.to_string()).collect()
+    }
+
+    #[test]
+    fn short_sha_slices_on_char_boundary() {
+        use super::short_sha;
+        // byte 12 lands mid-codepoint (11 ASCII + a 2-byte char spanning bytes
+        // 11-12), so a raw &sha[..12] would panic; we take the first 12 chars.
+        assert_eq!(short_sha("abcdefghijkééé"), "abcdefghijké");
+        // all multibyte: take the first 12 chars, not 12 bytes.
+        assert_eq!(short_sha("ααααααααααααα"), "αααααααααααα");
+        assert_eq!(short_sha("short"), "short");
     }
 
     #[test]
