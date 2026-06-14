@@ -106,10 +106,15 @@ class EnvRecipe:
 
     @classmethod
     def _rlmesh_construct(cls, **kwargs: object) -> EnvLike:
-        """The lifecycle the projected recipe entrypoint runs: prepare then make."""
+        """The lifecycle the projected recipe entrypoint runs: prepare then make.
+
+        Class-level ``tags`` are NOT applied here -- they ride ``recipe.adapter``
+        and ``rlmesh.recipes.build`` publishes them (the single forward path), so
+        applying them here too would double-tag.
+        """
         instance = _instantiate(cls)
         instance.prepare()
-        return _apply_class_tags(cls, instance.make(**kwargs))
+        return instance.make(**kwargs)
 
     @classmethod
     def to_recipe(cls, **make_kwargs: object) -> Recipe:
@@ -224,25 +229,10 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
             f"{cls.__qualname__}.make(...) did not return an environment with "
             "reset(...) and step(...)"
         )
-    return _apply_class_tags(cls, env)
+    # The local path does not go through `build`, so publish the class-level tags
+    # here via the same forward helper the container path uses.
+    if cls.tags is not None:
+        from ._build import _publish_env_tags
 
-
-def _apply_class_tags(cls: type[EnvRecipe], env: EnvLike) -> EnvLike:
-    """Publish the recipe's declared ``tags`` on the constructed env.
-
-    The env-side mirror of how a resolved model carries its spec: a class-level
-    ``tags`` is attached to ``make()``'s return so the served env's contract
-    publishes it. A recipe that also tags inside ``make()`` is a double
-    declaration, so fail loud rather than silently let one win.
-    """
-    tags = cls.tags
-    if tags is None:
-        return env
-    from rlmesh.adapters import EnvTags, tag
-
-    if EnvTags.from_metadata(getattr(env, "metadata", None) or {}) is not None:
-        raise RecipeValidationError(
-            f"{cls.__qualname__} declares class-level tags= and make() also tagged "
-            "the env; declare the tags in one place, not both"
-        )
-    return tag(env, tags)
+        _publish_env_tags(env, cls.tags)
+    return env

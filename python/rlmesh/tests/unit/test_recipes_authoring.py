@@ -62,6 +62,12 @@ def authored_module(tmp_path: Path) -> Iterator[str]:
                 def make(self, **kwargs):
                     return rlmesh.adapters.tag(_TaggedStub(), _TAGS)
 
+            class TaggedMapping(rlmesh.EnvRecipe):
+                name = "test/tagged-mapping"
+                tags = _TAGS.to_dict()  # the serialized form is accepted too
+                def make(self, **kwargs):
+                    return _TaggedStub()
+
             class Heavy(rlmesh.EnvRecipe):
                 name = "acme/heavy"
                 build = Build(
@@ -173,12 +179,33 @@ def test_class_tags_published_on_constructed_env(authored_module: str) -> None:
     assert EnvTags.from_metadata(env.metadata) is not None
 
 
+def test_class_tags_published_via_build(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes import build
+
+    # The container forward path: build() runs the entrypoint then publishes
+    # recipe.adapter once. (A double-apply would trip the conflict guard below.)
+    tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
+    env = build(tagged.to_recipe())
+    assert EnvTags.from_metadata(env.metadata) is not None
+
+
 def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> None:
     from rlmesh.recipes._authoring import construct_authored
 
     conflict = _module(authored_module).TaggedConflict  # type: ignore[attr-defined]
     with pytest.raises(RecipeValidationError, match="one place"):
         construct_authored(conflict)
+
+
+def test_class_tags_as_serialized_mapping_are_normalized(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes._authoring import construct_authored
+
+    # tags declared as the serialized dict form must not crash tag() (Codex P2).
+    mapping = _module(authored_module).TaggedMapping  # type: ignore[attr-defined]
+    env = construct_authored(mapping)
+    assert EnvTags.from_metadata(env.metadata) is not None
 
 
 def test_to_recipe_rejects_local_class() -> None:

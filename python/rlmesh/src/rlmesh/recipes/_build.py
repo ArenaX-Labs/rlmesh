@@ -30,7 +30,7 @@ from rlmesh._bootstrap.env import (
 )
 
 from ._launch import UnsupportedRecipeError
-from ._schema import GymMake, PyMake, Recipe, Setup
+from ._schema import GymMake, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike
@@ -138,17 +138,18 @@ def build(
 
 
 def _publish_env_tags(env: object, adapter: object) -> None:
-    """Publish a recipe-launched env's :class:`EnvTags` (the forward path).
+    """Publish a recipe-launched env's :class:`EnvTags` (the single forward path).
 
-    This runs ``join()`` against the env's real spaces and fails loud. The adapters
-    layer is resolved dynamically so the recipe layer does not hard-depend on it.
-    A missing ``rlmesh.adapters`` is warned about once and skipped, so a recipe with
-    an adapter block still constructs; errors raised by ``tag()`` itself (once adapters
-    *is* importable) still propagate.
+    Runs ``join()`` against the env's real spaces and fails loud. The adapters layer
+    is resolved dynamically so the recipe layer does not hard-depend on it. A missing
+    ``rlmesh.adapters`` is warned about once and skipped, so a recipe with an adapter
+    block still constructs; errors raised by ``tag()`` itself (once adapters *is*
+    importable) still propagate. ``adapter`` may be an ``EnvTags`` or its serialized
+    mapping form.
 
-    Note: ``EnvRecipe.to_recipe()`` does not populate ``recipe.adapter`` -- env tags
-    normally ride ``tag()``/``EnvServer(tags=)`` -- so this path is usually inert, but
-    the read site must be correct and crash-free.
+    ``recipe.adapter`` is populated by ``EnvRecipe.tags`` (and by a model recipe's
+    spec); for an env this is where class-declared tags get published. A recipe that
+    also tags inside ``make()`` is a double declaration, caught here.
     """
     import importlib
 
@@ -163,5 +164,10 @@ def _publish_env_tags(env: object, adapter: object) -> None:
         )
         return
     env_tags_cls = adapters.EnvTags
+    if env_tags_cls.from_metadata(getattr(env, "metadata", None) or {}) is not None:
+        raise RecipeValidationError(
+            "the recipe declares env tags (EnvRecipe.tags / recipe.adapter) and make() "
+            "also tagged the env; declare the tags in one place, not both"
+        )
     tags = adapter if isinstance(adapter, env_tags_cls) else env_tags_cls.from_dict(adapter)
     adapters.tag(env, tags)
