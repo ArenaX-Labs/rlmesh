@@ -21,7 +21,14 @@ if TYPE_CHECKING:
     from ._authoring_model import ModelRecipe
     from ._schema import ArtifactInput
 
-__all__ = ["cache_root", "enter_recipe_context", "hf_load", "input_path", "resolve_inputs"]
+__all__ = [
+    "cache_root",
+    "enter_recipe_context",
+    "hf_load",
+    "input_path",
+    "local_dir_mounts",
+    "resolve_inputs",
+]
 
 # The recipe whose load() is running, so the module-level input_path() can find
 # its mounts without an explicit self.
@@ -79,6 +86,36 @@ def merged_inputs(
     for override in overrides:
         by_name[override.name] = override
     return by_name
+
+
+def local_dir_mounts(
+    inputs: Sequence[ArtifactInput],
+    overrides: Sequence[ArtifactInput] = (),
+) -> list[tuple[str, str]]:
+    """Resolved ``(host_dir, container_target)`` bind-mounts for declared inputs.
+
+    Only an input with a host ``local_dir`` is mounted; a uri-backed input
+    resolves in-container instead (``hf_load`` through the rlmesh cache).
+    ``overrides`` supply or replace a declared input's ``local_dir`` by name (the
+    run-time checkpoint selection), mounted at the declared target the container
+    resolves. A declared ``local_dir`` that is not a directory fails loud here,
+    on the host, before the container starts. The mount is read-only; the host
+    directory must be readable by the sandbox's non-root container user.
+    """
+    override_dir = {o.name: o.local_dir for o in overrides if o.local_dir is not None}
+    mounts: list[tuple[str, str]] = []
+    for declared in inputs:
+        local_dir = override_dir.get(declared.name, declared.local_dir)
+        if local_dir is None:
+            continue
+        host = Path(local_dir).expanduser()
+        if not host.is_dir():
+            raise FileNotFoundError(
+                f"ArtifactInput {declared.name!r} local_dir is not a directory: {host} "
+                "(it is bind-mounted into the sandbox at run time)"
+            )
+        mounts.append((str(host.resolve()), declared.target_path))
+    return mounts
 
 
 def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | None:

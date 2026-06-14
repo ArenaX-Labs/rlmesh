@@ -15,6 +15,7 @@ from .sandbox import _normalize_rlmesh_package
 
 if TYPE_CHECKING:
     from .recipes import Recipe
+    from .recipes._schema import ArtifactInput
 
 __all__ = ["SandboxModel"]
 
@@ -66,12 +67,20 @@ class SandboxModel:
         base_image: str | None = None,
         rlmesh_package: str | None = None,
         packages: Sequence[str] = (),
+        artifacts: Sequence[ArtifactInput] = (),
         trust_remote_code: bool = False,
         allow_unpinned_hf: bool = False,
     ) -> None:
+        import json
+
         from ._rlmesh import sandbox_start_env
+        from .recipes._artifacts import local_dir_mounts
 
         recipe, context_root = _model_recipe(source)
+        # A declared input with a host local_dir is bind-mounted at its container
+        # target; uri-backed inputs still resolve in-container. artifacts= supplies
+        # or overrides a local_dir by name (the run-time checkpoint).
+        mounts = local_dir_mounts(recipe.inputs, artifacts)
         info = sandbox_start_env(
             recipe.name,
             recipe_json=recipe.to_json(),
@@ -82,6 +91,7 @@ class SandboxModel:
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,
             context_root=context_root,
+            mounts_json=json.dumps(mounts) if mounts else None,
         )
         self._address = info["address"]
         self._container_id = info["container_id"]

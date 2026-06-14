@@ -82,6 +82,7 @@ impl DockerBackend {
         &self,
         spec: &EffectiveSandboxSpec,
         artifact: &BuildArtifact,
+        mounts: &[(String, String)],
     ) -> Result<StartedContainer> {
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
         // The bootstrap payload carries runtime-only parameters (kwargs,
@@ -98,6 +99,7 @@ impl DockerBackend {
                 &bootstrap_json,
                 std::process::id(),
                 gpu,
+                mounts,
             ))
             .output()
             .context("failed to start docker container")?;
@@ -695,6 +697,7 @@ fn docker_run_args(
     bootstrap_json: &str,
     owner_pid: u32,
     gpu: bool,
+    mounts: &[(String, String)],
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -727,6 +730,15 @@ fn docker_run_args(
             "--env".to_string(),
             "NVIDIA_VISIBLE_DEVICES=all".to_string(),
         ]);
+    }
+    // Runtime artifact mounts: a declared input's resolved host directory bound
+    // read-only at its in-container target. Read-only keeps the container from
+    // mutating the host weights and coexists with the hardening above.
+    for (host, target) in mounts {
+        args.push("--mount".to_string());
+        args.push(format!(
+            "type=bind,source={host},target={target},readonly"
+        ));
     }
     args.extend([
         // Deliver the bootstrap payload (runtime-only parameters) at run time
@@ -1050,7 +1062,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -1062,7 +1074,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -1071,7 +1083,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -1083,7 +1095,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_stamp_owner_pid_label() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         // The owner-pid label must be present so the reaper can tell a live
         // owner's container apart from an orphan.
@@ -1099,7 +1111,7 @@ mod tests {
         let Some(pid_namespace) = current_pid_namespace_id() else {
             return;
         };
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         assert!(
             args.iter()
@@ -1116,6 +1128,7 @@ mod tests {
             "{\"spec\":{\"kind\":\"gym\"}}",
             4242,
             false,
+            &[],
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -1123,6 +1136,33 @@ mod tests {
         assert_eq!(
             args.get(env_idx.unwrap() + 1).map(String::as_str),
             Some("RLMESH_BOOTSTRAP_JSON={\"spec\":{\"kind\":\"gym\"}}")
+        );
+    }
+
+    #[test]
+    fn docker_run_args_bind_mount_artifacts_read_only() {
+        let mounts = vec![(
+            "/host/weights".to_string(),
+            "/rlmesh/input/model/weights".to_string(),
+        )];
+        let args = docker_run_args("n", "img", "{}", 1, false, &mounts);
+
+        let idx = args
+            .iter()
+            .position(|arg| arg == "--mount")
+            .expect("a declared mount must emit --mount");
+        assert_eq!(
+            args[idx + 1],
+            "type=bind,source=/host/weights,target=/rlmesh/input/model/weights,readonly"
+        );
+    }
+
+    #[test]
+    fn docker_run_args_emit_no_mount_flag_without_artifacts() {
+        let args = docker_run_args("n", "img", "{}", 1, false, &[]);
+        assert!(
+            !args.iter().any(|arg| arg == "--mount"),
+            "no declared mounts must emit no --mount flag (gym/hf paths unchanged)"
         );
     }
 
@@ -1470,10 +1510,10 @@ mod tests {
 
     #[test]
     fn docker_run_args_add_gpu_flags_iff_gpu() {
-        let without = docker_run_args("n", "img", "{}", 1, false);
+        let without = docker_run_args("n", "img", "{}", 1, false, &[]);
         assert!(!without.iter().any(|arg| arg == "--gpus"));
 
-        let with = docker_run_args("n", "img", "{}", 1, true);
+        let with = docker_run_args("n", "img", "{}", 1, true, &[]);
         let idx = with.iter().position(|arg| arg == "--gpus").expect("--gpus");
         assert_eq!(with[idx + 1], "all");
         assert!(with.iter().any(|arg| arg == "NVIDIA_VISIBLE_DEVICES=all"));

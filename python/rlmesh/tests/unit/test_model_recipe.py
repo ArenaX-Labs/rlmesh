@@ -430,3 +430,49 @@ def test_instruction_seam_delivers_text_to_model() -> None:
     server = ModelServer(WithText)
     server.run(_TaggedEnv(horizon=2), instruction="pick up the red block")
     assert captured and all(c == "pick up the red block" for c in captured)
+
+
+# ---------------------------------------------------------------------------
+# Artifact bind-mounts (SandboxModel local_dir -> container)
+# ---------------------------------------------------------------------------
+
+
+def test_local_dir_mounts_binds_only_local_dir_inputs(tmp_path: Any) -> None:
+    from rlmesh.recipes._artifacts import local_dir_mounts
+    from rlmesh.recipes._schema import ArtifactInput
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    inputs = (
+        ArtifactInput("weights", "/rlmesh/input/model/weights", local_dir=str(weights)),
+        ArtifactInput("remote", "/rlmesh/input/model/remote", uri="hf://org/repo@abc"),
+    )
+    # Only the local_dir input mounts; the uri-backed one resolves in-container.
+    assert local_dir_mounts(inputs) == [
+        (str(weights.resolve()), "/rlmesh/input/model/weights")
+    ]
+
+
+def test_local_dir_mounts_override_supplies_local_dir(tmp_path: Any) -> None:
+    from rlmesh.recipes._artifacts import local_dir_mounts
+    from rlmesh.recipes._schema import ArtifactInput
+
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    inputs = (
+        ArtifactInput("weights", "/rlmesh/input/model/weights", uri="hf://org/repo@abc"),
+    )
+    override = ArtifactInput("weights", "/ignored", local_dir=str(ckpt))
+    # The override's local_dir mounts at the DECLARED target the container resolves.
+    assert local_dir_mounts(inputs, (override,)) == [
+        (str(ckpt.resolve()), "/rlmesh/input/model/weights")
+    ]
+
+
+def test_local_dir_mounts_missing_dir_fails_loud(tmp_path: Any) -> None:
+    from rlmesh.recipes._artifacts import local_dir_mounts
+    from rlmesh.recipes._schema import ArtifactInput
+
+    inputs = (ArtifactInput("weights", "/t", local_dir=str(tmp_path / "nope")),)
+    with pytest.raises(FileNotFoundError, match="local_dir is not a directory"):
+        local_dir_mounts(inputs)

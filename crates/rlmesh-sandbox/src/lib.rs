@@ -37,6 +37,10 @@ pub struct SandboxOptions {
     /// `ProjectInstall.src` for build-context staging and content hashing. Only
     /// meaningful for a recipe source with a `build.project`.
     pub context_root: Option<PathBuf>,
+    /// Runtime `(host_dir, container_target)` bind mounts for declared artifact
+    /// inputs. Delivered at `docker run` time, never baked, so they do not enter
+    /// the build hash (one image serves every checkpoint).
+    pub mounts: Vec<(String, String)>,
 }
 
 impl Default for SandboxOptions {
@@ -52,6 +56,7 @@ impl Default for SandboxOptions {
             trust_remote_code: false,
             allow_unpinned_hf: false,
             context_root: None,
+            mounts: Vec::new(),
         }
     }
 }
@@ -533,13 +538,17 @@ pub async fn start_env_async(
     source: EnvironmentSourceRef,
     options: SandboxOptions,
 ) -> std::result::Result<RunResult, SandboxError> {
+    // Mounts are runtime-only (delivered at `docker run`, never baked), so they
+    // are lifted out before `resolve` consumes `options` and excluded from the
+    // build hash.
+    let mounts = options.mounts.clone();
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
     let docker = docker::DockerBackend;
     let artifact = docker.ensure_image(&spec).map_err(|err| {
         SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
     })?;
     let started = docker
-        .run_container_async(&spec, &artifact)
+        .run_container_async(&spec, &artifact, &mounts)
         .await
         .map_err(|err| {
             SandboxError::from_docker_op(err, |m| SandboxError::ContainerStartup { message: m })

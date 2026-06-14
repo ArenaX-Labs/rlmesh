@@ -16,7 +16,7 @@ use rlmesh_sandbox::{
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None) -> SandboxRunInfo: ...
+def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None, mounts_json: str | None = None) -> SandboxRunInfo: ...
 "#
     )
 )]
@@ -36,7 +36,8 @@ def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_pack
         allow_unpinned_hf = false,
         recipe_json = None,
         recipe_provenance = None,
-        context_root = None
+        context_root = None,
+        mounts_json = None
     )
 )]
 pub fn sandbox_start_env(
@@ -54,6 +55,7 @@ pub fn sandbox_start_env(
     recipe_json: Option<&str>,
     recipe_provenance: Option<&str>,
     context_root: Option<&str>,
+    mounts_json: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let source = source.to_string();
     let base_image = base_image.map(str::to_owned);
@@ -64,6 +66,7 @@ pub fn sandbox_start_env(
     let recipe_json = recipe_json.map(str::to_owned);
     let recipe_provenance = recipe_provenance.map(str::to_owned);
     let context_root = context_root.map(PathBuf::from);
+    let mounts = parse_mounts_json(mounts_json)?;
     let vectorization_mode = VectorizationMode::parse(vectorization_mode)
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
 
@@ -85,6 +88,7 @@ pub fn sandbox_start_env(
                 trust_remote_code,
                 allow_unpinned_hf,
                 context_root,
+                mounts,
             },
         )
         .map_err(|err| err.to_string())?;
@@ -168,6 +172,40 @@ fn build_recipe_source(
         document,
         provenance,
     }))
+}
+
+/// Parse `[[host, target], ...]` artifact bind-mount pairs handed in by the
+/// Python sandbox layer (already resolved to absolute host paths). An absent or
+/// empty value means no mounts -- the gym/hf and no-artifact paths.
+fn parse_mounts_json(raw: Option<&str>) -> PyResult<Vec<(String, String)>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|err| PyValueError::new_err(format!("mounts must be valid JSON: {err}")))?;
+    let serde_json::Value::Array(items) = value else {
+        return Err(PyValueError::new_err(
+            "mounts JSON must decode to an array of [host, target] pairs",
+        ));
+    };
+    items
+        .into_iter()
+        .map(|item| match item {
+            serde_json::Value::Array(pair) if pair.len() == 2 => {
+                let host = pair[0].as_str().map(str::to_owned);
+                let target = pair[1].as_str().map(str::to_owned);
+                match (host, target) {
+                    (Some(host), Some(target)) => Ok((host, target)),
+                    _ => Err(PyValueError::new_err(
+                        "each mount pair must be [host: str, target: str]",
+                    )),
+                }
+            }
+            _ => Err(PyValueError::new_err(
+                "each mount must be a [host, target] pair",
+            )),
+        })
+        .collect()
 }
 
 fn parse_kwargs_json(raw: Option<&str>) -> PyResult<BTreeMap<String, serde_json::Value>> {

@@ -1449,7 +1449,7 @@
             "signature": "shutdown() -> None"
           }
         },
-        "signature": "SandboxModel(source: object, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: Sequence[str] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False)",
+        "signature": "SandboxModel(source: object, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: Sequence[str] = (), artifacts: Sequence[ArtifactInput] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False)",
         "stability": "Stable"
       },
       "SandboxVectorEnv": {
