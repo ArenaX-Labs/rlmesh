@@ -10,6 +10,7 @@ Use this when you need exact imports, methods, and backend behavior.
 - {doc}`remote-envs`: remote client base classes and endpoint behavior.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`models`: model worker wrappers.
+- {doc}`adapters`: experimental declarative env-to-model IO adapters.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
 - {doc}`recipes`: experimental environment recipes and the registry.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
@@ -30,6 +31,7 @@ serving
 remote-envs
 contracts
 models
+adapters
 numpy
 torch
 jax

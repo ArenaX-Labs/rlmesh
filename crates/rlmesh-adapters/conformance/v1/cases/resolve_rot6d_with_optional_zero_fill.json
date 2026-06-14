@@ -1,0 +1,180 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "gripper": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"state\" <- concat(eef_pos[:3], eef_quat (quat_xyzw->rot6d), gripper[:1], zeros(3)), pad to 16\n  \"instruction\" <- text \"instruction\"\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:9] (rot6d->axis_angle)\n  \"action/gripper\" <- model[9:10]\n  clip to (-1.0, 1.0)",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": "rot6d",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": null,
+            "encoding": "rot6d",
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": true,
+            "range": null,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": 16,
+        "reshape": null,
+        "type": "state"
+      },
+      {
+        "container": "str",
+        "default": "do the task",
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [2]
+      },
+      {
+        "dtype": "unspecified",
+        "kind": "text"
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam", "eef_pos", "eef_quat", "gripper", "instruction"],
+    "kind": "dict"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "expect": {
+    "describe": "observation:\n  \"image\" <- image \"cam\" (resize 3x4 (bilinear_aa), uint8)\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:6]\n  \"action/gripper\" <- model[6:7] (range (0.0, 1.0)->(-1.0, 1.0)) (sign)\n  clip to (-1.0, 1.0)",
+    "ok": true
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "dtype": "uint8",
+        "height": 3,
+        "key": "image",
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear_aa",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 4
+      }
+    ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [8, 8, 3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam"],
+    "kind": "dict"
+  }
+}

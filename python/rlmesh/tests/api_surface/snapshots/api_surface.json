@@ -55,7 +55,7 @@
       "EnvServer": {
         "kind": "class",
         "stability": "Stable",
-        "signature": "EnvServer(env: EnvLike | Recipe | type[EnvRecipe], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None)",
+        "signature": "EnvServer(env: EnvLike | Recipe | type[EnvRecipe], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "members": {
           "address": {
             "kind": "property",
@@ -449,7 +449,7 @@
       "EnvServer": {
         "kind": "class",
         "stability": "Stable",
-        "signature": "EnvServer(env: EnvLike | Recipe | type[EnvRecipe], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None)",
+        "signature": "EnvServer(env: EnvLike | Recipe | type[EnvRecipe], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "members": {
           "address": {
             "kind": "property",
@@ -718,8 +718,12 @@
       "Model": {
         "kind": "class",
         "stability": "Stable",
-        "signature": "Model(predict_fn: PredictFn[ObsT, ActT], *, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None) -> None",
+        "signature": "Model(predict_fn: Callable[..., Any], *, spec: ModelSpec | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False)",
         "members": {
+          "run": {
+            "kind": "function",
+            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
+          },
           "run_local": {
             "kind": "function",
             "signature": "run_local(env_address: str, *, token: str = '') -> None"
@@ -731,10 +735,6 @@
           "serve": {
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
-          },
-          "run": {
-            "kind": "function",
-            "signature": "run(env_or_address: object, *, token: str = '', max_episodes: int | None = None, close_env: bool = False) -> None"
           }
         }
       },

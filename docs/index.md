@@ -63,6 +63,7 @@ examples
 user-guide/serving-environments
 user-guide/remote-clients
 user-guide/backends
+user-guide/adapters
 user-guide/sandbox
 user-guide/recipes
 ```

@@ -1,0 +1,107 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "error_contains": "encoding quat_xyzw (4 dims) but the space width is 5"
+  },
+  "kind": "resolve",
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": null,
+            "encoding": "rot6d",
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_rot"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": null,
+        "reshape": null,
+        "type": "state"
+      }
+    ]
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [5]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef_quat"],
+    "kind": "dict"
+  }
+}

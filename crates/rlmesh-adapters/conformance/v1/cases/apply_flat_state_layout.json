@@ -1,0 +1,120 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [1]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      ".": {
+        "fields": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "range": null,
+            "role": null
+          },
+          {
+            "dim": 3,
+            "encoding": null,
+            "range": null,
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "type": "layout"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [0.5],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [1]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "state": {
+        "data": [0.0, 1.0, 2.0, 9.0, 3.0, 4.0, 5.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [7]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [0.5],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [1]
+  },
+  "model_spec": {
+    "action": {
+      "components": [
+        {
+          "dim": 1,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "role": "proprio/eef_pos"
+          },
+          {
+            "role": "proprio/gripper"
+          },
+          {
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "key": "state",
+        "type": "state"
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      ".": {
+        "data": [0.0, 1.0, 2.0, 9.0, -7.0, 3.0, 4.0, 5.0],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [8]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [8]
+  },
+  "preserve_inputs": true
+}

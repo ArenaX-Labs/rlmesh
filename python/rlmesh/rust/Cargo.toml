@@ -36,6 +36,7 @@ stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
 rlmesh = { workspace = true }
+rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-sandbox = { workspace = true }
@@ -50,7 +51,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 half = { workspace = true }
-image = { workspace = true, features = ["png"] }
+image = { workspace = true, features = ["png", "jpeg"] }
 pyo3 = { workspace = true, features = [
   "auto-initialize",
   "extension-module",

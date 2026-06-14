@@ -79,6 +79,40 @@ def _install_native_docs_stub() -> None:
     native.StepInfo = dict[str, object]
     native.RenderBundle = dict[str, object]
     native.SandboxRunInfo = dict[str, object]
+
+    # Adapter wire vocabulary, single-sourced from the rlmesh-adapters crate at
+    # runtime via register_constants(); mirrored here so rlmesh.adapters imports
+    # during documentation builds (which use this stub, not the extension).
+    adapter_constants: dict[str, str] = {
+        "ENV_METADATA_KEY": "rlmesh.adapters.v1.env_tags",
+        "MODEL_METADATA_KEY": "rlmesh.adapters.v1.model_spec",
+        "IMAGE_PRIMARY": "image/primary",
+        "IMAGE_SECONDARY": "image/secondary",
+        "INSTRUCTION": "text/instruction",
+        "JOINT_POS": "proprio/joint_pos",
+        "JOINT_VEL": "proprio/joint_vel",
+        "IMAGE_WRIST": "image/wrist",
+        "EEF_POS": "proprio/eef_pos",
+        "EEF_ROT": "proprio/eef_rot",
+        "GRIPPER_POS": "proprio/gripper",
+        "EEF_POS_2": "proprio/eef_pos_2",
+        "EEF_ROT_2": "proprio/eef_rot_2",
+        "GRIPPER_POS_2": "proprio/gripper_2",
+        "ACTION_DELTA_POS": "action/delta_eef_pos",
+        "ACTION_DELTA_ROT": "action/delta_eef_rot",
+        "ACTION_GRIPPER": "action/gripper",
+        "ACTION_DELTA_POS_2": "action/delta_eef_pos_2",
+        "ACTION_DELTA_ROT_2": "action/delta_eef_rot_2",
+        "ACTION_GRIPPER_2": "action/gripper_2",
+    }
+    for name, value in adapter_constants.items():
+        setattr(native, name, value)
+    native.ROTATION_DIMS = {"quat_xyzw": 4, "quat_wxyz": 4, "axis_angle": 3, "rot6d": 6}
+    native.IMAGE_LAYOUTS = ["hwc", "chw"]
+    native.AdapterPlan = _native_type("AdapterPlan")
+    for name in ("adapters_resolve", "adapters_join_check"):
+        setattr(native, name, _native_unavailable)
+
     native.__all__ = sorted(name for name in vars(native) if not name.startswith("_"))
     sys.modules["rlmesh._rlmesh"] = native
 

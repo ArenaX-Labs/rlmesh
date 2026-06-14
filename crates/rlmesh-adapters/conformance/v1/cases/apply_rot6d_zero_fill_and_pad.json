@@ -1,0 +1,244 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "gripper": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [
+        -0.5, -0.3888888955116272, -0.2777777910232544, 0.14794960618019104, -1.0, -1.0, 0.5
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "instruction": {
+        "data": "stack the cups",
+        "kind": "text"
+      },
+      "state": {
+        "data": [
+          0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 1.0, 0.0, 0.0, 0.0,
+          1.0, 0.03999999910593033, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        ],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [16]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [
+      -0.5, -0.3888888955116272, -0.2777777910232544, -0.1666666716337204, -0.0555555559694767,
+      0.0555555559694767, 0.1666666716337204, 0.2777777910232544, 0.3888888955116272, 0.5
+    ],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [10]
+  },
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": "rot6d",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": null,
+            "encoding": "rot6d",
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": true,
+            "range": null,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": 16,
+        "reshape": null,
+        "type": "state"
+      },
+      {
+        "container": "str",
+        "default": "do the task",
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      "cam": {
+        "data": [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [2, 2, 3]
+      },
+      "eef_pos": {
+        "data": [0.10000000149011612, -0.20000000298023224, 0.30000001192092896],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      },
+      "eef_quat": {
+        "data": [0.5, 0.5, 0.5, 0.5],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [4]
+      },
+      "gripper": {
+        "data": [0.03999999910593033, -0.03999999910593033],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [2]
+      },
+      "instruction": {
+        "data": "stack the cups",
+        "kind": "text"
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [2, 2, 3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [2]
+      },
+      {
+        "dtype": "unspecified",
+        "kind": "text"
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam", "eef_pos", "eef_quat", "gripper", "instruction"],
+    "kind": "dict"
+  }
+}

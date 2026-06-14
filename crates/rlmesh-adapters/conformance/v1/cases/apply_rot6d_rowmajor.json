@@ -1,0 +1,172 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [
+        -0.5, -0.3888888955116272, -0.2777777910232544, -0.7477098107337952, -1.0,
+        -0.9357659220695496, 0.5
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "state": {
+        "data": [
+          0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 0.0, 1.0, 0.0, 0.0,
+          1.0
+        ],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [9]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [
+      -0.5, -0.3888888955116272, -0.2777777910232544, -0.1666666716337204, -0.0555555559694767,
+      0.0555555559694767, 0.1666666716337204, 0.2777777910232544, 0.3888888955116272, 0.5
+    ],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [10]
+  },
+  "model_spec": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": "rot6d_rowmajor",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "components": [
+          {
+            "dim": 3,
+            "encoding": null,
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "dim": null,
+            "encoding": "rot6d_rowmajor",
+            "index": null,
+            "optional": false,
+            "range": null,
+            "role": "proprio/eef_rot"
+          }
+        ],
+        "container": "array",
+        "dtype": "float32",
+        "key": "state",
+        "pad_to": null,
+        "reshape": null,
+        "type": "state"
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      "eef_pos": {
+        "data": [0.10000000149011612, -0.20000000298023224, 0.30000001192092896],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      },
+      "eef_quat": {
+        "data": [0.5, 0.5, 0.5, 0.5],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [4]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [4]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["eef_pos", "eef_quat"],
+    "kind": "dict"
+  }
+}
