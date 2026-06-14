@@ -3116,7 +3116,6 @@ name = "rlmesh-python"
 version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
- "half",
  "image",
  "pyo3",
  "pyo3-build-config",

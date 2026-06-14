@@ -4,6 +4,7 @@
 //! Run by `mise run test:cxx` — `e2e_harness <model-binary>`. It is a binary, not
 //! a `cargo test`, so the C/C++ toolchain stays out of `cargo test --workspace`.
 //! The model binary is invoked as `<bin> <tcp-address> 1` (one episode).
+#![allow(clippy::print_stderr)]
 
 use std::process::{Command, ExitCode};
 
