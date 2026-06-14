@@ -99,8 +99,8 @@ def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | No
     if artifact.required:
         raise FileNotFoundError(
             f"ArtifactInput {artifact.name!r} has no uri/local_dir and is required; "
-            "bind it at run time (SandboxModel(artifacts=...)/ModelServer(artifacts=...)) "
-            "or set local_dir="
+            "give it a uri (hf://org/repo[@rev]) so it resolves through the rlmesh "
+            "cache, or set local_dir= to a path on this host"
         )
     return None
 

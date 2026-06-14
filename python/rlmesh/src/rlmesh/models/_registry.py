@@ -15,7 +15,8 @@ from typing import Any, overload
 
 from ..recipes._artifacts import hf_load
 from ..recipes._authoring_model import ModelRecipe, is_model_recipe
-from ..recipes._registry import register as _register_recipe
+from ..recipes._registry import _store as _store_recipe
+from ..recipes._registry import class_origin_dir
 from ..recipes._schema import ArtifactInput
 
 __all__ = ["lookup_model_class", "register"]
@@ -88,7 +89,10 @@ def register(
             "rlmesh.models.register() takes a ModelRecipe subclass or a name string "
             f"with hf=/load=; got {type(source).__name__}"
         )
-    _register_recipe(cls.to_recipe(), overwrite=overwrite)
+    # Record the model class's own defining module as the origin (mirroring the
+    # env class path), so a sandbox launched by registered name stages
+    # ProjectInstall from the user's source tree, not this helper module.
+    _store_recipe(cls.to_recipe(), overwrite=overwrite, origin=class_origin_dir(cls))
     _MODEL_CLASSES[cls.__dict__["name"]] = cls
     return cls
 

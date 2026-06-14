@@ -23,6 +23,7 @@ def _model_recipe(source: object) -> tuple[Recipe, str | None]:
     from .recipes import Recipe, resolve
     from .recipes._authoring_model import as_authored_model_recipe, is_model_recipe
     from .recipes._registry import class_origin_dir, recipe_origin_dir
+    from .recipes._schema import PyMake
 
     context_root: str | None = None
     if isinstance(source, str):
@@ -38,6 +39,19 @@ def _model_recipe(source: object) -> tuple[Recipe, str | None]:
         raise TypeError(
             "SandboxModel requires a model recipe (a ModelRecipe subclass, a "
             "kind='model' Recipe, or a registered model name)"
+        )
+    # A flat registration (register(name, hf=...|load=...)) synthesizes its loader
+    # class at register() time and binds it onto this module in the current
+    # interpreter only. A fresh container imports the module from disk and never
+    # sees that class, so the bootstrap would fail late with an opaque ImportError.
+    # Fail early, on the host, with the actionable fix.
+    if isinstance(recipe.make, PyMake) and recipe.make.entrypoint.split(":", 1)[0] == (
+        "rlmesh.models._registry"
+    ):
+        raise TypeError(
+            f"model {recipe.name!r} is flat-registered (register(name, hf=...|load=...)), "
+            "which is in-process only and cannot be launched in a container. "
+            "Subclass rlmesh.ModelRecipe so its loader lives in an importable module."
         )
     return recipe, context_root
 
