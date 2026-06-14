@@ -295,13 +295,13 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
             Scalar::Int(value) => value as u8,
             Scalar::Float(value) => value as u8,
         }),
-        DType::Int8 => out.extend_from_slice(&(int_value(value) as i8).to_le_bytes()),
-        DType::Int16 => out.extend_from_slice(&(int_value(value) as i16).to_le_bytes()),
-        DType::Int32 => out.extend_from_slice(&(int_value(value) as i32).to_le_bytes()),
-        DType::Int64 => out.extend_from_slice(&int_value(value).to_le_bytes()),
-        DType::Uint16 => out.extend_from_slice(&(int_value(value) as u16).to_le_bytes()),
-        DType::Uint32 => out.extend_from_slice(&(int_value(value) as u32).to_le_bytes()),
-        DType::Uint64 => out.extend_from_slice(&(int_value(value) as u64).to_le_bytes()),
+        DType::Int8 => out.extend_from_slice(&(value.as_i64() as i8).to_le_bytes()),
+        DType::Int16 => out.extend_from_slice(&(value.as_i64() as i16).to_le_bytes()),
+        DType::Int32 => out.extend_from_slice(&(value.as_i64() as i32).to_le_bytes()),
+        DType::Int64 => out.extend_from_slice(&value.as_i64().to_le_bytes()),
+        DType::Uint16 => out.extend_from_slice(&(value.as_i64() as u16).to_le_bytes()),
+        DType::Uint32 => out.extend_from_slice(&(value.as_i64() as u32).to_le_bytes()),
+        DType::Uint64 => out.extend_from_slice(&(value.as_i64() as u64).to_le_bytes()),
         DType::Float16 => out.extend_from_slice(&f16::from_f64(float_value(value)).to_le_bytes()),
         DType::Bfloat16 => out.extend_from_slice(&bf16::from_f64(float_value(value)).to_le_bytes()),
         DType::Float32 => out.extend_from_slice(&(float_value(value) as f32).to_le_bytes()),
@@ -310,19 +310,9 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
     }
 }
 
-fn int_value(value: Scalar) -> i64 {
-    value.as_i64()
-}
-
 fn float_value(value: Scalar) -> f64 {
     match value {
-        Scalar::Bool(value) => {
-            if value {
-                1.0
-            } else {
-                0.0
-            }
-        }
+        Scalar::Bool(value) => f64::from(u8::from(value)),
         Scalar::Int(value) => value as f64,
         Scalar::Float(value) => value,
     }

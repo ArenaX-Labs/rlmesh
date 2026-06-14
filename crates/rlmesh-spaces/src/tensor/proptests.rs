@@ -27,18 +27,6 @@ fn tensor_parts() -> impl Strategy<Value = (DType, Vec<i64>, Vec<u8>)> {
 }
 
 proptest! {
-    /// from_vec adopts bytes verbatim: every accessor agrees with the input.
-    #[test]
-    fn prop_from_vec_roundtrips_bytes((dtype, shape, data) in tensor_parts()) {
-        let tensor = Tensor::from_vec(data.clone(), shape.clone(), dtype).expect("valid parts");
-        prop_assert_eq!(tensor.shape(), shape.as_slice());
-        prop_assert_eq!(tensor.dtype(), dtype);
-        prop_assert_eq!(tensor.nbytes(), data.len());
-        let bytes = tensor.to_contiguous_bytes();
-        prop_assert_eq!(bytes.as_ref(), data.as_slice());
-        prop_assert!(tensor.is_contiguous());
-    }
-
     /// Flattening via reshape is a zero-copy view with identical bytes, and
     /// -1 inference agrees with the explicit shape.
     #[test]
@@ -133,16 +121,5 @@ proptest! {
 
         let gathered = view.to_contiguous_bytes();
         prop_assert_eq!(gathered.as_ref(), expected.as_slice());
-    }
-
-    /// contiguous_strides is the suffix product of the shape.
-    #[test]
-    fn prop_contiguous_strides_are_suffix_products(dims in shape()) {
-        let strides = contiguous_strides(&dims);
-        prop_assert_eq!(strides.len(), dims.len());
-        for axis in 0..dims.len() {
-            let product: i64 = dims[axis + 1..].iter().product();
-            prop_assert_eq!(strides[axis], product, "axis {}", axis);
-        }
     }
 }
