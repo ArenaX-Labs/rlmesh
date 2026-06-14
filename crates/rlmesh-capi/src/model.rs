@@ -435,3 +435,64 @@ fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, CapiError> {
         .to_str()
         .map_err(|_| CapiError::invalid_arg("string is not UTF-8"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn noop_predict(
+        _: *mut c_void,
+        _: *const RlmeshObservation,
+        _: *mut RlmeshBytes,
+    ) -> c_int {
+        0
+    }
+    unsafe extern "C" fn noop_lane(_: *mut c_void, _: *const c_char, _: i32) {}
+    unsafe extern "C" fn noop_close(_: *mut c_void) {}
+
+    fn full_vtable() -> RlmeshModelVtable {
+        RlmeshModelVtable {
+            struct_size: std::mem::size_of::<RlmeshModelVtable>(),
+            predict: Some(noop_predict),
+            on_lane_reset: Some(noop_lane),
+            on_episode_end: Some(noop_lane),
+            on_close: Some(noop_close),
+        }
+    }
+
+    #[test]
+    fn read_vtable_honors_truncated_struct_size() {
+        // A caller that compiled against only {struct_size, predict} reports a
+        // smaller size; the later callbacks must read as None even though they are
+        // non-null in this fully-allocated struct (the OOB-read regression guard).
+        let mut vtable = full_vtable();
+        vtable.struct_size = std::mem::offset_of!(RlmeshModelVtable, on_lane_reset);
+        let Ok(read) = (unsafe { read_vtable(&vtable) }) else {
+            panic!("predict must be covered");
+        };
+        assert!(read.predict.is_some());
+        assert!(read.on_lane_reset.is_none());
+        assert!(read.on_episode_end.is_none());
+        assert!(read.on_close.is_none());
+    }
+
+    #[test]
+    fn read_vtable_rejects_size_too_small_for_predict() {
+        let mut vtable = full_vtable();
+        vtable.struct_size = std::mem::offset_of!(RlmeshModelVtable, predict);
+        assert!(unsafe { read_vtable(&vtable) }.is_err());
+        vtable.struct_size = 0;
+        assert!(unsafe { read_vtable(&vtable) }.is_err());
+    }
+
+    #[test]
+    fn read_vtable_full_struct_reads_every_field() {
+        let Ok(read) = (unsafe { read_vtable(&full_vtable()) }) else {
+            panic!("full struct must read");
+        };
+        assert!(read.predict.is_some());
+        assert!(read.on_lane_reset.is_some());
+        assert!(read.on_episode_end.is_some());
+        assert!(read.on_close.is_some());
+    }
+}
