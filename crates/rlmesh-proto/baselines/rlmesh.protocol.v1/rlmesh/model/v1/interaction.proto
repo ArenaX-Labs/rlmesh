@@ -32,9 +32,6 @@ message ConfigureRouteRequest {
 
   // RLMesh contract for all later Predict calls on this route.
   rlmesh.env.v1.EnvContract env_contract = 2;
-
-  reserved 5;
-  reserved "capabilities";
 }
 
 message ConfigureRouteResponse {}

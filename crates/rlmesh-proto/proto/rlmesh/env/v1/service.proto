@@ -14,9 +14,6 @@ message HandshakeRequest {
   // Every workflow edition the client can operate under. The server selects
   // the highest mutual edition; an empty intersection fails the handshake.
   repeated string supported_workflow_editions = 6;
-
-  reserved 5;
-  reserved "workflow_edition";
 }
 
 message HandshakeResponse {
@@ -42,9 +39,6 @@ message HandshakeResponse {
   // peers carrying the same checksum; both are empty when compatible is false.
   string selected_edition_spec_sha256 = 11;
   string selected_edition_status = 12;
-
-  reserved 7;
-  reserved "workflow_edition";
 }
 
 message ShutdownRequest {

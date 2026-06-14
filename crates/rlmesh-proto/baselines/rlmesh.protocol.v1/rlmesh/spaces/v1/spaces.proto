@@ -8,11 +8,6 @@ import "rlmesh/spaces/v1/types.proto";
 // ======= Fundamental Spaces ======= //
 // ================================== //
 message BoxSpec {
-  // Field 3 (`axiswise`) is reserved. Bounds use `elementwise` when per-element
-  // values are needed.
-  reserved 3;
-  reserved "axiswise";
-
   oneof bounds {
     bool unbounded = 1;
     UniformBounds uniform = 2;
