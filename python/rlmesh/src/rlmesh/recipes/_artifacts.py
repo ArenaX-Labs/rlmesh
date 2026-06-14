@@ -192,7 +192,12 @@ def _from_pretrained(loader: str, source: str, **kwargs: Any) -> Any:
     module = importlib.import_module(module_name)
     obj = module
     for part in attr.split("."):
-        obj = getattr(obj, part)
+        try:
+            obj = getattr(obj, part)
+        except AttributeError as exc:
+            raise AttributeError(
+                f"hf_load loader {loader!r}: {type(obj).__name__} has no attribute {part!r}"
+            ) from exc
     from_pretrained = getattr(obj, "from_pretrained", None)
     if from_pretrained is None:
         raise TypeError(f"{loader} has no from_pretrained(); not a HF loader")

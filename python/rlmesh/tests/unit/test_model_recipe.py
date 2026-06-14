@@ -288,6 +288,49 @@ def test_register_class_and_run_by_name() -> None:
     assert result.total_steps == 3
 
 
+# ── review regressions ──────────────────────────────────────────────────────
+
+
+def test_check_passes_for_model_recipe_with_spec() -> None:
+    # Regression: check() compared dataclasses, but adapter is a ModelSpec instance
+    # pre-round-trip and a dict post, so it spuriously failed. Must not raise now.
+    TinyPolicy.check()
+    InlinePolicy  # noqa: B018 - keep the local-only policy referenced
+
+
+def test_flat_hf_form_projects_importable_recipe() -> None:
+    import rlmesh.models._registry as reg
+    from rlmesh.recipes import resolve as resolve_recipe
+
+    rlmesh.register(
+        "policy/flat-openvla",
+        hf="org/openvla",
+        spec=_SPEC,
+        revision="abc123def",
+        loader="transformers:AutoModel",
+        overwrite=True,
+    )
+    recipe = resolve_recipe("policy/flat-openvla")
+    assert recipe.kind == "model"
+    # auto-declared weights mount with the pinned hf uri (per-run artifacts override it)
+    assert any(
+        a.name == "weights" and a.uri == "hf://org/openvla@abc123def" for a in recipe.inputs
+    )
+    # the projected entrypoint class is bound into the module, so a fresh-process /
+    # sandbox import of "rlmesh.models._registry:<Class>._rlmesh_load" resolves
+    assert recipe.make is not None
+    cls_name = recipe.make.entrypoint.split(":", 1)[1].rsplit(".", 1)[0]
+    assert cls_name.isidentifier()
+    assert hasattr(reg, cls_name)
+
+
+def test_serve_bind_address_resolution() -> None:
+    assert ModelServer(LoopPolicy, "1.2.3.4:9")._bind_address(None) == "1.2.3.4:9"
+    assert ModelServer(LoopPolicy, host="h", port=5)._bind_address(None) == "h:5"
+    assert ModelServer(LoopPolicy, path="/tmp/s")._bind_address(None) == "unix:///tmp/s"
+    assert ModelServer(LoopPolicy)._bind_address("over:1") == "over:1"
+
+
 # ── the REAL adapter path end-to-end (resolve + transform in the loop) ───────
 
 

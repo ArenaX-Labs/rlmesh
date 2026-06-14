@@ -23,7 +23,11 @@ def check(recipe: Recipe) -> None:
         RecipeValidationError: If the recipe does not round-trip through JSON or its
             entrypoint string is malformed.
     """
-    if Recipe.from_json(recipe.to_json()) != recipe:
+    # Compare CANONICAL dicts, not the dataclasses: a model recipe carries its
+    # ModelSpec on `adapter` as a live instance at authoring time but as a plain
+    # Mapping after from_dict, so dataclass equality would spuriously fail even
+    # though the JSON is identical (FINAL_API_SPEC §2.3 / §5).
+    if Recipe.from_json(recipe.to_json()).to_dict() != recipe.to_dict():
         raise RecipeValidationError("recipe does not round-trip through JSON")
     if isinstance(recipe.make, PyMake):
         try:

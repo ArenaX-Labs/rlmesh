@@ -9,6 +9,7 @@ are disjoint, so a registration is unambiguously one kind.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from typing import Any, overload
 
@@ -112,21 +113,30 @@ def _flat_model_class(
     from ..recipes._schema import Build, PipInstall
 
     build = Build(pip=[PipInstall(list(packages))]) if packages else Build()
-    namespace: dict[str, Any] = {
-        "name": name,
-        "build": build,
-        "spec": spec,
-        "inputs": tuple(artifacts),
-        "__module__": __name__,
-    }
+    class_name = _class_name(name)
 
     if hf is not None:
+        # Auto-declare the weights mount (FINAL_API_SPEC §6.5); a per-run artifact
+        # override (ModelServer/SandboxModel artifacts=) replaces it by name, so the
+        # documented "launch-arg wins" checkpoint swap actually takes effect.
+        rev = f"@{revision}" if revision else ""
+        weights = ArtifactInput(
+            "weights", "/rlmesh/input/model/weights", uri=f"hf://{hf}{rev}"
+        )
+        inputs = _merge_by_name((weights,), artifacts)
+
         def load_fn(self: ModelRecipe) -> None:
+            # Load from the mount the resolver materialized, not a second download.
             self._policy = hf_load(  # type: ignore[attr-defined]
-                hf, revision=revision, loader=loader, trust_remote_code=trust_remote_code
+                hf,
+                revision=revision,
+                loader=loader,
+                trust_remote_code=trust_remote_code,
+                local_dir=self.input_path("weights"),
             )
     else:
         assert load is not None
+        inputs = tuple(artifacts)
 
         def load_fn(self: ModelRecipe) -> None:
             from .._bootstrap.entrypoint import resolve_entrypoint
@@ -137,14 +147,43 @@ def _flat_model_class(
     def predict_fn(self: ModelRecipe, observation: Any) -> Any:
         return _turnkey_predict(self._policy, observation)  # type: ignore[attr-defined]
 
-    namespace["load"] = load_fn
-    namespace["predict"] = predict_fn
-    cls = type(_class_name(name), (ModelRecipe,), namespace)
+    namespace: dict[str, Any] = {
+        "name": name,
+        "build": build,
+        "spec": spec,
+        "inputs": inputs,
+        "load": load_fn,
+        "predict": predict_fn,
+        "__module__": __name__,
+        "__qualname__": class_name,
+    }
+    cls = type(class_name, (ModelRecipe,), namespace)
+    # Bind the synthesized class into THIS module so the projected entrypoint
+    # ``rlmesh.models._registry:<Class>._rlmesh_load`` imports in a fresh process /
+    # sandbox (the local path uses the live class in _MODEL_CLASSES directly).
+    setattr(sys.modules[__name__], class_name, cls)
     return cls
 
 
+def _merge_by_name(
+    defaults: tuple[ArtifactInput, ...], overrides: Sequence[ArtifactInput]
+) -> tuple[ArtifactInput, ...]:
+    """Overlay per-run artifact overrides onto defaults, keyed by name."""
+    by_name = {a.name: a for a in defaults}
+    for override in overrides:
+        by_name[override.name] = override
+    return tuple(by_name.values())
+
+
 def _class_name(name: str) -> str:
-    return "".join(part.capitalize() for part in name.replace("/", "_").split("_")) or "FlatModel"
+    """A valid Python identifier for the synthesized class (the entrypoint needs it)."""
+    import re
+
+    parts = [p for p in re.split(r"[^0-9A-Za-z]+", name) if p]
+    cleaned = "".join(p[:1].upper() + p[1:] for p in parts)
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = "FlatModel" + cleaned
+    return cleaned
 
 
 def _turnkey_predict(policy: Any, observation: Any) -> Any:

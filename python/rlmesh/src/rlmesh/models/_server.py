@@ -156,10 +156,15 @@ class ModelServer:
         finally:
             if self._on_close is not None:
                 self._on_close()
+            # Shut down the remote env BEFORE closing the local client connection.
+            # When we own the client (an address/EnvServer was given), shutdown rides
+            # the client (which can signal the remote); a directly-passed env is shut
+            # down directly. A bare address string has no shutdown method, so routing
+            # through the client is what actually stops the remote.
+            if close_env:
+                _shutdown(client if owns_client else env_or_address)
             if owns_client:
                 _close(client)
-            if close_env:
-                _shutdown(env_or_address)
         return RunResult(episodes=tuple(episodes))
 
     def _run_episode(
@@ -230,18 +235,30 @@ class ModelServer:
         return adapter
 
     # ── topology B: the model is dialed (served endpoint) ──
-    def serve(self, address: str | None = None) -> None:
+    def serve(self, address: str | None = None, *, token: str = "") -> None:
         """Host this policy as a model endpoint (blocking).
 
-        Delegates to the native ``rlmesh.numpy.Model`` worker. A plain (spec=None)
-        model serves directly; an adapted (spec=) served model resolves against the
-        env contract the runtime delivers via ``ConfigureRoute`` -- the sandboxed
-        served path, wired by the runtime, not here.
+        Delegates to the native ``rlmesh.numpy.Model`` worker, honoring the
+        constructor's bind parameters (``host``/``port``/``path``/``address``) and
+        ``options``. A plain (spec=None) model serves directly; an adapted (spec=)
+        served model resolves against the env contract the runtime delivers via
+        ``ConfigureRoute`` -- the sandboxed served path, wired by the runtime, not here.
         """
         from ..numpy import Model
 
         worker = Model(self._predict, on_reset=self._on_reset, on_close=self._on_close)
-        worker.serve(address or self._address or "127.0.0.1:0")
+        worker.serve(self._bind_address(address), token=token, options=self._options)
+
+    def _bind_address(self, override: str | None) -> str:
+        if override is not None:
+            return override
+        if self._address is not None:
+            return self._address
+        if self._path is not None:
+            return f"unix://{self._path}"
+        if self._host is not None or self._port is not None:
+            return f"{self._host or '127.0.0.1'}:{self._port or 0}"
+        return "127.0.0.1:0"
 
 
 def _coerce_model(
@@ -394,12 +411,24 @@ def _close(client: Any) -> None:
 
 
 def _shutdown(target: object) -> None:
-    """Close/shutdown the driven env: an EnvServer exposes shutdown(), a plain env close()."""
+    """Close/shutdown the driven env: an EnvServer exposes shutdown(), a plain env close().
+
+    A reason argument is passed when the callable accepts one (decided by binding the
+    signature, NOT by catching a TypeError from the call -- so an unrelated TypeError
+    raised inside the callable is never masked).
+    """
+    import inspect
+
     for name in ("shutdown", "close"):
         fn = getattr(target, name, None)
-        if callable(fn):
-            try:
-                fn("model run complete")
-            except TypeError:
-                fn()
-            return
+        if not callable(fn):
+            continue
+        try:
+            inspect.signature(fn).bind("model run complete")
+            accepts_reason = True
+        except TypeError:
+            accepts_reason = False
+        except (ValueError, KeyError):  # un-introspectable builtin
+            accepts_reason = False
+        fn("model run complete") if accepts_reason else fn()
+        return

@@ -830,6 +830,7 @@ class Recipe:
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical JSON-shaped mapping for this recipe."""
+        adapter = _adapter_to_dict(self.adapter)
         return {
             "name": self.name,
             "make": _make_to_dict(self.make),
@@ -837,7 +838,13 @@ class Recipe:
             "setup": _setup_to_dict(self.setup),
             "requires": {"imports": list(self.requires.imports)},
             "summary": self.summary,
-            "adapter": _adapter_to_dict(self.adapter),
+            "adapter": adapter,
+            # Back-compat mirror: the SHIPPED Rust serde (and older readers) still key
+            # off "annotations"; emit it too so a recipe that round-trips through the
+            # current Rust core does not lose its published tags before the in-container
+            # publish path runs. Removed once the Rust field is renamed with a serde
+            # alias (FINAL_API_SPEC §7.4/§9.3). `from_dict` reads "adapter" first.
+            "annotations": adapter,
             "recipe_version": self.recipe_version,
             "kind": self.kind,
             "inputs": [_artifact_to_dict(a) for a in self.inputs],
