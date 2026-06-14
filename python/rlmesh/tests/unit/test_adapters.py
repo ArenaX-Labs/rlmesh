@@ -1301,6 +1301,59 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
         adapt.ImageInput("img", stack=10_000)
 
 
+# ---------------------------------------------------------------------------
+# Vector-env interim guard (pending the per-lane affinity manager)
+# ---------------------------------------------------------------------------
+
+
+def test_io_adapter_is_stateful_only_with_frame_history() -> None:
+    env = image_env(4, 4)
+    stateless = resolve(
+        env,
+        adapt.ModelSpec(
+            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY),),
+            action=SMOLVLA.action,
+        ),
+    )
+    stateful = resolve(
+        env,
+        adapt.ModelSpec(
+            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
+            action=SMOLVLA.action,
+        ),
+    )
+    assert stateless.is_stateful is False
+    assert stateful.is_stateful is True
+
+
+def test_stateful_adapter_rejected_on_vector_env() -> None:
+    # The runtime now permits num_envs>1, but a stateful adapter has no per-lane
+    # buffer axis yet, so it must fail loud rather than bleed frames across lanes.
+    from rlmesh.numpy import Model
+
+    env = image_env(4, 4)
+    contract: Any = SimpleNamespace(
+        metadata=env.tags.to_metadata(),
+        observation_space=env.obs_space,
+        action_space=env.action_space,
+        num_envs=2,
+    )
+    fake_env: Any = SimpleNamespace(env_contract=contract)
+
+    def predict(payload: dict[str, Any]) -> Any:
+        return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
+
+    model = Model(
+        predict,
+        spec=adapt.ModelSpec(
+            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
+            action=SMOLVLA.action,
+        ),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="vector env"):
+        model.run(fake_env, max_episodes=1)
+
+
 def test_euler_xyz_encoding_converts_end_to_end() -> None:
     # An env reporting orientation as roll-pitch-yaw, a model wanting axis_angle.
     env = Env(

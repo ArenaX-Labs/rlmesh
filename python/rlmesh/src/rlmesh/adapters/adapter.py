@@ -80,6 +80,19 @@ class AdapterBase(ABC, Generic[ActionT]):
         ``on_reset`` callback so state never leaks across episodes.
         """
 
+    @property
+    def is_stateful(self) -> bool:
+        """Whether the adapter carries per-stream state across steps.
+
+        A stateful adapter must keep affinity to its lane (one instance per
+        ``(session, route, env_index)``) and so cannot yet be shared across
+        the lanes of a vector env. Custom adapters default to stateful (the
+        safe assumption); :class:`IOAdapter` derives this from its frame
+        history. The per-lane affinity manager that makes vectorized stateful
+        adapters correct is not implemented yet.
+        """
+        return True
+
     def describe(self) -> str:
         """Return a human-readable summary of the adapter."""
         return f"{type(self).__name__} (custom adapter)"
@@ -213,6 +226,11 @@ class IOAdapter(AdapterBase[NumpyArray]):
     def reset(self) -> None:
         """Clear the frame-history buffers at an episode boundary."""
         self._buffers.clear()
+
+    @property
+    def is_stateful(self) -> bool:
+        """A resolved adapter is stateful only when it stacks frame history."""
+        return bool(self._stacks)
 
     def _apply_action_enc(self, raw_action: object) -> object:
         if not self._action_enc_shims:

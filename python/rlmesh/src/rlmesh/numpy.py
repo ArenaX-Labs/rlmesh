@@ -336,15 +336,27 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
         )
 
     def _wire_adapter(self, env_or_address: object) -> None:
-        from .adapters import resolve_from_contract
+        from .adapters import AdapterResolutionError, resolve_from_contract
 
         spec = self._spec
         assert spec is not None  # guarded by the caller
+        contract = _env_contract(env_or_address)
         adapter = resolve_from_contract(
-            _env_contract(env_or_address),
+            contract,
             spec,
             trust_entrypoints=self._trust_entrypoints,
         )
+        # Interim guard: the runtime now allows num_envs>1, but a stateful
+        # adapter still keeps a single set of payload-keyed buffers with no
+        # per-lane axis, so running it across a vector env would bleed frame
+        # history between lanes. Fail loud until the per-lane affinity manager
+        # lands; stateless adapters are unaffected.
+        if contract.num_envs > 1 and adapter.is_stateful:
+            raise AdapterResolutionError(
+                "a stateful adapter cannot run on a vector env yet "
+                f"(num_envs={contract.num_envs}); per-lane adapter affinity is "
+                "not implemented. Use num_envs=1 or a stateless adapter."
+            )
         wrapped = cast(
             "PredictFn[NumpyValue, NumpyValue]",
             adapter.wrap_predict(self._raw_predict),
