@@ -134,19 +134,27 @@ pub fn evaluate_handshake(
 
 /// Verify a provisional edition's content pin against a peer's handshake response.
 ///
-/// A sealed edition is identified by its string alone, so this is a no-op for it.
-/// For a provisional edition the peer's `spec_sha256` must equal this build's
-/// [`CURRENT_WORKFLOW_EDITION_SPEC_SHA256`]; a mismatch means the two builds
-/// carry different (still-mutable) contracts under the same edition string and
-/// must not interoperate. The error names both builds so an operator can tell
-/// which side is the stale beta.
+/// The selected edition is content-pinned when *either* this build or the peer
+/// treats it as provisional — including a peer that omits the status/checksum
+/// fields entirely, which must not slip through as if unpinned. The peer's
+/// `spec_sha256` must then equal this build's [`CURRENT_WORKFLOW_EDITION_SPEC_SHA256`];
+/// a mismatch (or an absent checksum) means the two builds carry different
+/// (still-mutable) contracts under the same edition string and must not
+/// interoperate. A sealed edition both sides agree on is identified by its string
+/// alone. The error names both builds so an operator can tell which side is the
+/// stale beta.
 pub fn check_provisional_edition_pin(
     selected_edition: &str,
     peer_status: &str,
     peer_spec_sha256: &str,
     peer_version: &str,
 ) -> Result<(), String> {
-    if peer_status != "provisional" || peer_spec_sha256 == CURRENT_WORKFLOW_EDITION_SPEC_SHA256 {
+    let we_pin = selected_edition == CURRENT_WORKFLOW_EDITION
+        && CURRENT_WORKFLOW_EDITION_STATUS == "provisional";
+    if !we_pin && peer_status != "provisional" {
+        return Ok(());
+    }
+    if peer_spec_sha256 == CURRENT_WORKFLOW_EDITION_SPEC_SHA256 {
         return Ok(());
     }
     let this_version = env!("CARGO_PKG_VERSION");
@@ -374,10 +382,14 @@ mod tests {
         assert!(err.contains(CURRENT_WORKFLOW_EDITION));
         assert!(err.contains("0.1.0-beta.1"));
 
-        // A sealed edition is identified by its string alone — sha is not pinned.
+        // A different (older, sealed) edition is identified by its string alone.
+        assert!(check_provisional_edition_pin("2025.01", "sealed", "deadbeef", "9.9.9").is_ok());
+
+        // A peer that omits the status/checksum while this build is provisional is
+        // refused, not accepted as unpinned.
         assert!(
-            check_provisional_edition_pin(CURRENT_WORKFLOW_EDITION, "sealed", "deadbeef", "9.9.9")
-                .is_ok()
+            check_provisional_edition_pin(CURRENT_WORKFLOW_EDITION, "", "", "0.1.0-beta.0")
+                .is_err()
         );
     }
 }

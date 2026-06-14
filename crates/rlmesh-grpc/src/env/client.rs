@@ -551,8 +551,8 @@ mod tests {
     };
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
+        MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, supported_workflow_editions,
     };
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::ReceiverStream;
@@ -879,6 +879,7 @@ mod tests {
                 server_protocol_generation: PROTOCOL_GENERATION.to_string(),
                 min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
                 selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+                selected_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
                 supported_workflow_editions: supported_workflow_editions(),
                 env_contract: Some(EnvContract {
                     observation_space: Some(SpaceSpec::default()),

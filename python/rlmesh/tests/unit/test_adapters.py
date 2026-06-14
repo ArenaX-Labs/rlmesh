@@ -469,7 +469,7 @@ def test_describe_mentions_zero_fill_for_absent_optional_roles():
 
 def test_role_constants_match_rust_crate():
     """Roles are single-sourced from the crate; this catches a role added
-    to ``v1/roles/*.rs`` but not exposed through the binding's table."""
+    to ``roles/*.rs`` but not exposed through the binding's table."""
     import re
     from pathlib import Path
 
@@ -478,7 +478,6 @@ def test_role_constants_match_rust_crate():
         / "crates"
         / "rlmesh-adapters"
         / "src"
-        / "v1"
         / "roles"
     )
     rust_roles: dict[str, str] = {}
