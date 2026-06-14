@@ -38,7 +38,10 @@ now use a recursive, raw-bytes `SpaceValueNode` encoding instead of base64-in-`S
 episodes rather than reporting a fabricated `0`. The protocol generation stays `rlmesh.protocol.v1`
 (the surface is still beta-mutable before the stable release), and the checked-in public baseline
 tracks the current surface, so peers must run the same beta release. The generation seals with the
-stable release, after which any such change requires a new generation.
+stable release, after which any such change requires a new generation. The provisional workflow
+edition is content-pinned at the handshake (the peers exchange the edition spec's checksum), so
+mismatched beta builds now fail fast at connect with a clear error rather than diverging
+mid-session.
 
 ## Framework Version Floors
 

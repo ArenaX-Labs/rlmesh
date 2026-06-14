@@ -770,7 +770,7 @@ mod tests {
         HandshakeRequest {
             protocol_generation: PROTOCOL_GENERATION.to_string(),
             client_name: "client".to_string(),
-            client_version: "0.1.0-beta.2".to_string(),
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
             capabilities: Default::default(),
             supported_workflow_editions: offered_editions
                 .iter()
