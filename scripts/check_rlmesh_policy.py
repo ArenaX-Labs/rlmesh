@@ -20,7 +20,7 @@ VERSION_RE = re.compile(
     r"(?:\+[A-Za-z0-9.-]+)?$",
     re.IGNORECASE,
 )
-STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str = "(?P<value>[^"]+)";')
+STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
 STR_SLICE_CONST_RE = re.compile(
     r"pub const (?P<name>[A-Z0-9_]+): &\[&str\]\s*=\s*&\[(?P<values>[^\]]*)\];",
     re.DOTALL,
@@ -227,6 +227,30 @@ def _validate_protocol_and_workflow(
                 f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
             )
 
+    # The current edition's status + spec checksum constants must match its
+    # manifest entry (which _validate_workflow_editions verifies against the spec
+    # file), keeping the content-pin the runtime ships honest with the contract.
+    current_edition = workflow.get("current_edition")
+    editions = workflow.get("editions")
+    current_entry = editions.get(current_edition, {}) if isinstance(editions, dict) else {}
+    edition_consts = {
+        "CURRENT_WORKFLOW_EDITION_STATUS": (
+            f'[workflow.editions."{current_edition}"].status',
+            current_entry.get("status"),
+        ),
+        "CURRENT_WORKFLOW_EDITION_SPEC_SHA256": (
+            f'[workflow.editions."{current_edition}"].spec_sha256',
+            current_entry.get("spec_sha256"),
+        ),
+    }
+    for name, (manifest_key, value) in edition_consts.items():
+        if not isinstance(value, str):
+            errors.append(f"{manifest_key} must be a string")
+        elif constants.get(name) != value:
+            errors.append(
+                f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
+            )
+
     supported = workflow.get("supported_editions")
     if not isinstance(supported, list) or not all(
         isinstance(item, str) for item in supported
@@ -319,19 +343,21 @@ def _validate_workflow_editions(
             errors.append(f"{prefix}.spec does not exist: {spec}")
             continue
 
+        # Every edition records its spec checksum: provisional editions are
+        # content-pinned (peers interoperate only on a matching contract), and a
+        # sealed edition's checksum is its frozen identity. Either way it must
+        # match the spec file on disk.
         spec_sha256 = entry.get("spec_sha256")
-        if status == "sealed":
-            if not isinstance(spec_sha256, str):
-                errors.append(f"{prefix}.spec_sha256 is required once sealed")
-            else:
-                actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
-                if actual != spec_sha256:
-                    errors.append(
-                        f"{prefix}: sealed spec {spec} was modified "
-                        f"(sha256 {actual}, manifest declares {spec_sha256})"
-                    )
-        elif spec_sha256 is not None:
-            errors.append(f"{prefix}.spec_sha256 is only recorded when sealed")
+        if not isinstance(spec_sha256, str):
+            errors.append(f"{prefix}.spec_sha256 is required (content-pin)")
+        else:
+            actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
+            if actual != spec_sha256:
+                noun = "sealed" if status == "sealed" else "provisional"
+                errors.append(
+                    f"{prefix}: {noun} spec {spec} sha256 is {actual}, "
+                    f"manifest declares {spec_sha256}"
+                )
 
     return errors
 

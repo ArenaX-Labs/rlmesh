@@ -1,5 +1,5 @@
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map,
+    PROTOCOL_GENERATION, capabilities, capability_map, check_provisional_edition_pin,
     core::v1::OperationTelemetry,
     model::v1::{
         CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
@@ -124,6 +124,13 @@ impl ModelClient {
         if !response.compatible {
             return Err(ProtocolError::HandshakeFailed(response.error_message).into());
         }
+        check_provisional_edition_pin(
+            &response.selected_workflow_edition,
+            &response.selected_edition_status,
+            &response.selected_edition_spec_sha256,
+            &response.server_version,
+        )
+        .map_err(ProtocolError::HandshakeFailed)?;
 
         self.setup_join_stream().await?;
         self.state = ClientState::Ready;

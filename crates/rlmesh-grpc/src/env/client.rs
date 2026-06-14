@@ -16,7 +16,8 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, supported_workflow_editions,
+    PROTOCOL_GENERATION, capabilities, capability_map, check_provisional_edition_pin,
+    supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
@@ -166,6 +167,13 @@ impl EnvClient {
         if !res.compatible {
             return Err(ProtocolError::HandshakeFailed(res.error_message).into());
         }
+        check_provisional_edition_pin(
+            &res.selected_workflow_edition,
+            &res.selected_edition_status,
+            &res.selected_edition_spec_sha256,
+            &res.server_version,
+        )
+        .map_err(ProtocolError::HandshakeFailed)?;
 
         let env_contract = res.env_contract.ok_or_else(|| {
             GrpcError::from(ProtocolError::HandshakeFailed(
