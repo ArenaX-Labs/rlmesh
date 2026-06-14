@@ -39,6 +39,14 @@ pub const CURRENT_WORKFLOW_EDITION_SPEC_SHA256: &str =
     "c03b0c916521485492aa02507cacb7888a0752fc72860e53231296de4a27007f";
 
 /// Stable capability names exchanged during handshake.
+///
+/// Capabilities are advisory: a present key means the named optional feature is
+/// available, an absent key means it is not. They gate optional, meaning-
+/// preserving features and never change the meaning of an interaction (that is an
+/// edition or generation change). House rule: any new field whose absence an
+/// older peer would silently mishandle is paired with a capability the emitter
+/// checks (via [`has_capability`]) before sending — if absence would be *wrong*
+/// rather than merely less-rich, it is an edition, not a capability.
 pub mod capabilities {
     /// Core environment handshake and Join stream.
     pub const ENV_SERVICE_V1: &str = "rlmesh.env.service.v1";
@@ -182,6 +190,11 @@ pub fn capability_map(names: &[&str]) -> HashMap<String, String> {
         .collect()
 }
 
+/// Whether a peer's handshake capability map advertises the named capability.
+pub fn has_capability(map: &HashMap<String, String>, name: &str) -> bool {
+    map.get(name).is_some_and(|value| value == "true")
+}
+
 pub mod common {
     pub mod v1 {
         tonic::include_proto!("rlmesh.common.v1");
@@ -223,6 +236,17 @@ mod tests {
 
     fn offer(editions: &[&str]) -> Vec<String> {
         editions.iter().map(|edition| edition.to_string()).collect()
+    }
+
+    #[test]
+    fn has_capability_reads_advertised_features() {
+        use super::{capabilities, capability_map, has_capability};
+        let map = capability_map(&[capabilities::ENV_SERVICE_V1]);
+        assert!(has_capability(&map, capabilities::ENV_SERVICE_V1));
+        assert!(!has_capability(
+            &map,
+            capabilities::MODEL_CONCURRENT_PREDICT_V1
+        ));
     }
 
     #[test]

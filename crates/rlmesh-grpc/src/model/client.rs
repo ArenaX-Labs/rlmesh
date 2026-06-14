@@ -10,6 +10,7 @@ use rlmesh_proto::{
     },
     supported_workflow_editions,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -51,6 +52,7 @@ pub struct ModelClient {
     pending: PendingResponses,
     request_counter: Arc<AtomicU64>,
     last_telemetry: Option<OperationTelemetry>,
+    server_capabilities: HashMap<String, String>,
 }
 
 impl ModelClient {
@@ -76,6 +78,7 @@ impl ModelClient {
             pending: Default::default(),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
+            server_capabilities: HashMap::new(),
         })
     }
 
@@ -98,6 +101,17 @@ impl ModelClient {
 
     pub fn take_last_telemetry(&mut self) -> Option<OperationTelemetry> {
         self.last_telemetry.take()
+    }
+
+    /// Whether the server advertised that it pipelines Join-stream predicts
+    /// (`rlmesh.model.concurrent_predict.v1`). Advisory: overlapping predicts via
+    /// [`predict_concurrent`](Self::predict_concurrent) work either way, but
+    /// serialize behind the handler when this is false.
+    pub fn server_pipelines_predict(&self) -> bool {
+        rlmesh_proto::has_capability(
+            &self.server_capabilities,
+            capabilities::MODEL_CONCURRENT_PREDICT_V1,
+        )
     }
 
     pub async fn handshake(&mut self) -> Result<(), GrpcError> {
@@ -140,6 +154,7 @@ impl ModelClient {
             ))
             .into());
         }
+        self.server_capabilities = response.capabilities;
 
         self.setup_join_stream().await?;
         self.state = ClientState::Ready;
@@ -464,6 +479,7 @@ mod tests {
             pending: Arc::clone(&pending),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_telemetry: None,
+            server_capabilities: HashMap::new(),
         };
         (client, request_rx, pending)
     }

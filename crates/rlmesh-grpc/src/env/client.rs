@@ -34,6 +34,9 @@ pub struct EnvHandshake {
     pub server_protocol_generation: String,
     pub workflow_edition: String,
     pub supported_workflow_editions: Vec<String>,
+    /// Optional features the server advertised (advisory; query with
+    /// [`rlmesh_proto::has_capability`]).
+    pub capabilities: std::collections::HashMap<String, String>,
 }
 
 /// Environment client that connects to an EnvService server.
@@ -197,6 +200,7 @@ impl EnvClient {
             server_protocol_generation: res.server_protocol_generation,
             workflow_edition: res.selected_workflow_edition,
             supported_workflow_editions: res.supported_workflow_editions,
+            capabilities: res.capabilities,
         };
         self.state = ClientState::Ready;
 
