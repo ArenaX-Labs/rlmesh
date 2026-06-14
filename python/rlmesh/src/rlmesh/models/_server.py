@@ -228,11 +228,24 @@ class ModelServer:
         """Host this policy as a model endpoint (blocking).
 
         Binds at ``address``, else the constructor's ``host``/``port``/``path``,
-        and forwards ``options``. A spec-less model serves directly; a model with a
-        spec resolves against the env contract the runtime delivers when it dials in.
+        and forwards ``options``. A spec-less model (``spec=None`` or ``DELEGATED``)
+        serves directly. A model carrying a ``ModelSpec`` must be driven with
+        ``run(env)`` instead: its adapter resolves from an env contract, which a
+        passive endpoint only sees when a client dials in, and serve-side
+        resolution is not implemented. Serving the raw predict would silently skip
+        the spec's observation/action transforms, so it is refused rather than run
+        wrong.
         """
+        from ..adapters import ModelSpec
         from ..numpy import Model
 
+        if isinstance(self._spec, ModelSpec):
+            raise NotImplementedError(
+                "serve() cannot host a spec'd model yet: its adapter resolves from "
+                "an env contract, which a served endpoint only sees on dial-in "
+                "(not implemented). Drive it with ModelServer(model).run(env), or "
+                "use spec=DELEGATED if the model adapts its own observations."
+            )
         worker = Model(self._predict, on_reset=self._on_reset, on_close=self._on_close)
         worker.serve(self._bind_address(address), token=token, options=self._options)
 

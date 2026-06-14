@@ -229,6 +229,12 @@ impl EffectiveSandboxSpec {
             build: recipe.as_ref().map(|r| &r.build),
             provenance: recipe_provenance,
             content_digest: content_digest.as_deref(),
+            // Only a non-default kind perturbs the hash, so env recipes and
+            // gym/hf keep their existing image tags; a model recipe gets its own.
+            kind: recipe
+                .as_ref()
+                .map(|r| r.kind.as_str())
+                .filter(|kind| *kind != "env"),
         })
         .map_err(SandboxError::invalid_option)?;
 
@@ -294,6 +300,13 @@ struct BuildHashInput<'a> {
     provenance: Option<RecipeProvenance>,
     /// A content digest of the staged `ProjectInstall` tree (7.1A).
     content_digest: Option<&'a str>,
+    /// The recipe kind, when it changes the baked ENTRYPOINT. `entrypoint_for`
+    /// derives the model bootstrap for kind="model", so a model and an env with a
+    /// byte-identical build phase must not collide on one cached image and reuse
+    /// the wrong bootstrap. Omitted for env recipes and gym/hf (the default
+    /// entrypoint), so their build hashes stay byte-stable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
 }
 
 /// Gate a recipe's build phase by provenance (spec section 2 / 7.1E / 7.1G).
@@ -707,6 +720,43 @@ mod tests {
         )
         .unwrap();
         assert_ne!(installed.build_hash, remote.build_hash);
+    }
+
+    #[test]
+    fn build_hash_keys_recipe_kind() {
+        // entrypoint_for bakes a different bootstrap per kind, so a model recipe
+        // and an env recipe with a byte-identical build phase must NOT share an
+        // image tag -- else the reused image starts the wrong bootstrap and the
+        // readiness probe fails against the expected service.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "gym", "env_id": "E-v0"},
+            "build": {"base": "python@sha256:abc"},
+        });
+        let mut model_doc = base.clone();
+        model_doc["kind"] = serde_json::json!("model");
+        let env = EffectiveSandboxSpec::resolve(
+            recipe_source(base.clone(), RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        let model = EffectiveSandboxSpec::resolve(
+            recipe_source(model_doc, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_ne!(env.build_hash, model.build_hash);
+
+        // Byte-stable: an explicit kind="env" hashes identically to the default,
+        // so existing env images keep their tags.
+        let mut explicit_env_doc = base.clone();
+        explicit_env_doc["kind"] = serde_json::json!("env");
+        let explicit_env = EffectiveSandboxSpec::resolve(
+            recipe_source(explicit_env_doc, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(env.build_hash, explicit_env.build_hash);
     }
 
     #[test]
