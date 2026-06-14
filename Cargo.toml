@@ -95,3 +95,10 @@ todo = "warn"
 unimplemented = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
+
+# Keep unwinding well-defined across the rlmesh-capi `extern "C"` boundary: every
+# FFI body relies on `catch_unwind`, which is a no-op under `panic = "abort"` (a
+# panic would then be instant UB). Pin unwind so a future size-tuning edit can't
+# silently break the C ABI.
+[profile.release]
+panic = "unwind"

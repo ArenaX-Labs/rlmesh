@@ -3054,6 +3054,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rlmesh-capi"
+version = "0.1.0-beta.2"
+dependencies = [
+ "async-trait",
+ "rlmesh",
+ "rlmesh-grpc",
+ "rlmesh-spaces",
+ "tokio",
+]
+
+[[package]]
 name = "rlmesh-cli"
 version = "0.1.0-beta.3"
 dependencies = [

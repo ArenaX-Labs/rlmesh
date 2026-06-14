@@ -22,6 +22,11 @@ git-cliff = "2.13"
 protoc = "35"
 buf = "1.70"
 
+# C/C++ bindings (rlmesh-capi): the compiler is zig (pinned above); clang-format is
+# the rustfmt/ruff-format analogue; cmake drives the find_package packaging smoke.
+"pipx:clang-format" = "20.1.0"
+cmake = "4.3"
+
 # Hooks
 prek = "0.4"
 fnox = "1.25"
@@ -61,7 +66,7 @@ run = "rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown
 # ──────────────────────────────────────────────
 [tasks."fmt"]
 description = "Format all source files"
-depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:oxfmt"]
+depends = ["fmt:rust", "fmt:python", "fmt:proto", "fmt:oxfmt", "fmt:cxx"]
 
 [tasks."fmt:rust"]
 description = "Format Rust code"
@@ -84,7 +89,13 @@ run = "git ls-files -z --cached --others --exclude-standard -- '*.md' '*.toml' '
 # ──────────────────────────────────────────────
 [tasks."fmt:check"]
 description = "Check formatting without modifying files"
-depends = ["fmt:check:rust", "fmt:check:python", "fmt:check:proto", "fmt:check:oxfmt"]
+depends = [
+  "fmt:check:rust",
+  "fmt:check:python",
+  "fmt:check:proto",
+  "fmt:check:oxfmt",
+  "fmt:check:cxx",
+]
 
 [tasks."fmt:check:rust"]
 description = "Check Rust formatting"
@@ -93,6 +104,14 @@ run = "cargo fmt --all --check"
 [tasks."fmt:check:python"]
 description = "Check Python formatting"
 run = "uv run ruff format --check"
+
+[tasks."fmt:cxx"]
+description = "Format the C/C++ bindings (clang-format)"
+run = "clang-format -i crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*/*.c*"
+
+[tasks."fmt:check:cxx"]
+description = "Check the C/C++ binding formatting"
+run = "clang-format --dry-run --Werror crates/rlmesh-capi/include/*.h* crates/rlmesh-capi/examples/*/*.c*"
 
 [tasks."fmt:check:proto"]
 description = "Check Protobuf formatting"
@@ -250,8 +269,8 @@ depends = [
 # Test
 # ──────────────────────────────────────────────
 [tasks."test"]
-description = "Run Rust tests plus Python unit and integration tests"
-depends = ["test:rust", "test:python"]
+description = "Run Rust tests, Python unit/integration tests, and the C/C++ binding smoke + e2e"
+depends = ["test:rust", "test:python", "test:cxx"]
 
 [tasks."test:rust"]
 description = "Run Rust workspace tests"

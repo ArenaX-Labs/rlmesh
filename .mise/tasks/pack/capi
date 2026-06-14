@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#MISE description="Assemble a local LibTorch-style C/C++ package (headers + prebuilt libs + CMake/pkg-config metadata) and tar it for the host triple"
+#MISE dir="{{ config_root }}"
+
+# LOCAL packaging only — host triple, no CI / publish / cross-compile. We ASSEMBLE
+# prebuilt artifacts (the cargo-built cdylib + staticlib and the hand-authored
+# headers) and generate the metadata that points consumers at them; CMake is never
+# run as a build system here.
+set -euo pipefail
+
+crate="crates/rlmesh-capi"
+inc="$PWD/$crate/include"
+
+# Marketing version (dir/tarball name) is the workspace package version; the numeric
+# ABI triple (CMake compat + .pc Version) drops the -beta suffix to match the header
+# macros / rlmesh_abi_version_*() getters — CMake can't compare a pre-release string.
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"   # 0.1.0-beta.2
+abi="${version%%-*}"                                                     # 0.1.0
+triple="$(rustc -vV | sed -n 's/host: //p')"                            # x86_64-unknown-linux-gnu
+
+name="rlmesh-${version}-${triple}"
+out="$PWD/target/capi-pkg"
+stage="$out/$name"
+echo "==> packaging $name (abi $abi)"
+
+# 1. Release-build the staticlib + cdylib, then relink the cdylib with an explicit
+#    SONAME (a Rust cdylib carries none by default). Without it a consumer binary
+#    records the build-machine absolute path in DT_NEEDED; with it the binary records
+#    a relative librlmesh_capi.so and stays relocatable. Deps cache between the two.
+cargo build -p rlmesh-capi --release --lib
+cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
+  -C link-arg=-Wl,-soname,librlmesh_capi.so
+
+# 2. Fresh staging tree.
+rm -rf "$stage"
+mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh" "$stage/lib/pkgconfig"
+
+# 3. Headers + licenses + the two libs (verbatim — include/ is the one header authority).
+cp "$inc/rlmesh.h" "$inc/rlmesh.hpp"   "$stage/include/"
+cp LICENSE-APACHE LICENSE-MIT          "$stage/"
+cp target/release/librlmesh_capi.so    "$stage/lib/"
+cp target/release/librlmesh_capi.a     "$stage/lib/"
+
+# 4. pkg-config metadata (non-CMake consumers). ${pcfiledir} keeps it relocatable.
+cat > "$stage/lib/pkgconfig/rlmesh.pc" <<EOF
+prefix=\${pcfiledir}/../..
+includedir=\${prefix}/include
+libdir=\${prefix}/lib
+
+Name: rlmesh
+Description: RLMesh C/C++ ABI (prebuilt, drop-in, no Rust toolchain)
+Version: $abi
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lrlmesh_capi
+# Native libs the Rust runtime pulls in; a static (.a) link also needs: -lgcc_s -lutil -lrt -lc
+Libs.private: -lpthread -ldl -lm
+EOF
+
+# 5. CMake config-version (numeric ABI version; SameMajorVersion compatibility).
+cat > "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" <<EOF
+set(PACKAGE_VERSION "$abi")
+if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE FALSE)
+else()
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  if(PACKAGE_FIND_VERSION VERSION_EQUAL PACKAGE_VERSION)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()
+EOF
+
+# 6. The CMake config itself is a committed template (static text, nothing to
+#    interpolate) — copied verbatim so it stays reviewable as a normal source file.
+cp "$crate/packaging/rlmesh-config.cmake" "$stage/lib/cmake/rlmesh/"
+
+# 7. Terse consume note.
+cat > "$stage/README.md" <<EOF
+# rlmesh $version ($triple)
+
+Prebuilt RLMesh C/C++ ABI — drop-in, no Rust toolchain required.
+
+## CMake
+    find_package(rlmesh CONFIG REQUIRED)
+    target_link_libraries(app PRIVATE rlmesh::rlmesh)
+Point -Drlmesh_DIR=<this>/lib/cmake/rlmesh, or add <this> to CMAKE_PREFIX_PATH.
+
+## pkg-config
+    export PKG_CONFIG_PATH=<this>/lib/pkgconfig
+    pkg-config --cflags --libs rlmesh
+
+## Notes
+- Static link: use rlmesh::rlmesh_static (engine targets with no other Rust).
+- The .so is found at run time via your rpath / LD_LIBRARY_PATH — stage it beside
+  your binary or add <this>/lib.
+EOF
+
+# 8. Tar from \$out so the archive's single root is the versioned dir.
+tar -C "$out" -czf "$out/$name.tar.gz" "$name"
+echo "==> wrote $out/$name.tar.gz"

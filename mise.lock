@@ -40,6 +40,22 @@ backend = "cargo:maturin"
 version = "1.40.0"
 backend = "cargo:typos-cli"
 
+[[tools.cmake]]
+version = "4.3.3"
+backend = "aqua:Kitware/CMake"
+
+[tools.cmake."platforms.linux-x64"]
+checksum = "sha256:927b2368a946c37269c3a66225ab00544e756459cdd0b5d0da438694fb9ff802"
+url = "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-linux-x86_64.tar.gz"
+
+[tools.cmake."platforms.macos-arm64"]
+checksum = "sha256:5221a13450c7a0219a2a0d1b6c9085eb06489721fafd8488ccebc1584175d2fb"
+url = "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-macos-universal.tar.gz"
+
+[tools.cmake."platforms.windows-x64"]
+checksum = "sha256:935ade9e5e8723583c07f44c5592cea2a1c8f65c56ca7e07b34c025c880e0bd6"
+url = "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.zip"
+
 [[tools.fnox]]
 version = "1.25.1"
 backend = "github:jdx/fnox"
@@ -97,6 +113,10 @@ url = "https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip"
 [[tools.oxfmt]]
 version = "0.53.0"
 backend = "npm:oxfmt"
+
+[[tools."pipx:clang-format"]]
+version = "20.1.0"
+backend = "pipx:clang-format"
 
 [[tools.prek]]
 version = "0.4.4"

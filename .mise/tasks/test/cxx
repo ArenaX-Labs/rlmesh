@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#MISE description="Compile the rlmesh-capi C/C++ ABI (C11 + C++17) and run the C and C++ model smokes against a live env"
+#MISE dir="{{ config_root }}"
+
+# The C/C++ analogue of the Python build+typecheck+test gates: the cdylib + the
+# hand-authored header + the wrapper are otherwise compiled by nothing.
+#
+# zig builds the rlmesh *library* (and cross-compiles the release artifacts); the
+# *consumer surface* is validated with whatever $CC/$CXX point at — industry-standard
+# clang/gcc in CI (preinstalled there), with zig's bundled clang as the zero-setup
+# local default (this box has no g++/clang++).
+set -euo pipefail
+
+repo_root="$PWD"
+inc="$repo_root/crates/rlmesh-capi/include"
+target="target/debug"
+
+# Compiler is overridable so CI can run this same task under real clang/gcc (and,
+# later, MSVC); $CC/$CXX may carry args ("zig cc"), so they are left unquoted below.
+CC="${CC:-zig cc}"
+CXX="${CXX:-zig c++}"
+echo "==> CC='$CC'  CXX='$CXX'"
+
+warn=(-Wall -Wextra -Werror)
+# zig-only quirks: its cc wrapper injects an unused -c, and its bundled libc++
+# headers emit -Wnullability-completeness noise on <variant> etc. Suppress those
+# only for zig, so real clang/gcc keep full -Werror coverage of the consumer surface.
+cc_quiet=()
+cxx_quiet=()
+case "$CC" in *zig*) cc_quiet=(-Wno-unused-command-line-argument) ;; esac
+case "$CXX" in *zig*) cxx_quiet=(-Wno-unused-command-line-argument -Wno-nullability-completeness) ;; esac
+
+# zig 0.16's `cc -fsyntax-only` is broken (errors "FileNotFound"), so the header
+# typecheck compiles to a throwaway object in this scratch dir instead.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# 1. Build the cdylib + the end-to-end harness (one cargo invocation builds both).
+cargo build -p rlmesh-capi --bin e2e_harness
+
+# 2. Typecheck the public surface in BOTH languages (the basedpyright analogue):
+#    a compile catches C-vs-C++ / extern "C" divergence in the header.
+echo "==> header compiles as C11 and as C++17"
+printf '#include <rlmesh.h>\n' |
+  $CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" -c -x c - -o "$tmp/header_c.o"
+printf '#include <rlmesh.hpp>\n' |
+  $CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" -c -x c++ - -o "$tmp/header_cxx.o"
+
+# 3. Compile + link the C and C++ smokes against the cdylib (the build + link gate:
+#    a missing / renamed / wrong-signature export fails right here).
+echo "==> build the C and C++ model smokes"
+link=(-L "$target" -lrlmesh_capi -Wl,-rpath,"$repo_root/$target" -lpthread -ldl -lm)
+$CC -std=c11 "${warn[@]}" "${cc_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/c_model/model.c "${link[@]}" -o "$target/c_model_smoke"
+$CXX -std=c++17 "${warn[@]}" "${cxx_quiet[@]}" -I "$inc" \
+  crates/rlmesh-capi/examples/cpp_model/model.cpp "${link[@]}" -o "$target/cpp_model_smoke"
+
+# 4. Run each smoke against a live env over real gRPC (the pytest analogue).
+echo "==> C model end-to-end vs a live env"
+"$target/e2e_harness" "$target/c_model_smoke"
+echo "==> C++ model end-to-end vs a live env"
+"$target/e2e_harness" "$target/cpp_model_smoke"
+echo "==> test:cxx OK"
