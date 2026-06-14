@@ -67,37 +67,29 @@ def input_path(name: str) -> str:
     return recipe.input_path(name)
 
 
-def resolve_inputs(
-    inputs: Sequence[ArtifactInput],
-    *,
-    in_container: bool,
-    overrides: Sequence[ArtifactInput] = (),
-) -> dict[str, str]:
-    """Resolve every declared mount to a local path, keyed by name.
+def merged_inputs(
+    inputs: Sequence[ArtifactInput], overrides: Sequence[ArtifactInput]
+) -> dict[str, ArtifactInput]:
+    """Overlay per-run overrides onto declared mounts, keyed by name.
 
-    In a container, each mount is already materialized at its ``target_path``.
-    Locally, ``local_dir`` wins, else the ``uri`` resolves through the cache; a
-    required mount that cannot be resolved raises, an optional one is skipped.
     An override matching a declared name replaces it (the run-time checkpoint
     selection wins); a new name adds a mount.
     """
-    override_by_name = {a.name: a for a in overrides}
-    resolved: dict[str, str] = {}
-    for declared in inputs:
-        artifact = override_by_name.get(declared.name, declared)
-        path = _resolve_one(artifact, in_container=in_container)
-        if path is not None:
-            resolved[artifact.name] = path
-    declared_names = {a.name for a in inputs}
-    for name, artifact in override_by_name.items():
-        if name not in declared_names:
-            path = _resolve_one(artifact, in_container=in_container)
-            if path is not None:
-                resolved[name] = path
-    return resolved
+    by_name = {a.name: a for a in inputs}
+    for override in overrides:
+        by_name[override.name] = override
+    return by_name
 
 
-def _resolve_one(artifact: ArtifactInput, *, in_container: bool) -> str | None:
+def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | None:
+    """Resolve one mount to a local path.
+
+    In a container the mount is already materialized at its ``target_path``.
+    Locally, ``local_dir`` wins, else the ``uri`` resolves through the cache; a
+    required mount that cannot be resolved raises, an optional one returns None.
+    Resolution is lazy (called from ``input_path``), so a model whose weights are
+    absent only fails if its ``load()`` actually reaches for them.
+    """
     if in_container:
         return artifact.target_path
     if artifact.local_dir is not None:
@@ -111,6 +103,21 @@ def _resolve_one(artifact: ArtifactInput, *, in_container: bool) -> str | None:
             "or set local_dir="
         )
     return None
+
+
+def resolve_inputs(
+    inputs: Sequence[ArtifactInput],
+    *,
+    in_container: bool,
+    overrides: Sequence[ArtifactInput] = (),
+) -> dict[str, str]:
+    """Eagerly resolve every declared mount to a local path (the bootstrap path)."""
+    resolved: dict[str, str] = {}
+    for name, artifact in merged_inputs(inputs, overrides).items():
+        path = resolve_artifact(artifact, in_container=in_container)
+        if path is not None:
+            resolved[name] = path
+    return resolved
 
 
 def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
