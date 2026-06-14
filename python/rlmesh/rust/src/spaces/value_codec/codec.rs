@@ -17,23 +17,38 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
+    space_value_to_py(py, value, space, &move |py, value, space| {
+        array_leaf_to_py_with_backend(py, value, space, backend)
+    })
+}
+
+pub(crate) fn space_value_to_py_neutral<'py>(
+    py: Python<'py>,
+    value: &SpaceValue,
+    space: &SpaceSpec,
+) -> PyResult<Bound<'py, PyAny>> {
+    space_value_to_py(py, value, space, &array_leaf_to_py_neutral)
+}
+
+// Encodes the array-like leaves (Box, MultiBinary, MultiDiscrete) — the only
+// thing that differs between the backend-aware and neutral (always-native) paths.
+type LeafEncoder<'py> = dyn Fn(Python<'py>, &SpaceValue, &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;
+
+// Shared scalar/composite dispatch parameterized by the leaf encoder.
+fn space_value_to_py<'py>(
+    py: Python<'py>,
+    value: &SpaceValue,
+    space: &SpaceSpec,
+    leaf: &LeafEncoder<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
     match (space.spec.as_ref(), value) {
-        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => {
-            decode_array_like_value_with_backend(py, &value.to_contiguous_bytes(), space, backend)
+        (Some(SpaceKind::Box(_)), SpaceValue::Box(_))
+        | (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(_))
+        | (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(_)) => {
+            leaf(py, value, space)
         }
         (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
-        }
-        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
-            let bytes = values
-                .iter()
-                .map(|value| u8::from(*value))
-                .collect::<Vec<_>>();
-            decode_array_like_value_with_backend(py, &bytes, space, backend)
-        }
-        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
-            let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
-            decode_array_like_value_with_backend(py, &bytes, space, backend)
         }
         (Some(SpaceKind::Text(_)), SpaceValue::Text(value)) => {
             Ok(value.into_pyobject(py)?.into_any())
@@ -46,10 +61,7 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
                         "missing RLMesh dict key '{key}'"
                     ))
                 })?;
-                dict.set_item(
-                    key,
-                    space_value_to_py_with_backend(py, child_value, child_space, backend)?,
-                )?;
+                dict.set_item(key, space_value_to_py(py, child_value, child_space, leaf)?)?;
             }
             Ok(dict.into_any())
         }
@@ -61,19 +73,67 @@ pub(crate) fn space_value_to_py_with_backend<'py>(
                     values.len()
                 )));
             }
-            let values = values
+            let items = values
                 .iter()
                 .zip(spec.spaces.iter())
                 .map(|(value, child_space)| {
-                    space_value_to_py_with_backend(py, value, child_space, backend)
-                        .map(|value| value.unbind())
+                    space_value_to_py(py, value, child_space, leaf).map(|value| value.unbind())
                 })
                 .collect::<PyResult<Vec<_>>>()?;
-            Ok(PyTuple::new(py, values)?.into_any())
+            Ok(PyTuple::new(py, items)?.into_any())
         }
         _ => Err(pyo3::exceptions::PyTypeError::new_err(
             "space/value kind mismatch",
         )),
+    }
+}
+
+fn array_leaf_to_py_with_backend<'py>(
+    py: Python<'py>,
+    value: &SpaceValue,
+    space: &SpaceSpec,
+    backend: ValueBackend,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        SpaceValue::Box(value) => {
+            decode_array_like_value_with_backend(py, &value.to_contiguous_bytes(), space, backend)
+        }
+        SpaceValue::MultiBinary(values) => {
+            let bytes = values
+                .iter()
+                .map(|value| u8::from(*value))
+                .collect::<Vec<_>>();
+            decode_array_like_value_with_backend(py, &bytes, space, backend)
+        }
+        SpaceValue::MultiDiscrete(values) => {
+            let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
+            decode_array_like_value_with_backend(py, &bytes, space, backend)
+        }
+        _ => unreachable!("array_leaf only dispatched for array-like kinds"),
+    }
+}
+
+fn array_leaf_to_py_neutral<'py>(
+    py: Python<'py>,
+    value: &SpaceValue,
+    space: &SpaceSpec,
+) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        // Hand the native tensor over directly: shares the (aligned) wire
+        // storage instead of copying into a fresh unaligned buffer.
+        SpaceValue::Box(value) => wrap_native_tensor(py, value.clone()),
+        SpaceValue::MultiBinary(values) => {
+            let bytes = values
+                .iter()
+                .map(|value| u8::from(*value))
+                .collect::<Vec<_>>();
+            tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
+        }
+        SpaceValue::MultiDiscrete(values) => {
+            let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
+            tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
+        }
+        _ => unreachable!("array_leaf only dispatched for array-like kinds"),
     }
 }
 
@@ -185,70 +245,6 @@ fn py_any_to_space_value_unchecked(
     })
 }
 
-pub(crate) fn space_value_to_py_neutral<'py>(
-    py: Python<'py>,
-    value: &SpaceValue,
-    space: &SpaceSpec,
-) -> PyResult<Bound<'py, PyAny>> {
-    match (space.spec.as_ref(), value) {
-        // Hand the native tensor over directly: shares the (aligned) wire
-        // storage instead of copying into a fresh unaligned buffer.
-        (Some(SpaceKind::Box(_)), SpaceValue::Box(value)) => wrap_native_tensor(py, value.clone()),
-        (Some(SpaceKind::Discrete(_)), SpaceValue::Discrete(value)) => {
-            Ok(value.into_pyobject(py)?.into_any())
-        }
-        (Some(SpaceKind::MultiBinary(_)), SpaceValue::MultiBinary(values)) => {
-            let bytes = values
-                .iter()
-                .map(|value| u8::from(*value))
-                .collect::<Vec<_>>();
-            tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
-        }
-        (Some(SpaceKind::MultiDiscrete(_)), SpaceValue::MultiDiscrete(values)) => {
-            let bytes = encode_i64_sequence_bytes(values, space.dtype)?;
-            tensor_from_array_bytes(py, bytes, space.shape.clone(), space.dtype)
-        }
-        (Some(SpaceKind::Text(_)), SpaceValue::Text(value)) => {
-            Ok(value.into_pyobject(py)?.into_any())
-        }
-        (Some(SpaceKind::Dict(spec)), SpaceValue::Dict(values)) => {
-            let dict = PyDict::new(py);
-            for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                let child_value = values.get(key).ok_or_else(|| {
-                    pyo3::exceptions::PyKeyError::new_err(format!(
-                        "missing RLMesh dict key '{key}'"
-                    ))
-                })?;
-                dict.set_item(
-                    key,
-                    space_value_to_py_neutral(py, child_value, child_space)?,
-                )?;
-            }
-            Ok(dict.into_any())
-        }
-        (Some(SpaceKind::Tuple(spec)), SpaceValue::Tuple(values)) => {
-            if values.len() != spec.spaces.len() {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "tuple arity mismatch: expected {}, got {}",
-                    spec.spaces.len(),
-                    values.len()
-                )));
-            }
-            let items = values
-                .iter()
-                .zip(spec.spaces.iter())
-                .map(|(value, child_space)| {
-                    space_value_to_py_neutral(py, value, child_space).map(|value| value.unbind())
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok(PyTuple::new(py, items)?.into_any())
-        }
-        _ => Err(pyo3::exceptions::PyTypeError::new_err(
-            "space/value kind mismatch",
-        )),
-    }
-}
-
 pub(crate) fn tensor_from_array_bytes<'py>(
     py: Python<'py>,
     bytes: Vec<u8>,
@@ -281,10 +277,15 @@ pub(crate) fn encode_array_like_value_with_backend(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Vec<u8>> {
+    // A native rlmesh tensor is validated and encoded identically on either
+    // backend; only non-tensor inputs (lists, numpy arrays) take the backend path.
+    if let Some(bytes) = encode_native_tensor(value, space)? {
+        return Ok(bytes);
+    }
     if backend.prefers_numpy(py)? {
         return encode_with_numpy(py, value, space);
     }
-    encode_without_numpy(value, space)
+    encode_scalars(value, space)
 }
 
 pub(crate) fn decode_array_like_value_with_backend<'py>(
@@ -304,7 +305,7 @@ pub(crate) fn decode_array_like_value_with_backend<'py>(
     let item_count = bytes.len() / item_size;
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) || base_shape.is_empty() {
+        if base_shape.is_empty() {
             let scalars = decode_scalars(bytes, dtype)?;
             return scalar_to_bound(
                 py,
@@ -369,38 +370,44 @@ fn encode_with_numpy(
     bytes_obj.extract::<Vec<u8>>()
 }
 
-fn encode_without_numpy(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Vec<u8>> {
-    if let Some(tensor) = extract_tensor(value)? {
-        let expected = normalize_dtype(resolve_dtype(space.dtype));
-        let actual = normalize_dtype(tensor.inner.dtype());
-        if actual != expected {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "tensor dtype {} does not match space dtype {}",
-                actual.name(),
-                expected.name(),
-            )));
-        }
-
-        // The bytes are reinterpreted against the space's element layout, so a
-        // tensor that is neither a single sample nor a whole number of samples
-        // would silently misdecode. Reject those instead of shipping garbage.
-        let base_numel = element_count(&shape_to_usize(&space.shape)?);
-        let tensor_numel = tensor.inner.numel();
-        if base_numel == 0 {
-            if tensor_numel != 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "tensor has {tensor_numel} elements but the space is empty",
-                )));
-            }
-        } else if !tensor_numel.is_multiple_of(base_numel) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "tensor element count {tensor_numel} is not a multiple of the space \
-                 element count {base_numel}",
-            )));
-        }
-
-        return Ok(tensor.inner.to_contiguous_bytes().into_owned());
+// Validate + encode a native rlmesh tensor; returns None when `value` is not a
+// native tensor so the caller can fall back to a backend-specific encoder.
+fn encode_native_tensor(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Option<Vec<u8>>> {
+    let Some(tensor) = extract_tensor(value)? else {
+        return Ok(None);
+    };
+    let expected = normalize_dtype(resolve_dtype(space.dtype));
+    let actual = normalize_dtype(tensor.inner.dtype());
+    if actual != expected {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "tensor dtype {} does not match space dtype {}",
+            actual.name(),
+            expected.name(),
+        )));
     }
+
+    // The bytes are reinterpreted against the space's element layout, so a
+    // tensor that is neither a single sample nor a whole number of samples
+    // would silently misdecode. Reject those instead of shipping garbage.
+    let base_numel = element_count(&shape_to_usize(&space.shape)?);
+    let tensor_numel = tensor.inner.numel();
+    if base_numel == 0 {
+        if tensor_numel != 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tensor has {tensor_numel} elements but the space is empty",
+            )));
+        }
+    } else if !tensor_numel.is_multiple_of(base_numel) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "tensor element count {tensor_numel} is not a multiple of the space \
+             element count {base_numel}",
+        )));
+    }
+
+    Ok(Some(tensor.inner.to_contiguous_bytes().into_owned()))
+}
+
+fn encode_scalars(value: &Bound<'_, PyAny>, space: &SpaceSpec) -> PyResult<Vec<u8>> {
     let mut flattened = Vec::new();
     flatten_scalars(value, &mut flattened)?;
     let dtype = resolve_dtype(space.dtype);
@@ -431,7 +438,7 @@ fn decode_with_numpy<'py>(
     };
 
     if item_count == base_numel {
-        if matches!(space.spec.as_ref(), Some(SpaceKind::Discrete(_))) || base_shape.is_empty() {
+        if base_shape.is_empty() {
             // Scalar () spaces decode to a Python scalar, matching the native
             // backend instead of leaving frombuffer's stray (1,) array.
             return raw_array.call_method0("item");
@@ -635,6 +642,35 @@ mod tests {
             let err =
                 encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Native)
                     .unwrap_err();
+            assert!(
+                err.to_string().contains("does not match space dtype"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn encode_rejects_dtype_mismatched_tensor_on_numpy_backend() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![3])
+                .dtype(rlmesh_spaces::DType::Int32)
+                .build()
+                .unwrap();
+            let tensor = Tensor::from_slice(
+                &1.0f32.to_le_bytes().repeat(3),
+                &[3],
+                rlmesh_spaces::DType::Float32,
+            )
+            .unwrap();
+            let value = wrap_native_tensor(py, tensor).unwrap();
+
+            // A native tensor is validated ahead of the backend split, so the
+            // numpy path rejects the dtype mismatch instead of silently coercing.
+            let err = encode_array_like_value_with_backend(py, &value, &space, ValueBackend::Auto)
+                .unwrap_err();
             assert!(
                 err.to_string().contains("does not match space dtype"),
                 "unexpected error: {err}"

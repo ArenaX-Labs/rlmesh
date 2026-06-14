@@ -19,70 +19,81 @@ pub(crate) fn batched_space_values_to_py_with_backend<'py>(
     space: &SpaceSpec,
     backend: ValueBackend,
 ) -> PyResult<Bound<'py, PyAny>> {
+    batched_space_values_to_py(py, values, space, &move |py, values, space| {
+        batched_values_to_py(py, values, space, backend)
+    })
+}
+
+// Encodes a non-composite batch — the only thing that differs between the
+// backend-aware and neutral encoders.
+type BatchLeafEncoder<'py> =
+    dyn Fn(Python<'py>, &[SpaceValue], &SpaceSpec) -> PyResult<Bound<'py, PyAny>>;
+
+// Shared composite (Dict/Tuple) fan-out parameterized by the leaf encoder.
+fn batched_space_values_to_py<'py>(
+    py: Python<'py>,
+    values: &[SpaceValue],
+    space: &SpaceSpec,
+    leaf: &BatchLeafEncoder<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
     match space.spec.as_ref() {
         Some(SpaceKind::Dict(spec)) => {
             let dict = PyDict::new(py);
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                let child_values = values
-                    .iter()
-                    .map(|value| match value {
-                        SpaceValue::Dict(fields) => fields.get(key).cloned().ok_or_else(|| {
-                            pyo3::exceptions::PyKeyError::new_err(format!(
-                                "missing RLMesh dict key '{key}'"
-                            ))
-                        }),
-                        _ => Err(pyo3::exceptions::PyTypeError::new_err(
-                            "batched value kind mismatch for Dict space",
-                        )),
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
+                let child_values = dict_column(values, key)?;
                 dict.set_item(
                     key,
-                    batched_space_values_to_py_with_backend(
-                        py,
-                        &child_values,
-                        child_space,
-                        backend,
-                    )?,
+                    batched_space_values_to_py(py, &child_values, child_space, leaf)?,
                 )?;
             }
             Ok(dict.into_any())
         }
         Some(SpaceKind::Tuple(spec)) => {
-            let mut columns = vec![Vec::with_capacity(values.len()); spec.spaces.len()];
-            for value in values {
-                let items = match value {
-                    SpaceValue::Tuple(items) => items,
-                    _ => {
-                        return Err(pyo3::exceptions::PyTypeError::new_err(
-                            "batched value kind mismatch for Tuple space",
-                        ));
-                    }
-                };
-                if items.len() != spec.spaces.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "tuple arity mismatch: expected {}, got {}",
-                        spec.spaces.len(),
-                        items.len()
-                    )));
-                }
-                for (column, item) in columns.iter_mut().zip(items.iter()) {
-                    column.push(item.clone());
-                }
-            }
-
+            let columns = tuple_columns(values, spec.spaces.len())?;
             let items = columns
                 .iter()
                 .zip(spec.spaces.iter())
                 .map(|(child_values, child_space)| {
-                    batched_space_values_to_py_with_backend(py, child_values, child_space, backend)
+                    batched_space_values_to_py(py, child_values, child_space, leaf)
                         .map(|value| value.unbind())
                 })
                 .collect::<PyResult<Vec<_>>>()?;
             Ok(PyTuple::new(py, items)?.into_any())
         }
-        _ => batched_values_to_py(py, values, space, backend),
+        _ => leaf(py, values, space),
     }
+}
+
+fn dict_column(values: &[SpaceValue], key: &str) -> PyResult<Vec<SpaceValue>> {
+    values
+        .iter()
+        .map(|value| match value {
+            SpaceValue::Dict(fields) => fields.get(key).cloned().ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("missing RLMesh dict key '{key}'"))
+            }),
+            _ => Err(batch_kind_err("Dict")),
+        })
+        .collect()
+}
+
+fn tuple_columns(values: &[SpaceValue], arity: usize) -> PyResult<Vec<Vec<SpaceValue>>> {
+    let mut columns = vec![Vec::with_capacity(values.len()); arity];
+    for value in values {
+        let items = match value {
+            SpaceValue::Tuple(items) => items,
+            _ => return Err(batch_kind_err("Tuple")),
+        };
+        if items.len() != arity {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "tuple arity mismatch: expected {arity}, got {}",
+                items.len()
+            )));
+        }
+        for (column, item) in columns.iter_mut().zip(items.iter()) {
+            column.push(item.clone());
+        }
+    }
+    Ok(columns)
 }
 
 pub(crate) fn py_any_to_batched_space_values_with_backend(
@@ -194,6 +205,14 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
     values: &[SpaceValue],
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
+    batched_space_values_to_py(py, values, space, &batched_leaf_neutral)
+}
+
+fn batched_leaf_neutral<'py>(
+    py: Python<'py>,
+    values: &[SpaceValue],
+    space: &SpaceSpec,
+) -> PyResult<Bound<'py, PyAny>> {
     match space.spec.as_ref() {
         Some(SpaceKind::Box(_)) => batch_array_bytes(py, values, space, |value| match value {
             SpaceValue::Box(value) => Ok(value.to_contiguous_bytes().into_owned()),
@@ -222,55 +241,6 @@ pub(crate) fn batched_space_values_to_py_neutral<'py>(
                 SpaceValue::MultiDiscrete(items) => encode_i64_sequence_bytes(items, space.dtype),
                 _ => Err(batch_kind_err("MultiDiscrete")),
             })
-        }
-        Some(SpaceKind::Dict(spec)) => {
-            let dict = PyDict::new(py);
-            for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                let child_values = values
-                    .iter()
-                    .map(|value| match value {
-                        SpaceValue::Dict(fields) => fields.get(key).cloned().ok_or_else(|| {
-                            pyo3::exceptions::PyKeyError::new_err(format!(
-                                "missing RLMesh dict key '{key}'"
-                            ))
-                        }),
-                        _ => Err(batch_kind_err("Dict")),
-                    })
-                    .collect::<PyResult<Vec<_>>>()?;
-                dict.set_item(
-                    key,
-                    batched_space_values_to_py_neutral(py, &child_values, child_space)?,
-                )?;
-            }
-            Ok(dict.into_any())
-        }
-        Some(SpaceKind::Tuple(spec)) => {
-            let mut columns = vec![Vec::with_capacity(values.len()); spec.spaces.len()];
-            for value in values {
-                let items = match value {
-                    SpaceValue::Tuple(items) => items,
-                    _ => return Err(batch_kind_err("Tuple")),
-                };
-                if items.len() != spec.spaces.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "tuple arity mismatch: expected {}, got {}",
-                        spec.spaces.len(),
-                        items.len()
-                    )));
-                }
-                for (column, item) in columns.iter_mut().zip(items.iter()) {
-                    column.push(item.clone());
-                }
-            }
-            let items = columns
-                .iter()
-                .zip(spec.spaces.iter())
-                .map(|(child_values, child_space)| {
-                    batched_space_values_to_py_neutral(py, child_values, child_space)
-                        .map(|value| value.unbind())
-                })
-                .collect::<PyResult<Vec<_>>>()?;
-            Ok(PyTuple::new(py, items)?.into_any())
         }
         _ => {
             let items = values
