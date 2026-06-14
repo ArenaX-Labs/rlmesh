@@ -10,6 +10,29 @@ use crate::SandboxError;
 pub enum EnvironmentSourceRef {
     Gym(GymSourceRef),
     Hf(HfSourceRef),
+    Recipe(RecipeSourceRef),
+}
+
+/// Where a recipe document came from, and therefore how much its build phase is
+/// trusted. `Installed` is set only when the Python registry resolved the name
+/// from a local `register()` or an installed `rlmesh.recipes` entry point (the
+/// pip-install-is-consent path); `Remote` is set for any document handed in as
+/// data from an untrusted source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecipeProvenance {
+    Installed,
+    Remote,
+}
+
+/// A recipe handed to the sandbox already-structured (the Python registry
+/// resolves a name to a recipe before `sandbox_start_env`; the document is the
+/// recipe's canonical JSON).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecipeSourceRef {
+    pub name: String,
+    pub document: serde_json::Value,
+    pub provenance: RecipeProvenance,
 }
 
 impl EnvironmentSourceRef {
@@ -65,6 +88,7 @@ impl EnvironmentSourceRef {
                 }
                 sanitize_slug(&value)
             }
+            Self::Recipe(source) => sanitize_slug(&source.name),
         }
     }
 
@@ -94,6 +118,7 @@ impl fmt::Display for EnvironmentSourceRef {
                 }
                 Ok(())
             }
+            Self::Recipe(source) => write!(f, "recipe://{}", source.name),
         }
     }
 }
@@ -150,6 +175,7 @@ impl HfSourceRef {
 pub(crate) enum ResolvedEnvironmentSourceRef {
     Gym(GymSourceRef),
     Hf(ResolvedHfSourceRef),
+    Recipe(RecipeSourceRef),
 }
 
 impl ResolvedEnvironmentSourceRef {
@@ -168,6 +194,7 @@ impl ResolvedEnvironmentSourceRef {
                 }
                 sanitize_slug(&value)
             }
+            Self::Recipe(source) => sanitize_slug(&source.name),
         }
     }
 }
@@ -186,6 +213,7 @@ impl fmt::Display for ResolvedEnvironmentSourceRef {
                 }
                 Ok(())
             }
+            Self::Recipe(source) => write!(f, "recipe://{}", source.name),
         }
     }
 }
@@ -299,7 +327,7 @@ mod tests {
         let source = EnvironmentSourceRef::parse("CartPole-v1").unwrap();
         match source {
             EnvironmentSourceRef::Gym(source) => assert_eq!(source.env_id, "CartPole-v1"),
-            EnvironmentSourceRef::Hf(_) => panic!("expected gym"),
+            _ => panic!("expected gym"),
         }
     }
 
