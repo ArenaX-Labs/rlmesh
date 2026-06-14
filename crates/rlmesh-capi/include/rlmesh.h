@@ -1,7 +1,6 @@
-/* RLMesh C ABI — experimental. Hand-authored; cbindgen-verifiable (a header-drift
- * CI gate is a follow-up). A thin projection of the core Rust model/environment
- * runtime. This header covers the v1 model path (a C/C++ model driving a remote
- * environment). */
+/* RLMesh C ABI — experimental, v1 model path (a C/C++ model driving a remote
+ * environment). Hand-authored; cbindgen-verifiable (a header-drift CI gate is a
+ * follow-up). */
 #ifndef RLMESH_H
 #define RLMESH_H
 
@@ -149,8 +148,7 @@ const RlmeshSpaceSpec* rlmesh_contract_action_space(const RlmeshContract* contra
 uint32_t rlmesh_contract_num_envs(const RlmeshContract* contract);
 
 /* Space introspection (so a model can size an action to the action space).
- * `rlmesh_space_type` returns a SpaceType discriminant: Box=1, Discrete=2,
- * MultiBinary=3, MultiDiscrete=4, Text=5, Dict=10, Tuple=11 (0 if unknown). */
+ * `rlmesh_space_type` returns a RlmeshValueKind discriminant (0 if unknown). */
 int32_t rlmesh_space_type(const RlmeshSpaceSpec* spec);
 RlmeshDType rlmesh_space_dtype(const RlmeshSpaceSpec* spec);
 size_t rlmesh_space_ndim(const RlmeshSpaceSpec* spec);

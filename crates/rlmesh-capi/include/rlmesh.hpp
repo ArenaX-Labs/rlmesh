@@ -1,7 +1,6 @@
-// RLMesh C++ wrapper — experimental, header-only, C++17. A thin RAII layer over
-// the C ABI (rlmesh.h), modeled on wasmtime.hh: no exceptions by default,
-// errors via Result<T, Error>; unwrap() aborts (an escape hatch, not the idiom).
-// This header covers the v1 model path (a C++ model driving a remote env).
+// RLMesh C++ wrapper — experimental, header-only, C++17, v1 model path. A thin
+// RAII layer over the C ABI (rlmesh.h): no exceptions by default, errors via
+// Result<T, Error>; unwrap() aborts (an escape hatch, not the idiom).
 #ifndef RLMESH_HPP
 #define RLMESH_HPP
 
