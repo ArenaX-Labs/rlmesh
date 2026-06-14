@@ -1,6 +1,8 @@
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, check_provisional_edition_pin,
+    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
+    check_provisional_edition_pin,
     core::v1::OperationTelemetry,
+    is_protocol_generation_supported,
     model::v1::{
         CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
         JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, ShutdownResponse,
@@ -131,6 +133,13 @@ impl ModelClient {
             &response.server_version,
         )
         .map_err(ProtocolError::HandshakeFailed)?;
+        if !is_protocol_generation_supported(&response.server_protocol_generation) {
+            return Err(ProtocolError::HandshakeFailed(format!(
+                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                response.server_protocol_generation
+            ))
+            .into());
+        }
 
         self.setup_join_stream().await?;
         self.state = ClientState::Ready;

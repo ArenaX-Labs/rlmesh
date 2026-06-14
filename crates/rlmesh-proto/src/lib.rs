@@ -11,6 +11,14 @@ pub const PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 /// Oldest protocol generation accepted by this crate.
 pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 
+/// Protocol generations this build can speak, oldest ([`MIN_SUPPORTED_PROTOCOL_GENERATION`])
+/// to newest ([`PROTOCOL_GENERATION`]). A peer is wire-compatible iff its generation is in
+/// this window. Introducing a new generation appends it and bumps `PROTOCOL_GENERATION`;
+/// dropping an old one raises `MIN_SUPPORTED_PROTOCOL_GENERATION` (monotonic — never lower it
+/// past a still-deployed generation). While the window holds one generation, compatibility is
+/// exact equality.
+pub const SUPPORTED_PROTOCOL_GENERATIONS: &[&str] = &[PROTOCOL_GENERATION];
+
 /// Current workflow semantics edition.
 pub const CURRENT_WORKFLOW_EDITION: &str = "2026.06";
 
@@ -53,9 +61,17 @@ pub mod capabilities {
     pub const MODEL_CONCURRENT_PREDICT_V1: &str = "rlmesh.model.concurrent_predict.v1";
 }
 
-/// Return whether a client protocol generation can speak to a server protocol generation.
+/// Whether this build can speak the given protocol generation.
+pub fn is_protocol_generation_supported(generation: &str) -> bool {
+    SUPPORTED_PROTOCOL_GENERATIONS.contains(&generation.trim())
+}
+
+/// Return whether a client and server protocol generation can interoperate: both must lie in
+/// this build's supported generation window. While the window holds a single generation this
+/// is exact equality; once a v2 is added (with v1 still supported), a v1 peer and a v2 peer
+/// interoperate.
 pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
-    client.trim() == PROTOCOL_GENERATION && server.trim() == PROTOCOL_GENERATION
+    is_protocol_generation_supported(client) && is_protocol_generation_supported(server)
 }
 
 /// Select the workflow edition governing a session from a peer's offer.
@@ -207,6 +223,17 @@ mod tests {
 
     fn offer(editions: &[&str]) -> Vec<String> {
         editions.iter().map(|edition| edition.to_string()).collect()
+    }
+
+    #[test]
+    fn supported_generations_span_min_to_current() {
+        use super::{SUPPORTED_PROTOCOL_GENERATIONS, is_protocol_generation_supported};
+        // Both endpoints of the window are in the supported set.
+        assert!(SUPPORTED_PROTOCOL_GENERATIONS.contains(&PROTOCOL_GENERATION));
+        assert!(SUPPORTED_PROTOCOL_GENERATIONS.contains(&MIN_SUPPORTED_PROTOCOL_GENERATION));
+        // The current generation is accepted; nothing past it is.
+        assert!(is_protocol_generation_supported(PROTOCOL_GENERATION));
+        assert!(!is_protocol_generation_supported("rlmesh.protocol.v2"));
     }
 
     #[test]

@@ -16,8 +16,8 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, check_provisional_edition_pin,
-    supported_workflow_editions,
+    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
+    check_provisional_edition_pin, is_protocol_generation_supported, supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
@@ -174,6 +174,13 @@ impl EnvClient {
             &res.server_version,
         )
         .map_err(ProtocolError::HandshakeFailed)?;
+        if !is_protocol_generation_supported(&res.server_protocol_generation) {
+            return Err(ProtocolError::HandshakeFailed(format!(
+                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                res.server_protocol_generation
+            ))
+            .into());
+        }
 
         let env_contract = res.env_contract.ok_or_else(|| {
             GrpcError::from(ProtocolError::HandshakeFailed(
