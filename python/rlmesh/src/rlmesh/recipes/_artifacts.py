@@ -15,10 +15,11 @@ import contextvars
 import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from ._schema import RecipeValidationError
 
 if TYPE_CHECKING:
-    from ._authoring_model import ModelRecipe
     from ._schema import ArtifactInput
 
 __all__ = [
@@ -27,16 +28,83 @@ __all__ = [
     "hf_load",
     "input_path",
     "local_dir_mounts",
-    "resolve_inputs",
 ]
 
-# The recipe whose load() is running, so the module-level input_path() can find
-# its mounts without an explicit self.
-_CURRENT_RECIPE: contextvars.ContextVar[ModelRecipe | None] = contextvars.ContextVar(
-    "rlmesh_current_recipe", default=None
+# The recipe whose load()/make() is running, so the module-level input_path() can
+# find its mounts without an explicit self.
+_CURRENT_RECIPE: contextvars.ContextVar[_ArtifactConsumer | None] = (
+    contextvars.ContextVar("rlmesh_current_recipe", default=None)
 )
 
 _HF_SCHEME = "hf://"
+
+
+class _ArtifactConsumer:
+    """A recipe that declares runtime ``ArtifactInput`` mounts and resolves them.
+
+    Shared by :class:`ModelRecipe` (weights) and :class:`EnvRecipe` (assets) so the
+    materialize() seam is identical for both kinds. Construction binds the two
+    private slots; ``input_path`` resolves a declared mount lazily inside
+    ``load()``/``make()``.
+    """
+
+    #: Runtime weight/asset mounts. Never baked into the image.
+    inputs: ClassVar[tuple[ArtifactInput, ...]] = ()
+
+    def __init__(self) -> None:
+        # Bound per-instance by the construct functions before load()/make() runs.
+        self._rlmesh_inputs: dict[str, ArtifactInput] = {}
+        self._rlmesh_in_container: bool = False
+
+    def input_path(self, name: str) -> str:
+        """Resolve a declared :class:`ArtifactInput` mount by name to its local path.
+
+        Call it inside ``load()``/``make()``. Resolution order: a path the run
+        contract already materialized (env override), else the in-container mount or
+        cache fetch, else the resolved host ``local_dir`` or cache path locally.
+        """
+        declared: dict[str, ArtifactInput] = getattr(self, "_rlmesh_inputs", {})
+        try:
+            artifact = declared[name]
+        except KeyError:
+            names = ", ".join(declared) or "<none>"
+            raise RecipeValidationError(
+                f"{type(self).__name__}.input_path({name!r}): no such ArtifactInput; "
+                f"declared inputs: {names}"
+            ) from None
+        path = resolve_artifact(
+            artifact, in_container=getattr(self, "_rlmesh_in_container", False)
+        )
+        if path is None:
+            raise FileNotFoundError(
+                f"ArtifactInput {name!r} is optional and unresolved; nothing to load"
+            )
+        return path
+
+
+def _env_key(name: str) -> str:
+    """An ArtifactInput name as the env-var token form: upper, non-alnum -> ``_``."""
+    return "".join(c if c.isalnum() else "_" for c in name).upper()
+
+
+def _materialized_path_from_env(name: str) -> str | None:
+    """An already-materialized path for input ``name`` from the run contract, if set.
+
+    Managed's sidecar materializes each input out-of-container and exports its path
+    here; honoring it means an OSS self-describing image run under managed reads the
+    sidecar's bytes instead of re-fetching (and tripping ``HF_HUB_OFFLINE``). The
+    canonical name is kind-neutral so model and env inputs share it; the
+    ``RLMESH_MODEL_*`` forms are back-compat aliases for what managed emits today.
+    """
+    key = _env_key(name)
+    candidates = [f"RLMESH_INPUT_{key}_PATH", f"RLMESH_MODEL_INPUT_{key}_PATH"]
+    if name == "checkpoint":
+        candidates.append("RLMESH_MODEL_CHECKPOINT_PATH")
+    for env_name in candidates:
+        value = os.environ.get(env_name)
+        if value:
+            return value
+    return None
 
 
 def cache_root() -> Path:
@@ -50,7 +118,7 @@ def cache_root() -> Path:
 
 
 @contextlib.contextmanager
-def enter_recipe_context(instance: ModelRecipe) -> Iterator[None]:
+def enter_recipe_context(instance: _ArtifactConsumer) -> Iterator[None]:
     """Bind ``instance`` as the current recipe for the module-level ``input_path``."""
     token = _CURRENT_RECIPE.set(instance)
     try:
@@ -137,16 +205,25 @@ def local_dir_mounts(
 
 
 def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | None:
-    """Resolve one mount to a local path.
+    """Resolve one declared input to a local path (the ``materialize()`` seam).
 
-    In a container the mount is already materialized at its ``target_path``.
-    Locally, ``local_dir`` wins, else the ``uri`` resolves through the cache; a
-    required mount that cannot be resolved raises, an optional one returns None.
-    Resolution is lazy (called from ``input_path``), so a model whose weights are
-    absent only fails if its ``load()`` actually reaches for them.
+    An env override (a path the run contract already materialized, e.g. managed's
+    sidecar) wins everywhere. In a container a bind-mounted ``local_dir`` input is
+    already at ``target_path``; a uri-only input is fetched through the rlmesh cache
+    here. On the host, ``local_dir`` wins, else the ``uri`` resolves through the
+    cache. Resolution is lazy (called from ``input_path``), so an unused input is
+    never fetched; a required, unresolved input raises and an optional one returns
+    None.
     """
+    override = _materialized_path_from_env(artifact.name)
+    if override is not None:
+        return override
     if in_container:
-        return artifact.target_path
+        # A local_dir input is bind-mounted at target_path by the sandbox; a uri-only
+        # input is not, so fetch it through the cache in-container.
+        if artifact.local_dir is not None or artifact.uri is None:
+            return artifact.target_path
+        return _resolve_uri(artifact.uri, include=artifact.include)
     if artifact.local_dir is not None:
         return artifact.local_dir
     if artifact.uri is not None:
@@ -158,21 +235,6 @@ def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | No
             "cache, or set local_dir= to a path on this host"
         )
     return None
-
-
-def resolve_inputs(
-    inputs: Sequence[ArtifactInput],
-    *,
-    in_container: bool,
-    overrides: Sequence[ArtifactInput] = (),
-) -> dict[str, str]:
-    """Eagerly resolve every declared mount to a local path (the bootstrap path)."""
-    resolved: dict[str, str] = {}
-    for name, artifact in merged_inputs(inputs, overrides).items():
-        path = resolve_artifact(artifact, in_container=in_container)
-        if path is not None:
-            resolved[name] = path
-    return resolved
 
 
 def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
@@ -207,8 +269,8 @@ def _snapshot_hf(
             from huggingface_hub import snapshot_download
         except ImportError as exc:  # pragma: no cover - optional dep
             raise ImportError(
-                "resolving an hf:// artifact requires huggingface_hub "
-                "(pip install huggingface_hub)"
+                "resolving an hf:// artifact requires huggingface_hub; install it "
+                "with `pip install rlmesh[hf]` (or `pip install huggingface_hub`)"
             ) from exc
 
     root = cache_root() / "hf"

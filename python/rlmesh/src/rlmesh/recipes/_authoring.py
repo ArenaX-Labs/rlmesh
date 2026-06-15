@@ -22,6 +22,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
 
+from ._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
 from ._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
@@ -33,7 +34,7 @@ __all__ = ["EnvRecipe", "as_authored_recipe", "construct_authored", "is_env_reci
 _CONSTRUCT = "_rlmesh_construct"
 
 
-class EnvRecipe:
+class EnvRecipe(_ArtifactConsumer):
     """Base class for authoring an environment and its recipe together.
 
     Subclasses set the data attributes and define the factory::
@@ -113,8 +114,11 @@ class EnvRecipe:
         applying them here too would double-tag.
         """
         instance = _instantiate(cls)
+        instance._rlmesh_inputs = merged_inputs(cls.inputs, ())
+        instance._rlmesh_in_container = True
         instance.prepare()
-        return instance.make(**kwargs)
+        with enter_recipe_context(instance):
+            return instance.make(**kwargs)
 
     @classmethod
     def to_recipe(cls, **make_kwargs: object) -> Recipe:
@@ -150,6 +154,7 @@ class EnvRecipe:
             make=PyMake(entrypoint=entrypoint, kwargs=make_kwargs),
             build=cls.build,
             setup=cls.setup,
+            inputs=cls.inputs,
             adapter=cls.tags,
         )
 
@@ -220,8 +225,11 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)
+    instance._rlmesh_inputs = merged_inputs(cls.inputs, ())
+    instance._rlmesh_in_container = False
     instance.prepare()
-    env = instance.make(**kwargs)
+    with enter_recipe_context(instance):
+        env = instance.make(**kwargs)
     if not looks_like_env(env):
         # Match the gate the container/entrypoint path enforces, so both paths fail
         # identically at construction rather than later.

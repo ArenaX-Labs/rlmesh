@@ -22,7 +22,7 @@ import inspect
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar
 
-from ._artifacts import enter_recipe_context, merged_inputs, resolve_artifact
+from ._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
 from ._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ class _Delegated:
 DELEGATED = _Delegated()
 
 
-class ModelRecipe:
+class ModelRecipe(_ArtifactConsumer):
     """Base class for authoring a policy and its recipe together.
 
     Subclasses set the data attributes and define the policy::
@@ -107,8 +107,8 @@ class ModelRecipe:
     #: The model's adapter content. ``None`` for no adaptation, ``DELEGATED`` when
     #: the model self-adapts, or a ``ModelSpec`` to resolve against the env's tags.
     spec: ClassVar[Any] = None
-    #: Runtime weight/asset mounts. Never baked into the image.
-    inputs: ClassVar[tuple[ArtifactInput, ...]] = ()
+    #: ``inputs`` (runtime weight/asset mounts) and ``input_path`` come from
+    #: :class:`_ArtifactConsumer`, shared with ``EnvRecipe``.
 
     def load(self) -> None:
         """Build the model into ``self``, with heavy imports here; runs once per process.
@@ -141,37 +141,14 @@ class ModelRecipe:
     def close(self) -> None:
         """Release the model and any handles. The default does nothing."""
 
-    def input_path(self, name: str) -> str:
-        """Resolve a declared :class:`ArtifactInput` mount by name to its local path.
-
-        Call it inside ``load()``. The path is the in-container mount under the
-        sandbox, or the resolved host/cache path locally.
-        """
-        inputs: dict[str, ArtifactInput] = getattr(self, "_rlmesh_inputs", {})
-        try:
-            artifact = inputs[name]
-        except KeyError:
-            declared = ", ".join(inputs) or "<none>"
-            raise RecipeValidationError(
-                f"{type(self).__name__}.input_path({name!r}): no such ArtifactInput; "
-                f"declared inputs: {declared}"
-            ) from None
-        path = resolve_artifact(
-            artifact, in_container=getattr(self, "_rlmesh_in_container", False)
-        )
-        if path is None:
-            raise FileNotFoundError(
-                f"ArtifactInput {name!r} is optional and unresolved; nothing to load"
-            )
-        return path
-
     @classmethod
     def _rlmesh_load(cls) -> ModelRecipe:
         """The in-container lifecycle the projected entrypoint runs.
 
-        Takes no kwargs: weights ride ``ArtifactInput`` mounts the bootstrap has
-        already materialized. Instantiates, resolves the mounts, runs ``load()``,
-        and returns the loaded policy.
+        Takes no kwargs: weights resolve through ``input_path`` -- a bind-mounted
+        input from its ``target_path``, a uri-only input fetched in-container through
+        the cache, or an externally materialized path from the run contract.
+        Instantiates, runs ``load()``, and returns the loaded policy.
         """
         return construct_authored_model(cls, in_container=True)
 
@@ -307,8 +284,8 @@ def construct_authored_model(
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)
-    instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)  # type: ignore[attr-defined]
-    instance._rlmesh_in_container = in_container  # type: ignore[attr-defined]
+    instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)
+    instance._rlmesh_in_container = in_container
     with enter_recipe_context(instance):
         if load_kwargs:
             instance.load(**load_kwargs)  # type: ignore[arg-type]

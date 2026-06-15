@@ -26,7 +26,7 @@ from .specs import EnvContract, SpaceSpec
 from .types import Metadata
 
 if TYPE_CHECKING:
-    from .recipes import EnvRecipe, Recipe
+    from .recipes import ArtifactInput, EnvRecipe, Recipe
 
 ResetInfo: TypeAlias = dict[str, object]
 StepInfo: TypeAlias = dict[str, object]
@@ -235,8 +235,8 @@ def export(
         recipe, context_root = resolve_model_recipe(source)
         display, recipe_json, provenance = recipe.name, recipe.to_json(), "installed"
     else:
-        display, recipe_json, provenance, context_root = _resolve_recipe_source(
-            source, {}, ()
+        display, recipe_json, provenance, context_root, _inputs = (
+            _resolve_recipe_source(source, {}, ())
         )
     info = cast(
         _SandboxBuildInfo,
@@ -734,8 +734,8 @@ def _resolve_recipe_source(
     source: str | Recipe | type[EnvRecipe],
     gym_make_kwargs: Mapping[str, object] = _NO_MAKE_KWARGS,
     imports: Sequence[str] | None = None,
-) -> tuple[str, str | None, str | None, str | None]:
-    """Resolve a sandbox source into (display, recipe_json, provenance, context_root).
+) -> tuple[str, str | None, str | None, str | None, tuple[ArtifactInput, ...]]:
+    """Resolve a sandbox source into (display, recipe_json, provenance, context_root, inputs).
 
     An ``EnvRecipe`` subclass or an in-process ``Recipe`` is ``Installed`` -- it
     came from your installed/loaded code (pip-install-is-consent), so its build
@@ -792,7 +792,7 @@ def _resolve_recipe_source(
         try:
             recipe = resolve(source)
         except RecipeNotFoundError:
-            return source, None, None, None
+            return source, None, None, None, ()
         provenance = "installed"
         # A name resolves to a recipe registered by some package; prefer that
         # registrant's module directory when the registry recorded it.
@@ -877,7 +877,7 @@ def _resolve_recipe_source(
         # instance assembled at the call site has no determinable origin -- the cwd
         # is then the only host tree we can reasonably stage from).
         context_root = origin if origin is not None else os.getcwd()
-    return recipe.name, recipe.to_json(), provenance, context_root
+    return recipe.name, recipe.to_json(), provenance, context_root, recipe.inputs
 
 
 def _start_sandbox(
@@ -894,9 +894,14 @@ def _start_sandbox(
     build_memory: str | None = None,
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
-    display, recipe_json, provenance, context_root = _resolve_recipe_source(
+    display, recipe_json, provenance, context_root, inputs = _resolve_recipe_source(
         source, gym_make_kwargs, imports
     )
+    # Bind-mount host local_dir inputs at run time, mirroring SandboxModel; uri inputs
+    # resolve in-container. Validation (the dir exists) happens here, at launch.
+    from .recipes._artifacts import local_dir_mounts
+
+    mounts = local_dir_mounts(inputs)
     # Only forward the recipe arguments when this is actually a recipe source, so
     # the gym/hf path stays byte-identical to before.
     recipe_kwargs: dict[str, str] = {}
@@ -934,6 +939,7 @@ def _start_sandbox(
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,
             build_memory=build_memory,
+            mounts_json=json.dumps(mounts) if mounts else None,
             **recipe_kwargs,
         ),
     )

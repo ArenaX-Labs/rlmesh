@@ -34,6 +34,14 @@
             "kind": "function",
             "signature": "check()"
           },
+          "input_path": {
+            "kind": "function",
+            "signature": "input_path(name: str) -> str"
+          },
+          "inputs": {
+            "kind": "attribute",
+            "signature": "inputs: tuple[ArtifactInput, ...]"
+          },
           "make": {
             "kind": "function",
             "signature": "make(**kwargs: object)"
@@ -59,6 +67,7 @@
             "signature": "to_recipe(**make_kwargs: object)"
           }
         },
+        "signature": "EnvRecipe() -> None",
         "stability": "Stable"
       },
       "EnvServer": {
@@ -167,7 +176,7 @@
           },
           "input_path": {
             "kind": "function",
-            "signature": "input_path(name: str)"
+            "signature": "input_path(name: str) -> str"
           },
           "inputs": {
             "kind": "attribute",
@@ -202,6 +211,7 @@
             "signature": "to_recipe()"
           }
         },
+        "signature": "ModelRecipe() -> None",
         "stability": "Stable"
       },
       "Recipe": {

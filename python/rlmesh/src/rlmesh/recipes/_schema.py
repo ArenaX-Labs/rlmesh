@@ -825,15 +825,20 @@ class Recipe:
             )
 
         # Cross-kind rules.
-        if self.kind == "model":
-            if not (self.make is None or isinstance(self.make, PyMake)):
-                raise RecipeValidationError(
-                    "a model recipe's make must be a PyMake (to ModelRecipe._rlmesh_load) "
-                    "or None; gym/hf factories are env-only"
-                )
-        elif self.inputs:
+        if self.kind == "model" and not (
+            self.make is None or isinstance(self.make, PyMake)
+        ):
             raise RecipeValidationError(
-                "Recipe.inputs (weight mounts) are model-only; got kind='env'"
+                "a model recipe's make must be a PyMake (to ModelRecipe._rlmesh_load) "
+                "or None; gym/hf factories are env-only"
+            )
+        # inputs (runtime artifact mounts) are kind-agnostic -- weights for a model,
+        # assets for an env -- but only an authored (PyMake/None) recipe has an
+        # input_path to resolve them; a gym/hf SOURCE env cannot, so reject them there.
+        if self.inputs and not (self.make is None or isinstance(self.make, PyMake)):
+            raise RecipeValidationError(
+                "Recipe.inputs require an authored (PyMake) recipe; a gym/hf source "
+                "env has no input_path to resolve them"
             )
         object.__setattr__(self, "inputs", tuple(self.inputs))
 

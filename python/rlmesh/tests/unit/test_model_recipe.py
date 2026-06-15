@@ -171,9 +171,28 @@ def test_recipe_json_round_trip() -> None:
     assert back.adapter == recipe.to_dict()["adapter"]
 
 
-def test_recipe_inputs_are_model_only() -> None:
-    with pytest.raises(RecipeValidationError, match="model-only"):
-        Recipe(name="x/y", kind="env", inputs=(ArtifactInput("w", "/w"),))
+def test_recipe_inputs_kind_agnostic_for_authored() -> None:
+    # An authored (PyMake) env may declare runtime inputs, same as a model.
+    env = Recipe(
+        name="x/y",
+        kind="env",
+        make=PyMake(entrypoint="m:C._rlmesh_construct"),
+        inputs=(ArtifactInput("assets", "/assets"),),
+    )
+    assert env.inputs[0].name == "assets"
+
+
+def test_recipe_inputs_require_authored_recipe() -> None:
+    # A gym/hf SOURCE env has no input_path to resolve mounts, so reject inputs.
+    from rlmesh.recipes import GymMake
+
+    with pytest.raises(RecipeValidationError, match="authored"):
+        Recipe(
+            name="x/y",
+            kind="env",
+            make=GymMake("CartPole-v1"),
+            inputs=(ArtifactInput("w", "/w"),),
+        )
 
 
 def test_local_only_spec_rejected_at_projection() -> None:

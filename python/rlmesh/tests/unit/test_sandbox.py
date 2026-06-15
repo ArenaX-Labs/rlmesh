@@ -255,7 +255,7 @@ def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     from rlmesh.sandbox import _resolve_recipe_source
 
     recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
-    _, recipe_json, provenance, _ = _resolve_recipe_source(
+    _, recipe_json, provenance, _, _ = _resolve_recipe_source(
         recipe, {"render_mode": "rgb_array"}
     )
 
@@ -276,7 +276,9 @@ def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
         name="cart/pole",
         make=GymMake(env_id="CartPole-v1", kwargs={"render_mode": "human", "g": 9.8}),
     )
-    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {"render_mode": "rgb_array"})
+    _, recipe_json, _, _, _ = _resolve_recipe_source(
+        recipe, {"render_mode": "rgb_array"}
+    )
 
     assert recipe_json is not None
     document = Recipe.from_json(recipe_json)
@@ -357,7 +359,7 @@ def test_resolve_recipe_source_from_recipe_uses_base_origin(
         lambda name: origins.get(name),
     )
     try:
-        _, _, provenance, context_root = _resolve_recipe_source("acme/task", {})
+        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/task", {})
     finally:
         recipes.unregister("acme/base")
         recipes.unregister("acme/task")
@@ -400,7 +402,7 @@ def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
         lambda name: origins.get(name),
     )
     try:
-        _, _, provenance, context_root = _resolve_recipe_source("acme/task", {})
+        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/task", {})
     finally:
         recipes.unregister("acme/base-a")
         recipes.unregister("acme/base-b")
@@ -417,7 +419,7 @@ def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
 
     from rlmesh.sandbox import _resolve_recipe_source
 
-    _, recipe_json, provenance, context_root = _resolve_recipe_source(
+    _, recipe_json, provenance, context_root, _ = _resolve_recipe_source(
         _ProjectRecipe, {}
     )
 
@@ -443,7 +445,7 @@ def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     )
     recipes.register(recipe)
     try:
-        _, _, provenance, context_root = _resolve_recipe_source("acme/by-name", {})
+        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/by-name", {})
     finally:
         recipes.unregister("acme/by-name")
 
@@ -461,6 +463,7 @@ def test_resolve_recipe_source_plain_id_unchanged() -> None:
         None,
         None,
         None,
+        (),
     )
 
 
@@ -473,7 +476,7 @@ def test_resolve_recipe_source_merges_imports_into_requires() -> None:
     from rlmesh.sandbox import _resolve_recipe_source
 
     recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
-    _, recipe_json, provenance, _ = _resolve_recipe_source(recipe, {}, ["ale_py"])
+    _, recipe_json, provenance, _, _ = _resolve_recipe_source(recipe, {}, ["ale_py"])
 
     assert provenance == "installed"
     assert recipe_json is not None
@@ -491,7 +494,9 @@ def test_resolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
         make=GymMake(env_id="ALE/Pong-v5"),
         requires=Requires(imports=["ale_py", "shimmy"]),
     )
-    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {}, ["ale_py", "extra_reg"])
+    _, recipe_json, _, _, _ = _resolve_recipe_source(
+        recipe, {}, ["ale_py", "extra_reg"]
+    )
 
     assert recipe_json is not None
     document = Recipe.from_json(recipe_json)
@@ -530,7 +535,7 @@ def test_resolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
         make=GymMake(env_id="ALE/Pong-v5"),
         requires=Requires(imports=["ale_py"]),
     )
-    _, recipe_json, _, _ = _resolve_recipe_source(recipe, {})
+    _, recipe_json, _, _, _ = _resolve_recipe_source(recipe, {})
 
     assert recipe_json is not None
     document = Recipe.from_json(recipe_json)
@@ -547,6 +552,7 @@ def test_resolve_recipe_source_plain_id_with_imports_unchanged() -> None:
         None,
         None,
         None,
+        (),
     )
 
 
