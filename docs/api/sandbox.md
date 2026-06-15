@@ -48,8 +48,8 @@ See {doc}`numpy` and {doc}`torch` for backend-specific class entries and helper 
 
 ## Export
 
-`rlmesh.export` builds the image without starting a container; see the
-{doc}`../user-guide/sandbox` guide for usage.
+`rlmesh.export` builds the image without starting a container; see the {doc}`../user-guide/sandbox`
+guide for usage.
 
 ```{eval-rst}
 .. autofunction:: rlmesh.export

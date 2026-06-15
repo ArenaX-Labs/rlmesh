@@ -60,9 +60,9 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 
 `SandboxEnv` and `SandboxVectorEnv` also accept an authored {doc}`EnvRecipe <env-recipes>`, a
 `Recipe`, or a registered env name as the source. When such a recipe declares `ArtifactInput` assets
-with a host `local_dir`, those directories are bind-mounted read-only into the sandbox at the input's
-target path (validated on the host before the container starts); an `hf://` uri input is fetched
-in-container through the rlmesh cache instead.
+with a host `local_dir`, those directories are bind-mounted read-only into the sandbox at the
+input's target path (validated on the host before the container starts); an `hf://` uri input is
+fetched in-container through the rlmesh cache instead.
 
 ## Runtime Options
 

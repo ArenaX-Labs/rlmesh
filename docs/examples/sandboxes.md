@@ -44,7 +44,8 @@ finally:
     env.close()
 ```
 
-The runnable file is {source}`examples/python/sandbox/gym_sandbox.py <examples/python/sandbox/gym_sandbox.py>`.
+The runnable file is
+{source}`examples/python/sandbox/gym_sandbox.py <examples/python/sandbox/gym_sandbox.py>`.
 
 ## Hugging Face Sandbox
 
@@ -78,4 +79,5 @@ envs = SandboxVectorEnv("CartPole-v1", num_envs=2)
 The demo is intentionally unpinned; for real evaluations, pin the repository to a full commit SHA
 and keep `trust_remote_code=False` unless you have reviewed the source.
 
-The runnable file is {source}`examples/python/sandbox/hf_sandbox.py <examples/python/sandbox/hf_sandbox.py>`.
+The runnable file is
+{source}`examples/python/sandbox/hf_sandbox.py <examples/python/sandbox/hf_sandbox.py>`.

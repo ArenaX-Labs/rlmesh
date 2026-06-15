@@ -26,12 +26,12 @@ When RLMesh serves an environment through its bootstrap entrypoint (for example 
 container), the bind address follows a single canonical contract so that hosts and downstream images
 agree on where the environment listens:
 
-| Variable             | Meaning                                                                                          |
-| -------------------- | ------------------------------------------------------------------------------------------------ |
-| `RLMESH_ADDRESS`     | Full bind address (`host:port`, `port`, `tcp://host:port`, `unix:///...`). When set, it wins.    |
-| `RLMESH_PORT`        | Port-only fallback, bound on `0.0.0.0`, used when `RLMESH_ADDRESS` is unset (default `50051`).    |
-| `RLMESH_ENV_ADDRESS` | Deprecated alias for `RLMESH_ADDRESS`; read only when it is unset.                                |
-| `RLMESH_ENV_PORT`    | Deprecated alias for `RLMESH_PORT`; read only when both addresses are unset.                      |
+| Variable             | Meaning                                                                                        |
+| -------------------- | ---------------------------------------------------------------------------------------------- |
+| `RLMESH_ADDRESS`     | Full bind address (`host:port`, `port`, `tcp://host:port`, `unix:///...`). When set, it wins.  |
+| `RLMESH_PORT`        | Port-only fallback, bound on `0.0.0.0`, used when `RLMESH_ADDRESS` is unset (default `50051`). |
+| `RLMESH_ENV_ADDRESS` | Deprecated alias for `RLMESH_ADDRESS`; read only when it is unset.                             |
+| `RLMESH_ENV_PORT`    | Deprecated alias for `RLMESH_PORT`; read only when both addresses are unset.                   |
 
 `RLMESH_ADDRESS` is the preferred knob; it accepts the same forms as the `EnvServer` `address`
 argument, so a non-default host or a Unix socket can be selected without code changes.
