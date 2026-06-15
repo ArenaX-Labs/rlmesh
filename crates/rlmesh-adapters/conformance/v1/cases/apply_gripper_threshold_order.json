@@ -1,0 +1,176 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [2]
+  },
+  "env_tags": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "invert": true,
+          "range": null,
+          "role": "action/x",
+          "scale": 2.0,
+          "threshold": 0.5
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper",
+          "threshold": 0.5
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [-1.0, 1.0],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [2]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "image": {
+        "data": [
+          99, 106, 113, 123, 130, 137, 85, 92, 99, 109, 116, 123, 90, 97, 104, 120, 127, 134, 114,
+          121, 128, 144, 151, 158, 125, 132, 139, 149, 156, 163, 111, 118, 125, 135, 142, 149
+        ],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [3, 4, 3]
+      },
+      "instruction": {
+        "data": "threshold ordering",
+        "kind": "text"
+      },
+      "state": {
+        "data": [0.25, -0.5, 1.5],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      }
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [0.2, 0.5],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [2]
+  },
+  "model_spec": {
+    "action": {
+      "components": [
+        {
+          "dim": 1,
+          "role": "action/x"
+        },
+        {
+          "dim": 1,
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "inputs": [
+      {
+        "height": 3,
+        "key": "image",
+        "role": "image/primary",
+        "type": "image",
+        "width": 4
+      },
+      {
+        "components": [
+          {
+            "role": "proprio/eef_pos"
+          }
+        ],
+        "key": "state",
+        "type": "state"
+      },
+      {
+        "key": "instruction",
+        "role": "text/instruction",
+        "type": "text"
+      }
+    ]
+  },
+  "observation": {
+    "data": {
+      "cam": {
+        "data": [
+          0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 98, 105, 112, 119, 126, 133, 140,
+          147, 154, 161, 168, 175, 182, 189, 196, 203, 210, 217, 224, 231, 238, 245, 1, 8, 15, 22,
+          29, 36, 43, 50, 57, 64, 71, 78, 85, 92, 99, 106, 113, 120, 127, 134, 141, 148, 155, 162,
+          169, 176, 183, 190, 197, 204, 211, 218, 225, 232, 239, 246, 2, 9, 16, 23, 30, 37, 44, 51,
+          58, 65, 72, 79, 86, 93, 100, 107, 114, 121, 128, 135, 142, 149, 156, 163, 170, 177, 184,
+          191, 198, 205, 212, 219, 226, 233, 240, 247, 3, 10, 17, 24, 31, 38, 45, 52, 59, 66, 73,
+          80, 87, 94, 101, 108, 115, 122, 129, 136, 143, 150, 157, 164, 171, 178, 185, 192, 199,
+          206, 213, 220, 227, 234, 241, 248
+        ],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [6, 8, 3]
+      },
+      "instruction": {
+        "data": "threshold ordering",
+        "kind": "text"
+      },
+      "pos": {
+        "data": [0.25, -0.5, 1.5],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [6, 8, 3]
+      },
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      },
+      {
+        "dtype": "unspecified",
+        "kind": "text"
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam", "pos", "instruction"],
+    "kind": "dict"
+  },
+  "preserve_inputs": true
+}

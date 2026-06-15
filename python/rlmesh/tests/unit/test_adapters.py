@@ -280,6 +280,33 @@ def test_action_component_positional_binary_is_unchanged() -> None:
     assert c.scale is None and c.invert is False and c.threshold is None
 
 
+def test_action_layout_from_dict_rejects_loosely_typed_corrections() -> None:
+    # The Python deserializer must match the Rust serde contract: a truthy
+    # non-bool invert/binary or a numeric-string scale/threshold is rejected, so
+    # both bindings agree on hand-authored or third-party layout JSON.
+    from rlmesh.adapters.specs.action_serialization import action_layout_from_dict
+
+    def layout(**correction: Any) -> dict[str, Any]:
+        return {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1, **correction}]}
+
+    for bad in (
+        {"invert": 1},
+        {"invert": "yes"},
+        {"scale": "2"},
+        {"threshold": True},
+        {"binary": 1},
+    ):
+        with pytest.raises(ValueError):
+            action_layout_from_dict(layout(**bad))
+
+    ok = action_layout_from_dict(
+        layout(invert=True, scale=2.0, threshold=0.5, binary=True)
+    )
+    assert ok.components[0].invert is True
+    assert ok.components[0].scale == 2.0
+    assert ok.components[0].threshold == 0.5
+
+
 # ---------------------------------------------------------------------------
 # OpenVLA
 # ---------------------------------------------------------------------------

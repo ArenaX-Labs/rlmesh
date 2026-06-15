@@ -8,14 +8,11 @@ use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::plans::ActionPlan;
 
-fn sign(value: f32) -> f32 {
-    if value > 0.0 {
-        1.0
-    } else if value < 0.0 {
-        -1.0
-    } else {
-        0.0
-    }
+/// Snap a corrected value to a definite binary side. A value exactly on the
+/// boundary (e.g. the model output equals the threshold, giving 0.0 here) opens
+/// (`>= 0`) rather than emitting an undefined 0.0, which is neither open nor close.
+fn binary_snap(value: f32) -> f32 {
+    if value >= 0.0 { 1.0 } else { -1.0 }
 }
 
 /// Convert a model action vector into the env action vector (float32).
@@ -60,7 +57,7 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         }
         if segment.binarize {
             for entry in &mut piece {
-                *entry = sign(*entry);
+                *entry = binary_snap(*entry);
             }
         }
         pieces.extend(piece);
@@ -132,6 +129,14 @@ mod tests {
         let plan = one_segment(None, false, Some(0.5), true);
         assert_eq!(apply_one(&plan, 0.8), 1.0);
         assert_eq!(apply_one(&plan, 0.3), -1.0);
+    }
+
+    #[test]
+    fn binary_boundary_opens_rather_than_emitting_zero() {
+        // model output == threshold lands exactly on 0.0 after the subtract; it
+        // must snap to a definite side (open), never an undefined 0.0.
+        let plan = one_segment(None, false, Some(0.5), true);
+        assert_eq!(apply_one(&plan, 0.5), 1.0);
     }
 
     #[test]

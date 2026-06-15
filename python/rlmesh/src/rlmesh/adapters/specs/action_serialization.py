@@ -66,10 +66,10 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
                 dim=int(raw_dim) if raw_dim is not None else 0,
                 encoding=opt_encoding(item.get("encoding"), "action component"),
                 range=opt_range(item.get("range"), "action component"),
-                scale=_opt_float(item.get("scale")),
-                invert=bool(item.get("invert", False)),
-                threshold=_opt_float(item.get("threshold")),
-                binary=bool(item.get("binary", False)),
+                scale=_opt_number(item.get("scale"), "scale"),
+                invert=_require_bool(item.get("invert"), "invert"),
+                threshold=_opt_number(item.get("threshold"), "threshold"),
+                binary=_require_bool(item.get("binary"), "binary"),
             )
         )
     return ActionLayout(
@@ -78,8 +78,28 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
     )
 
 
-def _opt_float(value: Any) -> float | None:
-    return float(value) if value is not None else None
+def _opt_number(value: Any, field: str) -> float | None:
+    # Match the Rust serde f64 contract: a bool or a numeric string is rejected
+    # (Python's float() would silently accept both, diverging from the other
+    # binding on hand-authored or third-party layout JSON).
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"action component field {field!r} must be a number, got {value!r}"
+        )
+    return float(value)
+
+
+def _require_bool(value: Any, field: str) -> bool:
+    # Match the Rust serde bool contract: a truthy non-bool (1, "yes") is rejected.
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"action component field {field!r} must be a bool, got {value!r}"
+        )
+    return value
 
 
 __all__ = ["action_layout_from_dict", "action_layout_to_dict"]
