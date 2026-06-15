@@ -12,8 +12,21 @@
 extern "C" {
 #endif
 
-/* ABI version (must match the crate version; rlmesh_abi_version_* return these
- * at runtime so a plugin can refuse a too-old host). */
+/* Binary ABI generation — bumped ONLY on a binary-incompatible change (a
+ * repr(C) layout/enum-discriminant change, an extern "C" signature retype, or a
+ * symbol removal). Decoupled from the package semver below, which can't express
+ * an ABI break. Appending a struct_size-guarded vtable field is NOT a break. */
+#define RLMESH_ABI_VERSION 1
+
+uint32_t rlmesh_abi_version(void);
+
+/* Nonzero when the linked library's ABI generation matches the one this header
+ * was compiled against. SONAME-linked consumers are already gated by the loader
+ * (librlmesh_capi.so.N); this is for dlopen / raw-path consumers that bypass it. */
+static inline int rlmesh_abi_check(void) { return RLMESH_ABI_VERSION == rlmesh_abi_version(); }
+
+/* Package (marketing) semver — informational only. Do NOT gate ABI
+ * compatibility on these; use RLMESH_ABI_VERSION / rlmesh_abi_check(). */
 #define RLMESH_ABI_VERSION_MAJOR 0
 #define RLMESH_ABI_VERSION_MINOR 1
 #define RLMESH_ABI_VERSION_PATCH 0

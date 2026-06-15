@@ -10,25 +10,28 @@ set -euo pipefail
 crate="crates/rlmesh-capi"
 inc="$PWD/$crate/include"
 
-# The ABI version (CMake compat + .pc Version) drops the -beta suffix because
-# CMake/pkg-config can't compare a pre-release string; the package dir/tarball keeps
-# the full marketing version.
+# The package dir/tarball keeps the full marketing version. The SONAME, CMake
+# compat, and .pc Version all key off the binary ABI generation instead — the
+# monotonic RLMESH_ABI_VERSION integer in the header, which (unlike the 0.x
+# pre-release semver) can actually express an ABI break.
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"   # 0.1.0-beta.2
-abi="${version%%-*}"                                                     # 0.1.0
+abi_gen="$(sed -n 's/^#define RLMESH_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$inc/rlmesh.h")"  # 1
+: "${abi_gen:?could not parse RLMESH_ABI_VERSION from $inc/rlmesh.h}"
 triple="$(rustc -vV | sed -n 's/host: //p')"                            # x86_64-unknown-linux-gnu
 
 name="rlmesh-${version}-${triple}"
 out="$PWD/target/capi-pkg"
 stage="$out/$name"
-echo "==> packaging $name (abi $abi)"
+echo "==> packaging $name (ABI generation $abi_gen)"
 
 # 1. Release-build the staticlib + cdylib, then relink the cdylib with an explicit
-#    SONAME (a Rust cdylib carries none by default). Without it a consumer binary
-#    records the build-machine absolute path in DT_NEEDED; with it the binary records
-#    a relative librlmesh_capi.so and stays relocatable. Deps cache between the two.
+#    versioned SONAME (a Rust cdylib carries none by default). Without it a consumer
+#    binary records the build-machine absolute path in DT_NEEDED; with it the binary
+#    records librlmesh_capi.so.${abi_gen} and the loader refuses a different ABI
+#    generation. Deps cache between the two.
 cargo build -p rlmesh-capi --release --lib
 cargo rustc -p rlmesh-capi --release --lib --crate-type cdylib -- \
-  -C link-arg=-Wl,-soname,librlmesh_capi.so
+  -C link-arg=-Wl,-soname,librlmesh_capi.so.${abi_gen}
 
 # 2. Fresh staging tree.
 rm -rf "$stage"
@@ -37,7 +40,11 @@ mkdir -p "$stage/include" "$stage/lib/cmake/rlmesh" "$stage/lib/pkgconfig"
 # 3. Headers + licenses + the two libs (verbatim — include/ is the one header authority).
 cp "$inc/rlmesh.h" "$inc/rlmesh.hpp"   "$stage/include/"
 cp LICENSE-APACHE LICENSE-MIT          "$stage/"
-cp target/release/librlmesh_capi.so    "$stage/lib/"
+# Stage the cdylib under its real SONAME + a librlmesh_capi.so dev symlink: the
+# linker reads the SONAME (records the versioned DT_NEEDED) while find_package and
+# -lrlmesh_capi still resolve through the bare name at link time.
+cp target/release/librlmesh_capi.so    "$stage/lib/librlmesh_capi.so.${abi_gen}"
+ln -sf "librlmesh_capi.so.${abi_gen}"  "$stage/lib/librlmesh_capi.so"
 cp target/release/librlmesh_capi.a     "$stage/lib/"
 
 # 4. pkg-config metadata (non-CMake consumers). ${pcfiledir} keeps it relocatable.
@@ -48,15 +55,16 @@ libdir=\${prefix}/lib
 
 Name: rlmesh
 Description: RLMesh C/C++ ABI (prebuilt, drop-in, no Rust toolchain)
-Version: $abi
+Version: $abi_gen
 Cflags: -I\${includedir}
 Libs: -L\${libdir} -lrlmesh_capi
 # Native libs the Rust runtime pulls in; a static (.a) link also needs: -lgcc_s -lutil -lrt -lc
 Libs.private: -lpthread -ldl -lm
 EOF
 
-# 5. CMake config-version with real SameMajorVersion compatibility: a different
-#    major is an ABI break and must be rejected (CMake's canonical template).
+# 5. CMake config-version: PACKAGE_VERSION is the ABI generation, so the canonical
+#    SameMajorVersion template now genuinely rejects a different ABI generation —
+#    find_package(rlmesh N) gates the binary ABI, not the inert 0.x semver.
 cat > "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake" <<'EOF'
 set(PACKAGE_VERSION "@ABI@")
 if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
@@ -77,7 +85,7 @@ else()
   endif()
 endif()
 EOF
-sed -i "s/@ABI@/$abi/" "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake"
+sed -i "s/@ABI@/$abi_gen/" "$stage/lib/cmake/rlmesh/rlmesh-config-version.cmake"
 
 # 6. The CMake config itself is a committed template (static text, nothing to
 #    interpolate) — copied verbatim so it stays reviewable as a normal source file.

@@ -143,6 +143,17 @@ fn header_abi_version_macros_match_crate() {
             .map(|rest| rest.trim().to_string())
             .expect("version macro present in header")
     };
+    // The binary ABI generation: header macro, exported fn, and crate const must
+    // all agree (this is the gate consumers compile against).
+    assert_eq!(
+        macro_value("RLMESH_ABI_VERSION"),
+        crate::abi::RLMESH_ABI_VERSION.to_string()
+    );
+    assert_eq!(
+        crate::abi::rlmesh_abi_version(),
+        crate::abi::RLMESH_ABI_VERSION
+    );
+    // Package semver macros stay informational but honest vs the crate version.
     assert_eq!(
         macro_value("RLMESH_ABI_VERSION_MAJOR"),
         env!("CARGO_PKG_VERSION_MAJOR")
