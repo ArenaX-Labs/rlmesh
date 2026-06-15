@@ -73,6 +73,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "viewer")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_build_image, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
 
     adapters::register_constants(m)?;

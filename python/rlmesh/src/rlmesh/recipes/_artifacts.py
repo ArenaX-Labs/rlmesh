@@ -180,7 +180,9 @@ def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
         return uri[len("file://") :]
     if uri.startswith(_HF_SCHEME):
         repo, _, revision = uri[len(_HF_SCHEME) :].partition("@")
-        return _snapshot_hf(repo, revision or None, allow_patterns=list(include) or None)
+        return _snapshot_hf(
+            repo, revision or None, allow_patterns=list(include) or None
+        )
     raise NotImplementedError(
         f"artifact uri scheme not resolvable on the local path yet: {uri!r}; "
         "use local_dir= for gs://, s3://, https:// until the remote resolver lands"
@@ -190,13 +192,24 @@ def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
 def _snapshot_hf(
     repo: str, revision: str | None, *, allow_patterns: list[str] | None = None
 ) -> str:
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - optional dep
-        raise ImportError(
-            "resolving an hf:// artifact requires huggingface_hub "
-            "(pip install huggingface_hub)"
-        ) from exc
+    if TYPE_CHECKING:
+        # huggingface_hub is an optional, unstubbed runtime dep; declare the one call
+        # we make so the strict checker sees a real signature without it installed.
+        def snapshot_download(
+            *,
+            repo_id: str,
+            revision: str | None,
+            cache_dir: str,
+            allow_patterns: list[str] | None,
+        ) -> str: ...
+    else:
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise ImportError(
+                "resolving an hf:// artifact requires huggingface_hub "
+                "(pip install huggingface_hub)"
+            ) from exc
 
     root = cache_root() / "hf"
     root.mkdir(parents=True, exist_ok=True)
@@ -227,7 +240,9 @@ def hf_load(
     model, or ``(model, processor)`` when ``processor`` is given.
     """
     source = local_dir if local_dir is not None else _snapshot_hf(repo, revision)
-    model = _from_pretrained(loader, source, trust_remote_code=trust_remote_code, **kwargs)
+    model = _from_pretrained(
+        loader, source, trust_remote_code=trust_remote_code, **kwargs
+    )
     if processor is not None:
         proc = _from_pretrained(processor, source, trust_remote_code=trust_remote_code)
         return model, proc

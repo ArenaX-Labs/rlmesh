@@ -137,7 +137,6 @@ __all__ = [
     "CustomEncoding",
     "EntrypointCustomInput",
     "EnvTags",
-    "IOAdapter",
     "ImageInput",
     "ImageLayout",
     "ImageTag",
@@ -160,17 +159,3 @@ __all__ = [
     "resolve_from_contract",
     "tag",
 ]
-
-
-def __getattr__(name: str) -> object:
-    """Deprecation shim: ``IOAdapter`` was renamed to ``Adapter``."""
-    if name == "IOAdapter":
-        import warnings
-
-        warnings.warn(
-            "rlmesh.adapters.IOAdapter is deprecated; use rlmesh.adapters.Adapter instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return Adapter
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

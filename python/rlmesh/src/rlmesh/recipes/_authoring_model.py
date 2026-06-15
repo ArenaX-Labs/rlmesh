@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
+from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar
 
 from ._artifacts import enter_recipe_context, merged_inputs, resolve_artifact
 from ._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
@@ -74,13 +74,19 @@ class ModelRecipe:
         class SmolVLA(rlmesh.ModelRecipe):
             name = "policy/smolvla"
             build = Build(pip=[PipInstall(["lerobot==0.4.0"])], gpu=True)
-            inputs = (ArtifactInput("weights", "/weights/smolvla",
-                                    uri="hf://lerobot/smolvla_base@<sha>"),)
+            inputs = (
+                ArtifactInput(
+                    "weights", "/weights/smolvla", uri="hf://lerobot/smolvla_base@<sha>"
+                ),
+            )
             spec = ModelSpec(inputs=(...), action=...)
 
             def load(self):
-                self._policy = hf_load("lerobot/smolvla_base", loader="lerobot:SmolVLAPolicy",
-                                       local_dir=self.input_path("weights"))
+                self._policy = hf_load(
+                    "lerobot/smolvla_base",
+                    loader="lerobot:SmolVLAPolicy",
+                    local_dir=self.input_path("weights"),
+                )
 
             def predict(self, observation):
                 return self._policy.select_action(observation)
@@ -196,7 +202,7 @@ class ModelRecipe:
                 "container cannot import; define it in an installed module"
             )
         spec = cls.spec
-        adapter: object | None = None
+        adapter: ModelSpec | None = None
         if spec is not None and spec is not DELEGATED:
             _reject_local_only_spec(spec)
             adapter = spec
@@ -259,7 +265,10 @@ def as_authored_model_recipe(source: object) -> Recipe | None:
     return None
 
 
-def _instantiate(cls: type[ModelRecipe]) -> ModelRecipe:
+_M = TypeVar("_M", bound="ModelRecipe")
+
+
+def _instantiate(cls: type[_M]) -> _M:
     """Construct ``cls()`` with a recipe-aware error if it requires constructor args."""
     try:
         signature = inspect.signature(cls)
@@ -281,12 +290,12 @@ def _instantiate(cls: type[ModelRecipe]) -> ModelRecipe:
 
 
 def construct_authored_model(
-    cls: type[ModelRecipe],
+    cls: type[_M],
     *,
     in_container: bool = False,
     load_kwargs: dict[str, object] | None = None,
     artifacts: Sequence[ArtifactInput] = (),
-) -> ModelRecipe:
+) -> _M:
     """Construct a ``ModelRecipe`` in-process (or in-container) and return the policy.
 
     Applies ``setup``, resolves the declared ``inputs`` mounts, instantiates, runs

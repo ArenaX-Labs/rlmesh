@@ -1,24 +1,26 @@
-# Recipes
+# Environment recipes
 
 Recipes are experimental in this beta. A recipe is an inert, JSON-serializable description of how to
-_construct_ an environment, **decoupled from where it runs**. You can author a recipe for an
-environment you cannot run locally -- an IsaacSim recipe written on a Mac, say -- because the recipe
-only references your construction code by name; the code runs later, in a container. See
-{doc}`../api/recipes` for the exact classes and methods.
+construct an environment, decoupled from where it runs. You can author a recipe for an environment
+you cannot run locally (an IsaacSim recipe written on a Mac, say). The recipe only references your
+construction code by name, so the code runs later, in a container. See {doc}`../api/recipes` for the
+full class and method contract.
 
-**Which rung am I on?**
+For authoring a model, see {doc}`model-recipes`.
+
+## Choosing an entry point
 
 - Already pip-installed the env? `rlmesh.make("id")`.
 - Want it installed for you in a clean container? `SandboxEnv("id", packages=[...])`.
 - Naming one for reuse? `rlmesh.register("name", gym=...)` or `register("name", factory=...)`.
 - Your own construction code? Subclass `rlmesh.EnvRecipe`.
 
-Everything below those is the inert form your recipe lowers to; you rarely write it by hand.
+Each one lowers to the same inert recipe form. You rarely write that form by hand.
 
 ## Run a built-in
 
-`rlmesh.make` is a strict superset of `gymnasium.make`. If the package is already installed, this is
-the whole story:
+For a Gymnasium id, `rlmesh.make` is a drop-in for `gymnasium.make` (it forwards the same kwargs and
+adds recipe sources). If the package is already installed, this is the whole story:
 
 ```python
 import rlmesh
@@ -27,11 +29,11 @@ env = rlmesh.make("CartPole-v1")
 obs, info = env.reset(seed=0)
 ```
 
-## Run it isolated, and install the dependency for you
+## Run it isolated, with the dependency installed for you
 
-When an env needs a `pip install` you don't want in your process, the flat one-liner builds a
-container and hands you a remote env. `packages=` are installed in the container; `imports=` are
-module names imported so the env registers itself (not packages -- those go in `packages=`):
+When an env needs a `pip install` you don't want in your process, the one-liner builds a container
+and hands you a remote env. `packages=` are installed in the container; `imports=` are module names
+imported so the env registers itself:
 
 ```python
 from rlmesh.numpy import SandboxEnv  # pick your array backend (numpy / torch / jax)
@@ -42,9 +44,8 @@ with SandboxEnv("ALE/Breakout-v5", packages=["ale-py"], imports=["ale_py"]) as e
 
 ## Name it for reuse
 
-`rlmesh.register` and `rlmesh.make` are the pair: register a recipe once, then anyone refers to it
-by name -- locally or in a sandbox. Pass exactly one of `gym=` (a gym id) or `factory=` (a
-`module:callable`):
+`rlmesh.register` and `rlmesh.make` are the pair. Register a recipe once, then refer to it by name,
+locally or in a sandbox. Pass exactly one of `gym=` (a gym id) or `factory=` (a `module:callable`):
 
 ```python
 import rlmesh
@@ -57,9 +58,8 @@ env = rlmesh.make("atari/breakout")                       # in-process
 
 ## Point at a factory you already have
 
-`GymMake` only covers ids that `gymnasium.make` can build. An environment with its _own_ `make` or
-one that needs a wrapper -- like `safety_gymnasium` -- is constructed by a factory you reference by
-name:
+`GymMake` only covers ids that `gymnasium.make` can build. An environment with its own `make`, or one
+that needs a wrapper like `safety_gymnasium`, is constructed by a factory you reference by name:
 
 ```python
 # safety_env.py  (in your package; the recipe references it as a string)
@@ -81,12 +81,12 @@ rlmesh.register(
 
 ## Author with a class: `EnvRecipe`
 
-When your `make()` _is_ your code -- a real build, GPU, your own package -- subclass
-`rlmesh.EnvRecipe`. It co-locates the recipe data (the `name`/`build`/`setup` class attributes) with
-the construction code (`make()`, and an optional `prepare()` hook), and projects to an inert recipe:
+When your `make()` is your own construction code (a build step, GPU, your own package), subclass
+`rlmesh.EnvRecipe`. The class attributes (`name`/`build`/`setup`) hold the recipe data; `make()` and
+the optional `prepare()` hook hold the construction code. The class lowers to an inert recipe.
 
 ```python
-from __future__ import annotations  # required: keeps the class importable where deps are absent
+from __future__ import annotations
 
 import rlmesh
 from rlmesh.recipes import Build, Fetch, PipInstall, ProjectInstall
@@ -106,31 +106,36 @@ class LiberoObject(rlmesh.EnvRecipe):
     )
 
     def prepare(self):
-        ...  # construct-time CODE (download a checkpoint, warm a cache) -- runs before make()
+        ...  # construct-time work (download a checkpoint, warm a cache); runs before make()
 
     def make(self, task="libero_object/0", **kwargs):
-        import libero.env                       # heavy import INSIDE make() (never at author time)
+        import libero.env
         return libero.env.Environment(task=task, **kwargs)
 
 
 rlmesh.register(LiberoObject)
 ```
 
+```{important}
 Put every heavy import inside `make()`/`prepare()`. `register(LiberoObject)` reads the class
-attributes and records the entrypoint string -- it never instantiates the class or imports its
-dependencies, so this works on a machine that cannot run the env. Validate a recipe without
-importing anything with `LiberoObject.check()`.
+attributes and records the entrypoint string. It never instantiates the class or imports its
+dependencies, so authoring works on a machine that cannot run the env. The
+`from __future__ import annotations` line keeps the class importable where those deps are absent.
+Validate without importing anything with `LiberoObject.check()`.
+```
 
-`prepare()` and `make()` run once each, in order, on the same instance, so share state through
-instance attributes (`self._x` set in `prepare()` is read in `make()`). But **the recipe instance is
-discarded the moment `make()` returns** -- only what the returned env references (or a
-process-global singleton) survives into `reset`/`step`/`close`. If `prepare()` opens a resource the
-env needs at runtime (a file, subprocess, render context, socket), the env must own it: create it in
-`make()` and release it in `env.close()`. There is no recipe teardown hook, and `__init__` is called
-with no arguments -- per-construction parameters go in `make(self, **kwargs)`.
+State set in `prepare()` is read in `make()` through instance attributes. The recipe instance is then
+discarded, so it cannot own anything the running env needs. See {doc}`../api/recipes` for the full
+`prepare()`/`make()` lifecycle and registry-introspection functions.
 
-`register` also works as a decorator -- `@rlmesh.register` above the class registers it on import
-and returns the class unchanged:
+```{warning}
+The recipe instance is discarded the moment `make()` returns. A resource opened in `prepare()` (a
+file, subprocess, or socket) dies with it unless the returned env holds it. Create runtime resources
+in `make()` and release them in `env.close()`.
+```
+
+`register` also works as a decorator. `@rlmesh.register` above the class registers it on import and
+returns the class unchanged:
 
 ```python
 @rlmesh.register
@@ -139,10 +144,8 @@ class LiberoObject(rlmesh.EnvRecipe):
     ...
 ```
 
-It must live in an importable module (not a `__main__` script), because the container imports the
-factory by reference. To see what is registered, `rlmesh.recipes.pprint_registry()` prints the
-recipes grouped by namespace, and `rlmesh.recipes.registry()` returns a read-only `name -> recipe`
-view.
+The class must live in an importable module, not a `__main__` script, because the container imports
+the factory by reference.
 
 ## Share one build across tasks
 
@@ -166,15 +169,15 @@ class Scene1(rlmesh.EnvRecipe):
         return robot_env.scene1()
 ```
 
-Per-task differences belong in `make`/`setup`; they ride the runtime payload and never invalidate
-the shared image.
+Per-task differences belong in `make`/`setup`. They ride the runtime payload and never invalidate the
+shared image.
 
 ## A non-Debian base, or wrapping an existing Dockerfile
 
-`system`/`system_runtime` are installed with `apt`, so a structured `Build` targets a Debian/Ubuntu
-base (the defaults -- `python:3.11-slim` and the `nvidia/cuda` images -- are). For another distro,
-or to wrap a Dockerfile you already have, set `build.dockerfile` to a verbatim body (the deriver
-appends the rlmesh entrypoint). It is mutually exclusive with the structured build fields:
+`system`/`system_runtime` are installed with `apt`, so a structured `Build` targets a Debian or Ubuntu
+base. The defaults (`python:3.11-slim` and the `nvidia/cuda` images) qualify. For another distro, or
+to wrap a Dockerfile you already have, set `build.dockerfile` to a verbatim body. The deriver appends
+the rlmesh entrypoint. It is mutually exclusive with the structured build fields:
 
 ```python
 from rlmesh.recipes import Build
@@ -184,8 +187,8 @@ Build(dockerfile="FROM alpine:3.20\nRUN apk add --no-cache python3 py3-pip\n..."
 
 ## Serving
 
-`rlmesh.EnvServer` accepts the same `str | Recipe | EnvRecipe` source as `make`; an `EnvRecipe` (or
-`Recipe`) is built before it is served:
+`rlmesh.EnvServer` accepts the same `str | Recipe | EnvRecipe` source as `make`. An `EnvRecipe` or
+`Recipe` is built before it is served:
 
 ```python
 from rlmesh import EnvServer
@@ -196,8 +199,13 @@ EnvServer(LiberoObject).serve()
 ## Safety
 
 The build phase runs `apt`, `git`, and `pip` only inside `docker build`, never in your process; the
-`setup` phase is data-only. A recipe from your installed/loaded code (a `register` call, an
-installed package, an `EnvRecipe`) is trusted to build anything. A recipe handed in as raw data from
-an untrusted source is gated: its build must pin every git fetch and download, version-pin and
-allowlist its pip steps, and may not carry raw shell commands or a verbatim Dockerfile. Keep recipe
-sources reviewed and pinned for reproducible evaluations.
+`setup` phase is data-only.
+
+```{important}
+A recipe from your installed or loaded code (a `register` call, an installed package, an `EnvRecipe`)
+is trusted to build anything. A recipe handed in as raw data from an untrusted source is gated: its
+build must pin every git fetch and download, version-pin and allowlist its pip steps, and may not
+carry raw shell commands or a verbatim Dockerfile.
+```
+
+Keep recipe sources reviewed and pinned for reproducible evaluations.

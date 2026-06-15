@@ -48,11 +48,7 @@ pub struct DockerBackend;
 
 impl DockerBackend {
     pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
-        let image_tag = format!(
-            "rlmesh-sandbox-{}:{}",
-            spec.image_slug(),
-            &spec.build_hash[..12.min(spec.build_hash.len())]
-        );
+        let image_tag = spec.image_tag();
 
         // A single `docker image inspect` answers both "does it exist" and
         // "what is its id": inspect_image_id returns Ok(None) when the image is
@@ -80,7 +76,14 @@ impl DockerBackend {
                 let builder = ensure_bounded_builder(memory)?;
                 Command::new("docker")
                     .args([
-                        "buildx", "build", "--builder", &builder, "--load", "-t", &image_tag, ".",
+                        "buildx",
+                        "build",
+                        "--builder",
+                        &builder,
+                        "--load",
+                        "-t",
+                        &image_tag,
+                        ".",
                     ])
                     .current_dir(tempdir.path())
                     .output()
@@ -99,6 +102,20 @@ impl DockerBackend {
         let image_id = inspect_image_id(&image_tag)?
             .ok_or_else(|| anyhow!("docker build completed but image id was not found"))?;
         Ok(BuildArtifact { image_id })
+    }
+
+    /// Add an alias tag to an already-built image (`docker tag <source> <alias>`).
+    /// Docker validates the alias reference and reports a clear error if it is
+    /// malformed, so no separate validation is needed here.
+    pub fn tag_image(&self, source: &str, alias: &str) -> Result<()> {
+        let output = Command::new("docker")
+            .args(["tag", source, alias])
+            .output()
+            .context("failed to invoke docker tag")?;
+        if !output.status.success() {
+            bail!("docker tag failed:\n{}", command_output(&output));
+        }
+        Ok(())
     }
 
     pub async fn run_container_async(
@@ -420,7 +437,7 @@ impl BootstrapSpec {
                     .as_ref()
                     .ok_or_else(|| anyhow!("recipe source missing its parsed recipe"))?;
                 Self::Recipe(RecipeBootstrapSpec {
-                    // Only the runtime phase (setup/make/requires/annotations)
+                    // Only the runtime phase (setup/make/requires/adapter)
                     // rides the payload; the build phase already shaped the image
                     // and must not re-ship.
                     document: runtime_document(recipe)?,
@@ -466,7 +483,7 @@ struct HfBootstrapSpec {
 
 #[derive(Debug, Clone, Serialize)]
 struct RecipeBootstrapSpec {
-    /// The recipe's runtime half (setup/make/requires/annotations); the build
+    /// The recipe's runtime half (setup/make/requires/adapter); the build
     /// phase is stripped because it already shaped the image.
     document: serde_json::Value,
     num_envs: usize,
@@ -923,9 +940,7 @@ fn docker_run_args(
     // mutating the host weights and coexists with the hardening above.
     for (host, target) in mounts {
         args.push("--mount".to_string());
-        args.push(format!(
-            "type=bind,source={host},target={target},readonly"
-        ));
+        args.push(format!("type=bind,source={host},target={target},readonly"));
     }
     args.extend([
         // Deliver the bootstrap payload (runtime-only parameters) at run time
@@ -1270,12 +1285,23 @@ mod tests {
         );
         // A typo'd size is rejected up front, not handed to docker.
         for bad in ["garbage", ";;;", "20 g", "-5g", "0"] {
-            assert!(resolve_build_memory(bad).is_err(), "{bad} should be rejected");
+            assert!(
+                resolve_build_memory(bad).is_err(),
+                "{bad} should be rejected"
+            );
         }
 
         // is_docker_size accepts the forms docker accepts and nothing else.
-        assert!(["20g", "2048m", "1.5g", "1073741824", "512k", "1t"].iter().all(|s| is_docker_size(s)));
-        assert!(!["", "g", "0", "-5g", "garbage", "20 g", "b"].iter().any(|s| is_docker_size(s)));
+        assert!(
+            ["20g", "2048m", "1.5g", "1073741824", "512k", "1t"]
+                .iter()
+                .all(|s| is_docker_size(s))
+        );
+        assert!(
+            !["", "g", "0", "-5g", "garbage", "20 g", "b"]
+                .iter()
+                .any(|s| is_docker_size(s))
+        );
 
         // Builder name encodes the cap and is a valid buildx name.
         assert_eq!(builder_name("20g"), "rlmesh-build-20g");

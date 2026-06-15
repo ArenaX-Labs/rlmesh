@@ -31,7 +31,7 @@ from rlmesh.models import (
     construct_authored_model,
 )
 from rlmesh.numpy import Model
-from rlmesh.recipes import Build, PipInstall, Recipe, RecipeValidationError
+from rlmesh.recipes import Build, PipInstall, PyMake, Recipe, RecipeValidationError
 
 _SPEC = ModelSpec(
     inputs=(ImageInput("image", role=IMAGE_PRIMARY, size=8),),
@@ -102,9 +102,13 @@ InlinePolicy.spec = _inline_spec()
 
 
 class _Contract:
-    def __init__(self, metadata: dict[str, Any] | None = None, num_envs: int = 1) -> None:
+    def __init__(
+        self, metadata: dict[str, Any] | None = None, num_envs: int = 1
+    ) -> None:
         self.metadata = metadata or {}
         self.num_envs = num_envs
+        self.observation_space: Any = None
+        self.action_space: Any = None
 
 
 class _LoopEnv:
@@ -122,13 +126,17 @@ class _LoopEnv:
     def env_contract(self) -> _Contract:
         return self._contract
 
-    def reset(self, *, seed: int | None = None) -> tuple[dict[str, int], dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None
+    ) -> tuple[dict[str, int], dict[str, Any]]:
         self.t = 0
         self.resets += 1
         self.last_seed = seed
         return {"obs": 0}, {}
 
-    def step(self, action: Any) -> tuple[dict[str, int], float, bool, bool, dict[str, Any]]:
+    def step(
+        self, action: Any
+    ) -> tuple[dict[str, int], float, bool, bool, dict[str, Any]]:
         self.t += 1
         terminated = self.t >= self.horizon
         return {"obs": self.t}, 1.0, terminated, False, {}
@@ -144,12 +152,14 @@ def test_to_recipe_is_model_kind() -> None:
     recipe = TinyPolicy.to_recipe()
     assert recipe.kind == "model"
     assert recipe.name == "policy/tiny"
-    assert recipe.make is not None
+    assert isinstance(recipe.make, PyMake)
     assert recipe.make.entrypoint.endswith(":TinyPolicy._rlmesh_load")
     # at authoring, recipe.adapter holds the ModelSpec INSTANCE...
     assert recipe.adapter is _SPEC
     # ...which serializes to a BARE dict (not the to_metadata wrapper)
-    assert set(recipe.to_dict()["adapter"]) == {"inputs", "action"}
+    adapter_dict = recipe.to_dict()["adapter"]
+    assert isinstance(adapter_dict, dict)
+    assert set(adapter_dict) == {"inputs", "action"}
 
 
 def test_recipe_json_round_trip() -> None:
@@ -192,6 +202,7 @@ def test_artifact_input_local_dir_resolves(tmp_path: Any) -> None:
     class WithWeights(ModelRecipe):
         name = "policy/with-weights"
         inputs = (ArtifactInput("ckpt", "/weights", local_dir=str(tmp_path)),)
+        ckpt_dir: str
 
         def load(self) -> None:
             self.ckpt_dir = self.input_path("ckpt")
@@ -210,6 +221,7 @@ def test_artifact_override_wins(tmp_path: Any) -> None:
     class WithWeights(ModelRecipe):
         name = "policy/override"
         inputs = (ArtifactInput("ckpt", "/weights", local_dir=str(tmp_path)),)
+        ckpt_dir: str
 
         def load(self) -> None:
             self.ckpt_dir = self.input_path("ckpt")
@@ -218,7 +230,8 @@ def test_artifact_override_wins(tmp_path: Any) -> None:
             return observation
 
     policy = construct_authored_model(
-        WithWeights, artifacts=(ArtifactInput("ckpt", "/weights", local_dir=str(other)),)
+        WithWeights,
+        artifacts=(ArtifactInput("ckpt", "/weights", local_dir=str(other)),),
     )
     assert policy.ckpt_dir == str(other)
 
@@ -295,7 +308,7 @@ def test_check_passes_for_model_recipe_with_spec() -> None:
     # Regression: check() compared dataclasses, but adapter is a ModelSpec instance
     # pre-round-trip and a dict post, so it spuriously failed. Must not raise now.
     TinyPolicy.check()
-    InlinePolicy  # noqa: B018 - keep the local-only policy referenced
+    assert InlinePolicy is not None  # keep the local-only policy referenced
 
 
 def test_flat_hf_form_projects_importable_recipe() -> None:
@@ -314,11 +327,12 @@ def test_flat_hf_form_projects_importable_recipe() -> None:
     assert recipe.kind == "model"
     # auto-declared weights mount with the pinned hf uri (per-run artifacts override it)
     assert any(
-        a.name == "weights" and a.uri == "hf://org/openvla@abc123def" for a in recipe.inputs
+        a.name == "weights" and a.uri == "hf://org/openvla@abc123def"
+        for a in recipe.inputs
     )
     # the projected entrypoint class is bound into the module, so a fresh-process /
     # sandbox import of "rlmesh.models._registry:<Class>._rlmesh_load" resolves
-    assert recipe.make is not None
+    assert isinstance(recipe.make, PyMake)
     cls_name = recipe.make.entrypoint.split(":", 1)[1].rsplit(".", 1)[0]
     assert cls_name.isidentifier()
     assert hasattr(reg, cls_name)
@@ -340,9 +354,15 @@ class _TaggedEnv:
         self.horizon = horizon
         self.t = 0
         self._obs_space = gym.spaces.Dict(
-            {"image": gym.spaces.Box(low=0, high=255, shape=(16, 16, 3), dtype=np.uint8)}
+            {
+                "image": gym.spaces.Box(
+                    low=0, high=255, shape=(16, 16, 3), dtype=np.uint8
+                )
+            }
         )
-        self._action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        self._action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(1,), dtype=np.float32
+        )
         tags = EnvTags(
             observation={"image": ImageTag(role=IMAGE_PRIMARY)},
             action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
@@ -357,17 +377,27 @@ class _TaggedEnv:
     def env_contract(self) -> _Contract:
         return self._contract
 
-    def reset(self, *, seed: int | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
+    def reset(
+        self, *, seed: int | None = None
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         self.t = 0
         return {"image": np.zeros((16, 16, 3), dtype=np.uint8)}, {}
 
-    def step(self, action: Any) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
+    def step(
+        self, action: Any
+    ) -> tuple[dict[str, Any], float, bool, bool, dict[str, Any]]:
         self.t += 1
         # the action must be the ENV-format action: a length-1 array in [-1, 1]
         arr = np.asarray(action, dtype=np.float32).reshape(-1)
         assert arr.shape == (1,)
         terminated = self.t >= self.horizon
-        return {"image": np.zeros((16, 16, 3), dtype=np.uint8)}, 1.0, terminated, False, {}
+        return (
+            {"image": np.zeros((16, 16, 3), dtype=np.uint8)},
+            1.0,
+            terminated,
+            False,
+            {},
+        )
 
 
 class AdaptedPolicy(ModelRecipe):
@@ -453,7 +483,9 @@ def test_local_dir_mounts_override_supplies_local_dir(tmp_path: Any) -> None:
     ckpt = tmp_path / "ckpt"
     ckpt.mkdir()
     inputs = (
-        ArtifactInput("weights", "/rlmesh/input/model/weights", uri="hf://org/repo@abc"),
+        ArtifactInput(
+            "weights", "/rlmesh/input/model/weights", uri="hf://org/repo@abc"
+        ),
     )
     override = ArtifactInput("weights", "/ignored", local_dir=str(ckpt))
     # The override's local_dir mounts at the DECLARED target the container resolves.

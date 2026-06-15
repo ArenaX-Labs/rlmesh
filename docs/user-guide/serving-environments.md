@@ -79,9 +79,9 @@ the human-readable output is not a stable interface.
 
 ### gRPC Health Service
 
-Every RLMesh gRPC server serves the standard
-[`grpc.health.v1`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) health service.
-It is always on and separate from the env/model RPCs. Overall server health, the empty `""` service
+RLMesh's Rust gRPC serve paths serve the standard
+[`grpc.health.v1`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) health service,
+separate from the env/model RPCs. Overall server health, the empty `""` service
 name, reports `SERVING` once the listener accepts connections.
 
 Any standard health client can probe it, for example with

@@ -13,6 +13,7 @@ Use this when you need exact imports, methods, and backend behavior.
 - {doc}`adapters`: experimental declarative env-to-model IO adapters.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
 - {doc}`recipes`: experimental environment recipes and the registry.
+- {doc}`model-recipes`: experimental model construction — ModelRecipe authoring, the runtime Model, hf_load, and ArtifactInput.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
 - {doc}`types`: structural protocols and shared value aliases.
 
@@ -39,4 +40,5 @@ spaces
 types
 sandbox
 recipes
+model-recipes
 ```

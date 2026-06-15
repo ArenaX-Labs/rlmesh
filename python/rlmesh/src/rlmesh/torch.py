@@ -241,7 +241,7 @@ class Model(ModelBase[TorchValue, TorchValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
-    _remote_env_cls: ClassVar[type] = RemoteEnv
+    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

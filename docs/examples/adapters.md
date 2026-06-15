@@ -9,7 +9,7 @@ or simulator.
 One process serves a tagged environment and runs an adapted model against it:
 
 ```bash
-uv run python examples/python/adapters_quickstart/serve_and_run.py
+uv run python examples/python/adapters/serve_and_run.py
 ```
 
 The environment is served with its tags published in the contract:

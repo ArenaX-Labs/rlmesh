@@ -33,6 +33,13 @@ class SandboxRunInfo(TypedDict):
     address: str
     container_id: str
 
+class SandboxBuildInfo(TypedDict):
+    requested_source: str
+    resolved_source: str
+    image: str
+    alias: str | None
+    image_id: str
+
 "#;
 const TENSOR_BUFFER_STUB: &str =
     "    def __buffer__(self, flags: builtins.int, /) -> memoryview: ...\n";

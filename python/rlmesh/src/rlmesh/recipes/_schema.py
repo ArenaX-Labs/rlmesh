@@ -53,10 +53,9 @@ __all__ = [
     "Setup",
 ]
 
-# Bumped 1 -> 2 with the kind/inputs/runtime/adapter additions.
-# Back-compat is by serde alias + defaults, so v1 and v2 documents are wire-compatible;
-# the bump is a soft signal, not a hard gate.
-RECIPE_VERSION: Final = 2
+# The recipe schema version. New fields default, so a document missing them still
+# loads; the version is a soft signal for readers, not a hard gate.
+RECIPE_VERSION: Final = 1
 
 # The single discriminator that distinguishes an env recipe document from a model
 # recipe document. Selects the container ENTRYPOINT/bootstrap and gates a small set
@@ -744,8 +743,40 @@ class RuntimeReserved:
         """Rehydrate from JSON, ignoring unknown keys (forward-compat)."""
         if not data:
             return cls()
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        loop_mode = data.get("loop_mode")
+        if loop_mode is not None and loop_mode not in (
+            "step",
+            "chunk",
+            "receding",
+            "open_loop",
+        ):
+            raise RecipeValidationError(
+                f"RuntimeReserved.loop_mode invalid: {loop_mode!r}"
+            )
+        batching = data.get("batching")
+        if batching is not None and batching not in ("off", "utilization", "fusion"):
+            raise RecipeValidationError(
+                f"RuntimeReserved.batching invalid: {batching!r}"
+            )
+        determinism = data.get("determinism")
+        if determinism is not None and determinism not in ("off", "seeded", "strict"):
+            raise RecipeValidationError(
+                f"RuntimeReserved.determinism invalid: {determinism!r}"
+            )
+        return cls(
+            chunk_size=_opt_int(data.get("chunk_size"), "RuntimeReserved.chunk_size"),
+            execute_horizon=_opt_int(
+                data.get("execute_horizon"), "RuntimeReserved.execute_horizon"
+            ),
+            loop_mode=loop_mode,
+            batching=batching,
+            max_batch=_opt_int(data.get("max_batch"), "RuntimeReserved.max_batch"),
+            determinism=determinism,
+            perturbation=_opt_map(data.get("perturbation")),
+            lane_affinity=_opt_bool(
+                data.get("lane_affinity"), "RuntimeReserved.lane_affinity"
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -766,8 +797,7 @@ class Recipe:
     requires: Requires = field(default_factory=Requires)
     summary: str | None = None
     # The published adapter content: an env recipe's EnvTags or a model recipe's
-    # ModelSpec (or a raw JSON Mapping after from_dict). Renamed from ``annotations``
-    # (read-aliased for back-compat). A dataclass instance is
+    # ModelSpec (or a raw JSON Mapping after from_dict). A dataclass instance is
     # accepted at construction and lazily type-checked against ``kind`` in
     # __post_init__; serde flattens it to a bare JSON dict.
     adapter: EnvTags | ModelSpec | Mapping[str, object] | None = None
@@ -819,10 +849,14 @@ class Recipe:
         else:
             from rlmesh.adapters import EnvTags, ModelSpec
 
-            expected = EnvTags if self.kind == "env" else ModelSpec
-            if not isinstance(adapter, expected):
+            if self.kind == "env" and not isinstance(adapter, EnvTags):
                 raise RecipeValidationError(
-                    f"Recipe.adapter must be a {expected.__name__} for kind={self.kind!r}; "
+                    f"Recipe.adapter must be an EnvTags for kind='env'; "
+                    f"got {type(adapter).__name__}"
+                )
+            if self.kind == "model" and not isinstance(adapter, ModelSpec):
+                raise RecipeValidationError(
+                    f"Recipe.adapter must be a ModelSpec for kind='model'; "
                     f"got {type(adapter).__name__}"
                 )
 
@@ -837,12 +871,6 @@ class Recipe:
             "requires": {"imports": list(self.requires.imports)},
             "summary": self.summary,
             "adapter": adapter,
-            # Back-compat mirror: the SHIPPED Rust serde (and older readers) still key
-            # off "annotations"; emit it too so a recipe that round-trips through the
-            # current Rust core does not lose its published tags before the in-container
-            # publish path runs. Removed once the Rust field is renamed with a serde
-            # alias. `from_dict` reads "adapter" first.
-            "annotations": adapter,
             "recipe_version": self.recipe_version,
             "kind": self.kind,
             "inputs": [_artifact_to_dict(a) for a in self.inputs],
@@ -868,14 +896,12 @@ class Recipe:
             setup=_setup_from_dict(payload.get("setup")),
             requires=Requires(imports=_str_list(_get(payload, "requires", "imports"))),
             summary=_opt_str(payload.get("summary"), "summary"),
-            # read-alias: documents serialized before the rename carry "annotations"
-            # . New documents emit "adapter".
-            adapter=_opt_map(payload.get("adapter", payload.get("annotations"))),
+            adapter=_opt_map(payload.get("adapter")),
             recipe_version=_expect_int(
                 payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
             ),
             kind=_recipe_kind_from(payload.get("kind")),
-            inputs=tuple(_artifact_from_dict(a) for a in (payload.get("inputs") or ())),
+            inputs=_artifact_list(payload.get("inputs")),
             runtime=RuntimeReserved.from_dict(_opt_map(payload.get("runtime"))),
         )
 
@@ -896,10 +922,19 @@ def _recipe_kind_from(value: object) -> RecipeKind:
         raise RecipeValidationError(
             f"Recipe.kind must be 'env' or 'model', got {value!r}"
         )
-    return cast("RecipeKind", value)
+    return value
 
 
-def _adapter_to_dict(adapter: object) -> dict[str, object] | None:
+def _artifact_list(value: object) -> tuple[ArtifactInput, ...]:
+    """Coerce a JSON ``inputs`` array (or absent) to a tuple of artifact mounts."""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(_artifact_from_dict(item) for item in cast("Sequence[object]", value))
+
+
+def _adapter_to_dict(
+    adapter: EnvTags | ModelSpec | Mapping[str, object] | None,
+) -> dict[str, object] | None:
     """Serialize ``Recipe.adapter`` to a BARE JSON dict.
 
     A raw Mapping passes through verbatim; a dataclass (``EnvTags``/``ModelSpec``)
@@ -910,15 +945,7 @@ def _adapter_to_dict(adapter: object) -> dict[str, object] | None:
         return None
     if isinstance(adapter, Mapping):
         return dict(adapter)
-    to_dict = getattr(adapter, "to_dict", None)
-    if callable(to_dict):
-        result = to_dict()
-        if isinstance(result, Mapping):
-            return dict(result)
-    raise RecipeValidationError(
-        f"Recipe.adapter must be a Mapping or expose to_dict(); "
-        f"got {type(adapter).__name__}"
-    )
+    return adapter.to_dict()
 
 
 def _artifact_to_dict(artifact: ArtifactInput) -> dict[str, object]:

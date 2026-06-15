@@ -15,8 +15,8 @@ from typing import Any, overload
 
 from ..recipes._artifacts import hf_load
 from ..recipes._authoring_model import ModelRecipe, is_model_recipe
-from ..recipes._registry import _store as _store_recipe
 from ..recipes._registry import class_origin_dir
+from ..recipes._registry import store_recipe as _store_recipe
 from ..recipes._schema import ArtifactInput
 
 __all__ = ["lookup_model_class", "register"]
@@ -30,7 +30,9 @@ def lookup_model_class(name: str) -> type[ModelRecipe] | None:
 
 
 @overload
-def register(source: type[ModelRecipe], *, overwrite: bool = ...) -> type[ModelRecipe]: ...
+def register(
+    source: type[ModelRecipe], *, overwrite: bool = ...
+) -> type[ModelRecipe]: ...
 @overload
 def register(
     source: str,
@@ -70,7 +72,9 @@ def register(
     """
     if is_model_recipe(source):
         if hf or load:
-            raise TypeError("register(ModelRecipe) takes no hf=/load=; those are the flat form")
+            raise TypeError(
+                "register(ModelRecipe) takes no hf=/load=; those are the flat form"
+            )
         cls = source
     elif isinstance(source, str):
         cls = _flat_model_class(

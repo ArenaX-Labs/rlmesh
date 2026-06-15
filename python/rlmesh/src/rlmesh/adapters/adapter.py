@@ -286,9 +286,4 @@ class Adapter(AdapterBase[NumpyArray]):
         return "\n".join(lines)
 
 
-# Deprecated alias kept for one minor release. External
-# code importing ``IOAdapter`` keeps working; the package surfaces a
-# DeprecationWarning via ``rlmesh.adapters.__getattr__``.
-IOAdapter = Adapter
-
-__all__ = ["Adapter", "AdapterBase", "IOAdapter"]
+__all__ = ["Adapter", "AdapterBase"]

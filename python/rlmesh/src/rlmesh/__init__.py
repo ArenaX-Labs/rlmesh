@@ -18,6 +18,7 @@ from .recipes import EnvRecipe, Recipe
 from .recipes import make as make
 from .recipes import register as _register_env
 from .recipes._authoring_model import is_model_recipe as _is_model_recipe
+from .sandbox import ExportResult, export
 from .server import EnvServer
 
 try:
@@ -40,12 +41,15 @@ def register(source: Any, **kwargs: Any) -> Any:
     )
     if is_model:
         return models.register(source, **kwargs)
-    return _register_env(source, **kwargs)
+    # Dynamic kind dispatch: source/kwargs are Any, so the overloaded env register
+    # cannot be matched statically.
+    return _register_env(source, **kwargs)  # pyright: ignore[reportCallIssue, reportArgumentType, reportUnknownVariableType]
 
 
 __all__ = [
     "EnvRecipe",
     "EnvServer",
+    "ExportResult",
     "Model",
     "ModelRecipe",
     "Recipe",
@@ -55,6 +59,7 @@ __all__ = [
     "Tensor",
     "__version__",
     "adapters",
+    "export",
     "make",
     "models",
     "recipes",

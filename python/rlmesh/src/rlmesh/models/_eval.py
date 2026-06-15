@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ..recipes._authoring_model import (
     DELEGATED,
@@ -21,6 +21,10 @@ from ..recipes._authoring_model import (
     is_model_recipe,
 )
 from ..recipes._schema import ArtifactInput, Recipe
+
+if TYPE_CHECKING:
+    from ..adapters import Adapter
+    from ..specs import EnvContract
 
 __all__ = ["EpisodeResult", "RunResult", "coerce_model", "evaluate"]
 
@@ -38,7 +42,7 @@ class EpisodeResult:
     reward: float
     terminated: bool
     truncated: bool
-    info: Mapping[str, Any] = field(default_factory=dict)
+    info: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -108,7 +112,9 @@ def evaluate(
         for i in range(n_episodes):
             seed = seeds[i] if seeds is not None and i < len(seeds) else None
             episodes.append(
-                _run_episode(client, predict, adapter, on_reset, i, seed, instruction, text_keys)
+                _run_episode(
+                    client, predict, adapter, on_reset, i, seed, instruction, text_keys
+                )
             )
             if on_episode_end is not None:
                 on_episode_end()
@@ -161,17 +167,24 @@ def _run_episode(
         reward=total,
         terminated=bool(terminated),
         truncated=bool(truncated),
-        info=dict(info) if isinstance(info, Mapping) else {},
+        info=dict(info),
     )
 
 
-def _resolve_adapter(spec: object | None, contract: object, trust_entrypoints: bool) -> Any:
-    from ..adapters import AdapterResolutionError, EnvTags, resolve_from_contract
+def _resolve_adapter(
+    spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
+) -> Adapter | None:
+    from ..adapters import (
+        AdapterResolutionError,
+        EnvTags,
+        ModelSpec,
+        resolve_from_contract,
+    )
 
     if spec is DELEGATED:
         return None
-    metadata = getattr(contract, "metadata", None) or {}
-    tagged = EnvTags.from_metadata(metadata) is not None
+    metadata = contract.metadata if contract is not None else None
+    tagged = EnvTags.from_metadata(metadata or {}) is not None
     if spec is None:
         if tagged:
             raise AdapterResolutionError(
@@ -180,12 +193,19 @@ def _resolve_adapter(spec: object | None, contract: object, trust_entrypoints: b
                 "adapts its own observations"
             )
         return None
+    if not isinstance(spec, ModelSpec):
+        raise AdapterResolutionError(
+            f"a model spec must be a ModelSpec or DELEGATED; got {type(spec).__name__}"
+        )
+    if contract is None:
+        raise AdapterResolutionError(
+            "resolving a spec'd adapter requires an env contract, but the env exposes none"
+        )
     adapter = resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
-    num_envs = int(getattr(contract, "num_envs", 1) or 1)
-    if num_envs > 1 and adapter.is_stateful:
+    if contract.num_envs > 1 and adapter.is_stateful:
         raise AdapterResolutionError(
             "a stateful adapter cannot run on a vector env yet "
-            f"(num_envs={num_envs}); per-lane affinity is not implemented. "
+            f"(num_envs={contract.num_envs}); per-lane affinity is not implemented. "
             "Use num_envs=1 or a stateless adapter."
         )
     return adapter
@@ -197,7 +217,13 @@ def coerce_model(
     spec: object | None,
     artifacts: tuple[ArtifactInput, ...],
     load_kwargs: dict[str, object] | None,
-) -> tuple[Callable[[Any], Any], object | None, Callable[[], None] | None, Callable[[], None] | None, Any]:
+) -> tuple[
+    Callable[[Any], Any],
+    object | None,
+    Callable[[], None] | None,
+    Callable[[], None] | None,
+    Any,
+]:
     """Resolve a model source into ``(predict, spec, on_reset, on_close, policy)``."""
     if isinstance(source, ModelRecipe):
         return _bind_policy(source, spec)
@@ -227,7 +253,9 @@ def coerce_model(
                 f"Model source {recipe.name!r} is a kind={recipe.kind!r} recipe, "
                 "not a model recipe"
             )
-        policy = _construct_from_recipe(recipe, load_kwargs=load_kwargs, artifacts=artifacts)
+        policy = _construct_from_recipe(
+            recipe, load_kwargs=load_kwargs, artifacts=artifacts
+        )
         return _bind_policy(policy, spec)
     if callable(source):
         return source, spec, None, None, None
@@ -239,13 +267,22 @@ def coerce_model(
 
 def _bind_policy(
     policy: ModelRecipe, spec_override: object | None
-) -> tuple[Callable[[Any], Any], object | None, Callable[[], None], Callable[[], None], ModelRecipe]:
+) -> tuple[
+    Callable[[Any], Any],
+    object | None,
+    Callable[[], None],
+    Callable[[], None],
+    ModelRecipe,
+]:
     spec = spec_override if spec_override is not None else type(policy).spec
     return policy.predict, spec, policy.reset, policy.close, policy
 
 
 def _construct_from_recipe(
-    recipe: Recipe, *, load_kwargs: dict[str, object] | None, artifacts: tuple[ArtifactInput, ...]
+    recipe: Recipe,
+    *,
+    load_kwargs: dict[str, object] | None,
+    artifacts: tuple[ArtifactInput, ...],
 ) -> ModelRecipe:
     """Construct a policy from an inert model recipe via its ``module:Class`` entrypoint."""
     from .._bootstrap.entrypoint import resolve_entrypoint
@@ -270,7 +307,9 @@ def _text_input_keys(spec: object | None) -> tuple[str, ...]:
         return ()
     from ..adapters import TextInput
 
-    return tuple(inp.key for inp in getattr(spec, "inputs", ()) if isinstance(inp, TextInput))
+    return tuple(
+        inp.key for inp in getattr(spec, "inputs", ()) if isinstance(inp, TextInput)
+    )
 
 
 def _episode_count(seeds: Sequence[int] | None, max_episodes: int | None) -> int:
@@ -281,7 +320,9 @@ def _episode_count(seeds: Sequence[int] | None, max_episodes: int | None) -> int
     return 1
 
 
-def _connect(target: object, token: str, remote_env_cls: type | None) -> tuple[Any, Any, bool]:
+def _connect(
+    target: object, token: str, remote_env_cls: type | None
+) -> tuple[Any, Any, bool]:
     """Return ``(client, contract, owns_client)`` for an env object, address, or EnvServer."""
     if isinstance(target, str):
         client = _remote_env(target, remote_env_cls)
@@ -307,9 +348,12 @@ def _remote_env(address: str, remote_env_cls: type | None) -> Any:
 
 
 def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
-    result = client.reset(seed=seed) if seed is not None else client.reset()
-    if isinstance(result, tuple) and len(result) == 2:
-        return result[0], result[1]
+    result: Any = client.reset(seed=seed) if seed is not None else client.reset()
+    if isinstance(result, tuple):
+        pair = cast("tuple[Any, ...]", result)
+        if len(pair) == 2:
+            return pair[0], pair[1]
+        return pair, {}
     return result, {}
 
 

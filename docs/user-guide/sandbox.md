@@ -72,7 +72,34 @@ Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `p
 into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as
 `rlmesh==0.1.0b2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
+## Export a Docker image
+
+`SandboxEnv` and `SandboxModel` build an image and run a container in one step. To build the image
+and keep it — for example to push it to a registry the RLMesh Managed platform can pull from — call
+`rlmesh.export` instead. It builds the image, applies your tag, and returns without starting a
+container:
+
+```python
+import rlmesh
+
+result = rlmesh.export(MyPolicy, tag="me/my-policy:v1", rlmesh_package="local")
+print(result.image)  # rlmesh-sandbox-recipe:<hash> (content-addressed, always applied)
+print(result.alias)  # me/my-policy:v1
+```
+
+```console
+$ docker push me/my-policy:v1
+```
+
+`export` works for both env recipes (`EnvRecipe`, a `Recipe`, or a registered env name) and model
+recipes (`ModelRecipe`, a `kind="model"` Recipe, or a registered model name). The image is
+self-describing: it bakes the recipe document and a kind-aware entrypoint, so `docker run` with no
+arguments serves the env or model on port 50051. A human `tag` is optional; the content-addressed
+`rlmesh-sandbox-<slug>:<hash>` tag is always applied and is the stable handle to pin.
+
 ## Safety
 
+```{warning}
 Keep `trust_remote_code=False` unless the environment source is trusted. Untrusted environment code
 should be pinned and reviewed before it is run.
+```

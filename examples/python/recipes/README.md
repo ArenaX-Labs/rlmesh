@@ -31,13 +31,6 @@ the render backend (`MUJOCO_GL`) so off-screen rendering works in the container.
   uv run python examples/python/recipes/serve_metaworld.py
   ```
 
-## Author IsaacSim where IsaacSim can't be imported
-
-[`isaacsim_franka.py`](isaacsim_franka.py) is the headline _authoring != running_ case: a GPU recipe
-you can write on a Mac where `import isaaclab` fails. The recipe never imports it — the heavy
-imports live inside `make()`/`prepare()`, which only run in the built container. It also shows a
-`prepare()` construct-time hook (launch the headless simulator) and "vectorize inside the factory."
-
 ## A tour of weirder situations
 
 [`weird_situations.py`](weird_situations.py) validates a spread of less-obvious recipes

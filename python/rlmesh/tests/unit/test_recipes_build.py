@@ -173,10 +173,10 @@ def test_build_py_recipe_rejects_true_vector_request(py_factory_module: str) -> 
         build(recipe, num_envs=4)
 
 
-def test_build_recipe_with_annotations_degrades_without_adapters(
+def test_build_recipe_with_adapter_degrades_without_adapters(
     py_factory_module: str,
 ) -> None:
-    # rlmesh.adapters does not exist in this branch yet; a recipe with annotations
+    # rlmesh.adapters does not exist in this branch yet; a recipe with an adapter
     # must still construct (publishing is skipped with a single warning).
     import importlib.util
 
@@ -186,7 +186,7 @@ def test_build_recipe_with_annotations_degrades_without_adapters(
     recipe = Recipe(
         name="acme/factory",
         make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
-        annotations={"observation": {"kind": "box"}},
+        adapter={"observation": {"kind": "box"}},
     )
     with pytest.warns(RuntimeWarning, match="rlmesh.adapters is not available"):
         env = build(recipe)

@@ -41,8 +41,10 @@ Use that boundary to:
 - name an environment's construction as a {doc}`recipe <user-guide/recipes>` and rebuild it the same
   way locally or in a sandbox.
 
-SAI examples appear where they demonstrate optional environment packages. The RLMesh docs focus on
-the open-source framework and the protocol boundary it exposes.
+RLMesh has two surfaces, split by protocol. The framework is this repository. It speaks the gRPC
+runtime contract, so you author and run environments and models in Python or Rust, on one machine or
+over the wire. The hosted platform speaks a REST control plane at `api.rlmesh.dev` and is documented
+separately. These docs cover the framework.
 
 ```{toctree}
 :hidden:
@@ -66,6 +68,7 @@ user-guide/backends
 user-guide/adapters
 user-guide/sandbox
 user-guide/recipes
+user-guide/model-recipes
 ```
 
 ```{toctree}

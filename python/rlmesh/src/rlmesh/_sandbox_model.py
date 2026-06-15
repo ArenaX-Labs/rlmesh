@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from .sandbox import _normalize_rlmesh_package
+from .sandbox import normalize_rlmesh_package
 
 if TYPE_CHECKING:
     from .recipes import Recipe
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 __all__ = ["SandboxModel"]
 
 
-def _model_recipe(source: object) -> tuple[Recipe, str | None]:
+def resolve_model_recipe(source: object) -> tuple[Recipe, str | None]:
     from .recipes import Recipe, resolve
     from .recipes._authoring_model import as_authored_model_recipe, is_model_recipe
     from .recipes._registry import class_origin_dir, recipe_origin_dir
@@ -77,7 +77,7 @@ class SandboxModel:
         from ._rlmesh import sandbox_start_env
         from .recipes._artifacts import local_dir_mounts
 
-        recipe, context_root = _model_recipe(source)
+        recipe, context_root = resolve_model_recipe(source)
         # A declared input with a host local_dir is bind-mounted at its container
         # target; uri-backed inputs still resolve in-container. artifacts= supplies
         # or overrides a local_dir by name (the run-time checkpoint).
@@ -87,7 +87,7 @@ class SandboxModel:
             recipe_json=recipe.to_json(),
             recipe_provenance="installed",
             base_image=base_image,
-            rlmesh_package=_normalize_rlmesh_package(rlmesh_package),
+            rlmesh_package=normalize_rlmesh_package(rlmesh_package),
             packages=list(packages),
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,

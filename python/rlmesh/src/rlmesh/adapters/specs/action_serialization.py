@@ -26,7 +26,9 @@ def action_layout_to_dict(layout: ActionLayout) -> dict[str, Any]:
                 "locally, or add the encoding to the native vocabulary"
             )
     return {
-        "components": [_component_to_dict(component) for component in layout.components],
+        "components": [
+            _component_to_dict(component) for component in layout.components
+        ],
         "clip": list(layout.clip) if layout.clip else None,
     }
 

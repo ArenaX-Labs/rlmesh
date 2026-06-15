@@ -132,12 +132,12 @@ def build(
         )
 
     if recipe.adapter is not None and recipe.kind == "env":
-        _publish_env_tags(env, recipe.adapter)
+        publish_env_tags(env, recipe.adapter)
 
     return cast("EnvLike", env)
 
 
-def _publish_env_tags(env: object, adapter: object) -> None:
+def publish_env_tags(env: object, adapter: object) -> None:
     """Publish a recipe-launched env's :class:`EnvTags` (the single forward path).
 
     Runs ``join()`` against the env's real spaces and fails loud. The adapters layer
@@ -169,5 +169,9 @@ def _publish_env_tags(env: object, adapter: object) -> None:
             "the recipe declares env tags (EnvRecipe.tags / recipe.adapter) and make() "
             "also tagged the env; declare the tags in one place, not both"
         )
-    tags = adapter if isinstance(adapter, env_tags_cls) else env_tags_cls.from_dict(adapter)
+    tags = (
+        adapter
+        if isinstance(adapter, env_tags_cls)
+        else env_tags_cls.from_dict(adapter)
+    )
     adapters.tag(env, tags)

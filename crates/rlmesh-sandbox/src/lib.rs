@@ -149,6 +149,19 @@ pub struct RunResult {
     pub container_id: String,
 }
 
+/// The outcome of building a sandbox image without starting a container. The
+/// `image` is the deterministic content-addressed reference; `alias` is the
+/// optional human tag the caller requested (both name the same image).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct BuildResult {
+    pub requested_source: String,
+    pub resolved_source: String,
+    pub image: String,
+    pub alias: Option<String>,
+    pub image_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EffectiveSandboxSpec {
     pub schema_version: u32,
@@ -298,6 +311,16 @@ impl EffectiveSandboxSpec {
             source::ResolvedEnvironmentSourceRef::Recipe(_) => "recipe".to_string(),
             _ => self.resolved_source.slug(),
         }
+    }
+
+    /// The deterministic local image reference for this spec -- the single
+    /// source of truth for both the build (`ensure_image`) and the export tag.
+    pub(crate) fn image_tag(&self) -> String {
+        format!(
+            "rlmesh-sandbox-{}:{}",
+            self.image_slug(),
+            &self.build_hash[..12.min(self.build_hash.len())]
+        )
     }
 
     pub(crate) fn requested_display(&self) -> String {
@@ -585,6 +608,38 @@ pub async fn start_env_async(
         resolved_source: spec.resolved_display(),
         address: started.address,
         container_id: started.container_id,
+    })
+}
+
+/// Build the sandbox image for `source` and return its reference, without
+/// starting a container. With `tag` set, the built image is also given that
+/// alias. This is the export path: the resulting self-describing image (baked
+/// recipe.json + kind-aware entrypoint) is the same image the managed platform
+/// runs. Synchronous -- no container is run, so no tokio runtime is needed.
+pub fn build_env(
+    source: EnvironmentSourceRef,
+    options: SandboxOptions,
+    tag: Option<&str>,
+) -> std::result::Result<BuildResult, SandboxError> {
+    // Mounts are runtime-only and irrelevant to a build; drop them so `resolve`
+    // ignores them (they are excluded from the build hash regardless).
+    let spec = EffectiveSandboxSpec::resolve(source, options)?;
+    let docker = docker::DockerBackend;
+    let artifact = docker.ensure_image(&spec).map_err(|err| {
+        SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
+    })?;
+    let image = spec.image_tag();
+    if let Some(alias) = tag {
+        docker.tag_image(&image, alias).map_err(|err| {
+            SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m })
+        })?;
+    }
+    Ok(BuildResult {
+        requested_source: spec.requested_display(),
+        resolved_source: spec.resolved_display(),
+        image,
+        alias: tag.map(str::to_owned),
+        image_id: artifact.image_id,
     })
 }
 

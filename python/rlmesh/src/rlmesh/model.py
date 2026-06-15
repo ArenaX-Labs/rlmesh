@@ -83,7 +83,11 @@ class ModelBase(Generic[ObsT, ActT]):
         # The native worker (serve/run_local) wraps the raw predict for a plain
         # model. An adapted (spec'd) model resolves its adapter only at run(env),
         # so its worker is a fail-loud placeholder -- run() does the adapting.
-        worker_predict = self._raw_predict if resolved_spec is None else _unwired
+        worker_predict = (
+            self._raw_predict
+            if resolved_spec is None
+            else cast("PredictFn[ObsT, ActT]", _unwired)
+        )
         self._install_worker(worker_predict, self._on_reset)
 
     @property

@@ -1,14 +1,21 @@
 # Recipes
 
-Recipe APIs are experimental in this beta. A recipe is an inert, JSON-serializable description of
-how to construct an environment, with three phases: `make` (the factory), `build` (the image), and
-`setup` (construct-time data). Structured builds assume a Debian/Ubuntu base and `apt`; for another
-distro use `build.dockerfile`. See {doc}`../user-guide/recipes` for a task-oriented guide.
+```{note}
+`rlmesh.recipes` is **experimental** in this beta: it may change or disappear before the stable release. Pin versions; see {doc}`/compatibility`.
+```
 
-## Authoring -- `EnvRecipe`
+A recipe is an inert, JSON-serializable description of how to construct an environment, with three
+phases: `make` (the factory), `build` (the image), and `setup` (construct-time data). See
+{doc}`../user-guide/recipes` for a task-oriented guide.
 
-The headline authoring surface: subclass `EnvRecipe` to co-locate the build/setup data and the
-factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.EnvRecipe`.
+```{note}
+Structured builds assume a Debian/Ubuntu base and `apt`. For another distro, use `build.dockerfile`.
+```
+
+## Authoring: `EnvRecipe`
+
+Subclass `EnvRecipe` to co-locate the build/setup data and the factory. It projects to an inert
+`Recipe` and is exported at the top level as `rlmesh.EnvRecipe`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.EnvRecipe
@@ -16,10 +23,9 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
    :show-inheritance:
 ```
 
-## Construction
+## Construction & Registry
 
-`rlmesh.make` and `rlmesh.register` are the top-level pair; they are the same functions as
-`rlmesh.recipes.make` / `rlmesh.recipes.register`.
+`rlmesh.make` and `rlmesh.register` re-export `rlmesh.recipes.make` and `rlmesh.recipes.register`.
 
 ```{eval-rst}
 .. autofunction:: rlmesh.recipes.make
@@ -37,6 +43,22 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
 .. autofunction:: rlmesh.recipes.build
 ```
 
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.resolve
+```
+
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.resolve_from_recipe
+```
+
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.registered_names
+```
+
+```{eval-rst}
+.. autofunction:: rlmesh.recipes.unregister
+```
+
 ## The Recipe
 
 ```{eval-rst}
@@ -45,7 +67,14 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
    :show-inheritance:
 ```
 
-## Make (phase 3)
+## Build Phases
+
+```{tip}
+The phase numbers below are execution order. The sections list the phases by authoring relevance:
+`make` first, then `build`, then `setup`.
+```
+
+### Make (phase 3)
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.GymMake
@@ -65,7 +94,7 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
    :show-inheritance:
 ```
 
-## Build (phase 1)
+### Build (phase 1)
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.Build
@@ -91,7 +120,7 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
    :show-inheritance:
 ```
 
-## Setup (phase 2)
+### Setup (phase 2)
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.Setup
@@ -109,24 +138,6 @@ factory, projecting to an inert `Recipe`. Exported at the top level as `rlmesh.E
 .. autoclass:: rlmesh.recipes.Requires
    :members:
    :show-inheritance:
-```
-
-## Registry
-
-```{eval-rst}
-.. autofunction:: rlmesh.recipes.resolve
-```
-
-```{eval-rst}
-.. autofunction:: rlmesh.recipes.resolve_from_recipe
-```
-
-```{eval-rst}
-.. autofunction:: rlmesh.recipes.registered_names
-```
-
-```{eval-rst}
-.. autofunction:: rlmesh.recipes.unregister
 ```
 
 ## Migration

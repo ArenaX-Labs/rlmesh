@@ -39,6 +39,6 @@
     "imports": ["ale_py"]
   },
   "summary": "Atari Breakout via the ALE",
-  "annotations": null,
+  "adapter": null,
   "recipe_version": 1
 }

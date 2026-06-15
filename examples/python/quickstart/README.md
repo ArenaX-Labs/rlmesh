@@ -1,33 +1,30 @@
 # Quickstart Example
 
-This is the smallest copyable RLMesh server/client loop. Start with Gymnasium `CartPole-v1`, then
-swap in another registration or a custom Gymnasium-style object.
+The smallest copyable RLMesh server/client loop. Full walkthrough:
+[docs.rlmesh.dev quickstart](https://docs.rlmesh.dev/quickstart) (or `docs/quickstart.md`).
 
-From the repository root, start the server:
-
-```bash
-uv run python examples/python/quickstart/serve_gymnasium.py
-```
-
-In another terminal, run the client:
+From the repository root, serve an env:
 
 ```bash
-uv run python examples/python/quickstart/eval.py
+uv run python examples/python/quickstart/serve_gymnasium.py   # Gymnasium CartPole-v1
 ```
 
-To copy this example into a separate project:
+In another terminal, connect a client:
+
+```bash
+uv run python examples/python/quickstart/eval.py              # sampled-action eval
+```
+
+The files:
+
+- `serve_gymnasium.py`: serve any Gymnasium registration (`--env-id Acrobot-v1`).
+- `serve.py`: serve a dependency-light custom `CounterEnv` (no Gymnasium).
+- `eval.py`: connect a client and step with sampled actions.
+- `eval_many.py`: one evaluator across multiple endpoints.
+- `model.py`: run a tiny model worker against an endpoint.
+
+To copy outside the repo, install the published package:
 
 ```bash
 pip install --pre "rlmesh[gymnasium,numpy]"
-python serve_gymnasium.py
-python eval.py
 ```
-
-Use `--env-id` for another Gymnasium registration:
-
-```bash
-python serve_gymnasium.py --env-id Acrobot-v1
-```
-
-For a dependency-light custom environment, run `serve.py`. It exposes a tiny `CounterEnv` object
-that implements `reset`, `step`, `close`, `observation_space`, and `action_space`.

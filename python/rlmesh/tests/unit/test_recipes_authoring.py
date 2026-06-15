@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
 import rlmesh
 from rlmesh import recipes
 from rlmesh.recipes import EnvRecipe, RecipeValidationError
+
+
+def _env_metadata(env: object) -> Mapping[str, object]:
+    """Read a constructed env's metadata; it is not part of the minimal EnvLike protocol."""
+    metadata = getattr(env, "metadata", {})
+    return metadata if isinstance(metadata, Mapping) else {}
 
 
 @pytest.fixture(autouse=True)
@@ -176,7 +182,7 @@ def test_class_tags_published_on_constructed_env(authored_module: str) -> None:
     tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
     env = construct_authored(tagged)
     # The framework attached the declared tags, so the served env publishes them.
-    assert EnvTags.from_metadata(env.metadata) is not None
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
 
 
 def test_class_tags_published_via_build(authored_module: str) -> None:
@@ -187,7 +193,7 @@ def test_class_tags_published_via_build(authored_module: str) -> None:
     # recipe.adapter once. (A double-apply would trip the conflict guard below.)
     tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
     env = build(tagged.to_recipe())
-    assert EnvTags.from_metadata(env.metadata) is not None
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
 
 
 def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> None:
@@ -205,7 +211,7 @@ def test_class_tags_as_serialized_mapping_are_normalized(authored_module: str) -
     # tags declared as the serialized dict form must not crash tag() (Codex P2).
     mapping = _module(authored_module).TaggedMapping  # type: ignore[attr-defined]
     env = construct_authored(mapping)
-    assert EnvTags.from_metadata(env.metadata) is not None
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
 
 
 def test_to_recipe_rejects_local_class() -> None:

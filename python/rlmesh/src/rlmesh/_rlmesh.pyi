@@ -51,6 +51,7 @@ __all__ = [
     "multi_binary_space_spec",
     "multi_discrete_space_spec",
     "run_cli",
+    "sandbox_build_image",
     "sandbox_start_env",
     "sandbox_stop_env",
     "space_spec_from_gym_space",
@@ -103,6 +104,13 @@ class SandboxRunInfo(TypedDict):
     resolved_source: str
     address: str
     container_id: str
+
+class SandboxBuildInfo(TypedDict):
+    requested_source: str
+    resolved_source: str
+    image: str
+    alias: str | None
+    image_id: str
 
 @typing.final
 class AdapterPlan:
@@ -362,6 +370,8 @@ def multi_binary_space_spec(shape: list[int], dtype: str | None = None) -> Space
 def multi_discrete_space_spec(nvec: list[int], dtype: str | None = None) -> SpaceSpec: ...
 
 def run_cli(args: list[str]) -> int: ...
+
+def sandbox_build_image(source: str, *, tag: str | None = None, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None, build_memory: str | None = None) -> SandboxBuildInfo: ...
 
 def sandbox_start_env(source: str, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: list[str] | None = None, imports: list[str] | None = None, kwargs_json: str | None = None, num_envs: int = 1, vectorization_mode: str | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, recipe_json: str | None = None, recipe_provenance: str | None = None, context_root: str | None = None, mounts_json: str | None = None, build_memory: str | None = None) -> SandboxRunInfo: ...
 

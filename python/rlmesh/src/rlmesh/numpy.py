@@ -21,7 +21,6 @@ from .types import PrimitiveValue
 if TYPE_CHECKING:
     import numpy as np
 
-
     NumpyArray: TypeAlias = np.ndarray[Any, Any]
     NumpyValue: TypeAlias = (
         PrimitiveValue
@@ -217,7 +216,7 @@ class Model(ModelBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _remote_env_cls: ClassVar[type] = RemoteEnv
+    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final

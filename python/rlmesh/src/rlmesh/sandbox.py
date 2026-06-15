@@ -18,6 +18,7 @@ from typing import (
     cast,
 )
 
+from ._rlmesh import sandbox_build_image as _sandbox_build_image
 from ._rlmesh import sandbox_start_env as _sandbox_start_env
 from ._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from .spaces import Space
@@ -47,6 +48,14 @@ class _SandboxStartInfo(TypedDict):
     resolved_source: str
     address: str
     container_id: str
+
+
+class _SandboxBuildInfo(TypedDict):
+    requested_source: str
+    resolved_source: str
+    image: str
+    alias: str | None
+    image_id: str
 
 
 class _RemoteHandleBase(Protocol):
@@ -178,6 +187,99 @@ class SandboxInfo:
     resolved_source: str
     address: str
     container_id: str
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    """The image produced by :func:`export`.
+
+    ``image`` is the deterministic, content-addressed reference; it is stable
+    for a given build, so the managed platform pins it. ``alias`` is the human
+    tag passed as ``tag=``, if any. Both name the same image.
+    """
+
+    requested_source: str
+    resolved_source: str
+    image: str
+    alias: str | None
+    image_id: str
+
+
+def export(
+    source: str | Recipe | type[EnvRecipe] | type,
+    *,
+    tag: str | None = None,
+    base_image: str | None = None,
+    rlmesh_package: str | PathLike[str] | None = None,
+    packages: Sequence[str] = (),
+    trust_remote_code: bool = False,
+    allow_unpinned_hf: bool = False,
+    build_memory: str | None = None,
+) -> ExportResult:
+    """Build a recipe into a Docker image and return its reference.
+
+    No container is started. The image is self-describing -- it bakes the recipe
+    document and the kind-aware entrypoint, so ``docker run`` with no arguments
+    serves the env or model on port 50051. It is the same image the RLMesh Managed
+    platform runs; ``docker push`` the returned reference to a registry it can reach.
+
+    Works for both env recipes (``EnvRecipe``, a ``Recipe``, or a registered env
+    name) and model recipes (``ModelRecipe``, a ``kind='model'`` Recipe, or a
+    registered model name); the kind selects the baked entrypoint. ``tag`` adds a
+    human alias alongside the always-applied content-addressed
+    ``rlmesh-sandbox-<slug>:<hash>`` tag.
+    """
+    if _is_model_source(source):
+        from ._sandbox_model import resolve_model_recipe
+
+        recipe, context_root = resolve_model_recipe(source)
+        display, recipe_json, provenance = recipe.name, recipe.to_json(), "installed"
+    else:
+        display, recipe_json, provenance, context_root = _resolve_recipe_source(
+            source, {}, ()
+        )
+    info = cast(
+        _SandboxBuildInfo,
+        _sandbox_build_image(
+            display,
+            tag=tag,
+            base_image=base_image,
+            rlmesh_package=normalize_rlmesh_package(rlmesh_package),
+            packages=_string_sequence("packages", packages),
+            trust_remote_code=trust_remote_code,
+            allow_unpinned_hf=allow_unpinned_hf,
+            recipe_json=recipe_json,
+            recipe_provenance=provenance,
+            context_root=context_root,
+            build_memory=build_memory,
+        ),
+    )
+    return ExportResult(
+        requested_source=info["requested_source"],
+        resolved_source=info["resolved_source"],
+        image=info["image"],
+        alias=info["alias"],
+        image_id=info["image_id"],
+    )
+
+
+def _is_model_source(source: object) -> bool:
+    """Whether ``source`` names a model recipe (vs an env recipe)."""
+    from .recipes import Recipe, resolve
+    from .recipes._authoring_model import is_model_recipe
+    from .recipes._registry import RecipeNotFoundError
+
+    if is_model_recipe(source):
+        return True
+    if isinstance(source, Recipe):
+        return source.kind == "model"
+    if isinstance(source, str):
+        # An unregistered name is not a model here; let the env path raise.
+        try:
+            return resolve(source).kind == "model"
+        except RecipeNotFoundError:
+            return False
+    return False
 
 
 class SandboxSessionBase(Generic[RemoteT]):
@@ -868,7 +970,7 @@ def _reject_removed_option(name: str, value: object) -> None:
         )
 
 
-def _normalize_rlmesh_package(value: str | PathLike[str] | None) -> str | None:
+def normalize_rlmesh_package(value: str | PathLike[str] | None) -> str | None:
     if value is None:
         return None
     return fspath(value)
@@ -886,7 +988,7 @@ def _resolve_rlmesh_package(
                 "use rlmesh_package=..."
             )
         rlmesh_package = cast(str | PathLike[str], package_spec)
-    return _normalize_rlmesh_package(rlmesh_package)
+    return normalize_rlmesh_package(rlmesh_package)
 
 
 def _reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:

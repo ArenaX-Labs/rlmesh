@@ -13,6 +13,12 @@ categories = { workspace = true }
 keywords = { workspace = true }
 publish = { workspace = true }
 
+# docs.rs renders an "Examples found in repository" block on the API items each
+# example calls. Scraping is nightly-only; docs.rs builds nightly, the stable
+# local/CI `cargo doc` does not, so this flag stays out of the local doc build.
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
 [dependencies]
 async-trait = { workspace = true }
 rlmesh-spaces = { workspace = true }

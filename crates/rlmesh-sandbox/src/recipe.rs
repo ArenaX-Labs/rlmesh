@@ -41,7 +41,11 @@ const MODEL_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_model";
 /// model recipes serve/drive a policy. `pub(crate)` so the gym/hf preamble in
 /// `docker.rs` single-sources the env entrypoint through here too.
 pub(crate) fn entrypoint_for(kind: &str) -> String {
-    let module = if kind == "model" { MODEL_BOOTSTRAP } else { ENV_BOOTSTRAP };
+    let module = if kind == "model" {
+        MODEL_BOOTSTRAP
+    } else {
+        ENV_BOOTSTRAP
+    };
     format!("ENTRYPOINT [\"python\", \"-m\", \"{module}\"]")
 }
 
@@ -293,9 +297,10 @@ pub struct Recipe {
     /// A human-readable summary.
     #[serde(default)]
     pub summary: Option<String>,
-    /// Forward field: published adapter annotations.
+    /// Forward field: the published adapter (an env recipe's tags or a model
+    /// recipe's spec), carried verbatim for round-trip fidelity.
     #[serde(default)]
-    pub annotations: Option<serde_json::Value>,
+    pub adapter: Option<serde_json::Value>,
     /// The schema version.
     #[serde(default = "default_recipe_version")]
     pub recipe_version: u32,

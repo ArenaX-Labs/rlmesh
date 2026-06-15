@@ -232,7 +232,7 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     # The local path does not go through `build`, so publish the class-level tags
     # here via the same forward helper the container path uses.
     if cls.tags is not None:
-        from ._build import _publish_env_tags
+        from ._build import publish_env_tags
 
-        _publish_env_tags(env, cls.tags)
+        publish_env_tags(env, cls.tags)
     return env

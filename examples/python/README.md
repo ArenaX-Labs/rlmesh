@@ -1,80 +1,14 @@
 # Python Examples
 
-These examples are small and copyable. Most server/client examples default to `127.0.0.1:5555`.
-Sandbox examples start their own Docker-backed environment process.
+Each example is small and copyable, and shares the repository environment. Run any of them with
+`uv run python examples/python/<dir>/<file>.py` from the repository root. Examples that need their
+own lockfile are Demos and live in the separate `rlmesh-examples` repository, not here.
 
-## Quickstart
+Most server/client examples default to `127.0.0.1:5555`; start the server in one terminal and the
+client in another.
 
-Use this first when learning the RLMesh server/client shape. It serves Gymnasium `CartPole-v1` and
-uses the NumPy client adapter.
-
-```bash
-uv run python examples/python/quickstart/serve_gymnasium.py
-```
-
-In another terminal:
-
-```bash
-uv run python examples/python/quickstart/eval.py
-```
-
-If copying these files outside the repository, install the published package:
-
-```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
-```
-
-For a custom object without Gymnasium, see `quickstart/serve.py`.
-
-## Sandbox Examples
-
-Use these when the environment needs an owned Docker-backed process instead of a separate server
-terminal.
-
-```bash
-uv run python examples/python/sandbox/gym_sandbox.py
-```
-
-Available sandbox examples:
-
-- [`sandbox/gym_sandbox.py`](sandbox/gym_sandbox.py): starts Gymnasium `CartPole-v1` in a sandbox.
-- [`sandbox/hf_sandbox.py`](sandbox/hf_sandbox.py): starts
-  `hf://lerobot/cartpole-env:cartpole_suite/0`.
-
-## Recipe Examples
-
-Use these when an environment needs custom construction -- a build phase (deps, base image, render
-backend) plus a `make()` that returns the env, possibly wrapped. Recipes are authored as inert data,
-so they validate on a laptop that can't import the heavy sim deps.
-
-- [`recipes/render_into_obs.py`](recipes/render_into_obs.py): folds a render-only env's camera frame
-  into its observation (the MetaWorld case), and validates the recipe without installing MetaWorld.
-
-```bash
-uv run python examples/python/recipes/render_into_obs.py
-```
-
-## Optional Environment Examples
-
-The SAI examples keep their own `pyproject.toml`, lockfile, and `.venv`. That is intentional: these
-dependencies are optional and can be heavier than the normal RLMesh development environment.
-
-With `mise`, opening or entering one of these folders creates and sources that example's `.venv`
-automatically. Each folder also exposes local tasks:
-
-```bash
-cd examples/python/sai-pygame
-mise run sync
-mise run serve
-```
-
-In another terminal from the same folder:
-
-```bash
-mise run eval
-```
-
-Available optional examples:
-
-- [`sai-pygame`](sai-pygame): serves `sai_pygame:SquidHunt-v0`.
-- [`sai-mujoco`](sai-mujoco): serves `sai_mujoco:So101IkColorSortPickPlace-v0`.
+- [`quickstart/`](quickstart): the canonical loop — serve an env, connect an evaluator.
+- [`adapters/`](adapters): tag an env, then run a model against it through a resolved IO adapter.
+- [`recipes/`](recipes): author an `EnvRecipe` as inert data and validate it without the heavy deps.
+- [`sandbox/`](sandbox): start an owned Docker-backed environment process (needs Docker).
+- [`vla_adapters/`](vla_adapters): tag-driven adapters across many model × env pairs.

@@ -5,12 +5,11 @@ the registry is printed. Nothing here needs Docker, a GPU, or the env packages.
 
     uv run python examples/python/recipes/weird_situations.py
 
-It also imports the class-style recipes (metaworld, isaacsim) so the printed
-registry shows the whole range side by side.
+It also imports the class-style ``metaworld_reach`` recipe so the printed
+registry shows it alongside the inline ones.
 """
 
-import isaacsim_franka  # noqa: F401  -- @register on import (heavy imports stay inside make)
-import metaworld_reach  # noqa: F401
+import metaworld_reach  # noqa: F401  -- @register on import (heavy imports stay inside make)
 from rlmesh import recipes
 from rlmesh.recipes import Build, Fetch, PyMake, Recipe
 

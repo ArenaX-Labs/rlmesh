@@ -20,6 +20,19 @@ rlmesh = "0.1.0-beta.2"
 - `ModelWorker` APIs for model-side workflows.
 - Re-exported space, value, lifecycle, and error types used by the SDK.
 
+## Examples
+
+Two runnable examples mirror the Python quickstart. Serve an environment, then drive it from another
+process:
+
+```bash
+cargo run -p rlmesh --example serve_env    # host a CounterEnv on 127.0.0.1:5555
+cargo run -p rlmesh --example run_model    # connect a model and run three episodes
+```
+
+The boundary is language-neutral, so the same server also accepts the Python client in
+`examples/python/quickstart/eval.py`, and a Rust `run_model` can drive a Python environment.
+
 ## Status
 
 This crate is part of the `0.1.0-beta.2` release line. The public Rust API is supported for beta

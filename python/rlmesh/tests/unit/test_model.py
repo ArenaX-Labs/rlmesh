@@ -22,7 +22,9 @@ def test_connect_uses_an_env_like_object_directly() -> None:
 def test_connect_rejects_unsupported() -> None:
     from rlmesh.models._eval import _connect
 
-    with pytest.raises(TypeError, match="env object, a remote-env object, or an address"):
+    with pytest.raises(
+        TypeError, match="env object, a remote-env object, or an address"
+    ):
         _connect(object(), "", None)
 
 

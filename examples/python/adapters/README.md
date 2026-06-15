@@ -4,7 +4,7 @@ The smallest end-to-end `rlmesh.adapters` example: an environment tags its space
 its format, and they are paired automatically — no per-environment glue in the model.
 
 ```sh
-cd examples/python/adapters_quickstart
+cd examples/python/adapters
 uv run serve_and_run.py
 ```
 
