@@ -3,16 +3,14 @@
 A model consumes the env contract rather than publishing its own: ``evaluate``
 dials an env, pulls its contract, resolves the adapter from the env's tags and the
 model's spec, and runs a per-episode loop that returns a typed :class:`RunResult`.
-``coerce_model`` turns any model source -- a predict callable, a ``ModelRecipe``
-(class or instance), a ``kind='model'`` Recipe, or a registered name -- into the
-``(predict, spec, on_reset, on_close, policy)`` the loop needs.
+``coerce_model`` turns any model source into a :class:`CoercedModel`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from ..recipes._schema import ArtifactInput, Recipe
 from ..recipes.authoring.model import (
@@ -28,8 +26,16 @@ if TYPE_CHECKING:
 
 __all__ = ["EpisodeResult", "RunResult", "coerce_model", "evaluate"]
 
-# Bound the loop so a non-terminating env cannot hang it forever.
+# ponytail: bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
+
+
+class CoercedModel(NamedTuple):
+    predict: Callable[[Any], Any]
+    spec: object | None
+    on_reset: Callable[[], None] | None
+    on_close: Callable[[], None] | None
+    policy: Any
 
 
 @dataclass(frozen=True)
@@ -95,18 +101,16 @@ def evaluate(
     trust_entrypoints: bool = False,
     remote_env_cls: type | None = None,
 ) -> RunResult:
-    """Drive ``predict`` against an env and return a :class:`RunResult`.
-
-    Resolves the adapter from the env's tags and ``spec``, then runs a per-episode
-    loop: reset env, adapter, and policy; step until the episode ends; collect the
-    result. ``seeds`` gives a per-episode seed, and its length sets the episode
-    count unless ``max_episodes`` is given. ``instruction`` is written into the
-    model's text inputs each episode.
-    """
+    """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``)."""
     client, contract, owns_client = _connect(env_or_address, token, remote_env_cls)
     adapter = _resolve_adapter(spec, contract, trust_entrypoints)
     text_keys = _text_input_keys(spec)
-    n_episodes = _episode_count(seeds, max_episodes)
+    if max_episodes is not None:
+        n_episodes = max_episodes
+    elif seeds is not None:
+        n_episodes = len(seeds)
+    else:
+        n_episodes = 1
     episodes: list[EpisodeResult] = []
     try:
         for i in range(n_episodes):
@@ -157,7 +161,7 @@ def _run_episode(
         action = predict(payload)
         if adapter is not None:
             action = adapter.transform_action(action)
-        obs, reward, terminated, truncated, info = _step(client, action)
+        obs, reward, terminated, truncated, info = client.step(action)
         total += float(reward)
         steps += 1
     return EpisodeResult(
@@ -217,31 +221,26 @@ def coerce_model(
     spec: object | None,
     artifacts: tuple[ArtifactInput, ...],
     load_kwargs: dict[str, object] | None,
-) -> tuple[
-    Callable[[Any], Any],
-    object | None,
-    Callable[[], None] | None,
-    Callable[[], None] | None,
-    Any,
-]:
-    """Resolve a model source into ``(predict, spec, on_reset, on_close, policy)``."""
+) -> CoercedModel:
+    """Resolve a model source into a :class:`CoercedModel`."""
+
+    def construct(cls: Any) -> CoercedModel:
+        policy = construct_authored_model(
+            cls, in_container=False, load_kwargs=load_kwargs, artifacts=artifacts
+        )
+        return _bind_policy(policy, spec)
+
     if isinstance(source, ModelRecipe):
         return _bind_policy(source, spec)
     if is_model_recipe(source):
-        policy = construct_authored_model(
-            source, in_container=False, load_kwargs=load_kwargs, artifacts=artifacts
-        )
-        return _bind_policy(policy, spec)
+        return construct(source)
     recipe: Recipe | None = None
     if isinstance(source, str):
         from ._registry import lookup_model_class
 
         cls = lookup_model_class(source)
         if cls is not None:
-            policy = construct_authored_model(
-                cls, in_container=False, load_kwargs=load_kwargs, artifacts=artifacts
-            )
-            return _bind_policy(policy, spec)
+            return construct(cls)
         from ..recipes import resolve as resolve_recipe
 
         recipe = resolve_recipe(source)
@@ -253,53 +252,30 @@ def coerce_model(
                 f"Model source {recipe.name!r} is a kind={recipe.kind!r} recipe, "
                 "not a model recipe"
             )
-        policy = _construct_from_recipe(
-            recipe, load_kwargs=load_kwargs, artifacts=artifacts
-        )
-        return _bind_policy(policy, spec)
+        from .._entrypoint import resolve_entrypoint
+        from ..recipes._schema import PyMake
+
+        make = recipe.make
+        if not isinstance(make, PyMake):
+            raise TypeError(
+                f"model recipe {recipe.name!r} has no PyMake entrypoint to construct from"
+            )
+        cls_path = make.entrypoint.rsplit(".", 1)[0]
+        cls = resolve_entrypoint(cls_path, label="model recipe class")
+        if not is_model_recipe(cls):
+            raise TypeError(f"{cls_path} is not a ModelRecipe subclass")
+        return construct(cls)
     if callable(source):
-        return source, spec, None, None, None
+        return CoercedModel(source, spec, None, None, None)
     raise TypeError(
         "Model source must be a predict callable, a ModelRecipe (class or instance), "
         f"a kind='model' Recipe, or a registered name; got {type(source).__name__}"
     )
 
 
-def _bind_policy(
-    policy: ModelRecipe, spec_override: object | None
-) -> tuple[
-    Callable[[Any], Any],
-    object | None,
-    Callable[[], None],
-    Callable[[], None],
-    ModelRecipe,
-]:
+def _bind_policy(policy: ModelRecipe, spec_override: object | None) -> CoercedModel:
     spec = spec_override if spec_override is not None else type(policy).spec
-    return policy.predict, spec, policy.reset, policy.close, policy
-
-
-def _construct_from_recipe(
-    recipe: Recipe,
-    *,
-    load_kwargs: dict[str, object] | None,
-    artifacts: tuple[ArtifactInput, ...],
-) -> ModelRecipe:
-    """Construct a policy from an inert model recipe via its ``module:Class`` entrypoint."""
-    from .._entrypoint import resolve_entrypoint
-    from ..recipes._schema import PyMake
-
-    make = recipe.make
-    if not isinstance(make, PyMake):
-        raise TypeError(
-            f"model recipe {recipe.name!r} has no PyMake entrypoint to construct from"
-        )
-    cls_path = make.entrypoint.rsplit(".", 1)[0]
-    cls = resolve_entrypoint(cls_path, label="model recipe class")
-    if not is_model_recipe(cls):
-        raise TypeError(f"{cls_path} is not a ModelRecipe subclass")
-    return construct_authored_model(
-        cls, in_container=False, load_kwargs=load_kwargs, artifacts=artifacts
-    )
+    return CoercedModel(policy.predict, spec, policy.reset, policy.close, policy)
 
 
 def _text_input_keys(spec: object | None) -> tuple[str, ...]:
@@ -312,18 +288,9 @@ def _text_input_keys(spec: object | None) -> tuple[str, ...]:
     )
 
 
-def _episode_count(seeds: Sequence[int] | None, max_episodes: int | None) -> int:
-    if max_episodes is not None:
-        return max_episodes
-    if seeds is not None:
-        return len(seeds)
-    return 1
-
-
 def _connect(
     target: object, token: str, remote_env_cls: type | None
 ) -> tuple[Any, Any, bool]:
-    """Return ``(client, contract, owns_client)`` for an env object, address, or EnvServer."""
     if isinstance(target, str):
         client = _remote_env(target, remote_env_cls)
         return client, client.env_contract, True
@@ -357,11 +324,6 @@ def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
     return result, {}
 
 
-def _step(client: Any, action: Any) -> tuple[Any, float, bool, bool, Mapping[str, Any]]:
-    obs, reward, terminated, truncated, info = client.step(action)
-    return obs, reward, terminated, truncated, info
-
-
 def _close(client: Any) -> None:
     close = getattr(client, "close", None)
     if callable(close):
@@ -369,11 +331,8 @@ def _close(client: Any) -> None:
 
 
 def _shutdown(target: object) -> None:
-    """Stop the driven env via ``shutdown()`` or ``close()``.
-
-    Whether a reason argument is passed is decided by binding the signature, so an
-    unrelated ``TypeError`` raised inside the callable is never swallowed.
-    """
+    # ponytail: decide reason-passing by binding the signature, not by try/except
+    # around the call, so a TypeError raised *inside* the callable is never swallowed.
     import inspect
 
     for name in ("shutdown", "close"):
@@ -383,9 +342,7 @@ def _shutdown(target: object) -> None:
         try:
             inspect.signature(fn).bind("model run complete")
             accepts_reason = True
-        except TypeError:
-            accepts_reason = False
-        except (ValueError, KeyError):  # un-introspectable builtin
+        except (TypeError, ValueError, KeyError):  # also un-introspectable builtins
             accepts_reason = False
         fn("model run complete") if accepts_reason else fn()
         return

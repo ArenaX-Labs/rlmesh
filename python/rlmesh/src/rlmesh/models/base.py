@@ -67,25 +67,24 @@ class ModelBase(Generic[ObsT, ActT]):
         self._bridge.ensure_available()
         from ._eval import coerce_model
 
-        predict, resolved_spec, coerced_reset, coerced_close, policy = coerce_model(
+        coerced = coerce_model(
             source,
             spec=spec,
             artifacts=tuple(artifacts),
             load_kwargs=dict(load_kwargs) if load_kwargs else None,
         )
-        self._raw_predict = cast("PredictFn[ObsT, ActT]", predict)
-        self._spec = resolved_spec
-        self._policy = policy
-        self._on_reset = on_reset if on_reset is not None else coerced_reset
-        self._on_close = on_close if on_close is not None else coerced_close
+        self._raw_predict = cast("PredictFn[ObsT, ActT]", coerced.predict)
+        self._spec = coerced.spec
+        self._policy = coerced.policy
+        self._on_reset = on_reset if on_reset is not None else coerced.on_reset
+        self._on_close = on_close if on_close is not None else coerced.on_close
         self._on_episode_end = on_episode_end
         self._trust_entrypoints = trust_entrypoints
-        # The native worker (serve/run_local) wraps the raw predict for a plain
-        # model. An adapted (spec'd) model resolves its adapter only at run(env),
-        # so its worker is a fail-loud placeholder -- run() does the adapting.
+        # An adapted (spec'd) model resolves its adapter only at run(env), so its
+        # native worker is a fail-loud placeholder -- run() does the adapting.
         worker_predict = (
             self._raw_predict
-            if resolved_spec is None
+            if self._spec is None
             else cast("PredictFn[ObsT, ActT]", _unwired)
         )
         self._install_worker(worker_predict, self._on_reset)

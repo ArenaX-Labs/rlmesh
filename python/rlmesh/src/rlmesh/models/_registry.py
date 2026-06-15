@@ -25,7 +25,6 @@ _MODEL_CLASSES: dict[str, type[ModelRecipe]] = {}
 
 
 def lookup_model_class(name: str) -> type[ModelRecipe] | None:
-    """Return the live ``ModelRecipe`` subclass registered under ``name``, or None."""
     return _MODEL_CLASSES.get(name)
 
 
@@ -167,7 +166,6 @@ def _flat_model_class(
 def _merge_by_name(
     defaults: tuple[ArtifactInput, ...], overrides: Sequence[ArtifactInput]
 ) -> tuple[ArtifactInput, ...]:
-    """Overlay per-run artifact overrides onto defaults, keyed by name."""
     by_name = {a.name: a for a in defaults}
     for override in overrides:
         by_name[override.name] = override
@@ -186,11 +184,6 @@ def _class_name(name: str) -> str:
 
 
 def _turnkey_predict(policy: Any, observation: Any) -> Any:
-    """Best-effort predict for a flat-registered turnkey policy.
-
-    Tries the common policy call conventions, in order, and raises a clear error
-    pointing the user to subclass ``ModelRecipe`` for a custom ``predict``.
-    """
     for attr in ("select_action", "predict", "act", "get_action"):
         method = getattr(policy, attr, None)
         if callable(method):
