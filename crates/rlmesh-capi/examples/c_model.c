@@ -10,8 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static RlmeshStatus predict(void* user_data, const RlmeshObservation* obs,
-                            RlmeshBytes* out_action) {
+static int predict(void* user_data, const RlmeshObservation* obs, RlmeshBytes* out_action) {
   (void)user_data;
   const RlmeshSpaceSpec* action =
       obs->contract ? rlmesh_contract_action_space(obs->contract) : NULL;

@@ -205,10 +205,12 @@ void rlmesh_callback_set_error(const char* message, bool recoverable);
 
 /* The model callback vtable. Set struct_size = sizeof(RlmeshModelVtable); fields
  * beyond that are ignored (append-only). `predict` is required. Callbacks run on
- * a worker thread, so `user_data` must be thread-migration-safe. */
+ * a worker thread, so `user_data` must be thread-migration-safe.
+ * `predict` returns a plain int (0 == RLMESH_OK, nonzero declines) so an
+ * out-of-range value from a C author stays well-defined. */
 typedef struct RlmeshModelVtable {
   size_t struct_size;
-  RlmeshStatus (*predict)(void* user_data, const RlmeshObservation* obs, RlmeshBytes* out_action);
+  int (*predict)(void* user_data, const RlmeshObservation* obs, RlmeshBytes* out_action);
   void (*on_lane_reset)(void* user_data, const char* episode_id, int32_t env_index);
   void (*on_episode_end)(void* user_data, const char* episode_id, int32_t env_index);
   void (*on_close)(void* user_data);

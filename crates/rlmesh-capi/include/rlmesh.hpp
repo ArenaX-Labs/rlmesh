@@ -276,8 +276,8 @@ class Model {
   Model(RlmeshModel* model, std::unique_ptr<State> state)
       : model_(model), state_(std::move(state)) {}
 
-  static RlmeshStatus trampoline_predict(void* user_data, const RlmeshObservation* obs,
-                                         RlmeshBytes* out_action) noexcept {
+  static int trampoline_predict(void* user_data, const RlmeshObservation* obs,
+                                RlmeshBytes* out_action) noexcept {
     auto* state = static_cast<State*>(user_data);
     Observation observation(obs);
 #if defined(__cpp_exceptions)
