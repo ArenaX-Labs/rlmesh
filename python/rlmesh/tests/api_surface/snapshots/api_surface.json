@@ -9,6 +9,9 @@
       "Recipe",
       "RemoteEnv",
       "RemoteVectorEnv",
+      "SandboxEnv",
+      "SandboxModel",
+      "SandboxVectorEnv",
       "ServeOptions",
       "Tensor",
       "__version__",
@@ -435,6 +438,179 @@
         "signature": "RemoteVectorEnv(address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None) -> None",
         "stability": "Stable"
       },
+      "SandboxEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "sandbox": {
+            "kind": "attribute",
+            "signature": "sandbox: SandboxInfo"
+          },
+          "source": {
+            "kind": "property",
+            "signature": "property source: str | Recipe | type[EnvRecipe]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
+          }
+        },
+        "signature": "SandboxEnv(source: str | Recipe | type[EnvRecipe], *, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **gym_make_kwargs: object) -> None",
+        "stability": "Stable"
+      },
+      "SandboxModel": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "container_id": {
+            "kind": "property",
+            "signature": "property container_id: str"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown()"
+          }
+        },
+        "signature": "SandboxModel(source: object, *, base_image: str | None = None, rlmesh_package: str | None = None, packages: Sequence[str] = (), artifacts: Sequence[ArtifactInput] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None)",
+        "stability": "Stable"
+      },
+      "SandboxVectorEnv": {
+        "kind": "class",
+        "members": {
+          "action_space": {
+            "kind": "property",
+            "signature": "property action_space: Space[ActionT]"
+          },
+          "action_space_spec": {
+            "kind": "property",
+            "signature": "property action_space_spec: SpaceSpec"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "close_viewer": {
+            "kind": "function",
+            "signature": "close_viewer() -> None"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "metadata": {
+            "kind": "property",
+            "signature": "property metadata: Metadata"
+          },
+          "num_envs": {
+            "kind": "property",
+            "signature": "property num_envs: int"
+          },
+          "observation_space": {
+            "kind": "property",
+            "signature": "property observation_space: Space[ValueT]"
+          },
+          "observation_space_spec": {
+            "kind": "property",
+            "signature": "property observation_space_spec: SpaceSpec"
+          },
+          "open_viewer": {
+            "kind": "function",
+            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
+          },
+          "render": {
+            "kind": "function",
+            "signature": "render(*, env_index: int = 0) -> ValueT | None"
+          },
+          "render_mode": {
+            "kind": "property",
+            "signature": "property render_mode: str | None"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | list[int] | None = None, options: dict[str, object] | None = None) -> tuple[ValueT, ResetInfo]"
+          },
+          "sandbox": {
+            "kind": "attribute",
+            "signature": "sandbox: SandboxInfo"
+          },
+          "single_action_space": {
+            "kind": "property",
+            "signature": "property single_action_space: Space[ActionT]"
+          },
+          "single_observation_space": {
+            "kind": "property",
+            "signature": "property single_observation_space: Space[ValueT]"
+          },
+          "source": {
+            "kind": "property",
+            "signature": "property source: str | Recipe | type[EnvRecipe]"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
+          }
+        },
+        "signature": "SandboxVectorEnv(source: str | Recipe | type[EnvRecipe], num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object) -> None",
+        "stability": "Stable"
+      },
       "ServeOptions": {
         "kind": "class",
         "members": {
@@ -532,7 +708,7 @@
       },
       "export": {
         "kind": "function",
-        "signature": "export(source: str | Recipe | type[EnvRecipe] | type, *, tag: str | None = None, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> ExportResult",
+        "signature": "export(source: str | Recipe | type[EnvRecipe] | type, *, tag: str | None = None, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None)",
         "stability": "Stable"
       },
       "make": {
@@ -1141,7 +1317,7 @@
       }
     }
   },
-  "rlmesh.model": {
+  "rlmesh.models.base": {
     "exports": ["LifecycleCallback", "ModelBase", "PredictFn"],
     "objects": {
       "LifecycleCallback": {
@@ -1599,14 +1775,43 @@
   },
   "rlmesh.sandbox": {
     "exports": [
+      "ExportResult",
       "RemoteEnvHandle",
       "RemoteVectorEnvHandle",
       "SandboxEnvBase",
       "SandboxInfo",
       "SandboxSessionBase",
-      "SandboxVectorEnvBase"
+      "SandboxVectorEnvBase",
+      "export"
     ],
     "objects": {
+      "ExportResult": {
+        "kind": "class",
+        "members": {
+          "alias": {
+            "kind": "attribute",
+            "signature": "alias: str | None"
+          },
+          "image": {
+            "kind": "attribute",
+            "signature": "image: str"
+          },
+          "image_id": {
+            "kind": "attribute",
+            "signature": "image_id: str"
+          },
+          "requested_source": {
+            "kind": "attribute",
+            "signature": "requested_source: str"
+          },
+          "resolved_source": {
+            "kind": "attribute",
+            "signature": "resolved_source: str"
+          }
+        },
+        "signature": "ExportResult(requested_source: str, resolved_source: str, image: str, alias: str | None, image_id: str)",
+        "stability": "Experimental"
+      },
       "RemoteEnvHandle": {
         "kind": "class",
         "members": {
@@ -1937,6 +2142,11 @@
           }
         },
         "signature": "SandboxVectorEnvBase(source: str | Recipe | type[EnvRecipe], num_envs: int, *, vectorization_mode: str = 'sync', base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] | None = None, imports: Sequence[str] | None = None, trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None, task: str | None = None, config: Mapping[str, object] | str | PathLike[str] | None = None, capabilities: Sequence[str] | None = None, override: str | PathLike[str] | None = None, cwd: str | PathLike[str] | None = None, repo_root: str | PathLike[str] | None = None, **env_make_kwargs: object)",
+        "stability": "Experimental"
+      },
+      "export": {
+        "kind": "function",
+        "signature": "export(source: str | Recipe | type[EnvRecipe] | type, *, tag: str | None = None, base_image: str | None = None, rlmesh_package: str | PathLike[str] | None = None, packages: Sequence[str] = (), trust_remote_code: bool = False, allow_unpinned_hf: bool = False, build_memory: str | None = None) -> ExportResult",
         "stability": "Experimental"
       }
     }

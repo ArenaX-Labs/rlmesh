@@ -11,20 +11,20 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from .sandbox import normalize_rlmesh_package
+from ._export import normalize_rlmesh_package
 
 if TYPE_CHECKING:
-    from .recipes import Recipe
-    from .recipes._schema import ArtifactInput
+    from ..recipes import Recipe
+    from ..recipes._schema import ArtifactInput
 
 __all__ = ["SandboxModel"]
 
 
 def resolve_model_recipe(source: object) -> tuple[Recipe, str | None]:
-    from .recipes import Recipe, resolve
-    from .recipes._authoring_model import as_authored_model_recipe, is_model_recipe
-    from .recipes._registry import class_origin_dir, recipe_origin_dir
-    from .recipes._schema import PyMake
+    from ..recipes import Recipe, resolve
+    from ..recipes._registry import class_origin_dir, recipe_origin_dir
+    from ..recipes._schema import PyMake
+    from ..recipes.authoring.model import as_authored_model_recipe, is_model_recipe
 
     context_root: str | None = None
     if isinstance(source, str):
@@ -74,8 +74,8 @@ class SandboxModel:
     ) -> None:
         import json
 
-        from ._rlmesh import sandbox_start_env
-        from .recipes._artifacts import local_dir_mounts
+        from .._rlmesh import sandbox_start_env
+        from ..recipes._artifacts import local_dir_mounts
 
         recipe, context_root = resolve_model_recipe(source)
         # A declared input with a host local_dir is bind-mounted at its container
@@ -107,7 +107,7 @@ class SandboxModel:
         return self._container_id
 
     def shutdown(self) -> None:
-        from ._rlmesh import sandbox_stop_env
+        from .._rlmesh import sandbox_stop_env
 
         sandbox_stop_env(container_id=self._container_id)
 

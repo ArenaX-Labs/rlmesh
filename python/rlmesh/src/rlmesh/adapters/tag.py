@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
 from .._rlmesh import adapters_join_check
-from .errors import AdapterResolutionError
+from .resolver import AdapterResolutionError
 from .specs import EnvTags
 
 EnvT = TypeVar("EnvT")

@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Generic, TypeVar, cast
 
 from .._rlmesh import Space as _SpaceHandle
 from ..specs import SpaceSpec
-from ._utils import spec_to_dict
+from ._internals import spec_to_dict
 
 OutputT = TypeVar("OutputT")
 NewOutputT = TypeVar("NewOutputT")
@@ -117,6 +117,6 @@ class Space(Generic[OutputT]):
 
 
 def _native_space_bridge() -> SpaceBridge[Any]:
-    from ._sample import NATIVE_SPACE_BRIDGE
+    from ._internals import NATIVE_SPACE_BRIDGE
 
     return NATIVE_SPACE_BRIDGE

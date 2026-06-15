@@ -14,13 +14,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
-from ..recipes._authoring_model import (
+from ..recipes._schema import ArtifactInput, Recipe
+from ..recipes.authoring.model import (
     DELEGATED,
     ModelRecipe,
     construct_authored_model,
     is_model_recipe,
 )
-from ..recipes._schema import ArtifactInput, Recipe
 
 if TYPE_CHECKING:
     from ..adapters import Adapter
@@ -285,7 +285,7 @@ def _construct_from_recipe(
     artifacts: tuple[ArtifactInput, ...],
 ) -> ModelRecipe:
     """Construct a policy from an inert model recipe via its ``module:Class`` entrypoint."""
-    from .._bootstrap.entrypoint import resolve_entrypoint
+    from .._entrypoint import resolve_entrypoint
     from ..recipes._schema import PyMake
 
     make = recipe.make

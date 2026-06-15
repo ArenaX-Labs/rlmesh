@@ -11,7 +11,7 @@ from rlmesh.recipes import Build, EnvRecipe, ProjectInstall
 def test_sandbox_cleanup_runs_on_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     stopped: list[str] = []
     captured: dict[str, object] = {}
@@ -51,7 +51,7 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
 def test_sandbox_cleanup_runs_on_remote_attach_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     stopped: list[str] = []
 
@@ -79,7 +79,7 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
 def test_sandbox_package_spec_alias_sets_rlmesh_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
     stopped: list[str] = []
@@ -122,7 +122,7 @@ def test_sandbox_package_spec_alias_sets_rlmesh_package(
 def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     class Remote:
         def __init__(self, address: str) -> None:
@@ -148,7 +148,7 @@ def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
 def test_sandbox_retries_close_after_transient_stop_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     stop_calls: list[str] = []
 
@@ -189,7 +189,7 @@ def test_sandbox_rejects_bare_str_packages_imports(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     class Remote:
         def __init__(self, address: str) -> None:
@@ -214,7 +214,7 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
     stopped: list[str] = []
@@ -562,7 +562,7 @@ def test_start_sandbox_gym_path_forwards_imports(
     # On the gym/hf source-string path, imports= is still forwarded to
     # _sandbox_start_env byte-identically to before (the recipe-merge path does not
     # apply to a non-recipe source).
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 
@@ -595,8 +595,8 @@ def test_start_sandbox_recipe_path_omits_forwarded_imports(
     # On the recipe path the caller imports ride the document (requires.imports); they
     # must NOT also be forwarded via _sandbox_start_env's imports= channel (which the
     # recipe bootstrap ignores), so the document is their sole carrier.
-    from rlmesh import sandbox
     from rlmesh.recipes import GymMake, Recipe
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 
@@ -630,8 +630,8 @@ def test_start_sandbox_recipe_path_omits_kwargs_json(
 ) -> None:
     # On the recipe path the make kwargs ride the document (make.kwargs); they must
     # not ALSO be shipped via kwargs_json, which the recipe bootstrap ignores.
-    from rlmesh import sandbox
     from rlmesh.recipes import GymMake, Recipe
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 

@@ -29,7 +29,7 @@ from rlmesh._bootstrap.env import (
     make_gym_environment,
 )
 
-from ._launch import UnsupportedRecipeError
+from ._sandbox_validate import UnsupportedRecipeError
 from ._schema import GymMake, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:

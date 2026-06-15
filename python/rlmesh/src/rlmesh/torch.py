@@ -6,15 +6,14 @@ import importlib
 import warnings
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
-from ._frameworks import FrameworkBridge
+from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .model import ModelBase
+from .models.base import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_bridge_from_value_bridge
+from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -247,7 +246,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
 class Model(ModelBase[TorchValue, TorchValue]):
     """Experimental Torch-backed model: ``predict`` works in Torch values.
 
-    The Torch-typed :class:`~rlmesh.model.ModelBase`; see it for the source/spec
+    The Torch-typed :class:`~rlmesh.models.base.ModelBase`; see it for the source/spec
     construction and ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 

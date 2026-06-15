@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 import rlmesh
-from rlmesh import sandbox
 from rlmesh.models import ModelRecipe
 from rlmesh.recipes import Build, PipInstall
 
@@ -54,7 +53,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             "image_id": "sha256:abc",
         }
 
-    monkeypatch.setattr(sandbox, "_sandbox_build_image", fake_build)
+    monkeypatch.setattr("rlmesh.sandbox._export._sandbox_build_image", fake_build)
     return seen
 
 

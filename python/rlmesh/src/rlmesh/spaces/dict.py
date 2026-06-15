@@ -10,7 +10,7 @@ from .._rlmesh import dict_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import NewOutputT, Space, SpaceBridge
-from ._utils import EMPTY_SPACE_MAPPING, spec_details
+from ._internals import EMPTY_SPACE_MAPPING, spec_details
 
 
 @final

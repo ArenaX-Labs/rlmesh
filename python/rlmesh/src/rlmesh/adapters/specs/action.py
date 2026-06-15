@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .custom_encoding import CustomEncoding
-from .rotations import RotationEncoding
-from .serialization import check_non_negative
+from .validation import check_non_negative
+from .vocabularies import RotationEncoding
 
 
 @dataclass(frozen=True)

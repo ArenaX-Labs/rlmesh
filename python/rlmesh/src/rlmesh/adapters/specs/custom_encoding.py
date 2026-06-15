@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
 from ..._rlmesh import ROTATION_DIMS
-from .rotations import RotationEncoding
+from .vocabularies import RotationEncoding
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike

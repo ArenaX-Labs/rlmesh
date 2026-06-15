@@ -9,7 +9,7 @@ from .._rlmesh import multi_discrete_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._utils import spec_details
+from ._internals import spec_details
 
 
 @final

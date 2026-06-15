@@ -16,13 +16,13 @@ an env.
 from __future__ import annotations
 
 from ..recipes._artifacts import hf_load, input_path
-from ..recipes._authoring_model import (
+from ..recipes._schema import ArtifactInput
+from ..recipes.authoring.model import (
     DELEGATED,
     ModelRecipe,
     construct_authored_model,
     is_model_recipe,
 )
-from ..recipes._schema import ArtifactInput
 from ._eval import EpisodeResult, RunResult
 from ._registry import register
 

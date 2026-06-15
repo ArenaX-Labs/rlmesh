@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 
 from ..numpy import NumpyArray, ensure_available
-from .helpers.bridge import decode_value, encode_value
+from .helpers.codec import decode_value, encode_value
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:

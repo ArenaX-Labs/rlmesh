@@ -2,7 +2,8 @@
 
 Run more than one environment endpoint, then connect one evaluator to all of them.
 
-The runnable evaluator is {source}`examples/python/quickstart/eval_many.py <examples/python/quickstart/eval_many.py>`.
+The runnable evaluator is
+{source}`examples/python/quickstart/eval_many.py <examples/python/quickstart/eval_many.py>`.
 
 ## Start Two Servers
 

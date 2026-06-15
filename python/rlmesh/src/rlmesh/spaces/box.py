@@ -9,8 +9,8 @@ from .._rlmesh import box_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._utils import require_float, spec_details
-from ._utils import shape as normalize_shape
+from ._internals import require_float, spec_details
+from ._internals import shape as normalize_shape
 
 
 @final

@@ -22,8 +22,8 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
 
-from ._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
-from ._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
+from .._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
+from .._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike
@@ -161,7 +161,7 @@ class EnvRecipe(_ArtifactConsumer):
     @classmethod
     def check(cls) -> None:
         """Validate this recipe without importing its dependencies (see :func:`check`)."""
-        from ._check import check as _check
+        from .._sandbox_validate import check as _check
 
         _check(cls.to_recipe())
 
@@ -221,7 +221,7 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     """
     from rlmesh._bootstrap.env import looks_like_env
 
-    from ._build import apply_setup
+    from .._construct import apply_setup
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)
@@ -240,7 +240,7 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     # The local path does not go through `build`, so publish the class-level tags
     # here via the same forward helper the container path uses.
     if cls.tags is not None:
-        from ._build import publish_env_tags
+        from .._construct import publish_env_tags
 
         publish_env_tags(env, cls.tags)
     return env

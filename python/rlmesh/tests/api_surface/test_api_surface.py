@@ -7,15 +7,20 @@ def test_root_namespace_is_small() -> None:
     assert rlmesh.__all__ == [
         "EnvRecipe",
         "EnvServer",
+        "ExportResult",
         "Model",
         "ModelRecipe",
         "Recipe",
         "RemoteEnv",
         "RemoteVectorEnv",
+        "SandboxEnv",
+        "SandboxModel",
+        "SandboxVectorEnv",
         "ServeOptions",
         "Tensor",
         "__version__",
         "adapters",
+        "export",
         "make",
         "models",
         "recipes",
@@ -38,8 +43,6 @@ def test_root_namespace_is_small() -> None:
         "EnvLike",
         "VectorEnvLike",
         "SpaceLike",
-        "SandboxEnv",
-        "SandboxVectorEnv",
     ):
         assert not hasattr(rlmesh, name)
 

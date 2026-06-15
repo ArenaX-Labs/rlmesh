@@ -244,24 +244,6 @@ def test_load_env_entrypoint_rejects_non_env_return(
         load_env_entrypoint("fake_env_module:make_env")
 
 
-def test_legacy_sandbox_bootstrap_shim_dispatches_gym(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh import _sandbox_bootstrap
-
-    gymnasium = ModuleType("gymnasium")
-
-    def make(env_id: str, **kwargs: object) -> tuple[str, dict[str, object]]:
-        return env_id, kwargs
-
-    gymnasium.make = make  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gymnasium", gymnasium)
-
-    env = _sandbox_bootstrap.load_env({"kind": "gym", "env_id": "CartPole-v1"})
-
-    assert env == ("CartPole-v1", {})
-
-
 def test_normalize_hf_env_returns_direct_env() -> None:
     from rlmesh._bootstrap.env import normalize_hf_env
 
@@ -368,7 +350,7 @@ def make_env(**kwargs):
 
 
 def test_load_predict_resolves_nested_callable(monkeypatch: pytest.MonkeyPatch) -> None:
-    from rlmesh._bootstrap.model import load_predict
+    from rlmesh._bootstrap.loaders import load_predict
 
     module = ModuleType("fake_model_module")
     module.policy = SimpleNamespace(  # type: ignore[attr-defined]
@@ -382,7 +364,7 @@ def test_load_predict_resolves_nested_callable(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_parse_entrypoint_rejects_missing_callable() -> None:
-    from rlmesh._bootstrap.model import parse_entrypoint
+    from rlmesh._entrypoint import parse_entrypoint
 
     with pytest.raises(ValueError, match="module:callable"):
         parse_entrypoint("fake_model_module")

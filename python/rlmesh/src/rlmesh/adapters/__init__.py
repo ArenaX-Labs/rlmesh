@@ -77,8 +77,7 @@ from .constants import (
     JOINT_VEL,
     MODEL_METADATA_KEY,
 )
-from .errors import AdapterResolutionError
-from .resolver import resolve, resolve_from_contract
+from .resolver import AdapterResolutionError, resolve, resolve_from_contract
 from .specs import (
     ROTATION_DIMS,
     ActionComponent,

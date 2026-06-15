@@ -177,7 +177,7 @@ def test_class_tags_project_onto_recipe_adapter(authored_module: str) -> None:
 
 def test_class_tags_published_on_constructed_env(authored_module: str) -> None:
     from rlmesh.adapters import EnvTags
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
     env = construct_authored(tagged)
@@ -197,7 +197,7 @@ def test_class_tags_published_via_build(authored_module: str) -> None:
 
 
 def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> None:
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     conflict = _module(authored_module).TaggedConflict  # type: ignore[attr-defined]
     with pytest.raises(RecipeValidationError, match="one place"):
@@ -206,7 +206,7 @@ def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> N
 
 def test_class_tags_as_serialized_mapping_are_normalized(authored_module: str) -> None:
     from rlmesh.adapters import EnvTags
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     # tags declared as the serialized dict form must not crash tag() (Codex P2).
     mapping = _module(authored_module).TaggedMapping  # type: ignore[attr-defined]
@@ -251,7 +251,7 @@ def test_entrypoint_runs_prepare_then_make(authored_module: str) -> None:
 def test_required_init_arg_raises_recipe_aware_error() -> None:
     # cls() is called with no args during construction; a required-arg __init__ would
     # otherwise fail with a confusing native TypeError.
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     class NeedsArg(EnvRecipe):
         name = "x/needs-arg"

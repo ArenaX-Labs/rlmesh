@@ -14,10 +14,10 @@ from collections.abc import Sequence
 from typing import Any, overload
 
 from ..recipes._artifacts import hf_load
-from ..recipes._authoring_model import ModelRecipe, is_model_recipe
 from ..recipes._registry import class_origin_dir
 from ..recipes._registry import store_recipe as _store_recipe
 from ..recipes._schema import ArtifactInput
+from ..recipes.authoring.model import ModelRecipe, is_model_recipe
 
 __all__ = ["lookup_model_class", "register"]
 
@@ -141,7 +141,7 @@ def _flat_model_class(
         inputs = tuple(artifacts)
 
         def load_fn(self: ModelRecipe) -> None:
-            from .._bootstrap.entrypoint import resolve_entrypoint
+            from .._entrypoint import resolve_entrypoint
 
             factory = resolve_entrypoint(load, label="model loader")
             self._policy = factory()  # type: ignore[attr-defined]

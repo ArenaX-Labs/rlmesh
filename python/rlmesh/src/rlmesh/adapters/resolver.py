@@ -14,11 +14,10 @@ import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from .._bootstrap.entrypoint import resolve_entrypoint
+from .._entrypoint import resolve_entrypoint
 from .._rlmesh import ROTATION_DIMS, adapters_resolve
 from .adapter import ActEncShim, Adapter, ObsEncShim
 from .constants import ENV_METADATA_KEY
-from .errors import AdapterResolutionError
 from .specs import (
     ActionComponent,
     ActionLayout,
@@ -39,6 +38,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from ..specs import EnvContract
+
+
+class AdapterResolutionError(ValueError):
+    """Raised when env tags and a model spec cannot be reconciled."""
+
 
 # Representative valid value per native base encoding, used by the optional
 # inverse self-check to confirm a CustomEncoding's two arms round-trip.

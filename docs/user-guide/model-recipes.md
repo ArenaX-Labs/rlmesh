@@ -44,8 +44,8 @@ to keep annotations as strings instead of evaluating them. A signature like `def
 
 ## Run it
 
-A backend `Model` drives the policy against a served env. The model is a client that dials the
-env; pass an env object, an object with an `address`, or a bare address string.
+A backend `Model` drives the policy against a served env. The model is a client that dials the env;
+pass an env object, an object with an `address`, or a bare address string.
 
 ```python
 from rlmesh.numpy import Model
@@ -108,8 +108,8 @@ with SandboxModel(SmolVLA) as model:
 
 `spec` declares how the model's observations relate to the env's tags.
 
-| `spec` value | Meaning |
-| --- | --- |
-| `None` | No adaptation. Runs against an untagged env; fails loud against a tagged one. |
-| `DELEGATED` | The model adapts its own observations. No adapter is resolved. |
+| `spec` value     | Meaning                                                                                                         |
+| ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| `None`           | No adaptation. Runs against an untagged env; fails loud against a tagged one.                                   |
+| `DELEGATED`      | The model adapts its own observations. No adapter is resolved.                                                  |
 | `ModelSpec(...)` | The adapter is resolved from the env's tags and this spec, so `predict` sees the model's declared input format. |

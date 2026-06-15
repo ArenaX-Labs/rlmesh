@@ -63,12 +63,12 @@ rather than mid-session.
 The optional framework backends declare the lowest versions their conversion paths actually require.
 Each floor has a concrete reason:
 
-| Package | Floor      | Why                                                                                      |
-| ------- | ---------- | ---------------------------------------------------------------------------------------- |
-| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels.                      |
-| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.                                  |
-| torch   | `>=1.11`   | First release with full `cp310` wheel coverage. [^torch-glibc]                           |
-| jax     | `>=0.4.24` | First release with DLPack `bool` support.                                                |
+| Package | Floor      | Why                                                                 |
+| ------- | ---------- | ------------------------------------------------------------------- |
+| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels. |
+| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.             |
+| torch   | `>=1.11`   | First release with full `cp310` wheel coverage. [^torch-glibc]      |
+| jax     | `>=0.4.24` | First release with DLPack `bool` support.                           |
 
 [^torch-glibc]:
     Torch wheels older than 1.13 fail to load on glibc 2.41+ hosts ("cannot enable executable

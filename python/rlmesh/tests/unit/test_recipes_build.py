@@ -230,7 +230,7 @@ def test_build_gym_recipe_falls_back_to_legacy_gym(
     first = _FakeGymModule("gymnasium", succeeds=False)
     second = _FakeGymModule("gym", succeeds=True)
     monkeypatch.setattr(
-        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+        "rlmesh.recipes._construct.import_gym_modules", lambda: [first, second]
     )
     recipe = Recipe(name="legacy/only", make=GymMake(env_id="LegacyOnly-v0"))
     env = build(recipe)
@@ -244,7 +244,7 @@ def test_build_gym_recipe_raises_aggregated_when_all_fail(
     first = _FakeGymModule("gymnasium", succeeds=False)
     second = _FakeGymModule("gym", succeeds=False)
     monkeypatch.setattr(
-        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+        "rlmesh.recipes._construct.import_gym_modules", lambda: [first, second]
     )
     recipe = Recipe(name="legacy/only", make=GymMake(env_id="Nowhere-v0"))
     with pytest.raises(RuntimeError, match="failed to create gym environment"):

@@ -5,7 +5,7 @@ from typing import Any, cast, overload
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import OutputT, Space, SpaceBridge
-from ._sample import NATIVE_SPACE_BRIDGE
+from ._internals import NATIVE_SPACE_BRIDGE
 from .box import Box
 from .dict import Dict
 from .discrete import Discrete

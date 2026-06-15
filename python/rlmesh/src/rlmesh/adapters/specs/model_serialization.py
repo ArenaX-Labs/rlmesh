@@ -14,7 +14,7 @@ from .model_inputs import (
     StateInput,
     TextInput,
 )
-from .serialization import (
+from .validation import (
     as_mapping,
     opt_encoding,
     opt_layout,

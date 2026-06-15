@@ -23,9 +23,7 @@ from typing import Any, TypeAlias, cast
 from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
 from .action import ActionLayout
 from .action_serialization import action_layout_from_dict, action_layout_to_dict
-from .layouts import ImageLayout
-from .rotations import RotationEncoding
-from .serialization import (
+from .validation import (
     as_mapping,
     load_json_mapping,
     opt_encoding,
@@ -35,6 +33,7 @@ from .serialization import (
     require_sequence,
     require_str,
 )
+from .vocabularies import ImageLayout, RotationEncoding
 
 
 @dataclass(frozen=True)

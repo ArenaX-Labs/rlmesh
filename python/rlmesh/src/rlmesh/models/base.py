@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast
 
-from ._values import ValueBridge
-from .types import Value
+from .._framework_bridge import ValueBridge
+from ..types import Value
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
 
-    from .models._eval import RunResult
-    from .recipes._schema import ArtifactInput
+    from ..recipes._schema import ArtifactInput
+    from ._eval import RunResult
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -65,7 +65,7 @@ class ModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: bool = False,
     ) -> None:
         self._bridge.ensure_available()
-        from .models._eval import coerce_model
+        from ._eval import coerce_model
 
         predict, resolved_spec, coerced_reset, coerced_close, policy = coerce_model(
             source,
@@ -137,7 +137,7 @@ class ModelBase(Generic[ObsT, ActT]):
         exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an object with an
         ``address``, or a bare address string the loop dials.
         """
-        from .models._eval import evaluate
+        from ._eval import evaluate
 
         return evaluate(
             self._raw_predict,
@@ -165,7 +165,7 @@ class ModelBase(Generic[ObsT, ActT]):
         endpoint only sees on dial-in (not implemented), so serving the raw predict
         would silently skip the spec's transforms.
         """
-        from .adapters import ModelSpec
+        from ..adapters import ModelSpec
 
         if isinstance(self._spec, ModelSpec):
             raise NotImplementedError(

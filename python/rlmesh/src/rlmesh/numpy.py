@@ -5,16 +5,15 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
-from ._frameworks import FrameworkBridge
+from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._rlmesh import Tensor
-from ._sandbox_model import SandboxModel
-from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .model import ModelBase
+from .models.base import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from .sandbox._model import SandboxModel
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_bridge_from_value_bridge
+from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -204,10 +203,10 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
 class Model(ModelBase[NumpyValue, NumpyValue]):
     """NumPy-backed model: ``predict`` works in NumPy values.
 
-    The NumPy-typed :class:`~rlmesh.model.ModelBase` -- ``Model(source, spec=...)``
+    The NumPy-typed :class:`~rlmesh.models.base.ModelBase` -- ``Model(source, spec=...)``
     where ``source`` is a predict callable, a ``ModelRecipe``, a ``kind='model'``
     Recipe, or a registered name; ``run(env, seeds=[...])`` returns a typed
-    ``RunResult``. See :class:`~rlmesh.model.ModelBase`.
+    ``RunResult``. See :class:`~rlmesh.models.base.ModelBase`.
 
     Examples:
         >>> from rlmesh.numpy import Model

@@ -6,7 +6,8 @@ import argparse
 import sys
 from dataclasses import dataclass
 
-from rlmesh._bootstrap.model import load_predict, parse_entrypoint
+from rlmesh._bootstrap.loaders import load_predict
+from rlmesh._entrypoint import parse_entrypoint
 
 __all__ = [
     "ServeModelArgs",

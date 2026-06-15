@@ -133,7 +133,7 @@ def test_resolve_recipe_source_defaults_context_root_for_project() -> None:
 def test_start_sandbox_forwards_recipe_json_for_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 
@@ -168,7 +168,7 @@ def test_start_sandbox_forwards_recipe_json_for_recipe(
 def test_start_sandbox_omits_recipe_args_for_gym(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 

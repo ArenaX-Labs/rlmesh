@@ -54,8 +54,8 @@ and does not need to import Torch unless the environment itself needs it.
 
 ## JAX
 
-The JAX backend is experimental in this beta. Tensor leaves decode to JAX arrays, which are immutable
-by construction.
+The JAX backend is experimental in this beta. Tensor leaves decode to JAX arrays, which are
+immutable by construction.
 
 ```python
 from rlmesh.jax import RemoteEnv

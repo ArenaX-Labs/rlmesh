@@ -11,13 +11,20 @@ from . import recipes as recipes
 from . import serving as serving
 from . import spaces as spaces
 from . import types as types
-from ._native import Model, RemoteEnv, RemoteVectorEnv
+from ._native import (
+    Model,
+    RemoteEnv,
+    RemoteVectorEnv,
+    SandboxEnv,
+    SandboxModel,
+    SandboxVectorEnv,
+)
 from ._rlmesh import ServeOptions, Tensor
 from .models import ModelRecipe
 from .recipes import EnvRecipe, Recipe
 from .recipes import make as make
 from .recipes import register as _register_env
-from .recipes._authoring_model import is_model_recipe as _is_model_recipe
+from .recipes.authoring.model import is_model_recipe as _is_model_recipe
 from .sandbox import ExportResult, export
 from .server import EnvServer
 
@@ -55,6 +62,9 @@ __all__ = [
     "Recipe",
     "RemoteEnv",
     "RemoteVectorEnv",
+    "SandboxEnv",
+    "SandboxModel",
+    "SandboxVectorEnv",
     "ServeOptions",
     "Tensor",
     "__version__",

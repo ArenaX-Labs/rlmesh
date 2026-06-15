@@ -22,8 +22,8 @@ import inspect
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar
 
-from ._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
-from ._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
+from .._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
+from .._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
     from rlmesh.adapters import ModelSpec
@@ -197,7 +197,7 @@ class ModelRecipe(_ArtifactConsumer):
     @classmethod
     def check(cls) -> None:
         """Validate this recipe without importing its dependencies (see :func:`check`)."""
-        from ._check import check as _check
+        from .._sandbox_validate import check as _check
 
         _check(cls.to_recipe())
 
@@ -280,7 +280,7 @@ def construct_authored_model(
     serve several construction-time configurations (such as a GR00T
     ``embodiment_tag``) without a per-variant recipe.
     """
-    from ._build import apply_setup
+    from .._construct import apply_setup
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)

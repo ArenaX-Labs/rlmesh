@@ -58,8 +58,8 @@ env = rlmesh.make("atari/breakout")                       # in-process
 
 ## Point at a factory you already have
 
-`GymMake` only covers ids that `gymnasium.make` can build. An environment with its own `make`, or one
-that needs a wrapper like `safety_gymnasium`, is constructed by a factory you reference by name:
+`GymMake` only covers ids that `gymnasium.make` can build. An environment with its own `make`, or
+one that needs a wrapper like `safety_gymnasium`, is constructed by a factory you reference by name:
 
 ```python
 # safety_env.py  (in your package; the recipe references it as a string)
@@ -193,15 +193,15 @@ class Scene1(rlmesh.EnvRecipe):
         return robot_env.scene1()
 ```
 
-Per-task differences belong in `make`/`setup`. They ride the runtime payload and never invalidate the
-shared image.
+Per-task differences belong in `make`/`setup`. They ride the runtime payload and never invalidate
+the shared image.
 
 ## A non-Debian base, or wrapping an existing Dockerfile
 
-`system`/`system_runtime` are installed with `apt`, so a structured `Build` targets a Debian or Ubuntu
-base. The defaults (`python:3.11-slim` and the `nvidia/cuda` images) qualify. For another distro, or
-to wrap a Dockerfile you already have, set `build.dockerfile` to a verbatim body. The deriver appends
-the rlmesh entrypoint. It is mutually exclusive with the structured build fields:
+`system`/`system_runtime` are installed with `apt`, so a structured `Build` targets a Debian or
+Ubuntu base. The defaults (`python:3.11-slim` and the `nvidia/cuda` images) qualify. For another
+distro, or to wrap a Dockerfile you already have, set `build.dockerfile` to a verbatim body. The
+deriver appends the rlmesh entrypoint. It is mutually exclusive with the structured build fields:
 
 ```python
 from rlmesh.recipes import Build

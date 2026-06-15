@@ -1219,7 +1219,7 @@ def test_negative_u32_fields_are_rejected_at_construction() -> None:
 
 
 def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
-    from rlmesh.adapters.helpers.bridge import encode_value
+    from rlmesh.adapters.helpers.codec import encode_value
 
     assert encode_value(np.bool_(True)) == ("n", 1.0)
     assert encode_value(np.bool_(False)) == ("n", 0.0)

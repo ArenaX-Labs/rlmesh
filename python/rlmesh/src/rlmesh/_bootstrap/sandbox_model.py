@@ -86,10 +86,10 @@ def main(
     document = expect_mapping(spec.get("document"), "bootstrap spec.document")
 
     try:
-        from rlmesh._bootstrap.entrypoint import resolve_entrypoint
+        from rlmesh._entrypoint import resolve_entrypoint
         from rlmesh.numpy import Model
         from rlmesh.recipes import Recipe
-        from rlmesh.recipes._build import apply_setup
+        from rlmesh.recipes._construct import apply_setup
         from rlmesh.recipes._schema import PyMake
 
         recipe = Recipe.from_dict(document)

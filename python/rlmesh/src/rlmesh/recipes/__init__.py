@@ -21,15 +21,7 @@ from __future__ import annotations
 from rlmesh._bootstrap.env import RecipeConstructionError
 
 from ._artifacts import hf_load, input_path
-from ._authoring import EnvRecipe
-from ._authoring_model import ModelRecipe
-from ._build import build
-from ._check import check
-from ._launch import (
-    SandboxLaunchArgs,
-    UnsupportedRecipeError,
-    recipe_to_sandbox_args,
-)
+from ._construct import build
 from ._make import make
 from ._registry import (
     RecipeNotFoundError,
@@ -41,6 +33,12 @@ from ._registry import (
     resolve,
     resolve_from_recipe,
     unregister,
+)
+from ._sandbox_validate import (
+    SandboxLaunchArgs,
+    UnsupportedRecipeError,
+    check,
+    recipe_to_sandbox_args,
 )
 from ._schema import (
     ArtifactInput,
@@ -60,6 +58,8 @@ from ._schema import (
     RuntimeReserved,
     Setup,
 )
+from .authoring.env import EnvRecipe
+from .authoring.model import ModelRecipe
 
 __all__ = [
     "ArtifactInput",

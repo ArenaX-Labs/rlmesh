@@ -6,8 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from .layouts import IMAGE_LAYOUTS, ImageLayout
-from .rotations import ROTATION_DIMS, RotationEncoding
+from .vocabularies import IMAGE_LAYOUTS, ROTATION_DIMS, ImageLayout, RotationEncoding
 
 
 def load_json_mapping(payload: str) -> Mapping[str, Any]:

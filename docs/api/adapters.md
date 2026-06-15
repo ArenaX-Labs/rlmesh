@@ -143,18 +143,18 @@ a model declares the action vector it emits. The resolver converts between them 
 
 When a pairing needs logic a declarative spec cannot express, three mechanisms compose, most local
 first. A custom input computes one payload key from the raw observation while the rest stays
-spec-driven. A custom encoding handles a rotation convention the native crate does not ship. A custom
-adapter subclasses {class}`~rlmesh.adapters.AdapterBase` to add stateful behavior, typically by
-wrapping a resolved adapter and overriding only the stateful part.
+spec-driven. A custom encoding handles a rotation convention the native crate does not ship. A
+custom adapter subclasses {class}`~rlmesh.adapters.AdapterBase` to add stateful behavior, typically
+by wrapping a resolved adapter and overriding only the stateful part.
 
 ### Custom inputs
 
-{class}`~rlmesh.adapters.InlineCustomInput` runs an in-process callable that maps the raw observation
-to one payload key; it is local only. {class}`~rlmesh.adapters.EntrypointCustomInput` names a
-`module:callable` string that is imported only when you pass `resolve(..., trust_entrypoints=True)`,
-so it can travel in a contract. A custom input receives the environment's own keys, not roles, and
-returns the entire payload key, so it does no role-matching, `dim`/`index`, or range-mapping, and is
-observation-side only.
+{class}`~rlmesh.adapters.InlineCustomInput` runs an in-process callable that maps the raw
+observation to one payload key; it is local only. {class}`~rlmesh.adapters.EntrypointCustomInput`
+names a `module:callable` string that is imported only when you pass
+`resolve(..., trust_entrypoints=True)`, so it can travel in a contract. A custom input receives the
+environment's own keys, not roles, and returns the entire payload key, so it does no role-matching,
+`dim`/`index`, or range-mapping, and is observation-side only.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.adapters.InlineCustomInput
@@ -180,9 +180,9 @@ sides, serializes into the contract, and is conformance-tested once.
 For a bespoke or proprietary convention, declare a {class}`~rlmesh.adapters.CustomEncoding` on the
 nearest native base encoding (`rot6d` or a quaternion) and supply the host-side repacking. `resolve`
 lowers the field to its base for the native core, so role-matching, range-mapping, and the
-env-to-base conversion are unchanged; the adapter applies your transforms at the boundary: `from_base`
-after the native conversion on the observation side, `to_base` before it on the action side. Define
-the encoding once and reference it from both arms:
+env-to-base conversion are unchanged; the adapter applies your transforms at the boundary:
+`from_base` after the native conversion on the observation side, `to_base` before it on the action
+side. Define the encoding once and reference it from both arms:
 
 ```python
 ROT6D_MINE = adapt.CustomEncoding(
@@ -196,12 +196,12 @@ env-dependent). At resolve time the two arms are round-tripped on a probe to cat
 encode/decode; pass `resolve(..., check_inverse=False)` to skip. The transforms are in-process
 callables, so the spec is local; a serializable `module:callable` form is planned.
 
-When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field state,
-or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole payload key
-with an `InlineCustomInput`. What none of these do is attach a custom encoding to a role in the spec
-itself: the vocabulary stays closed so specs remain pure data that resolve on a remote client with no
-code. Reach for the boundary wrapper for a one-off; upstream the encoding once you want it attached
-to a role and reused.
+When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field
+state, or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole
+payload key with an `InlineCustomInput`. What none of these do is attach a custom encoding to a role
+in the spec itself: the vocabulary stays closed so specs remain pure data that resolve on a remote
+client with no code. Reach for the boundary wrapper for a one-off; upstream the encoding once you
+want it attached to a role and reused.
 
 ### Custom adapters
 
@@ -212,8 +212,8 @@ Override {meth}`~rlmesh.adapters.AdapterBase.reset` to clear episode state and w
 worker's `on_reset`.
 
 A pair override replaces the adapter for one specific (model, environment) pairing entirely, for
-cases like control-space conversion against a robot's kinematic model. There is no special machinery:
-keep a registry keyed by the pair and consult it before resolving.
+cases like control-space conversion against a robot's kinematic model. There is no special
+machinery: keep a registry keyed by the pair and consult it before resolving.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.adapters.AdapterBase
@@ -240,24 +240,25 @@ keep a registry keyed by the pair and consult it before resolving.
 
 ## Vocabulary
 
-Semantic roles are an open vocabulary of wire strings matched verbatim between independently authored
-tags and specs. The well-known conventions that ship with RLMesh are re-exported from the package
-(single-sourced from the native crate): the domain-agnostic roles `IMAGE_PRIMARY`, `IMAGE_SECONDARY`,
-`INSTRUCTION`, `JOINT_POS`, `JOINT_VEL` and the arm-manipulation roles `IMAGE_WRIST`, `EEF_POS`,
-`EEF_ROT`, `GRIPPER_POS` (with bimanual `_2` variants) and their `ACTION_*` counterparts.
+Semantic roles are an open vocabulary of wire strings matched verbatim between independently
+authored tags and specs. The well-known conventions that ship with RLMesh are re-exported from the
+package (single-sourced from the native crate): the domain-agnostic roles `IMAGE_PRIMARY`,
+`IMAGE_SECONDARY`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL` and the arm-manipulation roles
+`IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS` (with bimanual `_2` variants) and their
+`ACTION_*` counterparts.
 
 Rotation widths follow the declared encoding. `rlmesh.adapters.ROTATION_DIMS` maps each encoding to
 its dimension count:
 
-| Encoding         | Dims | Convention                                                    |
-| ---------------- | ---- | ------------------------------------------------------------- |
-| `quat_xyzw`      | 4    | quaternion, scalar-last                                       |
-| `quat_wxyz`      | 4    | quaternion, scalar-first                                      |
-| `axis_angle`     | 3    | rotation vector                                               |
-| `rot6d`          | 6    | first two columns of the rotation matrix, concatenated        |
-| `rot6d_rowmajor` | 6    | same two columns flattened row-major                          |
-| `euler_xyz`      | 3    | roll-pitch-yaw, extrinsic XYZ                                 |
+| Encoding         | Dims | Convention                                             |
+| ---------------- | ---- | ------------------------------------------------------ |
+| `quat_xyzw`      | 4    | quaternion, scalar-last                                |
+| `quat_wxyz`      | 4    | quaternion, scalar-first                               |
+| `axis_angle`     | 3    | rotation vector                                        |
+| `rot6d`          | 6    | first two columns of the rotation matrix, concatenated |
+| `rot6d_rowmajor` | 6    | same two columns flattened row-major                   |
+| `euler_xyz`      | 3    | roll-pitch-yaw, extrinsic XYZ                          |
 
-`rot6d` is the standard 6D rotation; `rot6d_rowmajor` exists for checkpoints trained on the row-major
-interleaving. See {doc}`../user-guide/adapters` for when to add an encoding versus reach for a custom
-encoding.
+`rot6d` is the standard 6D rotation; `rot6d_rowmajor` exists for checkpoints trained on the
+row-major interleaving. See {doc}`../user-guide/adapters` for when to add an encoding versus reach
+for a custom encoding.

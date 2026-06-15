@@ -8,9 +8,8 @@ from typing import Any, Literal, TypeAlias
 
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
 from .custom_encoding import CustomEncoding
-from .layouts import ImageLayout
-from .rotations import RotationEncoding
-from .serialization import check_non_negative
+from .validation import check_non_negative
+from .vocabularies import ImageLayout, RotationEncoding
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 

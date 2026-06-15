@@ -7,7 +7,7 @@ from typing import Any
 
 from .action import ActionComponent, ActionLayout
 from .custom_encoding import CustomEncoding
-from .serialization import (
+from .validation import (
     as_mapping,
     opt_encoding,
     opt_range,

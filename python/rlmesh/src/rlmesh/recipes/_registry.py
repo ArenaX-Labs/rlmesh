@@ -19,9 +19,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import overload
 
-from ._authoring import EnvRecipe, is_env_recipe
 from ._gym_sugar import factory_sugar_to_recipe, gym_sugar_to_recipe
 from ._schema import Build, GymMake, PyMake, Recipe
+from .authoring.env import EnvRecipe, is_env_recipe
 
 __all__ = [
     "RecipeNotFoundError",

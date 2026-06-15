@@ -9,7 +9,7 @@ To author and register a model as a recipe, see {doc}`model-recipes`.
 ## Base Model
 
 ```{eval-rst}
-.. autoclass:: rlmesh.model.ModelBase
+.. autoclass:: rlmesh.models.base.ModelBase
    :members:
    :show-inheritance:
 ```

@@ -97,7 +97,7 @@ backend arrays or tensors.
 | `size`                | `int`        | Number of elements.                                           |
 | `nbytes`              | `int`        | Element data size in bytes.                                   |
 | `strides`             | `list[int]`  | Byte strides per dimension, C order.                          |
-| `device`              | `str`        | Device holding the data; currently always `"cpu"`.           |
+| `device`              | `str`        | Device holding the data; currently always `"cpu"`.            |
 | `is_contiguous()`     | `bool`       | Whether elements are laid out C-contiguously.                 |
 | `reshape(shape)`      | `Tensor`     | Same elements, new shape; zero-copy view when contiguous.     |
 | `copy()`              | `Tensor`     | Deep copy backed by fresh storage.                            |
@@ -109,6 +109,6 @@ backend arrays or tensors.
 
 Use `rlmesh.numpy.asarray(tensor)` to get a writable NumPy copy of an RLMesh tensor
 (`numpy.from_dlpack(tensor)` for a zero-copy, read-only view), `rlmesh.torch.as_tensor(tensor)` to
-view or copy it as a Torch tensor, and
-`rlmesh.jax.asarray(tensor)` to import it as a JAX array. `bfloat16` tensors are not representable
-through the buffer protocol; use DLPack or `tobytes()` for those.
+view or copy it as a Torch tensor, and `rlmesh.jax.asarray(tensor)` to import it as a JAX array.
+`bfloat16` tensors are not representable through the buffer protocol; use DLPack or `tobytes()` for
+those.

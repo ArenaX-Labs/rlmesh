@@ -25,8 +25,8 @@ pip install --pre "rlmesh[numpy]"
 ## Conversion Semantics
 
 - `asarray(tensor)` returns a **writable copy** of the tensor bytes, matching Gymnasium where
-  `reset`/`step` observations are writable (so `obs /= 255.0` works). For a zero-copy, read-only view
-  that shares the tensor buffer, use `numpy.from_dlpack(tensor)` or the buffer protocol.
+  `reset`/`step` observations are writable (so `obs /= 255.0` works). For a zero-copy, read-only
+  view that shares the tensor buffer, use `numpy.from_dlpack(tensor)` or the buffer protocol.
 - `from_array(array)` always copies: it makes the array C-contiguous and serializes its bytes into a
   fresh RLMesh tensor.
 - `bfloat16` tensors have no buffer-protocol format, so `asarray` copies through raw bytes and needs
