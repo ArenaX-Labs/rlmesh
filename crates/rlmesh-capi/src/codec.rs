@@ -26,6 +26,11 @@ pub struct RlmeshBytes {
 
 impl RlmeshBytes {
     pub(crate) fn from_vec(mut bytes: Vec<u8>) -> Self {
+        // An empty Vec's as_mut_ptr() is a dangling non-null sentinel; report the
+        // documented NULL/empty form so a consumer can branch on `data` not `len`.
+        if bytes.is_empty() {
+            return Self { data: std::ptr::null_mut(), len: 0, cap: 0 };
+        }
         let out = Self {
             data: bytes.as_mut_ptr(),
             len: bytes.len(),
