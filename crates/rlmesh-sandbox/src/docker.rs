@@ -1156,7 +1156,20 @@ fn current_pid_namespace_id() -> Option<String> {
 /// acceptable: erring toward *not* reaping is the safe direction, since the
 /// cost is a leaked container, not a killed live session.
 fn pid_is_alive(pid: u32) -> bool {
-    std::path::Path::new(&format!("/proc/{pid}")).exists()
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // `kill -0` probes process existence without sending a signal.
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
 }
 
 fn inspect_container_state(container_id: &str) -> Result<Option<ContainerState>> {
