@@ -76,11 +76,11 @@ its path inside `load()` with `self.input_path(name)`. A `uri="hf://org/repo@sha
 the rlmesh artifact cache; `local_dir=` points at a host directory instead. `hf_load` loads the
 policy from that path.
 
-Resolving an `hf://` uri needs `huggingface_hub` (the `rlmesh[hf]` extra: `pip install --pre
-"rlmesh[hf]"`). In a `SandboxModel` the container resolves the uri, not the host, so a recipe with a
-`uri=` input must install it in the recipe's `build` (`PipInstall(["huggingface_hub"])`). Point the
-input at `local_dir=` to bind-mount weights from the host instead, which needs nothing extra in the
-container.
+Resolving an `hf://` uri needs `huggingface_hub` (the `rlmesh[hf]` extra:
+`pip install --pre "rlmesh[hf]"`). In a `SandboxModel` the container resolves the uri, not the host,
+so a recipe with a `uri=` input must install it in the recipe's `build`
+(`PipInstall(["huggingface_hub"])`). Point the input at `local_dir=` to bind-mount weights from the
+host instead, which needs nothing extra in the container.
 
 ## Register
 

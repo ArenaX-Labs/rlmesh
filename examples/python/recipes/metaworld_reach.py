@@ -35,7 +35,9 @@ class MetaworldReach(rlmesh.EnvRecipe):
         import numpy as np
         from gymnasium import spaces
         from gymnasium.wrappers import AddRenderObservation
-        from metaworld.env_dict import ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE
+        from metaworld.env_dict import (  # pyright: ignore[reportMissingImports]
+            ALL_V3_ENVIRONMENTS_GOAL_OBSERVABLE,
+        )
 
         # Meta-World v3 registers benchmark ids (Meta-World/MT1, .../goal_observable),
         # not per-task gym ids, and its goal_observable entry point does not forward
