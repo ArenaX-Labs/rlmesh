@@ -97,6 +97,7 @@ class SandboxModel:
         )
         self._address = info["address"]
         self._container_id = info["container_id"]
+        self._closed = False
 
     @property
     def address(self) -> str:
@@ -107,9 +108,16 @@ class SandboxModel:
         return self._container_id
 
     def shutdown(self) -> None:
+        """Stop the owned container. Idempotent; safe to call more than once."""
+        if self._closed:
+            return
         from .._rlmesh import sandbox_stop_env
 
+        # Mark closed only once the stop succeeds, so a transient failure can be
+        # retried by a later shutdown()/__exit__/__del__ instead of leaking the
+        # container (mirrors SandboxSessionBase).
         sandbox_stop_env(container_id=self._container_id)
+        self._closed = True
 
     def __enter__(self) -> SandboxModel:
         return self
@@ -117,3 +125,9 @@ class SandboxModel:
     def __exit__(self, *exc: object) -> bool:
         self.shutdown()
         return False
+
+    def __del__(self) -> None:
+        try:
+            self.shutdown()
+        except Exception:
+            pass

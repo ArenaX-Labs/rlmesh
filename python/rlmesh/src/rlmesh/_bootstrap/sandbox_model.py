@@ -116,7 +116,10 @@ def main(
         if drive_address:
             from rlmesh.numpy import RemoteEnv
 
-            seeds = [int(s) for s in os.environ.get("RLMESH_SEEDS", "0,1").split(",")]
+            # `os.environ.get(key, default)` returns "" (not the default) when the
+            # var is set but empty, and int("") raises; `or` falls back cleanly.
+            raw_seeds = os.environ.get("RLMESH_SEEDS") or "0,1"
+            seeds = [int(s) for s in raw_seeds.split(",") if s.strip()]
             result = server.run(RemoteEnv(drive_address), seeds=seeds)
             print(
                 "RLMESH_RUN_RESULT "

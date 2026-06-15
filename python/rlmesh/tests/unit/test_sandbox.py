@@ -247,6 +247,31 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     assert captured[field] == ["ale-py"]
 
 
+def test_sandbox_model_shutdown_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # SandboxModel.shutdown() must be safe to call more than once: an explicit
+    # shutdown() followed by __exit__ (or __del__) must not re-stop an already
+    # stopped container. Bypass __init__ (which starts a real container).
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox._model import SandboxModel
+
+    stops: list[str] = []
+    monkeypatch.setattr(
+        native, "sandbox_stop_env", lambda *, container_id: stops.append(container_id)
+    )
+
+    model = object.__new__(SandboxModel)
+    model._address = "0.0.0.0:50051"
+    model._container_id = "container-x"
+    model._closed = False
+
+    with model:
+        model.shutdown()  # explicit early stop
+    model.shutdown()  # __exit__ already stopped; these must be no-ops
+    assert stops == ["container-x"]
+
+
 def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     # A recipe source carries make kwargs in the document (make.kwargs), since the
     # recipe bootstrap payload never threads kwargs_json into the recipe build.

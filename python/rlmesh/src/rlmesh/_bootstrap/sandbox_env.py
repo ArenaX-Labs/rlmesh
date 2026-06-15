@@ -38,7 +38,14 @@ def main(
     # num_envs/vectorization_mode from the spec).
     num_envs = os.environ.get("RLMESH_NUM_ENVS")
     if num_envs:
-        spec["num_envs"] = int(num_envs)
+        try:
+            spec["num_envs"] = int(num_envs)
+        except ValueError:
+            print(
+                f"RLMESH_NUM_ENVS must be an integer, got {num_envs!r}",
+                file=sys.stderr,
+            )
+            return 2
     vectorization_mode = os.environ.get("RLMESH_VECTORIZATION_MODE")
     if vectorization_mode:
         spec["vectorization_mode"] = vectorization_mode
