@@ -83,13 +83,19 @@ The self-adapting-model sentinel for `spec`:
 
 ## Sandbox
 
-`SandboxModel` builds a model recipe to an image and runs the policy in its own container. It
-exposes `.address` and `.container_id`, has `.shutdown()`, and is a context manager. Exported per
-backend as `rlmesh.numpy.SandboxModel`.
+`SandboxModel` is the containerized sibling of the backend `Model`, exported per backend as
+`rlmesh.numpy.SandboxModel`. It builds a model recipe to an image and runs the policy in its own
+container, keeping the model's dependencies isolated from the caller.
+
+`SandboxModel(source).run(env, seeds=[...])` builds the image, runs a one-shot container that drives
+`env`, and returns a `RunResult`, mirroring `Model.run`. Used as a context manager (or via
+`serve()`), it instead serves the policy as a long-lived model endpoint for spec-less or
+`spec=DELEGATED` models, exposing `.address` and `.container_id` with `.shutdown()` to stop the
+container.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.numpy.SandboxModel
-   :members: address, container_id, shutdown
+   :members: run, serve, address, container_id, shutdown
 ```
 
 ## Errors

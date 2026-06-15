@@ -83,6 +83,7 @@ Publish crates in dependency order:
 ```bash
 cargo publish -p rlmesh-proto
 cargo publish -p rlmesh-spaces
+cargo publish -p rlmesh-adapters
 cargo publish -p rlmesh-cli
 cargo publish -p rlmesh-runtime
 cargo publish -p rlmesh-grpc

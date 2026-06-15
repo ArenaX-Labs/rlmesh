@@ -94,15 +94,44 @@ a container.
 
 ## Run in a container
 
-`SandboxModel` builds the recipe to an image and starts the policy in its own container. It exposes
-`.address` and `.container_id`, has `.shutdown()`, and is a context manager:
+`SandboxModel` is the containerized sibling of `Model`. It builds the recipe to an image and runs
+the policy in its own container, so the model's dependencies never enter your process. It works two
+ways.
+
+### One-shot eval
+
+`SandboxModel(source).run(env)` builds the image, runs a single container that drives `env`, and
+returns a `RunResult`. This is the containerized form of `Model.run`, returning the same
+`RunResult`; `seeds` and `max_episodes` carry over.
 
 ```python
 from rlmesh.numpy import SandboxModel
 
-with SandboxModel(SmolVLA) as model:
-    Model("policy/smolvla").run(model.address, seeds=[0])
+result = SandboxModel(SmolVLA).run(env, seeds=[0, 1, 2])
+print(result.mean_reward)
 ```
+
+`env` is the dialed party, exactly as with `Model.run`: pass an env object, an object with an
+`.address`, or a bare address string. The container reaches that address over the host network,
+drives the env for the given `seeds` (or `max_episodes`), reports the run, and exits. Nothing stays
+running.
+
+### Served endpoint
+
+As a context manager, `SandboxModel` serves the policy as a long-lived model endpoint instead. It
+exposes `.address` and `.container_id`, has `.shutdown()`, and stops the container on exit:
+
+```python
+with SandboxModel(SmolVLA) as model:
+    print(model.address)  # the container serves the policy at this model endpoint
+```
+
+`model.address` is a _model_ endpoint, not an env address, so don't pass it to
+`Model(...).run(...)`, which dials its argument as an env.
+
+Serving suits a spec-less or `DELEGATED` model. A model with a `ModelSpec` resolves its adapter from
+an env contract, which a served endpoint does not yet receive on dial-in, so evaluate a spec'd model
+with `run(env)` instead.
 
 ## spec: None, DELEGATED, or a ModelSpec
 
