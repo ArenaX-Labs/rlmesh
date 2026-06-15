@@ -261,6 +261,26 @@ RlmeshStatus rlmesh_model_new(const RlmeshModelVtable* vtable, void* user_data, 
 RlmeshStatus rlmesh_model_run_local(RlmeshModel* model, const char* env_address);
 RlmeshStatus rlmesh_model_run_local_for_episodes(RlmeshModel* model, const char* env_address,
                                                  uint64_t max_episodes);
+
+/* Serve options for rlmesh_model_serve. Pass NULL for all defaults (no auth, no
+ * remote shutdown, no timeouts — serves until the process is killed). A 0 timeout
+ * / concurrency means "unset". */
+typedef struct RlmeshServeOptions {
+  const char* token;          /* NULL/"" disables auth */
+  bool allow_remote_shutdown; /* honor a client-issued shutdown request */
+  uint64_t idle_timeout_ms;   /* 0 = never idle-shutdown */
+  uint64_t drain_timeout_ms;  /* 0 = unset */
+  uint64_t close_timeout_ms;  /* 0 = unset */
+  size_t predict_concurrency; /* 0 = default */
+} RlmeshServeOptions;
+
+/* Serve the model as a ModelService endpoint at `bind_address` (tcp://host:port
+ * or unix:///path). Blocking — returns when the server stops (a remote shutdown
+ * request or an idle timeout). The same vtable backs every predict, exactly as
+ * rlmesh_model_run_local. `options` may be NULL for defaults. */
+RlmeshStatus rlmesh_model_serve(RlmeshModel* model, const char* bind_address,
+                                const RlmeshServeOptions* options);
+
 void rlmesh_model_free(RlmeshModel* model);
 
 #ifdef __cplusplus

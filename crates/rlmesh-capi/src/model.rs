@@ -8,12 +8,13 @@
 #![allow(unsafe_code)] // FFI: raw callback pointers + repr(C) structs.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh::spaces::BinaryPayload;
 use rlmesh::{
-    ConnectAddress, Error, ModelEpisodeEnd, ModelHandler, ModelLaneReset, ModelObservation,
-    ModelWorker, RunLocalOptions,
+    BindAddress, ConnectAddress, Error, ModelEpisodeEnd, ModelHandler, ModelLaneReset,
+    ModelObservation, ModelWorker, RunLocalOptions, ServeModelOptions, ServeOptions,
 };
 
 use crate::abi::status::{
@@ -408,6 +409,83 @@ fn run_local(
     })
 }
 
+/// Serve options for `rlmesh_model_serve`. A NULL pointer means all defaults (no
+/// auth, no remote shutdown, no timeouts — serves until the process is killed). A
+/// 0 timeout / concurrency means "unset".
+#[repr(C)]
+pub struct RlmeshServeOptions {
+    /// Bearer token required on requests; NULL or "" disables auth.
+    pub token: *const c_char,
+    /// Honor a client-issued shutdown request.
+    pub allow_remote_shutdown: bool,
+    /// Shut down after this many ms with no activity (0 = never).
+    pub idle_timeout_ms: u64,
+    /// Grace period for in-flight requests on shutdown (0 = unset).
+    pub drain_timeout_ms: u64,
+    /// Deadline for the handler's close hook (0 = unset).
+    pub close_timeout_ms: u64,
+    /// Max concurrent predicts (0 = default).
+    pub predict_concurrency: usize,
+}
+
+fn serve_model_options(
+    bind: BindAddress,
+    options: *const RlmeshServeOptions,
+) -> Result<ServeModelOptions, CapiError> {
+    let mut model_options = ServeModelOptions::new(bind);
+    let Some(options) = (unsafe { options.as_ref() }) else {
+        return Ok(model_options);
+    };
+    if !options.token.is_null() {
+        model_options = model_options.token(cstr_to_str(options.token)?);
+    }
+    let ms = |value: u64| (value != 0).then(|| Duration::from_millis(value));
+    model_options = model_options.serve_options(ServeOptions {
+        allow_remote_shutdown: options.allow_remote_shutdown,
+        idle_timeout: ms(options.idle_timeout_ms),
+        drain_timeout: ms(options.drain_timeout_ms),
+        close_timeout: ms(options.close_timeout_ms),
+        predict_concurrency: (options.predict_concurrency != 0)
+            .then_some(options.predict_concurrency),
+        ..ServeOptions::default()
+    });
+    Ok(model_options)
+}
+
+/// Serve the model as a `ModelService` endpoint at `bind_address` (e.g.
+/// `tcp://127.0.0.1:50051` or `unix:///path.sock`). Blocking — returns when the
+/// server stops (a remote shutdown request or an idle timeout). The same vtable
+/// backs every predict, exactly as `rlmesh_model_run_local`. `options` may be
+/// NULL for defaults.
+///
+/// # Safety
+/// `model` must be a live handle; `bind_address` a valid C string; `options` NULL
+/// or a valid `RlmeshServeOptions`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_model_serve(
+    model: *mut RlmeshModel,
+    bind_address: *const c_char,
+    options: *const RlmeshServeOptions,
+) -> RlmeshStatus {
+    guard(|| {
+        let model =
+            unsafe { model.as_ref() }.ok_or_else(|| CapiError::invalid_arg("null model"))?;
+        let address = cstr_to_str(bind_address)?;
+        let bind = BindAddress::parse(address)
+            .map_err(|err| CapiError::invalid_arg(format!("invalid bind address: {err}")))?;
+        let model_options = serve_model_options(bind, options)?;
+        let handler = CModelHandler {
+            vtable: model.vtable,
+            user_data: model.user_data,
+        };
+        model
+            .runtime
+            .block_on(async move { ModelWorker::new(handler).serve_async(model_options).await })
+            .map_err(CapiError::from)?;
+        Ok(())
+    })
+}
+
 /// Free a model handle.
 ///
 /// # Safety
@@ -491,5 +569,66 @@ mod tests {
         assert!(read.on_lane_reset.is_some());
         assert!(read.on_episode_end.is_some());
         assert!(read.on_close.is_some());
+    }
+
+    #[test]
+    fn model_serve_binds_handshakes_and_remote_shuts_down() {
+        // Reserve a free port, then hand it to the blocking serve on its own
+        // thread; the real ModelClient drives the handshake + remote shutdown that
+        // run_local never exercises.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("reserve port")
+            .local_addr()
+            .expect("local addr")
+            .port();
+        let address = format!("tcp://127.0.0.1:{port}");
+
+        let vtable = full_vtable();
+        let mut model: *mut RlmeshModel = std::ptr::null_mut();
+        assert_eq!(
+            unsafe { rlmesh_model_new(&vtable, std::ptr::null_mut(), &mut model) },
+            RlmeshStatus::Ok
+        );
+        let bind = CString::new(address.clone()).expect("bind cstr");
+        let options = RlmeshServeOptions {
+            token: std::ptr::null(),
+            allow_remote_shutdown: true,
+            idle_timeout_ms: 0,
+            drain_timeout_ms: 0,
+            close_timeout_ms: 0,
+            predict_concurrency: 0,
+        };
+
+        struct ServeArgs {
+            model: *mut RlmeshModel,
+            bind: *const c_char,
+            options: *const RlmeshServeOptions,
+        }
+        // SAFETY: the test joins the serve thread before dropping model/bind/options.
+        unsafe impl Send for ServeArgs {}
+        let args = ServeArgs {
+            model,
+            bind: bind.as_ptr(),
+            options: std::ptr::from_ref(&options),
+        };
+        let server = std::thread::spawn(move || {
+            let args = args;
+            unsafe { rlmesh_model_serve(args.model, args.bind, args.options) }
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("client runtime");
+        runtime.block_on(async {
+            let connect = rlmesh_grpc::ConnectOptions::with_deadline(Duration::from_secs(5))
+                .backoff(Duration::from_millis(10));
+            let mut client = rlmesh_grpc::ModelClient::connect_with_retry(&address, "", &connect)
+                .await
+                .expect("client connects to the C-served model");
+            client.handshake().await.expect("handshake");
+            let shutdown = client.shutdown("test complete").await.expect("shutdown");
+            assert!(shutdown.accepted, "server honored remote shutdown");
+        });
+
+        assert_eq!(server.join().expect("serve thread"), RlmeshStatus::Ok);
+        unsafe { rlmesh_model_free(model) };
     }
 }
