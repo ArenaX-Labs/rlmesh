@@ -36,7 +36,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.1.0b2"
+version = "0.1.0b3"
 role = "core"
 publish = true
 
@@ -45,7 +45,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -54,7 +54,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -63,7 +63,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -72,7 +72,7 @@ id = "cargo:rlmesh-grpc"
 ecosystem = "cargo"
 name = "rlmesh-grpc"
 manifest = "crates/rlmesh-grpc/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -81,7 +81,7 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -90,7 +90,7 @@ id = "cargo:rlmesh-runtime"
 ecosystem = "cargo"
 name = "rlmesh-runtime"
 manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -99,7 +99,7 @@ id = "cargo:rlmesh-sandbox"
 ecosystem = "cargo"
 name = "rlmesh-sandbox"
 manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true
 
@@ -108,6 +108,6 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 role = "core"
 publish = true

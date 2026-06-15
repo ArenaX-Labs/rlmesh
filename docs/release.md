@@ -18,8 +18,8 @@ Review the compatibility policy before changing stable APIs, protocol fields, or
 
 Confirm the version spellings:
 
-- Rust crates: `0.1.0-beta.2`
-- Python package: `0.1.0b2`
+- Rust crates: `0.1.0-beta.3`
+- Python package: `0.1.0b3`
 
 Confirm the release policy manifest:
 

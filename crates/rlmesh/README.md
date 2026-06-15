@@ -10,7 +10,7 @@ instead.
 
 ```toml
 [dependencies]
-rlmesh = "0.1.0-beta.2"
+rlmesh = "0.1.0-beta.3"
 ```
 
 ## What It Provides
@@ -35,7 +35,7 @@ The boundary is language-neutral, so the same server also accepts the Python cli
 
 ## Status
 
-This crate is part of the `0.1.0-beta.2` release line. The public Rust API is supported for beta
+This crate is part of the `0.1.0-beta.3` release line. The public Rust API is supported for beta
 users and may still change before a stable release.
 
 ## Links

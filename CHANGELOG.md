@@ -3,21 +3,28 @@
 All notable RLMesh changes are tracked here. Entries are generated from conventional commit messages
 with `mise run changelog:build`.
 
-## Unreleased
+## 0.1.0-beta.3 - 2026-06-15
 
 ### Added
 
-- **Breaking:** proto: Negotiate workflow editions in handshake
-- **Breaking:** handshake: Negotiate workflow editions across servers and clients
+- **Breaking:** spaces: DLPack-native Tensor with zero-copy framework backends (#3)
+- **Breaking:** handshake: Negotiated workflow editions, edition spec docs, and generated changelog
+  (#2)
+- **Breaking:** beta: Harden RLMesh APIs, spaces, and transport (#5)
+- recipes: Three-phase environment Recipe system (#8)
+- **Breaking:** vector-lifecycle: Per-lane NEXT_STEP autoreset contract for vector environments (#7)
+- adapters: Tag-driven IO adapters — env tags × model specs resolved at runtime (#9)
+- models: Add ModelRecipe authoring and containerized model eval (#11)
 
 ### Fixed
 
 - grpc: Keep tracing spans across awaits and demote per-step logs
 - cli: Align CLI tagline with README positioning
+- Allow to build again
 
-### Documentation
+### Changed
 
-- editions: Add workflow edition model and 2026.06 spec
+- Final workspace cleanup with workflow-edition and handshake hardening (#10)
 
 ## 0.1.0-beta.2 - 2026-06-08
 

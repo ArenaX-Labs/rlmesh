@@ -78,7 +78,7 @@ fetched in-container through the rlmesh cache instead.
 
 Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `python/rlmesh/dist`
 into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as
-`rlmesh==0.1.0b2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
+`rlmesh==0.1.0b3`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ```{warning}
 During the beta, the container and your host must run the same rlmesh build: beta editions are

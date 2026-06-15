@@ -1228,7 +1228,7 @@ wheels = [
 
 [[package]]
 name = "rlmesh"
-version = "0.1.0b2"
+version = "0.1.0b3"
 source = { editable = "python/rlmesh" }
 
 [package.optional-dependencies]
@@ -1301,7 +1301,7 @@ source = { editable = "tools/rlmesh_system_fixtures" }
 
 [[package]]
 name = "rlmesh-workspace"
-version = "0.1.0b2"
+version = "0.1.0b3"
 source = { virtual = "." }
 dependencies = [
     { name = "rlmesh" },

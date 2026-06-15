@@ -8,7 +8,7 @@ inspection plus internal viewer plumbing used by the Python package.
 ## Installation
 
 ```bash
-cargo install rlmesh-cli --version 0.1.0-beta.2
+cargo install rlmesh-cli --version 0.1.0-beta.3
 ```
 
 ## Commands

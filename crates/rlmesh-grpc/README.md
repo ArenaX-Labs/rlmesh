@@ -9,7 +9,7 @@ integrating at the transport layer or need direct access to the gRPC environment
 
 ```toml
 [dependencies]
-rlmesh-grpc = "0.1.0-beta.2"
+rlmesh-grpc = "0.1.0-beta.3"
 ```
 
 ## Status

@@ -9,7 +9,7 @@ work directly with the runtime layer that coordinates evaluation sessions.
 
 ```toml
 [dependencies]
-rlmesh-runtime = "0.1.0-beta.2"
+rlmesh-runtime = "0.1.0-beta.3"
 ```
 
 ## Status

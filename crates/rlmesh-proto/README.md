@@ -9,7 +9,7 @@ message and service types for protocol-level integration.
 
 ```toml
 [dependencies]
-rlmesh-proto = "0.1.0-beta.2"
+rlmesh-proto = "0.1.0-beta.3"
 ```
 
 ## Build Requirements
