@@ -3,6 +3,7 @@
 //! thread (the thread-local last-error slot is the final hop only).
 
 mod abi;
+mod adapters;
 mod codec;
 mod model;
 mod spaces;

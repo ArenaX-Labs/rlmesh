@@ -3059,8 +3059,10 @@ version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
  "rlmesh",
+ "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-spaces",
+ "serde_json",
  "tokio",
 ]
 

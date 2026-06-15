@@ -179,6 +179,32 @@ RlmeshStatus rlmesh_encode_batch(const RlmeshValue* const* values, size_t n,
 
 void rlmesh_values_free(RlmeshValue** values, size_t n);
 
+/* ---- adapters (experimental) -------------------------------------------- */
+
+/* Resolve the env's tags (env_tags_json; see rlmesh_contract_adapter_tags_json)
+ * against this model's spec (model_spec_json) into an opaque plan. Specs are the
+ * frozen v1 JSON wire format; observation/action_space are borrowed contract
+ * spaces, not retained. trust_entrypoints allows custom-input entrypoint strings
+ * (the C caller vets them). On RLMESH_OK *out_plan owns a plan; free it with
+ * rlmesh_adapter_plan_free. Per-step apply is not yet exposed. */
+typedef struct RlmeshAdapterPlan RlmeshAdapterPlan;
+
+RlmeshStatus rlmesh_adapter_resolve(const char* env_tags_json,
+                                    const RlmeshSpaceSpec* observation_space,
+                                    const RlmeshSpaceSpec* action_space,
+                                    const char* model_spec_json, bool trust_entrypoints,
+                                    RlmeshAdapterPlan** out_plan);
+void rlmesh_adapter_plan_free(RlmeshAdapterPlan* plan);
+/* Human-readable summary (UTF-8) into out; free with rlmesh_bytes_free. */
+RlmeshStatus rlmesh_adapter_plan_describe(const RlmeshAdapterPlan* plan, RlmeshBytes* out);
+/* Top-level observation keys the plan reads, as a JSON array of strings into
+ * out; free with rlmesh_bytes_free. */
+RlmeshStatus rlmesh_adapter_plan_referenced_obs_keys(const RlmeshAdapterPlan* plan,
+                                                     RlmeshBytes* out);
+/* The env's EnvTags as JSON into out (ready for rlmesh_adapter_resolve); free
+ * with rlmesh_bytes_free. Empty buffer (RLMESH_OK) when the env is untagged. */
+RlmeshStatus rlmesh_contract_adapter_tags_json(const RlmeshContract* contract, RlmeshBytes* out);
+
 /* ---- model -------------------------------------------------------------- */
 
 typedef struct RlmeshRouteSlot {

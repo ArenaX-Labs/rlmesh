@@ -15,7 +15,7 @@ pub struct RlmeshContract(pub(crate) EnvContract);
 impl RlmeshContract {
     /// # Safety
     /// `ptr` must be NULL or a valid `*const RlmeshContract` outliving `'a`.
-    unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a EnvContract> {
+    pub(crate) unsafe fn as_ref<'a>(ptr: *const Self) -> Option<&'a EnvContract> {
         unsafe { ptr.cast::<EnvContract>().as_ref() }
     }
 }
@@ -62,7 +62,7 @@ fn space_ptr(
     })
 }
 
-fn spec_ref<'a>(spec: *const RlmeshSpaceSpec) -> Option<&'a SpaceSpec> {
+pub(crate) fn spec_ref<'a>(spec: *const RlmeshSpaceSpec) -> Option<&'a SpaceSpec> {
     unsafe { spec.cast::<SpaceSpec>().as_ref() }
 }
 
