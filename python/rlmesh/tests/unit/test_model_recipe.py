@@ -101,6 +101,35 @@ def _inline_spec() -> ModelSpec:
 InlinePolicy.spec = _inline_spec()
 
 
+class _ActionCustomPolicy(ModelRecipe):
+    """A spec with an action-side CustomEncoding -- local-only, like InlinePolicy."""
+
+    name = "policy/action-custom"
+
+    def load(self) -> None: ...
+
+    def predict(self, observation: Any) -> Any:
+        return observation
+
+
+def _action_custom_spec() -> ModelSpec:
+    from rlmesh.adapters import ACTION_DELTA_ROT, CustomEncoding
+
+    return ModelSpec(
+        inputs=(ImageInput("image", role=IMAGE_PRIMARY, size=8),),
+        action=ActionLayout(
+            ActionComponent(
+                ACTION_DELTA_ROT,
+                dim=6,
+                encoding=CustomEncoding(base="rot6d", to_base=lambda v: v),
+            ),
+        ),
+    )
+
+
+_ActionCustomPolicy.spec = _action_custom_spec()
+
+
 class _Contract:
     def __init__(
         self, metadata: dict[str, Any] | None = None, num_envs: int = 1
@@ -198,6 +227,13 @@ def test_recipe_inputs_require_authored_recipe() -> None:
 def test_local_only_spec_rejected_at_projection() -> None:
     with pytest.raises(RecipeValidationError, match="local-only"):
         InlinePolicy.to_recipe()
+
+
+def test_local_only_action_encoding_rejected_at_projection() -> None:
+    # The local-only gate must also walk the action layout, not just inputs: an
+    # action-side in-process CustomEncoding cannot cross the wire either.
+    with pytest.raises(RecipeValidationError, match="action role"):
+        _ActionCustomPolicy.to_recipe()
 
 
 # ── construction (load populates self; the instance IS the policy) ───────────

@@ -13,12 +13,12 @@ defining a subclass must start with ``from __future__ import annotations``.
 
 from __future__ import annotations
 
-import inspect
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar
 
 from .._artifacts import ArtifactConsumer, enter_recipe_context, merged_inputs
 from .._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
+from ._common import instantiate, require_importable_name
 
 if TYPE_CHECKING:
     from rlmesh.adapters import ModelSpec
@@ -32,6 +32,12 @@ __all__ = [
 ]
 
 _LOAD = "_rlmesh_load"
+
+#: Where per-construction parameters belong (named in the no-arg __init__ error).
+_PARAM_HINT = (
+    "Put construction parameters in load(self) (weights ride ArtifactInput), "
+    "not __init__."
+)
 
 
 class _Delegated:
@@ -132,30 +138,13 @@ class ModelRecipe(ArtifactConsumer):
         ``__main__`` or a local scope), or if the ``spec`` is local-only (it carries
         an ``InlineCustomInput`` or ``CustomEncoding``).
         """
-        name = cls.__dict__.get("name")
-        if not isinstance(name, str) or not name:
-            inherited = getattr(cls, "name", None)
-            hint = (
-                f" (it would otherwise inherit {inherited!r})"
-                if isinstance(inherited, str) and inherited
-                else ""
-            )
-            raise RecipeValidationError(
-                f'{cls.__qualname__} must declare its own `name = "namespace/name"`{hint}'
-            )
-        module = cls.__module__
-        qualname = cls.__qualname__
-        if module == "__main__" or "<locals>" in qualname:
-            raise RecipeValidationError(
-                f"ModelRecipe {name!r} is defined in {module}:{qualname}, which the "
-                "container cannot import; define it in an installed module"
-            )
+        name = require_importable_name(cls, kind="ModelRecipe")
         spec = cls.spec
         adapter: ModelSpec | None = None
         if spec is not None and spec is not DELEGATED:
             _reject_local_only_spec(spec)
             adapter = spec
-        entrypoint = f"{module}:{qualname}.{_LOAD}"
+        entrypoint = f"{cls.__module__}:{cls.__qualname__}.{_LOAD}"
         return Recipe(
             name=name,
             kind="model",
@@ -193,6 +182,13 @@ def _reject_local_only_spec(spec: ModelSpec) -> None:
                 "local-only; use a native-vocabulary RotationEncoding for a "
                 "sandboxed model"
             )
+    for component in spec.action.components:
+        if isinstance(component.encoding, CustomEncoding):
+            raise RecipeValidationError(
+                f"ModelSpec action role {component.role!r} uses a CustomEncoding, "
+                "which is local-only; use a native-vocabulary RotationEncoding for "
+                "a sandboxed model"
+            )
 
 
 def is_model_recipe(source: object) -> TypeGuard[type[ModelRecipe]]:
@@ -212,27 +208,6 @@ def as_authored_model_recipe(source: object) -> Recipe | None:
 _M = TypeVar("_M", bound="ModelRecipe")
 
 
-def _instantiate(cls: type[_M]) -> _M:
-    """Construct ``cls()`` with a recipe-aware error if it requires constructor args."""
-    try:
-        signature = inspect.signature(cls)
-    except (TypeError, ValueError):
-        return cls()
-    required = [
-        name
-        for name, p in signature.parameters.items()
-        if p.default is p.empty
-        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
-    ]
-    if required:
-        raise TypeError(
-            f"{cls.__qualname__} is instantiated with no arguments, but its __init__ "
-            f"requires {required}. Put construction parameters in load(self) "
-            "(weights ride ArtifactInput), not __init__."
-        )
-    return cls()
-
-
 def construct_authored_model(
     cls: type[_M],
     *,
@@ -243,13 +218,16 @@ def construct_authored_model(
     """Construct a ``ModelRecipe`` in-process (or in-container) and return the policy.
 
     Applies ``setup``, resolves the declared ``inputs`` mounts, instantiates, runs
-    ``load()``. ``load_kwargs`` lets one recipe serve several construction-time
-    configurations (e.g. a GR00T ``embodiment_tag``) without a per-variant recipe.
+    ``load()``. ``load_kwargs`` forwards construction-time keywords to ``load()`` on
+    the in-process ``Model`` path only -- ``to_recipe()`` does not bake them and the
+    container entrypoint (:meth:`ModelRecipe._rlmesh_load`) runs with none. For a
+    sandboxed or registered model, select a variant via ``setup.env`` (member params,
+    which cross the wire) or a per-variant recipe, not ``load_kwargs``.
     """
     from .._construct import apply_setup
 
     apply_setup(cls.setup)
-    instance = _instantiate(cls)
+    instance = instantiate(cls, param_hint=_PARAM_HINT)
     instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)  # pyright: ignore[reportPrivateUsage]
     instance._rlmesh_in_container = in_container  # pyright: ignore[reportPrivateUsage]
     with enter_recipe_context(instance):

@@ -19,11 +19,11 @@ that machine. **Every module defining an ``EnvRecipe`` subclass must start with*
 
 from __future__ import annotations
 
-import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
 
 from .._artifacts import ArtifactConsumer, enter_recipe_context, merged_inputs
-from .._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
+from .._schema import Build, PyMake, Recipe, Setup
+from ._common import instantiate, require_importable_name
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike
@@ -32,6 +32,12 @@ __all__ = ["EnvRecipe", "as_authored_recipe", "construct_authored", "is_env_reci
 
 #: The classmethod the projected entrypoint resolves to; runs the lifecycle.
 _CONSTRUCT = "_rlmesh_construct"
+
+#: Where per-construction parameters belong (named in the no-arg __init__ error).
+_PARAM_HINT = (
+    "Put per-construction parameters in make(self, **kwargs) (baked into the "
+    "recipe), not __init__."
+)
 
 
 class EnvRecipe(ArtifactConsumer):
@@ -113,7 +119,7 @@ class EnvRecipe(ArtifactConsumer):
         and ``rlmesh.recipes.build`` publishes them (the single forward path), so
         applying them here too would double-tag.
         """
-        instance = _instantiate(cls)
+        instance = instantiate(cls, param_hint=_PARAM_HINT)
         instance._rlmesh_inputs = merged_inputs(cls.inputs, ())  # pyright: ignore[reportPrivateUsage]
         instance._rlmesh_in_container = True  # pyright: ignore[reportPrivateUsage]
         instance.prepare()
@@ -128,27 +134,8 @@ class EnvRecipe(ArtifactConsumer):
         string. Raises if the class is not importable by that path (defined in
         ``__main__`` or a local scope), because the container must import it.
         """
-        # Require the name on the concrete class, not inherited -- otherwise a
-        # no-name subclass would silently project under its parent's identity.
-        name = cls.__dict__.get("name")
-        if not isinstance(name, str) or not name:
-            inherited = getattr(cls, "name", None)
-            hint = (
-                f" (it would otherwise inherit {inherited!r})"
-                if isinstance(inherited, str) and inherited
-                else ""
-            )
-            raise RecipeValidationError(
-                f'{cls.__qualname__} must declare its own `name = "namespace/name"`{hint}'
-            )
-        module = cls.__module__
-        qualname = cls.__qualname__
-        if module == "__main__" or "<locals>" in qualname:
-            raise RecipeValidationError(
-                f"EnvRecipe {name!r} is defined in {module}:{qualname}, which the "
-                "container cannot import; define it in an installed module"
-            )
-        entrypoint = f"{module}:{qualname}.{_CONSTRUCT}"
+        name = require_importable_name(cls, kind="EnvRecipe")
+        entrypoint = f"{cls.__module__}:{cls.__qualname__}.{_CONSTRUCT}"
         return Recipe(
             name=name,
             make=PyMake(entrypoint=entrypoint, kwargs=make_kwargs),
@@ -185,32 +172,6 @@ def as_authored_recipe(source: object) -> Recipe | None:
     return None
 
 
-def _instantiate(cls: type[EnvRecipe]) -> EnvRecipe:
-    """Construct ``cls()`` with a recipe-aware error if it requires constructor args.
-
-    The lifecycle always instantiates with no arguments, so a required-arg ``__init__``
-    fails with a confusing native ``TypeError``; per-construction parameters belong in
-    ``make(self, **kwargs)``, not ``__init__``.
-    """
-    try:
-        signature = inspect.signature(cls)
-    except (TypeError, ValueError):
-        return cls()  # un-introspectable: let cls() raise on its own terms
-    required = [
-        name
-        for name, p in signature.parameters.items()
-        if p.default is p.empty
-        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
-    ]
-    if required:
-        raise TypeError(
-            f"{cls.__qualname__} is instantiated with no arguments, but its __init__ "
-            f"requires {required}. Put per-construction parameters in "
-            "make(self, **kwargs) (baked into the recipe), not __init__."
-        )
-    return cls()
-
-
 def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     """Construct an ``EnvRecipe`` IN-PROCESS, without re-importing by entrypoint.
 
@@ -224,7 +185,7 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
     from .._construct import apply_setup
 
     apply_setup(cls.setup)
-    instance = _instantiate(cls)
+    instance = instantiate(cls, param_hint=_PARAM_HINT)
     instance._rlmesh_inputs = merged_inputs(cls.inputs, ())  # pyright: ignore[reportPrivateUsage]
     instance._rlmesh_in_container = False  # pyright: ignore[reportPrivateUsage]
     instance.prepare()
