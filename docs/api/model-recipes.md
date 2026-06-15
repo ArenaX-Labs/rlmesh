@@ -47,6 +47,8 @@ returns these typed results.
 
 Weights are a runtime mount, never baked into the image. Declare an `ArtifactInput`, resolve its
 path inside `load()` with `self.input_path(name)`, and load a Hugging Face policy with `hf_load`.
+Resolving an `hf://` uri (or calling `hf_load` without `local_dir`) on the host needs the
+`rlmesh[hf]` extra; in a sandbox it is already present.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.ArtifactInput

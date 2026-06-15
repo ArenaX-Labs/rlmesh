@@ -147,6 +147,30 @@ class LiberoObject(rlmesh.EnvRecipe):
 The class must live in an importable module, not a `__main__` script, because the container imports
 the factory by reference.
 
+## Mount a runtime asset
+
+A large asset (a scene/USD pack, a dataset, a teacher checkpoint) is a runtime mount, never baked
+into the image — the env-side twin of a {doc}`model recipe <model-recipes>`'s weights. Declare an
+`ArtifactInput` on `inputs`, then resolve its local path inside `make()`/`prepare()` with
+`self.input_path(name)`:
+
+```python
+from rlmesh.recipes import ArtifactInput
+
+
+class Scene(rlmesh.EnvRecipe):
+    name = "robot/scene"
+    inputs = (ArtifactInput("scene", "/assets/scene", uri="hf://org/scene@<sha>"),)
+
+    def make(self, **kwargs):
+        import robot_env
+        return robot_env.from_assets(self.input_path("scene"))
+```
+
+A `uri="hf://org/repo@sha"` resolves through the rlmesh cache (`pip install --pre "rlmesh[hf]"` on
+the host); `local_dir=` bind-mounts a host directory into the sandbox at the input's target path.
+Only the authored class form carries `inputs` — a gym/hf source env has no `input_path`.
+
 ## Share one build across tasks
 
 Declare a heavy build once as a base recipe; each task references it with `from_recipe`. Every task

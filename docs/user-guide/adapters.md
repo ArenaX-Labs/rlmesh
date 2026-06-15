@@ -185,7 +185,7 @@ local first.
 
 ```python
 OVERRIDES: dict[tuple[str, str], Callable[[], adapt.AdapterBase]] = {
-    ("xvla", "bridge"): XVLABridgeAdapter,
+    ("xvla", "simpler-bridge"): XVLABridgeAdapter,
 }
 
 def build_adapter(model_name, env_name, ...):

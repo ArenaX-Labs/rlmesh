@@ -172,13 +172,10 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
 
 @final
 class Model(ModelBase[JaxValue, JaxValue]):
-    """Experimental JAX-backed model worker.
+    """Experimental JAX-backed model: ``predict`` works in JAX values.
 
-    Args:
-        predict_fn: Callable that maps one observation to one action.
-        on_reset: Optional callback invoked when the environment resets.
-        on_episode_end: Optional callback invoked when an episode ends.
-        on_close: Optional callback invoked when the model worker closes.
+    The JAX-typed :class:`~rlmesh.model.ModelBase`; see it for the source/spec
+    construction and ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge

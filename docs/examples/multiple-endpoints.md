@@ -40,18 +40,23 @@ uv run python examples/python/quickstart/serve.py --address 127.0.0.1:5556
 endpoint:
 
 ```python
-from rlmesh.numpy import RemoteEnv
-
 def evaluate(address: str, max_steps: int) -> str:
+    from rlmesh.numpy import RemoteEnv
+
     env = RemoteEnv(address)
     try:
+        lines = [f"{address}: connected"]
         obs, info = env.reset(seed=0)
         for step in range(1, max_steps + 1):
             action = env.action_space.sample()
             obs, reward, term, trunc, info = env.step(action)
+            lines.append(f"{address}: step={step} reward={reward:.3f}")
             if term or trunc:
+                lines.append(f"{address}: episode complete")
                 break
-        return f"{address}: done"
+        else:
+            lines.append(f"{address}: stopped after {max_steps} steps")
+        return "\n".join(lines)
     finally:
         env.close()
 ```

@@ -69,6 +69,9 @@ its path inside `load()` with `self.input_path(name)`. A `uri="hf://org/repo@sha
 the rlmesh artifact cache; `local_dir=` points at a host directory instead. `hf_load` loads the
 policy from that path.
 
+Resolving an `hf://` uri on the host needs the optional extra: `pip install --pre "rlmesh[hf]"`. In
+a `SandboxModel` the container fetches it, so the host doesn't need the extra.
+
 ## Register
 
 The class form stores the projected recipe and keeps the live class:

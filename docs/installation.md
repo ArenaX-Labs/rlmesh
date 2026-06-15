@@ -18,10 +18,13 @@ pip install --pre rlmesh
 pip install --pre "rlmesh[numpy]"
 pip install --pre "rlmesh[gymnasium]"
 pip install --pre "rlmesh[torch]"
+pip install --pre "rlmesh[hf]"
 ```
 
-Use `gymnasium` when serving a Gymnasium environment. Use `torch` only when you want client-side
-values decoded as Torch tensors.
+Use `gymnasium` when serving a Gymnasium environment (or `gym` for a legacy classic-Gym stack). Use
+`torch` only when you want client-side values decoded as Torch tensors. Use `hf` for host-side,
+container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container
+fetches them for you.
 
 ## Repository Examples
 

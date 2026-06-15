@@ -1,8 +1,8 @@
 # Core Exports
 
 The top-level `rlmesh` package exports `EnvServer`, `RemoteEnv`, `RemoteVectorEnv`, `Model`,
-`ServeOptions`, `Tensor`, `make`, `register`, `EnvRecipe`, `Recipe`, `recipes`, `spaces`, and
-`types`.
+`ServeOptions`, `Tensor`, `make`, `register`, `EnvRecipe`, `ModelRecipe`, `Recipe`, `recipes`,
+`models`, `export`, `ExportResult`, `spaces`, and `types`.
 
 The top-level client and model classes are dependency-free wrappers around RLMesh-native values. For
 most user code, prefer the backend-specific modules when you want decoded NumPy arrays or Torch
@@ -19,8 +19,12 @@ tensors.
 | `rlmesh.make`            | Construct an environment from a name, `Recipe`, `EnvRecipe`, or gym id. |
 | `rlmesh.register`        | Register a recipe (or the flat `gym=`/`factory=` sugar) by name.        |
 | `rlmesh.EnvRecipe`       | Base class for class-style environment authoring.                       |
+| `rlmesh.ModelRecipe`     | Base class for class-style model (policy) authoring (experimental).     |
 | `rlmesh.Recipe`          | The inert recipe document your authoring lowers to.                     |
 | `rlmesh.recipes`         | Environment recipes, the registry, and migration helpers.               |
+| `rlmesh.models`          | Model recipes, the eval loop, and the model registry (experimental).    |
+| `rlmesh.export`          | Build a sandbox image and return without starting a container.          |
+| `rlmesh.ExportResult`    | Result of `export`: the content-addressed image and optional alias.     |
 | `rlmesh.spaces`          | Space wrappers and Gymnasium conversion helpers.                        |
 | `rlmesh.types`           | Structural protocols and value aliases.                                 |
 
@@ -31,3 +35,4 @@ The detailed pages below describe the shared behavior:
 - {doc}`models`
 - {doc}`contracts`
 - {doc}`env-recipes`
+- {doc}`model-recipes`

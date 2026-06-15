@@ -17,11 +17,13 @@ Structured builds assume a Debian/Ubuntu base and `apt`. For another distro, use
 ## Authoring: `EnvRecipe`
 
 Subclass `EnvRecipe` to co-locate the build/setup data and the factory. It projects to an inert
-`Recipe` and is exported at the top level as `rlmesh.EnvRecipe`.
+`Recipe` and is exported at the top level as `rlmesh.EnvRecipe`. Like a {doc}`model recipe
+<model-recipes>`, it can declare runtime `inputs` (`ArtifactInput` asset mounts, documented there)
+and resolve them inside `make()`/`prepare()` with `self.input_path(name)`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.EnvRecipe
-   :members: make, prepare, to_recipe, check
+   :members: make, prepare, input_path, to_recipe, check
    :show-inheritance:
 ```
 
