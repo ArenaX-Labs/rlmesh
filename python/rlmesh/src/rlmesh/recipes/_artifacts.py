@@ -90,10 +90,8 @@ def _env_key(name: str) -> str:
 def _materialized_path_from_env(name: str) -> str | None:
     """An already-materialized path for input ``name`` from the run contract, if set.
 
-    Managed's sidecar materializes each input out-of-container and exports its path
-    here; honoring it means an OSS self-describing image run under managed reads the
-    sidecar's bytes instead of re-fetching (and tripping ``HF_HUB_OFFLINE``). The
-    canonical name is kind-neutral so model and env inputs share it; the
+    Managed's sidecar materializes inputs out-of-container and exports the path here,
+    so an OSS image run under managed reads those bytes instead of re-fetching. The
     ``RLMESH_MODEL_*`` forms are back-compat aliases for what managed emits today.
     """
     key = _env_key(name)

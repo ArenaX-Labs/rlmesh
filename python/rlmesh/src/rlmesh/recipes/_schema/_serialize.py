@@ -23,7 +23,6 @@ from ._definitions import (
     PyMake,
     RecipeKind,
     RecipeValidationError,
-    RuntimeReserved,
     Setup,
 )
 
@@ -91,11 +90,6 @@ def artifact_from_dict(value: object) -> ArtifactInput:
         include=str_list(data.get("include")),
         required=expect_bool(data.get("required"), "ArtifactInput.required", True),
     )
-
-
-def runtime_to_dict(runtime: RuntimeReserved) -> dict[str, object] | None:
-    """The reserved-features struct serializes to ``None`` when inert."""
-    return runtime.to_dict()
 
 
 def make_to_dict(make: Make | None) -> dict[str, object] | None:

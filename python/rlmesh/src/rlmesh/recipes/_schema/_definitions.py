@@ -70,13 +70,10 @@ _GIT_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
 _SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 _URL: Final = re.compile(r"^https?://[^\s'\"\\]+$")
 _POSIX_PATH: Final = re.compile(r"^[A-Za-z0-9._/\-]+$")
-# A relative path glob for ProjectInstall.include: like a POSIX path but also
-# permits the only wildcards the Rust include matcher implements -- '*' and '**'.
-# '..' rides on the '.' already in the charset (the renderer enforces the
-# context_root boundary). The other glob metacharacters ('?', '[', ']', '{', '}')
-# are deliberately *rejected*: the matcher treats them as literals, so an entry
-# like 'file?.json' would pass check() then silently match nothing. Shell
-# metacharacters, whitespace, and a leading '/' are excluded too.
+# A relative path glob for ProjectInstall.include: a POSIX path plus the only
+# wildcards the Rust include matcher implements -- '*' and '**'. The matcher treats
+# '?'/'['/']'/'{'/'}' as literals, so rejecting them here keeps a 'file?.json' entry
+# from passing check() then silently matching nothing.
 _INCLUDE_GLOB: Final = re.compile(r"^[A-Za-z0-9._/\-*]+$")
 _ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # The name half of "namespace/name"; '@' is reserved for @variant addressing.
@@ -111,18 +108,7 @@ def _check_apt_name(value: str, field_name: str) -> None:
 
 
 def _check_include_glob(value: str, field_name: str) -> None:
-    """Validate a ProjectInstall.include glob entry (spec 7.1; staged by the deriver).
-
-    Each entry is a glob relative to the project root that may use ``..`` to reach
-    siblings (e.g. ``../assets/**``); the Rust deriver enforces the context_root
-    boundary at staging time. The only supported wildcards are ``*`` and ``**`` --
-    the Rust include matcher implements just those and treats ``?``/``[``/``]``/
-    ``{``/``}`` as *literals*, so those metacharacters are rejected here rather than
-    let an entry pass check() and then silently match nothing. The load-bearing
-    checks are: non-empty, no absolute path (leading ``/``), and only path/``*``
-    tokens -- no other glob metacharacters, shell metacharacters, whitespace, or
-    control characters.
-    """
+    """Validate a ProjectInstall.include glob: non-empty, relative, path/``*`` tokens only."""
     if not value:
         raise RecipeValidationError(f"{field_name} entry must be non-empty")
     if value[0] == "/":
@@ -515,15 +501,9 @@ class Build:
         )
         object.__setattr__(self, "env", _clean_str_map(self.env, "Build.env"))
 
-        # The verbatim-Dockerfile trapdoor is mutually exclusive with
-        # every field that only affects the *derived* Dockerfile. The Rust deriver's
-        # verbatim trapdoor emits the body as-is and IGNORES the resolved base_image
-        # and installer, so base/installer/env/pythonpath/run_as would be silently
-        # dropped just like the structured build steps -- pairing dockerfile with
-        # base=... would even build a different FROM than the hash/wheel-compat were
-        # computed against. ``gpu`` is the lone exception: it independently drives
-        # the runtime --gpus flag, so a verbatim Dockerfile legitimately pairs with
-        # gpu=True.
+        # A verbatim dockerfile is emitted as-is: every field that only feeds the
+        # *derived* Dockerfile is silently dropped, so reject the combination. ``gpu``
+        # is exempt -- it drives the runtime --gpus flag independently.
         if self.dockerfile is not None:
             _require_str(self.dockerfile, "Build.dockerfile")
             structured = (
@@ -859,7 +839,7 @@ class Recipe:
             "recipe_version": self.recipe_version,
             "kind": self.kind,
             "inputs": [artifact_to_dict(a) for a in self.inputs],
-            "runtime": runtime_to_dict(self.runtime),
+            "runtime": self.runtime.to_dict(),
         }
 
     def to_json(self) -> str:
@@ -899,11 +879,6 @@ class Recipe:
         return cls.from_dict(require_map(loaded, "recipe JSON"))
 
 
-# Surface every dataclass field name for tooling/conformance cross-checks without
-# importing dataclasses at call sites.
-RECIPE_FIELD_NAMES: Final = tuple(f.name for f in fields(Recipe))
-
-
 # Imported at module bottom (after the dataclasses) to break the
 # definitions<->serialize cycle: serialize imports these dataclasses at its top.
 from ._serialize import (  # noqa: E402
@@ -923,7 +898,6 @@ from ._serialize import (  # noqa: E402
     opt_str,
     recipe_kind_from,
     require_map,
-    runtime_to_dict,
     setup_from_dict,
     setup_to_dict,
     str_list,
