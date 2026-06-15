@@ -173,32 +173,25 @@ def test_build_base_and_from_recipe_mutually_exclusive() -> None:
         Build(base="img", from_recipe="other/recipe")
 
 
-def test_build_dockerfile_excludes_structured_fields() -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        # structured installer fields (verbatim trapdoor ignores them)
+        {"pip": [PipInstall(packages=["a"])]},
+        # derived-Dockerfile-only fields would be silently dropped
+        {"env": {"K": "V"}},
+        {"run_as": 1000},
+        {"pythonpath": ["/x"]},
+        # resolved base/installer would diverge from the hashed FROM
+        {"base": "cuda@sha256:abc"},
+        {"installer": "uv"},
+    ],
+)
+def test_build_dockerfile_excludes_other_fields(field: dict[str, object]) -> None:
     with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", pip=[PipInstall(packages=["a"])])
+        Build(dockerfile="FROM x\n", **field)
     # dockerfile alone is fine
     assert Build(dockerfile="FROM x\n").dockerfile == "FROM x\n"
-
-
-def test_build_dockerfile_excludes_derived_only_fields() -> None:
-    # env/pythonpath/run_as only affect the *derived* Dockerfile, which the verbatim
-    # trapdoor bypasses -- so pairing them with dockerfile would silently drop them.
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", env={"K": "V"})
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", run_as=1000)
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", pythonpath=["/x"])
-
-
-def test_build_dockerfile_excludes_base_and_installer() -> None:
-    # The verbatim trapdoor emits the body as-is and ignores the resolved base_image
-    # and installer, so pairing dockerfile with base= builds a different FROM than the
-    # hash was computed against, and installer="uv" is silently dropped.
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", base="cuda@sha256:abc")
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", installer="uv")
 
 
 def test_build_dockerfile_permits_gpu() -> None:
