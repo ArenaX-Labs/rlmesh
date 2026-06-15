@@ -4,6 +4,7 @@ import sys
 import textwrap
 from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import rlmesh
@@ -336,7 +337,7 @@ def test_rejects_envrecipe_instance(authored_module: str) -> None:
 
 @pytest.mark.parametrize("kwargs", [{"num_envs": 4}, {"vectorization_mode": "async"}])
 def test_make_envrecipe_rejects_vectorization(
-    authored_module: str, kwargs: dict[str, object]
+    authored_module: str, kwargs: dict[str, Any]
 ) -> None:
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="num_envs"):

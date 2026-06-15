@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from rlmesh.recipes import (
     Build,
@@ -187,7 +189,7 @@ def test_build_base_and_from_recipe_mutually_exclusive() -> None:
         {"installer": "uv"},
     ],
 )
-def test_build_dockerfile_excludes_other_fields(field: dict[str, object]) -> None:
+def test_build_dockerfile_excludes_other_fields(field: dict[str, Any]) -> None:
     with pytest.raises(RecipeValidationError, match="mutually exclusive"):
         Build(dockerfile="FROM x\n", **field)
     # dockerfile alone is fine
