@@ -7,8 +7,8 @@
 A recipe is an inert, JSON-serializable description of how to construct an environment, with three
 phases: `make` (the factory), `build` (the image), and `setup` (construct-time data). See
 {doc}`../user-guide/env-recipes` for a task-oriented guide. The inert `Recipe` form and the shared
-`Build`/`Setup` phases documented here are the same ones a {doc}`model recipe <model-recipes>` lowers
-to.
+`Build`/`Setup` phases documented here are the same ones a {doc}`model recipe <model-recipes>`
+lowers to.
 
 ```{note}
 Structured builds assume a Debian/Ubuntu base and `apt`. For another distro, use `build.dockerfile`.

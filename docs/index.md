@@ -38,8 +38,8 @@ Use that boundary to:
 - run a model against an environment without merging their dependency stacks;
 - run multiple environment endpoints at the same time;
 - reuse existing Gymnasium registrations, wrappers, and environment objects with small changes;
-- name an environment's construction as a {doc}`recipe <user-guide/env-recipes>` and rebuild it the same
-  way locally or in a sandbox.
+- name an environment's construction as a {doc}`recipe <user-guide/env-recipes>` and rebuild it the
+  same way locally or in a sandbox.
 
 RLMesh has two surfaces, split by protocol. The framework is this repository. It speaks the gRPC
 runtime contract, so you author and run environments and models in Python or Rust, on one machine or

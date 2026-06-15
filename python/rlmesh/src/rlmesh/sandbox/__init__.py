@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._export import ExportResult, _resolve_recipe_source, export
+from ._export import ExportResult, export
 from .env import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .session import (
     RemoteEnvHandle,
@@ -18,6 +18,5 @@ __all__ = [
     "SandboxInfo",
     "SandboxSessionBase",
     "SandboxVectorEnvBase",
-    "_resolve_recipe_source",
     "export",
 ]

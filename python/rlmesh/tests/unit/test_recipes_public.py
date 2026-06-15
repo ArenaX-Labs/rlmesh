@@ -83,7 +83,7 @@ def test_bootstrap_recipe_dispatch_builds_env() -> None:
 
 
 def test_resolve_recipe_source_for_registered_name() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import _resolve_recipe_source
 
     recipes.register(Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1")))
     display, recipe_json, provenance, context_root, _ = _resolve_recipe_source(
@@ -95,7 +95,7 @@ def test_resolve_recipe_source_for_registered_name() -> None:
 
 
 def test_resolve_recipe_source_for_literal_recipe() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import _resolve_recipe_source
 
     recipe = Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1"))
     display, recipe_json, provenance, _, _ = _resolve_recipe_source(recipe)
@@ -107,7 +107,7 @@ def test_resolve_recipe_source_for_literal_recipe() -> None:
 
 
 def test_resolve_recipe_source_passes_through_gym_id() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import _resolve_recipe_source
 
     assert _resolve_recipe_source("CartPole-v1") == (
         "CartPole-v1",
@@ -119,7 +119,7 @@ def test_resolve_recipe_source_passes_through_gym_id() -> None:
 
 
 def test_resolve_recipe_source_defaults_context_root_for_project() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import _resolve_recipe_source
 
     recipe = Recipe(
         name="acme/env",

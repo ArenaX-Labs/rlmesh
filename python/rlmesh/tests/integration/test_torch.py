@@ -132,7 +132,6 @@ def test_torch_bridge_decode_is_owned_writable_copy() -> None:
     VLA normalize idiom) must not write through into the shared wire buffer."""
     pytest.importorskip("torch")
     import torch
-
     from rlmesh import Tensor
     from rlmesh.torch import _torch_bridge
 

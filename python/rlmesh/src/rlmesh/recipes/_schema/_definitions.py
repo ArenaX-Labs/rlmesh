@@ -744,16 +744,16 @@ class RuntimeReserved:
                 f"RuntimeReserved.determinism invalid: {determinism!r}"
             )
         return cls(
-            chunk_size=_opt_int(data.get("chunk_size"), "RuntimeReserved.chunk_size"),
-            execute_horizon=_opt_int(
+            chunk_size=opt_int(data.get("chunk_size"), "RuntimeReserved.chunk_size"),
+            execute_horizon=opt_int(
                 data.get("execute_horizon"), "RuntimeReserved.execute_horizon"
             ),
             loop_mode=loop_mode,
             batching=batching,
-            max_batch=_opt_int(data.get("max_batch"), "RuntimeReserved.max_batch"),
+            max_batch=opt_int(data.get("max_batch"), "RuntimeReserved.max_batch"),
             determinism=determinism,
-            perturbation=_opt_map(data.get("perturbation")),
-            lane_affinity=_opt_bool(
+            perturbation=opt_map(data.get("perturbation")),
+            lane_affinity=opt_bool(
                 data.get("lane_affinity"), "RuntimeReserved.lane_affinity"
             ),
         )
@@ -847,19 +847,19 @@ class Recipe:
 
     def to_dict(self) -> dict[str, object]:
         """Return the canonical JSON-shaped mapping for this recipe."""
-        adapter = _adapter_to_dict(self.adapter)
+        adapter = adapter_to_dict(self.adapter)
         return {
             "name": self.name,
-            "make": _make_to_dict(self.make),
-            "build": _build_to_dict(self.build),
-            "setup": _setup_to_dict(self.setup),
+            "make": make_to_dict(self.make),
+            "build": build_to_dict(self.build),
+            "setup": setup_to_dict(self.setup),
             "requires": {"imports": list(self.requires.imports)},
             "summary": self.summary,
             "adapter": adapter,
             "recipe_version": self.recipe_version,
             "kind": self.kind,
-            "inputs": [_artifact_to_dict(a) for a in self.inputs],
-            "runtime": _runtime_to_dict(self.runtime),
+            "inputs": [artifact_to_dict(a) for a in self.inputs],
+            "runtime": runtime_to_dict(self.runtime),
         }
 
     def to_json(self) -> str:
@@ -875,19 +875,19 @@ class Recipe:
     def from_dict(cls, payload: Mapping[str, object]) -> Recipe:
         """Build a recipe from a canonical JSON-shaped mapping (executes nothing)."""
         return cls(
-            name=_expect_str(payload.get("name"), "name"),
-            make=_make_from_dict(payload.get("make")),
-            build=_build_from_dict(payload.get("build")),
-            setup=_setup_from_dict(payload.get("setup")),
-            requires=Requires(imports=_str_list(_get(payload, "requires", "imports"))),
-            summary=_opt_str(payload.get("summary"), "summary"),
-            adapter=_opt_map(payload.get("adapter")),
-            recipe_version=_expect_int(
+            name=expect_str(payload.get("name"), "name"),
+            make=make_from_dict(payload.get("make")),
+            build=build_from_dict(payload.get("build")),
+            setup=setup_from_dict(payload.get("setup")),
+            requires=Requires(imports=str_list(get(payload, "requires", "imports"))),
+            summary=opt_str(payload.get("summary"), "summary"),
+            adapter=opt_map(payload.get("adapter")),
+            recipe_version=expect_int(
                 payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
             ),
-            kind=_recipe_kind_from(payload.get("kind")),
-            inputs=_artifact_list(payload.get("inputs")),
-            runtime=RuntimeReserved.from_dict(_opt_map(payload.get("runtime"))),
+            kind=recipe_kind_from(payload.get("kind")),
+            inputs=artifact_list(payload.get("inputs")),
+            runtime=RuntimeReserved.from_dict(opt_map(payload.get("runtime"))),
         )
 
     @classmethod
@@ -896,7 +896,7 @@ class Recipe:
         import json
 
         loaded: object = json.loads(payload)
-        return cls.from_dict(_require_map(loaded, "recipe JSON"))
+        return cls.from_dict(require_map(loaded, "recipe JSON"))
 
 
 # Surface every dataclass field name for tooling/conformance cross-checks without
@@ -907,24 +907,24 @@ RECIPE_FIELD_NAMES: Final = tuple(f.name for f in fields(Recipe))
 # Imported at module bottom (after the dataclasses) to break the
 # definitions<->serialize cycle: serialize imports these dataclasses at its top.
 from ._serialize import (  # noqa: E402
-    _adapter_to_dict,
-    _artifact_list,
-    _artifact_to_dict,
-    _build_from_dict,
-    _build_to_dict,
-    _expect_int,
-    _expect_str,
-    _get,
-    _make_from_dict,
-    _make_to_dict,
-    _opt_bool,
-    _opt_int,
-    _opt_map,
-    _opt_str,
-    _recipe_kind_from,
-    _require_map,
-    _runtime_to_dict,
-    _setup_from_dict,
-    _setup_to_dict,
-    _str_list,
+    adapter_to_dict,
+    artifact_list,
+    artifact_to_dict,
+    build_from_dict,
+    build_to_dict,
+    expect_int,
+    expect_str,
+    get,
+    make_from_dict,
+    make_to_dict,
+    opt_bool,
+    opt_int,
+    opt_map,
+    opt_str,
+    recipe_kind_from,
+    require_map,
+    runtime_to_dict,
+    setup_from_dict,
+    setup_to_dict,
+    str_list,
 )

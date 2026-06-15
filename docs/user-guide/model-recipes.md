@@ -39,8 +39,8 @@ episode) and `close()` are optional. `build` shares the phase-1 vocabulary with 
 
 Your heavy imports live inside `load()`, so the types named in a method's annotations aren't in
 scope when the class is defined. Add `from __future__ import annotations` at the top of the module
-to keep annotations as strings instead of evaluating them. A signature like `def predict(self, obs)
--> torch.Tensor:` then defines fine, even though `torch` is imported later.
+to keep annotations as strings instead of evaluating them. A signature like
+`def predict(self, obs) -> torch.Tensor:` then defines fine, even though `torch` is imported later.
 
 ## Run it
 

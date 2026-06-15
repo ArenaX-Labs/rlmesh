@@ -21,7 +21,6 @@ from ._schema import RecipeValidationError
 
 if TYPE_CHECKING:
     from ._schema import ArtifactInput
-    from .authoring.model import ModelRecipe
 
 __all__ = [
     "cache_root",

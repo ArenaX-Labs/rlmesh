@@ -142,7 +142,7 @@ def _assets_env(local_dir: str, captured: dict[str, str]) -> type[rlmesh.EnvReci
 
 
 def test_env_recipe_host_input_path_resolves_local_dir(tmp_path: Path) -> None:
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     captured: dict[str, str] = {}
     _ = construct_authored(_assets_env(str(tmp_path), captured))
@@ -159,7 +159,7 @@ def test_env_sandbox_inputs_flow_to_mounts(tmp_path: Path) -> None:
     # 1.5b: an env recipe's local_dir inputs reach the sandbox as bind-mounts.
     from rlmesh.recipes import PyMake, Recipe
     from rlmesh.recipes._artifacts import local_dir_mounts
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import _resolve_recipe_source
 
     rec = Recipe(
         name="t/assets-sandbox",
