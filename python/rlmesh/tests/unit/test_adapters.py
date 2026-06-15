@@ -1367,9 +1367,10 @@ def test_io_adapter_is_stateful_only_with_frame_history() -> None:
     assert stateful.is_stateful is True
 
 
-def test_stateful_adapter_rejected_on_vector_env() -> None:
-    # The runtime now permits num_envs>1, but a stateful adapter has no per-lane
-    # buffer axis yet, so it must fail loud rather than bleed frames across lanes.
+def test_vector_env_rejected_by_single_env_eval_loop() -> None:
+    # The per-episode eval loop reads scalar reward/termination, so it rejects any
+    # vector env (num_envs>1) up front instead of crashing on array truthiness deep
+    # in the step loop -- regardless of whether the adapter is stateful.
     from rlmesh.numpy import Model
 
     env = image_env(4, 4)
@@ -1379,7 +1380,7 @@ def test_stateful_adapter_rejected_on_vector_env() -> None:
         action_space=env.action_space,
         num_envs=2,
     )
-    # A steppable env-like object; adapter resolution fails before any step.
+    # A steppable env-like object; the vector env is rejected before any step.
     fake_env: Any = SimpleNamespace(
         env_contract=contract,
         reset=lambda **_kw: ({}, {}),
@@ -1396,7 +1397,7 @@ def test_stateful_adapter_rejected_on_vector_env() -> None:
             action=SMOLVLA.action,
         ),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="vector env"):
+    with pytest.raises(ValueError, match="num_envs=2"):
         model.run(fake_env, max_episodes=1)
 
 

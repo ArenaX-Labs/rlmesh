@@ -68,25 +68,26 @@ def test_backend_models_wire_their_own_remote_env() -> None:
 
 
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
+    from typing import Any, cast
+
     from rlmesh.models._eval import _reject_vector_env
 
     class FourEnvs:
         num_envs = 4
 
     with pytest.raises(ValueError, match="num_envs=4"):
-        _reject_vector_env(FourEnvs())
+        _reject_vector_env(cast(Any, FourEnvs()))
 
     class OneEnv:
         num_envs = 1
 
-    _reject_vector_env(OneEnv())  # single env is fine
+    _reject_vector_env(cast(Any, OneEnv()))  # single env is fine
     _reject_vector_env(None)  # an env with no contract is fine
 
 
 def test_to_framework_rekeys_adapter_numpy_payload() -> None:
     torch = pytest.importorskip("torch")
     import numpy as np
-
     from rlmesh.models._eval import _to_framework, _to_numpy
     from rlmesh.numpy import _numpy_bridge
     from rlmesh.torch import _torch_bridge

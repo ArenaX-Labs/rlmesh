@@ -120,8 +120,15 @@ def evaluate(
             seed = seeds[i] if seeds is not None and i < len(seeds) else None
             episodes.append(
                 _run_episode(
-                    client, predict, adapter, on_reset, i, seed, instruction,
-                    text_keys, bridge,
+                    client,
+                    predict,
+                    adapter,
+                    on_reset,
+                    i,
+                    seed,
+                    instruction,
+                    text_keys,
+                    bridge,
                 )
             )
             if on_episode_end is not None:
@@ -241,7 +248,7 @@ def _to_framework(payload: Any, bridge: ValueBridge | None) -> Any:
     receive its own value type. A numpy model already matches, so skip the
     round-trip; otherwise go numpy -> Value -> framework.
     """
-    from ..numpy import _numpy_bridge
+    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
 
     if bridge is None or bridge is _numpy_bridge:
         return payload
@@ -249,9 +256,8 @@ def _to_framework(payload: Any, bridge: ValueBridge | None) -> Any:
 
 
 def _to_numpy(action: Any, bridge: ValueBridge | None) -> Any:
-    """Inverse of :func:`_to_framework` for the action the model returns, so the
-    numpy-based adapter ``transform_action`` receives numpy regardless of backend."""
-    from ..numpy import _numpy_bridge
+    """Convert the model's action back to numpy for the adapter (inverse of above)."""
+    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
 
     if bridge is None or bridge is _numpy_bridge:
         return action

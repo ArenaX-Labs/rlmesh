@@ -680,8 +680,7 @@ class RuntimeReserved:
     lane_affinity: bool | None = None
 
     def __post_init__(self) -> None:
-        """Eagerly validate every field so a constructed instance always round-trips
-        (the same constraints ``from_dict`` enforces), then clean perturbation."""
+        """Validate every field eagerly so a constructed instance always round-trips."""
         for name, allowed in (
             ("loop_mode", ("step", "chunk", "receding", "open_loop")),
             ("batching", ("off", "utilization", "fusion")),
@@ -689,7 +688,9 @@ class RuntimeReserved:
         ):
             value = getattr(self, name)
             if value is not None and value not in allowed:
-                raise RecipeValidationError(f"RuntimeReserved.{name} invalid: {value!r}")
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} invalid: {value!r}"
+                )
         for name in ("chunk_size", "execute_horizon", "max_batch"):
             value = getattr(self, name)
             if value is not None and (
@@ -698,11 +699,12 @@ class RuntimeReserved:
                 raise RecipeValidationError(
                     f"RuntimeReserved.{name} must be an integer, got {value!r}"
                 )
-        if self.lane_affinity is not None and not isinstance(self.lane_affinity, bool):
-            raise RecipeValidationError(
-                f"RuntimeReserved.lane_affinity must be a boolean, "
-                f"got {self.lane_affinity!r}"
-            )
+        for name in ("lane_affinity",):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} must be a boolean, got {value!r}"
+                )
         if self.perturbation is not None:
             object.__setattr__(
                 self,
