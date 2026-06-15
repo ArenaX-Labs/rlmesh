@@ -3055,7 +3055,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-capi"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
  "rlmesh",
@@ -3116,6 +3116,7 @@ name = "rlmesh-python"
 version = "0.1.0-beta.3"
 dependencies = [
  "async-trait",
+ "half",
  "image",
  "pyo3",
  "pyo3-build-config",
