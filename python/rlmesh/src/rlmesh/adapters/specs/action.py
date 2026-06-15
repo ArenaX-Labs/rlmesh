@@ -25,7 +25,9 @@ class ActionComponent:
             boundary -- typically paired with ``binary`` so the snap splits at
             ``threshold`` instead of zero.
         binary: Whether the component encodes a binary decision (resolved
-            adapters snap the value to ``sign`` after range mapping).
+            adapters snap the value to a definite side after range mapping:
+            ``>= 0`` opens (``+1``), below closes (``-1``); a value exactly on the
+            boundary opens rather than emitting an undefined ``0``).
 
     ``scale``, ``invert``, and ``threshold`` are env-side corrections: they
     declare the env actuator's convention and are applied to the incoming model

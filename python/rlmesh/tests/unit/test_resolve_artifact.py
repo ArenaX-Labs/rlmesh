@@ -177,7 +177,9 @@ def test_resolve_uri_handles_file_netloc_forms() -> None:
 
     assert _resolve_uri("file:///abs/path") == "/abs/path"
     assert _resolve_uri("file://localhost/abs/path") == "/abs/path"
-    assert _resolve_uri("file:///path%20with%20spaces") == "/path with spaces"
+    # A '#'/'?' is a legal path char on the host and must survive (urlparse would
+    # truncate it into a fragment/query).
+    assert _resolve_uri("file:///data/run#2/ckpt") == "/data/run#2/ckpt"
     with pytest.raises(NotImplementedError):
         _resolve_uri("file://remotehost/path")
 

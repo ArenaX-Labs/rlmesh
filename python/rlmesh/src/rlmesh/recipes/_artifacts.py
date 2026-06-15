@@ -248,17 +248,19 @@ def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | No
 
 def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
     if uri.startswith("file://"):
-        from urllib.parse import unquote, urlparse
-
-        # Parse properly rather than stripping the prefix: file:///p and
-        # file://localhost/p both name the local path /p, and %20-style escapes
-        # decode. A real remote host is not a local file.
-        parsed = urlparse(uri)
-        if parsed.netloc and parsed.netloc != "localhost":
-            raise NotImplementedError(
-                f"file:// uri with a remote host is not resolvable locally: {uri!r}"
-            )
-        return unquote(parsed.path)
+        rest = uri[len("file://") :]
+        # file:///p has an empty netloc (the leading "/" is the path); otherwise
+        # the segment up to the first "/" is the host. Split the netloc off by
+        # hand rather than urlparse, which would also swallow a legal '#'/'?' in
+        # the path into its fragment/query.
+        if not rest.startswith("/"):
+            netloc, slash, tail = rest.partition("/")
+            if netloc and netloc != "localhost":
+                raise NotImplementedError(
+                    f"file:// uri with a remote host is not resolvable locally: {uri!r}"
+                )
+            rest = slash + tail
+        return rest
     if uri.startswith(_HF_SCHEME):
         repo, _, revision = uri[len(_HF_SCHEME) :].partition("@")
         return _snapshot_hf(

@@ -117,9 +117,11 @@ def main(
             from rlmesh.numpy import RemoteEnv
 
             # `os.environ.get(key, default)` returns "" (not the default) when the
-            # var is set but empty, and int("") raises; `or` falls back cleanly.
+            # var is set but empty, and int("") raises; `or` falls back cleanly. The
+            # trailing `or [0, 1]` keeps an all-separator value (",") from yielding
+            # zero seeds, which would silently run zero episodes.
             raw_seeds = os.environ.get("RLMESH_SEEDS") or "0,1"
-            seeds = [int(s) for s in raw_seeds.split(",") if s.strip()]
+            seeds = [int(s) for s in raw_seeds.split(",") if s.strip()] or [0, 1]
             result = server.run(RemoteEnv(drive_address), seeds=seeds)
             print(
                 "RLMESH_RUN_RESULT "
