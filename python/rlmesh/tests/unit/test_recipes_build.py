@@ -173,10 +173,10 @@ def test_build_py_recipe_rejects_true_vector_request(py_factory_module: str) -> 
         build(recipe, num_envs=4)
 
 
-def test_build_recipe_with_annotations_degrades_without_adapters(
+def test_build_recipe_with_adapter_degrades_without_adapters(
     py_factory_module: str,
 ) -> None:
-    # rlmesh.adapters does not exist in this branch yet; a recipe with annotations
+    # rlmesh.adapters does not exist in this branch yet; a recipe with an adapter
     # must still construct (publishing is skipped with a single warning).
     import importlib.util
 
@@ -186,7 +186,7 @@ def test_build_recipe_with_annotations_degrades_without_adapters(
     recipe = Recipe(
         name="acme/factory",
         make=PyMake(entrypoint=f"{py_factory_module}:make_env"),
-        annotations={"observation": {"kind": "box"}},
+        adapter={"observation": {"kind": "box"}},
     )
     with pytest.warns(RuntimeWarning, match="rlmesh.adapters is not available"):
         env = build(recipe)
@@ -230,7 +230,7 @@ def test_build_gym_recipe_falls_back_to_legacy_gym(
     first = _FakeGymModule("gymnasium", succeeds=False)
     second = _FakeGymModule("gym", succeeds=True)
     monkeypatch.setattr(
-        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+        "rlmesh.recipes._construct.import_gym_modules", lambda: [first, second]
     )
     recipe = Recipe(name="legacy/only", make=GymMake(env_id="LegacyOnly-v0"))
     env = build(recipe)
@@ -244,7 +244,7 @@ def test_build_gym_recipe_raises_aggregated_when_all_fail(
     first = _FakeGymModule("gymnasium", succeeds=False)
     second = _FakeGymModule("gym", succeeds=False)
     monkeypatch.setattr(
-        "rlmesh.recipes._build.import_gym_modules", lambda: [first, second]
+        "rlmesh.recipes._construct.import_gym_modules", lambda: [first, second]
     )
     recipe = Recipe(name="legacy/only", make=GymMake(env_id="Nowhere-v0"))
     with pytest.raises(RuntimeError, match="failed to create gym environment"):

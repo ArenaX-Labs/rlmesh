@@ -5,15 +5,14 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
-from ._frameworks import FrameworkBridge
+from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .model import ModelBase
+from .models.base import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_bridge_from_value_bridge
+from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -172,16 +171,16 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
 
 @final
 class Model(ModelBase[JaxValue, JaxValue]):
-    """Experimental JAX-backed model worker.
+    """Experimental JAX-backed model: ``predict`` works in JAX values.
 
-    Args:
-        predict_fn: Callable that maps one observation to one action.
-        on_reset: Optional callback invoked when the environment resets.
-        on_episode_end: Optional callback invoked when an episode ends.
-        on_close: Optional callback invoked when the model worker closes.
+    The JAX-typed :class:`~rlmesh.model.ModelBase`; see it for the source/spec
+    construction and ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    # Without this, run(address) falls back to the numpy RemoteEnv and decodes
+    # observations as ndarrays instead of JAX arrays.
+    _remote_env_cls = RemoteEnv
 
 
 @final
@@ -235,6 +234,7 @@ __all__ = [
     "SandboxInfo",
     "SandboxVectorEnv",
     "asarray",
+    "ensure_available",
     "from_array",
     "space_from_spec",
 ]

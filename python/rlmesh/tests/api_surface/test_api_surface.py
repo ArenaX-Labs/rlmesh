@@ -7,14 +7,22 @@ def test_root_namespace_is_small() -> None:
     assert rlmesh.__all__ == [
         "EnvRecipe",
         "EnvServer",
+        "ExportResult",
         "Model",
+        "ModelRecipe",
         "Recipe",
         "RemoteEnv",
         "RemoteVectorEnv",
+        "SandboxEnv",
+        "SandboxModel",
+        "SandboxVectorEnv",
         "ServeOptions",
         "Tensor",
         "__version__",
+        "adapters",
+        "export",
         "make",
+        "models",
         "recipes",
         "register",
         "serving",
@@ -35,8 +43,6 @@ def test_root_namespace_is_small() -> None:
         "EnvLike",
         "VectorEnvLike",
         "SpaceLike",
-        "SandboxEnv",
-        "SandboxVectorEnv",
     ):
         assert not hasattr(rlmesh, name)
 
@@ -87,8 +93,10 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxInfo",
+        "SandboxModel",
         "SandboxVectorEnv",
         "asarray",
+        "ensure_available",
         "from_array",
         "space_from_spec",
     ]
@@ -104,6 +112,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "SandboxVectorEnv",
         "TorchValue",
         "as_tensor",
+        "ensure_available",
         "from_tensor",
         "space_from_spec",
     ]

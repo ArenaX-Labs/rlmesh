@@ -67,6 +67,6 @@
     "imports": []
   },
   "summary": "LIBERO object suite, task 0",
-  "annotations": null,
+  "adapter": null,
   "recipe_version": 1
 }

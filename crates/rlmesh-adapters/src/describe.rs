@@ -58,6 +58,15 @@ fn describe_segment(segment: &ActionSegment) -> String {
             quoted_range(dst_range)
         );
     }
+    if let Some(scale) = segment.scale {
+        let _ = write!(note, " (*{scale})");
+    }
+    if segment.invert {
+        note.push_str(" (invert)");
+    }
+    if let Some(threshold) = segment.threshold {
+        let _ = write!(note, " (-{threshold})");
+    }
     if segment.binarize {
         note.push_str(" (sign)");
     }

@@ -1,4 +1,4 @@
-"""Generalized env-to-model IO adapters (experimental).
+"""Generalized env-to-model adapters (experimental).
 
 Instead of writing one bespoke adapter per environment/model pair,
 environments *tag* their observation and action spaces once with
@@ -8,7 +8,7 @@ preprocessing/postprocessing for any pair by matching semantic roles::
 
     env tags ──┐                              ┌── model spec
     (roles +   │   resolve() matches by role  │   (full payload +
-     a few     ├──────────────► IOAdapter ◄───┤    action layout)
+     a few     ├───────────────► Adapter ◄────┤    action layout)
      facts)    │   widths/dtypes from spaces  │
     obs/action │                              │
       spaces ──┘                              └── transform_obs / transform_action
@@ -54,7 +54,7 @@ This package requires NumPy (install ``rlmesh[numpy]``). Encoded image
 bytes (PNG/JPEG) in observations are decoded natively -- no Pillow.
 """
 
-from .adapter import AdapterBase, IOAdapter
+from .adapter import Adapter, AdapterBase
 from .constants import (
     ACTION_DELTA_POS,
     ACTION_DELTA_POS_2,
@@ -77,8 +77,7 @@ from .constants import (
     JOINT_VEL,
     MODEL_METADATA_KEY,
 )
-from .errors import AdapterResolutionError
-from .resolver import resolve, resolve_from_contract
+from .resolver import AdapterResolutionError, resolve, resolve_from_contract
 from .specs import (
     ROTATION_DIMS,
     ActionComponent,
@@ -131,12 +130,12 @@ __all__ = [
     "ROTATION_DIMS",
     "ActionComponent",
     "ActionLayout",
+    "Adapter",
     "AdapterBase",
     "AdapterResolutionError",
     "CustomEncoding",
     "EntrypointCustomInput",
     "EnvTags",
-    "IOAdapter",
     "ImageInput",
     "ImageLayout",
     "ImageTag",

@@ -7,12 +7,15 @@ and copyable.
 
 Some envs (MetaWorld, many MuJoCo tasks) return a flat state array and expose the camera image only
 through `env.render()` -- the image is not in the observation. A recipe fixes this in one place:
-`make()` returns the env already wrapped with Gymnasium's `AddRenderObservation`, and `build` pins
-the render backend (`MUJOCO_GL`) so off-screen rendering works in the container.
+`make()` returns the env already wrapped with Gymnasium's `AddRenderObservation`, and `build` pins a
+headless render backend (`MUJOCO_GL=osmesa` plus its system libs) so off-screen rendering works in
+the container with no GPU or display.
 
-- [`metaworld_reach.py`](metaworld_reach.py): the recipe. An `EnvRecipe` in an importable module (so
-  the factory can travel by reference into the container), auto-registered with `@rlmesh.register`
-  so it resolves by name.
+- [`metaworld_reach.py`](metaworld_reach.py): the recipe. An `EnvRecipe` in an importable module,
+  registered with `@rlmesh.register` so it resolves by name. The factory crosses into the container
+  by reference (`metaworld_reach:MetaworldReach...`), so its source has to travel with it.
+  `build.project=ProjectInstall(src=".")` and the sibling `pyproject.toml` stage this folder into
+  the image; the container imports the module from there.
 - [`render_into_obs.py`](render_into_obs.py): validates the recipe dependency-free (`check()` runs
   without importing MetaWorld -- authoring != running) and demonstrates the render→obs mechanic on a
   tiny stub env. **Runs with no MetaWorld and no Docker:**
@@ -30,13 +33,6 @@ the render backend (`MUJOCO_GL`) so off-screen rendering works in the container.
   ```bash
   uv run python examples/python/recipes/serve_metaworld.py
   ```
-
-## Author IsaacSim where IsaacSim can't be imported
-
-[`isaacsim_franka.py`](isaacsim_franka.py) is the headline _authoring != running_ case: a GPU recipe
-you can write on a Mac where `import isaaclab` fails. The recipe never imports it — the heavy
-imports live inside `make()`/`prepare()`, which only run in the built container. It also shows a
-`prepare()` construct-time hook (launch the headless simulator) and "vectorize inside the factory."
 
 ## A tour of weirder situations
 

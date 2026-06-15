@@ -15,11 +15,11 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
-from ._authoring import EnvRecipe, construct_authored, is_env_recipe
-from ._build import build
+from ._construct import build
 from ._gym_sugar import gym_sugar_to_recipe
 from ._registry import RecipeNotFoundError, resolve
 from ._schema import Recipe
+from .authoring.env import EnvRecipe, construct_authored, is_env_recipe
 
 if TYPE_CHECKING:
     from rlmesh.server import EnvLike

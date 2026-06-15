@@ -73,6 +73,9 @@ jobs:
       - name: System harness tests
         run: mise run --skip-tools test:system:harness
 
+      - name: Docs build
+        run: mise run --skip-tools docs:build
+
       - name: Minimize uv cache
         if: always()
         run: uv cache prune --ci

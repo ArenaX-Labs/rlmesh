@@ -1,4 +1,4 @@
-"""The model-side IO spec: expected input payload plus the action output."""
+"""The model-side spec: expected input payload plus the action output."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from .action import ActionLayout
 from .action_serialization import action_layout_from_dict, action_layout_to_dict
 from .model_inputs import ModelInput
 from .model_serialization import model_input_from_dict, model_input_to_dict
-from .serialization import (
+from .validation import (
     load_json_mapping,
     require_mapping,
     require_sequence,

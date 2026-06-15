@@ -146,52 +146,57 @@ def test_recipe_to_sandbox_args_flattens_multiple_pip_steps() -> None:
     assert recipe_to_sandbox_args(recipe).packages == ("a", "b", "c")
 
 
-def test_recipe_to_sandbox_args_rejects_non_gym() -> None:
-    recipe = Recipe(name="a/py", make=HfMake(repo="org/env"))
-    with pytest.raises(UnsupportedRecipeError, match="non-gym"):
-        recipe_to_sandbox_args(recipe)
-
-
-def test_recipe_to_sandbox_args_rejects_structured_build() -> None:
-    recipe = Recipe(
-        name="a/heavy",
-        make=GymMake(env_id="E-v0"),
-        build=Build(
-            system=["cmake"],
-            fetch=[
-                Fetch(kind="git", repo="https://x/r.git", ref="a" * 40, dest="/opt/r")
-            ],
-            project=ProjectInstall(),
-            gpu=True,
+@pytest.mark.parametrize(
+    ("recipe", "match"),
+    [
+        (Recipe(name="a/py", make=HfMake(repo="org/env")), "non-gym"),
+        (
+            Recipe(
+                name="a/heavy",
+                make=GymMake(env_id="E-v0"),
+                build=Build(
+                    system=["cmake"],
+                    fetch=[
+                        Fetch(
+                            kind="git",
+                            repo="https://x/r.git",
+                            ref="a" * 40,
+                            dest="/opt/r",
+                        )
+                    ],
+                    project=ProjectInstall(),
+                    gpu=True,
+                ),
+            ),
+            "build deriver",
         ),
-    )
-    with pytest.raises(UnsupportedRecipeError, match="build deriver"):
-        recipe_to_sandbox_args(recipe)
-
-
-def test_recipe_to_sandbox_args_rejects_indexed_pip() -> None:
-    recipe = Recipe(
-        name="a/indexed",
-        make=GymMake(env_id="E-v0"),
-        build=Build(
-            pip=[
-                PipInstall(
-                    packages=["torch"], index_url="https://download.pytorch.org/whl/cpu"
-                )
-            ]
+        (
+            Recipe(
+                name="a/indexed",
+                make=GymMake(env_id="E-v0"),
+                build=Build(
+                    pip=[
+                        PipInstall(
+                            packages=["torch"],
+                            index_url="https://download.pytorch.org/whl/cpu",
+                        )
+                    ]
+                ),
+            ),
+            "index URL",
         ),
-    )
-    with pytest.raises(UnsupportedRecipeError, match="index URL"):
-        recipe_to_sandbox_args(recipe)
-
-
-def test_recipe_to_sandbox_args_rejects_setup() -> None:
-    recipe = Recipe(
-        name="a/setup",
-        make=GymMake(env_id="E-v0"),
-        setup=Setup(env={"LIBERO_TASK": "x"}),
-    )
-    with pytest.raises(UnsupportedRecipeError, match="setup"):
+        (
+            Recipe(
+                name="a/setup",
+                make=GymMake(env_id="E-v0"),
+                setup=Setup(env={"LIBERO_TASK": "x"}),
+            ),
+            "setup",
+        ),
+    ],
+)
+def test_recipe_to_sandbox_args_rejects(recipe: Recipe, match: str) -> None:
+    with pytest.raises(UnsupportedRecipeError, match=match):
         recipe_to_sandbox_args(recipe)
 
 

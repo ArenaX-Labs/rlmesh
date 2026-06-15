@@ -83,7 +83,7 @@
   "module_order": [
     "rlmesh",
     "rlmesh.server",
-    "rlmesh.model",
+    "rlmesh.models.base",
     "rlmesh.client",
     "rlmesh.numpy",
     "rlmesh.torch",
@@ -107,8 +107,8 @@
       "stability": "Stable",
       "status": "Stable."
     },
-    "rlmesh.model": {
-      "title": "rlmesh.model",
+    "rlmesh.models.base": {
+      "title": "rlmesh.models.base",
       "description": "Shared model wrapper base classes and callback types.",
       "stability": "Stable",
       "status": "Stable."
@@ -199,10 +199,10 @@
     "rlmesh.server.EnvLike": {
       "description": "Accepted environment shape for EnvServer."
     },
-    "rlmesh.model.LifecycleCallback": {
+    "rlmesh.models.base.LifecycleCallback": {
       "description": "No-argument callback used for model lifecycle events."
     },
-    "rlmesh.model.PredictFn": {
+    "rlmesh.models.base.PredictFn": {
       "description": "Callable that maps one observation to one action."
     },
     "rlmesh.client.Transport": {

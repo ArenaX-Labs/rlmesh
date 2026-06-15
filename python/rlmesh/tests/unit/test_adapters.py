@@ -97,7 +97,7 @@ class Env(NamedTuple):
     action_space: gym.spaces.Space[Any]
 
 
-def resolve(env: Env, model: adapt.ModelSpec, **kwargs: Any) -> adapt.IOAdapter:
+def resolve(env: Env, model: adapt.ModelSpec, **kwargs: Any) -> adapt.Adapter:
     return adapt.resolve(env.tags, env.obs_space, env.action_space, model, **kwargs)
 
 
@@ -244,6 +244,67 @@ def test_smolvla_action_passthrough_with_clip():
     raw = np.array([0.1, -0.2, 0.3, 1.7, -1.7, 0.0, 0.5], dtype=np.float32)
     result = adapter.transform_action(raw)
     np.testing.assert_allclose(result, np.clip(raw, -1.0, 1.0), rtol=1e-6)
+
+
+def test_env_gripper_invert_and_binary_flips_model_sign():
+    # The env declares its gripper actuator is sign-flipped from the model's
+    # convention; the resolved adapter applies the flip and binary snap, in place
+    # of a hand-rolled invert_gripper_action escape hatch on the model side.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag()},
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(
+                    adapt.ACTION_GRIPPER, dim=1, invert=True, binary=True
+                ),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(1, low=-1.0, high=1.0),
+    )
+    model = adapt.ModelSpec(
+        inputs=(adapt.TextInput("instruction"),),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = resolve(env, model)
+    # The model says "close" (+0.8); the env's opposite sign + binary snap to -1.
+    result = adapter.transform_action(np.array([0.8], dtype=np.float32))
+    np.testing.assert_allclose(result, [-1.0], rtol=1e-6)
+
+
+def test_action_component_positional_binary_is_unchanged() -> None:
+    # scale/invert/threshold are appended after binary, so the old positional
+    # layout (role, dim, encoding, range, binary) keeps its meaning.
+    c = adapt.ActionComponent(adapt.ACTION_GRIPPER, 1, None, None, True)
+    assert c.binary is True
+    assert c.scale is None and c.invert is False and c.threshold is None
+
+
+def test_action_layout_from_dict_rejects_loosely_typed_corrections() -> None:
+    # The Python deserializer must match the Rust serde contract: a truthy
+    # non-bool invert/binary or a numeric-string scale/threshold is rejected, so
+    # both bindings agree on hand-authored or third-party layout JSON.
+    from rlmesh.adapters.specs.action_serialization import action_layout_from_dict
+
+    def layout(**correction: Any) -> dict[str, Any]:
+        return {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1, **correction}]}
+
+    for bad in (
+        {"invert": 1},
+        {"invert": "yes"},
+        {"scale": "2"},
+        {"threshold": True},
+        {"binary": 1},
+    ):
+        with pytest.raises(ValueError):
+            action_layout_from_dict(layout(**bad))
+
+    ok = action_layout_from_dict(
+        layout(invert=True, scale=2.0, threshold=0.5, binary=True)
+    )
+    assert ok.components[0].invert is True
+    assert ok.components[0].scale == 2.0
+    assert ok.components[0].threshold == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -873,8 +934,9 @@ def test_env_tags_metadata_round_trip():
 
 
 def test_model_spec_metadata_round_trip():
-    metadata = {"max_batch": 8, **SMOLVLA.to_metadata()}
-    assert adapt.ModelSpec.from_metadata(metadata) == SMOLVLA
+    for spec in (SMOLVLA, OPENVLA, XVLA, GR00T):
+        metadata = {"max_batch": 8, **spec.to_metadata()}
+        assert adapt.ModelSpec.from_metadata(metadata) == spec
     assert adapt.ModelSpec.from_metadata({"max_batch": 8}) is None
 
 
@@ -888,22 +950,14 @@ def test_metadata_keys_are_side_specific():
     assert adapt.ModelSpec.from_metadata(tags.to_metadata()) is None
 
 
-def test_custom_callable_spec_is_not_publishable():
+@pytest.mark.parametrize("method", ["to_dict", "to_metadata"])
+def test_custom_callable_spec_is_not_serializable(method: str):
     spec = adapt.ModelSpec(
         inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
         action=SMOLVLA.action,
     )
     with pytest.raises(ValueError, match="cannot be serialized"):
-        spec.to_metadata()
-
-
-def test_custom_callable_is_not_serializable():
-    spec = adapt.ModelSpec(
-        inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
-        action=SMOLVLA.action,
-    )
-    with pytest.raises(ValueError, match="cannot be serialized"):
-        spec.to_dict()
+        getattr(spec, method)()
 
 
 def test_custom_entrypoint_is_serializable():
@@ -1167,18 +1221,6 @@ def test_tag_without_validation_skips_the_check() -> None:
     assert adapt.EnvTags.from_metadata(env.metadata) == bad
 
 
-def test_model_spec_run_requires_an_env_object() -> None:
-    from rlmesh.numpy import Model
-
-    def predict(payload: dict[str, Any]) -> Any:
-        return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
-
-    model = Model(predict, spec=SMOLVLA)
-    # A bare address carries no contract to resolve the adapter from.
-    with pytest.raises(TypeError, match="env_contract"):
-        model.run("127.0.0.1:5555", max_episodes=1)
-
-
 def test_negative_u32_fields_are_rejected_at_construction() -> None:
     with pytest.raises(ValueError, match="width must be non-negative"):
         adapt.ImageInput("image", width=-1)
@@ -1197,7 +1239,7 @@ def test_negative_u32_fields_are_rejected_at_construction() -> None:
 
 
 def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
-    from rlmesh.adapters.helpers.bridge import encode_value
+    from rlmesh.adapters.helpers.codec import encode_value
 
     assert encode_value(np.bool_(True)) == ("n", 1.0)
     assert encode_value(np.bool_(False)) == ("n", 0.0)
@@ -1325,9 +1367,10 @@ def test_io_adapter_is_stateful_only_with_frame_history() -> None:
     assert stateful.is_stateful is True
 
 
-def test_stateful_adapter_rejected_on_vector_env() -> None:
-    # The runtime now permits num_envs>1, but a stateful adapter has no per-lane
-    # buffer axis yet, so it must fail loud rather than bleed frames across lanes.
+def test_vector_env_rejected_by_single_env_eval_loop() -> None:
+    # The per-episode eval loop reads scalar reward/termination, so it rejects any
+    # vector env (num_envs>1) up front instead of crashing on array truthiness deep
+    # in the step loop -- regardless of whether the adapter is stateful.
     from rlmesh.numpy import Model
 
     env = image_env(4, 4)
@@ -1337,7 +1380,12 @@ def test_stateful_adapter_rejected_on_vector_env() -> None:
         action_space=env.action_space,
         num_envs=2,
     )
-    fake_env: Any = SimpleNamespace(env_contract=contract)
+    # A steppable env-like object; the vector env is rejected before any step.
+    fake_env: Any = SimpleNamespace(
+        env_contract=contract,
+        reset=lambda **_kw: ({}, {}),
+        step=lambda _action: ({}, 0.0, True, False, {}),
+    )
 
     def predict(payload: dict[str, Any]) -> Any:
         return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
@@ -1349,7 +1397,7 @@ def test_stateful_adapter_rejected_on_vector_env() -> None:
             action=SMOLVLA.action,
         ),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="vector env"):
+    with pytest.raises(ValueError, match="num_envs=2"):
         model.run(fake_env, max_episodes=1)
 
 

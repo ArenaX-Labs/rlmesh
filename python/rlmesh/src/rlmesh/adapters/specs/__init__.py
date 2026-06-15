@@ -16,7 +16,6 @@ from .env_tags import (
     StateTag,
     TextTag,
 )
-from .layouts import ImageLayout
 from .model import ModelSpec
 from .model_inputs import (
     EntrypointCustomInput,
@@ -28,7 +27,7 @@ from .model_inputs import (
     StateInput,
     TextInput,
 )
-from .rotations import ROTATION_DIMS, RotationEncoding
+from .vocabularies import ROTATION_DIMS, ImageLayout, RotationEncoding
 
 __all__ = [
     "ROTATION_DIMS",

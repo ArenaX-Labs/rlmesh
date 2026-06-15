@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from rlmesh.recipes import (
     Build,
@@ -106,6 +108,7 @@ def test_from_dict_is_lenient_about_missing_keys() -> None:
     assert recipe.build == Build()
     assert recipe.setup == Setup()
     assert recipe.requires.imports == ()
+    # an absent recipe_version still defaults to the current version.
     assert recipe.recipe_version == 1
 
 
@@ -172,32 +175,25 @@ def test_build_base_and_from_recipe_mutually_exclusive() -> None:
         Build(base="img", from_recipe="other/recipe")
 
 
-def test_build_dockerfile_excludes_structured_fields() -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        # structured installer fields (verbatim trapdoor ignores them)
+        {"pip": [PipInstall(packages=["a"])]},
+        # derived-Dockerfile-only fields would be silently dropped
+        {"env": {"K": "V"}},
+        {"run_as": 1000},
+        {"pythonpath": ["/x"]},
+        # resolved base/installer would diverge from the hashed FROM
+        {"base": "cuda@sha256:abc"},
+        {"installer": "uv"},
+    ],
+)
+def test_build_dockerfile_excludes_other_fields(field: dict[str, Any]) -> None:
     with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", pip=[PipInstall(packages=["a"])])
+        Build(dockerfile="FROM x\n", **field)
     # dockerfile alone is fine
     assert Build(dockerfile="FROM x\n").dockerfile == "FROM x\n"
-
-
-def test_build_dockerfile_excludes_derived_only_fields() -> None:
-    # env/pythonpath/run_as only affect the *derived* Dockerfile, which the verbatim
-    # trapdoor bypasses -- so pairing them with dockerfile would silently drop them.
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", env={"K": "V"})
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", run_as=1000)
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", pythonpath=["/x"])
-
-
-def test_build_dockerfile_excludes_base_and_installer() -> None:
-    # The verbatim trapdoor emits the body as-is and ignores the resolved base_image
-    # and installer, so pairing dockerfile with base= builds a different FROM than the
-    # hash was computed against, and installer="uv" is silently dropped.
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", base="cuda@sha256:abc")
-    with pytest.raises(RecipeValidationError, match="mutually exclusive"):
-        Build(dockerfile="FROM x\n", installer="uv")
 
 
 def test_build_dockerfile_permits_gpu() -> None:
@@ -355,3 +351,40 @@ def test_project_include_rejects_unsupported_glob_metachars() -> None:
     for bad in ["file?.json", "data/[abc].txt", "data/{a,b}.bin"]:
         with pytest.raises(RecipeValidationError):
             ProjectInstall(include=[bad])
+
+
+def test_runtime_reserved_validates_on_construction() -> None:
+    from rlmesh.recipes._schema._definitions import RuntimeReserved
+
+    # Every constraint from_dict enforces must also fire on direct construction,
+    # or you can build an instance that serializes but cannot round-trip back.
+    for kwargs in (
+        {"loop_mode": "bogus"},
+        {"batching": "nope"},
+        {"determinism": "x"},
+        {"chunk_size": True},
+        {"max_batch": "5"},
+        {"lane_affinity": 1},
+    ):
+        with pytest.raises(RecipeValidationError):
+            RuntimeReserved(**kwargs)  # type: ignore[arg-type]
+
+    reserved = RuntimeReserved(loop_mode="chunk", chunk_size=8)
+    assert RuntimeReserved.from_dict(reserved.to_dict()) == reserved
+
+
+def test_artifact_input_rejects_non_str_local_dir() -> None:
+    from rlmesh.recipes._schema import ArtifactInput
+
+    with pytest.raises(RecipeValidationError):
+        ArtifactInput("w", "/w", local_dir=123)  # type: ignore[arg-type]
+    # A host path is type-checked but not token-validated (spaces are fine).
+    assert (
+        ArtifactInput("w", "/w", local_dir="/host/My Weights").local_dir
+        == "/host/My Weights"
+    )
+
+
+def test_recipe_from_dict_rejects_pre_rename_annotations_key() -> None:
+    with pytest.raises(RecipeValidationError, match="annotations"):
+        Recipe.from_dict({"name": "x/y", "annotations": {"observation": {}}})

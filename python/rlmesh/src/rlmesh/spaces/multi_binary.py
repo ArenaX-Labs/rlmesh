@@ -9,8 +9,8 @@ from .._rlmesh import multi_binary_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._utils import shape as space_shape
-from ._utils import spec_details
+from ._internals import shape as space_shape
+from ._internals import spec_details
 
 
 @final

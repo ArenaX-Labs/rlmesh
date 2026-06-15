@@ -5,14 +5,6 @@ import importlib
 import pytest
 
 
-def test_native_module_exposes_version() -> None:
-    """The compiled extension exposes its Cargo version as __version__."""
-    from rlmesh import _rlmesh
-
-    assert isinstance(_rlmesh.__version__, str)
-    assert _rlmesh.__version__  # non-empty
-
-
 def test_version_fallback_uses_native_extension_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

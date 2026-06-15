@@ -1,0 +1,373 @@
+"""Shared vector-environment remote client base."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
+
+from .._framework_bridge import ValueBridge
+from ..spaces import Space, SpaceBridge, space_from_spec
+from ..specs import EnvContract, SpaceSpec
+from ..types import Metadata, Value
+from ._endpoint import Transport, normalize_connect_address
+from ._viewer import EMPTY_METADATA, RenderPacket, ViewerMixin, ViewerProcess
+
+if TYPE_CHECKING:
+    from rlmesh._rlmesh import PyVectorEnvClient, ResetInfo, StepInfo
+
+ValueT = TypeVar("ValueT")
+ActionT = TypeVar("ActionT")
+
+
+class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
+    """Base class for backend-specific vector-environment remote clients.
+
+    Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
+    value bridge. User code should normally instantiate those concrete
+    backends instead of this base class.
+
+    Args:
+        address: Endpoint address such as ``"tcp://127.0.0.1:5555"``.
+        host: TCP host helper used when ``address`` is omitted.
+        port: TCP port helper used when ``address`` is omitted.
+        path: Unix socket path helper used when ``address`` is omitted.
+        transport: Explicit transport selector.
+    """
+
+    _bridge: ClassVar[ValueBridge]
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = None
+    _address: str
+    _viewer_warning_emitted: bool
+
+    def __init__(
+        self,
+        address: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        path: str | None = None,
+        transport: Transport | None = None,
+    ) -> None:
+        self._initialize(
+            address,
+            host=host,
+            port=port,
+            path=path,
+            transport=transport,
+            connect_timeout_seconds=None,
+        )
+
+    @classmethod
+    def _connect_for_sandbox(
+        cls,
+        address: str,
+        *,
+        connect_timeout_seconds: float,
+    ) -> object:
+        instance = cls.__new__(cls)
+        instance._initialize(
+            address,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+        return instance
+
+    def _initialize(
+        self,
+        address: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        path: str | None = None,
+        transport: Transport | None = None,
+        connect_timeout_seconds: float | None,
+    ) -> None:
+        try:
+            from rlmesh._rlmesh import PyVectorEnvClient
+        except ImportError as e:  # pragma: no cover - import guard
+            raise ImportError("Failed to import _rlmesh native module.") from e
+
+        self._bridge.ensure_available()
+        normalized_address = normalize_connect_address(
+            address,
+            host=host,
+            port=port,
+            path=path,
+            transport=transport,
+        )
+        self._client: PyVectorEnvClient = PyVectorEnvClient(
+            normalized_address,
+            connect_timeout_seconds=connect_timeout_seconds,
+        )
+        self._address = self._client.address()
+        self._env_contract: EnvContract = self._client.handshake()
+        self._single_observation_space: Space[ValueT] | None = None
+        self._single_action_space: Space[ActionT] | None = None
+        self._viewer: ViewerProcess | None = None
+        self._viewer_warning_emitted = False
+
+    @property
+    def address(self) -> str:
+        """Endpoint address this client is connected to."""
+        return self._address
+
+    @property
+    def env_contract(self) -> EnvContract:
+        """Environment contract returned by the endpoint handshake."""
+        return self._env_contract
+
+    @property
+    def spec(self) -> EnvContract:
+        """Alias for `env_contract`."""
+        return self._env_contract
+
+    @property
+    def render_mode(self) -> str | None:
+        """Configured render mode reported by the endpoint."""
+        return self._env_contract.render_mode
+
+    @property
+    def num_envs(self) -> int:
+        """Number of environment instances served by the endpoint."""
+        return self._client.num_envs()
+
+    @property
+    def single_observation_space(self) -> Space[ValueT]:
+        """Observation space for one environment in the vector."""
+        if self._single_observation_space is None:
+            self._single_observation_space = self._load_observation_space()
+        return self._single_observation_space
+
+    @property
+    def single_action_space(self) -> Space[ActionT]:
+        """Action space for one environment in the vector."""
+        if self._single_action_space is None:
+            self._single_action_space = self._load_action_space()
+        return self._single_action_space
+
+    @property
+    def observation_space(self) -> Space[ValueT]:
+        """Alias for `single_observation_space`."""
+        return self.single_observation_space
+
+    @property
+    def action_space(self) -> Space[ActionT]:
+        """Alias for `single_action_space`."""
+        return self.single_action_space
+
+    @property
+    def metadata(self) -> Metadata:
+        """Endpoint metadata reported by the environment contract.
+
+        The wire codec degrades Gymnasium's ``AutoresetMode`` enum to its plain
+        string value, but Gymnasium 1.x vector consumers (for example
+        ``RecordEpisodeStatistics``) assert that
+        ``metadata["autoreset_mode"]`` is an ``AutoresetMode`` instance. We
+        restore the enum here so a Gymnasium-compliant training loop can read
+        the server-side autoreset convention.
+        """
+        metadata = self._env_contract.metadata
+        if metadata is None:
+            return EMPTY_METADATA
+        return _normalize_autoreset_mode(cast(Mapping[str, object], metadata))
+
+    def _render_client(self) -> PyVectorEnvClient:
+        return self._client
+
+    @property
+    def observation_space_spec(self) -> SpaceSpec:
+        """Native observation space spec reported by the endpoint."""
+        return self._space_spec("observation")
+
+    @property
+    def action_space_spec(self) -> SpaceSpec:
+        """Native action space spec reported by the endpoint."""
+        return self._space_spec("action")
+
+    def reset(
+        self,
+        *,
+        seed: int | list[int] | None = None,
+        options: dict[str, object] | None = None,
+    ) -> tuple[ValueT, ResetInfo]:
+        """Reset all remote environments and decode the observations.
+
+        Args:
+            seed: Optional seed or per-environment seed list.
+            options: Optional reset options forwarded to the vector environment.
+
+        Returns:
+            Batched decoded observations and reset info dictionary.
+        """
+        if isinstance(seed, list):
+            seeds = seed
+        elif seed is None:
+            seeds = None
+        else:
+            seeds = [seed]
+        obs, info = self._client.reset(seeds=seeds, options=options)
+        self._refresh_viewer()
+        return cast(ValueT, self._bridge.decode(obs)), info
+
+    def step(self, actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]:
+        """Step all remote environments with a batch of actions.
+
+        Args:
+            actions: Batched actions accepted by the vector endpoint.
+
+        Returns:
+            Batched observations, rewards, terminations, truncations, and info.
+        """
+        obs, rewards, terminated, truncated, info = self._client.step(
+            self._encode_actions(actions)
+        )
+        self._refresh_viewer(pace=True)
+        return (
+            cast(ValueT, self._bridge.decode(obs)),
+            cast(ValueT, self._bridge.decode(rewards)),
+            cast(ValueT, self._bridge.decode(terminated)),
+            cast(ValueT, self._bridge.decode(truncated)),
+            info,
+        )
+
+    def _encode_actions(self, actions: ActionT) -> object:
+        """Encode a batched action through the value bridge when possible.
+
+        For leaf array action spaces (Box/Discrete/MultiDiscrete/MultiBinary)
+        a CleanRL-style batched action is a single framework array of shape
+        ``(num_envs, *action_shape)``. We split it into per-environment slices
+        and encode each through the value bridge, yielding a list of zero-copy
+        ``Tensor`` leaves that the Rust codec packs via its tensor fast path
+        instead of materializing every scalar through ``.tolist()``.
+
+        Anything the bridge cannot map cleanly (the identity bridge, ``Dict``/
+        ``Tuple`` action structures, or non-array batches) is passed through
+        unchanged so the existing Rust batching path handles it.
+        """
+        bridge = self._bridge
+        if bridge.name == "rlmesh":
+            return actions
+        if self._space_spec("action").kind in ("dict", "tuple", "text"):
+            return actions
+        if not _is_array_batch(actions):
+            return actions
+        try:
+            per_env = list(cast("Iterable[object]", actions))
+        except TypeError:
+            return actions
+        if len(per_env) != self.num_envs:
+            return actions
+        return [bridge.encode(item) for item in per_env]
+
+    def render(self, *, env_index: int = 0) -> ValueT | None:
+        """Render a frame from one environment in the vector.
+
+        Args:
+            env_index: Environment index to render.
+
+        Returns:
+            A decoded render frame, or ``None`` when the environment has no frame.
+        """
+        if self._viewer is not None and self._viewer.env_index == env_index:
+            frame, packet = cast(
+                tuple[Value | None, RenderPacket],
+                self._client.render_bundle(env_index=env_index),
+            )
+            self._push_viewer_packet(packet)
+            return cast(ValueT | None, self._bridge.decode(frame))
+        return cast(
+            ValueT | None,
+            self._bridge.decode(self._client.render(env_index=env_index)),
+        )
+
+    def close(self) -> None:
+        """Detach this client from the remote endpoint."""
+        self._shutdown_viewer()
+        self._client.close()
+
+    def shutdown(self, reason: str = "owner shutdown") -> bool:
+        """Request owner-level shutdown of the remote vector environment endpoint."""
+        self._shutdown_viewer()
+        return bool(self._client.shutdown(reason))
+
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}(address={self.address!r}, "
+            f"env_id={self._env_contract.id!r}, num_envs={self.num_envs!r})"
+        )
+
+    def __enter__(self) -> RemoteVectorEnvBase[ValueT, ActionT]:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        _ = exc_type, exc_val, exc_tb
+        self.close()
+
+    def _space_spec(self, kind: Literal["observation", "action"]) -> SpaceSpec:
+        return (
+            self._env_contract.observation_space
+            if kind == "observation"
+            else self._env_contract.action_space
+        )
+
+    def _load_observation_space(self) -> Space[ValueT]:
+        spec = self._space_spec("observation")
+        bridge = self._space_bridge
+        if bridge is None:
+            return cast(Space[ValueT], space_from_spec(spec))
+        return cast(Space[ValueT], space_from_spec(spec, bridge=bridge))
+
+    def _load_action_space(self) -> Space[ActionT]:
+        spec = self._space_spec("action")
+        bridge = self._space_bridge
+        if bridge is None:
+            return cast(Space[ActionT], space_from_spec(spec))
+        return cast(Space[ActionT], space_from_spec(spec, bridge=bridge))
+
+
+def _is_array_batch(actions: object) -> bool:
+    """Return ``True`` for a single framework array batch (not a container).
+
+    Python lists/tuples are already per-environment containers that the Rust
+    codec iterates directly; ``str``/``bytes``/``Mapping`` are never batches.
+    A framework array (numpy ``ndarray``/torch ``Tensor``) is sized and iterable
+    over its leading axis, which is exactly the per-environment split we want.
+    """
+    if isinstance(actions, (str, bytes, bytearray, Mapping)):
+        return False
+    if isinstance(actions, (list, tuple)):
+        return False
+    if isinstance(actions, Sequence):
+        return False
+    return hasattr(actions, "__len__") and hasattr(actions, "__iter__")
+
+
+def _normalize_autoreset_mode(metadata: Mapping[str, object]) -> Metadata:
+    """Restore ``autoreset_mode`` to a Gymnasium ``AutoresetMode`` enum.
+
+    The value is returned unchanged when the key is absent, when it is already
+    an ``AutoresetMode``, when it does not match a known mode, or when
+    Gymnasium is not installed.
+    """
+    mode = metadata.get("autoreset_mode")
+    if mode is None or not isinstance(mode, str):
+        return metadata
+    try:
+        from gymnasium.vector import AutoresetMode
+    except ImportError:  # pragma: no cover - gymnasium optional
+        return metadata
+    try:
+        enum_mode = AutoresetMode(mode)
+    except ValueError:
+        return metadata
+    normalized = dict(metadata)
+    normalized["autoreset_mode"] = enum_mode
+    return normalized
+
+
+__all__ = ["ActionT", "RemoteVectorEnvBase", "ValueT"]

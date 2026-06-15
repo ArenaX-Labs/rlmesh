@@ -23,6 +23,24 @@ Changes that touch public Python or Rust APIs should update API surface snapshot
 native stubs when needed. Changes that touch packaging, wheels, sandboxing, transport, or
 compatibility should explain which system validation was run or why it was skipped.
 
+## Examples
+
+Examples live in `examples/python/` and `crates/rlmesh/examples/`. Each one shares the repository
+environment and runs against the working tree, so it breaks in the same pull request that breaks the
+code it exercises. Run a Python example from the repository root:
+
+```bash
+uv run python examples/python/<dir>/<file>.py
+```
+
+Two rules keep the set honest:
+
+- One shape in-repo. If an example needs its own `pyproject.toml` or lockfile, it is a Demo rather
+  than an Example, and it belongs in the separate `rlmesh-examples` repository. In-repo examples
+  share the repo environment.
+- Do not name an example "Recipe". `EnvRecipe` and `ModelRecipe` already own that word. An example
+  that teaches recipes is still just an example.
+
 ## Commit Messages
 
 Commits follow the [Conventional Commits](https://www.conventionalcommits.org) format:

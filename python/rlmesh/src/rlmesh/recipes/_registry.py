@@ -19,9 +19,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import overload
 
-from ._authoring import EnvRecipe, is_env_recipe
 from ._gym_sugar import factory_sugar_to_recipe, gym_sugar_to_recipe
 from ._schema import Build, GymMake, PyMake, Recipe
+from .authoring.env import EnvRecipe, is_env_recipe
 
 __all__ = [
     "RecipeNotFoundError",
@@ -107,14 +107,16 @@ def register(
         _reject_flat_kwargs(gym, factory, packages, imports)
         # An authored EnvRecipe carries its own defining module, so stage a
         # ProjectInstall from there regardless of who calls register().
-        _store(source.to_recipe(), overwrite=overwrite, origin=class_origin_dir(source))
+        store_recipe(
+            source.to_recipe(), overwrite=overwrite, origin=class_origin_dir(source)
+        )
         return source
     if isinstance(source, Recipe):
         _reject_flat_kwargs(gym, factory, packages, imports)
-        return _store(source, overwrite=overwrite, origin=_caller_origin())
+        return store_recipe(source, overwrite=overwrite, origin=_caller_origin())
     if isinstance(source, str):
         recipe = _flat_recipe(source, gym, factory, packages, imports)
-        return _store(recipe, overwrite=overwrite, origin=_caller_origin())
+        return store_recipe(recipe, overwrite=overwrite, origin=_caller_origin())
     raise TypeError(
         "register() first argument must be a name string, a Recipe, or an "
         f"EnvRecipe subclass, got {type(source).__name__}"
@@ -151,7 +153,9 @@ def _flat_recipe(
     return factory_sugar_to_recipe(name, factory, packages=packages, imports=imports)
 
 
-def _store(recipe: Recipe, *, overwrite: bool, origin: str | None = None) -> Recipe:
+def store_recipe(
+    recipe: Recipe, *, overwrite: bool, origin: str | None = None
+) -> Recipe:
     existing = _REGISTRY.get(recipe.name)
     if existing is not None and not overwrite and existing != recipe:
         raise ValueError(
@@ -167,12 +171,13 @@ def _store(recipe: Recipe, *, overwrite: bool, origin: str | None = None) -> Rec
     return recipe
 
 
-def class_origin_dir(cls: type[EnvRecipe]) -> str | None:
+def class_origin_dir(cls: type[object]) -> str | None:
     """Return the directory of the module that defines ``cls``, or None.
 
     Best-effort: a dynamically created class (no source file) has no origin. The
-    sandbox uses this to stage an authored ``EnvRecipe``'s ProjectInstall from its
-    defining package rather than the launching process's current directory.
+    sandbox uses this to stage an authored ``EnvRecipe`` or ``ModelRecipe``'s
+    ProjectInstall from its defining package rather than the launching process's
+    current directory.
     """
     try:
         source_file = inspect.getfile(cls)

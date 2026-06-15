@@ -97,8 +97,6 @@ ignore = [
 "python/rlmesh/examples/**" = ["F405", "D"]
 "python/rlmesh/src/rlmesh/_cli/**" = ["D"]
 "python/rlmesh/src/rlmesh/__main__.py" = ["D"]
-"python/rlmesh/src/rlmesh/_sandbox_bootstrap.py" = ["D"]
-"python/rlmesh/src/rlmesh/_values.py" = ["D"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

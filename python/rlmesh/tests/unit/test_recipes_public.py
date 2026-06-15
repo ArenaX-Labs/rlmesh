@@ -83,20 +83,22 @@ def test_bootstrap_recipe_dispatch_builds_env() -> None:
 
 
 def test_resolve_recipe_source_for_registered_name() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipes.register(Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1")))
-    display, recipe_json, provenance, context_root = _resolve_recipe_source("acme/env")
+    display, recipe_json, provenance, context_root, _ = resolve_recipe_source(
+        "acme/env"
+    )
     assert display == "acme/env"
     assert recipe_json is not None and provenance == "installed"
     assert context_root is None
 
 
 def test_resolve_recipe_source_for_literal_recipe() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1"))
-    display, recipe_json, provenance, _ = _resolve_recipe_source(recipe)
+    display, recipe_json, provenance, _, _ = resolve_recipe_source(recipe)
     assert display == "acme/env"
     assert recipe_json == recipe.to_json()
     # An in-process literal Recipe is Installed (it came from your code); Remote is
@@ -105,27 +107,33 @@ def test_resolve_recipe_source_for_literal_recipe() -> None:
 
 
 def test_resolve_recipe_source_passes_through_gym_id() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
-    assert _resolve_recipe_source("CartPole-v1") == ("CartPole-v1", None, None, None)
+    assert resolve_recipe_source("CartPole-v1") == (
+        "CartPole-v1",
+        None,
+        None,
+        None,
+        (),
+    )
 
 
 def test_resolve_recipe_source_defaults_context_root_for_project() -> None:
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="acme/env",
         make=GymMake(env_id="CartPole-v1"),
         build=Build(project=ProjectInstall(src=".", dest="/opt/acme")),
     )
-    _, _, _, context_root = _resolve_recipe_source(recipe)
+    _, _, _, context_root, _ = resolve_recipe_source(recipe)
     assert context_root is not None
 
 
 def test_start_sandbox_forwards_recipe_json_for_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 
@@ -160,7 +168,7 @@ def test_start_sandbox_forwards_recipe_json_for_recipe(
 def test_start_sandbox_omits_recipe_args_for_gym(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh import sandbox
+    from rlmesh.sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 

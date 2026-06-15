@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 import rlmesh
 from rlmesh import recipes
 from rlmesh.recipes import EnvRecipe, RecipeValidationError
+
+
+def _env_metadata(env: object) -> Mapping[str, object]:
+    """Read a constructed env's metadata; it is not part of the minimal EnvLike protocol."""
+    metadata = getattr(env, "metadata", {})
+    return metadata if isinstance(metadata, Mapping) else {}
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +34,46 @@ def authored_module(tmp_path: Path) -> Iterator[str]:
             """
             from __future__ import annotations
 
+            import gymnasium as _gym
+            import numpy as _np
             import rlmesh
+            from rlmesh.adapters import (
+                ACTION_GRIPPER, IMAGE_PRIMARY, ActionComponent, ActionLayout,
+                EnvTags, ImageTag,
+            )
             from rlmesh.recipes import Build, PipInstall, ProjectInstall
+
+            _TAGS = EnvTags(
+                observation={"img": ImageTag(role=IMAGE_PRIMARY)},
+                action=ActionLayout(ActionComponent(ACTION_GRIPPER, dim=2)),
+            )
+
+            class _TaggedStub:
+                observation_space = _gym.spaces.Dict({"img": _gym.spaces.Box(0, 255, (8, 8, 3), _np.uint8)})
+                action_space = _gym.spaces.Box(-1, 1, (2,), _np.float32)
+                metadata: dict = {}
+                def reset(self, *, seed=None, options=None):
+                    return {"img": _np.zeros((8, 8, 3), _np.uint8)}, {}
+                def step(self, action):
+                    return {"img": _np.zeros((8, 8, 3), _np.uint8)}, 0.0, False, False, {}
+
+            class Tagged(rlmesh.EnvRecipe):
+                name = "test/tagged"
+                tags = _TAGS
+                def make(self, **kwargs):
+                    return _TaggedStub()
+
+            class TaggedConflict(rlmesh.EnvRecipe):
+                name = "test/tagged-conflict"
+                tags = _TAGS
+                def make(self, **kwargs):
+                    return rlmesh.adapters.tag(_TaggedStub(), _TAGS)
+
+            class TaggedMapping(rlmesh.EnvRecipe):
+                name = "test/tagged-mapping"
+                tags = _TAGS.to_dict()  # the serialized form is accepted too
+                def make(self, **kwargs):
+                    return _TaggedStub()
 
             class Heavy(rlmesh.EnvRecipe):
                 name = "acme/heavy"
@@ -120,15 +165,54 @@ def test_check_is_dependency_free(authored_module: str) -> None:
     heavy.check()  # the classmethod shorthand
 
 
-def test_to_recipe_rejects_local_class() -> None:
-    class Local(EnvRecipe):
-        name = "x/y"
+def test_class_tags_project_onto_recipe_adapter(authored_module: str) -> None:
+    module = _module(authored_module)
+    tagged = module.Tagged  # type: ignore[attr-defined]
+    recipe = tagged.to_recipe()
+    # The env-side mirror of ModelRecipe.spec: declared tags ride recipe.adapter.
+    assert recipe.adapter is module._TAGS  # type: ignore[attr-defined]
+    assert recipe.kind == "env"
+    # A tag-less recipe leaves adapter empty (byte-stable for existing recipes).
+    assert module.Cart.to_recipe().adapter is None  # type: ignore[attr-defined]
 
-        def make(self, **kwargs: object) -> object:
-            return None
 
-    with pytest.raises(RecipeValidationError, match="cannot import"):
-        Local.to_recipe()
+def test_class_tags_published_on_constructed_env(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes.authoring.env import construct_authored
+
+    tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
+    env = construct_authored(tagged)
+    # The framework attached the declared tags, so the served env publishes them.
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
+
+
+def test_class_tags_published_via_build(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes import build
+
+    # The container forward path: build() runs the entrypoint then publishes
+    # recipe.adapter once. (A double-apply would trip the conflict guard below.)
+    tagged = _module(authored_module).Tagged  # type: ignore[attr-defined]
+    env = build(tagged.to_recipe())
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
+
+
+def test_class_tags_and_make_tags_conflict_fails_loud(authored_module: str) -> None:
+    from rlmesh.recipes.authoring.env import construct_authored
+
+    conflict = _module(authored_module).TaggedConflict  # type: ignore[attr-defined]
+    with pytest.raises(RecipeValidationError, match="one place"):
+        construct_authored(conflict)
+
+
+def test_class_tags_as_serialized_mapping_are_normalized(authored_module: str) -> None:
+    from rlmesh.adapters import EnvTags
+    from rlmesh.recipes.authoring.env import construct_authored
+
+    # tags declared as the serialized dict form must not crash tag() (Codex P2).
+    mapping = _module(authored_module).TaggedMapping  # type: ignore[attr-defined]
+    env = construct_authored(mapping)
+    assert EnvTags.from_metadata(_env_metadata(env)) is not None
 
 
 def test_to_recipe_requires_name(authored_module: str) -> None:
@@ -157,7 +241,7 @@ def test_entrypoint_runs_prepare_then_make(authored_module: str) -> None:
 def test_required_init_arg_raises_recipe_aware_error() -> None:
     # cls() is called with no args during construction; a required-arg __init__ would
     # otherwise fail with a confusing native TypeError.
-    from rlmesh.recipes._authoring import construct_authored
+    from rlmesh.recipes.authoring.env import construct_authored
 
     class NeedsArg(EnvRecipe):
         name = "x/needs-arg"
@@ -204,10 +288,10 @@ def test_sandbox_source_for_envrecipe_with_project_is_installed(
     A Remote recipe rejects ProjectInstall; stamping an in-process/EnvRecipe source
     as Installed is what lets the robotics-on-a-Mac one-liner launch.
     """
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     heavy = _module(authored_module).Heavy  # type: ignore[attr-defined]
-    display, recipe_json, provenance, context_root = _resolve_recipe_source(heavy)
+    display, recipe_json, provenance, context_root, _ = resolve_recipe_source(heavy)
     assert display == "acme/heavy"
     assert provenance == "installed"
     assert recipe_json is not None
@@ -216,10 +300,10 @@ def test_sandbox_source_for_envrecipe_with_project_is_installed(
 
 def test_sandbox_source_for_literal_recipe_is_installed() -> None:
     from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="acme/literal", make=GymMake(env_id="CartPole-v1"))
-    _, _, provenance, _ = _resolve_recipe_source(recipe)
+    _, _, provenance, _, _ = resolve_recipe_source(recipe)
     assert provenance == "installed"
 
 
@@ -240,26 +324,24 @@ def test_envserver_builds_envrecipe(authored_module: str) -> None:
 # ----- footgun guards (from the adversarial review) -----
 
 
-def test_make_rejects_envrecipe_instance(authored_module: str) -> None:
-    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
-    with pytest.raises(TypeError, match="not an instance"):
-        rlmesh.make(cart())  # the class is correct; an instance is the mistake
-
-
-def test_envserver_rejects_envrecipe_instance(authored_module: str) -> None:
+def test_rejects_envrecipe_instance(authored_module: str) -> None:
+    # Both public surfaces reject an instance (the class is correct; an instance
+    # is the mistake): rlmesh.make(...) and EnvServer's _coerce_env(...).
     from rlmesh.server import _coerce_env
 
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
-    with pytest.raises(TypeError, match="not an instance"):
-        _coerce_env(cart())
+    for entry in (rlmesh.make, _coerce_env):
+        with pytest.raises(TypeError, match="not an instance"):
+            entry(cart())
 
 
-def test_make_envrecipe_rejects_vectorization(authored_module: str) -> None:
+@pytest.mark.parametrize("kwargs", [{"num_envs": 4}, {"vectorization_mode": "async"}])
+def test_make_envrecipe_rejects_vectorization(
+    authored_module: str, kwargs: dict[str, Any]
+) -> None:
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="num_envs"):
-        rlmesh.make(cart, num_envs=4)
-    with pytest.raises(TypeError, match="num_envs"):
-        rlmesh.make(cart, vectorization_mode="async")
+        rlmesh.make(cart, **kwargs)
 
 
 def test_make_py_recipe_rejects_vectorization() -> None:

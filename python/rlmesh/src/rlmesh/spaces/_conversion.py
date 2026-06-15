@@ -8,8 +8,8 @@ from typing import Any, cast
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
+from ._internals import space_shape, spec_details
 from ._registry import space_from_spec
-from ._utils import space_shape, spec_details
 from .box import Box
 from .dict import Dict
 from .discrete import Discrete

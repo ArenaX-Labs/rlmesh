@@ -50,6 +50,11 @@ Issues = "https://github.com/ArenaX-Labs/rlmesh/issues"
 gymnasium = ["gymnasium>=0.26.1"]
 gym = ["gym>=0.22.0"]
 
+# Host-side hf:// artifact resolution (container-less local runs) needs
+# huggingface_hub. Optional so the core stays dependency-free; in a sandbox the
+# managed sidecar materializes inputs and the eval container never imports it.
+hf = ["huggingface_hub"]
+
 # NumPy support for Python 3.10 was introduced in 1.21, but only has built wheels
 # starting from 1.21.2. However, 1.22+ seems to be when Python 3.10 support was
 # truly stable, which also coincides with the DLPack backend release, making it a

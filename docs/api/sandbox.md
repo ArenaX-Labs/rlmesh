@@ -45,3 +45,18 @@ inside the owned sandbox session.
 | `rlmesh.torch.SandboxVectorEnv` | `rlmesh.torch.RemoteVectorEnv` | Torch tensors and primitives |
 
 See {doc}`numpy` and {doc}`torch` for backend-specific class entries and helper functions.
+
+## Export
+
+`rlmesh.export` builds the image without starting a container; see the {doc}`../user-guide/sandbox`
+guide for usage.
+
+```{eval-rst}
+.. autofunction:: rlmesh.export
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.ExportResult
+   :members:
+   :show-inheritance:
+```

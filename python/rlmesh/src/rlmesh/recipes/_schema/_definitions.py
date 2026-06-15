@@ -1,0 +1,916 @@
+"""Recipe schema definitions: the inert, JSON-round-trippable dataclasses.
+
+A recipe is **inert data**: no callables anywhere, JSON-round-trippable, and
+derivable to a Dockerfile by a language-neutral core with zero Python executed.
+A non-serializable field would poison the sandbox / cross-language path, so the
+invariant is enforced *eagerly* at construction (``__post_init__``) rather than
+at the wire: you can never construct a ``Recipe`` that will not serialize and
+render safely.
+
+The three phases are read top to bottom:
+
+* **make** (phase 3) -- the named factory (``gym`` | ``py`` | ``hf``).
+* **build** (phase 1) -- derives a Dockerfile; shell/apt/git are allowed here
+  and *only* here, because this phase runs exclusively inside ``docker build``.
+* **setup** (phase 2) -- construct-time DATA only (env mutation + file writes);
+  the safety boundary, because it runs in your process.
+
+Canonical parse/serialize lives in :mod:`._serialize` (single-implemented in the
+Rust serde core; these dataclasses are typed views with identical field names
+and JSON shape).
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, fields
+from typing import TYPE_CHECKING, Final, Literal, cast
+
+if TYPE_CHECKING:
+    # Typing-only: the core never depends on the adapters layer at runtime
+    # (``from __future__ import annotations`` keeps the annotation a string).
+    from rlmesh.adapters import EnvTags, ModelSpec
+
+# The recipe schema version. New fields default, so a document missing them still
+# loads; the version is a soft signal for readers, not a hard gate.
+RECIPE_VERSION: Final = 1
+
+# The single discriminator that distinguishes an env recipe document from a model
+# recipe document. Selects the container ENTRYPOINT/bootstrap and gates a small set
+# of cross-kind validations. Deliberately excluded from build_hash.
+RecipeKind = Literal["env", "model"]
+
+
+def _empty_json_map() -> dict[str, object]:
+    return {}
+
+
+def _empty_str_map() -> dict[str, str]:
+    return {}
+
+
+class RecipeValidationError(ValueError):
+    """Raised when a recipe is constructed with an unserializable or unsafe field.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` handlers keep
+    working; the dedicated type lets callers distinguish recipe-shape failures
+    from other value errors.
+    """
+
+
+# Per-field allowlists, each with its own legal charset. The *primary* safety
+# boundary is exec-form argument passing in the renderer; these allowlists are
+# belt-and-suspenders that reject shell metacharacters, newlines, and option
+# injection (a leading "-") at construction time.
+
+_APT_NAME: Final = re.compile(r"^[a-z0-9][a-z0-9+.\-]*$")
+_GIT_REF: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
+_SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
+_URL: Final = re.compile(r"^https?://[^\s'\"\\]+$")
+_POSIX_PATH: Final = re.compile(r"^[A-Za-z0-9._/\-]+$")
+# A relative path glob for ProjectInstall.include: a POSIX path plus the only
+# wildcards the Rust include matcher implements -- '*' and '**'. The matcher treats
+# '?'/'['/']'/'{'/'}' as literals, so rejecting them here keeps a 'file?.json' entry
+# from passing check() then silently matching nothing.
+_INCLUDE_GLOB: Final = re.compile(r"^[A-Za-z0-9._/\-*]+$")
+_ENV_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# The name half of "namespace/name"; '@' is reserved for @variant addressing.
+_RECIPE_NAME: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/\-]*$")
+# A gymnasium env id. Unlike a recipe name it may contain ':' (the
+# ``module:Name-vN`` load form, e.g. ``sai_pygame:SquidHunt-v0``), so
+# ``rlmesh.make`` stays a strict superset of ``gymnasium.make``.
+_GYM_ENV_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:\-]*$")
+
+
+def _require_str(value: object, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise RecipeValidationError(
+            f"{field_name} must be a str, got {type(value).__name__}"
+        )
+    return value
+
+
+def _check_token(value: str, pattern: re.Pattern[str], field_name: str) -> None:
+    # fullmatch, not match: with a `$`-anchored pattern, match() accepts a value
+    # with a trailing newline (`$` matches before the final \n), which then breaks
+    # the Dockerfile line / recipe name at the Rust boundary. fullmatch requires
+    # the whole string to match, so a trailing \n (or any control char) is rejected.
+    if not pattern.fullmatch(value):
+        raise RecipeValidationError(
+            f"{field_name} {value!r} is not a valid {field_name} token"
+        )
+
+
+def _check_include_glob(value: str, field_name: str) -> None:
+    """Validate a ProjectInstall.include glob: non-empty, relative, path/``*`` tokens only."""
+    if not value:
+        raise RecipeValidationError(f"{field_name} entry must be non-empty")
+    if value[0] == "/":
+        raise RecipeValidationError(
+            f"{field_name} {value!r} must be a relative glob, not an absolute path"
+        )
+    _check_token(value, _INCLUDE_GLOB, field_name)
+
+
+def _check_pip_package(value: str, field_name: str) -> None:
+    """Validate a pip requirement string (PEP 508-ish, exec-form safe).
+
+    Full PEP 508 is brittle to re-derive; the load-bearing checks are: non-empty,
+    no newlines/control characters, and no leading ``-`` (which would smuggle a
+    ``pip`` option such as ``--index-url`` past the package list).
+    """
+    if not value or value[0] == "-":
+        raise RecipeValidationError(
+            f"{field_name} {value!r} must be a package spec, not empty or an option"
+        )
+    if any(ch in value for ch in "\n\r\x00"):
+        raise RecipeValidationError(
+            f"{field_name} {value!r} must not contain newlines or null bytes"
+        )
+
+
+# ``kwargs`` are inherited by the Rust serde boundary as serde_json::Value, so
+# they must be JSON-only. Scalars are checked by *exact* type (not isinstance) so
+# numpy scalars -- np.float64 subclasses float -- are rejected, not silently cast.
+
+_JSON_SCALARS: Final = (bool, int, float, str)
+
+
+def _clean_json(value: object, path: str) -> object:
+    """Validate a value is JSON-only and return a canonical copy.
+
+    Tuples become lists and mappings become plain dicts so that
+    ``from_json(to_json(recipe)) == recipe`` holds regardless of the container
+    types the author passed in.
+    """
+    if type(value) is float and not math.isfinite(value):
+        # float('nan')/float('inf') survive construction and json.dumps emits them as
+        # the NaN/Infinity tokens, which Python's json.loads accepts but the Rust
+        # serde_json boundary REJECTS -- a check()-passes-then-fails-at-launch trap.
+        # Reject at construction (`is float` so bool/int are unaffected; numpy scalars
+        # already fall through to the non-JSON rejection below).
+        raise RecipeValidationError(
+            f"{path}: non-finite floats (NaN/Infinity) are not valid JSON; "
+            f"got {value!r}"
+        )
+    if value is None or type(value) in _JSON_SCALARS:
+        return value
+    if isinstance(value, Mapping):
+        cleaned: dict[str, object] = {}
+        for key, item in cast("Mapping[object, object]", value).items():
+            if not isinstance(key, str):
+                raise RecipeValidationError(
+                    f"{path}: kwargs mapping keys must be str, got {type(key).__name__}"
+                )
+            cleaned[key] = _clean_json(item, f"{path}.{key}")
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        items = cast("Sequence[object]", value)
+        return [
+            _clean_json(item, f"{path}[{index}]") for index, item in enumerate(items)
+        ]
+    raise RecipeValidationError(
+        f"{path}: kwargs must be JSON-only (str/int/float/bool/None/list/dict), "
+        f"got {type(value).__name__}"
+    )
+
+
+def _clean_json_kwargs(value: Mapping[str, object], path: str) -> dict[str, object]:
+    cleaned = _clean_json(dict(value), path)
+    # _clean_json on a Mapping always returns a dict; narrow for the type checker.
+    assert isinstance(cleaned, dict)
+    return cast("dict[str, object]", cleaned)
+
+
+def _clean_str_map(value: Mapping[str, str], field_name: str) -> dict[str, str]:
+    cleaned: dict[str, str] = {}
+    for key, item in value.items():
+        name = _require_str(key, f"{field_name} key")
+        _check_token(name, _ENV_NAME, f"{field_name} key")
+        cleaned[name] = _require_str(item, f"{field_name}[{name}]")
+    return cleaned
+
+
+def _as_str_tuple(value: Sequence[str], field_name: str) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise RecipeValidationError(
+            f"{field_name} expects a sequence of strings, not a bare str; "
+            f"pass [{value!r}] for a single entry"
+        )
+    return tuple(_require_str(item, f"{field_name}[]") for item in value)
+
+
+@dataclass(frozen=True)
+class GymMake:
+    """A ``gymnasium.make`` / ``gym.make`` factory -- the 90% case.
+
+    Covers any id constructible via ``gymnasium.make``: a built-in like
+    ``CartPole-v1``, or one that a ``requires.imports`` package registers into the
+    Gymnasium registry on import (e.g. ``ale_py`` for Atari). For an environment
+    with its *own* ``make`` or one that needs a wrapper (e.g. ``safety_gymnasium``),
+    or any custom construction, use :class:`PyMake` or ``rlmesh.EnvRecipe`` instead.
+    """
+
+    env_id: str
+    kwargs: Mapping[str, object] = field(default_factory=_empty_json_map)
+    kind: Final = "gym"
+
+    def __post_init__(self) -> None:
+        """Validate the env id and JSON-only kwargs."""
+        _check_token(
+            _require_str(self.env_id, "GymMake.env_id"), _GYM_ENV_ID, "GymMake.env_id"
+        )
+        object.__setattr__(
+            self, "kwargs", _clean_json_kwargs(self.kwargs, "GymMake.kwargs")
+        )
+
+
+@dataclass(frozen=True)
+class PyMake:
+    """A ``module:callable`` Python factory referenced by string.
+
+    The right tool whenever ``gymnasium.make`` is not (an env with its own ``make``
+    plus a wrapper like ``safety_gymnasium``, or heavy construction like LIBERO /
+    Isaac). The callable can be a function or a class (its ``__init__`` is the
+    initializer). The factory *body* is the sole import sequencer; the envelope
+    never pre-runs ``requires.imports`` for a py recipe (see ``Recipe`` validation).
+    For the cohesive class form (factory + build + ``prepare()`` together), subclass
+    ``rlmesh.EnvRecipe``, which projects to a ``PyMake`` recipe.
+    """
+
+    entrypoint: str
+    kwargs: Mapping[str, object] = field(default_factory=_empty_json_map)
+    kind: Final = "py"
+
+    def __post_init__(self) -> None:
+        """Validate the ``module:callable`` entrypoint and JSON-only kwargs."""
+        from rlmesh._entrypoint import parse_entrypoint
+
+        entrypoint = _require_str(self.entrypoint, "PyMake.entrypoint")
+        # Use the canonical parser so the same malformed shapes the loader rejects
+        # (``mod:``, ``:fn``, ``mod:fn.``) fail at construction, not at image build.
+        try:
+            parse_entrypoint(entrypoint, label="PyMake.entrypoint")
+        except ValueError as exc:
+            raise RecipeValidationError(str(exc)) from exc
+        object.__setattr__(
+            self, "kwargs", _clean_json_kwargs(self.kwargs, "PyMake.kwargs")
+        )
+
+
+@dataclass(frozen=True)
+class HfMake:
+    """A Hugging Face-materialized factory.
+
+    ``revision`` pins a full 40-char SHA by default (the ``allow_unpinned_hf``
+    gate relaxes it).
+    """
+
+    repo: str
+    revision: str | None = None
+    suite: str | None = None
+    task: str | None = None
+    kwargs: Mapping[str, object] = field(default_factory=_empty_json_map)
+    kind: Final = "hf"
+
+    def __post_init__(self) -> None:
+        """Validate the repo / revision and JSON-only kwargs."""
+        _require_str(self.repo, "HfMake.repo")
+        if self.revision is not None:
+            _check_token(
+                _require_str(self.revision, "HfMake.revision"),
+                _GIT_REF,
+                "HfMake.revision",
+            )
+        object.__setattr__(
+            self, "kwargs", _clean_json_kwargs(self.kwargs, "HfMake.kwargs")
+        )
+
+
+Make = GymMake | PyMake | HfMake
+
+
+@dataclass(frozen=True)
+class PipInstall:
+    """One ``pip install`` step with its own index URLs.
+
+    The per-step model is the only faithful transcription of pyproject's
+    per-package ``[tool.uv.sources]``: torch+torchvision via one step pinned to a
+    cu118 ``--index-url``, isaacsim via another pinned to ``pypi.nvidia.com``,
+    pure-PyPI deps in a third. ``packages`` accepts bare strings for the common
+    case.
+    """
+
+    packages: Sequence[str]
+    index_url: str | None = None
+    extra_index_urls: Sequence[str] = ()
+    no_deps: bool = False
+    pre: bool = False
+    requirements: str | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize sequences and validate package specs and index URLs."""
+        packages = _as_str_tuple(self.packages, "PipInstall.packages")
+        if not packages:
+            raise RecipeValidationError("PipInstall.packages must be non-empty")
+        for package in packages:
+            _check_pip_package(package, "PipInstall.packages")
+        object.__setattr__(self, "packages", packages)
+
+        extras = _as_str_tuple(self.extra_index_urls, "PipInstall.extra_index_urls")
+        for url in extras:
+            _check_token(url, _URL, "PipInstall.extra_index_urls")
+        object.__setattr__(self, "extra_index_urls", extras)
+
+        if self.index_url is not None:
+            _check_token(
+                _require_str(self.index_url, "PipInstall.index_url"),
+                _URL,
+                "PipInstall.index_url",
+            )
+        if self.requirements is not None:
+            _check_token(
+                _require_str(self.requirements, "PipInstall.requirements"),
+                _POSIX_PATH,
+                "PipInstall.requirements",
+            )
+
+
+@dataclass(frozen=True)
+class Fetch:
+    """A third-party build-time acquisition: a git clone or url download.
+
+    Confined to ``docker build``; never runs in-process. Pinned by ``ref`` (git)
+    or ``sha256`` (url). Installing the recipe *author's own* tree is
+    ``ProjectInstall``, not ``Fetch``.
+    """
+
+    kind: str
+    repo: str | None = None
+    ref: str | None = None
+    dest: str = ""
+    pip_install: bool = False
+    pip_requirements: str | None = None
+    url: str | None = None
+    sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate the fetch kind and its pinning/destination tokens."""
+        kind = _require_str(self.kind, "Fetch.kind")
+        if kind not in ("git", "url"):
+            raise RecipeValidationError(
+                f"Fetch.kind must be 'git' or 'url', got {kind!r}"
+            )
+        if kind == "git":
+            if self.repo is None:
+                raise RecipeValidationError("Fetch(kind='git') requires repo=")
+            _check_token(_require_str(self.repo, "Fetch.repo"), _URL, "Fetch.repo")
+            if self.ref is not None:
+                _check_token(_require_str(self.ref, "Fetch.ref"), _GIT_REF, "Fetch.ref")
+        else:
+            if self.url is None:
+                raise RecipeValidationError("Fetch(kind='url') requires url=")
+            _check_token(_require_str(self.url, "Fetch.url"), _URL, "Fetch.url")
+            if self.sha256 is not None:
+                _check_token(
+                    _require_str(self.sha256, "Fetch.sha256"), _SHA256, "Fetch.sha256"
+                )
+        # dest is required for both kinds: the deriver clones/downloads INTO it,
+        # and an empty dest fails the Rust deriver (MissingField) only at build
+        # time -- reject it eagerly here instead.
+        dest = _require_str(self.dest, "Fetch.dest")
+        if not dest:
+            raise RecipeValidationError(
+                f"Fetch(kind={kind!r}) requires a non-empty dest="
+            )
+        _check_token(dest, _POSIX_PATH, "Fetch.dest")
+        if self.pip_requirements is not None:
+            _check_token(
+                _require_str(self.pip_requirements, "Fetch.pip_requirements"),
+                _POSIX_PATH,
+                "Fetch.pip_requirements",
+            )
+
+
+@dataclass(frozen=True)
+class ProjectInstall:
+    """Install the recipe *author's own* package source tree, editable.
+
+    Carries the package's non-code assets and preserves parent-dir layout so
+    ``__file__``-relative paths (the Isaac/USD ``Path(__file__).parent/'../../assets'``
+    pattern) resolve at construct time. Rejected for Remote provenance (no host
+    tree to read).
+    """
+
+    src: str = "."
+    dest: str = ""
+    editable: bool = True
+    include: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        """Validate the source/destination paths and include globs."""
+        src = _require_str(self.src, "ProjectInstall.src")
+        if src != "." and not _POSIX_PATH.fullmatch(src):
+            raise RecipeValidationError(
+                f"ProjectInstall.src {src!r} is not a valid path"
+            )
+        if self.dest:
+            _check_token(
+                _require_str(self.dest, "ProjectInstall.dest"),
+                _POSIX_PATH,
+                "ProjectInstall.dest",
+            )
+        include = _as_str_tuple(self.include, "ProjectInstall.include")
+        for entry in include:
+            _check_include_glob(entry, "ProjectInstall.include")
+        object.__setattr__(self, "include", include)
+
+
+@dataclass(frozen=True)
+class Build:
+    """Phase 1 -- the typed Dockerfile.
+
+    An empty ``Build()`` reproduces today's OSS behavior (base + pip rlmesh +
+    gymnasium). Every field renders to a Dockerfile instruction, *or*
+    ``dockerfile`` supplies the body verbatim (the strict-superset-of-a-Dockerfile
+    trapdoor). The full ``FROM``-chain is derivable from the document alone.
+
+    The default renderer installs ``system``/``system_runtime`` with **apt**, so a
+    structured build targets a **Debian/Ubuntu** base (the defaults --
+    ``python:3.11-slim`` and the ``nvidia/cuda`` images -- are). For another distro,
+    set ``dockerfile`` to a verbatim Dockerfile, or use ``commands``.
+    """
+
+    base: str | None = None
+    from_recipe: str | None = None
+    system: Sequence[str] = ()
+    system_runtime: Sequence[str] = ()
+    pip: Sequence[PipInstall] = ()
+    project: ProjectInstall | None = None
+    fetch: Sequence[Fetch] = ()
+    env: Mapping[str, str] = field(default_factory=_empty_str_map)
+    pythonpath: Sequence[str] = ()
+    gpu: bool = False
+    installer: str = "pip"
+    run_as: int | None = None
+    toolchain: bool | None = None
+    commands: Sequence[str] = ()
+    dockerfile: str | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize sequences and enforce mutual-exclusivity + token rules."""
+        if self.base is not None and self.from_recipe is not None:
+            raise RecipeValidationError(
+                "Build.base and Build.from_recipe are mutually exclusive"
+            )
+        if self.base is not None:
+            _require_str(self.base, "Build.base")
+        if self.from_recipe is not None:
+            _check_token(
+                _require_str(self.from_recipe, "Build.from_recipe"),
+                _RECIPE_NAME,
+                "Build.from_recipe",
+            )
+        if self.installer not in ("pip", "uv"):
+            raise RecipeValidationError(
+                f"Build.installer must be 'pip' or 'uv', got {self.installer!r}"
+            )
+
+        system = _as_str_tuple(self.system, "Build.system")
+        runtime = _as_str_tuple(self.system_runtime, "Build.system_runtime")
+        for name in (*system, *runtime):
+            _check_token(name, _APT_NAME, "Build.system")
+        object.__setattr__(self, "system", system)
+        object.__setattr__(self, "system_runtime", runtime)
+
+        pythonpath = _as_str_tuple(self.pythonpath, "Build.pythonpath")
+        for entry in pythonpath:
+            _check_token(entry, _POSIX_PATH, "Build.pythonpath")
+        object.__setattr__(self, "pythonpath", pythonpath)
+
+        object.__setattr__(self, "pip", tuple(self.pip))
+        object.__setattr__(self, "fetch", tuple(self.fetch))
+        object.__setattr__(
+            self, "commands", _as_str_tuple(self.commands, "Build.commands")
+        )
+        object.__setattr__(self, "env", _clean_str_map(self.env, "Build.env"))
+
+        # A verbatim dockerfile is emitted as-is: every field that only feeds the
+        # *derived* Dockerfile is silently dropped, so reject the combination. ``gpu``
+        # is exempt -- it drives the runtime --gpus flag independently.
+        if self.dockerfile is not None:
+            _require_str(self.dockerfile, "Build.dockerfile")
+            structured = (
+                system,
+                runtime,
+                self.pip,
+                self.fetch,
+                self.commands,
+                self.project,
+                self.env,
+                pythonpath,
+            )
+            if (
+                any(structured)
+                or self.base is not None
+                or self.from_recipe is not None
+                or self.run_as is not None
+                or self.installer != "pip"
+            ):
+                raise RecipeValidationError(
+                    "Build.dockerfile is mutually exclusive with structured build "
+                    "fields (base/system/pip/fetch/project/commands/from_recipe/env/"
+                    "pythonpath/run_as/installer); put those directives in the "
+                    "verbatim Dockerfile body"
+                )
+
+
+@dataclass(frozen=True)
+class FileWrite:
+    """A construct-time file write.
+
+    In-container the path is unrestricted; in-process it is tempdir-only (the
+    safety boundary).
+    """
+
+    path: str
+    contents: str
+    if_absent: bool = False
+
+    def __post_init__(self) -> None:
+        """Validate the path and contents are strings."""
+        _require_str(self.path, "FileWrite.path")
+        _require_str(self.contents, "FileWrite.contents")
+
+
+@dataclass(frozen=True)
+class Setup:
+    """Construct-time DATA: ``os.environ`` updates plus file writes.
+
+    Applied before ``requires.imports`` (gym/hf only).
+
+    Per-construction parameters for env-var-driven legacy envs (LIBERO's
+    parameterless ``class Environment`` that reads ``LIBERO_TASK``) ride
+    ``setup.env`` -- not ``make.kwargs`` -- so they do not invalidate ``build_hash``.
+    ``setup.env`` is *not* isolation-safe in-process (constructed envs read vars
+    lazily); the sandbox is the blessed isolation path.
+    """
+
+    env: Mapping[str, str] = field(default_factory=_empty_str_map)
+    files: Sequence[FileWrite] = ()
+    # Allowlist of setup.env keys a member may override at runtime via
+    # RLMESH_PARAMS_JSON; build-hash-excluded, so one image serves every member.
+    params: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        """Validate env var names / params and normalize the file-write sequence."""
+        object.__setattr__(self, "env", _clean_str_map(self.env, "Setup.env"))
+        object.__setattr__(self, "files", tuple(self.files))
+        params = _as_str_tuple(self.params, "Setup.params")
+        for name in params:
+            _check_token(name, _ENV_NAME, "Setup.params[]")
+        object.__setattr__(self, "params", params)
+
+
+@dataclass(frozen=True)
+class Requires:
+    """Registration imports, run *before* ``make`` for ``GymMake``/``HfMake`` only.
+
+    For ``PyMake`` this field is forbidden (spec 7.1D): the factory body owns its
+    own import sequence, so a non-empty ``imports`` would be a silently-ignored
+    lie. There is no ``requires.packages`` -- the single dependency surface is
+    ``build.pip``.
+    """
+
+    imports: Sequence[str] = ()
+
+    def __post_init__(self) -> None:
+        """Normalize the imports sequence to a tuple of strings."""
+        object.__setattr__(
+            self, "imports", _as_str_tuple(self.imports, "Requires.imports")
+        )
+
+
+_ARTIFACT_URI_SCHEMES: Final = (
+    "hf://",
+    "gs://",
+    "s3://",
+    "https://",
+    "http://",
+    "file://",
+)
+
+
+@dataclass(frozen=True)
+class ArtifactInput:
+    """A runtime weight/asset mount for a model recipe.
+
+    Weights are ALWAYS a runtime mount -- never ``build.fetch``, never baked into the
+    image. ``build_hash`` excludes runtime params, so one image serves every checkpoint.
+    Resolve the mounted path inside ``load()`` via ``ModelRecipe.input_path(name)``.
+
+    A ``uri`` is fetched by the rlmesh artifact resolver into a content-addressed cache
+    (root ``$RLMESH_CACHE_DIR``, default ``~/.cache/rlmesh/artifacts``); ``local_dir``
+    overrides with an explicit host dir for the local (non-sandbox) path. ``None`` uri
+    means the mount is bound at run time (a ``SandboxModel``/``Model`` launch arg).
+    """
+
+    name: str
+    target_path: str
+    uri: str | None = None
+    local_dir: str | None = None
+    include: Sequence[str] = ()
+    required: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate the handle name, mount path, uri scheme, and include globs."""
+        _check_token(
+            _require_str(self.name, "ArtifactInput.name"),
+            _RECIPE_NAME,
+            "ArtifactInput.name",
+        )
+        _check_token(
+            _require_str(self.target_path, "ArtifactInput.target_path"),
+            _POSIX_PATH,
+            "ArtifactInput.target_path",
+        )
+        if self.uri is not None:
+            uri = _require_str(self.uri, "ArtifactInput.uri")
+            if not uri.startswith(_ARTIFACT_URI_SCHEMES):
+                raise RecipeValidationError(
+                    f"ArtifactInput.uri {uri!r} must use one of {_ARTIFACT_URI_SCHEMES}"
+                )
+        # local_dir is a host path (not a rendered-in-container token), so only its
+        # type is checked eagerly, like every other string field -- not its shape.
+        if self.local_dir is not None:
+            _require_str(self.local_dir, "ArtifactInput.local_dir")
+        includes = _as_str_tuple(self.include, "ArtifactInput.include")
+        for glob in includes:
+            _check_include_glob(glob, "ArtifactInput.include")
+        object.__setattr__(self, "include", includes)
+
+
+@dataclass(frozen=True)
+class RuntimeReserved:
+    """Reserved, inert home for every deferred feature.
+
+    Every default is ``None`` (a no-op today); populating any field later is additive
+    and excluded from ``build_hash``. Serializes to absent/null when empty, so existing
+    env recipe JSON and build hashes stay byte-identical. Lives on ``Recipe.runtime``.
+    """
+
+    # action chunking -- a MODEL fact vs a pinned eval knob vs the loop mode
+    chunk_size: int | None = None
+    execute_horizon: int | None = None
+    loop_mode: Literal["step", "chunk", "receding", "open_loop"] | None = None
+    # batching / scheduling -- opt-in is the industry standard
+    batching: Literal["off", "utilization", "fusion"] | None = None
+    max_batch: int | None = None
+    # eval-determinism mode
+    determinism: Literal["off", "seeded", "strict"] | None = None
+    # multi-modal perturbation taxonomy (a JSON bag until/unless it earns a schema)
+    perturbation: Mapping[str, object] | None = None
+    # per-lane stateful-adapter affinity
+    lane_affinity: bool | None = None
+
+    def __post_init__(self) -> None:
+        """Validate every field eagerly so a constructed instance always round-trips."""
+        for name, allowed in (
+            ("loop_mode", ("step", "chunk", "receding", "open_loop")),
+            ("batching", ("off", "utilization", "fusion")),
+            ("determinism", ("off", "seeded", "strict")),
+        ):
+            value = getattr(self, name)
+            if value is not None and value not in allowed:
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} invalid: {value!r}"
+                )
+        for name in ("chunk_size", "execute_horizon", "max_batch"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} must be an integer, got {value!r}"
+                )
+        for name in ("lane_affinity",):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} must be a boolean, got {value!r}"
+                )
+        if self.perturbation is not None:
+            object.__setattr__(
+                self,
+                "perturbation",
+                _clean_json_kwargs(self.perturbation, "RuntimeReserved.perturbation"),
+            )
+
+    def is_empty(self) -> bool:
+        """True when every field is ``None`` (the default, inert state)."""
+        return all(getattr(self, f.name) is None for f in fields(self))
+
+    def to_dict(self) -> dict[str, object] | None:
+        """JSON form, or ``None`` when empty (so the recipe envelope omits the key)."""
+        if self.is_empty():
+            return None
+        return {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if getattr(self, f.name) is not None
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, object] | None) -> RuntimeReserved:
+        """Rehydrate from JSON, ignoring unknown keys (forward-compat)."""
+        if not data:
+            return cls()
+        # __post_init__ re-validates every field, so pass the raw values straight through.
+        return cls(
+            chunk_size=opt_int(data.get("chunk_size"), "RuntimeReserved.chunk_size"),
+            execute_horizon=opt_int(
+                data.get("execute_horizon"), "RuntimeReserved.execute_horizon"
+            ),
+            loop_mode=data.get("loop_mode"),  # type: ignore[arg-type]
+            batching=data.get("batching"),  # type: ignore[arg-type]
+            max_batch=opt_int(data.get("max_batch"), "RuntimeReserved.max_batch"),
+            determinism=data.get("determinism"),  # type: ignore[arg-type]
+            perturbation=opt_map(data.get("perturbation")),
+            lane_affinity=opt_bool(
+                data.get("lane_affinity"), "RuntimeReserved.lane_affinity"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Recipe:
+    """An inert environment recipe.
+
+    No callables, JSON-round-trippable, and derivable to a Dockerfile by a
+    language-neutral core with zero Python executed.
+
+    ``make=None`` is a build-only base (the honest shape for ``from_recipe`` reuse);
+    constructing such a recipe directly is rejected by ``rlmesh.make``/``build()``.
+    """
+
+    name: str
+    make: Make | None = None
+    build: Build = field(default_factory=Build)
+    setup: Setup = field(default_factory=Setup)
+    requires: Requires = field(default_factory=Requires)
+    summary: str | None = None
+    # The published adapter content: an env recipe's EnvTags or a model recipe's
+    # ModelSpec (or a raw JSON Mapping after from_dict). A dataclass instance is
+    # accepted at construction and lazily type-checked against ``kind`` in
+    # __post_init__; serde flattens it to a bare JSON dict.
+    adapter: EnvTags | ModelSpec | Mapping[str, object] | None = None
+    recipe_version: int = RECIPE_VERSION
+    # Appended, keyword-friendly, defaulted; never inserted mid-list so positional
+    # construction + the Rust serde golden order stay stable.
+    kind: RecipeKind = "env"
+    inputs: tuple[ArtifactInput, ...] = ()
+    runtime: RuntimeReserved = field(default_factory=RuntimeReserved)
+
+    def __post_init__(self) -> None:
+        """Validate the name and enforce the cross-cutting PyMake import rule."""
+        name = _require_str(self.name, "Recipe.name")
+        if "@" in name:
+            raise RecipeValidationError(
+                f"Recipe.name {name!r} must not contain '@' (reserved for @variant)"
+            )
+        _check_token(name, _RECIPE_NAME, "Recipe.name")
+
+        # requires.imports is a hard error for PyMake.
+        if isinstance(self.make, PyMake) and self.requires.imports:
+            raise RecipeValidationError(
+                "requires.imports is forbidden for PyMake; the py factory body owns "
+                "its own import sequence (spec 7.1D)"
+            )
+
+        # Cross-kind rules.
+        if self.kind == "model" and not (
+            self.make is None or isinstance(self.make, PyMake)
+        ):
+            raise RecipeValidationError(
+                "a model recipe's make must be a PyMake (to ModelRecipe._rlmesh_load) "
+                "or None; gym/hf factories are env-only"
+            )
+        # inputs (runtime artifact mounts) are kind-agnostic -- weights for a model,
+        # assets for an env -- but only an authored (PyMake/None) recipe has an
+        # input_path to resolve them; a gym/hf SOURCE env cannot, so reject them there.
+        if self.inputs and not (self.make is None or isinstance(self.make, PyMake)):
+            raise RecipeValidationError(
+                "Recipe.inputs require an authored (PyMake) recipe; a gym/hf source "
+                "env has no input_path to resolve them"
+            )
+        object.__setattr__(self, "inputs", tuple(self.inputs))
+
+        # adapter: a raw Mapping is JSON-cleaned; a dataclass instance is type-checked
+        # against the kind (and serialized to a bare dict later).
+        adapter = self.adapter
+        if adapter is None:
+            pass
+        elif isinstance(adapter, Mapping):
+            object.__setattr__(
+                self, "adapter", _clean_json_kwargs(adapter, "Recipe.adapter")
+            )
+        else:
+            from rlmesh.adapters import EnvTags, ModelSpec
+
+            if self.kind == "env" and not isinstance(adapter, EnvTags):
+                raise RecipeValidationError(
+                    f"Recipe.adapter must be an EnvTags for kind='env'; "
+                    f"got {type(adapter).__name__}"
+                )
+            if self.kind == "model" and not isinstance(adapter, ModelSpec):
+                raise RecipeValidationError(
+                    f"Recipe.adapter must be a ModelSpec for kind='model'; "
+                    f"got {type(adapter).__name__}"
+                )
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the canonical JSON-shaped mapping for this recipe."""
+        adapter = adapter_to_dict(self.adapter)
+        return {
+            "name": self.name,
+            "make": make_to_dict(self.make),
+            "build": build_to_dict(self.build),
+            "setup": setup_to_dict(self.setup),
+            "requires": {"imports": list(self.requires.imports)},
+            "summary": self.summary,
+            "adapter": adapter,
+            "recipe_version": self.recipe_version,
+            "kind": self.kind,
+            "inputs": [artifact_to_dict(a) for a in self.inputs],
+            "runtime": self.runtime.to_dict(),
+        }
+
+    def to_json(self) -> str:
+        """Serialize to the canonical JSON wire format consumed by the Rust core."""
+        import json
+
+        # allow_nan=False is defense-in-depth: _clean_json already rejects non-finite
+        # floats at construction, so the wire can never carry the NaN/Infinity tokens
+        # that the Rust serde_json boundary rejects, even if some path bypasses it.
+        return json.dumps(self.to_dict(), allow_nan=False)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> Recipe:
+        """Build a recipe from a canonical JSON-shaped mapping (executes nothing)."""
+        # The published-adapter field was renamed annotations -> adapter. Fail loud
+        # on a pre-rename document rather than silently dropping its content.
+        if payload.get("adapter") is None and "annotations" in payload:
+            raise RecipeValidationError(
+                "recipe JSON uses the pre-rename 'annotations' key (now 'adapter'); "
+                "re-export the recipe with the current schema"
+            )
+        return cls(
+            name=expect_str(payload.get("name"), "name"),
+            make=make_from_dict(payload.get("make")),
+            build=build_from_dict(payload.get("build")),
+            setup=setup_from_dict(payload.get("setup")),
+            requires=Requires(imports=str_list(get(payload, "requires", "imports"))),
+            summary=opt_str(payload.get("summary"), "summary"),
+            adapter=opt_map(payload.get("adapter")),
+            recipe_version=expect_int(
+                payload.get("recipe_version"), "recipe_version", RECIPE_VERSION
+            ),
+            kind=recipe_kind_from(payload.get("kind")),
+            inputs=artifact_list(payload.get("inputs")),
+            runtime=RuntimeReserved.from_dict(opt_map(payload.get("runtime"))),
+        )
+
+    @classmethod
+    def from_json(cls, payload: str) -> Recipe:
+        """Parse a recipe from canonical JSON. Parsing is inert: executes nothing."""
+        import json
+
+        loaded: object = json.loads(payload)
+        return cls.from_dict(require_map(loaded, "recipe JSON"))
+
+
+# Imported at module bottom (after the dataclasses) to break the
+# definitions<->serialize cycle: serialize imports these dataclasses at its top.
+from ._serialize import (  # noqa: E402
+    adapter_to_dict,
+    artifact_list,
+    artifact_to_dict,
+    build_from_dict,
+    build_to_dict,
+    expect_int,
+    expect_str,
+    get,
+    make_from_dict,
+    make_to_dict,
+    opt_bool,
+    opt_int,
+    opt_map,
+    opt_str,
+    recipe_kind_from,
+    require_map,
+    setup_from_dict,
+    setup_to_dict,
+    str_list,
+)

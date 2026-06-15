@@ -9,7 +9,7 @@ from .._rlmesh import tuple_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import NewOutputT, Space, SpaceBridge
-from ._utils import spec_details
+from ._internals import spec_details
 
 
 @final

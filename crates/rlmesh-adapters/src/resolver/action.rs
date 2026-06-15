@@ -100,6 +100,34 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             ));
         };
         check_action_dims(model_component, env_component)?;
+        // Corrections (scale/invert/threshold) describe the env's actuator
+        // convention; the model declares none. They are read only from the env
+        // component below, so a model-side correction would be silently dropped --
+        // reject it instead.
+        if model_component.scale.is_some()
+            || model_component.invert
+            || model_component.threshold.is_some()
+        {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "action role {}: scale/invert/threshold belong on the env component, not the model",
+                    quoted(&env_component.role)
+                ),
+            ));
+        }
+        let binarize = env_component.binary || model_component.binary;
+        // threshold is a binary decision boundary; without a binary snap it would
+        // silently become a constant offset on a continuous action.
+        if env_component.threshold.is_some() && !binarize {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "action role {}: threshold requires a binary component (set binary=true)",
+                    quoted(&env_component.role)
+                ),
+            ));
+        }
         let same_range = model_component.range == env_component.range;
         segments.push(ActionSegment {
             role: env_component.role.clone(),
@@ -117,7 +145,12 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             } else {
                 env_component.range
             },
-            binarize: env_component.binary || model_component.binary,
+            // The env owns its actuator convention, so its corrections drive the
+            // segment; a model that ships against many envs declares none.
+            scale: env_component.scale,
+            invert: env_component.invert,
+            threshold: env_component.threshold,
+            binarize,
             out_dim: env_component.dim,
         });
     }
@@ -126,4 +159,63 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
         clip: env.clip,
         in_dim,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_action;
+    use crate::error::ErrorCode;
+    use crate::spec::{ActionComponent, ActionLayout};
+
+    fn component(role: &str) -> ActionComponent {
+        ActionComponent {
+            role: role.to_owned(),
+            dim: 1,
+            encoding: None,
+            range: None,
+            binary: false,
+            scale: None,
+            invert: false,
+            threshold: None,
+        }
+    }
+
+    fn layout(components: Vec<ActionComponent>) -> ActionLayout {
+        ActionLayout {
+            components,
+            clip: None,
+        }
+    }
+
+    #[test]
+    fn rejects_threshold_without_a_binary_component() {
+        let model = layout(vec![component("action/gripper")]);
+        let mut gripper = component("action/gripper");
+        gripper.threshold = Some(0.5);
+        let env = layout(vec![gripper]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("threshold requires a binary"));
+    }
+
+    #[test]
+    fn threshold_with_a_binary_component_is_accepted() {
+        let model = layout(vec![component("action/gripper")]);
+        let mut gripper = component("action/gripper");
+        gripper.threshold = Some(0.5);
+        gripper.binary = true;
+        let env = layout(vec![gripper]);
+        assert!(plan_action(&model, &env).is_ok());
+    }
+
+    #[test]
+    fn rejects_corrections_declared_on_the_model_component() {
+        let mut model_gripper = component("action/gripper");
+        model_gripper.scale = Some(2.0);
+        let model = layout(vec![model_gripper]);
+        let env = layout(vec![component("action/gripper")]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("belong on the env component"));
+    }
 }

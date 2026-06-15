@@ -14,11 +14,10 @@ import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
-from .._bootstrap.entrypoint import resolve_entrypoint
+from .._entrypoint import resolve_entrypoint
 from .._rlmesh import ROTATION_DIMS, adapters_resolve
-from .adapter import ActEncShim, IOAdapter, ObsEncShim
+from .adapter import ActEncShim, Adapter, ObsEncShim
 from .constants import ENV_METADATA_KEY
-from .errors import AdapterResolutionError
 from .specs import (
     ActionComponent,
     ActionLayout,
@@ -39,6 +38,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from ..specs import EnvContract
+
+
+class AdapterResolutionError(ValueError):
+    """Raised when env tags and a model spec cannot be reconciled."""
+
 
 # Representative valid value per native base encoding, used by the optional
 # inverse self-check to confirm a CustomEncoding's two arms round-trip.
@@ -121,8 +125,8 @@ def _shadow_state_input(
             model_key=key,
             base=encoding.base,
             width=encoding.width,
-            dtype=state_input.dtype,
             name=encoding.name,
+            dtype=state_input.dtype,
             from_base=cast("RotationTransform", encoding.from_base),
         )
     )
@@ -162,8 +166,8 @@ def _shadow_action(action: ActionLayout, act_shims: list[ActEncShim]) -> ActionL
             act_shims.append(
                 ActEncShim(
                     offset=offset,
-                    width=component.dim,
                     base=encoding.base,
+                    width=component.dim,
                     name=encoding.name,
                     to_base=cast("RotationTransform", encoding.to_base),
                 )
@@ -256,7 +260,7 @@ def _model_wire(
     string is gated on ``trust_entrypoints`` and imported here; an
     in-process callable stays here and is referenced by a ``host:<key>``
     placeholder. Either way the native plan keeps the input as a hole that
-    :class:`IOAdapter` fills from the raw observation.
+    :class:`Adapter` fills from the raw observation.
     """
     customs: dict[str, ObsTransform] = {}
     wire_inputs: list[dict[str, Any]] = []
@@ -296,8 +300,8 @@ def resolve(
     *,
     trust_entrypoints: bool = False,
     check_inverse: bool = True,
-) -> IOAdapter:
-    """Derive an :class:`IOAdapter` for an env/model pair.
+) -> Adapter:
+    """Derive an :class:`Adapter` for an env/model pair.
 
     Args:
         env_tags: The environment's observation/action tags.
@@ -339,7 +343,7 @@ def resolve(
         for model_input in shadow.inputs
         if isinstance(model_input, ImageInput) and model_input.stack > 1
     }
-    return IOAdapter(plan, customs, stacks, obs_shims, act_shims)
+    return Adapter(plan, customs, stacks, obs_shims, act_shims)
 
 
 def resolve_from_contract(
@@ -348,8 +352,8 @@ def resolve_from_contract(
     *,
     trust_entrypoints: bool = False,
     check_inverse: bool = True,
-) -> IOAdapter:
-    """Derive an :class:`IOAdapter` from an env contract and a model spec.
+) -> Adapter:
+    """Derive an :class:`Adapter` from an env contract and a model spec.
 
     Reads the env's tags from its contract metadata (published under
     :data:`ENV_METADATA_KEY` by a server set up with

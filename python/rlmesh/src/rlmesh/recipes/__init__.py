@@ -2,7 +2,8 @@
 
 A recipe declares how to *construct* an environment (build a Dockerfile, set up
 construct-time data, and name a factory) -- distinct from an adapter, which only
-describes IO. The headline authoring surface is :class:`EnvRecipe` (subclass it);
+describes how observations and actions map. The headline authoring surface is
+:class:`EnvRecipe` (subclass it);
 :class:`Recipe` and the ``Build``/``Make`` dataclasses are the inert form your
 recipe lowers to. See ``rlmesh.recipes._schema`` for the three-phase schema.
 
@@ -19,14 +20,8 @@ from __future__ import annotations
 
 from rlmesh._bootstrap.env import RecipeConstructionError
 
-from ._authoring import EnvRecipe
-from ._build import build
-from ._check import check
-from ._launch import (
-    SandboxLaunchArgs,
-    UnsupportedRecipeError,
-    recipe_to_sandbox_args,
-)
+from ._artifacts import hf_load, input_path
+from ._construct import build
 from ._make import make
 from ._registry import (
     RecipeNotFoundError,
@@ -39,7 +34,14 @@ from ._registry import (
     resolve_from_recipe,
     unregister,
 )
+from ._sandbox_validate import (
+    SandboxLaunchArgs,
+    UnsupportedRecipeError,
+    check,
+    recipe_to_sandbox_args,
+)
 from ._schema import (
+    ArtifactInput,
     Build,
     Fetch,
     FileWrite,
@@ -50,12 +52,17 @@ from ._schema import (
     ProjectInstall,
     PyMake,
     Recipe,
+    RecipeKind,
     RecipeValidationError,
     Requires,
+    RuntimeReserved,
     Setup,
 )
+from .authoring.env import EnvRecipe
+from .authoring.model import ModelRecipe
 
 __all__ = [
+    "ArtifactInput",
     "Build",
     "EnvRecipe",
     "Fetch",
@@ -63,20 +70,25 @@ __all__ = [
     "GymMake",
     "HfMake",
     "Make",
+    "ModelRecipe",
     "PipInstall",
     "ProjectInstall",
     "PyMake",
     "Recipe",
     "RecipeConstructionError",
+    "RecipeKind",
     "RecipeNotFoundError",
     "RecipeValidationError",
     "Requires",
+    "RuntimeReserved",
     "SandboxLaunchArgs",
     "Setup",
     "UnsupportedRecipeError",
     "build",
     "check",
     "clear_registry",
+    "hf_load",
+    "input_path",
     "make",
     "pprint_registry",
     "recipe_to_sandbox_args",

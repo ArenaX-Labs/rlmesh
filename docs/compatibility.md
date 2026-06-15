@@ -4,55 +4,71 @@ RLMesh documents compatibility at the workflow level rather than treating every 
 frozen. During beta, stability labels describe the intended support level, but APIs and package
 structure may still change.
 
+```{note}
+RLMesh is in beta. "Stable" here means the surface we intend to keep and will change carefully, with migration notes — not a frozen API. "Experimental" may change or disappear. Pin versions until v0.1.
+```
+
 ## Stable
 
 Stable workflows include documented public APIs, supported CLI flows, and supported remote
-environment/model interactions.
+environment/model interactions. Stable means the surface we intend to keep and will change
+carefully, with migration notes — not a frozen API.
 
-- Imports, signatures, and documented behavior are expected to stay usable within the compatibility
-  policy.
-- New runtimes are expected to keep accepting older stable clients and packages.
+- Imports, signatures, and documented behavior follow the compatibility policy; changes come with
+  migration notes.
+- Once a stable release exists, new runtimes aim to keep accepting older stable clients and
+  packages. During the beta, peers must run the same release.
 - New features may require newer packages or capabilities, but older stable workflows should fail
   clearly or keep working.
 
 ## Preview and Experimental
 
 Preview APIs are intended to become stable but may still change with migration notes. Experimental
-APIs may change or disappear.
+APIs may change or disappear. Preview is reserved for the intended-stable-but-still-moving case and
+is currently unused; today's labels are only Stable and Experimental.
 
 Torch and JAX backends and sandbox helpers are experimental in this beta. The `MultiBinary`,
 `MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for
 the per-space stability labels, which track the API surface policy in `api_metadata.json`.
 
-Beta caveat: dtype values added during the beta (`int8/16`, `uint16/32/64`, `bfloat16`) are not
+```{warning}
+dtype values added during the beta (`int8/16`, `uint16/32/64`, `bfloat16`) are not
 negotiated. A peer from an older beta fails with a decode error naming the unknown dtype when it
 meets an environment that uses them. Run both ends on the same beta release. Edition-gated dtype
 negotiation is planned for the workflow-edition rollout before GA.
+```
 
-Beta caveat: the `rlmesh.protocol.v1` wire format changed within the beta and is not
-backward-compatible across beta releases. Info/option channels (`infos`, `final_info`, `options`,
-and `EnvContract.metadata`) moved off `google.protobuf.Struct` to a self-describing `MetaMap` that
-preserves integer/float/bytes types exactly at any magnitude; composite (Dict/Tuple) space values
-now use a recursive, raw-bytes `SpaceValueNode` encoding instead of base64-in-`Struct`; and
-`EpisodeMetadata.seed` is now an explicit-presence `optional` field that is left unset for unseeded
-episodes rather than reporting a fabricated `0`. The protocol generation stays `rlmesh.protocol.v1`
-(the surface is still beta-mutable before the stable release), and the checked-in public baseline
-tracks the current surface, so peers must run the same beta release. The generation seals with the
-stable release; after that, the same kind of change requires a new generation. Provisional workflow
-editions are content-pinned during handshake: peers exchange the edition spec checksum, and
-mismatched beta builds fail at connect instead of diverging mid-session.
+```{warning}
+The `rlmesh.protocol.v1` wire format changed within the beta and is not
+backward-compatible across beta releases:
+
+- Info/option channels (`infos`, `final_info`, `options`, and `EnvContract.metadata`) moved off
+  `google.protobuf.Struct` to a self-describing `MetaMap` that preserves integer (up to the signed
+  64-bit range), float, and bytes types exactly.
+- Composite (Dict/Tuple) space values now use a recursive, raw-bytes `SpaceValueNode` encoding
+  instead of base64-in-`Struct`.
+- `EpisodeMetadata.seed` is now an explicit-presence `optional` field that is left unset for
+  unseeded episodes rather than reporting a fabricated `0`.
+
+The protocol generation stays `rlmesh.protocol.v1` (the surface is still beta-mutable before the
+stable release), and the checked-in public baseline tracks the current surface, so peers must run
+the same beta release. The generation seals with the stable release; after that, the same kind of
+change requires a new generation. Provisional workflow editions are content-pinned during
+handshake: peers exchange the edition spec checksum, and mismatched beta builds fail at connect
+rather than mid-session.
+```
 
 ## Framework Version Floors
 
 The optional framework backends declare the lowest versions their conversion paths actually require.
 Each floor has a concrete reason:
 
-| Package | Floor      | Why                                                                                      |
-| ------- | ---------- | ---------------------------------------------------------------------------------------- |
-| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels.                      |
-| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.                                  |
-| torch   | `>=1.11`   | First release with full `cp310` wheels and top-level `torch.from_dlpack`. [^torch-glibc] |
-| jax     | `>=0.4.24` | First release with DLPack `bool` support; `jaxlib` below `0.4.18` is no longer on PyPI.  |
+| Package | Floor      | Why                                                                 |
+| ------- | ---------- | ------------------------------------------------------------------- |
+| Python  | `3.10`     | Ecosystem baseline; all framework floors below ship `cp310` wheels. |
+| numpy   | `>=1.22`   | First release with complete Python 3.10 wheel coverage.             |
+| torch   | `>=1.11`   | First release with full `cp310` wheel coverage. [^torch-glibc]      |
+| jax     | `>=0.4.24` | First release with DLPack `bool` support.                           |
 
 [^torch-glibc]:
     Torch wheels older than 1.13 fail to load on glibc 2.41+ hosts ("cannot enable executable
@@ -82,8 +98,10 @@ metadata between them and the wire.
   `double`-based bounds. The legacy scalar-list wire encoding still stores integers in a signed
   64-bit slot, so `uint64` values above 2^63 wrap on that path (the raw byte encoding used by modern
   clients is exact).
-- Mutation: decoded views are read-only by contract. NumPy enforces this; Torch does not (see the
-  Torch backend page). JAX arrays are immutable by construction.
+- Mutation: in-place preprocessing on a decoded observation never corrupts the wire buffer. NumPy
+  and Torch decode to owned, writable copies; JAX decodes to an immutable array. The explicit
+  zero-copy views (`from_dlpack`, the buffer protocol, `torch.as_tensor(copy=False)`) are read-only;
+  NumPy enforces this, Torch does not (see the Torch backend page).
 
 ## Workflow Editions
 

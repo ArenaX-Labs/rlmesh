@@ -461,6 +461,9 @@ mod tests {
             dim,
             encoding,
             range: None,
+            scale: None,
+            invert: false,
+            threshold: None,
             binary: false,
         }
     }

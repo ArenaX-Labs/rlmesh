@@ -6,15 +6,14 @@ import importlib
 import warnings
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
-from ._frameworks import FrameworkBridge
+from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._rlmesh import Tensor
-from ._values import UNHANDLED, ValueBridge
 from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .model import ModelBase
+from .models.base import ModelBase
 from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._sample import space_bridge_from_value_bridge
+from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -113,6 +112,12 @@ def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
     import torch
 
     dtype = cast("torch.dtype", _torch_dtype(tensor.dtype))
+    shape = tuple(tensor.shape)
+    # torch.frombuffer rejects a zero-length buffer, so a zero-size leaf (an empty
+    # mask, point cloud, or variable-length buffer) would crash this decode path.
+    # Build the empty tensor directly instead.
+    if any(dim == 0 for dim in shape):
+        return torch.empty(shape, dtype=dtype)
     buffer: object = bytearray(tensor.tobytes()) if writable_copy else tensor
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -121,7 +126,6 @@ def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
             category=UserWarning,
         )
         view = torch.frombuffer(buffer, dtype=dtype)
-    shape = tuple(tensor.shape)
     return view.reshape(shape if shape else ())
 
 
@@ -180,10 +184,21 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
+def _decode_owned(tensor: Tensor) -> TorchTensor:
+    """Owned, writable decode for the value-bridge (predict/step) path.
+
+    The public ``as_tensor`` still shares memory by default; the decode path
+    copies so an in-place op in ``predict`` (e.g. ``img.div_(255)``) cannot
+    write through into the shared, read-only wire buffer. Opt back into the
+    zero-copy view with ``as_tensor(tensor, copy=False)``.
+    """
+    return as_tensor(tensor, copy=True)
+
+
 _torch_bridge: ValueBridge = FrameworkBridge(
     name="torch",
     ensure_available=ensure_available,
-    decode_leaf=as_tensor,
+    decode_leaf=_decode_owned,
     encode_leaf=_encode_leaf,
 )
 _torch_space_bridge: SpaceBridge[TorchValue] = cast(
@@ -234,16 +249,14 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
 
 @final
 class Model(ModelBase[TorchValue, TorchValue]):
-    """Experimental Torch-backed model worker.
+    """Experimental Torch-backed model: ``predict`` works in Torch values.
 
-    Args:
-        predict_fn: Callable that maps one observation to one action.
-        on_reset: Optional callback invoked when the environment resets.
-        on_episode_end: Optional callback invoked when an episode ends.
-        on_close: Optional callback invoked when the model worker closes.
+    The Torch-typed :class:`~rlmesh.models.base.ModelBase`; see it for the source/spec
+    construction and ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
+    _remote_env_cls: ClassVar[type | None] = RemoteEnv
 
 
 @final
@@ -297,6 +310,7 @@ __all__ = [
     "SandboxVectorEnv",
     "TorchValue",
     "as_tensor",
+    "ensure_available",
     "from_tensor",
     "space_from_spec",
 ]

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 
 from ..numpy import NumpyArray, ensure_available
-from .helpers.bridge import decode_value, encode_value
+from .helpers.codec import decode_value, encode_value
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:
@@ -29,8 +29,8 @@ class ObsEncShim:
     model_key: str
     base: str
     width: int
-    dtype: str
     name: str
+    dtype: str
     from_base: RotationTransform
 
 
@@ -42,8 +42,8 @@ class ActEncShim:
     """
 
     offset: int
-    width: int
     base: str
+    width: int
     name: str
     to_base: RotationTransform
 
@@ -52,7 +52,7 @@ class AdapterBase(ABC, Generic[ActionT]):
     """Base class for env-to-model adapters.
 
     :func:`rlmesh.adapters.resolve` derives the spec-driven implementation
-    (:class:`IOAdapter`); subclass this directly to plug a fully custom
+    (:class:`Adapter`); subclass this directly to plug a fully custom
     pairing into anything built around adapters instead. Implement the two
     transforms; ``wrap_predict`` comes for free. Custom adapters may hold
     state across steps (e.g. cache proprio from ``transform_obs`` for use
@@ -87,7 +87,7 @@ class AdapterBase(ABC, Generic[ActionT]):
         A stateful adapter must keep affinity to its lane (one instance per
         ``(session, route, env_index)``) and so cannot yet be shared across
         the lanes of a vector env. Custom adapters default to stateful (the
-        safe assumption); :class:`IOAdapter` derives this from its frame
+        safe assumption); :class:`Adapter` derives this from its frame
         history. The per-lane affinity manager that makes vectorized stateful
         adapters correct is not implemented yet.
         """
@@ -114,7 +114,7 @@ class AdapterBase(ABC, Generic[ActionT]):
 
 
 @final
-class IOAdapter(AdapterBase[NumpyArray]):
+class Adapter(AdapterBase[NumpyArray]):
     """A resolved env-to-model adapter; build instances with ``resolve()``.
 
     Declarative plans run in the native ``rlmesh-adapters`` core; custom
@@ -286,4 +286,4 @@ class IOAdapter(AdapterBase[NumpyArray]):
         return "\n".join(lines)
 
 
-__all__ = ["AdapterBase", "IOAdapter"]
+__all__ = ["Adapter", "AdapterBase"]

@@ -34,7 +34,20 @@ use crate::{RecipeProvenance, ResolvedRlmeshPackage, hex, shell_quote};
 
 const CONTAINER_PORT: u16 = 50051;
 const WORKDIR: &str = "/opt/rlmesh";
-const ENTRYPOINT: &str = "ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]";
+const ENV_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_env";
+const MODEL_BOOTSTRAP: &str = "rlmesh._bootstrap.sandbox_model";
+
+/// The container ENTRYPOINT for a recipe kind: env recipes serve an environment,
+/// model recipes serve/drive a policy. `pub(crate)` so the gym/hf preamble in
+/// `docker.rs` single-sources the env entrypoint through here too.
+pub(crate) fn entrypoint_for(kind: &str) -> String {
+    let module = if kind == "model" {
+        MODEL_BOOTSTRAP
+    } else {
+        ENV_BOOTSTRAP
+    };
+    format!("ENTRYPOINT [\"python\", \"-m\", \"{module}\"]")
+}
 
 /// The build-context subdirectory a `ProjectInstall` source tree is staged into;
 /// the deriver `COPY`s from here and `write_build_context` populates it.
@@ -245,6 +258,11 @@ pub struct Setup {
     pub env: BTreeMap<String, String>,
     /// File writes.
     pub files: Vec<FileWrite>,
+    /// Allowlist of `setup.env` keys a member may override at runtime via
+    /// `RLMESH_PARAMS_JSON`. Runtime-only: the deriver ignores it and it is
+    /// excluded from `build_hash` (it lives under the runtime `setup` phase), so
+    /// one image serves every declared member. Appended last for golden stability.
+    pub params: Vec<String>,
 }
 
 /// Registration imports (gym/hf only).
@@ -279,12 +297,26 @@ pub struct Recipe {
     /// A human-readable summary.
     #[serde(default)]
     pub summary: Option<String>,
-    /// Forward field: published adapter annotations.
+    /// Forward field: the published adapter (an env recipe's tags or a model
+    /// recipe's spec), carried verbatim for round-trip fidelity.
     #[serde(default)]
-    pub annotations: Option<serde_json::Value>,
+    pub adapter: Option<serde_json::Value>,
     /// The schema version.
     #[serde(default = "default_recipe_version")]
     pub recipe_version: u32,
+    /// The recipe kind ("env" or "model"); selects the container entrypoint.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    /// Forward-compat: capture any field this struct does not model (e.g. the
+    /// Python-side `inputs`/`runtime`) so a re-serialized recipe -- in particular
+    /// the baked `recipe.json` -- round-trips the full document instead of
+    /// silently dropping declarations the managed/export side needs.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+fn default_kind() -> String {
+    "env".to_string()
 }
 
 impl Recipe {
@@ -349,7 +381,12 @@ pub(crate) fn derive_dockerfile(
         }
         let mut out = body.trim_end().to_string();
         out.push_str("\n\n");
-        out.push_str(ENTRYPOINT);
+        // Self-describing image: bake the recipe's runtime half so the entrypoint
+        // can load it with no inline payload, exactly as the structured path does.
+        // COPY creates the parent dir, so this is independent of the body's WORKDIR.
+        out.push_str(&format!("COPY recipe.json {WORKDIR}/recipe.json\n"));
+        out.push_str(&format!("ENV RLMESH_RECIPE_PATH={WORKDIR}/recipe.json\n\n"));
+        out.push_str(&entrypoint_for(&recipe.kind));
         out.push('\n');
         return Ok(out);
     }
@@ -377,6 +414,9 @@ pub(crate) fn derive_dockerfile(
     out.push_str(&format!("FROM {base}\n\n"));
 
     // ENV block: standard vars, then gpu caps, then build.env, then PYTHONPATH.
+    // RLMESH_PORT is the canonical bind port; RLMESH_ENV_PORT is the deprecated
+    // alias the bootstraps still read after it.
+    out.push_str(&format!("ENV RLMESH_PORT={CONTAINER_PORT}\n"));
     out.push_str(&format!("ENV RLMESH_ENV_PORT={CONTAINER_PORT}\n"));
     out.push_str("ENV PYTHONUNBUFFERED=1\n");
     if build.gpu {
@@ -485,8 +525,15 @@ pub(crate) fn derive_dockerfile(
         out.push_str(&format!("USER {uid}\n\n"));
     }
 
+    // Self-describing image: bake the recipe's runtime half so the entrypoint can
+    // load it with no inline payload. `write_build_context` stages this file as a
+    // Dockerfile sibling (NEVER under build.project.src -- its content must stay
+    // out of the build-context digest, or one-image-many-members breaks).
+    out.push_str(&format!("COPY recipe.json {WORKDIR}/recipe.json\n"));
+    out.push_str(&format!("ENV RLMESH_RECIPE_PATH={WORKDIR}/recipe.json\n\n"));
+
     out.push_str(&format!("EXPOSE {CONTAINER_PORT}\n"));
-    out.push_str(ENTRYPOINT);
+    out.push_str(&entrypoint_for(&recipe.kind));
     out.push('\n');
     Ok(out)
 }
@@ -1131,6 +1178,20 @@ mod tests {
     }
 
     #[test]
+    fn model_recipe_gets_the_model_entrypoint() {
+        let recipe = Recipe::from_json(
+            r#"{"name":"policy/x","kind":"model","build":{},"make":{"kind":"py","entrypoint":"m:C._rlmesh_load","kwargs":{}}}"#,
+        )
+        .expect("model recipe parses");
+        let dockerfile = derive(&recipe).expect("derives");
+        assert!(
+            dockerfile.contains("rlmesh._bootstrap.sandbox_model"),
+            "a model recipe should use the model bootstrap, got:\n{dockerfile}"
+        );
+        assert!(!dockerfile.contains("sandbox_env"));
+    }
+
+    #[test]
     fn deserializes_python_wire_shape() {
         let recipe = gym_recipe();
         assert_eq!(recipe.name, "atari/breakout");
@@ -1162,6 +1223,25 @@ mod tests {
             .expect("parses");
         let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(&format!("FROM {DEFAULT_BASE_IMAGE}")));
+    }
+
+    #[test]
+    fn recipe_preserves_unmodeled_fields_through_round_trip() {
+        // The Python schema emits `inputs`/`runtime`, which this struct does not
+        // model; they must survive parse -> serialize so the baked recipe.json
+        // (and any re-export) is not lossy for the managed/export side.
+        let json = r#"{"name":"a/b","make":{"kind":"py","entrypoint":"m:M._rlmesh_load"},"kind":"model","inputs":[{"name":"weights","target_path":"/w","uri":"hf://org/repo"}],"runtime":{"loop_mode":"chunk"}}"#;
+        let recipe = Recipe::from_json(json).expect("parses");
+        let value = serde_json::to_value(&recipe).expect("serializes");
+        let object = value.as_object().expect("object");
+        assert_eq!(
+            object["inputs"][0]["name"], "weights",
+            "inputs dropped: {value}"
+        );
+        assert_eq!(
+            object["runtime"]["loop_mode"], "chunk",
+            "runtime dropped: {value}"
+        );
     }
 
     #[test]
@@ -1216,15 +1296,18 @@ mod tests {
     }
 
     #[test]
-    fn dockerfile_trapdoor_emits_verbatim_with_entrypoint() {
+    fn dockerfile_trapdoor_emits_verbatim_with_baked_recipe_and_entrypoint() {
         let recipe = Recipe::from_json(
             r#"{"name":"a","build":{"dockerfile":"FROM scratch\nRUN echo hi\n"}}"#,
         )
         .expect("parses");
         let derived = derive(&recipe).expect("derives");
+        // The verbatim trapdoor must still bake recipe.json + RLMESH_RECIPE_PATH so
+        // the exported image is self-describing on the no-inline-payload run path,
+        // exactly like the structured deriver.
         assert_eq!(
             derived,
-            "FROM scratch\nRUN echo hi\n\nENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n"
+            "FROM scratch\nRUN echo hi\n\nCOPY recipe.json /opt/rlmesh/recipe.json\nENV RLMESH_RECIPE_PATH=/opt/rlmesh/recipe.json\n\nENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n"
         );
     }
 

@@ -52,6 +52,25 @@ pip install --pre "rlmesh[torch]"
 Torch decoding happens at the client boundary. The server can remain a normal Gymnasium environment
 and does not need to import Torch unless the environment itself needs it.
 
+## JAX
+
+The JAX backend is experimental in this beta. Tensor leaves decode to JAX arrays, which are
+immutable by construction.
+
+```python
+from rlmesh.jax import RemoteEnv
+
+env = RemoteEnv("127.0.0.1:5555")
+```
+
+Install it with:
+
+```bash
+pip install --pre "rlmesh[jax]"
+```
+
+For conversion semantics and the supported JAX floor, see {doc}`../api/jax`.
+
 ## Models
 
 Backends also apply to model workers:

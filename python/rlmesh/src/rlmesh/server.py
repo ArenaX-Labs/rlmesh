@@ -28,7 +28,11 @@ def _coerce_env(env: EnvLike | Recipe | type[EnvRecipe]) -> EnvLike:
     """Build a recipe (or project + build an EnvRecipe) into an env, else pass through."""
     from rlmesh.recipes import Recipe as _Recipe
     from rlmesh.recipes import build
-    from rlmesh.recipes._authoring import EnvRecipe, construct_authored, is_env_recipe
+    from rlmesh.recipes.authoring.env import (
+        EnvRecipe,
+        construct_authored,
+        is_env_recipe,
+    )
 
     if is_env_recipe(env):
         return construct_authored(env)
@@ -56,7 +60,7 @@ class EnvServer:
         transport: Explicit transport selector.
         options: Optional serve lifecycle options controlling remote shutdown,
             idle shutdown, drain timeout, and close timeout.
-        tags: Optional adapter IO tags
+        tags: Optional adapter env tags
             (:class:`rlmesh.adapters.EnvTags`) to publish for this env.
             They are validated against the env's spaces and merged into its
             metadata, so a model client can resolve an adapter from the

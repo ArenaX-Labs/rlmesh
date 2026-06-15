@@ -3,7 +3,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rlmesh_grpc::EnvClient;
+use rlmesh_grpc::{EnvClient, ModelClient};
 use serde::Serialize;
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -48,40 +48,96 @@ pub struct DockerBackend;
 
 impl DockerBackend {
     pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
-        let image_tag = format!(
-            "rlmesh-sandbox-{}:{}",
-            spec.image_slug(),
-            &spec.build_hash[..12.min(spec.build_hash.len())]
-        );
+        self.ensure_image_tagged(spec, &spec.image_tag())
+    }
 
+    /// Like [`ensure_image`], but for the export path: keys the image by the
+    /// recipe's full baked content (`export_image_tag`), not just its build phase.
+    /// Two recipes that share a build phase but bake different recipe.json must NOT
+    /// collide on one self-describing image, since the payload-less managed run
+    /// reads the baked document.
+    pub fn ensure_export_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
+        self.ensure_image_tagged(spec, &spec.export_image_tag())
+    }
+
+    fn ensure_image_tagged(
+        &self,
+        spec: &EffectiveSandboxSpec,
+        image_tag: &str,
+    ) -> Result<BuildArtifact> {
         // A single `docker image inspect` answers both "does it exist" and
         // "what is its id": inspect_image_id returns Ok(None) when the image is
         // absent, so a second existence probe is redundant.
-        if let Some(image_id) = inspect_image_id(&image_tag)? {
+        if let Some(image_id) = inspect_image_id(image_tag)? {
             return Ok(BuildArtifact { image_id });
         }
 
         let tempdir = tempfile::tempdir().context("failed to create sandbox build context")?;
         self.write_build_context(spec, &tempdir)?;
 
-        let output = Command::new("docker")
-            .args(["build", "-t", &image_tag, "."])
-            .current_dir(tempdir.path())
-            .output()
-            .context("failed to invoke docker build")?;
+        // Opt-in: when a build memory ceiling is requested, route the build
+        // through a bounded `docker-container` buildx builder so an OOM is a
+        // clean cgroup-local build failure instead of a host freeze. Wrapping the
+        // `docker` CLI in a systemd scope does NOT work -- the build runs in the
+        // daemon's own cgroup (system.slice), a sibling of the CLI, so only a
+        // builder whose cgroup contains the work can bound it. Without a ceiling
+        // we keep the default builder (today's behaviour).
+        let build_memory = match spec.build_memory.as_deref() {
+            Some(raw) => resolve_build_memory(raw)?,
+            None => None,
+        };
+        let output = match &build_memory {
+            Some(memory) => {
+                let builder = ensure_bounded_builder(memory)?;
+                Command::new("docker")
+                    .args([
+                        "buildx",
+                        "build",
+                        "--builder",
+                        &builder,
+                        "--load",
+                        "-t",
+                        image_tag,
+                        ".",
+                    ])
+                    .current_dir(tempdir.path())
+                    .output()
+                    .context("failed to invoke docker buildx build")?
+            }
+            None => Command::new("docker")
+                .args(["build", "-t", image_tag, "."])
+                .current_dir(tempdir.path())
+                .output()
+                .context("failed to invoke docker build")?,
+        };
         if !output.status.success() {
             bail!("docker build failed:\n{}", command_output(&output));
         }
 
-        let image_id = inspect_image_id(&image_tag)?
+        let image_id = inspect_image_id(image_tag)?
             .ok_or_else(|| anyhow!("docker build completed but image id was not found"))?;
         Ok(BuildArtifact { image_id })
+    }
+
+    /// Add an alias tag to an already-built image (`docker tag <source> <alias>`).
+    /// Docker validates the alias reference and reports a clear error if it is
+    /// malformed, so no separate validation is needed here.
+    pub fn tag_image(&self, source: &str, alias: &str) -> Result<()> {
+        let output = Command::new("docker")
+            .args(["tag", source, alias])
+            .output()
+            .context("failed to invoke docker tag")?;
+        if !output.status.success() {
+            bail!("docker tag failed:\n{}", command_output(&output));
+        }
+        Ok(())
     }
 
     pub async fn run_container_async(
         &self,
         spec: &EffectiveSandboxSpec,
         artifact: &BuildArtifact,
+        mounts: &[(String, String)],
     ) -> Result<StartedContainer> {
         let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
         // The bootstrap payload carries runtime-only parameters (kwargs,
@@ -91,6 +147,16 @@ impl DockerBackend {
         // install layer.
         let bootstrap_json = render_bootstrap_json(spec)?;
         let gpu = spec.recipe.as_ref().is_some_and(|recipe| recipe.build.gpu);
+        // docker --mount parses comma-separated fields with no escape for a comma
+        // inside a value, so a host/target path containing one would silently
+        // corrupt the mount. Reject it loudly instead. ponytail: --mount CSV
+        // ceiling; move to a long-form mount API if comma paths ever need support.
+        for (host, target) in mounts {
+            anyhow::ensure!(
+                !host.contains(',') && !target.contains(','),
+                "artifact mount path must not contain a comma (docker --mount cannot escape it): host={host:?} target={target:?}"
+            );
+        }
         let output = Command::new("docker")
             .args(docker_run_args(
                 &container_name,
@@ -98,6 +164,7 @@ impl DockerBackend {
                 &bootstrap_json,
                 std::process::id(),
                 gpu,
+                mounts,
             ))
             .output()
             .context("failed to start docker container")?;
@@ -118,8 +185,16 @@ impl DockerBackend {
             }
         };
         let address = format!("tcp://127.0.0.1:{host_port}");
-        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
-            let report = self.startup_failure_report(&container_id, &container_name, &err);
+        let is_model = spec
+            .recipe
+            .as_ref()
+            .is_some_and(|recipe| recipe.kind == "model");
+        if let Err(err) =
+            wait_for_ready(&address, &container_id, Duration::from_secs(30), is_model).await
+        {
+            let hint = spec.rlmesh_package.skew_hint();
+            let report =
+                self.startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
             let _ = self.stop_container(&container_id);
             return Err(report);
         }
@@ -210,6 +285,7 @@ impl DockerBackend {
         container_id: &str,
         container_name: &str,
         cause: &anyhow::Error,
+        hint: Option<&str>,
     ) -> anyhow::Error {
         let state = match inspect_container_state(container_id) {
             Ok(Some(state)) => state.summary(),
@@ -231,6 +307,7 @@ impl DockerBackend {
             &cause.to_string(),
             &state,
             &logs,
+            hint,
         ))
     }
 
@@ -301,6 +378,16 @@ impl DockerBackend {
                     format!("failed to stage project include {}", include.path.display())
                 })?;
             }
+        }
+
+        // Bake the recipe's runtime half as a Dockerfile sibling (NOT under
+        // project/), so the derived `COPY recipe.json` makes the image
+        // self-describing without the recipe content entering project.src's digest.
+        if let Some(recipe) = &spec.recipe {
+            let json = serde_json::to_string(&runtime_document(recipe)?)
+                .context("failed to serialize baked recipe.json")?;
+            fs::write(tempdir.path().join("recipe.json"), json)
+                .context("failed to stage baked recipe.json")?;
         }
 
         let dockerfile = render_dockerfile(spec)?;
@@ -379,7 +466,7 @@ impl BootstrapSpec {
                     .as_ref()
                     .ok_or_else(|| anyhow!("recipe source missing its parsed recipe"))?;
                 Self::Recipe(RecipeBootstrapSpec {
-                    // Only the runtime phase (setup/make/requires/annotations)
+                    // Only the runtime phase (setup/make/requires/adapter)
                     // rides the payload; the build phase already shaped the image
                     // and must not re-ship.
                     document: runtime_document(recipe)?,
@@ -394,7 +481,7 @@ impl BootstrapSpec {
 /// Serialize a recipe's runtime half (build phase stripped) for the bootstrap
 /// payload. The container has already been built, so re-shipping the build keys
 /// would only bloat the payload.
-fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
+pub(crate) fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
     let mut value =
         serde_json::to_value(recipe).context("failed to serialize recipe bootstrap document")?;
     if let Some(object) = value.as_object_mut() {
@@ -425,20 +512,33 @@ struct HfBootstrapSpec {
 
 #[derive(Debug, Clone, Serialize)]
 struct RecipeBootstrapSpec {
-    /// The recipe's runtime half (setup/make/requires/annotations); the build
+    /// The recipe's runtime half (setup/make/requires/adapter); the build
     /// phase is stripped because it already shaped the image.
     document: serde_json::Value,
     num_envs: usize,
     vectorization_mode: String,
 }
 
-async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) -> Result<()> {
+async fn wait_for_ready(
+    address: &str,
+    container_id: &str,
+    timeout: Duration,
+    is_model: bool,
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
 
     loop {
         let probe = tokio::time::timeout(READY_PROBE_TIMEOUT, async {
-            let mut client = EnvClient::connect(address).await?;
-            client.handshake().await?;
+            // A model container serves ModelService; an env container serves
+            // EnvService. Probe with the matching handshake so readiness reflects
+            // the service the recipe's kind actually brings up.
+            if is_model {
+                let mut client = ModelClient::connect(address, "").await?;
+                client.handshake().await?;
+            } else {
+                let mut client = EnvClient::connect(address).await?;
+                client.handshake().await?;
+            }
             Ok::<_, rlmesh_grpc::error::Error>(())
         })
         .await;
@@ -449,7 +549,7 @@ async fn wait_for_ready(address: &str, container_id: &str, timeout: Duration) ->
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                if Instant::now() >= deadline {
+                if err.is_fatal_handshake() || Instant::now() >= deadline {
                     return Err(err.into());
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -536,6 +636,7 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
+ENV RLMESH_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV RLMESH_ENV_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
@@ -544,11 +645,12 @@ WORKDIR /opt/rlmesh\n\
 \n\
 RUN sh -lc {}\n\n\
 EXPOSE {DEFAULT_CONTAINER_PORT}\n\
-ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
+{}\n",
         spec.base_image,
         source_copy,
         package_copy,
         shell_quote(&package_command),
+        crate::recipe::entrypoint_for("env"),
     ))
 }
 
@@ -620,16 +722,174 @@ fn command_output(output: &std::process::Output) -> String {
     sections.join("\n")
 }
 
+/// Fixed cushion left for the already-running host (desktop + services) when
+/// `build_memory="auto"` computes the ceiling. The box is never idle, so a
+/// percentage cap would still co-exhaust with the desktop -- the trap that froze
+/// the host. Leave a flat headroom instead.
+const BUILD_MEMORY_HEADROOM: u64 = 8 * 1024 * 1024 * 1024;
+/// Floor so a small box still gets a usable (if tight) build ceiling.
+const BUILD_MEMORY_FLOOR: u64 = 4 * 1024 * 1024 * 1024;
+
+/// Interpret a requested `build_memory` value into a concrete `--driver-opt
+/// memory=` value, or `None` to use the default builder. `"auto"` sizes a
+/// ceiling from host RAM; `"off"`/`"none"`/`"unbounded"`/empty opt out; a docker
+/// size string (e.g. `"20g"`) passes through. A non-size string (typo) errors up
+/// front rather than failing confusingly inside `docker buildx create`.
+fn resolve_build_memory(raw: &str) -> Result<Option<String>> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | "off" | "none" | "unbounded" => Ok(None),
+        "auto" => Ok(Some(auto_build_memory())),
+        _ => {
+            let value = raw.trim();
+            if is_docker_size(value) {
+                Ok(Some(value.to_string()))
+            } else {
+                bail!(
+                    "build_memory must be a docker size like \"20g\", or \"auto\"/\"off\"; got {value:?}"
+                )
+            }
+        }
+    }
+}
+
+/// Whether `value` is a docker memory size: a positive decimal with an optional
+/// `b`/`k`/`m`/`g`/`t` unit (case-insensitive, optional trailing `b`). Gates the
+/// passthrough above so a typo can't produce a degenerate builder name or a
+/// late, opaque docker error.
+fn is_docker_size(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    let without_b = lower.strip_suffix('b').unwrap_or(&lower);
+    let number = without_b
+        .strip_suffix(['k', 'm', 'g', 't'])
+        .unwrap_or(without_b);
+    !number.is_empty() && number.parse::<f64>().is_ok_and(|n| n > 0.0)
+}
+
+fn auto_build_memory() -> String {
+    let total = host_total_ram_bytes().unwrap_or(BUILD_MEMORY_FLOOR + BUILD_MEMORY_HEADROOM);
+    bounded_build_memory(total).to_string()
+}
+
+fn bounded_build_memory(total_ram: u64) -> u64 {
+    total_ram
+        .saturating_sub(BUILD_MEMORY_HEADROOM)
+        .max(BUILD_MEMORY_FLOOR)
+}
+
+/// Total physical RAM in bytes: `/proc/meminfo` on Linux, else `sysctl
+/// hw.memsize` on macOS. `None` when neither is readable.
+///
+/// macOS caveat: `hw.memsize` is HOST RAM, but a docker build runs in a Linux VM
+/// whose (smaller) RAM is the real ceiling, so an `"auto"` cap here can land
+/// above the VM size. That is safe -- the VM already contains an OOM, so the
+/// host can't freeze and an over-high cap is merely inert. On macOS prefer an
+/// explicit `build_memory` (or raise the VM's memory) over `"auto"`.
+fn host_total_ram_bytes() -> Option<u64> {
+    proc_meminfo_total().or_else(sysctl_memsize)
+}
+
+fn proc_meminfo_total() -> Option<u64> {
+    fs::read_to_string("/proc/meminfo")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
+}
+
+fn sysctl_memsize() -> Option<u64> {
+    let output = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// The per-ceiling builder name, e.g. `rlmesh-build-20g`. Encoding the cap in
+/// the name keeps a re-requested ceiling stable (reused builder, warm cache)
+/// while a changed ceiling lands a fresh builder. Old ones are stopped
+/// containers costing only disk; clean up with `docker buildx rm`.
+fn builder_name(memory: &str) -> String {
+    let suffix: String = memory
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("rlmesh-build-{suffix}")
+}
+
+/// Inspect-or-create a bounded `docker-container` buildx builder. `memory-swap
+/// == memory` disables swap inside the builder so the cap is a hard wall (prompt
+/// cgroup OOM-kill, no thrash). Returns the builder name to build through.
+fn ensure_bounded_builder(memory: &str) -> Result<String> {
+    let name = builder_name(memory);
+    if builder_exists(&name)? {
+        return Ok(name);
+    }
+    let output = Command::new("docker")
+        .args([
+            "buildx",
+            "create",
+            "--name",
+            &name,
+            "--driver",
+            "docker-container",
+            "--driver-opt",
+            &format!("memory={memory}"),
+            "--driver-opt",
+            &format!("memory-swap={memory}"),
+        ])
+        .output()
+        .context("failed to create bounded docker buildx builder")?;
+    if !output.status.success() {
+        // A concurrent build may have created the builder between our inspect
+        // and create. Re-inspect rather than parse docker's version-varying
+        // error text: if it now exists, the race resolved in our favour.
+        if builder_exists(&name)? {
+            return Ok(name);
+        }
+        bail!(
+            "failed to create bounded docker buildx builder:\n{}",
+            command_output(&output)
+        );
+    }
+    Ok(name)
+}
+
+fn builder_exists(name: &str) -> Result<bool> {
+    Ok(Command::new("docker")
+        .args(["buildx", "inspect", name])
+        .output()
+        .context("failed to inspect docker buildx builder")?
+        .status
+        .success())
+}
+
 fn format_startup_failure_report(
     container_id: &str,
     container_name: &str,
     cause: &str,
     state: &str,
     logs: &str,
+    hint: Option<&str>,
 ) -> String {
-    format!(
+    let mut report = format!(
         "sandbox container did not become ready: {cause}\ncontainer id: {container_id}\ncontainer name: {container_name}\n{state}\n{logs}"
-    )
+    );
+    if let Some(hint) = hint {
+        report.push_str("\nhint: ");
+        report.push_str(hint);
+    }
+    report
 }
 
 /// Recursively copy a file or directory tree from `src` to `dest`.
@@ -676,6 +936,7 @@ fn docker_run_args(
     bootstrap_json: &str,
     owner_pid: u32,
     gpu: bool,
+    mounts: &[(String, String)],
 ) -> Vec<String> {
     let mut args = vec![
         "run".to_string(),
@@ -708,6 +969,13 @@ fn docker_run_args(
             "--env".to_string(),
             "NVIDIA_VISIBLE_DEVICES=all".to_string(),
         ]);
+    }
+    // Runtime artifact mounts: a declared input's resolved host directory bound
+    // read-only at its in-container target. Read-only keeps the container from
+    // mutating the host weights and coexists with the hardening above.
+    for (host, target) in mounts {
+        args.push("--mount".to_string());
+        args.push(format!("type=bind,source={host},target={target},readonly"));
     }
     args.extend([
         // Deliver the bootstrap payload (runtime-only parameters) at run time
@@ -968,11 +1236,12 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness,
-        confirmed_terminal_summary, copy_tree, current_pid_namespace_id, docker_run_args,
-        format_startup_failure_report, is_orphan, owner_pid_liveness, parse_container_state,
-        parse_owned_containers, parse_published_port, pid_is_alive, render_bootstrap_json,
-        render_dockerfile, shell_quote, tail_text,
+        BootstrapSpec, ContainerState, OwnedContainer, OwnerPidLiveness, bounded_build_memory,
+        builder_name, confirmed_terminal_summary, copy_tree, current_pid_namespace_id,
+        docker_run_args, format_startup_failure_report, is_docker_size, is_orphan,
+        owner_pid_liveness, parse_container_state, parse_owned_containers, parse_published_port,
+        pid_is_alive, render_bootstrap_json, render_dockerfile, resolve_build_memory, shell_quote,
+        tail_text,
     };
     use crate::source::{ResolvedEnvironmentSourceRef, ResolvedHfSourceRef};
     use crate::{
@@ -1004,6 +1273,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         }
     }
@@ -1030,8 +1300,52 @@ mod tests {
     }
 
     #[test]
+    fn build_memory_resolution_ceiling_and_builder_name() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // Headroom math (the trap that froze the host): leave 8 GiB for the
+        // loaded desktop; clamp small boxes up to the 4 GiB floor, never 0.
+        assert_eq!(bounded_build_memory(32 * GIB), 24 * GIB);
+        assert_eq!(bounded_build_memory(8 * GIB), 4 * GIB);
+        assert_eq!(bounded_build_memory(0), 4 * GIB);
+
+        // Opt-out keywords -> no builder; a size string passes through; "auto"
+        // expands to a concrete byte count.
+        assert_eq!(resolve_build_memory("off").unwrap(), None);
+        assert_eq!(resolve_build_memory("").unwrap(), None);
+        assert_eq!(resolve_build_memory("20g").unwrap().as_deref(), Some("20g"));
+        assert!(
+            resolve_build_memory("auto")
+                .unwrap()
+                .is_some_and(|m| m.parse::<u64>().is_ok())
+        );
+        // A typo'd size is rejected up front, not handed to docker.
+        for bad in ["garbage", ";;;", "20 g", "-5g", "0"] {
+            assert!(
+                resolve_build_memory(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+
+        // is_docker_size accepts the forms docker accepts and nothing else.
+        assert!(
+            ["20g", "2048m", "1.5g", "1073741824", "512k", "1t"]
+                .iter()
+                .all(|s| is_docker_size(s))
+        );
+        assert!(
+            !["", "g", "0", "-5g", "garbage", "20 g", "b"]
+                .iter()
+                .any(|s| is_docker_size(s))
+        );
+
+        // Builder name encodes the cap and is a valid buildx name.
+        assert_eq!(builder_name("20g"), "rlmesh-build-20g");
+        assert_eq!(builder_name("25769803776"), "rlmesh-build-25769803776");
+    }
+
+    #[test]
     fn docker_run_args_do_not_auto_remove_container() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         assert_eq!(args.first().map(String::as_str), Some("run"));
         assert!(args.iter().any(|arg| arg == "-d"));
@@ -1043,7 +1357,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_publish_ephemeral_host_port() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
@@ -1052,7 +1366,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_label_container_for_reaping() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         let label_idx = args.iter().position(|arg| arg == "--label");
         assert!(label_idx.is_some(), "containers must carry an owner label");
@@ -1064,7 +1378,7 @@ mod tests {
 
     #[test]
     fn docker_run_args_stamp_owner_pid_label() {
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         // The owner-pid label must be present so the reaper can tell a live
         // owner's container apart from an orphan.
@@ -1080,7 +1394,7 @@ mod tests {
         let Some(pid_namespace) = current_pid_namespace_id() else {
             return;
         };
-        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false);
+        let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242, false, &[]);
 
         assert!(
             args.iter()
@@ -1097,6 +1411,7 @@ mod tests {
             "{\"spec\":{\"kind\":\"gym\"}}",
             4242,
             false,
+            &[],
         );
 
         let env_idx = args.iter().position(|arg| arg == "--env");
@@ -1104,6 +1419,33 @@ mod tests {
         assert_eq!(
             args.get(env_idx.unwrap() + 1).map(String::as_str),
             Some("RLMESH_BOOTSTRAP_JSON={\"spec\":{\"kind\":\"gym\"}}")
+        );
+    }
+
+    #[test]
+    fn docker_run_args_bind_mount_artifacts_read_only() {
+        let mounts = vec![(
+            "/host/weights".to_string(),
+            "/rlmesh/input/model/weights".to_string(),
+        )];
+        let args = docker_run_args("n", "img", "{}", 1, false, &mounts);
+
+        let idx = args
+            .iter()
+            .position(|arg| arg == "--mount")
+            .expect("a declared mount must emit --mount");
+        assert_eq!(
+            args[idx + 1],
+            "type=bind,source=/host/weights,target=/rlmesh/input/model/weights,readonly"
+        );
+    }
+
+    #[test]
+    fn docker_run_args_emit_no_mount_flag_without_artifacts() {
+        let args = docker_run_args("n", "img", "{}", 1, false, &[]);
+        assert!(
+            !args.iter().any(|arg| arg == "--mount"),
+            "no declared mounts must emit no --mount flag (gym/hf paths unchanged)"
         );
     }
 
@@ -1295,6 +1637,7 @@ mod tests {
             "connection refused",
             "container state: status=exited, exit_code=1",
             "container logs:\ntraceback",
+            None,
         );
 
         assert!(message.contains("connection refused"));
@@ -1302,6 +1645,19 @@ mod tests {
         assert!(message.contains("container name: rlmesh-sandbox-test"));
         assert!(message.contains("exit_code=1"));
         assert!(message.contains("traceback"));
+    }
+
+    #[test]
+    fn startup_failure_report_appends_skew_hint() {
+        let with_hint = format_startup_failure_report(
+            "abc123",
+            "rlmesh-sandbox-test",
+            "handshake failed",
+            "container state: status=exited, exit_code=2",
+            "container logs:\nusage: ...",
+            Some("pass rlmesh_package=\"local\""),
+        );
+        assert!(with_hint.contains("hint: pass rlmesh_package=\"local\""));
     }
 
     #[test]
@@ -1335,6 +1691,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1386,6 +1743,7 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: None,
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         };
 
@@ -1445,16 +1803,17 @@ mod tests {
             vectorization_mode: VectorizationMode::Sync,
             recipe: Some(parsed),
             context_root: None,
+            build_memory: None,
             build_hash: "abcdef0123456789".to_string(),
         }
     }
 
     #[test]
     fn docker_run_args_add_gpu_flags_iff_gpu() {
-        let without = docker_run_args("n", "img", "{}", 1, false);
+        let without = docker_run_args("n", "img", "{}", 1, false, &[]);
         assert!(!without.iter().any(|arg| arg == "--gpus"));
 
-        let with = docker_run_args("n", "img", "{}", 1, true);
+        let with = docker_run_args("n", "img", "{}", 1, true, &[]);
         let idx = with.iter().position(|arg| arg == "--gpus").expect("--gpus");
         assert_eq!(with[idx + 1], "all");
         assert!(with.iter().any(|arg| arg == "NVIDIA_VISIBLE_DEVICES=all"));

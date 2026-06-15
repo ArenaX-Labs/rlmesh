@@ -24,13 +24,16 @@ pip install --pre "rlmesh[torch]"
 
 ## Memory Sharing and Mutation
 
-`as_tensor(tensor)` and decoded observations are zero-copy: the Torch tensor shares memory with the
-RLMesh tensor over DLPack. RLMesh flags shared exports read-only, but Torch, like most DLPack
-consumers, does not enforce that flag, so writes through a shared view succeed and **corrupt the
-RLMesh tensor for every other view of the same data** (including NumPy views in the same process).
+Decoded observations are owned, writable copies, so `predict_fn` can normalize in place
+(`img.div_(255)`) without corrupting the wire buffer. `as_tensor(tensor)` is the zero-copy opt-in:
+the Torch tensor shares memory with the RLMesh tensor over DLPack.
 
-Treat shared views as read-only. Use `as_tensor(tensor, copy=True)` for anything you intend to
-mutate; copies are independent, writable buffers.
+```{warning}
+A zero-copy `as_tensor(tensor)` view shares memory. RLMesh flags the export read-only, but Torch,
+like most DLPack consumers, does not enforce that flag, so an in-place write corrupts the RLMesh
+tensor for every other view of the same data, including NumPy views in the same process. Treat a
+shared view as read-only, or pass `copy=True`.
+```
 
 Conversion details:
 

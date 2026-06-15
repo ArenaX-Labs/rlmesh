@@ -199,67 +199,47 @@ def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
     assert imported == ["fake_env_registration", "fake_env_module"]
 
 
-def test_load_env_entrypoint_rejects_malformed_entrypoint() -> None:
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
-
-    with pytest.raises(RecipeConstructionError, match="module:callable"):
-        load_env_entrypoint("fake_env_module")
-
-
-def test_load_env_entrypoint_rejects_missing_callable(
+@pytest.mark.parametrize(
+    ("attr", "entrypoint", "exc", "match"),
+    [
+        (None, "fake_env_module", "RecipeConstructionError", "module:callable"),
+        (
+            None,
+            "fake_env_module:missing",
+            "RecipeConstructionError",
+            "could not resolve",
+        ),
+        (
+            object(),
+            "fake_env_module:value",
+            "RecipeConstructionError",
+            "did not resolve to a callable",
+        ),
+        (
+            (lambda: object()),
+            "fake_env_module:make_env",
+            "TypeError",
+            "did not return an environment",
+        ),
+    ],
+)
+def test_load_env_entrypoint_rejects(
     monkeypatch: pytest.MonkeyPatch,
+    attr: object,
+    entrypoint: str,
+    exc: str,
+    match: str,
 ) -> None:
     from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
+    if attr is not None:
+        setattr(module, entrypoint.split(":", 1)[1], attr)
     monkeypatch.setitem(sys.modules, "fake_env_module", module)
 
-    with pytest.raises(RecipeConstructionError, match="could not resolve"):
-        load_env_entrypoint("fake_env_module:missing")
-
-
-def test_load_env_entrypoint_rejects_non_callable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
-
-    module = ModuleType("fake_env_module")
-    module.value = object()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fake_env_module", module)
-
-    with pytest.raises(RecipeConstructionError, match="did not resolve to a callable"):
-        load_env_entrypoint("fake_env_module:value")
-
-
-def test_load_env_entrypoint_rejects_non_env_return(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
-
-    module = ModuleType("fake_env_module")
-    module.make_env = lambda: object()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fake_env_module", module)
-
-    with pytest.raises(TypeError, match="did not return an environment"):
-        load_env_entrypoint("fake_env_module:make_env")
-
-
-def test_legacy_sandbox_bootstrap_shim_dispatches_gym(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh import _sandbox_bootstrap
-
-    gymnasium = ModuleType("gymnasium")
-
-    def make(env_id: str, **kwargs: object) -> tuple[str, dict[str, object]]:
-        return env_id, kwargs
-
-    gymnasium.make = make  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "gymnasium", gymnasium)
-
-    env = _sandbox_bootstrap.load_env({"kind": "gym", "env_id": "CartPole-v1"})
-
-    assert env == ("CartPole-v1", {})
+    expected = TypeError if exc == "TypeError" else RecipeConstructionError
+    with pytest.raises(expected, match=match):
+        load_env_entrypoint(entrypoint)
 
 
 def test_normalize_hf_env_returns_direct_env() -> None:
@@ -311,26 +291,20 @@ def test_normalize_hf_env_selects_nested_task_by_string_key() -> None:
     )
 
 
-def test_normalize_hf_env_lists_ambiguous_suites() -> None:
+@pytest.mark.parametrize(
+    ("bundle", "suite", "match"),
+    [
+        ({"suite-a": object(), "suite-b": object()}, None, "suite-a, suite-b"),
+        ({"cartpole_suite": {0: object(), 1: object()}}, "cartpole_suite", "0, 1"),
+    ],
+)
+def test_normalize_hf_env_lists_ambiguous_choices(
+    bundle: object, suite: str | None, match: str
+) -> None:
     from rlmesh._bootstrap.env import normalize_hf_env
 
-    with pytest.raises(ValueError, match="suite-a, suite-b"):
-        normalize_hf_env(
-            {"suite-a": object(), "suite-b": object()},
-            suite=None,
-            task=None,
-        )
-
-
-def test_normalize_hf_env_lists_ambiguous_tasks() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
-
-    with pytest.raises(ValueError, match="0, 1"):
-        normalize_hf_env(
-            {"cartpole_suite": {0: object(), 1: object()}},
-            suite="cartpole_suite",
-            task=None,
-        )
+    with pytest.raises(ValueError, match=match):
+        normalize_hf_env(bundle, suite=suite, task=None)
 
 
 def test_load_hf_env_passes_task_from_bootstrap_spec(tmp_path) -> None:
@@ -368,7 +342,7 @@ def make_env(**kwargs):
 
 
 def test_load_predict_resolves_nested_callable(monkeypatch: pytest.MonkeyPatch) -> None:
-    from rlmesh._bootstrap.model import load_predict
+    from rlmesh._bootstrap.loaders import load_predict
 
     module = ModuleType("fake_model_module")
     module.policy = SimpleNamespace(  # type: ignore[attr-defined]
@@ -382,7 +356,7 @@ def test_load_predict_resolves_nested_callable(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_parse_entrypoint_rejects_missing_callable() -> None:
-    from rlmesh._bootstrap.model import parse_entrypoint
+    from rlmesh._entrypoint import parse_entrypoint
 
     with pytest.raises(ValueError, match="module:callable"):
         parse_entrypoint("fake_model_module")
@@ -426,3 +400,67 @@ def test_load_env_entrypoint_does_not_wrap_factory_errors(
     with pytest.raises(RuntimeError, match="boom-from-make") as excinfo:
         load_env_entrypoint("fake_env_module:boom")
     assert not isinstance(excinfo.value, RecipeConstructionError)
+
+
+def test_apply_member_params_applies_declared_and_ignores_undeclared() -> None:
+    # RLMESH_PARAMS_JSON.setup_env overrides only keys the recipe DECLARES in
+    # setup.params; undeclared keys (the shim emits extras as flat env) are dropped.
+    # kwargs merge over make.kwargs. The frozen recipe is replaced, not mutated.
+    from rlmesh._bootstrap.env import apply_member_params
+    from rlmesh.recipes import Recipe
+    from rlmesh.recipes._schema import GymMake, Setup
+
+    recipe = Recipe(
+        name="a/b",
+        make=GymMake(env_id="E-v0"),
+        setup=Setup(env={"LIBERO_TASK": "default"}, params=("LIBERO_TASK",)),
+    )
+    updated = apply_member_params(
+        recipe,
+        setup_env={"LIBERO_TASK": "libero_10/3", "LIBERO_CAMERA_WIDTH": "256"},
+        kwargs={"render_mode": "rgb_array"},
+    )
+
+    assert updated.setup.env["LIBERO_TASK"] == "libero_10/3"
+    assert "LIBERO_CAMERA_WIDTH" not in updated.setup.env
+    assert isinstance(updated.make, GymMake)
+    assert updated.make.kwargs == {"render_mode": "rgb_array"}
+    assert recipe.setup.env["LIBERO_TASK"] == "default"
+
+
+def test_resolve_bootstrap_spec_reads_baked_recipe_path(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A self-describing image: RLMESH_RECIPE_PATH points at a bare recipe doc, which
+    # is wrapped into a kind="recipe" spec.
+    from rlmesh._bootstrap.env import resolve_bootstrap_spec
+
+    recipe_json = tmp_path / "recipe.json"
+    recipe_json.write_text(
+        '{"name":"a/b","make":{"kind":"gym","env_id":"E-v0"}}', encoding="utf-8"
+    )
+    monkeypatch.delenv("RLMESH_BOOTSTRAP_JSON", raising=False)
+    monkeypatch.setenv("RLMESH_RECIPE_PATH", str(recipe_json))
+
+    spec = resolve_bootstrap_spec([], prog="x")
+
+    assert spec["kind"] == "recipe"
+    document = spec["document"]
+    assert isinstance(document, dict)
+    assert document["name"] == "a/b"
+
+
+def test_resolve_bootstrap_spec_inline_wins_over_baked(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Locked precedence: inline RLMESH_BOOTSTRAP_JSON wins over a baked recipe.json.
+    from rlmesh._bootstrap.env import resolve_bootstrap_spec
+
+    monkeypatch.setenv("RLMESH_RECIPE_PATH", str(tmp_path / "unread.json"))
+    monkeypatch.setenv(
+        "RLMESH_BOOTSTRAP_JSON", '{"spec":{"kind":"gym","env_id":"E-v0"}}'
+    )
+
+    spec = resolve_bootstrap_spec([], prog="x")
+
+    assert spec["kind"] == "gym"

@@ -66,7 +66,7 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
 
     def __init__(
         self,
-        inner: adapt.IOAdapter,
+        inner: adapt.Adapter,
         horizon: int = CHUNK,
         temperature: float = 0.25,
     ):

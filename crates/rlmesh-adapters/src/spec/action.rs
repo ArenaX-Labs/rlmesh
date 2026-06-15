@@ -16,6 +16,15 @@ pub struct ActionComponent {
     pub range: Option<(f64, f64)>,
     #[serde(default)]
     pub binary: bool,
+    // scale/invert/threshold are additive env-side corrections; they are
+    // omitted from serialization when unset so layouts that do not use them are
+    // byte-identical to before (matching the Python serializer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
 }
 
 /// Ordered action components plus optional clipping bounds.

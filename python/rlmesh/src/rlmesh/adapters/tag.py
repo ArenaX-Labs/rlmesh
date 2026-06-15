@@ -1,4 +1,4 @@
-"""The ``tag`` verb: attach env IO tags to an environment.
+"""The ``tag`` verb: attach env tags to an environment.
 
 Tagging an environment publishes its :class:`EnvTags` in the
 env's ``metadata`` mapping (under :data:`ENV_METADATA_KEY`). A server built
@@ -14,33 +14,18 @@ from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
 from .._rlmesh import adapters_join_check
-from .errors import AdapterResolutionError
+from .resolver import AdapterResolutionError
 from .specs import EnvTags
 
 EnvT = TypeVar("EnvT")
 
 
 def tag(env: EnvT, tags: EnvTags, *, validate: bool = True) -> EnvT:
-    """Attach IO tags to ``env`` and return it (for chaining).
+    """Merge env tags into ``env.metadata`` (under :data:`ENV_METADATA_KEY`) and return it.
 
-    The tags are merged into ``env.metadata`` under
-    :data:`ENV_METADATA_KEY`, leaving any existing metadata intact.
-
-    Args:
-        env: The environment to tag (a gymnasium-style env exposing
-            ``metadata`` and, for validation, ``observation_space`` and
-            ``action_space``).
-        tags: The observation/action tags to publish.
-        validate: When True (default), check the tags against the
-            env's observation and action spaces via the native ``join``,
-            failing fast if a role or width cannot be reconciled.
-
-    Returns:
-        The same ``env`` object, now carrying the tags.
-
-    Raises:
-        AdapterResolutionError: If ``validate`` is set and the tags
-            do not reconcile with the env's spaces.
+    With ``validate=True`` (default), check the tags against the env's
+    observation/action spaces via the native ``join``, raising
+    :class:`AdapterResolutionError` if a role or width cannot be reconciled.
     """
     if validate:
         _validate(env, tags)

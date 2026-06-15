@@ -47,15 +47,13 @@ There are two custom-adapter escape hatches, used at different scopes:
 ## Run it
 
 The dry run needs no simulator, GPU, or server — it pushes a synthetic observation through the
-resolved pipeline and prints the model payload and the env-ready action:
+resolved pipeline and prints the model payload and the env-ready action. Run it as a module from
+`examples/python`:
 
 ```sh
-cd examples/python/vla_adapters
-uv run eval.py                                  # every model x env pair
-uv run eval.py --model xvla --env simpler-bridge  # a single pairing
+uv run python -m vla_adapters.eval                       # every model x env pair
+uv run python -m vla_adapters.eval --model xvla --env simpler-bridge  # a single pairing
 ```
-
-(Equivalently: `python -m vla_adapters.eval ...` from `examples/python`.)
 
 Each run starts by printing `adapter.describe()` — the exact transformations the resolver chose for
 that pairing, e.g. for `xvla` on `libero`:
@@ -76,7 +74,7 @@ handshake — for a plain pairing it just hands `Model(spec=...)` the env and th
 from the contract:
 
 ```sh
-uv run eval.py --model smolvla --env libero --address 127.0.0.1:5555
+uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.0.1:5555
 ```
 
 ## Adding a model

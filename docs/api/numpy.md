@@ -14,20 +14,22 @@ Install it with:
 pip install --pre "rlmesh[numpy]"
 ```
 
-| Concrete API                    | Shared behavior                        | Backend-specific behavior                               |
-| ------------------------------- | -------------------------------------- | ------------------------------------------------------- |
-| `rlmesh.numpy.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.    |
-| `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.         |
-| `rlmesh.numpy.Model`            | {doc}`models`                          | `predict_fn` receives NumPy-decoded observations.       |
-| `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.       |
-| `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`. |
+| Concrete API                    | Shared behavior                        | Backend-specific behavior                                        |
+| ------------------------------- | -------------------------------------- | ---------------------------------------------------------------- |
+| `rlmesh.numpy.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.             |
+| `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.                  |
+| `rlmesh.numpy.Model`            | {doc}`models`                          | `predict_fn` receives NumPy-decoded observations.                |
+| `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.                |
+| `rlmesh.numpy.SandboxModel`     | {doc}`model-recipes` sandbox section   | Runs a `ModelRecipe` policy in its own container (experimental). |
+| `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`.          |
 
 ## Conversion Semantics
 
-- `asarray(tensor)` returns a **zero-copy, read-only** view over the tensor bytes (NumPy enforces
-  the read-only flag, unlike Torch). Call `.copy()` on the array if you need a writable buffer.
-- `from_array(array)` always copies. It deliberately uses the buffer protocol rather than DLPack:
-  read-only arrays cannot be exported over legacy DLPack, and decoded RLMesh views are read-only.
+- `asarray(tensor)` returns a **writable copy** of the tensor bytes, matching Gymnasium where
+  `reset`/`step` observations are writable (so `obs /= 255.0` works). For a zero-copy, read-only
+  view that shares the tensor buffer, use `numpy.from_dlpack(tensor)` or the buffer protocol.
+- `from_array(array)` always copies: it makes the array C-contiguous and serializes its bytes into a
+  fresh RLMesh tensor.
 - `bfloat16` tensors have no buffer-protocol format, so `asarray` copies through raw bytes and needs
   the optional [ml_dtypes](https://github.com/jax-ml/ml_dtypes) package. Install `rlmesh[bfloat16]`.
   Without it, `asarray` raises an `ImportError` naming that extra.

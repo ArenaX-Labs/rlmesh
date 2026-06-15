@@ -37,6 +37,17 @@ pub struct SandboxOptions {
     /// `ProjectInstall.src` for build-context staging and content hashing. Only
     /// meaningful for a recipe source with a `build.project`.
     pub context_root: Option<PathBuf>,
+    /// Runtime `(host_dir, container_target)` bind mounts for declared artifact
+    /// inputs. Delivered at `docker run` time, never baked, so they do not enter
+    /// the build hash (one image serves every checkpoint).
+    pub mounts: Vec<(String, String)>,
+    /// Opt-in memory ceiling for the build. `None` builds via the default docker
+    /// builder (today's behaviour). A docker size string (e.g. `"20g"`) or the
+    /// literal `"auto"` routes the build through a bounded `docker-container`
+    /// buildx builder so an OOM is a clean cgroup-local build failure instead of
+    /// a host freeze. Host-relative, never baked, so it stays out of the build
+    /// hash -- the same exclusion as `mounts`.
+    pub build_memory: Option<String>,
 }
 
 impl Default for SandboxOptions {
@@ -52,6 +63,8 @@ impl Default for SandboxOptions {
             trust_remote_code: false,
             allow_unpinned_hf: false,
             context_root: None,
+            mounts: Vec::new(),
+            build_memory: None,
         }
     }
 }
@@ -91,6 +104,19 @@ impl SandboxOptions {
             .unwrap_or_else(|| DEFAULT_BASE_IMAGE.to_string())
     }
 
+    /// The requested build memory ceiling: field, else
+    /// `RLMESH_SANDBOX_BUILD_MEMORY`, else `None`. The raw value (a docker size
+    /// string or the literal `"auto"`/`"off"`) is interpreted by the docker
+    /// backend; this only applies the field-over-env precedence, mirroring
+    /// [`resolved_base_image`](Self::resolved_base_image).
+    pub fn resolved_build_memory(&self) -> Option<String> {
+        self.build_memory
+            .clone()
+            .or_else(|| std::env::var("RLMESH_SANDBOX_BUILD_MEMORY").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
+
     fn resolved_rlmesh_package(&self, base_image: &str) -> Result<ResolvedRlmeshPackage> {
         let selected = self
             .rlmesh_package
@@ -123,6 +149,19 @@ pub struct RunResult {
     pub container_id: String,
 }
 
+/// The outcome of building a sandbox image without starting a container. The
+/// `image` is the deterministic content-addressed reference; `alias` is the
+/// optional human tag the caller requested (both name the same image).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct BuildResult {
+    pub requested_source: String,
+    pub resolved_source: String,
+    pub image: String,
+    pub alias: Option<String>,
+    pub image_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EffectiveSandboxSpec {
     pub schema_version: u32,
@@ -141,6 +180,9 @@ pub(crate) struct EffectiveSandboxSpec {
     pub recipe: Option<recipe::Recipe>,
     /// The recipe author's source-tree root, for `ProjectInstall` staging.
     pub context_root: Option<PathBuf>,
+    /// Opt-in build memory ceiling (see [`SandboxOptions::build_memory`]).
+    /// Excluded from `build_hash` -- host-relative, never baked into the image.
+    pub build_memory: Option<String>,
     pub build_hash: String,
 }
 
@@ -175,6 +217,7 @@ impl EffectiveSandboxSpec {
             _ => None,
         };
         let context_root = options.context_root.clone();
+        let build_memory = options.resolved_build_memory();
 
         let recipe_base = recipe.as_ref().and_then(|r| r.build.base.clone());
         let base_image = match recipe_base {
@@ -229,6 +272,12 @@ impl EffectiveSandboxSpec {
             build: recipe.as_ref().map(|r| &r.build),
             provenance: recipe_provenance,
             content_digest: content_digest.as_deref(),
+            // Only a non-default kind perturbs the hash, so env recipes and
+            // gym/hf keep their existing image tags; a model recipe gets its own.
+            kind: recipe
+                .as_ref()
+                .map(|r| r.kind.as_str())
+                .filter(|kind| *kind != "env"),
         })
         .map_err(SandboxError::invalid_option)?;
 
@@ -245,6 +294,7 @@ impl EffectiveSandboxSpec {
             vectorization_mode,
             recipe,
             context_root,
+            build_memory,
             build_hash,
         })
     }
@@ -261,6 +311,45 @@ impl EffectiveSandboxSpec {
             source::ResolvedEnvironmentSourceRef::Recipe(_) => "recipe".to_string(),
             _ => self.resolved_source.slug(),
         }
+    }
+
+    /// The deterministic local image reference for this spec -- the single
+    /// source of truth for both the build (`ensure_image`) and the export tag.
+    pub(crate) fn image_tag(&self) -> String {
+        format!(
+            "rlmesh-sandbox-{}:{}",
+            self.image_slug(),
+            &self.build_hash[..12.min(self.build_hash.len())]
+        )
+    }
+
+    /// The image tag for the EXPORT path. A run-path image is shared by build
+    /// phase (the inline bootstrap payload overrides the baked recipe.json), but an
+    /// exported/self-describing image is run payload-less, so it must be keyed by
+    /// the full baked content -- otherwise two recipes that share a build phase
+    /// would collide on one image carrying the first recipe's baked document.
+    /// Falls back to `image_tag` for gym/hf sources, which bake nothing.
+    pub(crate) fn export_image_tag(&self) -> String {
+        match self.runtime_digest() {
+            Some(digest) => format!(
+                "rlmesh-sandbox-{}:{}-{}",
+                self.image_slug(),
+                &self.build_hash[..12.min(self.build_hash.len())],
+                &digest[..12.min(digest.len())],
+            ),
+            None => self.image_tag(),
+        }
+    }
+
+    /// A digest of exactly what `docker::runtime_document` bakes into recipe.json
+    /// (the recipe minus its build phase); `None` for a gym/hf source.
+    fn runtime_digest(&self) -> Option<String> {
+        let recipe = self.recipe.as_ref()?;
+        let document = docker::runtime_document(recipe).ok()?;
+        let raw = serde_json::to_vec(&document).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(raw);
+        Some(hex(&hasher.finalize()))
     }
 
     pub(crate) fn requested_display(&self) -> String {
@@ -294,6 +383,13 @@ struct BuildHashInput<'a> {
     provenance: Option<RecipeProvenance>,
     /// A content digest of the staged `ProjectInstall` tree (7.1A).
     content_digest: Option<&'a str>,
+    /// The recipe kind, when it changes the baked ENTRYPOINT. `entrypoint_for`
+    /// derives the model bootstrap for kind="model", so a model and an env with a
+    /// byte-identical build phase must not collide on one cached image and reuse
+    /// the wrong bootstrap. Omitted for env recipes and gym/hf (the default
+    /// entrypoint), so their build hashes stay byte-stable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'a str>,
 }
 
 /// Gate a recipe's build phase by provenance (spec section 2 / 7.1E / 7.1G).
@@ -520,13 +616,17 @@ pub async fn start_env_async(
     source: EnvironmentSourceRef,
     options: SandboxOptions,
 ) -> std::result::Result<RunResult, SandboxError> {
+    // Mounts are runtime-only (delivered at `docker run`, never baked), so they
+    // are lifted out before `resolve` consumes `options` and excluded from the
+    // build hash.
+    let mounts = options.mounts.clone();
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
     let docker = docker::DockerBackend;
     let artifact = docker.ensure_image(&spec).map_err(|err| {
         SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
     })?;
     let started = docker
-        .run_container_async(&spec, &artifact)
+        .run_container_async(&spec, &artifact, &mounts)
         .await
         .map_err(|err| {
             SandboxError::from_docker_op(err, |m| SandboxError::ContainerStartup { message: m })
@@ -537,6 +637,36 @@ pub async fn start_env_async(
         resolved_source: spec.resolved_display(),
         address: started.address,
         container_id: started.container_id,
+    })
+}
+
+/// Build the sandbox image for `source` and return its reference, without
+/// starting a container. With `tag` set, the built image is also given that
+/// alias. This is the export path: the resulting self-describing image (baked
+/// recipe.json + kind-aware entrypoint) is the same image the managed platform
+/// runs. Synchronous -- no container is run, so no tokio runtime is needed.
+pub fn build_env(
+    source: EnvironmentSourceRef,
+    options: SandboxOptions,
+    tag: Option<&str>,
+) -> std::result::Result<BuildResult, SandboxError> {
+    let spec = EffectiveSandboxSpec::resolve(source, options)?;
+    let docker = docker::DockerBackend;
+    let artifact = docker.ensure_export_image(&spec).map_err(|err| {
+        SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
+    })?;
+    let image = spec.export_image_tag();
+    if let Some(alias) = tag {
+        docker.tag_image(&image, alias).map_err(|err| {
+            SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m })
+        })?;
+    }
+    Ok(BuildResult {
+        requested_source: spec.requested_display(),
+        resolved_source: spec.resolved_display(),
+        image,
+        alias: tag.map(str::to_owned),
+        image_id: artifact.image_id,
     })
 }
 
@@ -707,6 +837,128 @@ mod tests {
         )
         .unwrap();
         assert_ne!(installed.build_hash, remote.build_hash);
+    }
+
+    #[test]
+    fn build_hash_keys_recipe_kind() {
+        // entrypoint_for bakes a different bootstrap per kind, so a model recipe
+        // and an env recipe with a byte-identical build phase must NOT share an
+        // image tag -- else the reused image starts the wrong bootstrap and the
+        // readiness probe fails against the expected service.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "gym", "env_id": "E-v0"},
+            "build": {"base": "python@sha256:abc"},
+        });
+        let mut model_doc = base.clone();
+        model_doc["kind"] = serde_json::json!("model");
+        let env = EffectiveSandboxSpec::resolve(
+            recipe_source(base.clone(), RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        let model = EffectiveSandboxSpec::resolve(
+            recipe_source(model_doc, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_ne!(env.build_hash, model.build_hash);
+
+        // Byte-stable: an explicit kind="env" hashes identically to the default,
+        // so existing env images keep their tags.
+        let mut explicit_env_doc = base.clone();
+        explicit_env_doc["kind"] = serde_json::json!("env");
+        let explicit_env = EffectiveSandboxSpec::resolve(
+            recipe_source(explicit_env_doc, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(env.build_hash, explicit_env.build_hash);
+    }
+
+    #[test]
+    fn export_image_tag_keys_on_the_baked_runtime_document() {
+        // Two recipes sharing a byte-identical build phase but differing in their
+        // runtime half (make/setup/adapter) MUST get distinct export image tags, so
+        // a payload-less managed run of the second never serves the first's baked
+        // recipe.json. The run-path build_hash still collides by design.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "py", "entrypoint": "pkg.a:Model"},
+            "build": {"base": "python@sha256:abc"},
+            "kind": "model",
+        });
+        let resolve = |document: serde_json::Value| {
+            EffectiveSandboxSpec::resolve(
+                recipe_source(document, RecipeProvenance::Installed),
+                SandboxOptions::default(),
+            )
+            .unwrap()
+        };
+        let a = resolve(base.clone());
+        let mut other_make = base.clone();
+        other_make["make"] = serde_json::json!({"kind": "py", "entrypoint": "pkg.b:Model"});
+        let b = resolve(other_make);
+
+        assert_eq!(
+            a.build_hash, b.build_hash,
+            "run path still shares the build image"
+        );
+        assert_ne!(
+            a.export_image_tag(),
+            b.export_image_tag(),
+            "export tags must distinguish the baked documents"
+        );
+        assert_eq!(
+            a.export_image_tag(),
+            a.export_image_tag(),
+            "stable per recipe"
+        );
+
+        // setup-only variants (members) are also distinct exports (each bakes its
+        // own member), even though they share build_hash.
+        let mut with_setup = base.clone();
+        with_setup["setup"] = serde_json::json!({"env": {"LIBERO_TASK": "libero_10/3"}});
+        let member = resolve(with_setup);
+        assert_eq!(a.build_hash, member.build_hash);
+        assert_ne!(a.export_image_tag(), member.export_image_tag());
+
+        // A gym source bakes nothing, so its export tag is just the build-phase tag.
+        let gym = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(gym.export_image_tag(), gym.image_tag());
+    }
+
+    #[test]
+    fn build_hash_is_stable_across_recipe_setup() {
+        // setup.env / setup.params are runtime member-selection knobs: applied at
+        // `docker run` and baked into recipe.json, but NOT part of the build. They
+        // must not change build_hash, or one-image-many-members breaks (each LIBERO
+        // task would rebuild the image). Pins the property A1's baked recipe relies on.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "gym", "env_id": "E-v0"},
+            "build": {"base": "python@sha256:abc"},
+        });
+        let mut with_setup = base.clone();
+        with_setup["setup"] = serde_json::json!({
+            "env": {"LIBERO_TASK": "libero_10/3"},
+            "params": ["LIBERO_TASK", "LIBERO_SEED"],
+        });
+        let bare = EffectiveSandboxSpec::resolve(
+            recipe_source(base, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        let parameterized = EffectiveSandboxSpec::resolve(
+            recipe_source(with_setup, RecipeProvenance::Installed),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(bare.build_hash, parameterized.build_hash);
     }
 
     #[test]

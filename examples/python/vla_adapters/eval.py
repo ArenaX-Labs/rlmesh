@@ -1,13 +1,13 @@
 """Evaluate any registered model on any registered env via a resolved adapter.
 
-Offline dry runs (no server needed), from this directory:
+Run as a module from ``examples/python`` (no server needed):
 
-    uv run eval.py                                  # every model x env pair
-    uv run eval.py --model xvla --env simpler-bridge
+    uv run python -m vla_adapters.eval                       # every model x env pair
+    uv run python -m vla_adapters.eval --model xvla --env simpler-bridge
 
 Against a live env endpoint:
 
-    uv run eval.py --model smolvla --env libero --address 127.0.0.1:5555
+    uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.0.1:5555
 """
 
 from __future__ import annotations
@@ -17,15 +17,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import rlmesh.adapters as adapt
-
-if __package__ in (None, ""):
-    # Executed as a script (`uv run eval.py`): make the package importable
-    # so the relative imports below resolve (PEP 366).
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = "vla_adapters"
 
 from .envs import ENVS, EnvEntry
 from .models import MODELS

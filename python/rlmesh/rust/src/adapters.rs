@@ -7,7 +7,7 @@
 //! [`adapters_resolve`] joins and resolves them into a plan handle.
 //!
 //! Values cross the boundary in a small tagged-tuple encoding produced by
-//! `rlmesh.adapters.helpers.bridge`:
+//! `rlmesh.adapters.helpers.codec`:
 //!
 //! - `("a", dtype, shape, bytes)` — a dense array (little-endian element
 //!   bytes, matching the repo-wide tensor/scalar codec)
