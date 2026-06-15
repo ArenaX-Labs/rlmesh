@@ -29,8 +29,8 @@ class ObsEncShim:
     model_key: str
     base: str
     width: int
-    dtype: str
     name: str
+    dtype: str
     from_base: RotationTransform
 
 
@@ -42,8 +42,8 @@ class ActEncShim:
     """
 
     offset: int
-    width: int
     base: str
+    width: int
     name: str
     to_base: RotationTransform
 

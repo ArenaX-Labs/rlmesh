@@ -125,8 +125,8 @@ def _shadow_state_input(
             model_key=key,
             base=encoding.base,
             width=encoding.width,
-            dtype=state_input.dtype,
             name=encoding.name,
+            dtype=state_input.dtype,
             from_base=cast("RotationTransform", encoding.from_base),
         )
     )
@@ -166,8 +166,8 @@ def _shadow_action(action: ActionLayout, act_shims: list[ActEncShim]) -> ActionL
             act_shims.append(
                 ActEncShim(
                     offset=offset,
-                    width=component.dim,
                     base=encoding.base,
+                    width=component.dim,
                     name=encoding.name,
                     to_base=cast("RotationTransform", encoding.to_base),
                 )
