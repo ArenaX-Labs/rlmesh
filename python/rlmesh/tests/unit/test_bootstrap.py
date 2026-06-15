@@ -203,9 +203,24 @@ def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
     ("attr", "entrypoint", "exc", "match"),
     [
         (None, "fake_env_module", "RecipeConstructionError", "module:callable"),
-        (None, "fake_env_module:missing", "RecipeConstructionError", "could not resolve"),
-        (object(), "fake_env_module:value", "RecipeConstructionError", "did not resolve to a callable"),
-        ((lambda: object()), "fake_env_module:make_env", "TypeError", "did not return an environment"),
+        (
+            None,
+            "fake_env_module:missing",
+            "RecipeConstructionError",
+            "could not resolve",
+        ),
+        (
+            object(),
+            "fake_env_module:value",
+            "RecipeConstructionError",
+            "did not resolve to a callable",
+        ),
+        (
+            (lambda: object()),
+            "fake_env_module:make_env",
+            "TypeError",
+            "did not return an environment",
+        ),
     ],
 )
 def test_load_env_entrypoint_rejects(
