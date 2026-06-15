@@ -27,8 +27,8 @@ const ROUTE_ID: &str = "default";
 /// [`connect_with_token`](RemoteModel::connect_with_token)) passing the env
 /// contract the model should answer against — unlike an env server, a model
 /// publishes no contract of its own, so the caller supplies it. Then call
-/// [`predict`](RemoteModel::predict) per step and [`begin_episode`] at each
-/// episode boundary.
+/// [`predict`](RemoteModel::predict) per step and
+/// [`begin_episode`](RemoteModel::begin_episode) at each episode boundary.
 pub struct RemoteModel {
     inner: rlmesh_grpc::ModelClient,
     observation_space: Arc<spaces::SpaceSpec>,
