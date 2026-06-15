@@ -646,6 +646,10 @@ class ArtifactInput:
                 raise RecipeValidationError(
                     f"ArtifactInput.uri {uri!r} must use one of {_ARTIFACT_URI_SCHEMES}"
                 )
+        # local_dir is a host path (not a rendered-in-container token), so only its
+        # type is checked eagerly, like every other string field -- not its shape.
+        if self.local_dir is not None:
+            _require_str(self.local_dir, "ArtifactInput.local_dir")
         includes = _as_str_tuple(self.include, "ArtifactInput.include")
         for glob in includes:
             _check_include_glob(glob, "ArtifactInput.include")
@@ -676,7 +680,29 @@ class RuntimeReserved:
     lane_affinity: bool | None = None
 
     def __post_init__(self) -> None:
-        """Clean the perturbation bag to JSON scalars (the only non-scalar field)."""
+        """Eagerly validate every field so a constructed instance always round-trips
+        (the same constraints ``from_dict`` enforces), then clean perturbation."""
+        for name, allowed in (
+            ("loop_mode", ("step", "chunk", "receding", "open_loop")),
+            ("batching", ("off", "utilization", "fusion")),
+            ("determinism", ("off", "seeded", "strict")),
+        ):
+            value = getattr(self, name)
+            if value is not None and value not in allowed:
+                raise RecipeValidationError(f"RuntimeReserved.{name} invalid: {value!r}")
+        for name in ("chunk_size", "execute_horizon", "max_batch"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool)
+            ):
+                raise RecipeValidationError(
+                    f"RuntimeReserved.{name} must be an integer, got {value!r}"
+                )
+        if self.lane_affinity is not None and not isinstance(self.lane_affinity, bool):
+            raise RecipeValidationError(
+                f"RuntimeReserved.lane_affinity must be a boolean, "
+                f"got {self.lane_affinity!r}"
+            )
         if self.perturbation is not None:
             object.__setattr__(
                 self,
@@ -854,6 +880,13 @@ class Recipe:
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> Recipe:
         """Build a recipe from a canonical JSON-shaped mapping (executes nothing)."""
+        # The published-adapter field was renamed annotations -> adapter. Fail loud
+        # on a pre-rename document rather than silently dropping its content.
+        if payload.get("adapter") is None and "annotations" in payload:
+            raise RecipeValidationError(
+                "recipe JSON uses the pre-rename 'annotations' key (now 'adapter'); "
+                "re-export the recipe with the current schema"
+            )
         return cls(
             name=expect_str(payload.get("name"), "name"),
             make=make_from_dict(payload.get("make")),

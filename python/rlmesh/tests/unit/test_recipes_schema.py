@@ -351,3 +351,40 @@ def test_project_include_rejects_unsupported_glob_metachars() -> None:
     for bad in ["file?.json", "data/[abc].txt", "data/{a,b}.bin"]:
         with pytest.raises(RecipeValidationError):
             ProjectInstall(include=[bad])
+
+
+def test_runtime_reserved_validates_on_construction() -> None:
+    from rlmesh.recipes._schema._definitions import RuntimeReserved
+
+    # Every constraint from_dict enforces must also fire on direct construction,
+    # or you can build an instance that serializes but cannot round-trip back.
+    for kwargs in (
+        {"loop_mode": "bogus"},
+        {"batching": "nope"},
+        {"determinism": "x"},
+        {"chunk_size": True},
+        {"max_batch": "5"},
+        {"lane_affinity": 1},
+    ):
+        with pytest.raises(RecipeValidationError):
+            RuntimeReserved(**kwargs)  # type: ignore[arg-type]
+
+    reserved = RuntimeReserved(loop_mode="chunk", chunk_size=8)
+    assert RuntimeReserved.from_dict(reserved.to_dict()) == reserved
+
+
+def test_artifact_input_rejects_non_str_local_dir() -> None:
+    from rlmesh.recipes._schema import ArtifactInput
+
+    with pytest.raises(RecipeValidationError):
+        ArtifactInput("w", "/w", local_dir=123)  # type: ignore[arg-type]
+    # A host path is type-checked but not token-validated (spaces are fine).
+    assert (
+        ArtifactInput("w", "/w", local_dir="/host/My Weights").local_dir
+        == "/host/My Weights"
+    )
+
+
+def test_recipe_from_dict_rejects_pre_rename_annotations_key() -> None:
+    with pytest.raises(RecipeValidationError, match="annotations"):
+        Recipe.from_dict({"name": "x/y", "annotations": {"observation": {}}})
