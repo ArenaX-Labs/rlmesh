@@ -288,6 +288,7 @@ __all__ = [
     "SandboxModel",
     "SandboxVectorEnv",
     "asarray",
+    "ensure_available",
     "from_array",
     "space_from_spec",
 ]

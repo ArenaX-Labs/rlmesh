@@ -96,6 +96,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "SandboxModel",
         "SandboxVectorEnv",
         "asarray",
+        "ensure_available",
         "from_array",
         "space_from_spec",
     ]
@@ -111,6 +112,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "SandboxVectorEnv",
         "TorchValue",
         "as_tensor",
+        "ensure_available",
         "from_tensor",
         "space_from_spec",
     ]

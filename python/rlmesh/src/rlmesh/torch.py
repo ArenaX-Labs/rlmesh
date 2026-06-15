@@ -310,6 +310,7 @@ __all__ = [
     "SandboxVectorEnv",
     "TorchValue",
     "as_tensor",
+    "ensure_available",
     "from_tensor",
     "space_from_spec",
 ]

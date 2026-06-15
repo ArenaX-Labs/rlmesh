@@ -933,6 +933,7 @@
       "SandboxInfo",
       "SandboxVectorEnv",
       "asarray",
+      "ensure_available",
       "from_array",
       "space_from_spec"
     ],
@@ -1305,6 +1306,11 @@
         "signature": "asarray(tensor: Tensor) -> JaxArray",
         "stability": "Experimental"
       },
+      "ensure_available": {
+        "kind": "function",
+        "signature": "ensure_available() -> None",
+        "stability": "Experimental"
+      },
       "from_array": {
         "kind": "function",
         "signature": "from_array(array: object) -> Tensor | PrimitiveValue",
@@ -1318,7 +1324,11 @@
     }
   },
   "rlmesh.models.base": {
-    "exports": ["LifecycleCallback", "ModelBase", "PredictFn"],
+    "exports": [
+      "LifecycleCallback",
+      "ModelBase",
+      "PredictFn"
+    ],
     "objects": {
       "LifecycleCallback": {
         "kind": "type alias",
@@ -1370,6 +1380,7 @@
       "SandboxModel",
       "SandboxVectorEnv",
       "asarray",
+      "ensure_available",
       "from_array",
       "space_from_spec"
     ],
@@ -1759,6 +1770,11 @@
       "asarray": {
         "kind": "function",
         "signature": "asarray(tensor: Tensor) -> NumpyArray",
+        "stability": "Stable"
+      },
+      "ensure_available": {
+        "kind": "function",
+        "signature": "ensure_available() -> None",
         "stability": "Stable"
       },
       "from_array": {
@@ -2152,7 +2168,10 @@
     }
   },
   "rlmesh.server": {
-    "exports": ["EnvLike", "EnvServer"],
+    "exports": [
+      "EnvLike",
+      "EnvServer"
+    ],
     "objects": {
       "EnvLike": {
         "kind": "type alias",
@@ -2197,7 +2216,11 @@
     }
   },
   "rlmesh.serving": {
-    "exports": ["import_packages", "load_env", "load_env_entrypoint"],
+    "exports": [
+      "import_packages",
+      "load_env",
+      "load_env_entrypoint"
+    ],
     "objects": {
       "import_packages": {
         "kind": "function",
@@ -2656,7 +2679,10 @@
     }
   },
   "rlmesh.specs": {
-    "exports": ["EnvContract", "SpaceSpec"],
+    "exports": [
+      "EnvContract",
+      "SpaceSpec"
+    ],
     "objects": {
       "EnvContract": {
         "kind": "class",
@@ -2738,6 +2764,7 @@
       "SandboxVectorEnv",
       "TorchValue",
       "as_tensor",
+      "ensure_available",
       "from_tensor",
       "space_from_spec"
     ],
@@ -3108,6 +3135,11 @@
       "as_tensor": {
         "kind": "function",
         "signature": "as_tensor(tensor: Tensor | bool | int | float, *, copy: bool = False) -> TorchTensor",
+        "stability": "Experimental"
+      },
+      "ensure_available": {
+        "kind": "function",
+        "signature": "ensure_available() -> None",
         "stability": "Experimental"
       },
       "from_tensor": {

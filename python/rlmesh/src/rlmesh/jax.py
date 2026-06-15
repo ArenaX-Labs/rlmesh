@@ -234,6 +234,7 @@ __all__ = [
     "SandboxInfo",
     "SandboxVectorEnv",
     "asarray",
+    "ensure_available",
     "from_array",
     "space_from_spec",
 ]
