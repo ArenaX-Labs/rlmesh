@@ -247,7 +247,7 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     assert captured[field] == ["ale-py"]
 
 
-def testresolve_recipe_source_bakes_make_kwargs_into_document() -> None:
+def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     # A recipe source carries make kwargs in the document (make.kwargs), since the
     # recipe bootstrap payload never threads kwargs_json into the recipe build.
     from rlmesh import recipes
@@ -266,7 +266,7 @@ def testresolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     assert dict(document.make.kwargs) == {"render_mode": "rgb_array"}
 
 
-def testresolve_recipe_source_merges_over_existing_make_kwargs() -> None:
+def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
     # Caller kwargs win over the recipe's own baked make kwargs, like
     # rlmesh.make(recipe, **kwargs).
     from rlmesh.recipes import GymMake, Recipe
@@ -286,7 +286,7 @@ def testresolve_recipe_source_merges_over_existing_make_kwargs() -> None:
     assert dict(document.make.kwargs) == {"render_mode": "rgb_array", "g": 9.8}
 
 
-def testresolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
+def test_resolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
     # A build-only base recipe (make=None) has nowhere to bake make kwargs.
     from rlmesh.recipes import Build, Recipe
     from rlmesh.sandbox._export import resolve_recipe_source
@@ -296,7 +296,7 @@ def testresolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
         resolve_recipe_source(base, {"render_mode": "rgb_array"})
 
 
-def testresolve_recipe_source_rejects_hf_make_before_build() -> None:
+def test_resolve_recipe_source_rejects_hf_make_before_build() -> None:
     # An HfMake recipe must be rejected up front, not only after a full image build
     # by the in-container build().
     from rlmesh.recipes import HfMake, Recipe, UnsupportedRecipeError
@@ -310,7 +310,7 @@ def testresolve_recipe_source_rejects_hf_make_before_build() -> None:
         resolve_recipe_source(recipe, {})
 
 
-def testresolve_recipe_source_rejects_setup_files_before_build() -> None:
+def test_resolve_recipe_source_rejects_setup_files_before_build() -> None:
     # setup.files is not applied anywhere yet (the in-container build() -> apply_setup
     # raises on it too), so it must be rejected up front -- before any image build.
     from rlmesh.recipes import GymMake, Recipe, Setup, UnsupportedRecipeError
@@ -328,7 +328,7 @@ def testresolve_recipe_source_rejects_setup_files_before_build() -> None:
         resolve_recipe_source(recipe, {})
 
 
-def testresolve_recipe_source_from_recipe_uses_base_origin(
+def test_resolve_recipe_source_from_recipe_uses_base_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # When a task recipe inlines a `from_recipe` base, the base supplies the entire
@@ -368,7 +368,7 @@ def testresolve_recipe_source_from_recipe_uses_base_origin(
     assert context_root == "/dir/A"
 
 
-def testresolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
+def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A chained task -> base_b -> base_a inlines the TERMINAL base's build (base_a,
@@ -412,7 +412,7 @@ def testresolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
     assert context_root == "/dir/A"
 
 
-def testresolve_recipe_source_authored_project_uses_module_dir() -> None:
+def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
     # An authored EnvRecipe with a ProjectInstall stages from its defining module's
     # directory, not the launching process's cwd.
     from pathlib import Path
@@ -429,7 +429,7 @@ def testresolve_recipe_source_authored_project_uses_module_dir() -> None:
     assert context_root == expected
 
 
-def testresolve_recipe_source_registered_name_uses_registrant_dir() -> None:
+def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     # A recipe resolved by registered name stages a ProjectInstall from the
     # registrant's module directory (recorded at register() time), not the cwd.
     from pathlib import Path
@@ -454,7 +454,7 @@ def testresolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     assert context_root == str(Path(__file__).resolve().parent)
 
 
-def testresolve_recipe_source_plain_id_unchanged() -> None:
+def test_resolve_recipe_source_plain_id_unchanged() -> None:
     # A plain gym id that is not a registered recipe stays an ordinary source.
     from rlmesh.sandbox._export import resolve_recipe_source
 
@@ -467,7 +467,7 @@ def testresolve_recipe_source_plain_id_unchanged() -> None:
     )
 
 
-def testresolve_recipe_source_merges_imports_into_requires() -> None:
+def test_resolve_recipe_source_merges_imports_into_requires() -> None:
     # A recipe source carries caller imports= in the document (requires.imports),
     # since the recipe bootstrap reads requires.imports, never the caller's imports=
     # channel. Without the merge a registration import (e.g. ale_py) is dropped and
@@ -484,7 +484,7 @@ def testresolve_recipe_source_merges_imports_into_requires() -> None:
     assert "ale_py" in document.requires.imports
 
 
-def testresolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
+def test_resolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
     # The recipe's own imports come first; caller imports append, de-duplicated.
     from rlmesh.recipes import GymMake, Recipe, Requires
     from rlmesh.sandbox._export import resolve_recipe_source
@@ -501,7 +501,7 @@ def testresolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
     assert list(document.requires.imports) == ["ale_py", "shimmy", "extra_reg"]
 
 
-def testresolve_recipe_source_pymake_with_imports_raises() -> None:
+def test_resolve_recipe_source_pymake_with_imports_raises() -> None:
     # requires.imports is forbidden for PyMake (the py factory owns its imports), so
     # a caller imports= on a PyMake recipe is rejected rather than silently dropped.
     from rlmesh.recipes import PyMake, Recipe
@@ -512,7 +512,7 @@ def testresolve_recipe_source_pymake_with_imports_raises() -> None:
         resolve_recipe_source(recipe, {}, ["ale_py"])
 
 
-def testresolve_recipe_source_build_only_base_with_imports_raises() -> None:
+def test_resolve_recipe_source_build_only_base_with_imports_raises() -> None:
     # A build-only base (make=None) has no make/requires surface for caller imports.
     from rlmesh.recipes import Build, Recipe
     from rlmesh.sandbox._export import resolve_recipe_source
@@ -522,7 +522,7 @@ def testresolve_recipe_source_build_only_base_with_imports_raises() -> None:
         resolve_recipe_source(base, {}, ["ale_py"])
 
 
-def testresolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
+def test_resolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
     # The default (no caller imports) path is identical to before: the recipe's own
     # requires.imports passes through unchanged.
     from rlmesh.recipes import GymMake, Recipe, Requires
@@ -540,7 +540,7 @@ def testresolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
     assert list(document.requires.imports) == ["ale_py"]
 
 
-def testresolve_recipe_source_plain_id_with_imports_unchanged() -> None:
+def test_resolve_recipe_source_plain_id_with_imports_unchanged() -> None:
     # A plain gym source string (not a recipe) is unchanged: imports= is NOT consumed
     # here -- it stays forwarded via the gym/hf path's imports= channel.
     from rlmesh.sandbox._export import resolve_recipe_source
