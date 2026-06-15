@@ -14,6 +14,7 @@ import contextlib
 import contextvars
 import os
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -145,12 +146,22 @@ def merged_inputs(
 ) -> dict[str, ArtifactInput]:
     """Overlay per-run overrides onto declared mounts, keyed by name.
 
-    An override matching a declared name replaces it (the run-time checkpoint
-    selection wins); a new name adds a mount.
+    An override matching a declared name swaps only the resolvable source
+    (``local_dir``/``uri``) and keeps the declared contract (``target_path``,
+    ``include``, ``required``) -- the run-time checkpoint selection points the
+    mount at new bytes, not a new container path. This matches
+    :func:`local_dir_mounts` so the local and sandbox paths resolve identically.
+    A new name adds a mount.
     """
     by_name = {a.name: a for a in inputs}
     for override in overrides:
-        by_name[override.name] = override
+        declared = by_name.get(override.name)
+        if declared is None:
+            by_name[override.name] = override
+        else:
+            by_name[override.name] = replace(
+                declared, local_dir=override.local_dir, uri=override.uri
+            )
     return by_name
 
 
@@ -237,7 +248,17 @@ def resolve_artifact(artifact: ArtifactInput, *, in_container: bool) -> str | No
 
 def _resolve_uri(uri: str, *, include: Sequence[str] = ()) -> str:
     if uri.startswith("file://"):
-        return uri[len("file://") :]
+        from urllib.parse import unquote, urlparse
+
+        # Parse properly rather than stripping the prefix: file:///p and
+        # file://localhost/p both name the local path /p, and %20-style escapes
+        # decode. A real remote host is not a local file.
+        parsed = urlparse(uri)
+        if parsed.netloc and parsed.netloc != "localhost":
+            raise NotImplementedError(
+                f"file:// uri with a remote host is not resolvable locally: {uri!r}"
+            )
+        return unquote(parsed.path)
     if uri.startswith(_HF_SCHEME):
         repo, _, revision = uri[len(_HF_SCHEME) :].partition("@")
         return _snapshot_hf(

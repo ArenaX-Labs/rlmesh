@@ -170,3 +170,31 @@ def test_env_sandbox_inputs_flow_to_mounts(tmp_path: Path) -> None:
     _, _, _, _, inputs = resolve_recipe_source(rec)
     assert inputs == rec.inputs
     assert local_dir_mounts(inputs) == [(str(tmp_path), "/assets")]
+
+
+def test_resolve_uri_handles_file_netloc_forms() -> None:
+    from rlmesh.recipes._artifacts import _resolve_uri
+
+    assert _resolve_uri("file:///abs/path") == "/abs/path"
+    assert _resolve_uri("file://localhost/abs/path") == "/abs/path"
+    assert _resolve_uri("file:///path%20with%20spaces") == "/path with spaces"
+    with pytest.raises(NotImplementedError):
+        _resolve_uri("file://remotehost/path")
+
+
+def test_merged_inputs_override_keeps_declared_target_path() -> None:
+    from rlmesh.recipes._artifacts import merged_inputs
+
+    declared = ArtifactInput("weights", "/declared/target", uri="hf://org/repo")
+    override = ArtifactInput("weights", "/ignored/target", local_dir="/host/ckpt")
+    merged = merged_inputs((declared,), (override,))
+    result = merged["weights"]
+    # The override repoints the source; the container target stays the declared one
+    # (matching local_dir_mounts, so local and sandbox resolution agree).
+    assert result.target_path == "/declared/target"
+    assert result.local_dir == "/host/ckpt"
+    assert result.uri is None
+
+    # A new (undeclared) name still adds a mount on the local path.
+    extra = ArtifactInput("extra", "/extra", local_dir="/host/extra")
+    assert merged_inputs((declared,), (extra,))["extra"] is extra
