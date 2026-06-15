@@ -13,7 +13,7 @@ from .._rlmesh import sandbox_build_image as _sandbox_build_image
 if TYPE_CHECKING:
     from ..recipes import ArtifactInput, EnvRecipe, Recipe
 
-# Immutable empty mapping used as the default for callers that pass no make kwargs.
+# Frozen empty default (avoids the mutable-default trap) for callers passing no kwargs.
 _NO_MAKE_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
@@ -192,15 +192,10 @@ def resolve_recipe_source(
             f"sandbox source must be a str, Recipe, or EnvRecipe, got "
             f"{type(source).__name__}"
         )
-    # Capture the from_recipe base origin BEFORE inlining: from_recipe is exclusive
-    # with other build fields, so when it is set the inlined ProjectInstall always
-    # comes from the TERMINAL base (the first ancestor whose build.from_recipe is
-    # None), and its `src` is relative to that base's source tree -- not the child's
-    # or an intermediate base's. from_recipe_origin walks the chain to that terminal
-    # base; we use it below to stage from the right tree.
+    # Capture the terminal-base origin BEFORE inlining: an inlined ProjectInstall's
+    # `src` is relative to that base's tree, so we stage from it below.
     from_recipe_base_origin = from_recipe_origin(recipe)
-    # Inline any `from_recipe` base build before the wire so a task family shares
-    # one image.
+    # Inline any `from_recipe` base build so a task family shares one image.
     recipe = resolve_from_recipe(recipe)
     # An HfMake recipe materializes its source only via the sandbox HF path, never
     # the recipe path; reject it here so we fail fast instead of after a full image
@@ -219,9 +214,7 @@ def resolve_recipe_source(
             "setup.files is not applied yet (local or sandbox); remove it and stage "
             "files via the build phase (build.project / build.fetch) instead"
         )
-    # Bake any make kwargs into the recipe document so the in-container factory
-    # receives them (the recipe bootstrap payload carries make.kwargs, not the
-    # gym/hf kwargs_json). A build-only base has no make to carry them.
+    # Bake make kwargs into the document; a build-only base has no make to carry them.
     if gym_make_kwargs:
         if recipe.make is None:
             raise TypeError(
@@ -232,19 +225,15 @@ def resolve_recipe_source(
             recipe.make, kwargs={**recipe.make.kwargs, **gym_make_kwargs}
         )
         recipe = dataclasses.replace(recipe, make=merged_make)
-    # Merge any caller imports into the recipe document's requires.imports so the
-    # in-container bootstrap runs them (it reads requires.imports, never the caller's
-    # imports=). requires.imports is forbidden/meaningless for a PyMake or build-only
-    # base -- the py factory owns its own imports -- so reject caller imports there
-    # instead of silently dropping them.
+    # Merge caller imports into requires.imports (the bootstrap reads only that). A
+    # PyMake/build-only recipe owns its own imports, so reject rather than drop them.
     if imports:
         if recipe.make is None or isinstance(recipe.make, PyMake):
             raise TypeError(
                 f"recipe {recipe.name!r} is a PyMake/build-only recipe; imports= does "
                 "not apply -- a py factory performs its own imports"
             )
-        # De-duplicate while preserving order: the recipe's own imports first, then
-        # the caller's new entries.
+        # De-dup, preserving order: the recipe's own imports first.
         merged_imports = list(recipe.requires.imports)
         for name in imports:
             if name not in merged_imports:
@@ -254,18 +243,12 @@ def resolve_recipe_source(
     if recipe.build.project is None:
         context_root = None
     else:
-        # When the build came from a `from_recipe` chain, the inlined project.src is
-        # relative to the TERMINAL base's source tree, not the child's or an
-        # intermediate base's -- so prefer that terminal base's recorded origin.
-        # (from_recipe is exclusive with other build fields, so the ProjectInstall is
-        # always the terminal base's.) Fall back to the child's origin only when the
-        # terminal base has no recorded origin.
+        # For a from_recipe chain the inlined project.src is relative to the terminal
+        # base's tree, so prefer its origin. Stage from the recipe's defining package
+        # when known, else the caller's cwd (a Recipe assembled at the call site has
+        # no determinable origin).
         if from_recipe_base_origin is not None:
             origin = from_recipe_base_origin
-        # Stage a ProjectInstall from the recipe's defining package when we know it,
-        # falling back to the caller's cwd otherwise (e.g. a plain in-process Recipe
-        # instance assembled at the call site has no determinable origin -- the cwd
-        # is then the only host tree we can reasonably stage from).
         context_root = origin if origin is not None else os.getcwd()
     return recipe.name, recipe.to_json(), provenance, context_root, recipe.inputs
 

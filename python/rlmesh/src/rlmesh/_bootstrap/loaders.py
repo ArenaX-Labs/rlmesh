@@ -131,16 +131,9 @@ class RecipeConstructionError(RuntimeError, ImportError):
     """Raised when a recipe's factory entrypoint cannot be loaded.
 
     Wraps the import/attribute/not-callable boundary of resolving a
-    ``module:callable`` factory, naming the entrypoint and pointing at
-    ``rlmesh.recipes.check``. Errors raised *inside* a successfully-loaded factory
-    are not wrapped.
-
-    It subclasses both ``RuntimeError`` and ``ImportError`` so the nicer message is
-    raised while existing ``except ImportError`` callers of the public
-    ``rlmesh.serving.load_env_entrypoint`` still catch the common bad-entrypoint
-    case (which previously raised a raw ``ImportError``/``AttributeError``/
-    ``TypeError``/``ValueError``). The MRO is well-defined -- both bases derive from
-    ``Exception`` -- so ``raise``/``isinstance`` behave normally.
+    ``module:callable`` factory; errors raised *inside* a loaded factory are not
+    wrapped. Subclasses ``ImportError`` so existing ``except ImportError`` callers of
+    ``rlmesh.serving.load_env_entrypoint`` still catch the bad-entrypoint case.
     """
 
 

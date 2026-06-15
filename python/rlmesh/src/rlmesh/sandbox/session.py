@@ -6,7 +6,6 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
-from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -33,8 +32,6 @@ StepInfo: TypeAlias = dict[str, object]
 
 RemoteT = TypeVar("RemoteT")
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
-# Immutable empty mapping used as the default for callers that pass no make kwargs.
-_NO_MAKE_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
 def missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
@@ -363,25 +360,16 @@ def _start_sandbox(
     from ..recipes._artifacts import local_dir_mounts
 
     mounts = local_dir_mounts(inputs)
-    # Only forward the recipe arguments when this is actually a recipe source, so
-    # the gym/hf path stays byte-identical to before.
+    # On the recipe path the document is the sole carrier: resolve_recipe_source has
+    # already merged make.kwargs and requires.imports into it, so don't also forward
+    # kwargs_json/imports. The gym/hf path forwards both exactly as before.
     recipe_kwargs: dict[str, str] = {}
-    # On the recipe path the caller imports are merged into the document's
-    # requires.imports by resolve_recipe_source (the bootstrap reads requires.imports,
-    # not the imports= channel), so do not also forward them via _sandbox_start_env --
-    # the merged document is their sole carrier. The gym/hf path keeps forwarding
-    # imports exactly as before.
     forwarded_imports = imports
     if recipe_json is not None and provenance is not None:
         recipe_kwargs["recipe_json"] = recipe_json
         recipe_kwargs["recipe_provenance"] = provenance
         if context_root is not None:
             recipe_kwargs["context_root"] = context_root
-        # On the recipe path the make kwargs are baked into the document's
-        # make.kwargs by resolve_recipe_source (the recipe bootstrap payload
-        # carries make.kwargs, not kwargs_json), so do not also ship kwargs_json --
-        # the document is their sole carrier. The gym/hf path below keeps shipping
-        # kwargs_json exactly as before.
         kwargs_json: str | None = None
         forwarded_imports = None
     else:

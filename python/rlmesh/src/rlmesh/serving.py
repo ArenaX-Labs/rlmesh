@@ -38,20 +38,11 @@ def load_env(
     vectorization_mode: str | None = None,
     kwargs: Mapping[str, object] | None = None,
 ) -> EnvLike:
-    """Load a Gymnasium/Gym environment by registered id.
+    """Load a Gymnasium/Gym environment by registered id (e.g. ``"CartPole-v1"``).
 
-    Args:
-        env_id: Registered environment id, for example ``"CartPole-v1"``.
-        packages: Packages imported before loading so their environments
-            register themselves.
-        num_envs: Number of vectorized environments to construct. ``1`` returns
-            a single environment.
-        vectorization_mode: Preferred vectorization mode (``"sync"`` or
-            ``"async"``) when ``num_envs`` is greater than one.
-        kwargs: Extra keyword arguments forwarded to environment creation.
-
-    Returns:
-        An RLMesh-servable environment suitable for :class:`rlmesh.EnvServer`.
+    ``packages`` are imported first so their environments self-register; ``num_envs``
+    > 1 vectorizes (``vectorization_mode`` ``"sync"``/``"async"``). Returns an
+    environment suitable for :class:`rlmesh.EnvServer`.
     """
     return _load_environment(
         env_id,
@@ -70,14 +61,9 @@ def load_env_entrypoint(
 ) -> EnvLike:
     """Load an environment from a ``module:callable`` factory entrypoint.
 
-    Args:
-        entrypoint: Factory in ``module:callable`` form. The callable must
-            return an environment exposing ``reset(...)`` and ``step(...)``.
-        packages: Packages imported before resolving the entrypoint.
-        kwargs: Extra keyword arguments forwarded to the factory.
-
-    Returns:
-        An RLMesh-servable environment suitable for :class:`rlmesh.EnvServer`.
+    The callable must return an env exposing ``reset(...)``/``step(...)``;
+    ``packages`` are imported before resolving it. Returns an environment suitable
+    for :class:`rlmesh.EnvServer`.
     """
     return _load_env_entrypoint(
         entrypoint,
