@@ -48,12 +48,27 @@ pub struct DockerBackend;
 
 impl DockerBackend {
     pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
-        let image_tag = spec.image_tag();
+        self.ensure_image_tagged(spec, &spec.image_tag())
+    }
 
+    /// Like [`ensure_image`], but for the export path: keys the image by the
+    /// recipe's full baked content (`export_image_tag`), not just its build phase.
+    /// Two recipes that share a build phase but bake different recipe.json must NOT
+    /// collide on one self-describing image, since the payload-less managed run
+    /// reads the baked document.
+    pub fn ensure_export_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
+        self.ensure_image_tagged(spec, &spec.export_image_tag())
+    }
+
+    fn ensure_image_tagged(
+        &self,
+        spec: &EffectiveSandboxSpec,
+        image_tag: &str,
+    ) -> Result<BuildArtifact> {
         // A single `docker image inspect` answers both "does it exist" and
         // "what is its id": inspect_image_id returns Ok(None) when the image is
         // absent, so a second existence probe is redundant.
-        if let Some(image_id) = inspect_image_id(&image_tag)? {
+        if let Some(image_id) = inspect_image_id(image_tag)? {
             return Ok(BuildArtifact { image_id });
         }
 
@@ -82,7 +97,7 @@ impl DockerBackend {
                         &builder,
                         "--load",
                         "-t",
-                        &image_tag,
+                        image_tag,
                         ".",
                     ])
                     .current_dir(tempdir.path())
@@ -90,7 +105,7 @@ impl DockerBackend {
                     .context("failed to invoke docker buildx build")?
             }
             None => Command::new("docker")
-                .args(["build", "-t", &image_tag, "."])
+                .args(["build", "-t", image_tag, "."])
                 .current_dir(tempdir.path())
                 .output()
                 .context("failed to invoke docker build")?,
@@ -99,7 +114,7 @@ impl DockerBackend {
             bail!("docker build failed:\n{}", command_output(&output));
         }
 
-        let image_id = inspect_image_id(&image_tag)?
+        let image_id = inspect_image_id(image_tag)?
             .ok_or_else(|| anyhow!("docker build completed but image id was not found"))?;
         Ok(BuildArtifact { image_id })
     }
@@ -462,7 +477,7 @@ impl BootstrapSpec {
 /// Serialize a recipe's runtime half (build phase stripped) for the bootstrap
 /// payload. The container has already been built, so re-shipping the build keys
 /// would only bloat the payload.
-fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
+pub(crate) fn runtime_document(recipe: &crate::recipe::Recipe) -> Result<serde_json::Value> {
     let mut value =
         serde_json::to_value(recipe).context("failed to serialize recipe bootstrap document")?;
     if let Some(object) = value.as_object_mut() {

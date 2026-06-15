@@ -323,6 +323,35 @@ impl EffectiveSandboxSpec {
         )
     }
 
+    /// The image tag for the EXPORT path. A run-path image is shared by build
+    /// phase (the inline bootstrap payload overrides the baked recipe.json), but an
+    /// exported/self-describing image is run payload-less, so it must be keyed by
+    /// the full baked content -- otherwise two recipes that share a build phase
+    /// would collide on one image carrying the first recipe's baked document.
+    /// Falls back to `image_tag` for gym/hf sources, which bake nothing.
+    pub(crate) fn export_image_tag(&self) -> String {
+        match self.runtime_digest() {
+            Some(digest) => format!(
+                "rlmesh-sandbox-{}:{}-{}",
+                self.image_slug(),
+                &self.build_hash[..12.min(self.build_hash.len())],
+                &digest[..12.min(digest.len())],
+            ),
+            None => self.image_tag(),
+        }
+    }
+
+    /// A digest of exactly what `docker::runtime_document` bakes into recipe.json
+    /// (the recipe minus its build phase); `None` for a gym/hf source.
+    fn runtime_digest(&self) -> Option<String> {
+        let recipe = self.recipe.as_ref()?;
+        let document = docker::runtime_document(recipe).ok()?;
+        let raw = serde_json::to_vec(&document).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(raw);
+        Some(hex(&hasher.finalize()))
+    }
+
     pub(crate) fn requested_display(&self) -> String {
         self.requested_source.to_string()
     }
@@ -623,10 +652,10 @@ pub fn build_env(
 ) -> std::result::Result<BuildResult, SandboxError> {
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
     let docker = docker::DockerBackend;
-    let artifact = docker.ensure_image(&spec).map_err(|err| {
+    let artifact = docker.ensure_export_image(&spec).map_err(|err| {
         SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
     })?;
-    let image = spec.image_tag();
+    let image = spec.export_image_tag();
     if let Some(alias) = tag {
         docker.tag_image(&image, alias).map_err(|err| {
             SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m })
@@ -845,6 +874,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(env.build_hash, explicit_env.build_hash);
+    }
+
+    #[test]
+    fn export_image_tag_keys_on_the_baked_runtime_document() {
+        // Two recipes sharing a byte-identical build phase but differing in their
+        // runtime half (make/setup/adapter) MUST get distinct export image tags, so
+        // a payload-less managed run of the second never serves the first's baked
+        // recipe.json. The run-path build_hash still collides by design.
+        let base = serde_json::json!({
+            "name": "a/b",
+            "make": {"kind": "py", "entrypoint": "pkg.a:Model"},
+            "build": {"base": "python@sha256:abc"},
+            "kind": "model",
+        });
+        let resolve = |document: serde_json::Value| {
+            EffectiveSandboxSpec::resolve(
+                recipe_source(document, RecipeProvenance::Installed),
+                SandboxOptions::default(),
+            )
+            .unwrap()
+        };
+        let a = resolve(base.clone());
+        let mut other_make = base.clone();
+        other_make["make"] = serde_json::json!({"kind": "py", "entrypoint": "pkg.b:Model"});
+        let b = resolve(other_make);
+
+        assert_eq!(
+            a.build_hash, b.build_hash,
+            "run path still shares the build image"
+        );
+        assert_ne!(
+            a.export_image_tag(),
+            b.export_image_tag(),
+            "export tags must distinguish the baked documents"
+        );
+        assert_eq!(
+            a.export_image_tag(),
+            a.export_image_tag(),
+            "stable per recipe"
+        );
+
+        // setup-only variants (members) are also distinct exports (each bakes its
+        // own member), even though they share build_hash.
+        let mut with_setup = base.clone();
+        with_setup["setup"] = serde_json::json!({"env": {"LIBERO_TASK": "libero_10/3"}});
+        let member = resolve(with_setup);
+        assert_eq!(a.build_hash, member.build_hash);
+        assert_ne!(a.export_image_tag(), member.export_image_tag());
+
+        // A gym source bakes nothing, so its export tag is just the build-phase tag.
+        let gym = EffectiveSandboxSpec::resolve(
+            EnvironmentSourceRef::parse("CartPole-v1").unwrap(),
+            SandboxOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(gym.export_image_tag(), gym.image_tag());
     }
 
     #[test]
