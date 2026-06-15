@@ -907,8 +907,9 @@ def test_env_tags_metadata_round_trip():
 
 
 def test_model_spec_metadata_round_trip():
-    metadata = {"max_batch": 8, **SMOLVLA.to_metadata()}
-    assert adapt.ModelSpec.from_metadata(metadata) == SMOLVLA
+    for spec in (SMOLVLA, OPENVLA, XVLA, GR00T):
+        metadata = {"max_batch": 8, **spec.to_metadata()}
+        assert adapt.ModelSpec.from_metadata(metadata) == spec
     assert adapt.ModelSpec.from_metadata({"max_batch": 8}) is None
 
 
