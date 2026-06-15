@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import pytest
-from rlmesh.recipes import Build, EnvRecipe, ProjectInstall
+from rlmesh.models import ModelRecipe
+from rlmesh.recipes import ArtifactInput, Build, EnvRecipe, PipInstall, ProjectInstall
 
 
 def test_sandbox_cleanup_runs_on_keyboard_interrupt(
@@ -701,3 +702,229 @@ def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
         "address": "tcp://127.0.0.1:50051",
         "container_id": "container-1",
     }
+
+
+class _RunPolicy(ModelRecipe):
+    """A minimal model recipe SandboxModel.run() can build an image from."""
+
+    name = "policy/run-test"
+    build = Build(pip=[PipInstall(["numpy"])])
+
+    def load(self) -> None:
+        pass
+
+    def predict(self, observation: object) -> object:
+        return 0
+
+
+def _drive_stdout(episodes: list[dict[str, object]]) -> str:
+    return (
+        "RLMesh sandbox driving env\n"
+        + "RLMESH_RUN_RESULT "
+        + json.dumps({"episodes": episodes})
+        + "\nbye\n"
+    )
+
+
+def _run_episode(index: int, seed: int, reward: float, terminated: bool) -> dict:
+    return {
+        "index": index,
+        "seed": seed,
+        "steps": 3,
+        "reward": reward,
+        "terminated": terminated,
+        "truncated": not terminated,
+    }
+
+
+def test_sandbox_model_run_drives_and_parses_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # run() builds the image, runs ONE drive container with the right env vars,
+    # and reconstructs a full RunResult from the printed RLMESH_RUN_RESULT line.
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native,
+        "sandbox_build_image",
+        lambda *a, **k: {"image": "rlmesh-sandbox:abc", "image_id": "sha256:abc"},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> Any:
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_drive_stdout(
+                [
+                    _run_episode(0, 7, 1.0, True),
+                    _run_episode(1, 8, 0.0, False),
+                ]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(_model.subprocess, "run", fake_run)
+
+    model = _model.SandboxModel(_RunPolicy)
+    result = model.run("tcp://127.0.0.1:50051", seeds=[7, 8])
+
+    assert result.num_episodes == 2
+    assert result.mean_reward == 0.5
+    assert result.success_rate == 0.5
+    cmd = cast(list[str], captured["cmd"])
+    assert cmd[:2] == ["docker", "run"]
+    assert "--network" in cmd and "host" in cmd
+    assert "RLMESH_DRIVE_ENV_ADDRESS=tcp://127.0.0.1:50051" in cmd
+    assert "RLMESH_SEEDS=7,8" in cmd
+    assert cmd[-1] == "rlmesh-sandbox:abc"
+    # Hardening parity with the native runner.
+    assert "--cap-drop" in cmd and "ALL" in cmd
+    assert "no-new-privileges" in cmd
+    # The current recipe rides RLMESH_BOOTSTRAP_JSON so a cached image (keyed only
+    # by the build phase) still drives this recipe, not a previously baked one.
+    bootstrap = next(
+        a.split("=", 1)[1] for a in cmd if a.startswith("RLMESH_BOOTSTRAP_JSON=")
+    )
+    payload = json.loads(bootstrap)
+    assert payload["spec"]["document"]["name"] == "policy/run-test"
+    assert "build" not in payload["spec"]["document"]  # build phase stripped
+
+
+def test_sandbox_model_run_max_episodes_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
+    )
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> Any:
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_drive_stdout([_run_episode(0, 0, 1.0, True)]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(_model.subprocess, "run", fake_run)
+    _model.SandboxModel(_RunPolicy).run("addr", max_episodes=5)
+    assert "RLMESH_MAX_EPISODES=5" in cast(list[str], captured["cmd"])
+
+
+def test_sandbox_model_run_missing_result_line_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
+    )
+    monkeypatch.setattr(
+        _model.subprocess,
+        "run",
+        lambda cmd, **k: SimpleNamespace(
+            returncode=0, stdout="no marker here", stderr=""
+        ),
+    )
+    with pytest.raises(RuntimeError, match="no RLMESH_RUN_RESULT"):
+        _model.SandboxModel(_RunPolicy).run("addr")
+
+
+def test_sandbox_model_run_nonzero_exit_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
+    )
+    monkeypatch.setattr(
+        _model.subprocess,
+        "run",
+        lambda cmd, **k: SimpleNamespace(
+            returncode=1, stdout="", stderr="bootstrap failed: boom"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        _model.SandboxModel(_RunPolicy).run("addr")
+
+
+class _GpuPolicy(ModelRecipe):
+    name = "policy/gpu"
+    build = Build(pip=[PipInstall(["numpy"])], gpu=True)
+
+    def load(self) -> None:
+        pass
+
+    def predict(self, observation: object) -> object:
+        return 0
+
+
+class _WeightedRunPolicy(ModelRecipe):
+    name = "policy/weighted-run"
+    inputs = (ArtifactInput("weights", "/opt/weights", uri="hf://org/repo"),)
+
+    def load(self) -> None:
+        pass
+
+    def predict(self, observation: object) -> object:
+        return 0
+
+
+def _ok_run(captured: dict[str, object]):
+    def fake_run(cmd: list[str], **kwargs: object) -> Any:
+        captured["cmd"] = cmd
+        return SimpleNamespace(
+            returncode=0,
+            stdout=_drive_stdout([_run_episode(0, 0, 1.0, True)]),
+            stderr="",
+        )
+
+    return fake_run
+
+
+def test_sandbox_model_run_requests_gpu_for_gpu_recipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A build.gpu recipe must expose CUDA to the drive container, like the native
+    # runner does -- otherwise load()/inference fails for GPU models.
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(_model.subprocess, "run", _ok_run(captured))
+
+    _model.SandboxModel(_GpuPolicy).run("addr")
+    cmd = cast(list[str], captured["cmd"])
+    assert "--gpus" in cmd and "all" in cmd
+    assert "NVIDIA_VISIBLE_DEVICES=all" in cmd
+
+
+def test_sandbox_model_run_binds_artifact_mounts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    # A local_dir artifact must be bind-mounted into the drive container so the
+    # in-container input_path() target exists, matching the serve path.
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox import _model
+
+    monkeypatch.setattr(
+        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(_model.subprocess, "run", _ok_run(captured))
+
+    override = ArtifactInput("weights", "/ignored", local_dir=str(tmp_path))
+    _model.SandboxModel(_WeightedRunPolicy, artifacts=[override]).run("addr")
+    cmd = cast(list[str], captured["cmd"])
+    assert f"type=bind,source={tmp_path},target=/opt/weights,readonly" in cmd

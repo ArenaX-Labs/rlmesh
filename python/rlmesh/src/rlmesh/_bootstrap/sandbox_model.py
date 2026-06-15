@@ -122,14 +122,30 @@ def main(
             # zero seeds, which would silently run zero episodes.
             raw_seeds = os.environ.get("RLMESH_SEEDS") or "0,1"
             seeds = [int(s) for s in raw_seeds.split(",") if s.strip()] or [0, 1]
-            result = server.run(RemoteEnv(drive_address), seeds=seeds)
+            max_episodes = os.environ.get("RLMESH_MAX_EPISODES")
+            result = server.run(
+                RemoteEnv(drive_address),
+                seeds=seeds,
+                max_episodes=int(max_episodes) if max_episodes else None,
+            )
+            # Emit each episode so the host reconstructs a full RunResult (per-episode,
+            # success_rate), not just aggregates. ponytail: drop EpisodeResult.info from
+            # the wire -- it can hold non-JSON values and an eval summary doesn't need it.
             print(
                 "RLMESH_RUN_RESULT "
                 + json.dumps(
                     {
-                        "episodes": result.num_episodes,
-                        "steps": result.total_steps,
-                        "mean_reward": result.mean_reward,
+                        "episodes": [
+                            {
+                                "index": e.index,
+                                "seed": e.seed,
+                                "steps": e.steps,
+                                "reward": e.reward,
+                                "terminated": e.terminated,
+                                "truncated": e.truncated,
+                            }
+                            for e in result.episodes
+                        ]
                     }
                 ),
                 flush=True,

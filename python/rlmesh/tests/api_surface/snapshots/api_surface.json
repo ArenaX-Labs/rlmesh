@@ -520,6 +520,14 @@
             "kind": "property",
             "signature": "property container_id: str"
           },
+          "run": {
+            "kind": "function",
+            "signature": "run(env: object, *, seeds: Sequence[int] = (0, 1), max_episodes: int | None = None)"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve()"
+          },
           "shutdown": {
             "kind": "function",
             "signature": "shutdown()"
@@ -1324,11 +1332,7 @@
     }
   },
   "rlmesh.models.base": {
-    "exports": [
-      "LifecycleCallback",
-      "ModelBase",
-      "PredictFn"
-    ],
+    "exports": ["LifecycleCallback", "ModelBase", "PredictFn"],
     "objects": {
       "LifecycleCallback": {
         "kind": "type alias",
@@ -1675,6 +1679,14 @@
           "container_id": {
             "kind": "property",
             "signature": "property container_id: str"
+          },
+          "run": {
+            "kind": "function",
+            "signature": "run(env: object, *, seeds: Sequence[int] = (0, 1), max_episodes: int | None = None) -> RunResult"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve() -> SandboxModel"
           },
           "shutdown": {
             "kind": "function",
@@ -2168,10 +2180,7 @@
     }
   },
   "rlmesh.server": {
-    "exports": [
-      "EnvLike",
-      "EnvServer"
-    ],
+    "exports": ["EnvLike", "EnvServer"],
     "objects": {
       "EnvLike": {
         "kind": "type alias",
@@ -2216,11 +2225,7 @@
     }
   },
   "rlmesh.serving": {
-    "exports": [
-      "import_packages",
-      "load_env",
-      "load_env_entrypoint"
-    ],
+    "exports": ["import_packages", "load_env", "load_env_entrypoint"],
     "objects": {
       "import_packages": {
         "kind": "function",
@@ -2679,10 +2684,7 @@
     }
   },
   "rlmesh.specs": {
-    "exports": [
-      "EnvContract",
-      "SpaceSpec"
-    ],
+    "exports": ["EnvContract", "SpaceSpec"],
     "objects": {
       "EnvContract": {
         "kind": "class",
