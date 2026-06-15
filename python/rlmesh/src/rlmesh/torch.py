@@ -112,6 +112,12 @@ def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
     import torch
 
     dtype = cast("torch.dtype", _torch_dtype(tensor.dtype))
+    shape = tuple(tensor.shape)
+    # torch.frombuffer rejects a zero-length buffer, so a zero-size leaf (an empty
+    # mask, point cloud, or variable-length buffer) would crash this decode path.
+    # Build the empty tensor directly instead.
+    if any(dim == 0 for dim in shape):
+        return torch.empty(shape, dtype=dtype)
     buffer: object = bytearray(tensor.tobytes()) if writable_copy else tensor
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -120,7 +126,6 @@ def _frombuffer_view(tensor: Tensor, *, writable_copy: bool) -> TorchTensor:
             category=UserWarning,
         )
         view = torch.frombuffer(buffer, dtype=dtype)
-    shape = tuple(tensor.shape)
     return view.reshape(shape if shape else ())
 
 

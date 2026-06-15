@@ -142,6 +142,27 @@ def test_torch_bridge_decode_is_owned_writable_copy() -> None:
     assert tensor.tobytes() == bytes(8)
 
 
+def test_torch_decode_handles_empty_tensor_leaf() -> None:
+    """A zero-size leaf (empty mask, point cloud, variable-length buffer) must
+    decode rather than crash torch.frombuffer on an empty buffer."""
+    pytest.importorskip("torch")
+    import torch
+    from rlmesh import Tensor
+    from rlmesh.torch import _torch_bridge, as_tensor
+
+    empty = Tensor(b"", [0], "float32")
+
+    copied = as_tensor(empty, copy=True)
+    assert isinstance(copied, torch.Tensor)
+    assert tuple(copied.shape) == (0,)
+    assert copied.dtype == torch.float32
+
+    # The value-bridge (predict/step) decode path copies, so it must handle it too.
+    bridged = _torch_bridge.decode(empty)
+    assert isinstance(bridged, torch.Tensor)
+    assert tuple(bridged.shape) == (0,)
+
+
 def test_torch_export_works_without_numpy() -> None:
     """from_tensor must not require numpy (regression for the .numpy() path)."""
     import subprocess

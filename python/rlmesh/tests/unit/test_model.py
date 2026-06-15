@@ -52,3 +52,16 @@ def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
 
     _shutdown(NoReason())
     assert calls == [()]
+
+
+def test_backend_models_wire_their_own_remote_env() -> None:
+    # A bare-address run() dials type(self)._remote_env_cls; a backend Model that
+    # leaves it unset silently falls back to the numpy RemoteEnv (wrong value type
+    # and a forced numpy dependency). Pin that each backend wires its own.
+    from rlmesh import _native
+
+    assert _native.Model._remote_env_cls is _native.RemoteEnv
+
+    for module_name in ("rlmesh.numpy", "rlmesh.jax", "rlmesh.torch"):
+        module = pytest.importorskip(module_name)
+        assert module.Model._remote_env_cls is module.RemoteEnv, module_name

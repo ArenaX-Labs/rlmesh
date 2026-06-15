@@ -178,6 +178,9 @@ class Model(ModelBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
+    # Without this, run(address) falls back to the numpy RemoteEnv and decodes
+    # observations as ndarrays instead of JAX arrays.
+    _remote_env_cls = RemoteEnv
 
 
 @final
