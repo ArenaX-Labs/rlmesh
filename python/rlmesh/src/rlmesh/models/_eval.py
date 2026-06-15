@@ -21,6 +21,7 @@ from ..recipes.authoring.model import (
 )
 
 if TYPE_CHECKING:
+    from .._framework_bridge import ValueBridge
     from ..adapters import Adapter
     from ..specs import EnvContract
 
@@ -100,9 +101,11 @@ def evaluate(
     on_close: Callable[[], None] | None = None,
     trust_entrypoints: bool = False,
     remote_env_cls: type | None = None,
+    bridge: ValueBridge | None = None,
 ) -> RunResult:
     """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``)."""
     client, contract, owns_client = _connect(env_or_address, token, remote_env_cls)
+    _reject_vector_env(contract)
     adapter = _resolve_adapter(spec, contract, trust_entrypoints)
     text_keys = _text_input_keys(spec)
     if max_episodes is not None:
@@ -117,7 +120,8 @@ def evaluate(
             seed = seeds[i] if seeds is not None and i < len(seeds) else None
             episodes.append(
                 _run_episode(
-                    client, predict, adapter, on_reset, i, seed, instruction, text_keys
+                    client, predict, adapter, on_reset, i, seed, instruction,
+                    text_keys, bridge,
                 )
             )
             if on_episode_end is not None:
@@ -143,6 +147,7 @@ def _run_episode(
     seed: int | None,
     instruction: str | None,
     text_keys: tuple[str, ...],
+    bridge: ValueBridge | None = None,
 ) -> EpisodeResult:
     obs, _info = _reset(client, seed)
     if adapter is not None:
@@ -154,16 +159,25 @@ def _run_episode(
     terminated = truncated = False
     info: Mapping[str, Any] = {}
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
-        payload = adapter.transform_obs(obs) if adapter is not None else obs
+        if adapter is not None:
+            # The adapter codec speaks numpy; re-key it into the model's framework
+            # so a torch/jax/native predict gets its own value type, not ndarrays.
+            payload = _to_framework(adapter.transform_obs(obs), bridge)
+        else:
+            payload = obs
         if instruction is not None and isinstance(payload, dict):
             for key in text_keys:
                 payload[key] = instruction
         action = predict(payload)
         if adapter is not None:
-            action = adapter.transform_action(action)
+            action = adapter.transform_action(_to_numpy(action, bridge))
         obs, reward, terminated, truncated, info = client.step(action)
         total += float(reward)
         steps += 1
+    # Hitting the step cap is a truncation, not a silent non-outcome: without this
+    # the episode would count as neither success nor truncation in success_rate.
+    if not terminated and not truncated:
+        truncated = True
     return EpisodeResult(
         index=index,
         seed=seed,
@@ -205,14 +219,43 @@ def _resolve_adapter(
         raise AdapterResolutionError(
             "resolving a spec'd adapter requires an env contract, but the env exposes none"
         )
-    adapter = resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
-    if contract.num_envs > 1 and adapter.is_stateful:
-        raise AdapterResolutionError(
-            "a stateful adapter cannot run on a vector env yet "
-            f"(num_envs={contract.num_envs}); per-lane affinity is not implemented. "
-            "Use num_envs=1 or a stateless adapter."
+    return resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
+
+
+def _reject_vector_env(contract: EnvContract | None) -> None:
+    # The per-episode loop is single-env: it reads scalar reward/termination. A
+    # vector env (num_envs>1) would crash on array truthiness, so reject it up
+    # front rather than deep in the step loop.
+    num_envs = getattr(contract, "num_envs", 1) if contract is not None else 1
+    if num_envs and num_envs > 1:
+        raise ValueError(
+            f"Model.run() drives a single env, but the env reports num_envs={num_envs}; "
+            "use num_envs=1 (the per-episode loop reads scalar reward/termination)."
         )
-    return adapter
+
+
+def _to_framework(payload: Any, bridge: ValueBridge | None) -> Any:
+    """Re-key the adapter's numpy payload into the model's framework values.
+
+    The adapter codec always decodes to numpy; a torch/jax/native predict must
+    receive its own value type. A numpy model already matches, so skip the
+    round-trip; otherwise go numpy -> Value -> framework.
+    """
+    from ..numpy import _numpy_bridge
+
+    if bridge is None or bridge is _numpy_bridge:
+        return payload
+    return bridge.decode(_numpy_bridge.encode(payload))
+
+
+def _to_numpy(action: Any, bridge: ValueBridge | None) -> Any:
+    """Inverse of :func:`_to_framework` for the action the model returns, so the
+    numpy-based adapter ``transform_action`` receives numpy regardless of backend."""
+    from ..numpy import _numpy_bridge
+
+    if bridge is None or bridge is _numpy_bridge:
+        return action
+    return _numpy_bridge.decode(bridge.encode(action))
 
 
 def coerce_model(

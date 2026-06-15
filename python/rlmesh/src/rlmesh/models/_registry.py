@@ -118,7 +118,7 @@ def _flat_model_class(
     from ..recipes._schema import Build, PipInstall
 
     build = Build(pip=[PipInstall(list(packages))]) if packages else Build()
-    class_name = _class_name(name)
+    class_name = _module_attr_name(name)
 
     if hf is not None:
         rev = f"@{revision}" if revision else ""
@@ -181,6 +181,24 @@ def _class_name(name: str) -> str:
     if not cleaned or cleaned[0].isdigit():
         cleaned = "FlatModel" + cleaned
     return cleaned
+
+
+def _module_attr_name(registry_name: str) -> str:
+    """A collision-free module attribute for the synthesized class.
+
+    The projected entrypoint embeds this name (``module:Class._rlmesh_load``), so
+    two distinct registry names that normalize to the same identifier (e.g.
+    ``"policy/x"`` and ``"policy-x"``) must not share it -- otherwise the
+    by-entrypoint sandbox path would construct whichever was registered last.
+    Disambiguate a real collision with a short stable hash of the name.
+    """
+    base = _class_name(registry_name)
+    existing = getattr(sys.modules[__name__], base, None)
+    if existing is not None and getattr(existing, "name", None) != registry_name:
+        import hashlib
+
+        return f"{base}_{hashlib.sha1(registry_name.encode()).hexdigest()[:8]}"
+    return base
 
 
 def _turnkey_predict(policy: Any, observation: Any) -> Any:

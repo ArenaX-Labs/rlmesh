@@ -311,6 +311,44 @@ def test_delegated_skips_resolution_even_when_tagged() -> None:
     assert result.num_episodes == 1
 
 
+def test_delegated_serves_real_predict_not_unwired(monkeypatch: Any) -> None:
+    # serve() only blocks a ModelSpec, so a DELEGATED (self-adapting) model is
+    # served. Its worker must be the real predict, not the _unwired placeholder
+    # that raises on the first observation.
+    from rlmesh.models import base as base_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_install(self: Any, predict_fn: Any, on_reset: Any) -> None:
+        captured["predict"] = predict_fn
+        self._worker = object()
+
+    monkeypatch.setattr(base_mod.ModelBase, "_install_worker", fake_install)
+
+    def sentinel(_obs: Any) -> str:
+        return "real"
+
+    Model(sentinel, spec=DELEGATED)
+    assert captured["predict"] is sentinel
+
+    Model(lambda _obs: 0, spec=_SPEC)
+    assert captured["predict"] is base_mod._unwired
+
+
+def test_episode_at_step_cap_counts_as_truncation(monkeypatch: Any) -> None:
+    # An episode that hits the step cap must read as a truncation, not a silent
+    # non-outcome (neither success nor truncation) in success_rate.
+    from rlmesh.models import _eval
+
+    monkeypatch.setattr(_eval, "_MAX_STEPS_PER_EPISODE", 3)
+    never_ends = _LoopEnv(horizon=10**9)
+    result = Model(LoopPolicy).run(never_ends)
+    episode = result.episodes[0]
+    assert episode.steps == 3
+    assert episode.truncated is True and episode.terminated is False
+    assert result.success_rate == 0.0
+
+
 # ── registration + name-based construction ──────────────────────────────────
 
 
@@ -355,6 +393,27 @@ def test_flat_hf_form_projects_importable_recipe() -> None:
     cls_name = recipe.make.entrypoint.split(":", 1)[1].rsplit(".", 1)[0]
     assert cls_name.isidentifier()
     assert hasattr(reg, cls_name)
+
+
+def test_flat_registration_disambiguates_name_collisions() -> None:
+    import rlmesh.models._registry as reg
+    from rlmesh.recipes import resolve as resolve_recipe
+
+    rlmesh.register("collide/x", hf="org/a", spec=_SPEC, overwrite=True)
+    rlmesh.register("collide-x", hf="org/b", spec=_SPEC, overwrite=True)
+
+    # Both names normalize to "CollideX"; the entrypoint embeds the class attr,
+    # so they must get distinct attrs or a by-entrypoint sandbox run would build
+    # whichever was registered last.
+    def entry_cls(name: str) -> str:
+        make = resolve_recipe(name).make
+        assert isinstance(make, PyMake)
+        return make.entrypoint.split(":", 1)[1].rsplit(".", 1)[0]
+
+    cls_a, cls_b = entry_cls("collide/x"), entry_cls("collide-x")
+    assert cls_a != cls_b
+    assert getattr(reg, cls_a).__dict__["name"] == "collide/x"
+    assert getattr(reg, cls_b).__dict__["name"] == "collide-x"
 
 
 # ── the REAL adapter path end-to-end (resolve + transform in the loop) ───────

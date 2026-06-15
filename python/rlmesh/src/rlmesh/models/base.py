@@ -80,12 +80,15 @@ class ModelBase(Generic[ObsT, ActT]):
         self._on_close = on_close if on_close is not None else coerced.on_close
         self._on_episode_end = on_episode_end
         self._trust_entrypoints = trust_entrypoints
-        # An adapted (spec'd) model resolves its adapter only at run(env), so its
-        # native worker is a fail-loud placeholder -- run() does the adapting.
+        from ..adapters import ModelSpec
+
+        # Only a ModelSpec model resolves its adapter at run(env), so only it gets
+        # the fail-loud worker placeholder. A spec-less or DELEGATED (self-adapting)
+        # model serves its own predict directly.
         worker_predict = (
-            self._raw_predict
-            if self._spec is None
-            else cast("PredictFn[ObsT, ActT]", _unwired)
+            cast("PredictFn[ObsT, ActT]", _unwired)
+            if isinstance(self._spec, ModelSpec)
+            else self._raw_predict
         )
         self._install_worker(worker_predict, self._on_reset)
 
@@ -152,6 +155,7 @@ class ModelBase(Generic[ObsT, ActT]):
             on_close=self._on_close,
             trust_entrypoints=self._trust_entrypoints,
             remote_env_cls=type(self)._remote_env_cls,
+            bridge=type(self)._bridge,
         )
 
     def serve(
