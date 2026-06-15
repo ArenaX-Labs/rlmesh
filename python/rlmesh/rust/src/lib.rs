@@ -2,6 +2,7 @@ mod adapters;
 mod client;
 mod lifecycle;
 mod model;
+mod model_client;
 mod sandbox;
 mod server;
 mod spaces;
@@ -70,6 +71,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<model::PyModel>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
+    m.add_class::<model_client::PyModelClient>()?;
     #[cfg(feature = "viewer")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;

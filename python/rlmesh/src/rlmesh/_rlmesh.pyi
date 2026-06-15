@@ -36,6 +36,7 @@ __all__ = [
     "PyEnvClient",
     "PyEnvServer",
     "PyModel",
+    "PyModelClient",
     "PyVectorEnvClient",
     "ROTATION_DIMS",
     "ServeOptions",
@@ -231,6 +232,24 @@ class PyModel:
     def run_local(self, env_address: str, token: str) -> None: ...
     def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
+
+@typing.final
+class PyModelClient:
+    r"""
+    A client handle to a served model (single env / single route).
+    
+    Construct with the env's observation/action spaces (the model needs them to
+    configure its route and frame values), then call
+    [`predict`](PyModelClient::predict) per step and
+    [`begin_episode`](PyModelClient::begin_episode) at each episode boundary.
+    Values cross via the dependency-free native backend, matching
+    `rlmesh.RemoteEnv`.
+    """
+    def __init__(self, address: str, observation_space: Space, action_space: Space, *, token: str | None = None) -> None: ...
+    def predict(self, observation: Value) -> Value: ...
+    def begin_episode(self) -> None: ...
+    def close(self) -> None: ...
+    def shutdown(self, reason: str = 'owner shutdown') -> bool: ...
 
 @typing.final
 class PyVectorEnvClient:
