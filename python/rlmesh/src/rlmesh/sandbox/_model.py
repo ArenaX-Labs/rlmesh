@@ -12,6 +12,7 @@ only be driven with ``run(env)``, not served (see ``serve``).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -27,21 +28,25 @@ __all__ = ["SandboxModel"]
 
 
 def resolve_model_recipe(source: object) -> tuple[Recipe, str | None]:
-    from ..recipes import Recipe, resolve
-    from ..recipes._registry import class_origin_dir, recipe_origin_dir
+    from ..recipes import Recipe, resolve, resolve_from_recipe
+    from ..recipes._registry import (
+        class_origin_dir,
+        from_recipe_origin,
+        recipe_origin_dir,
+    )
     from ..recipes._schema import PyMake
     from ..recipes.authoring.model import as_authored_model_recipe, is_model_recipe
 
-    context_root: str | None = None
+    origin: str | None = None
     if isinstance(source, str):
         recipe = resolve(source)
-        context_root = recipe_origin_dir(source)
+        origin = recipe_origin_dir(source)
     elif isinstance(source, Recipe):
         recipe = source
     else:
         recipe = as_authored_model_recipe(source)
         if is_model_recipe(source):
-            context_root = class_origin_dir(source)
+            origin = class_origin_dir(source)
     if recipe is None or recipe.kind != "model":
         raise TypeError(
             "SandboxModel requires a model recipe (a ModelRecipe subclass, a "
@@ -60,7 +65,22 @@ def resolve_model_recipe(source: object) -> tuple[Recipe, str | None]:
             "which is in-process only and cannot be launched in a container. "
             "Subclass rlmesh.ModelRecipe so its loader lives in an importable module."
         )
+    from_recipe_base_origin = from_recipe_origin(recipe)
+    recipe = resolve_from_recipe(recipe)
+    if recipe.build.project is None:
+        context_root = None
+    else:
+        if from_recipe_base_origin is not None:
+            origin = from_recipe_base_origin
+        context_root = origin if origin is not None else os.getcwd()
     return recipe, context_root
+
+
+def _pid_namespace_id() -> str | None:
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
 
 
 def _resolve_env_address(env: object) -> str:
@@ -194,9 +214,14 @@ class SandboxModel:
             "no-new-privileges",
             "--label",
             "rlmesh.sandbox=1",
+            "--label",
+            f"rlmesh.sandbox.owner-pid={os.getpid()}",
             "-e",
             f"RLMESH_BOOTSTRAP_JSON={self._bootstrap_json()}",
         ]
+        pid_ns = _pid_namespace_id()
+        if pid_ns is not None:
+            args += ["--label", f"rlmesh.sandbox.owner-pid-ns={pid_ns}"]
         if self._recipe.build.gpu:
             args += ["--gpus", "all", "-e", "NVIDIA_VISIBLE_DEVICES=all"]
         for host, target in self._mounts:
@@ -252,10 +277,15 @@ class SandboxModel:
         Idempotent: a second call returns the already-running handle. The endpoint
         is reachable at :attr:`address` until :meth:`shutdown`.
         """
-        # TODO: serve a spec'd model once dial-in adapter resolution lands in
-        # Model.serve; today it raises, so this container would exit at startup.
         if self._address is not None:
             return self
+        # TODO: drop once dial-in adapter resolution lands in Model.serve.
+        if self._recipe.adapter is not None:
+            raise TypeError(
+                f"model {self._recipe.name!r} has a spec; its adapter resolves from "
+                "the env contract on dial-in, so it cannot be served -- drive it with "
+                "run(env) instead"
+            )
         from .._rlmesh import sandbox_start_env
 
         info = sandbox_start_env(

@@ -69,8 +69,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 with ThreadPoolExecutor(max_workers=len(args.addresses)) as executor:
     futures = [
-        executor.submit(evaluate, address, args.max_steps)
-        for address in args.addresses
+        executor.submit(evaluate, address, args.max_steps) for address in args.addresses
     ]
     for future in futures:
         print(future.result())

@@ -53,6 +53,12 @@ impl Error {
             _ => false,
         }
     }
+
+    /// A permanent handshake incompatibility (protocol/edition/SHA-pin mismatch)
+    /// that retrying cannot fix, vs a transient connect error while a server binds.
+    pub fn is_fatal_handshake(&self) -> bool {
+        matches!(self, Self::Protocol(ProtocolError::HandshakeFailed(_)))
+    }
 }
 
 /// Map a `tonic::Status` from an established connection into a structured
@@ -350,5 +356,13 @@ mod status_mapping_tests {
         // The message must not fabricate a zero duration.
         assert!(!error.to_string().contains("0ns"));
         assert!(error.to_string().contains("slow"));
+    }
+
+    #[test]
+    fn handshake_failure_is_fatal_but_connect_failure_is_not() {
+        let fatal = Error::Protocol(ProtocolError::HandshakeFailed("pin mismatch".into()));
+        assert!(fatal.is_fatal_handshake());
+        let transient = Error::Transport(TransportError::ConnectFailed("binding".into()));
+        assert!(!transient.is_fatal_handshake());
     }
 }

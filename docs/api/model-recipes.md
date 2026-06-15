@@ -47,8 +47,10 @@ returns these typed results.
 
 Weights are a runtime mount, never baked into the image. Declare an `ArtifactInput`, resolve its
 path inside `load()` with `self.input_path(name)`, and load a Hugging Face policy with `hf_load`.
-Resolving an `hf://` uri (or calling `hf_load` without `local_dir`) on the host needs the
-`rlmesh[hf]` extra; in a sandbox it is already present.
+Resolving an `hf://` uri (or calling `hf_load` without `local_dir`) needs the `rlmesh[hf]` extra
+(`huggingface_hub`). In a `SandboxModel` the container resolves the uri, so a recipe with a `uri=`
+input must install it in the recipe's `build`; `local_dir=` bind-mounts from the host and needs no
+extra.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.ArtifactInput
@@ -85,13 +87,16 @@ The self-adapting-model sentinel for `spec`:
 
 `SandboxModel` is the containerized sibling of the backend `Model`, exported per backend as
 `rlmesh.numpy.SandboxModel`. It builds a model recipe to an image and runs the policy in its own
-container, keeping the model's dependencies isolated from the caller.
+container, keeping the model's dependencies isolated from the caller. Construction is inert; it
+resolves the recipe but builds and runs nothing until you call `run` or `serve`.
 
-`SandboxModel(source).run(env, seeds=[...])` builds the image, runs a one-shot container that drives
-`env`, and returns a `RunResult`, mirroring `Model.run`. Used as a context manager (or via
-`serve()`), it instead serves the policy as a long-lived model endpoint for spec-less or
-`spec=DELEGATED` models, exposing `.address` and `.container_id` with `.shutdown()` to stop the
-container.
+`run(env, ...)` builds the image, runs a one-shot `--rm` container that drives `env`, and returns
+the same `RunResult` as `Model.run` (only `seeds`/`max_episodes` overlap); `env` resolves to a
+`SandboxEnv`'s `.sandbox.address`, an object's `.address`, or a bare address string. Used as a
+context manager (or via `serve()`), it instead serves the policy from a long-lived container as a
+model endpoint, exposing `.address` and `.container_id` (both raise until serving) with
+`.shutdown()` to stop it. `serve()` covers a spec-less or `spec=DELEGATED` model only; a spec'd
+model is drive-only via `run`. See {doc}`../user-guide/model-recipes` for usage.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.numpy.SandboxModel

@@ -9,7 +9,7 @@ model's spec, and runs a per-episode loop that returns a typed :class:`RunResult
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from ..recipes._schema import ArtifactInput, Recipe
@@ -49,7 +49,6 @@ class EpisodeResult:
     reward: float
     terminated: bool
     truncated: bool
-    info: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -115,6 +114,7 @@ def evaluate(
     else:
         n_episodes = 1
     episodes: list[EpisodeResult] = []
+    on_close_error: BaseException | None = None
     try:
         for i in range(n_episodes):
             seed = seeds[i] if seeds is not None and i < len(seeds) else None
@@ -135,13 +135,16 @@ def evaluate(
                 on_episode_end()
     finally:
         if on_close is not None:
-            on_close()
-        # Stop the remote env before closing the local connection. When we own
-        # the client, shutdown rides it (a bare address string has no shutdown).
+            try:
+                on_close()
+            except BaseException as exc:
+                on_close_error = exc
         if close_env:
             _shutdown(client if owns_client else env_or_address)
         if owns_client:
             _close(client)
+    if on_close_error is not None:
+        raise on_close_error
     return RunResult(episodes=tuple(episodes))
 
 
@@ -164,7 +167,6 @@ def _run_episode(
     total = 0.0
     steps = 0
     terminated = truncated = False
-    info: Mapping[str, Any] = {}
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
         if adapter is not None:
             # The adapter codec speaks numpy; re-key it into the model's framework
@@ -178,7 +180,7 @@ def _run_episode(
         action = predict(payload)
         if adapter is not None:
             action = adapter.transform_action(_to_numpy(action, bridge))
-        obs, reward, terminated, truncated, info = client.step(action)
+        obs, reward, terminated, truncated, _info = client.step(action)
         total += float(reward)
         steps += 1
     # Hitting the step cap is a truncation, not a silent non-outcome: without this
@@ -192,7 +194,6 @@ def _run_episode(
         reward=total,
         terminated=bool(terminated),
         truncated=bool(truncated),
-        info=dict(info),
     )
 
 
@@ -380,6 +381,13 @@ def _close(client: Any) -> None:
 
 
 def _shutdown(target: object) -> None:
+    # A SandboxSession's `shutdown` forwards to the remote handle; only close() stops
+    # the container.
+    from ..sandbox.session import SandboxSessionBase
+
+    if isinstance(target, SandboxSessionBase):
+        target.close()
+        return
     # ponytail: decide reason-passing by binding the signature, not by try/except
     # around the call, so a TypeError raised *inside* the callable is never swallowed.
     import inspect

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import TYPE_CHECKING
 
 from .env import (
     BootstrapUsageError,
@@ -22,9 +21,6 @@ from .env import (
     resolve_bootstrap_spec,
 )
 
-if TYPE_CHECKING:
-    from rlmesh import ServeOptions
-
 
 def _env_alias(*names: str) -> str | None:
     """First non-empty value among ``names`` (canonical name first, aliases after)."""
@@ -33,42 +29,6 @@ def _env_alias(*names: str) -> str | None:
         if value:
             return value
     return None
-
-
-def _env_flag(*names: str) -> bool:
-    value = _env_alias(*names)
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_float(*names: str) -> float | None:
-    value = _env_alias(*names)
-    return float(value) if value else None
-
-
-def _serve_options() -> ServeOptions | None:
-    """Build ``ServeOptions`` from the lifecycle env vars; ``None`` when all default.
-
-    A token and a clean remote shutdown are legitimate for any gRPC server, so these
-    stay deployment knobs (flat env, default off) rather than recipe properties.
-    """
-    allow_remote_shutdown = _env_flag(
-        "RLMESH_ALLOW_REMOTE_SHUTDOWN",
-        "RLMESH_MODEL_ALLOW_REMOTE_SHUTDOWN",
-        "RLMESH_MODEL_WAIT_FOR_TERMINATION",
-    )
-    idle = _env_float(
-        "RLMESH_IDLE_SHUTDOWN_SECONDS", "RLMESH_MODEL_IDLE_SHUTDOWN_SECONDS"
-    )
-    drain = _env_float("RLMESH_WAIT_FOR_TERMINATION")
-    if not allow_remote_shutdown and idle is None and drain is None:
-        return None
-    from rlmesh import ServeOptions
-
-    return ServeOptions(
-        allow_remote_shutdown=allow_remote_shutdown,
-        idle_timeout_seconds=idle,
-        drain_timeout_seconds=drain,
-    )
 
 
 def main(
@@ -100,14 +60,29 @@ def main(
                 file=sys.stderr,
             )
             return 2
-        # Construct-time config: apply setup.env (with declared RLMESH_PARAMS_JSON
-        # overrides) to os.environ before load(), which the policy reads. The member
-        # selector touches only setup.env / make.kwargs, so the entrypoint is stable.
         setup_env, kwargs = member_params_from_env()
-        recipe = apply_member_params(recipe, setup_env=setup_env, kwargs=kwargs)
+        if kwargs:
+            print(
+                "bootstrap failed: model recipes do not accept member-selector kwargs; "
+                "select a variant via setup.env (member params) or a per-variant recipe",
+                file=sys.stderr,
+            )
+            return 2
+        recipe = apply_member_params(recipe, setup_env=setup_env)
         apply_setup(recipe.setup)
         load = resolve_entrypoint(make.entrypoint, label="model bootstrap entrypoint")
-        policy = load()
+        from rlmesh.recipes.authoring.model import (
+            construct_authored_model,
+            is_model_recipe,
+        )
+
+        model_cls = getattr(load, "__self__", None)
+        if is_model_recipe(model_cls):
+            policy = construct_authored_model(
+                model_cls, in_container=True, artifacts=recipe.inputs
+            )
+        else:
+            policy = load()
         server = Model(policy)
 
         # De-overloaded: RLMESH_DRIVE_ENV_ADDRESS triggers drive-mode (keep the
@@ -116,12 +91,13 @@ def main(
         if drive_address:
             from rlmesh.numpy import RemoteEnv
 
-            # `os.environ.get(key, default)` returns "" (not the default) when the
-            # var is set but empty, and int("") raises; `or` falls back cleanly. The
-            # trailing `or [0, 1]` keeps an all-separator value (",") from yielding
-            # zero seeds, which would silently run zero episodes.
-            raw_seeds = os.environ.get("RLMESH_SEEDS") or "0,1"
-            seeds = [int(s) for s in raw_seeds.split(",") if s.strip()] or [0, 1]
+            # "" is an explicit empty seeds=() (0 episodes); only an absent var defaults.
+            raw_seeds = os.environ.get("RLMESH_SEEDS")
+            seeds = (
+                [0, 1]
+                if raw_seeds is None
+                else [int(s) for s in raw_seeds.split(",") if s.strip()]
+            )
             max_episodes = os.environ.get("RLMESH_MAX_EPISODES")
             result = server.run(
                 RemoteEnv(drive_address),
@@ -129,8 +105,7 @@ def main(
                 max_episodes=int(max_episodes) if max_episodes else None,
             )
             # Emit each episode so the host reconstructs a full RunResult (per-episode,
-            # success_rate), not just aggregates. ponytail: drop EpisodeResult.info from
-            # the wire -- it can hold non-JSON values and an eval summary doesn't need it.
+            # success_rate), not just aggregates.
             print(
                 "RLMESH_RUN_RESULT "
                 + json.dumps(
@@ -163,7 +138,7 @@ def main(
             address = f"0.0.0.0:{port}"
         token = _env_alias("RLMESH_TOKEN", "RLMESH_MODEL_ENDPOINT_TOKEN") or ""
         print(f"RLMesh sandbox serving {address}", flush=True)
-        server.serve(address, token=token, options=_serve_options())
+        server.serve(address, token=token, options=None)
         return 0
     except Exception as exc:  # pragma: no cover - exercised through container runs
         print(f"bootstrap failed: {exc}", file=sys.stderr)

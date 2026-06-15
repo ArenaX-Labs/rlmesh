@@ -54,6 +54,10 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 
 ## Local Development Notes
 
-Sandbox runs need Docker access. The generated image installs RLMesh inside the container. To test
-an unreleased local wheel from this checkout, pass `rlmesh_package="local"`. To test an exact
+Sandbox runs need Docker access. The generated image installs RLMesh inside the container. By
+default that is the published release, which matches a pip-installed host. To run these examples
+against this checkout instead, pass `rlmesh_package="local"`, which installs a wheel from
+`python/rlmesh/dist`. Build that wheel first with `mise run build:python:docker`, which produces the
+manylinux wheel the container can load. `mise run build:python` builds a host-platform wheel that
+will not load in the container when the host glibc is newer than the base image. To test an exact
 artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0b2`.

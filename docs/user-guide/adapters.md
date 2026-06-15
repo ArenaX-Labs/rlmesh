@@ -1,5 +1,10 @@
 # Adapters
 
+```{note}
+`rlmesh.adapters` is **experimental** in this beta: it may change or disappear before the stable
+release. Pin versions; see {doc}`/compatibility`.
+```
+
 `rlmesh.adapters` derives a model-to-environment IO adapter at runtime from two declarations: an
 environment tags its observation and action spaces, a model specifies the payload it ingests, and
 {func}`~rlmesh.adapters.resolve` matches them by role. It removes most of the per-(model,
@@ -8,11 +13,6 @@ cover fall back to an escape hatch (see Known limitations).
 
 Adapters connect the two halves of the recipe family: an {doc}`environment recipe <env-recipes>`
 publishes tags, a {doc}`model recipe <model-recipes>` declares a spec, and `resolve` bridges them.
-
-```{note}
-`rlmesh.adapters` is **experimental** in this beta: it may change or disappear before the
-stable release. Pin versions; see {doc}`/compatibility`.
-```
 
 It is fully opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
 backend (`pip install --pre "rlmesh[numpy]"`).
@@ -109,9 +109,9 @@ format and postprocesses the model's action back into the environment's.
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
-print(adapter.describe())          # the exact transformations chosen
-payload = adapter.transform_obs(obs)      # env observation -> model input
-action = adapter.transform_action(output) # model output    -> env action
+print(adapter.describe())  # the exact transformations chosen
+payload = adapter.transform_obs(obs)  # env observation -> model input
+action = adapter.transform_action(output)  # model output    -> env action
 ```
 
 `describe()` prints what the resolver derived. Here the image is resized, the rotation goes
@@ -144,7 +144,7 @@ yourself). A model then resolves from the handshake alone.
 from rlmesh.numpy import Model, RemoteEnv
 
 env = RemoteEnv("127.0.0.1:5555")
-model = Model(predict_fn, spec=spec)   # predict_fn works in the model's own format
+model = Model(predict_fn, spec=spec)  # predict_fn works in the model's own format
 model.run(env, max_episodes=10)
 ```
 

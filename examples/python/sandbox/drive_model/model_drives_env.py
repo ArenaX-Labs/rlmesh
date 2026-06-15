@@ -11,12 +11,9 @@ to its weights and deps, never in this process.
 from cartpole_policy import CartpolePolicy
 from rlmesh.numpy import SandboxEnv, SandboxModel
 
-# rlmesh_package="local" installs this checkout's wheel in both containers; drop it
-# to use the released package. The env serves CartPole; the model drives it.
-with SandboxEnv("CartPole-v1", rlmesh_package="local") as env:
-    result = SandboxModel(CartpolePolicy, rlmesh_package="local").run(
-        env, seeds=[0, 1, 2]
-    )
+# The env serves CartPole; the model drives it.
+with SandboxEnv("CartPole-v1") as env:
+    result = SandboxModel(CartpolePolicy).run(env, seeds=[0, 1, 2])
     print(result)  # RunResult(episodes=3, mean_reward=..., total_steps=...)
     for episode in result.episodes:
         print(f"  seed={episode.seed} steps={episode.steps} reward={episode.reward}")

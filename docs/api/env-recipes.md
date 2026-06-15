@@ -1,7 +1,8 @@
 # Environment Recipes
 
 ```{note}
-`rlmesh.recipes` is **experimental** in this beta: it may change or disappear before the stable release. Pin versions; see {doc}`/compatibility`.
+`rlmesh.recipes` is **experimental** in this beta: it may change or disappear before the stable
+release. Pin versions; see {doc}`/compatibility`.
 ```
 
 A recipe is an inert, JSON-serializable description of how to construct an environment, with three

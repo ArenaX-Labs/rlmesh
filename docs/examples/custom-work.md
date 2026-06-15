@@ -11,6 +11,7 @@ custom environment served over gRPC and one model worker that connects to it.
 ```python
 import rlmesh
 
+
 class CounterEnv:
     observation_space = rlmesh.spaces.Discrete(5)
     action_space = rlmesh.spaces.Discrete(2)
@@ -30,6 +31,7 @@ class CounterEnv:
 
     def close(self):
         pass
+
 
 server = rlmesh.EnvServer(CounterEnv(), "127.0.0.1:5555")
 print(f"serving CounterEnv on {server.address}")
@@ -53,8 +55,10 @@ runs episodes against the served endpoint:
 ```python
 from rlmesh.numpy import Model
 
+
 def predict(observation):
     return 0
+
 
 model = Model(predict)
 model.run("127.0.0.1:5555", max_episodes=1)

@@ -25,6 +25,10 @@ _MODEL_CLASSES: dict[str, type[ModelRecipe]] = {}
 
 
 def lookup_model_class(name: str) -> type[ModelRecipe] | None:
+    from ..recipes._registry import registry
+
+    if name not in registry():
+        return None
     return _MODEL_CLASSES.get(name)
 
 
@@ -70,9 +74,24 @@ def register(
       synthesizes a ``ModelRecipe`` whose ``load()`` calls the named factory.
     """
     if is_model_recipe(source):
-        if hf or load:
+        flat = [
+            name
+            for name, passed in (
+                ("hf", hf is not None),
+                ("load", load is not None),
+                ("spec", spec is not None),
+                ("revision", revision is not None),
+                ("loader", loader != "transformers:AutoModel"),
+                ("trust_remote_code", trust_remote_code),
+                ("packages", bool(packages)),
+                ("artifacts", bool(artifacts)),
+            )
+            if passed
+        ]
+        if flat:
             raise TypeError(
-                "register(ModelRecipe) takes no hf=/load=; those are the flat form"
+                f"register(ModelRecipe) takes no flat-form kwargs ({', '.join(flat)}); "
+                "set them on the class instead"
             )
         cls = source
     elif isinstance(source, str):

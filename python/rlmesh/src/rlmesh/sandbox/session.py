@@ -392,12 +392,7 @@ def _start_sandbox(
             **recipe_kwargs,
         ),
     )
-    return SandboxInfo(
-        requested_source=started["requested_source"],
-        resolved_source=started["resolved_source"],
-        address=started["address"],
-        container_id=started["container_id"],
-    )
+    return SandboxInfo(**started)
 
 
 def string_sequence(name: str, value: Sequence[str] | None) -> list[str]:

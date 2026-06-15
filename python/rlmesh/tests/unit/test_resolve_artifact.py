@@ -197,6 +197,7 @@ def test_merged_inputs_override_keeps_declared_target_path() -> None:
     assert result.local_dir == "/host/ckpt"
     assert result.uri is None
 
-    # A new (undeclared) name still adds a mount on the local path.
+    # An override naming an undeclared input is rejected, matching local_dir_mounts.
     extra = ArtifactInput("extra", "/extra", local_dir="/host/extra")
-    assert merged_inputs((declared,), (extra,))["extra"] is extra
+    with pytest.raises(ValueError, match="matches no declared input"):
+        merged_inputs((declared,), (extra,))

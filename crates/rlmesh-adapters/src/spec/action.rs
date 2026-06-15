@@ -21,14 +21,10 @@ pub struct ActionComponent {
     // byte-identical to before (matching the Python serializer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale: Option<f64>,
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invert: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 /// Ordered action components plus optional clipping bounds.

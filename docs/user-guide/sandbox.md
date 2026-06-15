@@ -1,8 +1,8 @@
 # Sandbox Environments
 
 Sandbox helpers are experimental in this beta. Use one when an environment needs its own
-dependencies and process. The client still uses the normal `reset`, `step`, `render`, and `close`
-loop.
+dependencies and process. Pin versions; see {doc}`/compatibility`. The client still uses the normal
+`reset`, `step`, `render`, and `close` loop.
 
 For runnable files, see {doc}`../examples/sandboxes`.
 
@@ -80,12 +80,21 @@ Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `p
 into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as
 `rlmesh==0.1.0b2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
+```{warning}
+During the beta, the container and your host must run the same rlmesh build: beta editions are
+content-pinned, so a mismatch fails the startup handshake (see {doc}`/compatibility`). This is a
+beta-only constraint; a stable release matches by version alone. With `rlmesh_package` unset the
+container installs the published release, so a host on an unreleased or source build will mismatch.
+Use `rlmesh_package="local"` and keep `python/rlmesh/dist` rebuilt from your checkout.
+```
+
 ## Export a Docker image
 
-`SandboxEnv` and `SandboxModel` build an image and run a container in one step. To build the image
-and keep it — for example to push it to a registry the RLMesh Managed platform can pull from — call
-`rlmesh.export` instead. It builds the image, applies your tag, and returns without starting a
-container:
+`SandboxEnv` and `SandboxModel` build an image and start a container when you use them: `SandboxEnv`
+on entering its context manager, `SandboxModel` on `run()` or `serve()`. Construction itself is
+inert. To build the image and keep it — for example to push it to a registry the RLMesh Managed
+platform can pull from — call `rlmesh.export` instead. It builds the image, applies your tag, and
+returns without starting a container:
 
 ```python
 import rlmesh

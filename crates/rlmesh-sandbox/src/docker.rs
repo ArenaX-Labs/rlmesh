@@ -192,7 +192,9 @@ impl DockerBackend {
         if let Err(err) =
             wait_for_ready(&address, &container_id, Duration::from_secs(30), is_model).await
         {
-            let report = self.startup_failure_report(&container_id, &container_name, &err);
+            let hint = spec.rlmesh_package.skew_hint();
+            let report =
+                self.startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
             let _ = self.stop_container(&container_id);
             return Err(report);
         }
@@ -283,6 +285,7 @@ impl DockerBackend {
         container_id: &str,
         container_name: &str,
         cause: &anyhow::Error,
+        hint: Option<&str>,
     ) -> anyhow::Error {
         let state = match inspect_container_state(container_id) {
             Ok(Some(state)) => state.summary(),
@@ -304,6 +307,7 @@ impl DockerBackend {
             &cause.to_string(),
             &state,
             &logs,
+            hint,
         ))
     }
 
@@ -545,7 +549,7 @@ async fn wait_for_ready(
                 if let Some(state) = container_terminated(container_id) {
                     bail!("sandbox container exited before ready ({state})");
                 }
-                if Instant::now() >= deadline {
+                if err.is_fatal_handshake() || Instant::now() >= deadline {
                     return Err(err.into());
                 }
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -876,10 +880,16 @@ fn format_startup_failure_report(
     cause: &str,
     state: &str,
     logs: &str,
+    hint: Option<&str>,
 ) -> String {
-    format!(
+    let mut report = format!(
         "sandbox container did not become ready: {cause}\ncontainer id: {container_id}\ncontainer name: {container_name}\n{state}\n{logs}"
-    )
+    );
+    if let Some(hint) = hint {
+        report.push_str("\nhint: ");
+        report.push_str(hint);
+    }
+    report
 }
 
 /// Recursively copy a file or directory tree from `src` to `dest`.
@@ -1627,6 +1637,7 @@ mod tests {
             "connection refused",
             "container state: status=exited, exit_code=1",
             "container logs:\ntraceback",
+            None,
         );
 
         assert!(message.contains("connection refused"));
@@ -1634,6 +1645,19 @@ mod tests {
         assert!(message.contains("container name: rlmesh-sandbox-test"));
         assert!(message.contains("exit_code=1"));
         assert!(message.contains("traceback"));
+    }
+
+    #[test]
+    fn startup_failure_report_appends_skew_hint() {
+        let with_hint = format_startup_failure_report(
+            "abc123",
+            "rlmesh-sandbox-test",
+            "handshake failed",
+            "container state: status=exited, exit_code=2",
+            "container logs:\nusage: ...",
+            Some("pass rlmesh_package=\"local\""),
+        );
+        assert!(with_hint.contains("hint: pass rlmesh_package=\"local\""));
     }
 
     #[test]

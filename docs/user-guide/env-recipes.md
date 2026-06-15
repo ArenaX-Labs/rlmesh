@@ -1,10 +1,15 @@
 # Environment Recipes
 
-Recipes are experimental in this beta. A recipe is an inert, JSON-serializable description of how to
-construct an environment, decoupled from where it runs. You can author a recipe for an environment
-you cannot run locally (an IsaacSim recipe written on a Mac, say). The recipe only references your
-construction code by name, so the code runs later, in a container. See {doc}`../api/env-recipes` for
-the full class and method contract.
+```{note}
+`rlmesh.recipes` is **experimental** in this beta: it may change or disappear before the stable
+release. Pin versions; see {doc}`/compatibility`.
+```
+
+A recipe is an inert, JSON-serializable description of how to construct an environment, decoupled
+from where it runs. You can author a recipe for an environment you cannot run locally (an IsaacSim
+recipe written on a Mac, say). The recipe only references your construction code by name, so the
+code runs later, in a container. See {doc}`../api/env-recipes` for the full class and method
+contract.
 
 For authoring a model, see {doc}`model-recipes`.
 
@@ -50,9 +55,11 @@ locally or in a sandbox. Pass exactly one of `gym=` (a gym id) or `factory=` (a 
 ```python
 import rlmesh
 
-rlmesh.register("atari/breakout", gym="ALE/Breakout-v5", packages=["ale-py"], imports=["ale_py"])
+rlmesh.register(
+    "atari/breakout", gym="ALE/Breakout-v5", packages=["ale-py"], imports=["ale_py"]
+)
 
-env = rlmesh.make("atari/breakout")                       # in-process
+env = rlmesh.make("atari/breakout")  # in-process
 # with SandboxEnv("atari/breakout") as env: ...           # in a container
 ```
 
@@ -96,20 +103,34 @@ class LiberoObject(rlmesh.EnvRecipe):
     name = "libero/object"
     build = Build(
         system=["cmake", "g++", "libegl1-mesa-dev"],
-        fetch=[Fetch(kind="git", repo="https://github.com/.../LIBERO.git",
-                     ref="<full-commit-sha>", dest="/opt/LIBERO",
-                     pip_requirements="requirements.txt", pip_install=True)],
+        fetch=[
+            Fetch(
+                kind="git",
+                repo="https://github.com/.../LIBERO.git",
+                ref="<full-commit-sha>",
+                dest="/opt/LIBERO",
+                pip_requirements="requirements.txt",
+                pip_install=True,
+            )
+        ],
         project=ProjectInstall(src=".", dest="/opt/robot_env", include=["assets/**"]),
-        pip=[PipInstall(["torch", "torchvision"],
-                        index_url="https://download.pytorch.org/whl/cu124")],
-        env={"MUJOCO_GL": "egl"}, pythonpath=["/opt/LIBERO"], gpu=True,
+        pip=[
+            PipInstall(
+                ["torch", "torchvision"],
+                index_url="https://download.pytorch.org/whl/cu124",
+            )
+        ],
+        env={"MUJOCO_GL": "egl"},
+        pythonpath=["/opt/LIBERO"],
+        gpu=True,
     )
 
-    def prepare(self):
-        ...  # construct-time work (download a checkpoint, warm a cache); runs before make()
+    # construct-time work (download a checkpoint, warm a cache); runs before make()
+    def prepare(self): ...
 
     def make(self, task="libero_object/0", **kwargs):
         import libero.env
+
         return libero.env.Environment(task=task, **kwargs)
 
 
@@ -164,6 +185,7 @@ class Scene(rlmesh.EnvRecipe):
 
     def make(self, **kwargs):
         import robot_env
+
         return robot_env.from_assets(self.input_path("scene"))
 ```
 
@@ -180,16 +202,25 @@ in the family resolves to the same image:
 from rlmesh.recipes import Build, PipInstall, Recipe
 
 # A build-only base recipe (make=None) holds the shared build:
-rlmesh.register(Recipe(name="droid/base", build=Build(
-    base="nvidia/cuda:12.4.1-runtime-ubuntu22.04", gpu=True, pip=[PipInstall(["torch==2.4.0"])])))
+rlmesh.register(
+    Recipe(
+        name="droid/base",
+        build=Build(
+            base="nvidia/cuda:12.4.1-runtime-ubuntu22.04",
+            gpu=True,
+            pip=[PipInstall(["torch==2.4.0"])],
+        ),
+    )
+)
 
 
 class Scene1(rlmesh.EnvRecipe):
     name = "droid/scene1"
-    build = Build(from_recipe="droid/base")        # reuse the base build; add your own make()
+    build = Build(from_recipe="droid/base")  # reuse the base build; add your own make()
 
     def make(self, **kwargs):
         import robot_env
+
         return robot_env.scene1()
 ```
 

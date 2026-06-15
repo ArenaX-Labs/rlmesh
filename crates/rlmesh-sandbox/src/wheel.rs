@@ -34,6 +34,17 @@ impl ResolvedRlmeshPackage {
             Self::Wheel { source_path, .. } => Some(source_path),
         }
     }
+
+    pub(crate) fn skew_hint(&self) -> Option<String> {
+        match self {
+            Self::Pip { spec } => Some(format!(
+                "the container installed {spec} from PyPI; if your host rlmesh is a \
+                 source/editable build, pass rlmesh_package=\"local\" so the container \
+                 uses your wheel"
+            )),
+            Self::Wheel { .. } => None,
+        }
+    }
 }
 
 pub(crate) fn resolve_rlmesh_package(

@@ -296,31 +296,11 @@ fn parse_mounts_json(raw: Option<&str>) -> PyResult<Vec<(String, String)>> {
     let Some(raw) = raw else {
         return Ok(Vec::new());
     };
-    let value: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|err| PyValueError::new_err(format!("mounts must be valid JSON: {err}")))?;
-    let serde_json::Value::Array(items) = value else {
-        return Err(PyValueError::new_err(
-            "mounts JSON must decode to an array of [host, target] pairs",
-        ));
-    };
-    items
-        .into_iter()
-        .map(|item| match item {
-            serde_json::Value::Array(pair) if pair.len() == 2 => {
-                let host = pair[0].as_str().map(str::to_owned);
-                let target = pair[1].as_str().map(str::to_owned);
-                match (host, target) {
-                    (Some(host), Some(target)) => Ok((host, target)),
-                    _ => Err(PyValueError::new_err(
-                        "each mount pair must be [host: str, target: str]",
-                    )),
-                }
-            }
-            _ => Err(PyValueError::new_err(
-                "each mount must be a [host, target] pair",
-            )),
-        })
-        .collect()
+    serde_json::from_str::<Vec<(String, String)>>(raw).map_err(|err| {
+        PyValueError::new_err(format!(
+            "mounts must be a JSON array of [host, target] string pairs: {err}"
+        ))
+    })
 }
 
 fn parse_kwargs_json(raw: Option<&str>) -> PyResult<BTreeMap<String, serde_json::Value>> {

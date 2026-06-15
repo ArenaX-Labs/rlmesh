@@ -146,22 +146,22 @@ def merged_inputs(
 ) -> dict[str, ArtifactInput]:
     """Overlay per-run overrides onto declared mounts, keyed by name.
 
-    An override matching a declared name swaps only the resolvable source
-    (``local_dir``/``uri``) and keeps the declared contract (``target_path``,
-    ``include``, ``required``) -- the run-time checkpoint selection points the
-    mount at new bytes, not a new container path. This matches
-    :func:`local_dir_mounts` so the local and sandbox paths resolve identically.
-    A new name adds a mount.
+    An override swaps only the resolvable source (``local_dir``/``uri``) and keeps
+    the declared contract (``target_path``, ``include``, ``required``). An override
+    naming an input the recipe never declared is rejected, matching
+    :func:`local_dir_mounts`, so the local and sandbox paths resolve identically.
     """
     by_name = {a.name: a for a in inputs}
     for override in overrides:
         declared = by_name.get(override.name)
         if declared is None:
-            by_name[override.name] = override
-        else:
-            by_name[override.name] = replace(
-                declared, local_dir=override.local_dir, uri=override.uri
+            raise ValueError(
+                f"artifacts override {override.name!r} matches no declared input "
+                f"({sorted(by_name) or ['<none>']}); it would not be mounted"
             )
+        by_name[override.name] = replace(
+            declared, local_dir=override.local_dir, uri=override.uri
+        )
     return by_name
 
 

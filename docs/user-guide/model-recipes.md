@@ -12,7 +12,8 @@ sibling of {doc}`env-recipes`; see {doc}`../api/model-recipes` for the full API.
 ## Author a `ModelRecipe`
 
 ```python
-from __future__ import annotations  # keeps method annotations as strings; see the note below
+# keeps method annotations as strings; see the note below
+from __future__ import annotations
 
 import rlmesh
 from rlmesh.recipes import ArtifactInput, Build, PipInstall, hf_load
@@ -21,13 +22,19 @@ from rlmesh.recipes import ArtifactInput, Build, PipInstall, hf_load
 class SmolVLA(rlmesh.ModelRecipe):
     name = "policy/smolvla"
     build = Build(pip=[PipInstall(["lerobot==0.4.0"])], gpu=True)
-    inputs = (ArtifactInput("weights", "/weights/smolvla",
-                            uri="hf://lerobot/smolvla_base@<sha>"),)
+    inputs = (
+        ArtifactInput(
+            "weights", "/weights/smolvla", uri="hf://lerobot/smolvla_base@<sha>"
+        ),
+    )
     spec = None
 
     def load(self):
-        self._policy = hf_load("lerobot/smolvla_base", loader="lerobot:SmolVLAPolicy",
-                               local_dir=self.input_path("weights"))
+        self._policy = hf_load(
+            "lerobot/smolvla_base",
+            loader="lerobot:SmolVLAPolicy",
+            local_dir=self.input_path("weights"),
+        )
 
     def predict(self, observation):
         return self._policy.select_action(observation)
@@ -69,15 +76,18 @@ its path inside `load()` with `self.input_path(name)`. A `uri="hf://org/repo@sha
 the rlmesh artifact cache; `local_dir=` points at a host directory instead. `hf_load` loads the
 policy from that path.
 
-Resolving an `hf://` uri on the host needs the optional extra: `pip install --pre "rlmesh[hf]"`. In
-a `SandboxModel` the container fetches it, so the host doesn't need the extra.
+Resolving an `hf://` uri needs `huggingface_hub` (the `rlmesh[hf]` extra: `pip install --pre
+"rlmesh[hf]"`). In a `SandboxModel` the container resolves the uri, not the host, so a recipe with a
+`uri=` input must install it in the recipe's `build` (`PipInstall(["huggingface_hub"])`). Point the
+input at `local_dir=` to bind-mount weights from the host instead, which needs nothing extra in the
+container.
 
 ## Register
 
 The class form stores the projected recipe and keeps the live class:
 
 ```python
-rlmesh.register(SmolVLA)          # or @rlmesh.register above the class
+rlmesh.register(SmolVLA)  # or @rlmesh.register above the class
 ```
 
 The flat form synthesizes the recipe for you. Use `hf=` for a Hugging Face policy or `load=` for a
@@ -95,43 +105,95 @@ a container.
 ## Run in a container
 
 `SandboxModel` is the containerized sibling of `Model`. It builds the recipe to an image and runs
-the policy in its own container, so the model's dependencies never enter your process. It works two
-ways.
+the policy in its own container, so the model's dependencies never enter your process. Like `Model`,
+construction is inert: `SandboxModel(source)` resolves the recipe but starts nothing. From there it
+either runs a one-shot eval or serves a long-lived endpoint.
+
+```{important}
+`SandboxModel` builds a fresh image and imports your recipe inside the container by reference, as
+`module:Class`. Define the class in an importable module, not a `__main__` script: a file run as
+`__main__` cannot be imported, and the build rejects it. The image also needs the module's source,
+so add `project=ProjectInstall(src=".")` to `build`, with a `pyproject.toml` beside it so the folder
+installs. Skip the `project` step and the image still builds, but the container cannot import your
+class at startup.
+```
 
 ### One-shot eval
 
-`SandboxModel(source).run(env)` builds the image, runs a single container that drives `env`, and
-returns a `RunResult`. This is the containerized form of `Model.run`, returning the same
-`RunResult`; `seeds` and `max_episodes` carry over.
+`SandboxModel(source).run(env)` builds the image, runs a single `--rm` container that drives `env`,
+and returns the same `RunResult` as `Model.run`; `seeds` and `max_episodes` carry over. Pair it with
+a `SandboxEnv` and both sides are isolated at once: the env runs its dependencies in one container,
+the model runs its own in another, and they meet over the host network.
+
+The recipe class lives in its own module so the container can import it:
 
 ```python
-from rlmesh.numpy import SandboxModel
+# greedy_cartpole.py
+from __future__ import annotations
 
-result = SandboxModel(SmolVLA).run(env, seeds=[0, 1, 2])
-print(result.mean_reward)
+import rlmesh
+from rlmesh.models import DELEGATED
+from rlmesh.recipes import Build, PipInstall, ProjectInstall
+
+
+class GreedyCartPole(rlmesh.ModelRecipe):
+    name = "policy/greedy-cartpole"
+    # project=ProjectInstall stages this folder so the container can import the class
+    build = Build(pip=[PipInstall(["numpy==2.1.3"])], project=ProjectInstall(src="."))
+    spec = DELEGATED  # adapts its own observations; no adapter is resolved
+
+    def load(self):
+        import numpy as np
+
+        self._np = np
+
+    def predict(self, observation):
+        # Nudge toward the side the pole is leaning: 1 if it tilts right, else 0.
+        return int(self._np.asarray(observation)[2] > 0)
 ```
 
-`env` is the dialed party, exactly as with `Model.run`: pass an env object, an object with an
-`.address`, or a bare address string. The container reaches that address over the host network,
-drives the env for the given `seeds` (or `max_episodes`), reports the run, and exits. Nothing stays
-running.
+A second file imports the class and drives the env:
+
+```python
+# run.py
+from greedy_cartpole import GreedyCartPole
+from rlmesh.numpy import SandboxEnv, SandboxModel
+
+with SandboxEnv(
+    "CartPole-v1", packages=["gymnasium==1.3.0"], imports=["gymnasium"]
+) as env:
+    result = SandboxModel(GreedyCartPole).run(env, seeds=[0, 1, 2, 3, 4])
+
+print(
+    f"{result.num_episodes} episodes, success {result.success_rate:.0%}, "
+    f"mean reward {result.mean_reward:.1f}"
+)
+```
+
+`run.py` and `greedy_cartpole.py` are two files in one folder. `ProjectInstall(src=".")` installs
+that folder into the image, so it needs a `pyproject.toml` beside them;
+`examples/python/sandbox/drive_model/` has the complete layout to copy.
+
+`env` is the dialed party, exactly as with `Model.run`: pass an env object (a `SandboxEnv` exposes
+its `.sandbox.address`), an object with an `.address`, or a bare address string. The container
+reaches that address over the host network, drives the env for the given `seeds` (or
+`max_episodes`), reports the run, and exits. Nothing stays running.
 
 ### Served endpoint
 
-As a context manager, `SandboxModel` serves the policy as a long-lived model endpoint instead. It
-exposes `.address` and `.container_id`, has `.shutdown()`, and stops the container on exit:
+As a context manager (or via `serve()`), `SandboxModel` serves the policy as a long-lived model
+endpoint instead. It exposes `.address` and `.container_id` (both raise until it is serving), and
+`.shutdown()` stops the container on exit:
 
 ```python
-with SandboxModel(SmolVLA) as model:
-    print(model.address)  # the container serves the policy at this model endpoint
+with SandboxModel(GreedyCartPole) as model:
+    print(model.address)  # a model endpoint, not an env address
 ```
 
 `model.address` is a _model_ endpoint, not an env address, so don't pass it to
-`Model(...).run(...)`, which dials its argument as an env.
-
-Serving suits a spec-less or `DELEGATED` model. A model with a `ModelSpec` resolves its adapter from
-an env contract, which a served endpoint does not yet receive on dial-in, so evaluate a spec'd model
-with `run(env)` instead.
+`Model(...).run(...)`, which dials its argument as an env. Serving needs a spec-less or `DELEGATED`
+model: a `ModelSpec` model resolves its adapter from the env contract, which a served endpoint does
+not yet receive on dial-in, so drive a spec'd model with `run(env)` instead.
 
 ## spec: None, DELEGATED, or a ModelSpec
 

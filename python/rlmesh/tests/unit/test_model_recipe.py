@@ -274,37 +274,24 @@ def test_construct_authored_model_skips_setup_in_container(monkeypatch: Any) -> 
     assert len(calls) == 1
 
 
-def test_sandbox_model_reflects_artifact_override_into_recipe(
-    monkeypatch: Any, tmp_path: Any
-) -> None:
+def test_sandbox_model_reflects_artifact_override_into_recipe(tmp_path: Any) -> None:
     # A per-run artifact override must reach the container: SandboxModel reflects it
     # into the recipe so input_path() resolves to the bind-mounted target instead of
     # re-fetching the declared uri.
     import json as _json
 
-    import rlmesh._rlmesh as native
     from rlmesh.sandbox._model import SandboxModel
 
-    captured: dict[str, Any] = {}
-
-    def fake_start(*_args: Any, **kwargs: Any) -> dict[str, str]:
-        captured.update(kwargs)
-        return {"address": "0.0.0.0:1", "container_id": "c"}
-
-    monkeypatch.setattr(native, "sandbox_start_env", fake_start)
-    monkeypatch.setattr(native, "sandbox_stop_env", lambda *, container_id: None)
-
     override = ArtifactInput("weights", "/ignored", local_dir=str(tmp_path))
-    with SandboxModel(_WeightedPolicy, artifacts=[override]):
-        pass
+    model = SandboxModel(_WeightedPolicy, artifacts=[override])
 
-    sent = _json.loads(captured["recipe_json"])
+    sent = _json.loads(model._recipe.to_json())
     weights = next(i for i in sent["inputs"] if i["name"] == "weights")
     assert weights["local_dir"] == str(tmp_path)  # the override is carried over
     assert weights["target_path"] == "/opt/weights"  # the declared target is kept
     assert weights.get("uri") is None  # the original uri is cleared (mount wins)
     # The bind-mount maps the host dir onto that same declared target.
-    assert _json.loads(captured["mounts_json"]) == [[str(tmp_path), "/opt/weights"]]
+    assert model._mounts == [(str(tmp_path), "/opt/weights")]
 
 
 def test_input_path_unknown_raises() -> None:
@@ -695,3 +682,18 @@ def test_local_dir_mounts_loud_failures(
 
     with pytest.raises(exc, match=match):
         local_dir_mounts(inputs, overrides)
+
+
+def test_sandbox_model_serve_rejects_specd_model() -> None:
+    from rlmesh.sandbox._model import SandboxModel
+
+    model = SandboxModel(_WeightedPolicy)
+    with pytest.raises(TypeError, match="has a spec"):
+        model.serve()
+
+
+def test_register_model_class_rejects_flat_form_kwargs() -> None:
+    import rlmesh
+
+    with pytest.raises(TypeError, match="flat-form kwargs"):
+        rlmesh.register(_WeightedPolicy, packages=["x"], overwrite=True)

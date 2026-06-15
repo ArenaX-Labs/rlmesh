@@ -57,7 +57,11 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         }
         if segment.binarize {
             for entry in &mut piece {
-                *entry = binary_snap(*entry);
+                // TODO: verify intended binary-gripper behavior at raw 0.0.
+                // threshold=None keeps a raw 0.0 neutral; a thresholded boundary opens.
+                if segment.threshold.is_some() || *entry != 0.0 {
+                    *entry = binary_snap(*entry);
+                }
             }
         }
         pieces.extend(piece);
@@ -137,6 +141,14 @@ mod tests {
         // must snap to a definite side (open), never an undefined 0.0.
         let plan = one_segment(None, false, Some(0.5), true);
         assert_eq!(apply_one(&plan, 0.5), 1.0);
+    }
+
+    #[test]
+    fn raw_zero_without_threshold_stays_neutral() {
+        let plan = one_segment(None, false, None, true);
+        assert_eq!(apply_one(&plan, 0.0), 0.0);
+        assert_eq!(apply_one(&plan, 0.2), 1.0);
+        assert_eq!(apply_one(&plan, -0.2), -1.0);
     }
 
     #[test]

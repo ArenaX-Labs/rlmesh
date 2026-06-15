@@ -119,8 +119,12 @@ for envs, so adding a fourth environment covers it against every model without t
 # models/smolvla.py
 SPEC = adapt.ModelSpec(
     inputs=(
-        adapt.ImageInput("observation.images.image", role=adapt.IMAGE_PRIMARY, height=224, width=224),
-        adapt.ImageInput("observation.images.image2", role=adapt.IMAGE_WRIST, height=224, width=224),
+        adapt.ImageInput(
+            "observation.images.image", role=adapt.IMAGE_PRIMARY, height=224, width=224
+        ),
+        adapt.ImageInput(
+            "observation.images.image2", role=adapt.IMAGE_WRIST, height=224, width=224
+        ),
         adapt.StateInput(
             "observation.state",
             components=(
@@ -146,8 +150,12 @@ def build_adapter(model_name, env_name, env):
         return override()
     model_entry = MODELS[model_name]
     if model_entry.make_adapter is not None:
-        return model_entry.make_adapter(env.tags, env.observation_space, env.action_space)
-    return adapt.resolve(env.tags, env.observation_space, env.action_space, model_entry.spec)
+        return model_entry.make_adapter(
+            env.tags, env.observation_space, env.action_space
+        )
+    return adapt.resolve(
+        env.tags, env.observation_space, env.action_space, model_entry.spec
+    )
 ```
 
 `metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a
@@ -196,6 +204,8 @@ if is_plain:
     model.run(env, max_episodes=episodes)
 else:
     adapter = build_adapter(model_name, env_name, ENVS[env_name])
-    model = Model(adapter.wrap_predict(model_entry.load_predict_fn()), on_reset=adapter.reset)
+    model = Model(
+        adapter.wrap_predict(model_entry.load_predict_fn()), on_reset=adapter.reset
+    )
     model.run(env, max_episodes=episodes)
 ```

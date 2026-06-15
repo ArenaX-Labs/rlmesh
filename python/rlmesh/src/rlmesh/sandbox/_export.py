@@ -92,13 +92,7 @@ def export(
             build_memory=build_memory,
         ),
     )
-    return ExportResult(
-        requested_source=info["requested_source"],
-        resolved_source=info["resolved_source"],
-        image=info["image"],
-        alias=info["alias"],
-        image_id=info["image_id"],
-    )
+    return ExportResult(**info)
 
 
 def _is_model_source(source: object) -> bool:

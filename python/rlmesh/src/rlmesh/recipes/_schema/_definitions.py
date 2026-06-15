@@ -103,10 +103,6 @@ def _check_token(value: str, pattern: re.Pattern[str], field_name: str) -> None:
         )
 
 
-def _check_apt_name(value: str, field_name: str) -> None:
-    _check_token(value, _APT_NAME, field_name)
-
-
 def _check_include_glob(value: str, field_name: str) -> None:
     """Validate a ProjectInstall.include glob: non-empty, relative, path/``*`` tokens only."""
     if not value:
@@ -485,7 +481,7 @@ class Build:
         system = _as_str_tuple(self.system, "Build.system")
         runtime = _as_str_tuple(self.system_runtime, "Build.system_runtime")
         for name in (*system, *runtime):
-            _check_apt_name(name, "Build.system")
+            _check_token(name, _APT_NAME, "Build.system")
         object.__setattr__(self, "system", system)
         object.__setattr__(self, "system_runtime", runtime)
 
@@ -731,35 +727,16 @@ class RuntimeReserved:
         """Rehydrate from JSON, ignoring unknown keys (forward-compat)."""
         if not data:
             return cls()
-        loop_mode = data.get("loop_mode")
-        if loop_mode is not None and loop_mode not in (
-            "step",
-            "chunk",
-            "receding",
-            "open_loop",
-        ):
-            raise RecipeValidationError(
-                f"RuntimeReserved.loop_mode invalid: {loop_mode!r}"
-            )
-        batching = data.get("batching")
-        if batching is not None and batching not in ("off", "utilization", "fusion"):
-            raise RecipeValidationError(
-                f"RuntimeReserved.batching invalid: {batching!r}"
-            )
-        determinism = data.get("determinism")
-        if determinism is not None and determinism not in ("off", "seeded", "strict"):
-            raise RecipeValidationError(
-                f"RuntimeReserved.determinism invalid: {determinism!r}"
-            )
+        # __post_init__ re-validates every field, so pass the raw values straight through.
         return cls(
             chunk_size=opt_int(data.get("chunk_size"), "RuntimeReserved.chunk_size"),
             execute_horizon=opt_int(
                 data.get("execute_horizon"), "RuntimeReserved.execute_horizon"
             ),
-            loop_mode=loop_mode,
-            batching=batching,
+            loop_mode=data.get("loop_mode"),  # type: ignore[arg-type]
+            batching=data.get("batching"),  # type: ignore[arg-type]
             max_batch=opt_int(data.get("max_batch"), "RuntimeReserved.max_batch"),
-            determinism=determinism,
+            determinism=data.get("determinism"),  # type: ignore[arg-type]
             perturbation=opt_map(data.get("perturbation")),
             lane_affinity=opt_bool(
                 data.get("lane_affinity"), "RuntimeReserved.lane_affinity"
