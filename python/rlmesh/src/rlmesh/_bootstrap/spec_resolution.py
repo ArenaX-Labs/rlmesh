@@ -74,8 +74,8 @@ def member_params_from_env() -> tuple[dict[str, object], dict[str, object]]:
         return {}, {}
     data = expect_mapping(cast(object, json.loads(raw)), "RLMESH_PARAMS_JSON")
     return (
-        _mapping_to_kwargs(data.get("setup_env"), "RLMESH_PARAMS_JSON.setup_env"),
-        _mapping_to_kwargs(data.get("kwargs"), "RLMESH_PARAMS_JSON.kwargs"),
+        mapping_to_kwargs(data.get("setup_env"), "RLMESH_PARAMS_JSON.setup_env"),
+        mapping_to_kwargs(data.get("kwargs"), "RLMESH_PARAMS_JSON.kwargs"),
     )
 
 
@@ -176,13 +176,13 @@ def expect_mapping(value: object, label: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], raw_mapping)
 
 
-def _optional_mapping(value: object, label: str) -> Mapping[str, object] | None:
+def optional_mapping(value: object, label: str) -> Mapping[str, object] | None:
     if value is None:
         return None
     return expect_mapping(value, label)
 
 
-def _optional_any_mapping(value: object, label: str) -> Mapping[object, object] | None:
+def optional_any_mapping(value: object, label: str) -> Mapping[object, object] | None:
     _ = label
     if value is None:
         return None
@@ -195,19 +195,19 @@ def _format_mapping_keys(mapping: Mapping[Any, object]) -> str:
     return ", ".join(sorted(str(key) for key in mapping.keys())) or "<none>"
 
 
-def _expect_str(value: object, label: str) -> str:
+def expect_str(value: object, label: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{label} must be a string")
     return value
 
 
-def _optional_str(value: object, label: str) -> str | None:
+def optional_str(value: object, label: str) -> str | None:
     if value is None:
         return None
-    return _expect_str(value, label)
+    return expect_str(value, label)
 
 
-def _expect_num_envs(value: object, label: str) -> int:
+def expect_num_envs(value: object, label: str) -> int:
     if value is None:
         return 1
     if not isinstance(value, int) or isinstance(value, bool):
@@ -217,16 +217,16 @@ def _expect_num_envs(value: object, label: str) -> int:
     return value
 
 
-def _expect_vectorization_mode(value: object, label: str) -> str:
+def expect_vectorization_mode(value: object, label: str) -> str:
     if value is None:
         return "sync"
-    value = _expect_str(value, label)
+    value = expect_str(value, label)
     if value not in {"sync", "async"}:
         raise ValueError(f"{label} must be 'sync' or 'async'")
     return value
 
 
-def _expect_str_list(value: object, label: str) -> list[str]:
+def expect_str_list(value: object, label: str) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list):
@@ -237,8 +237,8 @@ def _expect_str_list(value: object, label: str) -> list[str]:
     return cast(list[str], items)
 
 
-def _mapping_to_kwargs(value: object, label: str) -> dict[str, object]:
-    mapping = _optional_mapping(value, label)
+def mapping_to_kwargs(value: object, label: str) -> dict[str, object]:
+    mapping = optional_mapping(value, label)
     if mapping is None:
         return {}
     return dict(mapping)

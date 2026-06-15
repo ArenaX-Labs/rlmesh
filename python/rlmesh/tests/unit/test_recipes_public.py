@@ -82,11 +82,11 @@ def test_bootstrap_recipe_dispatch_builds_env() -> None:
 # ----- SandboxEnv source resolution -----
 
 
-def test_resolve_recipe_source_for_registered_name() -> None:
-    from rlmesh.sandbox._export import _resolve_recipe_source
+def testresolve_recipe_source_for_registered_name() -> None:
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipes.register(Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1")))
-    display, recipe_json, provenance, context_root, _ = _resolve_recipe_source(
+    display, recipe_json, provenance, context_root, _ = resolve_recipe_source(
         "acme/env"
     )
     assert display == "acme/env"
@@ -94,11 +94,11 @@ def test_resolve_recipe_source_for_registered_name() -> None:
     assert context_root is None
 
 
-def test_resolve_recipe_source_for_literal_recipe() -> None:
-    from rlmesh.sandbox._export import _resolve_recipe_source
+def testresolve_recipe_source_for_literal_recipe() -> None:
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="acme/env", make=GymMake(env_id="CartPole-v1"))
-    display, recipe_json, provenance, _, _ = _resolve_recipe_source(recipe)
+    display, recipe_json, provenance, _, _ = resolve_recipe_source(recipe)
     assert display == "acme/env"
     assert recipe_json == recipe.to_json()
     # An in-process literal Recipe is Installed (it came from your code); Remote is
@@ -106,10 +106,10 @@ def test_resolve_recipe_source_for_literal_recipe() -> None:
     assert provenance == "installed"
 
 
-def test_resolve_recipe_source_passes_through_gym_id() -> None:
-    from rlmesh.sandbox._export import _resolve_recipe_source
+def testresolve_recipe_source_passes_through_gym_id() -> None:
+    from rlmesh.sandbox._export import resolve_recipe_source
 
-    assert _resolve_recipe_source("CartPole-v1") == (
+    assert resolve_recipe_source("CartPole-v1") == (
         "CartPole-v1",
         None,
         None,
@@ -118,15 +118,15 @@ def test_resolve_recipe_source_passes_through_gym_id() -> None:
     )
 
 
-def test_resolve_recipe_source_defaults_context_root_for_project() -> None:
-    from rlmesh.sandbox._export import _resolve_recipe_source
+def testresolve_recipe_source_defaults_context_root_for_project() -> None:
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="acme/env",
         make=GymMake(env_id="CartPole-v1"),
         build=Build(project=ProjectInstall(src=".", dest="/opt/acme")),
     )
-    _, _, _, context_root, _ = _resolve_recipe_source(recipe)
+    _, _, _, context_root, _ = resolve_recipe_source(recipe)
     assert context_root is not None
 
 

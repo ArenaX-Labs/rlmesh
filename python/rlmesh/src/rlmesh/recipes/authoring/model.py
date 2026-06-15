@@ -22,7 +22,7 @@ import inspect
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard, TypeVar
 
-from .._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
+from .._artifacts import ArtifactConsumer, enter_recipe_context, merged_inputs
 from .._schema import ArtifactInput, Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
@@ -61,7 +61,7 @@ class _Delegated:
 DELEGATED = _Delegated()
 
 
-class ModelRecipe(_ArtifactConsumer):
+class ModelRecipe(ArtifactConsumer):
     """Base class for authoring a policy and its recipe together.
 
     Subclasses set the data attributes and define the policy::
@@ -108,7 +108,7 @@ class ModelRecipe(_ArtifactConsumer):
     #: the model self-adapts, or a ``ModelSpec`` to resolve against the env's tags.
     spec: ClassVar[Any] = None
     #: ``inputs`` (runtime weight/asset mounts) and ``input_path`` come from
-    #: :class:`_ArtifactConsumer`, shared with ``EnvRecipe``.
+    #: :class:`ArtifactConsumer`, shared with ``EnvRecipe``.
 
     def load(self) -> None:
         """Build the model into ``self``, with heavy imports here; runs once per process.
@@ -284,8 +284,8 @@ def construct_authored_model(
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)
-    instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)
-    instance._rlmesh_in_container = in_container
+    instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)  # pyright: ignore[reportPrivateUsage]
+    instance._rlmesh_in_container = in_container  # pyright: ignore[reportPrivateUsage]
     with enter_recipe_context(instance):
         if load_kwargs:
             instance.load(**load_kwargs)  # type: ignore[arg-type]

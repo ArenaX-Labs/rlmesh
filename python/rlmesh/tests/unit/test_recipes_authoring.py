@@ -298,10 +298,10 @@ def test_sandbox_source_for_envrecipe_with_project_is_installed(
     A Remote recipe rejects ProjectInstall; stamping an in-process/EnvRecipe source
     as Installed is what lets the robotics-on-a-Mac one-liner launch.
     """
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     heavy = _module(authored_module).Heavy  # type: ignore[attr-defined]
-    display, recipe_json, provenance, context_root, _ = _resolve_recipe_source(heavy)
+    display, recipe_json, provenance, context_root, _ = resolve_recipe_source(heavy)
     assert display == "acme/heavy"
     assert provenance == "installed"
     assert recipe_json is not None
@@ -310,10 +310,10 @@ def test_sandbox_source_for_envrecipe_with_project_is_installed(
 
 def test_sandbox_source_for_literal_recipe_is_installed() -> None:
     from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="acme/literal", make=GymMake(env_id="CartPole-v1"))
-    _, _, provenance, _, _ = _resolve_recipe_source(recipe)
+    _, _, provenance, _, _ = resolve_recipe_source(recipe)
     assert provenance == "installed"
 
 

@@ -247,15 +247,15 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     assert captured[field] == ["ale-py"]
 
 
-def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
+def testresolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     # A recipe source carries make kwargs in the document (make.kwargs), since the
     # recipe bootstrap payload never threads kwargs_json into the recipe build.
     from rlmesh import recipes
     from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
-    _, recipe_json, provenance, _, _ = _resolve_recipe_source(
+    _, recipe_json, provenance, _, _ = resolve_recipe_source(
         recipe, {"render_mode": "rgb_array"}
     )
 
@@ -266,17 +266,17 @@ def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
     assert dict(document.make.kwargs) == {"render_mode": "rgb_array"}
 
 
-def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
+def testresolve_recipe_source_merges_over_existing_make_kwargs() -> None:
     # Caller kwargs win over the recipe's own baked make kwargs, like
     # rlmesh.make(recipe, **kwargs).
     from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="cart/pole",
         make=GymMake(env_id="CartPole-v1", kwargs={"render_mode": "human", "g": 9.8}),
     )
-    _, recipe_json, _, _, _ = _resolve_recipe_source(
+    _, recipe_json, _, _, _ = resolve_recipe_source(
         recipe, {"render_mode": "rgb_array"}
     )
 
@@ -286,36 +286,36 @@ def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
     assert dict(document.make.kwargs) == {"render_mode": "rgb_array", "g": 9.8}
 
 
-def test_resolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
+def testresolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
     # A build-only base recipe (make=None) has nowhere to bake make kwargs.
     from rlmesh.recipes import Build, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
     with pytest.raises(TypeError, match="build-only base"):
-        _resolve_recipe_source(base, {"render_mode": "rgb_array"})
+        resolve_recipe_source(base, {"render_mode": "rgb_array"})
 
 
-def test_resolve_recipe_source_rejects_hf_make_before_build() -> None:
+def testresolve_recipe_source_rejects_hf_make_before_build() -> None:
     # An HfMake recipe must be rejected up front, not only after a full image build
     # by the in-container build().
     from rlmesh.recipes import HfMake, Recipe, UnsupportedRecipeError
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="acme/hf",
         make=HfMake(repo="acme/env", revision="a" * 40),
     )
     with pytest.raises(UnsupportedRecipeError, match="HfMake"):
-        _resolve_recipe_source(recipe, {})
+        resolve_recipe_source(recipe, {})
 
 
-def test_resolve_recipe_source_rejects_setup_files_before_build() -> None:
+def testresolve_recipe_source_rejects_setup_files_before_build() -> None:
     # setup.files is not applied anywhere yet (the in-container build() -> apply_setup
     # raises on it too), so it must be rejected up front -- before any image build.
     from rlmesh.recipes import GymMake, Recipe, Setup, UnsupportedRecipeError
     from rlmesh.recipes._schema import FileWrite
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="acme/with-files",
@@ -325,10 +325,10 @@ def test_resolve_recipe_source_rejects_setup_files_before_build() -> None:
     with pytest.raises(
         UnsupportedRecipeError, match=r"setup\.files is not applied yet"
     ):
-        _resolve_recipe_source(recipe, {})
+        resolve_recipe_source(recipe, {})
 
 
-def test_resolve_recipe_source_from_recipe_uses_base_origin(
+def testresolve_recipe_source_from_recipe_uses_base_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # When a task recipe inlines a `from_recipe` base, the base supplies the entire
@@ -337,7 +337,7 @@ def test_resolve_recipe_source_from_recipe_uses_base_origin(
     # registration dir / cwd (dir B).
     from rlmesh import recipes
     from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     base = Recipe(
         name="acme/base",
@@ -359,7 +359,7 @@ def test_resolve_recipe_source_from_recipe_uses_base_origin(
         lambda name: origins.get(name),
     )
     try:
-        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/task", {})
+        _, _, provenance, context_root, _ = resolve_recipe_source("acme/task", {})
     finally:
         recipes.unregister("acme/base")
         recipes.unregister("acme/task")
@@ -368,7 +368,7 @@ def test_resolve_recipe_source_from_recipe_uses_base_origin(
     assert context_root == "/dir/A"
 
 
-def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
+def testresolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A chained task -> base_b -> base_a inlines the TERMINAL base's build (base_a,
@@ -378,7 +378,7 @@ def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
     # its own here.
     from rlmesh import recipes
     from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     base_a = Recipe(
         name="acme/base-a",
@@ -402,7 +402,7 @@ def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
         lambda name: origins.get(name),
     )
     try:
-        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/task", {})
+        _, _, provenance, context_root, _ = resolve_recipe_source("acme/task", {})
     finally:
         recipes.unregister("acme/base-a")
         recipes.unregister("acme/base-b")
@@ -412,14 +412,14 @@ def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
     assert context_root == "/dir/A"
 
 
-def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
+def testresolve_recipe_source_authored_project_uses_module_dir() -> None:
     # An authored EnvRecipe with a ProjectInstall stages from its defining module's
     # directory, not the launching process's cwd.
     from pathlib import Path
 
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
-    _, recipe_json, provenance, context_root, _ = _resolve_recipe_source(
+    _, recipe_json, provenance, context_root, _ = resolve_recipe_source(
         _ProjectRecipe, {}
     )
 
@@ -429,14 +429,14 @@ def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
     assert context_root == expected
 
 
-def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
+def testresolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     # A recipe resolved by registered name stages a ProjectInstall from the
     # registrant's module directory (recorded at register() time), not the cwd.
     from pathlib import Path
 
     from rlmesh import recipes
     from rlmesh.recipes import Build, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="acme/by-name",
@@ -445,7 +445,7 @@ def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     )
     recipes.register(recipe)
     try:
-        _, _, provenance, context_root, _ = _resolve_recipe_source("acme/by-name", {})
+        _, _, provenance, context_root, _ = resolve_recipe_source("acme/by-name", {})
     finally:
         recipes.unregister("acme/by-name")
 
@@ -454,11 +454,11 @@ def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
     assert context_root == str(Path(__file__).resolve().parent)
 
 
-def test_resolve_recipe_source_plain_id_unchanged() -> None:
+def testresolve_recipe_source_plain_id_unchanged() -> None:
     # A plain gym id that is not a registered recipe stays an ordinary source.
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
-    assert _resolve_recipe_source("CartPole-v1", {"render_mode": "rgb_array"}) == (
+    assert resolve_recipe_source("CartPole-v1", {"render_mode": "rgb_array"}) == (
         "CartPole-v1",
         None,
         None,
@@ -467,16 +467,16 @@ def test_resolve_recipe_source_plain_id_unchanged() -> None:
     )
 
 
-def test_resolve_recipe_source_merges_imports_into_requires() -> None:
+def testresolve_recipe_source_merges_imports_into_requires() -> None:
     # A recipe source carries caller imports= in the document (requires.imports),
     # since the recipe bootstrap reads requires.imports, never the caller's imports=
     # channel. Without the merge a registration import (e.g. ale_py) is dropped and
     # the gym env is not found in-container.
     from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
-    _, recipe_json, provenance, _, _ = _resolve_recipe_source(recipe, {}, ["ale_py"])
+    _, recipe_json, provenance, _, _ = resolve_recipe_source(recipe, {}, ["ale_py"])
 
     assert provenance == "installed"
     assert recipe_json is not None
@@ -484,70 +484,68 @@ def test_resolve_recipe_source_merges_imports_into_requires() -> None:
     assert "ale_py" in document.requires.imports
 
 
-def test_resolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
+def testresolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
     # The recipe's own imports come first; caller imports append, de-duplicated.
     from rlmesh.recipes import GymMake, Recipe, Requires
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="my/atari",
         make=GymMake(env_id="ALE/Pong-v5"),
         requires=Requires(imports=["ale_py", "shimmy"]),
     )
-    _, recipe_json, _, _, _ = _resolve_recipe_source(
-        recipe, {}, ["ale_py", "extra_reg"]
-    )
+    _, recipe_json, _, _, _ = resolve_recipe_source(recipe, {}, ["ale_py", "extra_reg"])
 
     assert recipe_json is not None
     document = Recipe.from_json(recipe_json)
     assert list(document.requires.imports) == ["ale_py", "shimmy", "extra_reg"]
 
 
-def test_resolve_recipe_source_pymake_with_imports_raises() -> None:
+def testresolve_recipe_source_pymake_with_imports_raises() -> None:
     # requires.imports is forbidden for PyMake (the py factory owns its imports), so
     # a caller imports= on a PyMake recipe is rejected rather than silently dropped.
     from rlmesh.recipes import PyMake, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(name="acme/py", make=PyMake(entrypoint="acme_env:make"))
     with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
-        _resolve_recipe_source(recipe, {}, ["ale_py"])
+        resolve_recipe_source(recipe, {}, ["ale_py"])
 
 
-def test_resolve_recipe_source_build_only_base_with_imports_raises() -> None:
+def testresolve_recipe_source_build_only_base_with_imports_raises() -> None:
     # A build-only base (make=None) has no make/requires surface for caller imports.
     from rlmesh.recipes import Build, Recipe
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
     with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
-        _resolve_recipe_source(base, {}, ["ale_py"])
+        resolve_recipe_source(base, {}, ["ale_py"])
 
 
-def test_resolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
+def testresolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
     # The default (no caller imports) path is identical to before: the recipe's own
     # requires.imports passes through unchanged.
     from rlmesh.recipes import GymMake, Recipe, Requires
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     recipe = Recipe(
         name="my/atari",
         make=GymMake(env_id="ALE/Pong-v5"),
         requires=Requires(imports=["ale_py"]),
     )
-    _, recipe_json, _, _, _ = _resolve_recipe_source(recipe, {})
+    _, recipe_json, _, _, _ = resolve_recipe_source(recipe, {})
 
     assert recipe_json is not None
     document = Recipe.from_json(recipe_json)
     assert list(document.requires.imports) == ["ale_py"]
 
 
-def test_resolve_recipe_source_plain_id_with_imports_unchanged() -> None:
+def testresolve_recipe_source_plain_id_with_imports_unchanged() -> None:
     # A plain gym source string (not a recipe) is unchanged: imports= is NOT consumed
     # here -- it stays forwarded via the gym/hf path's imports= channel.
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
-    assert _resolve_recipe_source("CartPole-v1", {}, ["ale_py"]) == (
+    assert resolve_recipe_source("CartPole-v1", {}, ["ale_py"]) == (
         "CartPole-v1",
         None,
         None,

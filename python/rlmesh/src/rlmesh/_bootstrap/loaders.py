@@ -13,22 +13,22 @@ from typing import TYPE_CHECKING, Any, cast
 from rlmesh._entrypoint import resolve_entrypoint
 
 from .gym_support import (
-    _call_hf_make_env,
-    _load_callable,
+    call_hf_make_env,
     import_gym_modules,
+    load_callable,
     make_gym_environment,
 )
 from .spec_resolution import (
-    _expect_num_envs,
-    _expect_str,
-    _expect_str_list,
-    _expect_vectorization_mode,
-    _mapping_to_kwargs,
-    _optional_any_mapping,
-    _optional_mapping,
-    _optional_str,
     apply_member_params,
     expect_mapping,
+    expect_num_envs,
+    expect_str,
+    expect_str_list,
+    expect_vectorization_mode,
+    mapping_to_kwargs,
+    optional_any_mapping,
+    optional_mapping,
+    optional_str,
     select_mapping_item,
     select_task_item,
 )
@@ -92,7 +92,7 @@ def load_env_from_spec(
     ``setup_env``/``kwargs`` are the parsed ``RLMESH_PARAMS_JSON`` member selector;
     they apply to recipe sources only (gym/hf sources predate it and ignore them).
     """
-    kind = _expect_str(spec.get("kind"), "bootstrap spec.kind")
+    kind = expect_str(spec.get("kind"), "bootstrap spec.kind")
     if kind == "gym":
         return load_gym_env(spec)
     if kind == "hf":
@@ -117,8 +117,8 @@ def load_recipe_env(
     from rlmesh.recipes import Recipe, build
 
     document = expect_mapping(spec.get("document"), "bootstrap spec.document")
-    num_envs = _expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
-    vectorization_mode = _expect_vectorization_mode(
+    num_envs = expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = expect_vectorization_mode(
         spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
     )
     recipe = apply_member_params(
@@ -170,12 +170,12 @@ def load_env_entrypoint(
 
 def load_gym_env(spec: Mapping[str, object]) -> object:
     """Load a Gymnasium/Gym environment from a sandbox bootstrap spec."""
-    import_packages(_expect_str_list(spec.get("imports"), "bootstrap imports"))
+    import_packages(expect_str_list(spec.get("imports"), "bootstrap imports"))
 
-    env_id = _expect_str(spec.get("env_id"), "bootstrap spec.env_id")
-    kwargs = _mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
-    num_envs = _expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
-    vectorization_mode = _expect_vectorization_mode(
+    env_id = expect_str(spec.get("env_id"), "bootstrap spec.env_id")
+    kwargs = mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
+    num_envs = expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = expect_vectorization_mode(
         spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
     )
 
@@ -204,9 +204,9 @@ def load_gym_env(spec: Mapping[str, object]) -> object:
 
 def load_hf_env(spec: Mapping[str, object]) -> object:
     """Load an HF-materialized environment from a sandbox bootstrap spec."""
-    import_packages(_expect_str_list(spec.get("imports"), "bootstrap imports"))
+    import_packages(expect_str_list(spec.get("imports"), "bootstrap imports"))
 
-    source_subdir = _expect_str(
+    source_subdir = expect_str(
         spec.get("source_subdir"), "bootstrap spec.source_subdir"
     )
     source_root = Path("/opt/rlmesh") / source_subdir
@@ -219,22 +219,22 @@ def load_hf_env(spec: Mapping[str, object]) -> object:
         sys.path.insert(0, source_root_str)
 
     module = load_module_from_path("rlmesh_hf_env", env_py)
-    make_env = _load_callable(module, "make_env")
+    make_env = load_callable(module, "make_env")
 
-    kwargs = _mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
-    num_envs = _expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
-    vectorization_mode = _expect_vectorization_mode(
+    kwargs = mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
+    num_envs = expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = expect_vectorization_mode(
         spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
     )
 
-    envs = _call_hf_make_env(
+    envs = call_hf_make_env(
         make_env,
         kwargs,
         num_envs=num_envs,
         vectorization_mode=vectorization_mode,
     )
-    suite = _optional_str(spec.get("suite"), "bootstrap spec.suite")
-    task = _optional_str(spec.get("task"), "bootstrap spec.task")
+    suite = optional_str(spec.get("suite"), "bootstrap spec.suite")
+    task = optional_str(spec.get("task"), "bootstrap spec.task")
     return normalize_hf_env(envs, suite=suite, task=task)
 
 
@@ -262,7 +262,7 @@ def normalize_hf_env(envs: object, *, suite: str | None, task: str | None) -> ob
     if looks_like_env(envs):
         return envs
 
-    env_mapping = _optional_mapping(envs, "hf env mapping")
+    env_mapping = optional_mapping(envs, "hf env mapping")
     if env_mapping is None:
         raise TypeError("env.py make_env(...) returned an unsupported value")
 
@@ -275,7 +275,7 @@ def normalize_hf_env(envs: object, *, suite: str | None, task: str | None) -> ob
             )
         return suite_value
 
-    task_mapping = _optional_any_mapping(
+    task_mapping = optional_any_mapping(
         suite_value, f"task mapping for suite {suite_key!r}"
     )
     if task_mapping is not None:

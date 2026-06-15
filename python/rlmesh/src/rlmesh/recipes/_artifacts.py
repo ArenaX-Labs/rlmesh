@@ -32,14 +32,14 @@ __all__ = [
 
 # The recipe whose load()/make() is running, so the module-level input_path() can
 # find its mounts without an explicit self.
-_CURRENT_RECIPE: contextvars.ContextVar[_ArtifactConsumer | None] = (
+_CURRENT_RECIPE: contextvars.ContextVar[ArtifactConsumer | None] = (
     contextvars.ContextVar("rlmesh_current_recipe", default=None)
 )
 
 _HF_SCHEME = "hf://"
 
 
-class _ArtifactConsumer:
+class ArtifactConsumer:
     """A recipe that declares runtime ``ArtifactInput`` mounts and resolves them.
 
     Shared by :class:`ModelRecipe` (weights) and :class:`EnvRecipe` (assets) so the
@@ -118,7 +118,7 @@ def cache_root() -> Path:
 
 
 @contextlib.contextmanager
-def enter_recipe_context(instance: _ArtifactConsumer) -> Iterator[None]:
+def enter_recipe_context(instance: ArtifactConsumer) -> Iterator[None]:
     """Bind ``instance`` as the current recipe for the module-level ``input_path``."""
     token = _CURRENT_RECIPE.set(instance)
     try:

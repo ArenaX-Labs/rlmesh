@@ -159,7 +159,7 @@ def test_env_sandbox_inputs_flow_to_mounts(tmp_path: Path) -> None:
     # 1.5b: an env recipe's local_dir inputs reach the sandbox as bind-mounts.
     from rlmesh.recipes import PyMake, Recipe
     from rlmesh.recipes._artifacts import local_dir_mounts
-    from rlmesh.sandbox._export import _resolve_recipe_source
+    from rlmesh.sandbox._export import resolve_recipe_source
 
     rec = Recipe(
         name="t/assets-sandbox",
@@ -167,6 +167,6 @@ def test_env_sandbox_inputs_flow_to_mounts(tmp_path: Path) -> None:
         make=PyMake(entrypoint="m:C._rlmesh_construct"),
         inputs=(ArtifactInput("assets", "/assets", local_dir=str(tmp_path)),),
     )
-    _, _, _, _, inputs = _resolve_recipe_source(rec)
+    _, _, _, _, inputs = resolve_recipe_source(rec)
     assert inputs == rec.inputs
     assert local_dir_mounts(inputs) == [(str(tmp_path), "/assets")]

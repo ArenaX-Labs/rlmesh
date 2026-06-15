@@ -19,7 +19,7 @@ def make_gym_environment(
 ) -> object:
     """Construct a single or vectorized Gymnasium/Gym environment."""
     env_kwargs = dict(kwargs)
-    make = _load_callable(gym_module, "make")
+    make = load_callable(gym_module, "make")
     if num_envs <= 1:
         return make(env_id, **env_kwargs)
 
@@ -64,7 +64,7 @@ def import_gym_modules() -> list[ModuleType]:
     return modules
 
 
-def _call_hf_make_env(
+def call_hf_make_env(
     make_env: Callable[..., object],
     kwargs: dict[str, object],
     *,
@@ -116,7 +116,7 @@ def _callable_keyword_parameters(
     return accepts_kwargs, keyword_names
 
 
-def _load_callable(module: object, name: str) -> Callable[..., object]:
+def load_callable(module: object, name: str) -> Callable[..., object]:
     value = getattr(module, name, None)
     module_name = getattr(module, "__name__", "<unknown>")
     if not callable(value):

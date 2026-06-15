@@ -65,7 +65,7 @@ def export(
     human alias alongside the always-applied content-addressed
     ``rlmesh-sandbox-<slug>:<hash>`` tag.
     """
-    from .session import _string_sequence
+    from .session import string_sequence
 
     if _is_model_source(source):
         from ._model import resolve_model_recipe
@@ -73,8 +73,8 @@ def export(
         recipe, context_root = resolve_model_recipe(source)
         display, recipe_json, provenance = recipe.name, recipe.to_json(), "installed"
     else:
-        display, recipe_json, provenance, context_root, _inputs = (
-            _resolve_recipe_source(source, {}, ())
+        display, recipe_json, provenance, context_root, _inputs = resolve_recipe_source(
+            source, {}, ()
         )
     info = cast(
         _SandboxBuildInfo,
@@ -83,7 +83,7 @@ def export(
             tag=tag,
             base_image=base_image,
             rlmesh_package=normalize_rlmesh_package(rlmesh_package),
-            packages=_string_sequence("packages", packages),
+            packages=string_sequence("packages", packages),
             trust_remote_code=trust_remote_code,
             allow_unpinned_hf=allow_unpinned_hf,
             recipe_json=recipe_json,
@@ -120,7 +120,7 @@ def _is_model_source(source: object) -> bool:
     return False
 
 
-def _resolve_recipe_source(
+def resolve_recipe_source(
     source: str | Recipe | type[EnvRecipe],
     gym_make_kwargs: Mapping[str, object] = _NO_MAKE_KWARGS,
     imports: Sequence[str] | None = None,

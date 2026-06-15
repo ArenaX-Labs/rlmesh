@@ -16,8 +16,8 @@ from .session import (
     SandboxInfo,
     SandboxSessionBase,
     StepInfo,
-    _missing_remote_env_cls,
-    _reject_single_env_vector_option,
+    missing_remote_env_cls,
+    reject_single_env_vector_option,
 )
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls: ClassVar[Callable[[str], object]] = _missing_remote_env_cls
+    _remote_env_cls: ClassVar[Callable[[str], object]] = missing_remote_env_cls
 
     def __init__(
         self,
@@ -72,7 +72,7 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         repo_root: str | PathLike[str] | None = None,
         **gym_make_kwargs: object,
     ) -> None:
-        _reject_single_env_vector_option(gym_make_kwargs)
+        reject_single_env_vector_option(gym_make_kwargs)
         super().__init__(
             source,
             base_image=base_image,
@@ -188,7 +188,7 @@ class SandboxVectorEnvBase(
         **env_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls: ClassVar[Callable[[str], object]] = _missing_remote_env_cls
+    _remote_env_cls: ClassVar[Callable[[str], object]] = missing_remote_env_cls
 
     def __init__(
         self,

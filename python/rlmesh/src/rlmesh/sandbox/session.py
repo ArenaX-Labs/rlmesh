@@ -23,7 +23,7 @@ from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from ..spaces import Space
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata
-from ._export import _resolve_recipe_source, normalize_rlmesh_package
+from ._export import normalize_rlmesh_package, resolve_recipe_source
 
 if TYPE_CHECKING:
     from ..recipes import EnvRecipe, Recipe
@@ -37,7 +37,7 @@ SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
 _NO_MAKE_KWARGS: Mapping[str, object] = MappingProxyType({})
 
 
-def _missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
+def missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
     raise NotImplementedError("sandbox remote env class must be configured")
 
 
@@ -201,7 +201,7 @@ class SandboxSessionBase(Generic[RemoteT]):
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls: ClassVar[Callable[..., object]] = _missing_remote_env_cls
+    _remote_env_cls: ClassVar[Callable[..., object]] = missing_remote_env_cls
     _source: str | Recipe | type[EnvRecipe]
     _closed: bool
     sandbox: SandboxInfo
@@ -355,7 +355,7 @@ def _start_sandbox(
     build_memory: str | None = None,
     gym_make_kwargs: Mapping[str, object],
 ) -> SandboxInfo:
-    display, recipe_json, provenance, context_root, inputs = _resolve_recipe_source(
+    display, recipe_json, provenance, context_root, inputs = resolve_recipe_source(
         source, gym_make_kwargs, imports
     )
     # Bind-mount host local_dir inputs at run time, mirroring SandboxModel; uri inputs
@@ -367,7 +367,7 @@ def _start_sandbox(
     # the gym/hf path stays byte-identical to before.
     recipe_kwargs: dict[str, str] = {}
     # On the recipe path the caller imports are merged into the document's
-    # requires.imports by _resolve_recipe_source (the bootstrap reads requires.imports,
+    # requires.imports by resolve_recipe_source (the bootstrap reads requires.imports,
     # not the imports= channel), so do not also forward them via _sandbox_start_env --
     # the merged document is their sole carrier. The gym/hf path keeps forwarding
     # imports exactly as before.
@@ -378,7 +378,7 @@ def _start_sandbox(
         if context_root is not None:
             recipe_kwargs["context_root"] = context_root
         # On the recipe path the make kwargs are baked into the document's
-        # make.kwargs by _resolve_recipe_source (the recipe bootstrap payload
+        # make.kwargs by resolve_recipe_source (the recipe bootstrap payload
         # carries make.kwargs, not kwargs_json), so do not also ship kwargs_json --
         # the document is their sole carrier. The gym/hf path below keeps shipping
         # kwargs_json exactly as before.
@@ -392,8 +392,8 @@ def _start_sandbox(
             display,
             base_image=base_image,
             rlmesh_package=rlmesh_package,
-            packages=_string_sequence("packages", packages),
-            imports=_string_sequence("imports", forwarded_imports),
+            packages=string_sequence("packages", packages),
+            imports=string_sequence("imports", forwarded_imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
@@ -412,7 +412,7 @@ def _start_sandbox(
     )
 
 
-def _string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
+def string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
     """Normalize a package/import sequence, rejecting a bare ``str``.
 
     A bare ``str`` satisfies ``Sequence[str]`` but iterating it yields single
@@ -452,7 +452,7 @@ def _resolve_rlmesh_package(
     return normalize_rlmesh_package(rlmesh_package)
 
 
-def _reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:
+def reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:
     for name in ("num_envs", "vectorization_mode"):
         if name in kwargs:
             raise TypeError(

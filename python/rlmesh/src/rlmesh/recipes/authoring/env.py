@@ -22,7 +22,7 @@ from __future__ import annotations
 import inspect
 from typing import TYPE_CHECKING, Any, ClassVar, TypeGuard
 
-from .._artifacts import _ArtifactConsumer, enter_recipe_context, merged_inputs
+from .._artifacts import ArtifactConsumer, enter_recipe_context, merged_inputs
 from .._schema import Build, PyMake, Recipe, RecipeValidationError, Setup
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ __all__ = ["EnvRecipe", "as_authored_recipe", "construct_authored", "is_env_reci
 _CONSTRUCT = "_rlmesh_construct"
 
 
-class EnvRecipe(_ArtifactConsumer):
+class EnvRecipe(ArtifactConsumer):
     """Base class for authoring an environment and its recipe together.
 
     Subclasses set the data attributes and define the factory::
@@ -114,8 +114,8 @@ class EnvRecipe(_ArtifactConsumer):
         applying them here too would double-tag.
         """
         instance = _instantiate(cls)
-        instance._rlmesh_inputs = merged_inputs(cls.inputs, ())
-        instance._rlmesh_in_container = True
+        instance._rlmesh_inputs = merged_inputs(cls.inputs, ())  # pyright: ignore[reportPrivateUsage]
+        instance._rlmesh_in_container = True  # pyright: ignore[reportPrivateUsage]
         instance.prepare()
         with enter_recipe_context(instance):
             return instance.make(**kwargs)
@@ -225,8 +225,8 @@ def construct_authored(cls: type[EnvRecipe], **kwargs: object) -> EnvLike:
 
     apply_setup(cls.setup)
     instance = _instantiate(cls)
-    instance._rlmesh_inputs = merged_inputs(cls.inputs, ())
-    instance._rlmesh_in_container = False
+    instance._rlmesh_inputs = merged_inputs(cls.inputs, ())  # pyright: ignore[reportPrivateUsage]
+    instance._rlmesh_in_container = False  # pyright: ignore[reportPrivateUsage]
     instance.prepare()
     with enter_recipe_context(instance):
         env = instance.make(**kwargs)

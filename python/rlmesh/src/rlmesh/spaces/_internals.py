@@ -13,6 +13,10 @@ from ..types import Value
 if TYPE_CHECKING:
     from ._base import SpaceBridge
 
+    # Provided at runtime by the module-level __getattr__ below (lazy to avoid a
+    # circular import with _base); declared here so importers see its type.
+    NATIVE_SPACE_BRIDGE: SpaceBridge[Value]
+
 EMPTY_SPACE_MAPPING: Mapping[str, object] = MappingProxyType({})
 
 
