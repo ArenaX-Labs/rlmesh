@@ -199,49 +199,32 @@ def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
     assert imported == ["fake_env_registration", "fake_env_module"]
 
 
-def test_load_env_entrypoint_rejects_malformed_entrypoint() -> None:
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
-
-    with pytest.raises(RecipeConstructionError, match="module:callable"):
-        load_env_entrypoint("fake_env_module")
-
-
-def test_load_env_entrypoint_rejects_missing_callable(
+@pytest.mark.parametrize(
+    ("attr", "entrypoint", "exc", "match"),
+    [
+        (None, "fake_env_module", "RecipeConstructionError", "module:callable"),
+        (None, "fake_env_module:missing", "RecipeConstructionError", "could not resolve"),
+        (object(), "fake_env_module:value", "RecipeConstructionError", "did not resolve to a callable"),
+        ((lambda: object()), "fake_env_module:make_env", "TypeError", "did not return an environment"),
+    ],
+)
+def test_load_env_entrypoint_rejects(
     monkeypatch: pytest.MonkeyPatch,
+    attr: object,
+    entrypoint: str,
+    exc: str,
+    match: str,
 ) -> None:
     from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
+    if attr is not None:
+        setattr(module, entrypoint.split(":", 1)[1], attr)
     monkeypatch.setitem(sys.modules, "fake_env_module", module)
 
-    with pytest.raises(RecipeConstructionError, match="could not resolve"):
-        load_env_entrypoint("fake_env_module:missing")
-
-
-def test_load_env_entrypoint_rejects_non_callable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
-
-    module = ModuleType("fake_env_module")
-    module.value = object()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fake_env_module", module)
-
-    with pytest.raises(RecipeConstructionError, match="did not resolve to a callable"):
-        load_env_entrypoint("fake_env_module:value")
-
-
-def test_load_env_entrypoint_rejects_non_env_return(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
-
-    module = ModuleType("fake_env_module")
-    module.make_env = lambda: object()  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "fake_env_module", module)
-
-    with pytest.raises(TypeError, match="did not return an environment"):
-        load_env_entrypoint("fake_env_module:make_env")
+    expected = TypeError if exc == "TypeError" else RecipeConstructionError
+    with pytest.raises(expected, match=match):
+        load_env_entrypoint(entrypoint)
 
 
 def test_normalize_hf_env_returns_direct_env() -> None:
@@ -293,26 +276,20 @@ def test_normalize_hf_env_selects_nested_task_by_string_key() -> None:
     )
 
 
-def test_normalize_hf_env_lists_ambiguous_suites() -> None:
+@pytest.mark.parametrize(
+    ("bundle", "suite", "match"),
+    [
+        ({"suite-a": object(), "suite-b": object()}, None, "suite-a, suite-b"),
+        ({"cartpole_suite": {0: object(), 1: object()}}, "cartpole_suite", "0, 1"),
+    ],
+)
+def test_normalize_hf_env_lists_ambiguous_choices(
+    bundle: object, suite: str | None, match: str
+) -> None:
     from rlmesh._bootstrap.env import normalize_hf_env
 
-    with pytest.raises(ValueError, match="suite-a, suite-b"):
-        normalize_hf_env(
-            {"suite-a": object(), "suite-b": object()},
-            suite=None,
-            task=None,
-        )
-
-
-def test_normalize_hf_env_lists_ambiguous_tasks() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
-
-    with pytest.raises(ValueError, match="0, 1"):
-        normalize_hf_env(
-            {"cartpole_suite": {0: object(), 1: object()}},
-            suite="cartpole_suite",
-            task=None,
-        )
+    with pytest.raises(ValueError, match=match):
+        normalize_hf_env(bundle, suite=suite, task=None)
 
 
 def test_load_hf_env_passes_task_from_bootstrap_spec(tmp_path) -> None:
