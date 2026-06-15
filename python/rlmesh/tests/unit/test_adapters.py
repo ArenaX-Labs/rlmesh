@@ -922,22 +922,14 @@ def test_metadata_keys_are_side_specific():
     assert adapt.ModelSpec.from_metadata(tags.to_metadata()) is None
 
 
-def test_custom_callable_spec_is_not_publishable():
+@pytest.mark.parametrize("method", ["to_dict", "to_metadata"])
+def test_custom_callable_spec_is_not_serializable(method: str):
     spec = adapt.ModelSpec(
         inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
         action=SMOLVLA.action,
     )
     with pytest.raises(ValueError, match="cannot be serialized"):
-        spec.to_metadata()
-
-
-def test_custom_callable_is_not_serializable():
-    spec = adapt.ModelSpec(
-        inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
-        action=SMOLVLA.action,
-    )
-    with pytest.raises(ValueError, match="cannot be serialized"):
-        spec.to_dict()
+        getattr(spec, method)()
 
 
 def test_custom_entrypoint_is_serializable():
