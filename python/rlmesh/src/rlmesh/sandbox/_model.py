@@ -73,15 +73,24 @@ class SandboxModel:
         build_memory: str | None = None,
     ) -> None:
         import json
+        from dataclasses import replace
 
         from .._rlmesh import sandbox_start_env
-        from ..recipes._artifacts import local_dir_mounts
+        from ..recipes._artifacts import local_dir_mounts, merged_inputs
 
         recipe, context_root = resolve_model_recipe(source)
         # A declared input with a host local_dir is bind-mounted at its container
         # target; uri-backed inputs still resolve in-container. artifacts= supplies
         # or overrides a local_dir by name (the run-time checkpoint).
         mounts = local_dir_mounts(recipe.inputs, artifacts)
+        # Reflect the overrides into the recipe the container reconstructs from, so
+        # an overridden input carries a local_dir and input_path() resolves to the
+        # bind-mounted target instead of re-fetching the original uri.
+        if artifacts:
+            recipe = replace(
+                recipe,
+                inputs=tuple(merged_inputs(recipe.inputs, artifacts).values()),
+            )
         info = sandbox_start_env(
             recipe.name,
             recipe_json=recipe.to_json(),

@@ -226,7 +226,11 @@ def construct_authored_model(
     """
     from .._construct import apply_setup
 
-    apply_setup(cls.setup)
+    # In a container the bootstrap has already applied the recipe's setup with the
+    # RLMESH_PARAMS_JSON member overrides merged in; re-applying the class's
+    # original setup here would clobber that selection back to the default.
+    if not in_container:
+        apply_setup(cls.setup)
     instance = instantiate(cls, param_hint=_PARAM_HINT)
     instance._rlmesh_inputs = merged_inputs(cls.inputs, artifacts)  # pyright: ignore[reportPrivateUsage]
     instance._rlmesh_in_container = in_container  # pyright: ignore[reportPrivateUsage]

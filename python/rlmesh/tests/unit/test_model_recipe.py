@@ -130,6 +130,19 @@ def _action_custom_spec() -> ModelSpec:
 _ActionCustomPolicy.spec = _action_custom_spec()
 
 
+class _WeightedPolicy(ModelRecipe):
+    """A model recipe with a uri-backed weight input, for artifact overrides."""
+
+    name = "policy/weighted"
+    spec = _SPEC
+    inputs = (ArtifactInput("weights", "/opt/weights", uri="hf://org/repo"),)
+
+    def load(self) -> None: ...
+
+    def predict(self, observation: Any) -> Any:
+        return observation
+
+
 class _Contract:
     def __init__(
         self, metadata: dict[str, Any] | None = None, num_envs: int = 1
@@ -245,6 +258,53 @@ def test_construct_authored_model_runs_load() -> None:
     assert policy._loaded is True
     out = policy.predict({"image": np.zeros((8, 8, 3), dtype="uint8")})
     assert out.tolist() == [0.5]
+
+
+def test_construct_authored_model_skips_setup_in_container(monkeypatch: Any) -> None:
+    # In-container, the bootstrap already applied the recipe's setup with the
+    # RLMESH_PARAMS_JSON member override merged in; construct must NOT re-apply the
+    # class default and clobber the selection. Locally it must apply it.
+    calls: list[object] = []
+    monkeypatch.setattr(
+        "rlmesh.recipes._construct.apply_setup", lambda setup: calls.append(setup)
+    )
+    construct_authored_model(TinyPolicy, in_container=True)
+    assert calls == []
+    construct_authored_model(TinyPolicy, in_container=False)
+    assert len(calls) == 1
+
+
+def test_sandbox_model_reflects_artifact_override_into_recipe(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    # A per-run artifact override must reach the container: SandboxModel reflects it
+    # into the recipe so input_path() resolves to the bind-mounted target instead of
+    # re-fetching the declared uri.
+    import json as _json
+
+    import rlmesh._rlmesh as native
+    from rlmesh.sandbox._model import SandboxModel
+
+    captured: dict[str, Any] = {}
+
+    def fake_start(*_args: Any, **kwargs: Any) -> dict[str, str]:
+        captured.update(kwargs)
+        return {"address": "0.0.0.0:1", "container_id": "c"}
+
+    monkeypatch.setattr(native, "sandbox_start_env", fake_start)
+    monkeypatch.setattr(native, "sandbox_stop_env", lambda *, container_id: None)
+
+    override = ArtifactInput("weights", "/ignored", local_dir=str(tmp_path))
+    with SandboxModel(_WeightedPolicy, artifacts=[override]):
+        pass
+
+    sent = _json.loads(captured["recipe_json"])
+    weights = next(i for i in sent["inputs"] if i["name"] == "weights")
+    assert weights["local_dir"] == str(tmp_path)  # the override is carried over
+    assert weights["target_path"] == "/opt/weights"  # the declared target is kept
+    assert weights.get("uri") is None  # the original uri is cleared (mount wins)
+    # The bind-mount maps the host dir onto that same declared target.
+    assert _json.loads(captured["mounts_json"]) == [[str(tmp_path), "/opt/weights"]]
 
 
 def test_input_path_unknown_raises() -> None:

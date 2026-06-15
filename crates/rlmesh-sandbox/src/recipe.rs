@@ -307,6 +307,12 @@ pub struct Recipe {
     /// The recipe kind ("env" or "model"); selects the container entrypoint.
     #[serde(default = "default_kind")]
     pub kind: String,
+    /// Forward-compat: capture any field this struct does not model (e.g. the
+    /// Python-side `inputs`/`runtime`) so a re-serialized recipe -- in particular
+    /// the baked `recipe.json` -- round-trips the full document instead of
+    /// silently dropping declarations the managed/export side needs.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 fn default_kind() -> String {
@@ -1217,6 +1223,25 @@ mod tests {
             .expect("parses");
         let derived = derive(&recipe).expect("derives");
         assert!(derived.contains(&format!("FROM {DEFAULT_BASE_IMAGE}")));
+    }
+
+    #[test]
+    fn recipe_preserves_unmodeled_fields_through_round_trip() {
+        // The Python schema emits `inputs`/`runtime`, which this struct does not
+        // model; they must survive parse -> serialize so the baked recipe.json
+        // (and any re-export) is not lossy for the managed/export side.
+        let json = r#"{"name":"a/b","make":{"kind":"py","entrypoint":"m:M._rlmesh_load"},"kind":"model","inputs":[{"name":"weights","target_path":"/w","uri":"hf://org/repo"}],"runtime":{"loop_mode":"chunk"}}"#;
+        let recipe = Recipe::from_json(json).expect("parses");
+        let value = serde_json::to_value(&recipe).expect("serializes");
+        let object = value.as_object().expect("object");
+        assert_eq!(
+            object["inputs"][0]["name"], "weights",
+            "inputs dropped: {value}"
+        );
+        assert_eq!(
+            object["runtime"]["loop_mode"], "chunk",
+            "runtime dropped: {value}"
+        );
     }
 
     #[test]
