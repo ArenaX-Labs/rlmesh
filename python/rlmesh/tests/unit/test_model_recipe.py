@@ -279,7 +279,7 @@ def test_model_server_run_returns_runresult_and_wires_lifecycle() -> None:
 def test_run_seeds_threaded_to_env() -> None:
     env = _LoopEnv(horizon=2)
     Model(LoopPolicy).run(env, seeds=[7])
-    assert env.last_seed == 7
+    assert env.last_seed == 7  # sole guard the seed reaches env.reset(seed=)
 
 
 # ── spec=None vs DELEGATED (loud failure, FINAL_API_SPEC §12 B9) ─────────────
@@ -513,29 +513,30 @@ def test_local_dir_mounts_override_supplies_local_dir(tmp_path: Any) -> None:
     ]
 
 
-def test_local_dir_mounts_missing_dir_fails_loud(tmp_path: Any) -> None:
+@pytest.mark.parametrize(
+    ("case", "exc", "match"),
+    [
+        ("missing_dir", FileNotFoundError, "local_dir is not a directory"),
+        ("unknown_override", ValueError, "matches no declared input"),
+        ("unsafe_target", ValueError, "absolute container path without"),
+    ],
+)
+def test_local_dir_mounts_loud_failures(
+    tmp_path: Any, case: str, exc: type[Exception], match: str
+) -> None:
     from rlmesh.recipes._artifacts import local_dir_mounts
     from rlmesh.recipes._schema import ArtifactInput
 
-    inputs = (ArtifactInput("weights", "/t", local_dir=str(tmp_path / "nope")),)
-    with pytest.raises(FileNotFoundError, match="local_dir is not a directory"):
-        local_dir_mounts(inputs)
+    here = str(tmp_path)
+    inputs: Any
+    overrides: Any = ()
+    if case == "missing_dir":
+        inputs = (ArtifactInput("weights", "/t", local_dir=str(tmp_path / "nope")),)
+    elif case == "unknown_override":
+        inputs = (ArtifactInput("weights", "/rlmesh/input/model/weights"),)
+        overrides = (ArtifactInput("typo", "/x", local_dir=here),)
+    else:  # unsafe_target
+        inputs = (ArtifactInput("weights", "/rlmesh/../etc", local_dir=here),)
 
-
-def test_local_dir_mounts_rejects_unknown_override(tmp_path: Any) -> None:
-    from rlmesh.recipes._artifacts import local_dir_mounts
-    from rlmesh.recipes._schema import ArtifactInput
-
-    inputs = (ArtifactInput("weights", "/rlmesh/input/model/weights"),)
-    stray = ArtifactInput("typo", "/x", local_dir=str(tmp_path))
-    with pytest.raises(ValueError, match="matches no declared input"):
-        local_dir_mounts(inputs, (stray,))
-
-
-def test_local_dir_mounts_rejects_unsafe_target(tmp_path: Any) -> None:
-    from rlmesh.recipes._artifacts import local_dir_mounts
-    from rlmesh.recipes._schema import ArtifactInput
-
-    inputs = (ArtifactInput("weights", "/rlmesh/../etc", local_dir=str(tmp_path)),)
-    with pytest.raises(ValueError, match="absolute container path without"):
-        local_dir_mounts(inputs)
+    with pytest.raises(exc, match=match):
+        local_dir_mounts(inputs, overrides)
