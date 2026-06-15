@@ -132,6 +132,16 @@ impl DockerBackend {
         // install layer.
         let bootstrap_json = render_bootstrap_json(spec)?;
         let gpu = spec.recipe.as_ref().is_some_and(|recipe| recipe.build.gpu);
+        // docker --mount parses comma-separated fields with no escape for a comma
+        // inside a value, so a host/target path containing one would silently
+        // corrupt the mount. Reject it loudly instead. ponytail: --mount CSV
+        // ceiling; move to a long-form mount API if comma paths ever need support.
+        for (host, target) in mounts {
+            anyhow::ensure!(
+                !host.contains(',') && !target.contains(','),
+                "artifact mount path must not contain a comma (docker --mount cannot escape it): host={host:?} target={target:?}"
+            );
+        }
         let output = Command::new("docker")
             .args(docker_run_args(
                 &container_name,

@@ -621,8 +621,6 @@ pub fn build_env(
     options: SandboxOptions,
     tag: Option<&str>,
 ) -> std::result::Result<BuildResult, SandboxError> {
-    // Mounts are runtime-only and irrelevant to a build; drop them so `resolve`
-    // ignores them (they are excluded from the build hash regardless).
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
     let docker = docker::DockerBackend;
     let artifact = docker.ensure_image(&spec).map_err(|err| {

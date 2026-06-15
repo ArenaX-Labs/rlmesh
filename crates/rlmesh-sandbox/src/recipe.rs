@@ -375,6 +375,11 @@ pub(crate) fn derive_dockerfile(
         }
         let mut out = body.trim_end().to_string();
         out.push_str("\n\n");
+        // Self-describing image: bake the recipe's runtime half so the entrypoint
+        // can load it with no inline payload, exactly as the structured path does.
+        // COPY creates the parent dir, so this is independent of the body's WORKDIR.
+        out.push_str(&format!("COPY recipe.json {WORKDIR}/recipe.json\n"));
+        out.push_str(&format!("ENV RLMESH_RECIPE_PATH={WORKDIR}/recipe.json\n\n"));
         out.push_str(&entrypoint_for(&recipe.kind));
         out.push('\n');
         return Ok(out);
@@ -1266,15 +1271,18 @@ mod tests {
     }
 
     #[test]
-    fn dockerfile_trapdoor_emits_verbatim_with_entrypoint() {
+    fn dockerfile_trapdoor_emits_verbatim_with_baked_recipe_and_entrypoint() {
         let recipe = Recipe::from_json(
             r#"{"name":"a","build":{"dockerfile":"FROM scratch\nRUN echo hi\n"}}"#,
         )
         .expect("parses");
         let derived = derive(&recipe).expect("derives");
+        // The verbatim trapdoor must still bake recipe.json + RLMESH_RECIPE_PATH so
+        // the exported image is self-describing on the no-inline-payload run path,
+        // exactly like the structured deriver.
         assert_eq!(
             derived,
-            "FROM scratch\nRUN echo hi\n\nENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n"
+            "FROM scratch\nRUN echo hi\n\nCOPY recipe.json /opt/rlmesh/recipe.json\nENV RLMESH_RECIPE_PATH=/opt/rlmesh/recipe.json\n\nENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n"
         );
     }
 
