@@ -127,7 +127,7 @@ pub use env::{
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
-    ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,
+    ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker, RemoteModel,
     RunLocalOptions, ServeModelOptions, encode_action,
 };
 pub use serve_options::ServeOptions;
