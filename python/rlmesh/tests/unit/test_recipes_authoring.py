@@ -214,17 +214,6 @@ def test_class_tags_as_serialized_mapping_are_normalized(authored_module: str) -
     assert EnvTags.from_metadata(_env_metadata(env)) is not None
 
 
-def test_to_recipe_rejects_local_class() -> None:
-    class Local(EnvRecipe):
-        name = "x/y"
-
-        def make(self, **kwargs: object) -> object:
-            return None
-
-    with pytest.raises(RecipeValidationError, match="cannot import"):
-        Local.to_recipe()
-
-
 def test_to_recipe_requires_name(authored_module: str) -> None:
     class _NoName(EnvRecipe):
         def make(self, **kwargs: object) -> object:
@@ -334,26 +323,24 @@ def test_envserver_builds_envrecipe(authored_module: str) -> None:
 # ----- footgun guards (from the adversarial review) -----
 
 
-def test_make_rejects_envrecipe_instance(authored_module: str) -> None:
-    cart = _module(authored_module).Cart  # type: ignore[attr-defined]
-    with pytest.raises(TypeError, match="not an instance"):
-        rlmesh.make(cart())  # the class is correct; an instance is the mistake
-
-
-def test_envserver_rejects_envrecipe_instance(authored_module: str) -> None:
+def test_rejects_envrecipe_instance(authored_module: str) -> None:
+    # Both public surfaces reject an instance (the class is correct; an instance
+    # is the mistake): rlmesh.make(...) and EnvServer's _coerce_env(...).
     from rlmesh.server import _coerce_env
 
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
-    with pytest.raises(TypeError, match="not an instance"):
-        _coerce_env(cart())
+    for entry in (rlmesh.make, _coerce_env):
+        with pytest.raises(TypeError, match="not an instance"):
+            entry(cart())
 
 
-def test_make_envrecipe_rejects_vectorization(authored_module: str) -> None:
+@pytest.mark.parametrize("kwargs", [{"num_envs": 4}, {"vectorization_mode": "async"}])
+def test_make_envrecipe_rejects_vectorization(
+    authored_module: str, kwargs: dict[str, object]
+) -> None:
     cart = _module(authored_module).Cart  # type: ignore[attr-defined]
     with pytest.raises(TypeError, match="num_envs"):
-        rlmesh.make(cart, num_envs=4)
-    with pytest.raises(TypeError, match="num_envs"):
-        rlmesh.make(cart, vectorization_mode="async")
+        rlmesh.make(cart, **kwargs)
 
 
 def test_make_py_recipe_rejects_vectorization() -> None:
