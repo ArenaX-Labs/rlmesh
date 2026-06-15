@@ -1,9 +1,9 @@
-# Environment recipes
+# Environment Recipes
 
 Recipes are experimental in this beta. A recipe is an inert, JSON-serializable description of how to
 construct an environment, decoupled from where it runs. You can author a recipe for an environment
 you cannot run locally (an IsaacSim recipe written on a Mac, say). The recipe only references your
-construction code by name, so the code runs later, in a container. See {doc}`../api/recipes` for the
+construction code by name, so the code runs later, in a container. See {doc}`../api/env-recipes` for the
 full class and method contract.
 
 For authoring a model, see {doc}`model-recipes`.
@@ -125,7 +125,7 @@ Validate without importing anything with `LiberoObject.check()`.
 ```
 
 State set in `prepare()` is read in `make()` through instance attributes. The recipe instance is then
-discarded, so it cannot own anything the running env needs. See {doc}`../api/recipes` for the full
+discarded, so it cannot own anything the running env needs. See {doc}`../api/env-recipes` for the full
 `prepare()`/`make()` lifecycle and registry-introspection functions.
 
 ```{warning}

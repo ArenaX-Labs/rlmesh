@@ -38,7 +38,7 @@ Use that boundary to:
 - run a model against an environment without merging their dependency stacks;
 - run multiple environment endpoints at the same time;
 - reuse existing Gymnasium registrations, wrappers, and environment objects with small changes;
-- name an environment's construction as a {doc}`recipe <user-guide/recipes>` and rebuild it the same
+- name an environment's construction as a {doc}`recipe <user-guide/env-recipes>` and rebuild it the same
   way locally or in a sandbox.
 
 RLMesh has two surfaces, split by protocol. The framework is this repository. It speaks the gRPC
@@ -65,10 +65,17 @@ examples
 user-guide/serving-environments
 user-guide/remote-clients
 user-guide/backends
-user-guide/adapters
 user-guide/sandbox
-user-guide/recipes
+```
+
+```{toctree}
+:hidden:
+:caption: Recipes & Adapters
+:maxdepth: 2
+
+user-guide/env-recipes
 user-guide/model-recipes
+user-guide/adapters
 ```
 
 ```{toctree}

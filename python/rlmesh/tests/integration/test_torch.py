@@ -127,6 +127,22 @@ def test_torch_as_tensor_shares_memory_via_dlpack() -> None:
     assert copied.data_ptr() != view.data_ptr()
 
 
+def test_torch_bridge_decode_is_owned_writable_copy() -> None:
+    """predict() receives an owned, writable tensor: an in-place op (the common
+    VLA normalize idiom) must not write through into the shared wire buffer."""
+    pytest.importorskip("torch")
+    import torch
+
+    from rlmesh import Tensor
+    from rlmesh.torch import _torch_bridge
+
+    tensor = Tensor(bytes(8), [2], "float32")
+    decoded = _torch_bridge.decode(tensor)
+    assert isinstance(decoded, torch.Tensor)
+    decoded.add_(1.0)  # in-place; must not reach the wire bytes
+    assert tensor.tobytes() == bytes(8)
+
+
 def test_torch_export_works_without_numpy() -> None:
     """from_tensor must not require numpy (regression for the .numpy() path)."""
     import subprocess

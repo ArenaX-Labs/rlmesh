@@ -98,9 +98,10 @@ metadata between them and the wire.
   `double`-based bounds. The legacy scalar-list wire encoding still stores integers in a signed
   64-bit slot, so `uint64` values above 2^63 wrap on that path (the raw byte encoding used by modern
   clients is exact).
-- Mutation: zero-copy decoded views (`from_dlpack`, the buffer protocol) are read-only. NumPy
-  enforces this; Torch does not (see the Torch backend page). JAX arrays are immutable by
-  construction. `numpy.asarray` returns a writable copy, not a view.
+- Mutation: in-place preprocessing on a decoded observation never corrupts the wire buffer. NumPy
+  and Torch decode to owned, writable copies; JAX decodes to an immutable array. The explicit
+  zero-copy views (`from_dlpack`, the buffer protocol, `torch.as_tensor(copy=False)`) are read-only;
+  NumPy enforces this, Torch does not (see the Torch backend page).
 
 ## Workflow Editions
 

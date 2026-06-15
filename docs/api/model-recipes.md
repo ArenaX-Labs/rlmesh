@@ -1,4 +1,4 @@
-# Model recipes
+# Model Recipes
 
 ```{note}
 `rlmesh.models` is **experimental** in this beta: it may change or disappear before the stable
@@ -7,14 +7,16 @@ release. Pin versions; see {doc}`/compatibility`.
 
 A model recipe is one class that is both the policy and an inert, JSON-serializable construction
 document. `ModelRecipe.to_recipe()` projects the class to a `kind='model'` `Recipe` without
-importing the model's dependencies. It is the model-side sibling of {doc}`recipes`. See
+importing the model's dependencies. It is the model-side sibling of {doc}`env-recipes`. See
 {doc}`../user-guide/model-recipes` for a task-oriented guide.
 
 ## Authoring: `ModelRecipe`
 
 Subclass `ModelRecipe`: set `name`/`build`/`spec`/`inputs`, then define `load()` and `predict()`,
-with optional `reset()`/`close()`. Exported at the top level as `rlmesh.ModelRecipe`. Every module
-defining a subclass must begin with `from __future__ import annotations`.
+with optional `reset()`/`close()`. Exported at the top level as `rlmesh.ModelRecipe`. Start the
+module with `from __future__ import annotations`. It keeps method annotations as strings instead of
+evaluating them at import time, so you can annotate a method with a type that you import inside
+`load()`, such as `torch.Tensor`, without hitting a `NameError`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.recipes.ModelRecipe
@@ -91,5 +93,5 @@ backend as `rlmesh.numpy.SandboxModel`.
 ## Errors
 
 Model construction and resolution raise the shared recipe and adapter errors:
-{exc}`~rlmesh.recipes.RecipeValidationError` (see {doc}`recipes`) and
+{exc}`~rlmesh.recipes.RecipeValidationError` (see {doc}`env-recipes`) and
 {exc}`~rlmesh.adapters.AdapterResolutionError` (see {doc}`adapters`).

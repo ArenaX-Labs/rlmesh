@@ -52,14 +52,14 @@ def _serve_options() -> ServeOptions | None:
     stay deployment knobs (flat env, default off) rather than recipe properties.
     """
     allow_remote_shutdown = _env_flag(
-        "RLMESH_ALLOW_REMOTE_SHUTDOWN", "RLMESH_MODEL_ALLOW_REMOTE_SHUTDOWN"
+        "RLMESH_ALLOW_REMOTE_SHUTDOWN",
+        "RLMESH_MODEL_ALLOW_REMOTE_SHUTDOWN",
+        "RLMESH_MODEL_WAIT_FOR_TERMINATION",
     )
     idle = _env_float(
         "RLMESH_IDLE_SHUTDOWN_SECONDS", "RLMESH_MODEL_IDLE_SHUTDOWN_SECONDS"
     )
-    drain = _env_float(
-        "RLMESH_WAIT_FOR_TERMINATION", "RLMESH_MODEL_WAIT_FOR_TERMINATION"
-    )
+    drain = _env_float("RLMESH_WAIT_FOR_TERMINATION")
     if not allow_remote_shutdown and idle is None and drain is None:
         return None
     from rlmesh import ServeOptions
@@ -131,7 +131,9 @@ def main(
             )
             return 0
 
-        address = _env_alias("RLMESH_ADDRESS", "RLMESH_MODEL_ADDRESS")
+        address = _env_alias(
+            "RLMESH_ADDRESS", "RLMESH_MODEL_ADDRESS", "RLMESH_MODEL_ENDPOINT_ADDRESS"
+        )
         if not address:
             port = (
                 _env_alias("RLMESH_PORT", "RLMESH_MODEL_PORT", "RLMESH_ENV_PORT")

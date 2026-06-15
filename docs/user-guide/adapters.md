@@ -1,10 +1,13 @@
-# IO Adapters
+# Adapters
 
 `rlmesh.adapters` derives a model-to-environment IO adapter at runtime from two
 declarations: an environment tags its observation and action spaces, a model specifies the
 payload it ingests, and {func}`~rlmesh.adapters.resolve` matches them by role. It removes most of the
 per-(model, environment) adapter code you would otherwise write by hand; cases the declarative specs
 do not cover fall back to an escape hatch (see Known limitations).
+
+Adapters connect the two halves of the recipe family: an {doc}`environment recipe <env-recipes>`
+publishes tags, a {doc}`model recipe <model-recipes>` declares a spec, and `resolve` bridges them.
 
 ```{note}
 `rlmesh.adapters` is **experimental** in this beta: it may change or disappear before the

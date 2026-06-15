@@ -180,10 +180,21 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
+def _decode_owned(tensor: Tensor) -> TorchTensor:
+    """Owned, writable decode for the value-bridge (predict/step) path.
+
+    The public ``as_tensor`` still shares memory by default; the decode path
+    copies so an in-place op in ``predict`` (e.g. ``img.div_(255)``) cannot
+    write through into the shared, read-only wire buffer. Opt back into the
+    zero-copy view with ``as_tensor(tensor, copy=False)``.
+    """
+    return as_tensor(tensor, copy=True)
+
+
 _torch_bridge: ValueBridge = FrameworkBridge(
     name="torch",
     ensure_available=ensure_available,
-    decode_leaf=as_tensor,
+    decode_leaf=_decode_owned,
     encode_leaf=_encode_leaf,
 )
 _torch_space_bridge: SpaceBridge[TorchValue] = cast(

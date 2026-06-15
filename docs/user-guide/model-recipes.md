@@ -1,4 +1,4 @@
-# Model recipes
+# Model Recipes
 
 ```{note}
 `rlmesh.models` is **experimental** in this beta: it may change or disappear before the stable
@@ -7,12 +7,12 @@ release. Pin versions; see {doc}`/compatibility`.
 
 A model recipe is one class that is both the policy and its construction document. Subclass
 `rlmesh.ModelRecipe`, set the data attributes, and define `load()`/`predict()`. It is the model-side
-sibling of {doc}`recipes`; see {doc}`../api/model-recipes` for the full API.
+sibling of {doc}`env-recipes`; see {doc}`../api/model-recipes` for the full API.
 
 ## Author a `ModelRecipe`
 
 ```python
-from __future__ import annotations  # required: method annotations are read at class definition
+from __future__ import annotations  # keeps method annotations as strings; see the note below
 
 import rlmesh
 from rlmesh.recipes import ArtifactInput, Build, PipInstall, hf_load
@@ -36,6 +36,11 @@ class SmolVLA(rlmesh.ModelRecipe):
 `load()` builds the model into `self`; the instance is the policy for the whole eval. Put every
 heavy import inside `load()`. `predict()` maps one observation to one action. `reset()` (per
 episode) and `close()` are optional. `build` shares the phase-1 vocabulary with `EnvRecipe`.
+
+Your heavy imports live inside `load()`, so the types named in a method's annotations aren't in
+scope when the class is defined. Add `from __future__ import annotations` at the top of the module
+to keep annotations as strings instead of evaluating them. A signature like `def predict(self, obs)
+-> torch.Tensor:` then defines fine, even though `torch` is imported later.
 
 ## Run it
 

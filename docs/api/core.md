@@ -30,4 +30,4 @@ The detailed pages below describe the shared behavior:
 - {doc}`remote-envs`
 - {doc}`models`
 - {doc}`contracts`
-- {doc}`recipes`
+- {doc}`env-recipes`
