@@ -59,10 +59,11 @@ Each run starts by printing `adapter.describe()` — the exact transformations t
 that pairing, e.g. for `xvla` on `libero`:
 
 - `agentview_image`/`robot0_eye_in_hand_image` are resized to 256x256,
-- `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor`, and the second-arm proprio components
-  resolve to zero fill because this env declares no `_2` roles (the spec marks them `optional`),
-- the 20-dim EE6D action is sliced, `rot6d_rowmajor -> axis_angle` converted, and the second-arm dims
-  are dropped because the env does not consume them.
+- `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor`, and the second-arm proprio
+  components resolve to zero fill because this env declares no `_2` roles (the spec marks them
+  `optional`),
+- the 20-dim EE6D action is sliced, `rot6d_rowmajor -> axis_angle` converted, and the second-arm
+  dims are dropped because the env does not consume them.
 
 X-VLA's spec never hardcodes zero padding for dims 11-20: it declares them as second-arm components,
 and the padding/dropping above is _derived_ from the env at resolve time. A bimanual env declaring

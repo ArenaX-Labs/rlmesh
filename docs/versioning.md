@@ -30,8 +30,8 @@ promises.
 
 RLMesh publishes its Rust crates to crates.io so the Python extension can build. Most of them are
 internal implementation detail with no stability promise: their Rust API may change at any time and
-there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands —
-the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is an explicit near-term
+there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands
+— the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is an explicit near-term
 goal, planned but not yet committed; see {doc}`compatibility` for the roadmap. Until it lands, build
 on the Python package.
 

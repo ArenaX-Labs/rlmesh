@@ -13,8 +13,8 @@ cover fall back to an escape hatch (see Known limitations).
 The two sides of an eval connect through it: an environment publishes tags, a model declares a spec,
 and `resolve` bridges them.
 
-It is opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
-backend (`pip install "rlmesh[numpy]"`).
+It is opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy backend
+(`pip install "rlmesh[numpy]"`).
 
 ## Tag the environment
 
@@ -208,8 +208,8 @@ the resolve-time invariants.
 
 ## Known limitations
 
-The system targets the manipulation/VLA case: RGB cameras, proprioception, and an instruction. A
-few things are out of scope for now and fall back to an escape hatch.
+The system targets the manipulation/VLA case: RGB cameras, proprioception, and an instruction. A few
+things are out of scope for now and fall back to an escape hatch.
 
 | Area                                   | Status                                                                                                                                                                 |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

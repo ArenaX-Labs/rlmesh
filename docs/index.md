@@ -10,9 +10,9 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](https://github.com/ArenaX-Labs/rlmesh#license)
 
 RLMesh connects models to environments that need not share a process, a dependency set, or a
-machine. The Python SDK serves Gymnasium-style environments and lets evaluators call `reset`, `step`,
-`render`, and `close` over local or remote transports. Rust crates provide the lower-level runtime,
-protocol, and packaging layers.
+machine. The Python SDK serves Gymnasium-style environments and lets evaluators call `reset`,
+`step`, `render`, and `close` over local or remote transports. Rust crates provide the lower-level
+runtime, protocol, and packaging layers.
 
 RLMesh is released and pre-1.0 (`0.x`): the Python package is the supported surface, and a minor
 release may change a stable API with a migration note. See {doc}`compatibility` and
