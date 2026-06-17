@@ -41,7 +41,9 @@ _IMAGE_SCHEME = "image://"
 # Only these are retried while the container boots: a refused/unavailable
 # connection (ConnectionError/OSError) or a connect timeout. Deterministic
 # config errors -- a missing/invalid contract space (RuntimeError/TypeError,
-# raised before the client even dials) -- are NOT here, so they fail fast.
+# raised before the client even dials) -- are NOT here, so they fail fast. Each
+# retry first re-checks the container is still running, so a dial error against
+# an already-exited container also fails fast (with logs) rather than retrying.
 _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
@@ -65,9 +67,11 @@ def _parse_image_source(source: object) -> str | None:
 def _reap_orphans() -> None:
     """Best-effort sweep of containers orphaned by a prior hard kill.
 
-    Calls the native ``sandbox_reap_orphans`` reaper if the extension exposes it;
-    a no-op until the native side ships it. Failures are swallowed -- reaping is a
-    best-effort hygiene step, never a reason to fail a serve.
+    Delegates to the native ``sandbox_reap_orphans`` reaper, which sweeps any
+    rlmesh-owned container (env or model) whose owner process is gone. The
+    getattr guard degrades to a no-op against a version-skewed native extension
+    that predates the reaper; failures are swallowed -- reaping is hygiene, never
+    a reason to fail a serve.
     """
     import rlmesh._rlmesh as _rlmesh
 
@@ -168,7 +172,20 @@ class SandboxModel:
             )
         container_id = proc.stdout.strip()
         self._container_id = container_id
-        self._address = f"127.0.0.1:{self._resolve_published_port(container_id)}"
+        try:
+            port = self._resolve_published_port(container_id)
+        except BaseException:
+            # Port discovery failed after the container started: stop it before
+            # re-raising so a retry doesn't overwrite _container_id and leak it.
+            from .._rlmesh import sandbox_stop_env
+
+            try:
+                sandbox_stop_env(container_id=container_id)
+            except Exception:
+                pass
+            self._container_id = None
+            raise
+        self._address = f"127.0.0.1:{port}"
         self._closed = False
         return self
 
@@ -246,7 +263,10 @@ class SandboxModel:
             client = self._dial_with_retry(
                 PyModelClient, contract, connect_timeout_seconds
             )
-            return session_for_client(client, env, owner=self)
+            # Only hand ownership (and so container teardown on session close) to
+            # a session that actually started the container. A caller-managed
+            # handle (serve()/context manager) must survive its sessions closing.
+            return session_for_client(client, env, owner=self if started_here else None)
         except BaseException:
             if started_here:
                 self.shutdown()

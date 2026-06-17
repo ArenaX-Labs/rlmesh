@@ -180,6 +180,8 @@ def _run_episode(
         else:
             payload = obs
         if instruction is not None and isinstance(payload, dict):
+            # Inject into a shallow copy; don't mutate the obs the env returned.
+            payload = cast("dict[str, Any]", payload).copy()
             for key in text_keys:
                 payload[key] = instruction
         action = predict(payload)

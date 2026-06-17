@@ -206,17 +206,22 @@ impl RemoteModel {
         };
 
         let response = self.inner.predict(request).await.map_err(Error::from)?;
-        self.step += 1;
-        self.pending_reset = false;
 
         let action_bytes = value_bytes(response.action.as_ref())
             .map_err(|error| Error::Internal(error.to_string()))?;
         let mut actions = decode_batched_partial_values(action_bytes.as_ref(), &self.action_space)
             .map_err(|error| Error::Internal(error.to_string()))?;
-        actions
+        let action = actions
             .drain(..)
             .next()
-            .ok_or_else(|| Error::Internal("predict response missing action".into()))
+            .ok_or_else(|| Error::Internal("predict response missing action".into()))?;
+
+        // Advance only once a fully-decoded action is in hand, so a malformed
+        // (action-less) response leaves step/pending_reset intact for a retry,
+        // exactly like an RPC-level error does.
+        self.step += 1;
+        self.pending_reset = false;
+        Ok(action)
     }
 
     /// Close this client's route. Does not shut down the server or drain other
