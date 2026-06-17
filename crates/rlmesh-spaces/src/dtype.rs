@@ -110,6 +110,32 @@ impl DType {
             _ => None,
         }
     }
+
+    /// Whether this is an integer dtype (signed or unsigned). `Bool` and the
+    /// float dtypes are not integers.
+    #[must_use]
+    pub const fn is_integer(self) -> bool {
+        matches!(
+            self,
+            DType::Uint8
+                | DType::Int8
+                | DType::Int16
+                | DType::Uint16
+                | DType::Int32
+                | DType::Uint32
+                | DType::Int64
+                | DType::Uint64
+        )
+    }
+
+    /// Whether this is a floating-point dtype.
+    #[must_use]
+    pub const fn is_float(self) -> bool {
+        matches!(
+            self,
+            DType::Float16 | DType::Float32 | DType::Float64 | DType::Bfloat16
+        )
+    }
 }
 
 impl std::fmt::Display for DType {

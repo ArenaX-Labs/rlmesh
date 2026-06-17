@@ -1,5 +1,5 @@
 use crate::errors::{SpaceError, err_space};
-use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
+use crate::spaces::{Conformance, SpaceKind, SpaceSpec, SpaceValue};
 use crate::{DType, TextSpec};
 
 #[macro_export]
@@ -88,46 +88,46 @@ pub(crate) fn validate_text_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
     Ok(())
 }
 
-pub(crate) fn contains_text(
-    space: &SpaceSpec,
-    value: &SpaceValue,
-    path: &str,
-) -> Result<(), SpaceError> {
+pub(crate) fn conform_text(space: &SpaceSpec, value: &SpaceValue, path: &str) -> Conformance {
     let text = match value {
         SpaceValue::Text(s) => s,
-        _ => return err_space!(path, "expected Text value"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "expected Text value")),
     };
 
     let t = match &space.spec {
         Some(SpaceKind::Text(t)) => t,
-        _ => return err_space!(path, "space is not Text"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "space is not Text")),
     };
 
-    // Check length in characters (Gymnasium Text counts characters, not UTF-8 bytes)
+    // Length and charset are range deviations the serving side may tolerate.
+    // Length is counted in characters (Gymnasium Text counts characters, not
+    // UTF-8 bytes).
     let len = text.chars().count() as i64;
     if len < t.min_length {
-        return err_space!(
+        return Conformance::Range(SpaceError::invalid(
             path,
-            format!("text length {} below minimum {}", len, t.min_length)
-        );
+            format!("text length {len} below minimum {}", t.min_length),
+        ));
     }
     if len > t.max_length {
-        return err_space!(
+        return Conformance::Range(SpaceError::invalid(
             path,
-            format!("text length {} exceeds maximum {}", len, t.max_length)
-        );
+            format!("text length {len} exceeds maximum {}", t.max_length),
+        ));
     }
 
-    // Check charset if specified
     if !t.charset.is_empty() {
         for c in text.chars() {
             if !t.charset.contains(c) {
-                return err_space!(path, format!("character '{}' not in charset", c));
+                return Conformance::Range(SpaceError::invalid(
+                    path,
+                    format!("character '{c}' not in charset"),
+                ));
             }
         }
     }
 
-    Ok(())
+    Conformance::Ok
 }
 
 #[cfg(test)]

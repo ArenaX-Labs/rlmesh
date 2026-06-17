@@ -34,9 +34,8 @@ conversion.
 
 ## Fundamental Spaces
 
-`Box` and `Discrete` are stable. `MultiBinary`, `MultiDiscrete`, and `Text` are experimental in this
-beta and may change before the stable release; see {doc}`/compatibility` and the per-space labels in
-{doc}`/gymnasium`.
+`Box` and `Discrete` are stable. `MultiBinary`, `MultiDiscrete`, and `Text` are experimental and may
+change; see {doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.spaces.Box
@@ -75,8 +74,8 @@ beta and may change before the stable release; see {doc}`/compatibility` and the
 
 ## Composite Spaces
 
-`Dict` is stable. `Tuple` is experimental in this beta and may change before the stable release; see
-{doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
+`Dict` is stable. `Tuple` is experimental and may change; see {doc}`/compatibility` and the
+per-space labels in {doc}`/gymnasium`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.spaces.Tuple

@@ -10,7 +10,6 @@ uv = "0.11"
 zig = "0.16"
 node = "24"
 oxfmt = "0.53"
-git-cliff = "2.13"
 "cargo:maturin" = "1.13"
 "cargo:cargo-zigbuild" = "0.22"
 "cargo:cargo-deny" = "0.19"
@@ -188,24 +187,6 @@ run = "uv run --only-group docs sphinx-autobuild -b dirhtml docs site"
 description = "Build Rust library docs with warnings denied"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --lib"
-
-# ──────────────────────────────────────────────
-# Changelog (generated from conventional commits; see cliff.toml)
-# ──────────────────────────────────────────────
-[tasks."changelog:unreleased"]
-description = "Preview unreleased changelog entries from commit messages"
-run = "git cliff rust/v0.1.0-beta.1..HEAD --unreleased"
-
-[tasks."changelog:build"]
-description = "Regenerate CHANGELOG.md, including an Unreleased section"
-run = ["git cliff rust/v0.1.0-beta.1..HEAD -o CHANGELOG.md", "oxfmt --write CHANGELOG.md"]
-
-[tasks."changelog:release"]
-description = "Regenerate CHANGELOG.md with unreleased entries under the given tag (e.g. v0.1.0-beta.3)"
-run = [
-  'git cliff rust/v0.1.0-beta.1..HEAD --tag {{arg(name="version")}} -o CHANGELOG.md',
-  "oxfmt --write CHANGELOG.md",
-]
 
 # ──────────────────────────────────────────────
 # Native Python stubs
@@ -403,7 +384,7 @@ description = "Validate release artifact license files before publishing"
 run = "python scripts/check_release_artifact_licenses.py"
 
 [tasks."release:check"]
-description = "Run the local beta release gate without publishing"
+description = "Run the local release gate without publishing"
 run = [
   "mise run check",
   "mise run test",
@@ -414,6 +395,21 @@ run = [
   "mise run test:system",
   "mise run test:system:heavy",
 ]
+
+# ──────────────────────────────────────────────
+# Versioning + release driver
+# ──────────────────────────────────────────────
+[tasks.bump]
+description = "Bump the version across every manifest (X.Y.Z or X.Y.Z-beta.N)"
+run = 'python scripts/bump_version.py {{arg(name="version")}}'
+
+[tasks."changelog:draft"]
+description = "Append draft Unreleased changelog bullets from commits since the last release tag"
+run = "python scripts/changelog_draft.py"
+
+[tasks.release]
+description = "Release driver: bump, gate, tag (pass args after --, e.g. -- 0.2.0 --dry-run)"
+run = 'python scripts/release.py {{arg(name="version", var=true)}}'
 
 # Per-target wheel builds live in the parametrized file task
 # .mise/tasks/build/python/wheel (task: build:python:wheel <target>).

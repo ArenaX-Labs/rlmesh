@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh"
-description = "Rust SDK for model-environment evaluation workflows"
+description = "Internal RLMesh crate (unstable Rust API): Rust bindings for model-environment evaluation; build on the rlmesh Python package."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

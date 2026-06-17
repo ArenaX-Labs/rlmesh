@@ -1,6 +1,6 @@
 use crate::errors::{SpaceError, err_space};
 use crate::spaces::{
-    SpaceKind, SpaceSpec, SpaceValue, contains_at, validate_space, validate_space_at,
+    Conformance, SpaceKind, SpaceSpec, SpaceValue, conform_at, validate_space, validate_space_at,
 };
 use crate::{DType, TupleSpec};
 
@@ -66,37 +66,45 @@ pub(crate) fn validate_tuple_at(spec: &SpaceSpec, path: &str) -> Result<(), Spac
     Ok(())
 }
 
-pub(crate) fn contains_tuple(
-    space: &SpaceSpec,
-    value: &SpaceValue,
-    path: &str,
-) -> Result<(), SpaceError> {
+pub(crate) fn conform_tuple(space: &SpaceSpec, value: &SpaceValue, path: &str) -> Conformance {
     let tuple_val = match value {
         SpaceValue::Tuple(t) => t,
-        _ => return err_space!(path, "expected Tuple value"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "expected Tuple value")),
     };
 
     let t = match &space.spec {
         Some(SpaceKind::Tuple(t)) => t,
-        _ => return err_space!(path, "space is not Tuple"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "space is not Tuple")),
     };
 
     if tuple_val.len() != t.spaces.len() {
-        return err_space!(
+        return Conformance::Structural(SpaceError::invalid(
             path,
             format!(
                 "tuple length mismatch: expected {}, got {}",
                 t.spaces.len(),
                 tuple_val.len()
-            )
-        );
+            ),
+        ));
     }
 
+    let mut range: Option<SpaceError> = None;
     for (i, (sub_space, sub_val)) in t.spaces.iter().zip(tuple_val.iter()).enumerate() {
-        contains_at(sub_space, sub_val, &format!("{path}[{i}]"))?;
+        match conform_at(sub_space, sub_val, &format!("{path}[{i}]")) {
+            Conformance::Structural(err) => return Conformance::Structural(err),
+            Conformance::Range(err) => {
+                if range.is_none() {
+                    range = Some(err);
+                }
+            }
+            Conformance::Ok => {}
+        }
     }
 
-    Ok(())
+    match range {
+        Some(err) => Conformance::Range(err),
+        None => Conformance::Ok,
+    }
 }
 
 #[cfg(test)]

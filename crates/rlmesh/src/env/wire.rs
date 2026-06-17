@@ -16,18 +16,76 @@ use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, ResetResult, StepRequest,
 };
 use crate::spaces;
+use std::collections::{BTreeMap, HashSet};
+use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
+
+/// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
+const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
+
+/// One value-conformance warning surfaced in the info map.
+struct ConformanceWarning {
+    kind: String,
+    path: String,
+    detail: String,
+}
+
+/// Resolve the serving-side validation policy from `RLMESH_VALIDATION_POLICY`
+/// (`strict`/`off`; default and any other value are `warn`).
+fn validation_policy_from_env() -> ValidationPolicy {
+    match std::env::var("RLMESH_VALIDATION_POLICY") {
+        Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "strict" => ValidationPolicy::Strict,
+            "off" => ValidationPolicy::Off,
+            _ => ValidationPolicy::Warn,
+        },
+        Err(_) => ValidationPolicy::Warn,
+    }
+}
+
+/// Merge conformance warnings into an info map under the reserved key.
+fn inject_conformance_warnings(
+    info: &mut Option<spaces::MetaMap>,
+    warnings: Vec<ConformanceWarning>,
+) {
+    if warnings.is_empty() {
+        return;
+    }
+    let entries = warnings
+        .into_iter()
+        .map(|warning| {
+            spaces::MetaValue::Map(BTreeMap::from([
+                ("kind".to_string(), spaces::MetaValue::String(warning.kind)),
+                ("path".to_string(), spaces::MetaValue::String(warning.path)),
+                (
+                    "detail".to_string(),
+                    spaces::MetaValue::String(warning.detail),
+                ),
+            ]))
+        })
+        .collect();
+    info.get_or_insert_with(BTreeMap::new)
+        .insert(CONFORMANCE_WARNING_KEY.to_string(), spaces::MetaValue::List(entries));
+}
 
 /// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
 #[doc(hidden)]
 pub struct WireEnvAdapter<E> {
     inner: E,
+    /// Serving-side validation policy for observation/action range deviations.
+    policy: ValidationPolicy,
+    /// Conformance-warning dedup: `(kind, path)` already reported this session.
+    warned: HashSet<(String, String)>,
 }
 
 impl<E> WireEnvAdapter<E> {
     /// Wrap an [`Env`] for the wire layer.
     #[doc(hidden)]
     pub fn new(inner: E) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            policy: validation_policy_from_env(),
+            warned: HashSet::new(),
+        }
     }
 }
 
@@ -35,10 +93,16 @@ impl<E: Env> WireEnvAdapter<E> {
     /// Encode a public [`ResetResult`] into the proto reset response, validating
     /// the observation batch width. Shared by `reset` and `reset_subset`.
     fn encode_reset_response(
-        &self,
-        result: ResetResult,
+        &mut self,
+        mut result: ResetResult,
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
         validate_count(&result.observations, self.inner.num_envs(), "observations")?;
+
+        let mut warnings = Vec::new();
+        for observation in &result.observations {
+            self.enforce(observation, "observation", &mut warnings)?;
+        }
+        inject_conformance_warnings(&mut result.info, warnings);
 
         let observations =
             encode_batched_partial_values(&result.observations, self.inner.observation_space())
@@ -49,6 +113,45 @@ impl<E: Env> WireEnvAdapter<E> {
             infos: result.info.as_ref().map(meta_map_to_proto),
             episode_ids: result.episode_ids,
         })
+    }
+
+    /// Validate one observation or action against its declared space under the
+    /// active policy: structural deviations always reject, range deviations
+    /// follow the policy (default `warn`, recorded once per `(kind, path)`).
+    fn enforce(
+        &mut self,
+        value: &spaces::SpaceValue,
+        kind: &str,
+        warnings: &mut Vec<ConformanceWarning>,
+    ) -> std::result::Result<(), EnvError> {
+        let space = if kind == "action" {
+            self.inner.action_space()
+        } else {
+            self.inner.observation_space()
+        };
+        let outcome = self.policy.check(space, value);
+        match outcome {
+            PolicyOutcome::Accept => Ok(()),
+            PolicyOutcome::Reject(err) => {
+                let code = if kind == "action" {
+                    EnvErrorCode::InvalidAction
+                } else {
+                    EnvErrorCode::Internal
+                };
+                Err(EnvError::new(code, err.to_string()))
+            }
+            PolicyOutcome::Warn(err) => {
+                let path = err.path().to_string();
+                if self.warned.insert((kind.to_string(), path.clone())) {
+                    warnings.push(ConformanceWarning {
+                        kind: kind.to_string(),
+                        path,
+                        detail: err.to_string(),
+                    });
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -121,7 +224,12 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
                 .map_err(protocol_error_to_env_error)?;
         validate_action_count(&actions, self.inner.num_envs())?;
 
-        let result = self
+        let mut warnings = Vec::new();
+        for action in &actions {
+            self.enforce(action, "action", &mut warnings)?;
+        }
+
+        let mut result = self
             .inner
             .step(StepRequest {
                 actions,
@@ -135,6 +243,11 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
         validate_count(&result.terminated, env_count, "terminated values")?;
         validate_count(&result.truncated, env_count, "truncated values")?;
         validate_count(&result.rewards, env_count, "rewards values")?;
+
+        for observation in &result.observations {
+            self.enforce(observation, "observation", &mut warnings)?;
+        }
+        inject_conformance_warnings(&mut result.info, warnings);
 
         let observations =
             encode_batched_partial_values(&result.observations, self.inner.observation_space())

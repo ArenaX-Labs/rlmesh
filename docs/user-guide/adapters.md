@@ -1,8 +1,7 @@
 # Adapters
 
 ```{note}
-`rlmesh.adapters` is **experimental** in this beta: it may change or disappear before the stable
-release. Pin versions; see {doc}`/compatibility`.
+`rlmesh.adapters` is **experimental**: it may change or disappear. Pin versions; see {doc}`/compatibility`.
 ```
 
 `rlmesh.adapters` derives a model-to-environment IO adapter at runtime from two declarations: an
@@ -15,7 +14,7 @@ Adapters connect the two sides of an eval: an environment publishes tags, a mode
 and `resolve` bridges them.
 
 It is fully opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
-backend (`pip install --pre "rlmesh[numpy]"`).
+backend (`pip install "rlmesh[numpy]"`).
 
 ## Tag the environment
 

@@ -10,5 +10,5 @@ pub use fundamental::{
 };
 pub use space::validate_space;
 pub(crate) use space::validate_space_at;
-pub(crate) use value::contains_at;
-pub use value::{SpaceValue, contains};
+pub(crate) use value::conform_at;
+pub use value::{Conformance, PolicyOutcome, SpaceValue, ValidationPolicy, conform, contains};

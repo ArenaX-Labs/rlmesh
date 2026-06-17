@@ -61,4 +61,4 @@ against this checkout instead, pass `rlmesh_package="local"`, which installs a w
 `python/rlmesh/dist`. Build that wheel first with `mise run build:python:docker`, which produces the
 manylinux wheel the container can load. `mise run build:python` builds a host-platform wheel that
 will not load in the container when the host glibc is newer than the base image. To test an exact
-artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0b3`.
+artifact or published version, pass a wheel path or a pip spec such as `rlmesh==0.1.0rc1`.

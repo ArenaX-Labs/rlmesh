@@ -1,8 +1,7 @@
 # Adapters
 
 ```{note}
-`rlmesh.adapters` is **experimental** in this beta: it may change or disappear before the stable
-release. Pin versions; see {doc}`/compatibility`.
+`rlmesh.adapters` is **experimental**: it may change or disappear. Pin versions; see {doc}`/compatibility`.
 ```
 
 `rlmesh.adapters` derives the preprocessing and postprocessing between an environment and a model
@@ -18,7 +17,7 @@ emits. {func}`~rlmesh.adapters.resolve` matches the two by role and produces an
 Install it with the NumPy backend:
 
 ```bash
-pip install --pre "rlmesh[numpy]"
+pip install "rlmesh[numpy]"
 ```
 
 ```{note}

@@ -250,7 +250,15 @@ impl PySpace {
         py: Python<'_>,
         #[gen_stub(override_type(type_repr = "object", imports = ()))] value: &Bound<'_, PyAny>,
     ) -> bool {
-        py_any_to_space_value_with_backend(py, value, &self.spec, ValueBackend::Native).is_ok()
+        // `contains` is the strict membership predicate: a full member, where both
+        // structural and range conformance hold. Encoding rejects structural
+        // deviations; the strict `contains` check then also rejects range
+        // deviations (out-of-bounds, charset, length) that the transport path
+        // tolerates under its validation policy.
+        match py_any_to_space_value_with_backend(py, value, &self.spec, ValueBackend::Native) {
+            Ok(encoded) => rlmesh_spaces::contains(&self.spec, &encoded).is_ok(),
+            Err(_) => false,
+        }
     }
 
     fn __repr__(&self) -> String {

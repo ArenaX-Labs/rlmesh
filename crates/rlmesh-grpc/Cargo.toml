@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-grpc"
-description = "gRPC clients, servers, and wire helpers for RLMesh model-environment protocols"
+description = "Internal RLMesh crate (unstable Rust API): gRPC clients, servers, and wire helpers."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

@@ -1,6 +1,6 @@
 # Torch
 
-The Torch backend is experimental in this beta.
+The Torch backend is experimental.
 
 ## What This Backend Changes
 
@@ -11,7 +11,7 @@ sample Torch-compatible values.
 Install it with:
 
 ```bash
-pip install --pre "rlmesh[torch]"
+pip install "rlmesh[torch]"
 ```
 
 | Concrete API                    | Shared behavior                        | Backend-specific behavior                               |

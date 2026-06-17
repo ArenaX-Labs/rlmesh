@@ -115,10 +115,10 @@ The output is written to `site/`.
 
 ## Release Gate
 
-Before publishing a beta release from a local machine, run:
+Before publishing a release from a local machine, run:
 
 ```bash
 mise run release:check
 ```
 
-Publishing stays manual for this beta. See {doc}`release` for the maintainer release process.
+Publishing stays manual. See {doc}`release` for the maintainer release process.

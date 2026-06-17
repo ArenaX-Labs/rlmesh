@@ -5,7 +5,7 @@ Serve a Gymnasium environment in one process. Connect to it from another process
 ## Install
 
 ```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
+pip install "rlmesh[gymnasium,numpy]"
 ```
 
 ## Server

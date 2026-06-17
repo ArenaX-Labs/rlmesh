@@ -26,5 +26,5 @@ The files:
 To copy outside the repo, install the published package:
 
 ```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
+pip install "rlmesh[gymnasium,numpy]"
 ```

@@ -1,164 +1,103 @@
----
-orphan: true
----
-
 # Release Process
 
-This beta is published manually from a local machine.
+RLMesh is published manually from a maintainer's machine. SemVer is the source of truth
+(`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The
+version contract is in {doc}`versioning`.
 
-## Preflight
+The mechanical steps are scripted. The two things that stay yours are the changelog prose and the
+version number. The two irreversible actions — pushing the tag and publishing to the registries —
+are never run without you asking.
 
-```bash
-git status --short
-mise run release:check
-```
-
-Review the compatibility policy before changing stable APIs, protocol fields, or package versions:
-{doc}`compatibility`.
-
-Confirm the version spellings:
-
-- Rust crates: `0.1.0-beta.3`
-- Python package: `0.1.0b3`
-
-Confirm the release policy manifest:
+## One-command flow
 
 ```bash
-python scripts/check_rlmesh_policy.py
+# Curate the changelog first (see below), then:
+python scripts/release.py X.Y.Z --dry-run   # bump + full gate; no commit, tag, or publish
+python scripts/release.py X.Y.Z             # also commit and tag vX.Y.Z (does NOT push)
+git push origin HEAD --tags                 # you push, after reviewing
+python scripts/release.py X.Y.Z --publish   # crates.io + PyPI + GitHub Release
 ```
 
-Regenerate the changelog with the unreleased entries placed under the release tag, then review and
-commit it (entries come from conventional commit messages; see `cliff.toml`):
+`release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the
+changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
+
+## Prerequisites
+
+- crates.io publish access to the eight `rlmesh*` crates and PyPI access to `rlmesh`.
+- `gh` authenticated for the GitHub Release.
+- Publish tokens available (for example via `fnox`): `CARGO_REGISTRY_TOKEN`, `PYPI_TOKEN`.
+- A build host that can produce uploadable wheels (see Wheels).
+
+## Curate the changelog
+
+The changelog is hand-written. `git-cliff` is gone.
+
+1. `mise run changelog:draft` appends draft bullets under `## [Unreleased]` in `CHANGELOG.md`, one
+   per user-facing commit since the last `v*` tag, each marked `<!-- DRAFT -->`.
+2. Rewrite each bullet in your own words, drop internal-only changes, and group them under the Keep
+   a Changelog sections. **Delete every `<!-- DRAFT -->` marker** — the release driver refuses to
+   ship while any remain.
+3. Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above
+   it, and update the compare links at the bottom.
+
+A breaking change to a stable symbol gets a `### Breaking` entry with a before/after migration note
+(see {doc}`versioning`).
+
+## Bump the version
+
+`release.py` runs this for you, or run it alone:
 
 ```bash
-mise run changelog:release v0.1.0-beta.3
+mise run bump X.Y.Z
 ```
 
-Confirm protobuf compatibility against the checked-in public protocol baseline:
+It rewrites every manifest and install snippet, runs `cargo update` and `uv lock`, then
+`policy:check` — the backstop that fails loudly if any version-bearing spot was missed. A non-beta
+release must also seal any provisional workflow edition in `rlmesh.toml` (`status = "sealed"`,
+`sealed_in = "X.Y.Z"`). That stays a manual decision; see {doc}`editions/index`.
+
+## Tag scheme
+
+One unscoped annotated tag per release: `vX.Y.Z`. The legacy `rust/v*` and `python/v*` tags are
+history — do not add more.
+
+## Wheels
+
+RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are host-specific:
+
+- macOS (`mise run release:python:wheels:macos`) builds the full macOS, Linux, and Windows matrix.
+- Linux (`mise run release:python:wheels:linux`) builds the Linux and Windows subset.
+
+`python scripts/check_python_wheels.py python/rlmesh/dist` validates ABI/platform tags and payload
+contents. Release validation rejects plain `linux_*` tags; uploadable Linux wheels use `manylinux`
+or `musllinux`. Confirm license payloads with `mise run release:artifacts:licenses` before
+uploading.
+
+## Publish order
+
+`release.py --publish` publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`,
+`rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then
+uploads the wheels with `maturin`, then cuts the GitHub Release. `cargo publish` waits for each
+crate to appear in the index before the next one builds, so the ordered run is safe to leave
+unattended.
+
+## GitHub Releases
+
+Every release gets a GitHub Release built from its tag. Pre-releases (`-beta.N`, `-rc.N`) are marked
+`--prerelease` so they stay out of "Latest"; a final `X.Y.Z` release becomes Latest. `release.py`
+sets this automatically from the version string.
+
+## Post-publish smoke
 
 ```bash
-mise run protocol:breaking
+python -m venv /tmp/rlmesh-smoke
+/tmp/rlmesh-smoke/bin/python -m pip install rlmesh
+/tmp/rlmesh-smoke/bin/python -c "import rlmesh; print(rlmesh.__version__)"
 ```
 
-This is also included in `mise run check` and therefore in `mise run release:check`.
+## Recovery
 
-Confirm package and project access:
-
-- The PyPI `rlmesh` project is available to the publishing account.
-- The crates.io names in the workspace are available to the publishing account.
-- `rlmesh.dev` and `docs.rlmesh.dev` resolve to the intended launch pages.
-
-If using `fnox`, configure the local keychain values referenced by `fnox.toml` before publishing:
-
-- `CARGO_REGISTRY_TOKEN`
-- `PYPI_TOKEN`
-
-## Rust Crates
-
-Core feature releases should move the public Rust crates together. Patch releases may be
-artifact-specific when the fix is isolated, but republish any top-level crate that needs to depend
-on a fixed lower-level crate.
-
-Verify packaging without uploading:
-
-```bash
-mise run release:rust:package
-```
-
-After Rust packages and Python wheels have both been built, confirm the publish artifacts contain
-the required license payloads:
-
-```bash
-mise run release:artifacts:licenses
-```
-
-Before the first crates.io publish, workspace crates that depend on other RLMesh crates cannot be
-verified by `cargo package` as a full workspace because Cargo rewrites path dependencies to registry
-dependencies during publish verification. The release task fully verifies independent crates and
-then assembles all workspace tarballs with `--no-verify`; `mise run check` and `mise run test`
-remain the local compilation and behavior gates.
-
-Publish crates in dependency order:
-
-```bash
-cargo publish -p rlmesh-proto
-cargo publish -p rlmesh-spaces
-cargo publish -p rlmesh-adapters
-cargo publish -p rlmesh-cli
-cargo publish -p rlmesh-runtime
-cargo publish -p rlmesh-grpc
-cargo publish -p rlmesh-sandbox
-cargo publish -p rlmesh
-```
-
-## Python Wheels
-
-Python is a core RLMesh artifact. Python-only fixes may produce a Python patch release without
-forcing no-op publishes for unrelated bindings, but the package family in `rlmesh.toml` must stay
-unchanged. Protocol generation or workflow edition changes need an explicit compatibility review;
-see {doc}`editions/index` for when a change mints a new edition. A stable (non-beta) release must
-seal any provisional edition in `rlmesh.toml` before it ships.
-
-RLMesh publishes Python wheels only. Do not build or upload a Python source distribution; native
-builds are covered by the explicit wheel matrix below.
-
-Local smoke builds may produce plain `linux_*` platform tags. Those wheels work for
-installed-artifact validation but cannot be uploaded to PyPI. Release validation intentionally
-rejects plain `linux_*` tags; expected Linux release wheels use uploadable tags such as `manylinux`
-or `musllinux`.
-
-The wheel checker validates both ABI/platform tags and payload contents. Wheels must contain only
-runtime package files, type information, the native extension, metadata, licenses, notices, and
-SBOMs; tests, Rust source, caches, and build outputs are rejected.
-
-Build release wheels:
-
-```bash
-mise run release:python:wheels
-```
-
-Wheel builds are host-specific:
-
-- macOS: `mise run release:python:wheels:macos` builds the full macOS, Linux, and Windows matrix.
-  Xcode Command Line Tools are required.
-- Linux: `mise run release:python:wheels:linux` builds the Linux and Windows subset.
-
-The generic `release:python:wheels` task dispatches to the current host's supported wheel set. Linux
-cannot cross-link macOS frameworks, and Windows is not a supported development or release-build
-host. Release wheel tasks remove stale `rlmesh-*.whl` files first so local smoke wheels with plain
-`linux_*` tags cannot be uploaded accidentally.
-
-For focused builds, use `build:python:wheel <target>` with one of `local`, `macos-arm`, `macos-x86`,
-`linux-x86`, `linux-arm`, `linux-musl-x86`, `linux-musl-arm`, or `windows`. The
-`build:python:docker` task builds the linux-glibc cp310/cp311-abi3 pair consumed by container images
-and skips the build when matching wheels already exist. Use `--force` to rebuild or
-`--arch x86_64|aarch64` to override the architecture.
-
-Inspect the wheel matrix:
-
-```bash
-python scripts/check_python_wheels.py python/rlmesh/dist
-```
-
-Confirm the generated wheels and crate archives include the expected license files before
-publishing:
-
-```bash
-mise run release:artifacts:licenses
-```
-
-Upload only after inspecting `python/rlmesh/dist`:
-
-```bash
-maturin upload python/rlmesh/dist/*
-```
-
-## Post-Publish Smoke
-
-Install from public indexes in a clean environment:
-
-```bash
-python -m venv /tmp/rlmesh-release-smoke
-/tmp/rlmesh-release-smoke/bin/python -m pip install --pre rlmesh
-/tmp/rlmesh-release-smoke/bin/python -c "import rlmesh; print(rlmesh.__version__)"
-```
+- A bad crates.io or PyPI publish cannot be deleted, only yanked. Yank it and ship a fixed patch
+  release.
+- If the seal gate blocks the release, the edition is still `provisional`: seal it (above), or keep
+  the release a pre-release.

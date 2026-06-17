@@ -3028,7 +3028,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "rlmesh"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "async-trait",
  "rlmesh-grpc",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "rlmesh-spaces",
  "serde",
@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-cli"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3068,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-grpc"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-proto"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "prost",
  "prost-types",
@@ -3103,7 +3103,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-python"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "async-trait",
  "half",
@@ -3129,7 +3129,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-runtime"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "async-trait",
  "prost",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-sandbox"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "anyhow",
  "rlmesh-grpc",
@@ -3160,7 +3160,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-spaces"
-version = "0.1.0-beta.3"
+version = "0.1.0-rc.1"
 dependencies = [
  "half",
  "proptest",

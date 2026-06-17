@@ -14,7 +14,7 @@ wrappers can stay in place.
 
 RLMesh supports these Gymnasium spaces. The **Stability** column matches the API surface policy in
 `api_metadata.json`: `Stable` spaces follow the compatibility guarantees in {doc}`compatibility`,
-while `Experimental` spaces may still change before the stable release.
+while `Experimental` spaces may still change.
 
 ### Fundamental Spaces
 
@@ -37,13 +37,25 @@ space used Gymnasium's default alphanumeric charset.
 | `Tuple`         | `Tuple`      | Experimental | Supported when child spaces are. |
 | `Dict`          | `Dict`       | Stable       | Supported when child spaces are. |
 
-Not supported in this beta:
+Not supported:
 
 - `Graph`
 - `Sequence`
 - `OneOf`
 
 Unsupported spaces fail directly instead of silently changing the environment contract.
+
+## Value Conformance
+
+RLMesh checks values against their declared spaces a little differently from Gymnasium's
+`passive_env_checker`:
+
+- An out-of-bounds `Box` value, or an out-of-charset/length `Text` value, is **delivered with a
+  warning** (under the `rlmesh.conformance.warning` info key) rather than passed through silently,
+  and `NaN` is always rejected. See {doc}`compatibility` for the `strict`/`off` policy knob.
+- A value is **coerced to its declared dtype** before transport, whereas Gymnasium warns but
+  forwards the original dtype. A `float64` observation for a `float32` space is delivered as
+  `float32`.
 
 ## Conversion Helpers
 

@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-cli"
-description = "Command-line entrypoint for RLMesh evaluation workflows"
+description = "Internal RLMesh crate (unstable Rust API): the rlmesh command-line binary."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

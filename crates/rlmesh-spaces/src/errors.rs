@@ -7,6 +7,25 @@ pub enum SpaceError {
     Invalid { path: String, msg: String },
 }
 
+impl SpaceError {
+    /// Build an [`SpaceError::Invalid`] at `path` with `msg`.
+    pub(crate) fn invalid(path: impl Into<String>, msg: impl Into<String>) -> Self {
+        SpaceError::Invalid {
+            path: path.into(),
+            msg: msg.into(),
+        }
+    }
+
+    /// The value path this error is anchored at (advisory; used to dedup
+    /// conformance warnings per path).
+    #[must_use]
+    pub fn path(&self) -> &str {
+        match self {
+            SpaceError::Invalid { path, .. } => path,
+        }
+    }
+}
+
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EnvRuntimeError {

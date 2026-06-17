@@ -4,23 +4,23 @@ RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-sty
 connects clients over local or remote transports, and adapts values for plain Python, NumPy, and
 Torch users.
 
-> Beta: pin versions for active projects. APIs and package structure may change before the stable
-> release.
+> Pre-1.0 (`0.x`): the stable API may change in a minor release, with a migration note, so pin a
+> minor range for active projects.
 
 ## Installation
 
-Install the published beta from PyPI:
+Install from PyPI:
 
 ```bash
-pip install --pre rlmesh
+pip install rlmesh
 ```
 
 Install optional adapters as needed:
 
 ```bash
-pip install --pre "rlmesh[numpy]"
-pip install --pre "rlmesh[gymnasium]"
-pip install --pre "rlmesh[torch]"
+pip install "rlmesh[numpy]"
+pip install "rlmesh[gymnasium]"
+pip install "rlmesh[torch]"
 ```
 
 ## Quickstart
@@ -28,7 +28,7 @@ pip install --pre "rlmesh[torch]"
 Install RLMesh with Gymnasium support and the NumPy client adapter:
 
 ```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
+pip install "rlmesh[gymnasium,numpy]"
 ```
 
 In one process, serve any Gymnasium-compatible environment:

@@ -2,65 +2,92 @@ use crate::BoxBounds;
 use crate::dtype::DType;
 use crate::errors::{SpaceError, err_space};
 use crate::scalar::{Scalar, decode_scalars};
-use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
+use crate::spaces::{Conformance, SpaceKind, SpaceSpec, SpaceValue};
 
 /// A per-element low/high bound. `None` means "unbounded on this side" so
 /// integer bounds never have to invent a sentinel that collides with a real
 /// value (`i64::MIN`/`u64::MAX` are legitimate bounds).
 type Bound = (Option<Scalar>, Option<Scalar>);
 
-pub(crate) fn contains_box(
-    space: &SpaceSpec,
-    value: &SpaceValue,
-    path: &str,
-) -> Result<(), SpaceError> {
+pub(crate) fn conform_box(space: &SpaceSpec, value: &SpaceValue, path: &str) -> Conformance {
     let tensor = match value {
         SpaceValue::Box(tensor) => tensor,
-        _ => return err_space!(path, "expected Box value"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "expected Box value")),
     };
 
     if tensor.shape() != space.shape.as_slice() {
-        return err_space!(
+        return Conformance::Structural(SpaceError::invalid(
             path,
             format!(
                 "shape mismatch: expected {:?}, got {:?}",
                 space.shape,
                 tensor.shape()
-            )
-        );
+            ),
+        ));
     }
 
     if tensor.dtype() != space.dtype {
-        return err_space!(
+        return Conformance::Structural(SpaceError::invalid(
             path,
             format!(
                 "dtype mismatch: expected {:?}, got {:?}",
                 space.dtype,
                 tensor.dtype()
-            )
-        );
+            ),
+        ));
     }
 
     let dtype = tensor.dtype();
     if dtype == DType::Unspecified {
         // Tensor constructors reject Unspecified, so this cannot occur.
-        return err_space!(path, "Box value dtype is unspecified");
+        return Conformance::Structural(SpaceError::invalid(
+            path,
+            "Box value dtype is unspecified",
+        ));
     }
 
     let numel = tensor.numel();
-    let bounds = box_bounds(space, numel, dtype, path)?;
+    let bounds = match box_bounds(space, numel, dtype, path) {
+        Ok(bounds) => bounds,
+        Err(err) => return Conformance::Structural(err),
+    };
 
     let data = tensor.to_contiguous_bytes();
-    let values = decode_scalars(&data, dtype).map_err(|err| SpaceError::Invalid {
-        path: path.to_string(),
-        msg: format!("cannot decode Box value: {err}"),
-    })?;
+    let values = match decode_scalars(&data, dtype) {
+        Ok(values) => values,
+        Err(err) => {
+            return Conformance::Structural(SpaceError::invalid(
+                path,
+                format!("cannot decode Box value: {err}"),
+            ));
+        }
+    };
 
+    // One scan. A NaN is never a member of any space, so it is a structural
+    // rejection that outranks an out-of-bounds element found earlier in the
+    // tensor; an out-of-bounds value is only a range deviation the serving side
+    // may tolerate. Keep scanning every element for NaN even after a range
+    // deviation is recorded so a later NaN can still take priority.
+    let mut range: Option<SpaceError> = None;
     for (index, value) in values.iter().enumerate() {
-        let (low, high) = &bounds[index];
-        validate_box_scalar(*value, low.as_ref(), high.as_ref(), dtype, path, index)?;
+        if let Scalar::Float(v) = value
+            && v.is_nan()
+        {
+            return Conformance::Structural(SpaceError::invalid(
+                path,
+                format!("Box value at element {index} is NaN"),
+            ));
+        }
+        if range.is_none() {
+            let (low, high) = &bounds[index];
+            range = box_scalar_range(*value, low.as_ref(), high.as_ref(), dtype, path, index);
+        }
     }
-    Ok(())
+
+    match range {
+        Some(err) => Conformance::Range(err),
+        None => Conformance::Ok,
+    }
 }
 
 /// Resolve per-element bounds for every dtype, comparing in the dtype's native
@@ -151,48 +178,41 @@ fn decode_typed_bounds(
     Ok(scalars)
 }
 
-fn validate_box_scalar(
+/// Out-of-bounds check for a single in-domain (non-NaN) scalar, returning a range
+/// deviation if it falls outside its bounds. NaN is handled by the caller as a
+/// structural rejection, so it never reaches here.
+fn box_scalar_range(
     value: Scalar,
     low: Option<&Scalar>,
     high: Option<&Scalar>,
     dtype: DType,
     path: &str,
     index: usize,
-) -> Result<(), SpaceError> {
-    if let Scalar::Float(v) = value
-        && v.is_nan()
-    {
-        // A NaN value is out of bounds unless both sides are unbounded.
-        if low.is_some() || high.is_some() {
-            return err_space!(path, format!("Box value at element {index} is NaN"));
-        }
-        return Ok(());
-    }
-
+) -> Option<SpaceError> {
     if let Some(low) = low
         && super::space::scalar_gt(*low, value, dtype)
     {
-        return err_space!(
+        return Some(SpaceError::invalid(
             path,
-            format!("Box value at element {index} out of bounds: below low bound")
-        );
+            format!("Box value at element {index} out of bounds: below low bound"),
+        ));
     }
     if let Some(high) = high
         && super::space::scalar_gt(value, *high, dtype)
     {
-        return err_space!(
+        return Some(SpaceError::invalid(
             path,
-            format!("Box value at element {index} out of bounds: above high bound")
-        );
+            format!("Box value at element {index} out of bounds: above high bound"),
+        ));
     }
-    Ok(())
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spaces::contains;
     use crate::spaces::fundamental::BoxSpaceBuilder;
+    use crate::spaces::{Conformance, conform, contains};
     use crate::tensor::{Storage, Tensor};
     use half::bf16;
 
@@ -235,6 +255,48 @@ mod tests {
             SpaceValue::Box(Tensor::from_vec(data, vec![2], DType::Float32).expect("valid tensor"));
 
         assert!(contains(&space, &invalid).is_err());
+    }
+
+    #[test]
+    fn test_box_conform_classifies_deviations() {
+        let space = box_space(0.0, 1.0, vec![2], DType::Float32);
+
+        // Out of bounds is a Range deviation the serving side may tolerate.
+        let oob: Vec<u8> = [0.5f32, 2.5].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let oob = SpaceValue::Box(Tensor::from_vec(oob, vec![2], DType::Float32).expect("tensor"));
+        assert!(matches!(conform(&space, &oob), Conformance::Range(_)));
+
+        // NaN is Structural even when another element is also out of bounds, so a
+        // NaN is never masked by a range deviation found earlier in the scan.
+        let nan_and_oob: Vec<u8> = [2.5f32, f32::NAN]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let nan_and_oob = SpaceValue::Box(
+            Tensor::from_vec(nan_and_oob, vec![2], DType::Float32).expect("tensor"),
+        );
+        assert!(matches!(
+            conform(&space, &nan_and_oob),
+            Conformance::Structural(_)
+        ));
+    }
+
+    #[test]
+    fn test_box_contains_rejects_nan_even_when_unbounded() {
+        // An unbounded Box accepts any finite value but never NaN: NaN is not a
+        // member of any space, so it is rejected regardless of bounds.
+        let space = box_space(f64::NEG_INFINITY, f64::INFINITY, vec![2], DType::Float32);
+        let data: Vec<u8> = [f32::NAN, 0.5]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let value =
+            SpaceValue::Box(Tensor::from_vec(data, vec![2], DType::Float32).expect("tensor"));
+        assert!(contains(&space, &value).is_err());
+        assert!(matches!(
+            conform(&space, &value),
+            Conformance::Structural(_)
+        ));
     }
 
     #[test]

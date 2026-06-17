@@ -10,12 +10,14 @@ the `rlmesh` Python package.
 
 ```toml
 [dependencies]
-rlmesh-sandbox = "0.1.0-beta.3"
+rlmesh-sandbox = "0.1.0-rc.1"
 ```
 
 ## Status
 
-Sandboxing is a supported public capability, but the direct Rust API is still unstable during beta.
+Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
+for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
+the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

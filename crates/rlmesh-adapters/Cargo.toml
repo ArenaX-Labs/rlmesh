@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-adapters"
-description = "Declarative env-model IO spec resolution core for RLMesh adapters"
+description = "Internal RLMesh crate (unstable Rust API): declarative env-model IO spec resolution."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

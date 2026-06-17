@@ -1,6 +1,6 @@
 # JAX
 
-The JAX backend is experimental in this beta.
+The JAX backend is experimental.
 
 ## What This Backend Changes
 
@@ -11,7 +11,7 @@ JAX-compatible values.
 Install it with:
 
 ```bash
-pip install --pre "rlmesh[jax]"
+pip install "rlmesh[jax]"
 ```
 
 | Concrete API                  | Shared behavior                        | Backend-specific behavior                             |

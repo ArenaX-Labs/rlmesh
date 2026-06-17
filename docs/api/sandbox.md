@@ -1,7 +1,7 @@
 # Sandbox
 
-Sandbox APIs are experimental in this beta. A sandbox session owns a Docker-backed environment
-process, connects a remote client to it, and stops the container when the session closes. See
+Sandbox APIs are experimental. A sandbox session owns a Docker-backed environment process, connects
+a remote client to it, and stops the container when the session closes. See
 {doc}`../examples/sandboxes` for runnable examples.
 
 ## Session Info

@@ -9,13 +9,14 @@ on the full SDK. It is also re-exported by the higher-level `rlmesh` crate.
 
 ```toml
 [dependencies]
-rlmesh-spaces = "0.1.0-beta.3"
+rlmesh-spaces = "0.1.0-rc.1"
 ```
 
 ## Status
 
-This supporting crate is part of the supported beta API surface. Types may still be refined before
-the stable release.
+Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
+for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
+the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

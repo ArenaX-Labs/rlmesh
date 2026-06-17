@@ -14,8 +14,14 @@ set, or one machine. The Python SDK serves Gymnasium-style environments and lets
 `reset`, `step`, `render`, and `close` over local or remote transports. Rust crates provide the
 lower-level runtime, protocol, and packaging layers.
 
-RLMesh is in beta. Pin versions for active projects; APIs and package structure may still change
-before a stable release.
+RLMesh is released and pre-1.0 (`0.x`): the Python package is the supported surface, and a minor
+release may change a stable API with a migration note. See {doc}`compatibility` and
+{doc}`versioning`; pin a minor range for active projects.
+
+```{note}
+**0.1.0-rc.1 is a release candidate for 0.1.0.** The `2026.06` workflow edition is still provisional
+and seals at the final 0.1.0; the stability statements in these docs describe that upcoming release.
+```
 
 ## Try First
 
@@ -84,4 +90,14 @@ user-guide/adapters
 api/index
 compatibility
 editions/index
+```
+
+```{toctree}
+:hidden:
+:caption: Releases
+:maxdepth: 1
+
+changelog
+versioning
+release
 ```

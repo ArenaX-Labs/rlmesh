@@ -11,7 +11,7 @@ sample NumPy-compatible values.
 Install it with:
 
 ```bash
-pip install --pre "rlmesh[numpy]"
+pip install "rlmesh[numpy]"
 ```
 
 | Concrete API                    | Shared behavior                        | Backend-specific behavior                                |

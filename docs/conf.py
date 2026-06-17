@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import re
 import subprocess
 import sys
 import types
@@ -145,6 +146,16 @@ project = "RLMesh"
 author = "ArenaX Labs"
 copyright = "2026 ArenaX Labs, Inc."
 
+
+def _package_version() -> str:
+    text = (ROOT / "python" / "rlmesh" / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "0.0.0"
+
+
+release = _package_version()
+version = ".".join(release.split(".")[:2])
+
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
@@ -163,7 +174,6 @@ exclude_patterns = [
     "Thumbs.db",
     ".DS_Store",
     "local-dev.md",
-    "release.md",
     "testing.md",
 ]
 
@@ -186,7 +196,7 @@ extlinks = {
 }
 
 html_theme = "furo"
-html_title = "RLMesh"
+html_title = f"RLMesh {release}"
 html_show_sphinx = False
 templates_path = ["_templates"]
 html_static_path = ["_static"]

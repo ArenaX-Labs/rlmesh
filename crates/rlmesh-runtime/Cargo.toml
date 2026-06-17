@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-runtime"
-description = "Runtime driver for RLMesh model-environment evaluation sessions"
+description = "Internal RLMesh crate (unstable Rust API): runtime driver for evaluation sessions."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

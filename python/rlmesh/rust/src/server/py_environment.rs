@@ -9,14 +9,15 @@ use rlmesh::{
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
-use rlmesh_spaces::spaces::SpaceSpec;
+use rlmesh_spaces::spaces::{PolicyOutcome, SpaceSpec, ValidationPolicy};
 use rlmesh_spaces::{
     CloseRequest, CloseRequest as SingleCloseRequest, CloseResult as SingleCloseResult,
-    EnvContract, RenderFrame as NativeRenderFrame, RenderRequest,
+    EnvContract, MetaMap, MetaValue, RenderFrame as NativeRenderFrame, RenderRequest,
     RenderRequest as SingleRenderRequest, RenderResult, RenderResult as SingleRenderResult,
-    ResetRequest as SingleResetRequest, ResetResult as SingleResetResult,
+    ResetRequest as SingleResetRequest, ResetResult as SingleResetResult, SpaceValue,
     StepRequest as SingleStepRequest, StepResult as SingleStepResult,
 };
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use super::conversion::{
@@ -30,6 +31,58 @@ use crate::spaces::{
 };
 use crate::telemetry::ProfileCollector;
 use crate::types::space_value_size as native_value_size;
+
+/// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
+const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
+
+/// One value-conformance warning surfaced in the info map.
+struct ConformanceWarning {
+    kind: String,
+    path: String,
+    detail: String,
+}
+
+/// Resolve the serving-side validation policy. `RLMESH_VALIDATION_POLICY` may
+/// select `strict` or `off`; the default (and any other value) is `warn`.
+fn validation_policy_from_env() -> ValidationPolicy {
+    let raw = match std::env::var("RLMESH_VALIDATION_POLICY") {
+        Ok(raw) => raw,
+        Err(_) => return ValidationPolicy::Warn,
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "strict" => ValidationPolicy::Strict,
+        "off" => ValidationPolicy::Off,
+        "" | "warn" => ValidationPolicy::Warn,
+        other => {
+            eprintln!(
+                "RLMESH_VALIDATION_POLICY={other:?} is unrecognized; defaulting to warn"
+            );
+            ValidationPolicy::Warn
+        }
+    }
+}
+
+/// Merge conformance warnings into an info map under the reserved key, once per
+/// `(kind, path)` per session.
+fn inject_conformance_warnings(info: &mut Option<MetaMap>, warnings: Vec<ConformanceWarning>) {
+    if warnings.is_empty() {
+        return;
+    }
+    let entries = warnings
+        .into_iter()
+        .map(|warning| {
+            MetaValue::Map(BTreeMap::from([
+                ("kind".to_string(), MetaValue::String(warning.kind)),
+                ("path".to_string(), MetaValue::String(warning.path)),
+                ("detail".to_string(), MetaValue::String(warning.detail)),
+            ]))
+        })
+        .collect();
+    info.get_or_insert_with(BTreeMap::new).insert(
+        CONFORMANCE_WARNING_KEY.to_string(),
+        MetaValue::List(entries),
+    );
+}
 
 /// A Rust wrapper around a Python gymnasium environment.
 ///
@@ -50,6 +103,10 @@ pub struct PyEnvironment {
     uses_vector_api: bool,
     /// Per-process profiling summary
     profiler: Arc<ProfileCollector>,
+    /// Serving-side validation policy for observation/action range deviations.
+    policy: ValidationPolicy,
+    /// Conformance-warning dedup: `(kind, path)` already reported this session.
+    warned: HashSet<(String, String)>,
 }
 
 pub struct PySingleEnv(PyEnvironment);
@@ -166,6 +223,8 @@ impl PyEnvironment {
                 num_envs,
                 uses_vector_api,
                 profiler,
+                policy: validation_policy_from_env(),
+                warned: HashSet::new(),
             })
         })
     }
@@ -183,6 +242,42 @@ impl PyEnvironment {
 
     fn uses_single_env_api(&self) -> bool {
         self.num_envs == 1 && !self.uses_vector_api
+    }
+
+    /// Validate one observation or action against `space` under the active
+    /// policy. Returns an `EnvError` to reject (structural always; a range
+    /// deviation under `strict`); records a deduped conformance warning to
+    /// `warnings` for a range deviation under `warn`; otherwise accepts.
+    fn enforce(
+        policy: ValidationPolicy,
+        warned: &mut HashSet<(String, String)>,
+        space: &SpaceSpec,
+        value: &SpaceValue,
+        kind: &str,
+        warnings: &mut Vec<ConformanceWarning>,
+    ) -> Result<(), EnvError> {
+        match policy.check(space, value) {
+            PolicyOutcome::Accept => Ok(()),
+            PolicyOutcome::Reject(err) => {
+                let code = if kind == "action" {
+                    EnvErrorCode::InvalidAction
+                } else {
+                    EnvErrorCode::Internal
+                };
+                Err(EnvError::new(code, err.to_string()))
+            }
+            PolicyOutcome::Warn(err) => {
+                let path = err.path().to_string();
+                if warned.insert((kind.to_string(), path.clone())) {
+                    warnings.push(ConformanceWarning {
+                        kind: kind.to_string(),
+                        path,
+                        detail: err.to_string(),
+                    });
+                }
+                Ok(())
+            }
+        }
     }
 }
 
@@ -236,7 +331,7 @@ impl PyEnvironment {
         let options = req.options;
         let profiler = Arc::clone(&self.profiler);
 
-        let (observation, info) = spawn_py(
+        let (observation, mut info) = spawn_py(
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -277,6 +372,17 @@ impl PyEnvironment {
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
 
+        let mut warnings = Vec::new();
+        Self::enforce(
+            self.policy,
+            &mut self.warned,
+            &self.observation_space,
+            &observation,
+            "observation",
+            &mut warnings,
+        )?;
+        inject_conformance_warnings(&mut info, warnings);
+
         Ok(SingleResetResult {
             observation: Some(observation),
             info,
@@ -288,6 +394,18 @@ impl PyEnvironment {
     async fn step_single(&mut self, req: SingleStepRequest) -> Result<SingleStepResult, EnvError> {
         self.ensure_single_env("step")?;
 
+        let mut warnings = Vec::new();
+        if let Some(action) = req.action.as_ref() {
+            Self::enforce(
+                self.policy,
+                &mut self.warned,
+                &self.action_space,
+                action,
+                "action",
+                &mut warnings,
+            )?;
+        }
+
         let total_guard = self.profiler.start("server.step.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let observation_space = self.observation_space.clone();
@@ -296,7 +414,7 @@ impl PyEnvironment {
         let action_size = action.as_ref().map(native_value_size).unwrap_or(0);
         let profiler = Arc::clone(&self.profiler);
 
-        let (observation, reward, terminated, truncated, info) = spawn_py(
+        let (observation, reward, terminated, truncated, mut info) = spawn_py(
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -343,6 +461,16 @@ impl PyEnvironment {
         .await?;
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
+
+        Self::enforce(
+            self.policy,
+            &mut self.warned,
+            &self.observation_space,
+            &observation,
+            "observation",
+            &mut warnings,
+        )?;
+        inject_conformance_warnings(&mut info, warnings);
 
         Ok(SingleStepResult {
             observation: Some(observation),
@@ -445,7 +573,7 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
 
-        let (observations, info, obs_bytes) = spawn_py(
+        let (observations, mut info, obs_bytes) = spawn_py(
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -491,6 +619,20 @@ impl PyEnvironment {
         .await?;
         let _ = total_guard.finish(obs_bytes);
 
+        let mut warnings = Vec::new();
+        for observation in &observations {
+            Self::enforce(
+                self.policy,
+                &mut self.warned,
+                &self.observation_space,
+                observation,
+                "observation",
+                &mut warnings,
+            )
+            .map_err(env_error_to_runtime_error)?;
+        }
+        inject_conformance_warnings(&mut info, warnings);
+
         Ok(EnvResetResult {
             observations,
             info,
@@ -508,6 +650,19 @@ impl PyEnvironment {
             )));
         }
 
+        let mut warnings = Vec::new();
+        for action in &req.actions {
+            Self::enforce(
+                self.policy,
+                &mut self.warned,
+                &self.action_space,
+                action,
+                "action",
+                &mut warnings,
+            )
+            .map_err(env_error_to_runtime_error)?;
+        }
+
         let total_guard = self.profiler.start("server.step.total");
         let env = Python::attach(|py| self.env.clone_ref(py));
         let action_space = self.action_space.clone();
@@ -516,7 +671,7 @@ impl PyEnvironment {
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
 
-        let (observations, rewards, terminated, truncated, info, action_bytes, obs_bytes) =
+        let (observations, rewards, terminated, truncated, mut info, action_bytes, obs_bytes) =
             spawn_py(
                 "step",
                 move |py| {
@@ -570,6 +725,19 @@ impl PyEnvironment {
             )
             .await?;
         let _ = total_guard.finish(action_bytes + obs_bytes);
+
+        for observation in &observations {
+            Self::enforce(
+                self.policy,
+                &mut self.warned,
+                &self.observation_space,
+                observation,
+                "observation",
+                &mut warnings,
+            )
+            .map_err(env_error_to_runtime_error)?;
+        }
+        inject_conformance_warnings(&mut info, warnings);
 
         Ok(EnvStepResult {
             observations,

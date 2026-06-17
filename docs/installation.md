@@ -1,9 +1,9 @@
 # Installation
 
-Install the published Python beta:
+Install the Python package:
 
 ```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
+pip install "rlmesh[gymnasium,numpy]"
 ```
 
 RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend
@@ -14,11 +14,11 @@ for examples and notebooks.
 Install only the extras you need:
 
 ```bash
-pip install --pre rlmesh
-pip install --pre "rlmesh[numpy]"
-pip install --pre "rlmesh[gymnasium]"
-pip install --pre "rlmesh[torch]"
-pip install --pre "rlmesh[hf]"
+pip install rlmesh
+pip install "rlmesh[numpy]"
+pip install "rlmesh[gymnasium]"
+pip install "rlmesh[torch]"
+pip install "rlmesh[hf]"
 ```
 
 Use `gymnasium` when serving a Gymnasium environment (or `gym` for a legacy classic-Gym stack). Use

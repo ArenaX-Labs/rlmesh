@@ -1,8 +1,8 @@
 # Sandbox Environments
 
-Sandbox helpers are experimental in this beta. Use one when an environment needs its own
-dependencies and process. Pin versions; see {doc}`/compatibility`. The client still uses the normal
-`reset`, `step`, `render`, and `close` loop.
+Sandbox helpers are experimental. Use one when an environment needs its own dependencies and
+process. Pin versions; see {doc}`/compatibility`. The client still uses the normal `reset`, `step`,
+`render`, and `close` loop.
 
 For runnable files, see {doc}`../examples/sandboxes`.
 
@@ -70,13 +70,13 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 
 Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `python/rlmesh/dist`
 into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as
-`rlmesh==0.1.0b3`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
+`rlmesh==0.1.0rc1`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ```{warning}
-During the beta, the container and your host must run the same rlmesh build: beta editions are
-content-pinned, so a mismatch fails the startup handshake (see {doc}`/compatibility`). This is a
-beta-only constraint; a stable release matches by version alone. With `rlmesh_package` unset the
-container installs the published release, so a host on an unreleased or source build will mismatch.
+The container and your host must currently run the same rlmesh release: the protocol generation
+holds a single version, so a mismatch fails the startup handshake (see {doc}`/compatibility`).
+Cross-version interoperability is on the roadmap. With `rlmesh_package` unset the container installs
+the published release, so a host on an unreleased or source build will mismatch.
 Use `rlmesh_package="local"` and keep `python/rlmesh/dist` rebuilt from your checkout.
 ```
 

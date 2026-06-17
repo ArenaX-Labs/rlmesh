@@ -1,7 +1,7 @@
 # Contributing
 
-RLMesh is in beta. Issues and focused pull requests are welcome. Maintainers may be selective while
-the API and package structure are still settling.
+RLMesh is pre-1.0 (`0.x`). Issues and focused pull requests are welcome. Maintainers may be
+selective while the API and package structure are still settling.
 
 For larger API, architecture, dependency, or roadmap changes, please open an issue before starting
 implementation work. Small bug fixes, docs improvements, tests, and narrowly scoped compatibility
@@ -47,14 +47,15 @@ Commits follow the [Conventional Commits](https://www.conventionalcommits.org) f
 `type(scope): summary`, with `!` after the type or scope for breaking changes (`feat(proto)!: ...`).
 Common types are `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `ci`, `test`, and `build`.
 
-The changelog is generated from these messages (see `cliff.toml`): `feat`, `fix`, `perf`,
-`refactor`, and `docs` commits become entries; `chore`, `ci`, `test`, and `build` commits are
-omitted unless marked breaking. Write summaries that read well in release notes. Squash-merged pull
-requests must keep a conventional title, since that title becomes the commit message. Preview
-pending entries with:
+The changelog is hand-written. `mise run changelog:draft` reads these messages and appends draft
+bullets under `## [Unreleased]`: `feat`, `fix`, `perf`, and `refactor` commits become draft entries;
+`chore`, `ci`, `test`, and `build` commits are skipped. You then rewrite each bullet by hand and
+delete every `<!-- DRAFT -->` marker before the release ships. Write summaries that read well in
+release notes. Squash-merged pull requests must keep a conventional title, since that title becomes
+the commit message. Draft pending entries with:
 
 ```bash
-mise run changelog:unreleased
+mise run changelog:draft
 ```
 
 ## Local Setup

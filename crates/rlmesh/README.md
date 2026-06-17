@@ -1,16 +1,16 @@
 # rlmesh
 
-Rust SDK for serving RLMesh environments and connecting Rust evaluators.
+Internal Rust crate for serving RLMesh environments and connecting Rust evaluators.
 
-Use this crate when you want to serve environments, connect to remote environments, or build
-directly against RLMesh's Rust API. Most Python users should install the `rlmesh` Python package
-instead.
+The Rust API is internal and not stable yet, with no compatibility promise for now; stabilizing it
+is a near-term goal. Most users should install the `rlmesh` Python package instead; reach for this
+crate only to work directly against the Rust layer.
 
 ## Installation
 
 ```toml
 [dependencies]
-rlmesh = "0.1.0-beta.3"
+rlmesh = "0.1.0-rc.1"
 ```
 
 ## What It Provides
@@ -35,8 +35,9 @@ The boundary is language-neutral, so the same server also accepts the Python cli
 
 ## Status
 
-This crate is part of the `0.1.0-beta.3` release line. The public Rust API is supported for beta
-users and may still change before a stable release.
+Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
+for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
+the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

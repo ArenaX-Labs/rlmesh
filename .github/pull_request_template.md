@@ -1,37 +1,11 @@
-## Summary
+## What & why
 
-Briefly describe what changed and why.
+<!-- One to three sentences: what changed and why. -->
 
-## Change Type
+## Breaking change & migration
 
-- [ ] Bug fix
-- [ ] Feature or API change
-- [ ] Documentation
-- [ ] Tests or validation
-- [ ] Packaging or release
-- [ ] Internal cleanup
+<!-- Only if this breaks a stable API: what breaks, and the before/after migration. Delete if not applicable. -->
 
-## Impact
+## How tested
 
-- [ ] Public Python API
-- [ ] Public Rust API
-- [ ] Packaging or installation
-- [ ] Stable API, workflow edition, or protocol policy
-- [ ] Gym/Gymnasium compatibility
-- [ ] NumPy or Torch interop
-- [ ] Remote environment/model transport
-- [ ] Sandbox or Docker
-- [ ] Documentation only
-- [ ] No user-facing impact
-
-## Testing
-
-- [ ] `mise run check`
-- [ ] `mise run test`
-- [ ] `mise run release:check`
-- [ ] Targeted tests:
-- [ ] Not run; reason:
-
-## Review Notes
-
-Link related issues and call out migration, compatibility, packaging, release, or follow-up work.
+<!-- One line. -->

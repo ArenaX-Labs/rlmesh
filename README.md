@@ -19,8 +19,14 @@ transports. Rust crates provide the lower-level runtime, protocol, and packaging
 
 ## Project Status
 
-RLMesh is in beta. Pin versions for active projects; APIs and package structure may still change
-before a stable release.
+The current release, **0.1.0-rc.1**, is a release candidate for 0.1.0: the `2026.06` workflow
+edition is still provisional and seals at the final 0.1.0.
+
+RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release
+may change a stable API with a migration note, so pin a minor range for active projects. The Rust
+crates are internal and not stable yet, though stabilizing them is a near-term goal. See the
+[compatibility](https://docs.rlmesh.dev/compatibility/) and
+[versioning](https://docs.rlmesh.dev/versioning/) policies.
 
 RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are
 supported today. Additional language bindings are future work, not part of the current public
@@ -28,10 +34,10 @@ surface.
 
 ## Installation
 
-Install the published Python beta from PyPI:
+Install the Python package from PyPI:
 
 ```bash
-pip install --pre rlmesh
+pip install rlmesh
 ```
 
 ## Quickstart
@@ -39,7 +45,7 @@ pip install --pre rlmesh
 Install the Python package with Gymnasium support and the NumPy client adapter:
 
 ```bash
-pip install --pre "rlmesh[gymnasium,numpy]"
+pip install "rlmesh[gymnasium,numpy]"
 ```
 
 In one process, serve a standard Gymnasium environment:

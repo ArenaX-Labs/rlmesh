@@ -37,7 +37,7 @@ pub const CURRENT_WORKFLOW_EDITION_STATUS: &str = "provisional";
 /// `check_rlmesh_policy.py` cross-checks this value against the file and
 /// `rlmesh.toml`.
 pub const CURRENT_WORKFLOW_EDITION_SPEC_SHA256: &str =
-    "c03b0c916521485492aa02507cacb7888a0752fc72860e53231296de4a27007f";
+    "3827ecdfb7ad3c756c88587101675a412083252027720e4d0f7daa588f431d1e";
 
 /// Stable capability names exchanged during handshake.
 ///

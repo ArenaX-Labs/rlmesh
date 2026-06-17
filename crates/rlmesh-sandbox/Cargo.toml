@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-sandbox"
-description = "Docker-backed environment packaging and execution for RLMesh evaluation workflows"
+description = "Internal RLMesh crate (unstable Rust API): Docker-backed environment packaging and execution."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

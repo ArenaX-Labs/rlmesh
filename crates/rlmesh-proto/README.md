@@ -9,7 +9,7 @@ message and service types for protocol-level integration.
 
 ```toml
 [dependencies]
-rlmesh-proto = "0.1.0-beta.3"
+rlmesh-proto = "0.1.0-rc.1"
 ```
 
 ## Build Requirements
@@ -24,8 +24,9 @@ already provides `protoc`, so the published API docs build without extra configu
 
 ## Status
 
-This supporting crate is part of the supported beta protocol surface. Message shape may still change
-before the stable release.
+Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
+for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
+the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

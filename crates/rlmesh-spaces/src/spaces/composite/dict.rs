@@ -1,6 +1,6 @@
 use crate::errors::{SpaceError, err_space};
 use crate::spaces::{
-    SpaceKind, SpaceSpec, SpaceValue, contains_at, validate_space, validate_space_at,
+    Conformance, SpaceKind, SpaceSpec, SpaceValue, conform_at, validate_space, validate_space_at,
 };
 use crate::{DType, DictSpec};
 use std::collections::BTreeMap;
@@ -99,39 +99,53 @@ pub(crate) fn validate_dict_at(spec: &SpaceSpec, path: &str) -> Result<(), Space
     Ok(())
 }
 
-pub(crate) fn contains_dict(
-    space: &SpaceSpec,
-    value: &SpaceValue,
-    path: &str,
-) -> Result<(), SpaceError> {
+pub(crate) fn conform_dict(space: &SpaceSpec, value: &SpaceValue, path: &str) -> Conformance {
     let dict_val = match value {
         SpaceValue::Dict(d) => d,
-        _ => return err_space!(path, "expected Dict value"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "expected Dict value")),
     };
 
     let d = match &space.spec {
         Some(SpaceKind::Dict(d)) => d,
-        _ => return err_space!(path, "space is not Dict"),
+        _ => return Conformance::Structural(SpaceError::invalid(path, "space is not Dict")),
     };
 
+    // A structural deviation in any child outranks a range deviation anywhere, so
+    // return immediately on the first structural one but keep the first range one.
+    let mut range: Option<SpaceError> = None;
     for (i, key) in d.keys.iter().enumerate() {
         match dict_val.get(key) {
-            Some(sub_val) => {
-                contains_at(&d.spaces[i], sub_val, &format!("{path}.{key}"))?;
-            }
+            Some(sub_val) => match conform_at(&d.spaces[i], sub_val, &format!("{path}.{key}")) {
+                Conformance::Structural(err) => return Conformance::Structural(err),
+                Conformance::Range(err) => {
+                    if range.is_none() {
+                        range = Some(err);
+                    }
+                }
+                Conformance::Ok => {}
+            },
             None => {
-                return err_space!(path, format!("missing key '{}'", key));
+                return Conformance::Structural(SpaceError::invalid(
+                    path,
+                    format!("missing key '{key}'"),
+                ));
             }
         }
     }
 
     for key in dict_val.keys() {
         if !d.keys.contains(key) {
-            return err_space!(path, format!("unexpected key '{}'", key));
+            return Conformance::Structural(SpaceError::invalid(
+                path,
+                format!("unexpected key '{key}'"),
+            ));
         }
     }
 
-    Ok(())
+    match range {
+        Some(err) => Conformance::Range(err),
+        None => Conformance::Ok,
+    }
 }
 
 #[cfg(test)]

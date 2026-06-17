@@ -77,7 +77,6 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     errors: list[str] = []
     manifest = _read_toml(manifest_path)
 
-    project = _required_table(manifest, "project", errors)
     release = _required_table(manifest, "release", errors)
     workflow = _required_table(manifest, "workflow", errors)
     protocol = _required_table(manifest, "protocol", errors)
@@ -86,9 +85,6 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     if not isinstance(raw_artifacts, list) or not raw_artifacts:
         errors.append("manifest must define at least one [[artifact]] entry")
         raw_artifacts = []
-
-    if project.get("name") != "rlmesh":
-        errors.append("[project].name must be 'rlmesh'")
 
     package_family = release.get("package_family")
     if not isinstance(package_family, str):
@@ -348,22 +344,6 @@ def _validate_protocol_and_workflow(
             errors.append(
                 f"{source}: remove unpublished legacy protocol token {token!r}"
             )
-
-    baseline = protocol.get("public_baseline")
-    if not isinstance(baseline, str):
-        errors.append("[protocol].public_baseline must be a string")
-    else:
-        baseline_path = repo_root / baseline
-        if not baseline_path.exists():
-            errors.append(f"[protocol].public_baseline does not exist: {baseline}")
-
-    service_generations = protocol.get("service_generations")
-    if not isinstance(service_generations, dict):
-        errors.append("[protocol].service_generations must be an inline table")
-    else:
-        for key in ("env", "model", "spaces"):
-            if not isinstance(service_generations.get(key), str):
-                errors.append(f"[protocol].service_generations.{key} must be a string")
 
     buf_config = repo_root / "buf.yaml"
     if not buf_config.exists():

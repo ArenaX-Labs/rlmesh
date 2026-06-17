@@ -1,72 +1,18 @@
-name: Feature request
-description: Suggest an improvement or new capability for RLMesh.
-title: "[Feature]: "
+name: Idea / request
+description: Suggest an improvement, new capability, or change for RLMesh.
+title: "[Idea]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting an improvement.
-
-        Larger API, architecture, dependency, or roadmap changes should start as an issue before implementation work.
-  - type: checkboxes
-    id: existing-issues
-    attributes:
-      label: Existing issues
-      description: Please search open and closed issues before filing a new request.
-      options:
-        - label: I have searched existing issues.
-          required: true
-  - type: dropdown
-    id: affected-area
-    attributes:
-      label: Affected area
-      description: Select the area that best matches the request.
-      multiple: true
-      options:
-        - Python API
-        - Rust API
-        - CLI
-        - Remote environment/model transport
-        - Sandbox
-        - Packaging or installation
-        - Validation or tests
-        - Documentation
-        - Not sure
-    validations:
-      required: true
+        Thanks for the suggestion. Larger API, architecture, dependency, or roadmap changes are best raised here before implementation work.
   - type: textarea
-    id: problem
+    id: idea
     attributes:
-      label: Problem
-      description: What are you trying to do, and what is missing today?
-      placeholder: Describe the workflow, limitation, or user need.
-    validations:
-      required: true
-  - type: textarea
-    id: proposal
-    attributes:
-      label: Proposal
-      description: Describe the behavior, API, or documentation you would like RLMesh to support.
-      placeholder: Describe the smallest useful version of the change.
-    validations:
-      required: true
-  - type: textarea
-    id: context
-    attributes:
-      label: Context
+      label: Idea
       description:
-        Share related projects, use cases, constraints, alternatives, or compatibility concerns.
+        What are you trying to do, what is missing today, and what would you like RLMesh to do? Link
+        related projects, use cases, or alternatives if useful.
     validations:
-      required: false
-  - type: dropdown
-    id: contribution-interest
-    attributes:
-      label: Contribution interest
-      description: Let us know whether you expect to help with implementation or testing.
-      options:
-        - I am sharing feedback only
-        - I can help test this
-        - I am interested in opening a pull request
-    validations:
-      required: false
+      required: true

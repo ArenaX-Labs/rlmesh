@@ -1,11 +1,18 @@
 # Compatibility
 
 RLMesh documents compatibility at the workflow level rather than treating every internal type as
-frozen. During beta, stability labels describe the intended support level, but APIs and package
-structure may still change.
+frozen. The project is released and pre-1.0: stability labels describe the support level today, and
+the surface still evolves with care until 1.0. See {doc}`versioning` for the version contract.
 
 ```{note}
-RLMesh is in beta. "Stable" here means the surface we intend to keep and will change carefully, with migration notes — not a frozen API. "Experimental" may change or disappear. Pin versions until v0.1.
+**This documents 0.1.0-rc.1, a release candidate.** The `2026.06` workflow edition is still
+provisional; the stable cutover — sealing the edition and the `Production/Stable` trove status —
+lands at the final 0.1.0. The stability descriptions below describe that release. Install the
+candidate with `pip install rlmesh==0.1.0rc1`.
+```
+
+```{note}
+RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the {doc}`changelog` — not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
 ```
 
 ## Stable
@@ -14,10 +21,10 @@ Stable workflows include documented public APIs, supported CLI flows, and suppor
 environment/model interactions. Stable means the surface we intend to keep and will change
 carefully, with migration notes — not a frozen API.
 
-- Imports, signatures, and documented behavior follow the compatibility policy; changes come with
-  migration notes.
-- Once a stable release exists, new runtimes aim to keep accepting older stable clients and
-  packages. During the beta, peers must run the same release.
+- Imports, signatures, and documented behavior follow the version contract: a breaking change to a
+  stable symbol ships in a minor release with a migration note in the {doc}`changelog`.
+- Peers must currently run the same release. Cross-version acceptance, where newer runtimes keep
+  accepting older stable clients and packages, is on the roadmap below, not a guarantee today.
 - New features may require newer packages or capabilities, but older stable workflows should fail
   clearly or keep working.
 
@@ -27,36 +34,34 @@ Preview APIs are intended to become stable but may still change with migration n
 APIs may change or disappear. Preview is reserved for the intended-stable-but-still-moving case and
 is currently unused; today's labels are only Stable and Experimental.
 
-Torch and JAX backends and sandbox helpers are experimental in this beta. The `MultiBinary`,
-`MultiDiscrete`, `Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for
-the per-space stability labels, which track the API surface policy in `api_metadata.json`.
+Torch and JAX backends and sandbox helpers are experimental. The `MultiBinary`, `MultiDiscrete`,
+`Text`, and `Tuple` space wrappers are also experimental; see {doc}`gymnasium` for the per-space
+stability labels, which track the API surface policy in `api_metadata.json`.
 
 ```{warning}
-dtype values added during the beta (`int8/16`, `uint16/32/64`, `bfloat16`) are not
-negotiated. A peer from an older beta fails with a decode error naming the unknown dtype when it
-meets an environment that uses them. Run both ends on the same beta release. Edition-gated dtype
-negotiation is planned for the workflow-edition rollout before GA.
+The dtype values `int8/16`, `uint16/32/64`, and `bfloat16` are not negotiated. A peer from an
+earlier release fails with a decode error naming the unknown dtype when it meets an environment
+that uses them, so run both ends on the same release. An edition-gated dtype negotiation floor is
+on the roadmap below.
 ```
 
 ```{warning}
-The `rlmesh.protocol.v1` wire format changed within the beta and is not
-backward-compatible across beta releases:
+The `rlmesh.protocol.v1` wire format stabilizes at 0.1.0. The earlier 0.1.0 beta releases are not
+wire-compatible with it; rebuild both peers when upgrading from a beta.
 
-- Info/option channels (`infos`, `final_info`, `options`, and `EnvContract.metadata`) moved off
-  `google.protobuf.Struct` to a self-describing `MetaMap` that preserves integer (up to the signed
-  64-bit range), float, and bytes types exactly.
-- Composite (Dict/Tuple) space values now use a recursive, raw-bytes `SpaceValueNode` encoding
-  instead of base64-in-`Struct`.
-- `EpisodeMetadata.seed` is now an explicit-presence `optional` field that is left unset for
-  unseeded episodes rather than reporting a fabricated `0`.
-
-The protocol generation stays `rlmesh.protocol.v1` (the surface is still beta-mutable before the
-stable release), and the checked-in public baseline tracks the current surface, so peers must run
-the same beta release. The generation seals with the stable release; after that, the same kind of
-change requires a new generation. Provisional workflow editions are content-pinned during
-handshake: peers exchange the edition spec checksum, and mismatched beta builds fail at connect
-rather than mid-session.
+The supported-generation window currently holds a single generation, so peers must run the same
+release. A future incompatible wire change mints a new generation rather than mutating v1; a
+cross-version generation window is on the roadmap below. The `2026.06` workflow edition seals at
+0.1.0 — it is provisional in this release candidate — after which its spec checksum is frozen and a
+matching edition string is enough for peers to interoperate.
 ```
+
+## Rust crates
+
+The Rust crates are internal implementation detail today. They are published to crates.io so the
+Python extension can build, but the Rust API is not stable yet and carries no compatibility promise
+for now. Stabilizing it is a near-term goal (see the roadmap below); until then, build on the Python
+package. See {doc}`versioning`.
 
 ## Framework Version Floors
 
@@ -108,7 +113,50 @@ metadata between them and the wire.
 Workflow semantics are governed by a negotiated workflow edition. Each edition string names an
 immutable behavioral contract documented in {doc}`editions/index`; the handshake selects the highest
 edition supported by both peers. Editions change only on deliberate semantic redesigns; new features
-and new APIs do not mint editions.
+and new APIs do not mint editions. The current edition, `2026.06`, seals at 0.1.0 and is provisional
+in this release candidate.
+
+## Versioning and forward-compatibility roadmap
+
+RLMesh commits to forward-compatibility guarantees only once the code enforces them and a
+cross-version path is proven. The items below are planned, not promises; each is announced here as
+it ships.
+
+- **v0.1.0 (upcoming).** First stable release. It seals the `2026.06` workflow edition, freezing its
+  spec checksum. Peers still run the same release. The 0.1.0-rc.1 candidate ships first with the
+  edition still provisional.
+- **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, a
+  re-snapshotted protocol baseline with stricter checks, and the workflow edition made load-bearing
+  in the runtime. This unlocks edition-driven behavior and a cross-version path once a second
+  edition exists.
+- **Forward tolerance, around late July 2026.** Edition retention guarantees, a dtype negotiation
+  floor, and adapter forward-tolerance.
+- **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation
+  against a real semantic change.
+- **Rust crate API, near term.** The Rust crates are unstable today, but stabilizing their public
+  API is an explicit near-term goal once the surface settles; the commitment is announced here when
+  it lands.
+- **v1.0, date not set.** Forward-compatibility guarantees — newer runtimes accept older stable
+  clients, and sealed editions are never pruned — become binding, gated on the hardening above and a
+  proven cross-version path.
+
+## Value conformance
+
+The `2026.06` edition defines how observation and action values are checked against their declared
+spaces (full contract: {doc}`editions/2026.06`). Two points matter in practice:
+
+- **Out-of-bounds values warn; they do not fail.** A `Box` value outside its bounds, or a `Text`
+  value outside its charset or length, is delivered and reported once in the `reset`/`step` info map
+  under the `rlmesh.conformance.warning` key. This keeps the many Gymnasium environments whose
+  values drift past their declared bounds usable out of the box. Set
+  `RLMESH_VALIDATION_POLICY=strict` to reject such values instead, or `off` to skip the checks.
+  Structural problems — wrong shape, dtype, arity, or domain, a missing key — and `NaN` are always
+  rejected, regardless of the policy.
+- **Dtypes are coerced, not passed through.** A value is always converted to its declared dtype
+  before transport, so a peer reading the negotiated space never sees a per-message dtype. This is a
+  deliberate difference from Gymnasium, which warns but forwards the mismatched dtype (see
+  {doc}`gymnasium`). A float supplied for an integer dtype is rejected unless every element is
+  exactly integral.
 
 ## Artifact Versions
 

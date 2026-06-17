@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-proto"
-description = "Protobuf definitions and generated gRPC stubs for RLMesh model-environment protocols"
+description = "Internal RLMesh crate (unstable Rust API): protobuf definitions and generated gRPC stubs."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

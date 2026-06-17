@@ -1,6 +1,6 @@
 [package]
 name = "rlmesh-spaces"
-description = "Space specifications and value model for RLMesh environments and bindings"
+description = "Internal RLMesh crate (unstable Rust API): space specifications and value model."
 version = { workspace = true }
 authors = { workspace = true }
 edition = { workspace = true }

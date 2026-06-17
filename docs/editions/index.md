@@ -4,6 +4,10 @@ A workflow edition is a named, immutable behavioral contract for RLMesh workflow
 edition string (`YYYY.MM`) identifies one spec document in this section; that document is the
 contract, not the implementation. Exactly one edition governs a session, chosen during handshake.
 
+```{note}
+In 0.1.0-rc.1 the `2026.06` edition is still **provisional**; it seals at the final 0.1.0.
+```
+
 Editions answer a different question than the protocol generation. The protocol generation
 (`rlmesh.protocol.v1`) names the wire shape: which services, messages, and fields exist. The edition
 names what a conforming interaction over that shape _means_: lifecycle, ordering, episode
@@ -15,7 +19,9 @@ The client sends every edition it can operate under in
 `HandshakeRequest.supported_workflow_editions`. The server intersects that offer with its own
 supported set and selects the highest mutual edition; the zero-padded `YYYY.MM` format makes
 lexicographic order chronological order. The selection is returned in
-`HandshakeResponse.selected_workflow_edition` and governs the rest of the session.
+`HandshakeResponse.selected_workflow_edition`. The runtime currently supports a single edition and
+refuses any other; making the selected edition drive runtime behavior is on the roadmap (see
+{doc}`../compatibility`).
 
 - An empty intersection means `compatible = false`. The response lists the server's supported
   editions for diagnostics, but there is no second round trip because the client's offer was already
@@ -38,20 +44,22 @@ Most development never touches the edition:
 ## Lifecycle: Provisional, Then Sealed
 
 An edition is **provisional** while no stable release has shipped it: its spec document may still be
-edited in place, and beta releases may change its semantics as a hard break. The first stable
+edited in place, and pre-release builds may change its semantics as a hard break. The first stable
 release that ships an edition **seals** it permanently: the spec document becomes immutable
 (enforced by checksum), and any later semantic change mints a new edition.
 
-`2026.06` is provisional during the 0.1 beta series and seals when v0.1.0 ships. After sealing it
-remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on
-a schedule.
+`2026.06` is provisional through the 0.1 beta and release-candidate series and seals at v0.1.0.
+After sealing it remains valid indefinitely; a new edition is minted only by a deliberate semantic
+redesign, never on a schedule.
 
 ## Support Window
 
-Once a stable release seals an edition, every later release keeps offering and accepting it. That
-includes betas for a later edition, so newer builds can still negotiate with older peers. Sealed
-editions are never pruned. Provisional editions, which no stable release has sealed, may change or
-be dropped because they are content-pinned and interoperate only between matching builds.
+Sealing freezes an edition's spec by checksum. The intended support window — every later release
+keeps offering and accepting a sealed edition, including betas for a later edition, and sealed
+editions are never pruned — is a forward-compatibility guarantee on the roadmap (see
+{doc}`../compatibility`); it becomes binding at 1.0, not today. A provisional edition, which no
+stable release has sealed, may change or be dropped because it is content-pinned and interoperates
+only between matching builds.
 
 ## Enforcement
 

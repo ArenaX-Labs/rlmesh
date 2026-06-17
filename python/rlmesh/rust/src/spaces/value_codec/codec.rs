@@ -4,7 +4,7 @@ use half::{bf16, f16};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{DType, Scalar, SpaceValue, Tensor, contains};
+use rlmesh_spaces::{Conformance, DType, Scalar, SpaceValue, Tensor, conform};
 
 use super::ValueBackend;
 use super::metadata::normalize_py_value;
@@ -144,8 +144,13 @@ pub(crate) fn py_any_to_space_value_with_backend(
     backend: ValueBackend,
 ) -> PyResult<SpaceValue> {
     let encoded = py_any_to_space_value_unchecked(py, value, space, backend)?;
-    contains(space, &encoded)
-        .map_err(|err| pyo3::exceptions::PyValueError::new_err(err.to_string()))?;
+    // Structural deviations (wrong shape/dtype/arity/domain, NaN, a missing key)
+    // are rejected at encode regardless of policy. Range deviations (Box bounds,
+    // Text charset/length) pass through so the serving side can apply its
+    // validation policy (warn by default); see the env server's enforcement.
+    if let Conformance::Structural(err) = conform(space, &encoded) {
+        return Err(pyo3::exceptions::PyValueError::new_err(err.to_string()));
+    }
     Ok(encoded)
 }
 
@@ -362,9 +367,39 @@ fn encode_with_numpy(
     let numpy = py.import("numpy")?;
     let dtype_name = dtype_name(space.dtype as i32);
 
-    let kwargs = PyDict::new(py);
-    kwargs.set_item("dtype", dtype_name)?;
-    let array = numpy.getattr("asarray")?.call((value,), Some(&kwargs))?;
+    // A float supplied for an integer dtype coerces only when every element is
+    // finite, exactly integral, and within the target dtype's range; otherwise
+    // reject rather than silently truncating or overflow-wrapping, which would
+    // corrupt the value. (NumPy only warns on out-of-range integer casts.)
+    let source = numpy.getattr("asarray")?.call1((value,))?;
+    let kind = source
+        .getattr("dtype")?
+        .getattr("kind")?
+        .extract::<String>()?;
+    if resolve_dtype(space.dtype).is_integer() && kind == "f" {
+        let rint = numpy.getattr("rint")?.call1((&source,))?;
+        let integral = source.call_method1("__eq__", (&rint,))?;
+        let finite = numpy.getattr("isfinite")?.call1((&source,))?;
+        let clean = integral.call_method1("__and__", (finite,))?;
+        if !numpy.getattr("all")?.call1((&clean,))?.is_truthy()? {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "float value supplied for integer dtype {dtype_name} is not integral"
+            )));
+        }
+
+        let info = numpy.getattr("iinfo")?.call1((dtype_name,))?;
+        let in_range = source
+            .call_method1("__ge__", (info.getattr("min")?,))?
+            .call_method1("__and__", (source.call_method1("__le__", (info.getattr("max")?,))?,))?;
+        if !numpy.getattr("all")?.call1((in_range,))?.is_truthy()? {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "float value supplied for integer dtype {dtype_name} is not representable in integer dtype {dtype_name} range"
+            )));
+        }
+    }
+
+    // Reuse the already-materialized `source` so the data is parsed once.
+    let array = numpy.getattr("asarray")?.call1((&source, dtype_name))?;
 
     let bytes_obj = array.call_method0("tobytes")?;
     bytes_obj.extract::<Vec<u8>>()
@@ -679,6 +714,60 @@ mod tests {
     }
 
     #[test]
+    fn encode_rejects_non_integral_float_for_integer_dtype() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let numpy = py.import("numpy").unwrap();
+            let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![2])
+                .dtype(rlmesh_spaces::DType::Int32)
+                .build()
+                .unwrap();
+
+            // Integral floats coerce cleanly to the integer dtype.
+            let integral = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![1.0f64, 2.0],))
+                .unwrap();
+            assert!(
+                encode_array_like_value_with_backend(py, &integral, &space, ValueBackend::Auto)
+                    .is_ok()
+            );
+
+            // A non-integral float is rejected rather than silently truncated.
+            let fractional = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![1.5f64, 2.0],))
+                .unwrap();
+            let err =
+                encode_array_like_value_with_backend(py, &fractional, &space, ValueBackend::Auto)
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("not integral"),
+                "unexpected error: {err}"
+            );
+
+            // An integral but out-of-range float is rejected rather than
+            // silently overflow-wrapping to a garbage in-type value.
+            let out_of_range = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![3e9f64, 2.0],))
+                .unwrap();
+            let err =
+                encode_array_like_value_with_backend(py, &out_of_range, &space, ValueBackend::Auto)
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains("not representable"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
     fn encode_without_numpy_accepts_matching_tensor() {
         Python::attach(|py| {
             let space = BoxSpaceBuilder::scalar(-10.0, 10.0, vec![3])
@@ -873,8 +962,16 @@ class AutoresetMode:
                 .eval(pyo3::ffi::c_str!("{'instruction': 'a b'}"), None, None)
                 .unwrap();
 
-            let err = py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
-                .unwrap_err();
+            // A charset mismatch is a range deviation: it is no longer rejected at
+            // encode (the serving side applies the validation policy), but `conform`
+            // still classifies it as a range deviation and reports the nested path.
+            let encoded =
+                py_any_to_space_value_with_backend(py, &value, &space, ValueBackend::Native)
+                    .unwrap();
+            let rlmesh_spaces::Conformance::Range(err) = rlmesh_spaces::conform(&space, &encoded)
+            else {
+                panic!("expected a range deviation for the charset mismatch");
+            };
 
             assert!(err.to_string().contains("$.instruction"));
             assert!(err.to_string().contains("character ' ' not in charset"));
