@@ -11,7 +11,7 @@ drive with ``reset`` / ``predict`` symmetrically with the env's
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, Generic, Protocol, TypeVar, cast
 
 from .._framework_bridge import ValueBridge
 
@@ -24,6 +24,12 @@ ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 
 
+class _OwnedSource(Protocol):
+    """A model source a session may own and stop on close (e.g. SandboxModel)."""
+
+    def shutdown(self) -> None: ...
+
+
 class ModelSession(Generic[ObsT, ActT]):
     """A model bound to one env: the session :meth:`RemoteModelBase.against` returns.
 
@@ -33,7 +39,10 @@ class ModelSession(Generic[ObsT, ActT]):
     """
 
     def __init__(
-        self, client: PyModelClient, bridge: ValueBridge, owner: object = None
+        self,
+        client: PyModelClient,
+        bridge: ValueBridge,
+        owner: _OwnedSource | None = None,
     ) -> None:
         self._client = client
         self._bridge = bridge
@@ -142,7 +151,7 @@ def env_contract_of(env: object) -> EnvContract:
 
 
 def session_for_client(
-    client: PyModelClient, env: object, owner: object = None
+    client: PyModelClient, env: object, owner: _OwnedSource | None = None
 ) -> ModelSession[object, object]:
     """Wrap a pre-built model ``client`` in a session bridged for ``env``.
 

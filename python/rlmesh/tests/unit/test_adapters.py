@@ -1456,16 +1456,17 @@ def test_stateful_adapter_rejected_on_vector_route() -> None:
     with pytest.raises(adapt.AdapterResolutionError, match="num_envs=2"):
         resolve_route_adapter(stateful_spec, contract(2), trust_entrypoints=False)
     # The same stateful adapter is fine against a single lane.
-    assert resolve_route_adapter(
+    single_lane = resolve_route_adapter(
         stateful_spec, contract(1), trust_entrypoints=False
-    ).is_stateful
+    )
+    assert single_lane is not None and single_lane.is_stateful
     # A stateless adapter on a vector route is harmless and must not be rejected.
     stateless = resolve_route_adapter(
         stateless_spec, contract(2), trust_entrypoints=False
     )
     assert stateless is not None and stateless.is_stateful is False
     # spec=None / no tags also resolves to None without over-rejecting.
-    untagged = SimpleNamespace(metadata={}, num_envs=2)
+    untagged: Any = SimpleNamespace(metadata={}, num_envs=2)
     assert resolve_route_adapter(None, untagged, trust_entrypoints=False) is None
 
 

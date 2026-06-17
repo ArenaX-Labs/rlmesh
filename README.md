@@ -81,11 +81,11 @@ Pygame examples for heavier dependency stacks.
 ## Building the Rust SDK
 
 The gRPC crates generate their stubs from `.proto` files at build time. Building any of them
-(`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`) from source, including a
-plain `cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler
-`protoc` on the system. Install it from your package manager (for example
-`apt install protobuf-compiler` or `brew install protobuf`), or point `PROTOC` at an existing
-binary. The Python package has no such requirement; its wheels ship pre-built.
+(`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`) from source, including a plain
+`cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler `protoc` on
+the system. Install it from your package manager (for example `apt install protobuf-compiler` or
+`brew install protobuf`), or point `PROTOC` at an existing binary. The Python package has no such
+requirement; its wheels ship pre-built.
 
 ## Packages
 

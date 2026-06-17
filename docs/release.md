@@ -4,8 +4,8 @@ RLMesh is published manually from a maintainer's machine. SemVer is the source o
 (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The
 version contract is in {doc}`versioning`.
 
-The mechanical steps are scripted. You still own the changelog prose and the version number. The
-two irreversible actions, pushing the tag and publishing to the registries, never run without you
+The mechanical steps are scripted. You still own the changelog prose and the version number. The two
+irreversible actions, pushing the tag and publishing to the registries, never run without you
 asking.
 
 ## One-command flow

@@ -20,7 +20,7 @@ pip install "rlmesh[numpy]"
 | `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.          |
 | `rlmesh.numpy.Model`            | {doc}`models`                          | `predict_fn` receives NumPy-decoded observations.        |
 | `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.        |
-| `rlmesh.numpy.SandboxModel`     | {doc}`sandbox`                          | Runs a model policy in its own container (experimental). |
+| `rlmesh.numpy.SandboxModel`     | {doc}`sandbox`                         | Runs a model policy in its own container (experimental). |
 | `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`.  |
 
 ## Conversion Semantics

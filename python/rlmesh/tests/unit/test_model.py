@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 
@@ -106,7 +108,7 @@ def test_to_framework_rekeys_adapter_numpy_payload() -> None:
     assert np_action.tolist() == [1.0, 2.0]
 
 
-def _address_run_calls(*, close_env: bool) -> tuple[object, list[str]]:
+def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
     from rlmesh._models._eval import evaluate
 
     calls: list[str] = []

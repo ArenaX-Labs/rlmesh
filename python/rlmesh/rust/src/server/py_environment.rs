@@ -52,13 +52,10 @@ fn validation_policy_from_env() -> ValidationPolicy {
     match raw.trim().to_ascii_lowercase().as_str() {
         "strict" => ValidationPolicy::Strict,
         "off" => ValidationPolicy::Off,
-        "" | "warn" => ValidationPolicy::Warn,
-        other => {
-            eprintln!(
-                "RLMESH_VALIDATION_POLICY={other:?} is unrecognized; defaulting to warn"
-            );
-            ValidationPolicy::Warn
-        }
+        // An unrecognized value defaults to warn, matching the env wire path
+        // (crates/rlmesh/src/env/wire.rs); no stderr print (clippy::print_stderr
+        // is denied workspace-wide).
+        _ => ValidationPolicy::Warn,
     }
 }
 

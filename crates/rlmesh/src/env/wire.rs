@@ -16,8 +16,8 @@ use super::types::{
     CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, ResetResult, StepRequest,
 };
 use crate::spaces;
-use std::collections::{BTreeMap, HashSet};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
+use std::collections::{BTreeMap, HashSet};
 
 /// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
 const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
@@ -63,8 +63,10 @@ fn inject_conformance_warnings(
             ]))
         })
         .collect();
-    info.get_or_insert_with(BTreeMap::new)
-        .insert(CONFORMANCE_WARNING_KEY.to_string(), spaces::MetaValue::List(entries));
+    info.get_or_insert_with(BTreeMap::new).insert(
+        CONFORMANCE_WARNING_KEY.to_string(),
+        spaces::MetaValue::List(entries),
+    );
 }
 
 /// Internal adapter bridging an [`Env`] to the gRPC `Environment` trait.
