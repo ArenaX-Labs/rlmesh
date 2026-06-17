@@ -33,23 +33,24 @@ want more than one environment from the same source.
 
 ## Model Drives Env
 
-`drive_model/model_drives_env.py` shows `SandboxModel.run` -- the containerized sibling of
-`Model.run`. It builds a model recipe's image and runs a one-shot container that drives a
-`SandboxEnv` and returns a `RunResult`; the policy executes in its own container, not in your
-process.
+`SandboxModel("image://<tag>").against(env)` is the managed sibling of
+`RemoteModel(address).against(env)`: it starts the policy in its own container and returns a session
+you drive with the same `reset`/`predict` loop as the env, so the policy executes in its own
+container, not in your process. In v0.1 the model container is a prebuilt image you build yourself
+-- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
 
-```bash
-uv run python examples/python/sandbox/drive_model/model_drives_env.py
-```
+```python
+import rlmesh
 
-The model recipe (`drive_model/cartpole_policy.py`) stages its own folder via `build.project` so the
-container can import and run the policy.
-
-The demo opts into `trust_remote_code=True` and `allow_unpinned_hf=True`. For real evaluations, pin
-the source to a full commit SHA and only enable remote code for repositories you have reviewed:
-
-```text
-hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
+env = rlmesh.RemoteEnv("127.0.0.1:50051")
+model = rlmesh.SandboxModel("image://my-model:latest").against(env)
+obs, _ = env.reset()
+model.reset()
+done = False
+while not done:
+    action = model.predict(obs)
+    obs, reward, terminated, truncated, _ = env.step(action)
+    done = terminated or truncated
 ```
 
 ## Local Development Notes

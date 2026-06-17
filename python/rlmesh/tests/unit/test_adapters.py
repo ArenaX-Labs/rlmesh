@@ -1324,6 +1324,35 @@ def test_image_frame_stacking_buffers_and_pads() -> None:
     )
 
 
+def test_per_lane_reset_only_clears_on_whole_vector_or_lane_zero() -> None:
+    env = image_env(4, 4)
+    spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=3),),
+        action=SMOLVLA.action,
+    )
+    adapter = resolve(env, spec)
+    f1 = np.full((4, 4, 3), 10, dtype=np.uint8)
+    f2 = np.full((4, 4, 3), 20, dtype=np.uint8)
+
+    adapter.transform_obs({"rgb": f1})
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f2})["img"], np.stack([f1, f1, f2])
+    )
+
+    # A non-zero lane's autoreset must not wipe the shared, not-yet-lane-indexed
+    # buffers, or it would corrupt the still-running lane-0 episode.
+    adapter.reset(env_index=1)
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f2})["img"], np.stack([f1, f2, f2])
+    )
+
+    # Lane 0 (and a whole-vector reset, env_index=None) does clear.
+    adapter.reset(env_index=0)
+    np.testing.assert_array_equal(
+        adapter.transform_obs({"rgb": f2})["img"], np.stack([f2, f2, f2])
+    )
+
+
 def test_image_input_stack_round_trips_and_omits_default() -> None:
     from rlmesh.adapters.specs.model_serialization import model_input_to_dict
 
@@ -1399,6 +1428,45 @@ def test_vector_env_rejected_by_single_env_eval_loop() -> None:
     )
     with pytest.raises(ValueError, match="num_envs=2"):
         model.run(fake_env, max_episodes=1)
+
+
+def test_stateful_adapter_rejected_on_vector_route() -> None:
+    # A served stateful adapter's frame-history buffers are not lane-indexed, so
+    # resolve_route_adapter rejects num_envs>1 rather than corrupt other lanes.
+    from rlmesh._models._eval import resolve_route_adapter
+
+    env = image_env(4, 4)
+    stateful_spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
+        action=SMOLVLA.action,
+    )
+    stateless_spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY),),
+        action=SMOLVLA.action,
+    )
+
+    def contract(num_envs: int) -> Any:
+        return SimpleNamespace(
+            metadata=env.tags.to_metadata(),
+            observation_space=env.obs_space,
+            action_space=env.action_space,
+            num_envs=num_envs,
+        )
+
+    with pytest.raises(adapt.AdapterResolutionError, match="num_envs=2"):
+        resolve_route_adapter(stateful_spec, contract(2), trust_entrypoints=False)
+    # The same stateful adapter is fine against a single lane.
+    assert resolve_route_adapter(
+        stateful_spec, contract(1), trust_entrypoints=False
+    ).is_stateful
+    # A stateless adapter on a vector route is harmless and must not be rejected.
+    stateless = resolve_route_adapter(
+        stateless_spec, contract(2), trust_entrypoints=False
+    )
+    assert stateless is not None and stateless.is_stateful is False
+    # spec=None / no tags also resolves to None without over-rejecting.
+    untagged = SimpleNamespace(metadata={}, num_envs=2)
+    assert resolve_route_adapter(None, untagged, trust_entrypoints=False) is None
 
 
 def test_euler_xyz_encoding_converts_end_to_end() -> None:

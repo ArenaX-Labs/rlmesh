@@ -333,6 +333,7 @@ async fn served_model_configure_route_requires_env_contract() {
             predicts: Arc::new(AtomicUsize::new(0)),
             closes: Arc::new(AtomicUsize::new(0)),
         })),
+        None,
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
     )
@@ -366,6 +367,7 @@ async fn served_model_predict_mirrors_route_context() {
             predicts: Arc::new(AtomicUsize::new(0)),
             closes: Arc::new(AtomicUsize::new(0)),
         })),
+        None,
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::from([(
             "session-1:route-1".to_string(),
@@ -415,6 +417,7 @@ async fn served_model_predict_rejects_route_wider_than_opened_route() {
             predicts: Arc::new(AtomicUsize::new(0)),
             closes: Arc::new(AtomicUsize::new(0)),
         })),
+        None,
         Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::from([(
             "session-1:route-1".to_string(),
@@ -473,6 +476,7 @@ async fn served_model_close_route_drains_route_episodes() {
             request_id: "close-route-1".to_string(),
         },
         Arc::clone(&handler),
+        None,
         Arc::clone(&active_episodes),
         Arc::clone(&route_configs),
     )
@@ -523,6 +527,7 @@ async fn served_model_close_drains_all_active_episodes() {
             request_id: "close-1".to_string(),
         },
         Arc::clone(&handler),
+        None,
         Arc::clone(&active_episodes),
         Arc::new(Mutex::new(HashMap::new())),
     )
@@ -676,6 +681,183 @@ async fn model_bind_resolves_port_zero_before_serving() {
 
     shutdown_and_join(server).await;
     assert_eq!(closes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn remote_model_connects_resets_and_predicts() {
+    // The public RemoteModel mirrors RemoteEnv: connect to a served policy,
+    // begin an episode with reset(), then drive it by hand with predict(). It
+    // configures the route once from the env contract and round-trips the
+    // observation/action through the value codec.
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    let env_contract = SmokeEnv::new().env_contract;
+    let mut model = crate::RemoteModel::connect(&address, env_contract)
+        .await
+        .expect("model server did not start");
+
+    let observe = || {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    };
+
+    model.reset();
+    // SmokeModel returns the raw action byte vec![0]; it decodes against the
+    // contract's Uint8 Box action space.
+    let action = model.predict(observe()).await.unwrap();
+    assert!(matches!(action, spaces::SpaceValue::Box(_)));
+    // A second predict on the same episode does not re-configure the route.
+    model.predict(observe()).await.unwrap();
+    assert_eq!(predicts.load(Ordering::SeqCst), 2);
+
+    model.close().await.unwrap();
+    // close() now ends only this route (CloseRoute), leaving the bidi stream
+    // open; dropping the model closes it so the server can drain on shutdown.
+    drop(model);
+
+    // The route was configured exactly once; a fresh client could still connect.
+    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "")
+        .await
+        .unwrap();
+    shutdown_client.handshake().await.unwrap();
+    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
+    shutdown_and_join(server).await;
+}
+
+#[tokio::test]
+async fn remote_model_predict_requires_reset() {
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    let mut model = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .unwrap();
+
+    // predict() before reset() is a usage error, and no predict reaches the server.
+    let err = model
+        .predict(spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
+        ))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("reset()"));
+    assert_eq!(predicts.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn two_remote_models_in_one_process_use_distinct_route_keys() {
+    // Two RemoteModels connected to the same server from one process must not
+    // collide on the served model's session_id:route_id-keyed caches. route_id
+    // is stable per instance ("remote-model"), so the session id is what keeps
+    // the keys distinct; a regression would make both clients share one key and
+    // clobber each other's contract/adapter/lifecycle.
+    #[derive(Clone)]
+    struct KeyRecordingModel {
+        keys: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ModelHandler for KeyRecordingModel {
+        async fn predict(
+            &mut self,
+            observation: ModelObservation,
+        ) -> Result<spaces::BinaryPayload> {
+            let key = format!(
+                "{}:{}",
+                observation.route.session_id, observation.route.route_id
+            );
+            self.keys.lock().await.push(key);
+            Ok(spaces::BinaryPayload { data: vec![0] })
+        }
+    }
+
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let bound = ModelWorker::new(KeyRecordingModel {
+        keys: Arc::clone(&keys),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+    let address = format!("tcp://127.0.0.1:{port}");
+
+    let observe = || {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    };
+
+    let mut first = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .unwrap();
+    let mut second = crate::RemoteModel::connect(&address, SmokeEnv::new().env_contract)
+        .await
+        .unwrap();
+
+    first.reset();
+    first.predict(observe()).await.unwrap();
+    second.reset();
+    second.predict(observe()).await.unwrap();
+
+    let recorded = keys.lock().await.clone();
+    assert_eq!(recorded.len(), 2);
+    assert_ne!(
+        recorded[0], recorded[1],
+        "two sessions in one process collided on a single route key: {recorded:?}"
+    );
+
+    first.close().await.unwrap();
+    second.close().await.unwrap();
+    server.abort();
 }
 
 #[tokio::test]

@@ -9,7 +9,7 @@ def test_remote_handle_protocols_share_a_common_base() -> None:
     The common surface lives on _RemoteHandleBase so it is declared once
     instead of being restated in both protocols.
     """
-    from rlmesh.sandbox.session import (
+    from rlmesh._sandbox.session import (
         RemoteEnvHandle,
         RemoteVectorEnvHandle,
         _RemoteHandleBase,

@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from typing import Any, ClassVar, cast
 
 import pytest
-from rlmesh.models import ModelRecipe
-from rlmesh.recipes import ArtifactInput, Build, EnvRecipe, PipInstall, ProjectInstall
 
 
 def test_sandbox_cleanup_runs_on_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     stopped: list[str] = []
     captured: dict[str, object] = {}
@@ -52,7 +49,7 @@ def test_sandbox_cleanup_runs_on_keyboard_interrupt(
 def test_sandbox_cleanup_runs_on_remote_attach_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     stopped: list[str] = []
 
@@ -80,7 +77,7 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
 def test_sandbox_package_spec_alias_sets_rlmesh_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     captured: dict[str, object] = {}
     stopped: list[str] = []
@@ -123,7 +120,7 @@ def test_sandbox_package_spec_alias_sets_rlmesh_package(
 def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     class Remote:
         def __init__(self, address: str) -> None:
@@ -149,7 +146,7 @@ def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
 def test_sandbox_retries_close_after_transient_stop_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     stop_calls: list[str] = []
 
@@ -190,7 +187,7 @@ def test_sandbox_rejects_bare_str_packages_imports(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     class Remote:
         def __init__(self, address: str) -> None:
@@ -215,7 +212,7 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     captured: dict[str, object] = {}
     stopped: list[str] = []
@@ -255,7 +252,7 @@ def test_sandbox_model_shutdown_is_idempotent(
     # shutdown() followed by __exit__ (or __del__) must not re-stop an already
     # stopped container. Bypass __init__ (which starts a real container).
     import rlmesh._rlmesh as native
-    from rlmesh.sandbox._model import SandboxModel
+    from rlmesh._sandbox._model import SandboxModel
 
     stops: list[str] = []
     monkeypatch.setattr(
@@ -273,320 +270,13 @@ def test_sandbox_model_shutdown_is_idempotent(
     assert stops == ["container-x"]
 
 
-def test_resolve_recipe_source_bakes_make_kwargs_into_document() -> None:
-    # A recipe source carries make kwargs in the document (make.kwargs), since the
-    # recipe bootstrap payload never threads kwargs_json into the recipe build.
-    from rlmesh import recipes
-    from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
-    _, recipe_json, provenance, _, _ = resolve_recipe_source(
-        recipe, {"render_mode": "rgb_array"}
-    )
-
-    assert provenance == "installed"
-    assert recipe_json is not None
-    document = recipes.Recipe.from_json(recipe_json)
-    assert document.make is not None
-    assert dict(document.make.kwargs) == {"render_mode": "rgb_array"}
-
-
-def test_resolve_recipe_source_merges_over_existing_make_kwargs() -> None:
-    # Caller kwargs win over the recipe's own baked make kwargs, like
-    # rlmesh.make(recipe, **kwargs).
-    from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="cart/pole",
-        make=GymMake(env_id="CartPole-v1", kwargs={"render_mode": "human", "g": 9.8}),
-    )
-    _, recipe_json, _, _, _ = resolve_recipe_source(
-        recipe, {"render_mode": "rgb_array"}
-    )
-
-    assert recipe_json is not None
-    document = Recipe.from_json(recipe_json)
-    assert document.make is not None
-    assert dict(document.make.kwargs) == {"render_mode": "rgb_array", "g": 9.8}
-
-
-def test_resolve_recipe_source_build_only_base_with_kwargs_raises() -> None:
-    # A build-only base recipe (make=None) has nowhere to bake make kwargs.
-    from rlmesh.recipes import Build, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
-    with pytest.raises(TypeError, match="build-only base"):
-        resolve_recipe_source(base, {"render_mode": "rgb_array"})
-
-
-def test_resolve_recipe_source_rejects_hf_make_before_build() -> None:
-    # An HfMake recipe must be rejected up front, not only after a full image build
-    # by the in-container build().
-    from rlmesh.recipes import HfMake, Recipe, UnsupportedRecipeError
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="acme/hf",
-        make=HfMake(repo="acme/env", revision="a" * 40),
-    )
-    with pytest.raises(UnsupportedRecipeError, match="HfMake"):
-        resolve_recipe_source(recipe, {})
-
-
-def test_resolve_recipe_source_rejects_setup_files_before_build() -> None:
-    # setup.files is not applied anywhere yet (the in-container build() -> apply_setup
-    # raises on it too), so it must be rejected up front -- before any image build.
-    from rlmesh.recipes import GymMake, Recipe, Setup, UnsupportedRecipeError
-    from rlmesh.recipes._schema import FileWrite
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="acme/with-files",
-        make=GymMake(env_id="CartPole-v1"),
-        setup=Setup(files=[FileWrite(path="x.txt", contents="hi")]),
-    )
-    with pytest.raises(
-        UnsupportedRecipeError, match=r"setup\.files is not applied yet"
-    ):
-        resolve_recipe_source(recipe, {})
-
-
-def test_resolve_recipe_source_from_recipe_uses_base_origin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # When a task recipe inlines a `from_recipe` base, the base supplies the entire
-    # build (incl. its ProjectInstall, whose src is relative to the BASE's tree). The
-    # staged context_root must therefore be the BASE's origin (dir A), not the task's
-    # registration dir / cwd (dir B).
-    from rlmesh import recipes
-    from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    base = Recipe(
-        name="acme/base",
-        make=PyMake(entrypoint="acme_env:make"),
-        build=Build(project=ProjectInstall(src=".")),
-    )
-    task = Recipe(
-        name="acme/task",
-        make=GymMake(env_id="CartPole-v1"),
-        build=Build(from_recipe="acme/base"),
-    )
-    recipes.register(base)
-    recipes.register(task)
-    # Force the two recipes to have *different* recorded origins so we can prove the
-    # base's origin (dir A) wins over the task's (dir B / cwd).
-    origins = {"acme/base": "/dir/A", "acme/task": "/dir/B"}
-    monkeypatch.setattr(
-        "rlmesh.recipes._registry.recipe_origin_dir",
-        lambda name: origins.get(name),
-    )
-    try:
-        _, _, provenance, context_root, _ = resolve_recipe_source("acme/task", {})
-    finally:
-        recipes.unregister("acme/base")
-        recipes.unregister("acme/task")
-
-    assert provenance == "installed"
-    assert context_root == "/dir/A"
-
-
-def test_resolve_recipe_source_chained_from_recipe_uses_terminal_base_origin(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A chained task -> base_b -> base_a inlines the TERMINAL base's build (base_a,
-    # the first whose build.from_recipe is None). base_a owns the ProjectInstall, so
-    # the staged context_root must be base_a's origin (dir A) -- not base_b's (dir B)
-    # or the task's (dir C / cwd). The immediate base (base_b) carries no build of
-    # its own here.
-    from rlmesh import recipes
-    from rlmesh.recipes import Build, GymMake, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    base_a = Recipe(
-        name="acme/base-a",
-        make=PyMake(entrypoint="acme_env:make"),
-        build=Build(project=ProjectInstall(src=".")),
-    )
-    base_b = Recipe(name="acme/base-b", build=Build(from_recipe="acme/base-a"))
-    task = Recipe(
-        name="acme/task",
-        make=GymMake(env_id="CartPole-v1"),
-        build=Build(from_recipe="acme/base-b"),
-    )
-    recipes.register(base_a)
-    recipes.register(base_b)
-    recipes.register(task)
-    # Distinct recorded origins so we can prove the terminal base's origin (dir A)
-    # wins over the intermediate base (dir B) and the task (dir C / cwd).
-    origins = {"acme/base-a": "/dir/A", "acme/base-b": "/dir/B", "acme/task": "/dir/C"}
-    monkeypatch.setattr(
-        "rlmesh.recipes._registry.recipe_origin_dir",
-        lambda name: origins.get(name),
-    )
-    try:
-        _, _, provenance, context_root, _ = resolve_recipe_source("acme/task", {})
-    finally:
-        recipes.unregister("acme/base-a")
-        recipes.unregister("acme/base-b")
-        recipes.unregister("acme/task")
-
-    assert provenance == "installed"
-    assert context_root == "/dir/A"
-
-
-def test_resolve_recipe_source_authored_project_uses_module_dir() -> None:
-    # An authored EnvRecipe with a ProjectInstall stages from its defining module's
-    # directory, not the launching process's cwd.
-    from pathlib import Path
-
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    _, recipe_json, provenance, context_root, _ = resolve_recipe_source(
-        _ProjectRecipe, {}
-    )
-
-    assert provenance == "installed"
-    assert recipe_json is not None
-    expected = str(Path(__file__).resolve().parent)
-    assert context_root == expected
-
-
-def test_resolve_recipe_source_registered_name_uses_registrant_dir() -> None:
-    # A recipe resolved by registered name stages a ProjectInstall from the
-    # registrant's module directory (recorded at register() time), not the cwd.
-    from pathlib import Path
-
-    from rlmesh import recipes
-    from rlmesh.recipes import Build, ProjectInstall, PyMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="acme/by-name",
-        make=PyMake(entrypoint="acme_env:make"),
-        build=Build(project=ProjectInstall(src=".")),
-    )
-    recipes.register(recipe)
-    try:
-        _, _, provenance, context_root, _ = resolve_recipe_source("acme/by-name", {})
-    finally:
-        recipes.unregister("acme/by-name")
-
-    assert provenance == "installed"
-    # register() above runs from this test module, so its origin is this directory.
-    assert context_root == str(Path(__file__).resolve().parent)
-
-
-def test_resolve_recipe_source_plain_id_unchanged() -> None:
-    # A plain gym id that is not a registered recipe stays an ordinary source.
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    assert resolve_recipe_source("CartPole-v1", {"render_mode": "rgb_array"}) == (
-        "CartPole-v1",
-        None,
-        None,
-        None,
-        (),
-    )
-
-
-def test_resolve_recipe_source_merges_imports_into_requires() -> None:
-    # A recipe source carries caller imports= in the document (requires.imports),
-    # since the recipe bootstrap reads requires.imports, never the caller's imports=
-    # channel. Without the merge a registration import (e.g. ale_py) is dropped and
-    # the gym env is not found in-container.
-    from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
-    _, recipe_json, provenance, _, _ = resolve_recipe_source(recipe, {}, ["ale_py"])
-
-    assert provenance == "installed"
-    assert recipe_json is not None
-    document = Recipe.from_json(recipe_json)
-    assert "ale_py" in document.requires.imports
-
-
-def test_resolve_recipe_source_merges_imports_dedup_preserves_order() -> None:
-    # The recipe's own imports come first; caller imports append, de-duplicated.
-    from rlmesh.recipes import GymMake, Recipe, Requires
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="my/atari",
-        make=GymMake(env_id="ALE/Pong-v5"),
-        requires=Requires(imports=["ale_py", "shimmy"]),
-    )
-    _, recipe_json, _, _, _ = resolve_recipe_source(recipe, {}, ["ale_py", "extra_reg"])
-
-    assert recipe_json is not None
-    document = Recipe.from_json(recipe_json)
-    assert list(document.requires.imports) == ["ale_py", "shimmy", "extra_reg"]
-
-
-def test_resolve_recipe_source_pymake_with_imports_raises() -> None:
-    # requires.imports is forbidden for PyMake (the py factory owns its imports), so
-    # a caller imports= on a PyMake recipe is rejected rather than silently dropped.
-    from rlmesh.recipes import PyMake, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(name="acme/py", make=PyMake(entrypoint="acme_env:make"))
-    with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
-        resolve_recipe_source(recipe, {}, ["ale_py"])
-
-
-def test_resolve_recipe_source_build_only_base_with_imports_raises() -> None:
-    # A build-only base (make=None) has no make/requires surface for caller imports.
-    from rlmesh.recipes import Build, Recipe
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    base = Recipe(name="acme/base", build=Build(base="python:3.11-slim"))
-    with pytest.raises(TypeError, match=r"PyMake/build-only.*imports="):
-        resolve_recipe_source(base, {}, ["ale_py"])
-
-
-def test_resolve_recipe_source_no_imports_leaves_requires_untouched() -> None:
-    # The default (no caller imports) path is identical to before: the recipe's own
-    # requires.imports passes through unchanged.
-    from rlmesh.recipes import GymMake, Recipe, Requires
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    recipe = Recipe(
-        name="my/atari",
-        make=GymMake(env_id="ALE/Pong-v5"),
-        requires=Requires(imports=["ale_py"]),
-    )
-    _, recipe_json, _, _, _ = resolve_recipe_source(recipe, {})
-
-    assert recipe_json is not None
-    document = Recipe.from_json(recipe_json)
-    assert list(document.requires.imports) == ["ale_py"]
-
-
-def test_resolve_recipe_source_plain_id_with_imports_unchanged() -> None:
-    # A plain gym source string (not a recipe) is unchanged: imports= is NOT consumed
-    # here -- it stays forwarded via the gym/hf path's imports= channel.
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    assert resolve_recipe_source("CartPole-v1", {}, ["ale_py"]) == (
-        "CartPole-v1",
-        None,
-        None,
-        None,
-        (),
-    )
-
-
 def test_start_sandbox_gym_path_forwards_imports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # On the gym/hf source-string path, imports= is still forwarded to
     # _sandbox_start_env byte-identically to before (the recipe-merge path does not
     # apply to a non-recipe source).
-    from rlmesh.sandbox import session as sandbox
+    from rlmesh._sandbox import session as sandbox
 
     captured: dict[str, object] = {}
 
@@ -613,88 +303,6 @@ def test_start_sandbox_gym_path_forwards_imports(
     assert "recipe_json" not in captured
 
 
-def test_start_sandbox_recipe_path_omits_forwarded_imports(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # On the recipe path the caller imports ride the document (requires.imports); they
-    # must NOT also be forwarded via _sandbox_start_env's imports= channel (which the
-    # recipe bootstrap ignores), so the document is their sole carrier.
-    from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox import session as sandbox
-
-    captured: dict[str, object] = {}
-
-    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
-        captured.update(kwargs)
-        return _start_result()
-
-    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
-
-    recipe = Recipe(name="my/atari", make=GymMake(env_id="ALE/Pong-v5"))
-    sandbox._start_sandbox(
-        recipe,
-        base_image=None,
-        rlmesh_package=None,
-        packages=None,
-        imports=["ale_py"],
-        trust_remote_code=False,
-        allow_unpinned_hf=False,
-        num_envs=1,
-        vectorization_mode=None,
-        gym_make_kwargs={},
-    )
-
-    assert captured["imports"] == []
-    merged = Recipe.from_json(cast(str, captured["recipe_json"]))
-    assert "ale_py" in merged.requires.imports
-
-
-def test_start_sandbox_recipe_path_omits_kwargs_json(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # On the recipe path the make kwargs ride the document (make.kwargs); they must
-    # not ALSO be shipped via kwargs_json, which the recipe bootstrap ignores.
-    from rlmesh.recipes import GymMake, Recipe
-    from rlmesh.sandbox import session as sandbox
-
-    captured: dict[str, object] = {}
-
-    def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
-        captured.update(kwargs)
-        return _start_result()
-
-    monkeypatch.setattr(sandbox, "_sandbox_start_env", start_result)
-
-    recipe = Recipe(name="cart/pole", make=GymMake(env_id="CartPole-v1"))
-    sandbox._start_sandbox(
-        recipe,
-        base_image=None,
-        rlmesh_package=None,
-        packages=None,
-        imports=None,
-        trust_remote_code=False,
-        allow_unpinned_hf=False,
-        num_envs=1,
-        vectorization_mode=None,
-        gym_make_kwargs={"render_mode": "rgb_array"},
-    )
-
-    assert captured["kwargs_json"] is None
-    baked = Recipe.from_json(cast(str, captured["recipe_json"]))
-    assert baked.make is not None
-    assert dict(baked.make.kwargs) == {"render_mode": "rgb_array"}
-
-
-class _ProjectRecipe(EnvRecipe):
-    """A test EnvRecipe whose build stages its own package source tree."""
-
-    name = "acme/project"
-    build = Build(project=ProjectInstall(src="."))
-
-    def make(self, **kwargs: object) -> object:
-        return SimpleNamespace(reset=lambda: None, step=lambda action: None)
-
-
 def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
     return {
         "requested_source": "gym://CartPole-v1",
@@ -704,227 +312,20 @@ def _start_result(*_args: object, **_kwargs: object) -> dict[str, str]:
     }
 
 
-class _RunPolicy(ModelRecipe):
-    """A minimal model recipe SandboxModel.run() can build an image from."""
+def test_sandbox_model_requires_image_source() -> None:
+    # SandboxModel is image:// only; a non-image source is rejected.
+    from rlmesh._sandbox._model import SandboxModel
 
-    name = "policy/run-test"
-    build = Build(pip=[PipInstall(["numpy"])])
-
-    def load(self) -> None:
-        pass
-
-    def predict(self, observation: object) -> object:
-        return 0
+    with pytest.raises(TypeError, match="prebuilt image source"):
+        SandboxModel("policy/run-test")
 
 
-def _drive_stdout(episodes: list[dict[str, object]]) -> str:
-    return (
-        "RLMesh sandbox driving env\n"
-        + "RLMESH_RUN_RESULT "
-        + json.dumps({"episodes": episodes})
-        + "\nbye\n"
-    )
+def test_sandbox_model_image_rejects_artifacts() -> None:
+    from rlmesh._sandbox._model import SandboxModel
+    from rlmesh._spec._core import ArtifactInput
 
-
-def _run_episode(index: int, seed: int, reward: float, terminated: bool) -> dict:
-    return {
-        "index": index,
-        "seed": seed,
-        "steps": 3,
-        "reward": reward,
-        "terminated": terminated,
-        "truncated": not terminated,
-    }
-
-
-def test_sandbox_model_run_drives_and_parses_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # run() builds the image, runs ONE drive container with the right env vars,
-    # and reconstructs a full RunResult from the printed RLMESH_RUN_RESULT line.
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native,
-        "sandbox_build_image",
-        lambda *a, **k: {"image": "rlmesh-sandbox:abc", "image_id": "sha256:abc"},
-    )
-    captured: dict[str, object] = {}
-
-    def fake_run(cmd: list[str], **kwargs: object) -> Any:
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            returncode=0,
-            stdout=_drive_stdout(
-                [
-                    _run_episode(0, 7, 1.0, True),
-                    _run_episode(1, 8, 0.0, False),
-                ]
-            ),
-            stderr="",
+    with pytest.raises(TypeError, match="does not accept artifacts="):
+        SandboxModel(
+            "image://m:1",
+            artifacts=[ArtifactInput("w", "/w", local_dir="/host")],
         )
-
-    monkeypatch.setattr(_model.subprocess, "run", fake_run)
-
-    model = _model.SandboxModel(_RunPolicy)
-    result = model.run("tcp://127.0.0.1:50051", seeds=[7, 8])
-
-    assert result.num_episodes == 2
-    assert result.mean_reward == 0.5
-    assert result.success_rate == 0.5
-    cmd = cast(list[str], captured["cmd"])
-    assert cmd[:2] == ["docker", "run"]
-    assert "--network" in cmd and "host" in cmd
-    assert "RLMESH_DRIVE_ENV_ADDRESS=tcp://127.0.0.1:50051" in cmd
-    assert "RLMESH_SEEDS=7,8" in cmd
-    assert cmd[-1] == "rlmesh-sandbox:abc"
-    # Hardening parity with the native runner.
-    assert "--cap-drop" in cmd and "ALL" in cmd
-    assert "no-new-privileges" in cmd
-    # The current recipe rides RLMESH_BOOTSTRAP_JSON so a cached image (keyed only
-    # by the build phase) still drives this recipe, not a previously baked one.
-    bootstrap = next(
-        a.split("=", 1)[1] for a in cmd if a.startswith("RLMESH_BOOTSTRAP_JSON=")
-    )
-    payload = json.loads(bootstrap)
-    assert payload["spec"]["document"]["name"] == "policy/run-test"
-    assert "build" not in payload["spec"]["document"]  # build phase stripped
-
-
-def test_sandbox_model_run_max_episodes_passed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
-    )
-    captured: dict[str, object] = {}
-
-    def fake_run(cmd: list[str], **kwargs: object) -> Any:
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            returncode=0,
-            stdout=_drive_stdout([_run_episode(0, 0, 1.0, True)]),
-            stderr="",
-        )
-
-    monkeypatch.setattr(_model.subprocess, "run", fake_run)
-    _model.SandboxModel(_RunPolicy).run("addr", max_episodes=5)
-    assert "RLMESH_MAX_EPISODES=5" in cast(list[str], captured["cmd"])
-
-
-def test_sandbox_model_run_missing_result_line_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
-    )
-    monkeypatch.setattr(
-        _model.subprocess,
-        "run",
-        lambda cmd, **k: SimpleNamespace(
-            returncode=0, stdout="no marker here", stderr=""
-        ),
-    )
-    with pytest.raises(RuntimeError, match="no RLMESH_RUN_RESULT"):
-        _model.SandboxModel(_RunPolicy).run("addr")
-
-
-def test_sandbox_model_run_nonzero_exit_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
-    )
-    monkeypatch.setattr(
-        _model.subprocess,
-        "run",
-        lambda cmd, **k: SimpleNamespace(
-            returncode=1, stdout="", stderr="bootstrap failed: boom"
-        ),
-    )
-    with pytest.raises(RuntimeError, match="boom"):
-        _model.SandboxModel(_RunPolicy).run("addr")
-
-
-class _GpuPolicy(ModelRecipe):
-    name = "policy/gpu"
-    build = Build(pip=[PipInstall(["numpy"])], gpu=True)
-
-    def load(self) -> None:
-        pass
-
-    def predict(self, observation: object) -> object:
-        return 0
-
-
-class _WeightedRunPolicy(ModelRecipe):
-    name = "policy/weighted-run"
-    inputs = (ArtifactInput("weights", "/opt/weights", uri="hf://org/repo"),)
-
-    def load(self) -> None:
-        pass
-
-    def predict(self, observation: object) -> object:
-        return 0
-
-
-def _ok_run(captured: dict[str, object]):
-    def fake_run(cmd: list[str], **kwargs: object) -> Any:
-        captured["cmd"] = cmd
-        return SimpleNamespace(
-            returncode=0,
-            stdout=_drive_stdout([_run_episode(0, 0, 1.0, True)]),
-            stderr="",
-        )
-
-    return fake_run
-
-
-def test_sandbox_model_run_requests_gpu_for_gpu_recipe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A build.gpu recipe must expose CUDA to the drive container, like the native
-    # runner does -- otherwise load()/inference fails for GPU models.
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
-    )
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(_model.subprocess, "run", _ok_run(captured))
-
-    _model.SandboxModel(_GpuPolicy).run("addr")
-    cmd = cast(list[str], captured["cmd"])
-    assert "--gpus" in cmd and "all" in cmd
-    assert "NVIDIA_VISIBLE_DEVICES=all" in cmd
-
-
-def test_sandbox_model_run_binds_artifact_mounts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
-) -> None:
-    # A local_dir artifact must be bind-mounted into the drive container so the
-    # in-container input_path() target exists, matching the serve path.
-    import rlmesh._rlmesh as native
-    from rlmesh.sandbox import _model
-
-    monkeypatch.setattr(
-        native, "sandbox_build_image", lambda *a, **k: {"image": "img", "image_id": "i"}
-    )
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(_model.subprocess, "run", _ok_run(captured))
-
-    override = ArtifactInput("weights", "/ignored", local_dir=str(tmp_path))
-    _model.SandboxModel(_WeightedRunPolicy, artifacts=[override]).run("addr")
-    cmd = cast(list[str], captured["cmd"])
-    assert f"type=bind,source={tmp_path},target=/opt/weights,readonly" in cmd

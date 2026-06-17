@@ -3,6 +3,13 @@
 All notable RLMesh changes are tracked here. Entries are generated from conventional commit messages
 with `mise run changelog:build`.
 
+## Unreleased
+
+### Removed
+
+- **Breaking:** recipes: Remove recipe authoring (`rlmesh.recipes`, `register`, `EnvRecipe`,
+  `ModelRecipe`) from the package
+
 ## 0.1.0-beta.3 - 2026-06-15
 
 ### Added

@@ -11,8 +11,8 @@ environment tags its observation and action spaces, a model specifies the payloa
 environment) adapter code you would otherwise write by hand; cases the declarative specs do not
 cover fall back to an escape hatch (see Known limitations).
 
-Adapters connect the two halves of the recipe family: an {doc}`environment recipe <env-recipes>`
-publishes tags, a {doc}`model recipe <model-recipes>` declares a spec, and `resolve` bridges them.
+Adapters connect the two sides of an eval: an environment publishes tags, a model declares a spec,
+and `resolve` bridges them.
 
 It is fully opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
 backend (`pip install --pre "rlmesh[numpy]"`).

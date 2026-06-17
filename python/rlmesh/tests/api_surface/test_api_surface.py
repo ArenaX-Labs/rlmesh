@@ -5,14 +5,14 @@ def test_root_namespace_is_small() -> None:
     import rlmesh
 
     assert rlmesh.__all__ == [
-        "EnvRecipe",
+        "DELEGATED",
         "EnvServer",
-        "ExportResult",
+        "EpisodeResult",
         "Model",
-        "ModelRecipe",
-        "Recipe",
         "RemoteEnv",
+        "RemoteModel",
         "RemoteVectorEnv",
+        "RunResult",
         "SandboxEnv",
         "SandboxModel",
         "SandboxVectorEnv",
@@ -20,17 +20,24 @@ def test_root_namespace_is_small() -> None:
         "Tensor",
         "__version__",
         "adapters",
-        "export",
-        "make",
-        "models",
-        "recipes",
-        "register",
-        "serving",
+        "hf_load",
         "spaces",
         "types",
     ]
 
+    # Recipe authoring is excluded from the released wheel, and the internal
+    # modules are _-prefixed (server/serving/client/sandbox/models): none of
+    # these are part of the public top-level surface.
     for name in (
+        "EnvRecipe",
+        "ModelRecipe",
+        "Recipe",
+        "register",
+        "serving",
+        "server",
+        "client",
+        "sandbox",
+        "models",
         "Box",
         "Discrete",
         "Dict",
@@ -90,6 +97,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "Model",
         "NumpyValue",
         "RemoteEnv",
+        "RemoteModel",
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxInfo",
@@ -106,6 +114,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
     assert rlmesh_torch.__all__ == [
         "Model",
         "RemoteEnv",
+        "RemoteModel",
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxInfo",

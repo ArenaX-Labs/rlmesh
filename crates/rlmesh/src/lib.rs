@@ -127,8 +127,8 @@ pub use env::{
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
-    ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot, ModelWorker,
-    RunLocalOptions, ServeModelOptions, encode_action,
+    ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelRouteSlot,
+    ModelWorker, RemoteModel, RunLocalOptions, ServeModelOptions, encode_action,
 };
 pub use serve_options::ServeOptions;
 pub use single::{SingleEnv, SingleEnvAdapter};

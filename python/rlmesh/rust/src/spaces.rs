@@ -11,6 +11,7 @@ mod value_codec;
 
 // Re-export for use by other modules
 pub use crate::spaces::space::{make_space, parse_space};
+pub(crate) use crate::spaces::spec_view::extract_space_spec;
 pub use crate::spaces::spec_view::{env_contract_to_py, register_classes};
 pub(crate) use crate::spaces::value_codec::{
     ValueBackend, batched_space_values_to_py_neutral, batched_space_values_to_py_with_backend,

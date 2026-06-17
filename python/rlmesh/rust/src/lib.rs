@@ -68,13 +68,14 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<model::PyModel>()?;
+    m.add_class::<model::PyModelClient>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     #[cfg(feature = "viewer")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
-    m.add_function(wrap_pyfunction!(sandbox::sandbox_build_image, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
+    m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
 
     adapters::register_constants(m)?;
     m.add_class::<adapters::PyAdapterPlan>()?;

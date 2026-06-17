@@ -32,7 +32,7 @@ blocking the step loop when the viewer stalls.
 ## Single Environment Base
 
 ```{eval-rst}
-.. autoclass:: rlmesh.client.RemoteEnvBase
+.. autoclass:: rlmesh._client.RemoteEnvBase
    :members:
    :show-inheritance:
 ```
@@ -40,7 +40,7 @@ blocking the step loop when the viewer stalls.
 ## Vector Environment Base
 
 ```{eval-rst}
-.. autoclass:: rlmesh.client.RemoteVectorEnvBase
+.. autoclass:: rlmesh._client.RemoteVectorEnvBase
    :members:
    :show-inheritance:
 ```

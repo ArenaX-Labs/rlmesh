@@ -20,15 +20,12 @@ from .loaders import (
     load_gym_env,
     load_hf_env,
     load_module_from_path,
-    load_recipe_env,
     looks_like_env,
     normalize_hf_env,
 )
 from .spec_resolution import (
     BootstrapUsageError,
-    apply_member_params,
     expect_mapping,
-    member_params_from_env,
     resolve_bootstrap_spec,
     select_mapping_item,
 )
@@ -36,7 +33,6 @@ from .spec_resolution import (
 __all__ = [
     "BootstrapUsageError",
     "RecipeConstructionError",
-    "apply_member_params",
     "expect_mapping",
     "import_gym_modules",
     "import_packages",
@@ -47,10 +43,8 @@ __all__ = [
     "load_gym_env",
     "load_hf_env",
     "load_module_from_path",
-    "load_recipe_env",
     "looks_like_env",
     "make_gym_environment",
-    "member_params_from_env",
     "normalize_hf_env",
     "resolve_bootstrap_spec",
     "select_mapping_item",

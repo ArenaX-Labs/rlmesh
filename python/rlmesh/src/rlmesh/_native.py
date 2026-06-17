@@ -4,16 +4,21 @@ from __future__ import annotations
 
 from typing import ClassVar, final
 
+from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._framework_bridge import ValueBridge, identity_bridge
-from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .models.base import ModelBase
-from .sandbox import SandboxEnvBase, SandboxVectorEnvBase
-from .sandbox._model import SandboxModel
+from ._models.base import ModelBase
+from ._sandbox import SandboxEnvBase, SandboxVectorEnvBase
+from ._sandbox._model import SandboxModel
 from .types import Value
 
 
 @final
 class RemoteEnv(RemoteEnvBase[Value, Value]):
+    _bridge: ClassVar[ValueBridge] = identity_bridge
+
+
+@final
+class RemoteModel(RemoteModelBase[Value, Value]):
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
@@ -43,6 +48,7 @@ class SandboxVectorEnv(SandboxVectorEnvBase[Value, Value]):
 __all__ = [
     "Model",
     "RemoteEnv",
+    "RemoteModel",
     "RemoteVectorEnv",
     "SandboxEnv",
     "SandboxModel",

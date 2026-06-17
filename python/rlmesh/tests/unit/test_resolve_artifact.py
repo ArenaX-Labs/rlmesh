@@ -8,18 +8,15 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import cast
 
 import pytest
-import rlmesh
-from rlmesh.models import ArtifactInput
-from rlmesh.recipes import _artifacts
-from rlmesh.recipes._artifacts import (
+from rlmesh._models import ArtifactInput
+from rlmesh._spec import _artifacts
+from rlmesh._spec._artifacts import (
     _env_key,
     _materialized_path_from_env,
     resolve_artifact,
 )
-from rlmesh.server import EnvLike
 
 _OVERRIDE_ENVS = (
     "RLMESH_INPUT_WEIGHTS_PATH",
@@ -118,62 +115,16 @@ def test_snapshot_hf_missing_dep_message(monkeypatch: pytest.MonkeyPatch) -> Non
         _artifacts._snapshot_hf("org/repo", None)
 
 
-# ── env symmetry: an authored EnvRecipe resolves inputs through the same seam ──
+def test_local_dir_inputs_resolve_to_mounts(tmp_path: Path) -> None:
+    # An input with a local_dir resolves to a (host, target) bind-mount pair.
+    from rlmesh._spec._artifacts import local_dir_mounts
 
-
-class _Env:
-    def reset(self, *, seed: object = None, options: object = None) -> object:
-        return 0, {}
-
-    def step(self, action: object) -> object:
-        return 0, 0.0, False, False, {}
-
-
-def _assets_env(local_dir: str, captured: dict[str, str]) -> type[rlmesh.EnvRecipe]:
-    class AssetsEnv(rlmesh.EnvRecipe):
-        name = "test/assets-env"
-        inputs = (ArtifactInput("assets", "/assets", local_dir=local_dir),)
-
-        def make(self, **kwargs: object) -> EnvLike:
-            captured["path"] = self.input_path("assets")
-            return cast(EnvLike, cast(object, _Env()))
-
-    return AssetsEnv
-
-
-def test_env_recipe_host_input_path_resolves_local_dir(tmp_path: Path) -> None:
-    from rlmesh.recipes.authoring.env import construct_authored
-
-    captured: dict[str, str] = {}
-    _ = construct_authored(_assets_env(str(tmp_path), captured))
-    assert captured["path"] == str(tmp_path)
-
-
-def test_env_recipe_in_container_uses_target_path() -> None:
-    captured: dict[str, str] = {}
-    _ = _assets_env("/unused", captured)._rlmesh_construct()
-    assert captured["path"] == "/assets"
-
-
-def test_env_sandbox_inputs_flow_to_mounts(tmp_path: Path) -> None:
-    # 1.5b: an env recipe's local_dir inputs reach the sandbox as bind-mounts.
-    from rlmesh.recipes import PyMake, Recipe
-    from rlmesh.recipes._artifacts import local_dir_mounts
-    from rlmesh.sandbox._export import resolve_recipe_source
-
-    rec = Recipe(
-        name="t/assets-sandbox",
-        kind="env",
-        make=PyMake(entrypoint="m:C._rlmesh_construct"),
-        inputs=(ArtifactInput("assets", "/assets", local_dir=str(tmp_path)),),
-    )
-    _, _, _, _, inputs = resolve_recipe_source(rec)
-    assert inputs == rec.inputs
+    inputs = (ArtifactInput("assets", "/assets", local_dir=str(tmp_path)),)
     assert local_dir_mounts(inputs) == [(str(tmp_path), "/assets")]
 
 
 def test_resolve_uri_handles_file_netloc_forms() -> None:
-    from rlmesh.recipes._artifacts import _resolve_uri
+    from rlmesh._spec._artifacts import _resolve_uri
 
     assert _resolve_uri("file:///abs/path") == "/abs/path"
     assert _resolve_uri("file://localhost/abs/path") == "/abs/path"
@@ -185,7 +136,7 @@ def test_resolve_uri_handles_file_netloc_forms() -> None:
 
 
 def test_merged_inputs_override_keeps_declared_target_path() -> None:
-    from rlmesh.recipes._artifacts import merged_inputs
+    from rlmesh._spec._artifacts import merged_inputs
 
     declared = ArtifactInput("weights", "/declared/target", uri="hf://org/repo")
     override = ArtifactInput("weights", "/ignored/target", local_dir="/host/ckpt")

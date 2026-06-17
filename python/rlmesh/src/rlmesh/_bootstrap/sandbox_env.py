@@ -9,7 +9,6 @@ from typing import cast
 from .env import (
     BootstrapUsageError,
     load_env_from_spec,
-    member_params_from_env,
     resolve_bootstrap_spec,
 )
 
@@ -21,10 +20,9 @@ def main(
 ) -> int:
     """Serve a sandbox environment from a bootstrap payload.
 
-    The recipe is resolved (in precedence order) from inline
-    ``RLMESH_BOOTSTRAP_JSON``, the baked ``RLMESH_RECIPE_PATH`` recipe.json, or a
-    ``bootstrap.json`` path argument. ``RLMESH_PARAMS_JSON`` selects a member and
-    ``RLMESH_NUM_ENVS``/``RLMESH_VECTORIZATION_MODE`` set the eval shape at run time.
+    The bootstrap spec is resolved from inline ``RLMESH_BOOTSTRAP_JSON`` (or a
+    ``bootstrap.json`` path argument). ``RLMESH_NUM_ENVS``/
+    ``RLMESH_VECTORIZATION_MODE`` set the eval shape at run time.
     """
     argv = sys.argv[1:] if argv is None else argv
 
@@ -34,7 +32,7 @@ def main(
         print(exc, file=sys.stderr)
         return 2
 
-    # Flat eval knobs override whatever the spec carried (gym/hf/recipe all read
+    # Flat eval knobs override whatever the spec carried (gym/hf both read
     # num_envs/vectorization_mode from the spec).
     num_envs = os.environ.get("RLMESH_NUM_ENVS")
     if num_envs:
@@ -50,15 +48,11 @@ def main(
     if vectorization_mode:
         spec["vectorization_mode"] = vectorization_mode
 
-    setup_env, kwargs = member_params_from_env()
-
     try:
         from rlmesh import EnvServer
-        from rlmesh.server import EnvLike as ServedEnv
+        from rlmesh._server import EnvLike as ServedEnv
 
-        env = cast(
-            ServedEnv, load_env_from_spec(spec, setup_env=setup_env, kwargs=kwargs)
-        )
+        env = cast(ServedEnv, load_env_from_spec(spec))
         # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
         # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
         # deprecated aliases read after the new names.

@@ -9,12 +9,15 @@ actions in its format. This exercises tag -> serve -> resolve_from_contract
 
 from __future__ import annotations
 
+import socket
+import threading
+import time
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import rlmesh
 import rlmesh.adapters as adapt
-from rlmesh.numpy import Model, RemoteEnv
+from rlmesh.numpy import Model, RemoteEnv, RemoteModel
 
 if TYPE_CHECKING:
     import numpy as np
@@ -174,3 +177,77 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
         client.close()
     finally:
         server.shutdown()
+
+
+def _free_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return cast(int, sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
+def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
+    """A spec'd model served over the wire resolves its adapter from the route's
+    contract (configure_route) and applies transform_obs/transform_action, so the
+    same RemoteEnv/RemoteModel loop drives an adapted model end-to-end."""
+    pytest.importorskip("numpy")
+
+    tags = _tags()
+    spec = _model_spec()
+    env_obj = TinyArmEnv()
+    seen: dict[str, Any] = {"payload_keys": None}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        import numpy as np
+
+        seen["payload_keys"] = sorted(payload)
+        return np.zeros(spec.action.dim, dtype=np.float32)
+
+    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    env_server.start()
+    model_address = f"127.0.0.1:{_free_port()}"
+
+    def serve_model() -> None:
+        Model(predict, spec=spec).serve(
+            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
+        )
+
+    threading.Thread(target=serve_model, daemon=True).start()
+
+    try:
+        env = RemoteEnv(env_server.address)
+        deadline = time.monotonic() + 5.0
+        model: Any = None
+        last_error: BaseException | None = None
+        while time.monotonic() < deadline:
+            try:
+                model = RemoteModel(model_address).against(env)
+                break
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.05)
+        if model is None:
+            raise AssertionError("served model never came up") from last_error
+
+        obs, _info = env.reset(seed=0)
+        model.reset()
+        done = False
+        steps = 0
+        while not done and steps < 5:
+            action = model.predict(obs)
+            obs, _reward, terminated, truncated, _info = env.step(action)
+            done = terminated or truncated
+            steps += 1
+
+        model.close()
+        env.close()
+    finally:
+        env_server.shutdown()
+
+    # transform_obs ran server-side: the policy saw the model's declared payload.
+    assert seen["payload_keys"] == ["image", "instruction", "state"]
+    # transform_action ran and round-tripped: the env got its 7-dim action.
+    assert env_obj.last_action is not None
+    assert tuple(env_obj.last_action.shape) == (7,)

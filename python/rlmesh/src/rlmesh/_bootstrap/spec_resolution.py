@@ -1,16 +1,12 @@
-"""Bootstrap spec resolution, member-param layering, and JSON value coercion."""
+"""Bootstrap spec resolution and JSON value coercion."""
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
-
-if TYPE_CHECKING:
-    from rlmesh.recipes import Recipe
+from typing import Any, cast
 
 
 class BootstrapUsageError(ValueError):
@@ -18,14 +14,11 @@ class BootstrapUsageError(ValueError):
 
 
 def resolve_bootstrap_spec(argv: Sequence[str], *, prog: str) -> Mapping[str, object]:
-    """Resolve the bootstrap spec from its source, in precedence order.
+    """Resolve the bootstrap spec from its source.
 
-    ``RLMESH_BOOTSTRAP_JSON`` (inline payload, wins) > ``RLMESH_RECIPE_PATH`` (the
-    baked self-describing recipe.json) > a ``bootstrap.json`` path passed as the
-    sole argument. The first and last carry a ``{"spec": ...}`` payload; the baked
-    recipe.json is a bare recipe document, wrapped here into a ``kind="recipe"``
-    spec (its ``num_envs``/``vectorization_mode`` come from the flat
-    ``RLMESH_NUM_ENVS``/``RLMESH_VECTORIZATION_MODE`` vars, applied by the caller).
+    ``RLMESH_BOOTSTRAP_JSON`` (the inline run-time payload, wins) > a
+    ``bootstrap.json`` path passed as the sole argument. Both carry a
+    ``{"spec": ...}`` payload (a gym or hf bootstrap spec).
     """
     inline = os.environ.get("RLMESH_BOOTSTRAP_JSON")
     if inline is not None:
@@ -36,78 +29,15 @@ def resolve_bootstrap_spec(argv: Sequence[str], *, prog: str) -> Mapping[str, ob
         payload = expect_mapping(cast(object, json.loads(inline)), "bootstrap payload")
         return expect_mapping(payload.get("spec"), "bootstrap spec")
 
-    recipe_path = os.environ.get("RLMESH_RECIPE_PATH")
-    if recipe_path is not None:
-        if argv:
-            raise BootstrapUsageError(
-                f"usage: {prog} (set RLMESH_RECIPE_PATH, no arguments)"
-            )
-        document = cast(
-            object, json.loads(Path(recipe_path).read_text(encoding="utf-8"))
-        )
-        return {
-            "kind": "recipe",
-            "document": expect_mapping(document, "recipe document"),
-        }
-
     if len(argv) != 1:
         raise BootstrapUsageError(
-            f"usage: {prog} <bootstrap.json> "
-            "(or set RLMESH_BOOTSTRAP_JSON / RLMESH_RECIPE_PATH)"
+            f"usage: {prog} <bootstrap.json> (or set RLMESH_BOOTSTRAP_JSON)"
         )
     payload = expect_mapping(
         cast(object, json.loads(Path(argv[0]).read_text(encoding="utf-8"))),
         "bootstrap payload",
     )
     return expect_mapping(payload.get("spec"), "bootstrap spec")
-
-
-def member_params_from_env() -> tuple[dict[str, object], dict[str, object]]:
-    """Parse ``RLMESH_PARAMS_JSON`` into ``(setup_env, kwargs)`` (empty when unset).
-
-    The member selector ``{"setup_env": {...}, "kwargs": {...}}`` is layered over a
-    recipe's ``setup.env`` (declared keys only) and ``make.kwargs`` at startup, so
-    one image serves any declared member.
-    """
-    raw = os.environ.get("RLMESH_PARAMS_JSON")
-    if not raw:
-        return {}, {}
-    data = expect_mapping(cast(object, json.loads(raw)), "RLMESH_PARAMS_JSON")
-    return (
-        mapping_to_kwargs(data.get("setup_env"), "RLMESH_PARAMS_JSON.setup_env"),
-        mapping_to_kwargs(data.get("kwargs"), "RLMESH_PARAMS_JSON.kwargs"),
-    )
-
-
-def apply_member_params(
-    recipe: Recipe,
-    *,
-    setup_env: Mapping[str, object] | None = None,
-    kwargs: Mapping[str, object] | None = None,
-) -> Recipe:
-    """Layer the member selector over a recipe, returning a new frozen recipe.
-
-    ``setup_env`` overrides ``setup.env`` only for keys the recipe DECLARES in
-    ``setup.params``; undeclared keys are silently ignored -- the managed shim
-    deliberately emits extra selector keys that stay as flat env. ``kwargs`` merges
-    over ``make.kwargs``.
-    """
-    new = recipe
-    if setup_env:
-        setup = new.setup
-        declared = set(setup.params)
-        applied = {
-            key: str(value) for key, value in setup_env.items() if key in declared
-        }
-        if applied:
-            merged = {**setup.env, **applied}
-            new = dataclasses.replace(new, setup=dataclasses.replace(setup, env=merged))
-    if kwargs and new.make is not None:
-        merged_kwargs = {**dict(new.make.kwargs), **kwargs}
-        new = dataclasses.replace(
-            new, make=dataclasses.replace(new.make, kwargs=merged_kwargs)
-        )
-    return new
 
 
 def select_mapping_item(

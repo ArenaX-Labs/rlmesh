@@ -4,7 +4,7 @@ import pytest
 
 
 def test_connect_uses_an_env_like_object_directly() -> None:
-    from rlmesh.models._eval import _connect
+    from rlmesh._models._eval import _connect
 
     class Env:
         env_contract = "contract"
@@ -20,7 +20,7 @@ def test_connect_uses_an_env_like_object_directly() -> None:
 
 
 def test_connect_rejects_unsupported() -> None:
-    from rlmesh.models._eval import _connect
+    from rlmesh._models._eval import _connect
 
     with pytest.raises(
         TypeError, match="env object, a remote-env object, or an address"
@@ -29,7 +29,7 @@ def test_connect_rejects_unsupported() -> None:
 
 
 def test_shutdown_passes_a_reason_when_accepted() -> None:
-    from rlmesh.models._eval import _shutdown
+    from rlmesh._models._eval import _shutdown
 
     calls: list[tuple[object, ...]] = []
 
@@ -42,7 +42,7 @@ def test_shutdown_passes_a_reason_when_accepted() -> None:
 
 
 def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
-    from rlmesh.models._eval import _shutdown
+    from rlmesh._models._eval import _shutdown
 
     calls: list[tuple[object, ...]] = []
 
@@ -70,7 +70,7 @@ def test_backend_models_wire_their_own_remote_env() -> None:
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
     from typing import Any, cast
 
-    from rlmesh.models._eval import _reject_vector_env
+    from rlmesh._models._eval import _reject_vector_env
 
     class FourEnvs:
         num_envs = 4
@@ -88,7 +88,7 @@ def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
 def test_to_framework_rekeys_adapter_numpy_payload() -> None:
     torch = pytest.importorskip("torch")
     import numpy as np
-    from rlmesh.models._eval import _to_framework, _to_numpy
+    from rlmesh._models._eval import _to_framework, _to_numpy
     from rlmesh.numpy import _numpy_bridge
     from rlmesh.torch import _torch_bridge
 
@@ -104,3 +104,56 @@ def test_to_framework_rekeys_adapter_numpy_payload() -> None:
     np_action = _to_numpy(torch.tensor([1.0, 2.0]), _torch_bridge)
     assert isinstance(np_action, np.ndarray)
     assert np_action.tolist() == [1.0, 2.0]
+
+
+def _address_run_calls(*, close_env: bool) -> tuple[object, list[str]]:
+    from rlmesh._models._eval import evaluate
+
+    calls: list[str] = []
+
+    class FakeRemoteEnv:
+        env_contract = None
+
+        def __init__(self, address: str) -> None:
+            self.address = address
+
+        def reset(self, seed: object = None) -> tuple[object, dict[str, object]]:
+            return 0, {}
+
+        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
+            return 0, 0.0, True, False, {}
+
+        def shutdown(self, reason: str = "owner shutdown") -> bool:
+            calls.append("shutdown")
+            return True
+
+        def close(self) -> None:
+            calls.append("close")
+
+    result = evaluate(
+        lambda obs: 0,
+        None,
+        "tcp://env:9000",
+        max_episodes=1,
+        close_env=close_env,
+        remote_env_cls=FakeRemoteEnv,
+    )
+    return result, calls
+
+
+def test_address_run_honors_close_env_when_loop_owns_the_client() -> None:
+    # close_env is the caller's explicit opt-in to stop the env it asked us to
+    # dial: even when the loop owns the (self-dialed) client, close_env=True must
+    # issue the owner-level shutdown() before detaching the client.
+    result, calls = _address_run_calls(close_env=True)
+    assert result.num_episodes == 1
+    assert calls == ["shutdown", "close"]
+
+
+def test_address_run_only_detaches_when_close_env_is_false() -> None:
+    # Without close_env we must never shut down a possibly-shared remote env —
+    # only detach the borrowed client connection.
+    result, calls = _address_run_calls(close_env=False)
+    assert result.num_episodes == 1
+    assert calls == ["close"]
+    assert "shutdown" not in calls

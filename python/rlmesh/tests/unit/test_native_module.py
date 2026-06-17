@@ -8,6 +8,7 @@ def test_native_module_exports_only_reachable_classes() -> None:
     assert native.__all__ == [
         "Model",
         "RemoteEnv",
+        "RemoteModel",
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxModel",

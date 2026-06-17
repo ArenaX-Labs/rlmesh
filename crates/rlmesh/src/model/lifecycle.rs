@@ -71,6 +71,7 @@ where
     H: ModelHandler,
 {
     let route_key = route_state_key(observation);
+    handler.enter_route(&route_key).await?;
     if observation.num_envs > 1 {
         let mut should_emit_reset = observation.reset;
 
@@ -159,6 +160,10 @@ mod tests {
         resets: usize,
         episode_ends: Vec<ModelEpisodeEnd>,
         lane_resets: Vec<ModelLaneReset>,
+        entered_routes: Vec<String>,
+        // env_index of every lane reset that landed without a preceding
+        // enter_route — a per-lane handler would have no route to resolve.
+        lane_resets_without_route: Vec<i32>,
     }
 
     #[async_trait::async_trait]
@@ -170,12 +175,20 @@ mod tests {
             Ok(spaces::BinaryPayload { data: Vec::new() })
         }
 
+        async fn enter_route(&mut self, route_key: &str) -> crate::Result<()> {
+            self.entered_routes.push(route_key.to_string());
+            Ok(())
+        }
+
         async fn on_reset(&mut self, _observation: &ModelObservation) -> crate::Result<()> {
             self.resets += 1;
             Ok(())
         }
 
         async fn on_lane_reset(&mut self, event: ModelLaneReset) -> crate::Result<()> {
+            if self.entered_routes.is_empty() {
+                self.lane_resets_without_route.push(event.env_index);
+            }
             self.lane_resets.push(event);
             Ok(())
         }
@@ -207,6 +220,26 @@ mod tests {
             num_envs,
             env_contract: None,
         }
+    }
+
+    #[tokio::test]
+    async fn enter_route_precedes_lane_resets_with_route_key() {
+        let mut handler = RecordingHandler::default();
+        let mut active_episodes = HashMap::new();
+
+        update_lifecycle(
+            &mut handler,
+            &mut active_episodes,
+            &observation(vec![(0, "e0")], true, 1),
+        )
+        .await
+        .unwrap();
+
+        // The route is named before any per-lane reset, so a per-lane handler can
+        // resolve the route's adapter from on_lane_reset (which carries no route).
+        assert_eq!(handler.entered_routes, vec!["session:route".to_string()]);
+        assert!(!handler.lane_resets.is_empty());
+        assert!(handler.lane_resets_without_route.is_empty());
     }
 
     #[tokio::test]

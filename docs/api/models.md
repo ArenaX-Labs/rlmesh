@@ -4,12 +4,10 @@ Model workers wrap a Python prediction function and run it against an RLMesh env
 The framework backend controls how observations are decoded before `predict_fn` runs and how
 returned actions are encoded.
 
-To author and register a model as a recipe, see {doc}`model-recipes`.
-
 ## Base Model
 
 ```{eval-rst}
-.. autoclass:: rlmesh.models.base.ModelBase
+.. autoclass:: rlmesh._models.base.ModelBase
    :members:
    :show-inheritance:
 ```

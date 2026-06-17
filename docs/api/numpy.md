@@ -14,14 +14,14 @@ Install it with:
 pip install --pre "rlmesh[numpy]"
 ```
 
-| Concrete API                    | Shared behavior                        | Backend-specific behavior                                        |
-| ------------------------------- | -------------------------------------- | ---------------------------------------------------------------- |
-| `rlmesh.numpy.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.             |
-| `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.                  |
-| `rlmesh.numpy.Model`            | {doc}`models`                          | `predict_fn` receives NumPy-decoded observations.                |
-| `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.                |
-| `rlmesh.numpy.SandboxModel`     | {doc}`model-recipes` sandbox section   | Runs a `ModelRecipe` policy in its own container (experimental). |
-| `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`.          |
+| Concrete API                    | Shared behavior                        | Backend-specific behavior                                |
+| ------------------------------- | -------------------------------------- | -------------------------------------------------------- |
+| `rlmesh.numpy.RemoteEnv`        | {doc}`remote-envs` single clients      | Observations, actions, and render frames use arrays.     |
+| `rlmesh.numpy.RemoteVectorEnv`  | {doc}`remote-envs` vector clients      | Batched values use NumPy-compatible containers.          |
+| `rlmesh.numpy.Model`            | {doc}`models`                          | `predict_fn` receives NumPy-decoded observations.        |
+| `rlmesh.numpy.SandboxEnv`       | {doc}`sandbox` single sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteEnv`.        |
+| `rlmesh.numpy.SandboxModel`     | {doc}`sandbox` export section          | Runs a model policy in its own container (experimental). |
+| `rlmesh.numpy.SandboxVectorEnv` | {doc}`sandbox` vector sandbox sessions | Owned sandbox client is `rlmesh.numpy.RemoteVectorEnv`.  |
 
 ## Conversion Semantics
 

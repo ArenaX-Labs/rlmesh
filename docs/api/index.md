@@ -10,11 +10,8 @@ Use this when you need exact imports, methods, and backend behavior.
 - {doc}`remote-envs`: remote client base classes and endpoint behavior.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`models`: model worker wrappers.
-- {doc}`env-recipes`: experimental environment recipes, the shared Recipe core, and the registry.
-- {doc}`model-recipes`: experimental model construction — ModelRecipe authoring, the runtime Model,
-  hf_load, and ArtifactInput.
-- {doc}`adapters`: experimental declarative model-to-environment IO layer — the glue between a model
-  recipe and an env recipe.
+- {doc}`adapters`: experimental declarative model-to-environment IO layer — maps a model's
+  observations and actions to an environment's spaces.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
 - {doc}`types`: structural protocols and shared value aliases.
@@ -34,8 +31,6 @@ serving
 remote-envs
 contracts
 models
-env-recipes
-model-recipes
 adapters
 sandbox
 spaces

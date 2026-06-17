@@ -29,6 +29,7 @@ tonic = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros"] }

@@ -14,11 +14,11 @@ from rlmesh._bootstrap.env import (
     import_packages,
     is_env_lookup_error,
 )
-from rlmesh.serving import load_env as _serving_load_env
-from rlmesh.serving import load_env_entrypoint as _serving_load_env_entrypoint
+from rlmesh._serving import load_env as _serving_load_env
+from rlmesh._serving import load_env_entrypoint as _serving_load_env_entrypoint
 
 if TYPE_CHECKING:
-    from rlmesh.server import EnvLike
+    from rlmesh._server import EnvLike
 
 __all__ = [
     "ServeArgs",
@@ -215,7 +215,7 @@ def load_environment(
     vectorization_mode: str | None = None,
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    """Compatibility wrapper delegating to the public ``rlmesh._serving`` loader."""
     return _serving_load_env(
         env_id,
         packages=package_names,
@@ -230,7 +230,7 @@ def load_env_entrypoint(
     package_names: list[str],
     kwargs: dict[str, Any] | None = None,
 ) -> EnvLike:
-    """Compatibility wrapper delegating to the public ``rlmesh.serving`` loader."""
+    """Compatibility wrapper delegating to the public ``rlmesh._serving`` loader."""
     return _serving_load_env_entrypoint(
         entrypoint,
         packages=package_names,

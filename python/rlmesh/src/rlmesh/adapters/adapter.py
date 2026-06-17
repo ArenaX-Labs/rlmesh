@@ -72,12 +72,14 @@ class AdapterBase(ABC, Generic[ActionT]):
     def transform_action(self, raw_action: object) -> ActionT:
         """Convert a model action output into the env action."""
 
-    def reset(self) -> None:
-        """Clear any episode-scoped state.
+    def reset(self, env_index: int | None = None) -> None:
+        """Clear episode-scoped state, optionally for a single lane.
 
-        The default does nothing (resolved adapters are stateless). Stateful
-        custom adapters override this and wire it to the model worker's
-        ``on_reset`` callback so state never leaks across episodes.
+        ``env_index`` identifies the vector lane whose episode rolled, or
+        ``None`` for a whole-vector reset. The default does nothing (resolved
+        adapters are stateless). Stateful custom adapters override this and
+        wire it to the model worker's per-lane reset so a single lane's
+        autoreset never wipes the other still-running lanes' state.
         """
 
     @property
@@ -223,9 +225,18 @@ class Adapter(AdapterBase[NumpyArray]):
         # array or a Python list).
         return cast("NumpyArray", out.astype(np.dtype(shim.dtype)))
 
-    def reset(self) -> None:
-        """Clear the frame-history buffers at an episode boundary."""
-        self._buffers.clear()
+    def reset(self, env_index: int | None = None) -> None:
+        """Clear the frame-history buffers at an episode boundary.
+
+        The rolling buffers are not lane-indexed (the per-lane affinity manager
+        is unimplemented, see :attr:`is_stateful`). A stateful adapter is now
+        rejected on ``num_envs>1`` at :func:`resolve_route_adapter`, so a resolved
+        stateful adapter is always a single lane (env_index 0). Clear on a
+        whole-vector reset or lane 0's roll; ignore any other lane so a
+        mid-vector autoreset never wipes the shared buffers.
+        """
+        if env_index is None or env_index == 0:
+            self._buffers.clear()
 
     @property
     def is_stateful(self) -> bool:

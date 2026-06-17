@@ -7,7 +7,7 @@ import pytest
 
 
 def _make_numpy_vector_env(*, action_kind: str, num_envs: int) -> Any:
-    from rlmesh.client._remote_vector_env import RemoteVectorEnvBase
+    from rlmesh._client._remote_vector_env import RemoteVectorEnvBase
     from rlmesh.numpy import RemoteVectorEnv
 
     env: Any = RemoteVectorEnv.__new__(RemoteVectorEnv)
@@ -59,7 +59,7 @@ def test_encode_actions_passes_through_on_count_mismatch() -> None:
 
 def test_normalize_autoreset_mode_restores_enum() -> None:
     autoreset = pytest.importorskip("gymnasium.vector").AutoresetMode
-    from rlmesh.client._remote_vector_env import _normalize_autoreset_mode
+    from rlmesh._client._remote_vector_env import _normalize_autoreset_mode
 
     normalized = _normalize_autoreset_mode({"autoreset_mode": "NextStep"})
 
@@ -68,7 +68,7 @@ def test_normalize_autoreset_mode_restores_enum() -> None:
 
 
 def test_normalize_autoreset_mode_passes_through_other_keys() -> None:
-    from rlmesh.client._remote_vector_env import _normalize_autoreset_mode
+    from rlmesh._client._remote_vector_env import _normalize_autoreset_mode
 
     metadata = {"render_fps": 30}
     normalized = _normalize_autoreset_mode(metadata)
@@ -77,7 +77,7 @@ def test_normalize_autoreset_mode_passes_through_other_keys() -> None:
 
 
 def test_normalize_autoreset_mode_leaves_unknown_string() -> None:
-    from rlmesh.client._remote_vector_env import _normalize_autoreset_mode
+    from rlmesh._client._remote_vector_env import _normalize_autoreset_mode
 
     normalized = _normalize_autoreset_mode({"autoreset_mode": "bogus"})
 
@@ -86,7 +86,7 @@ def test_normalize_autoreset_mode_leaves_unknown_string() -> None:
 
 def test_normalize_autoreset_mode_idempotent_on_enum() -> None:
     autoreset = pytest.importorskip("gymnasium.vector").AutoresetMode
-    from rlmesh.client._remote_vector_env import _normalize_autoreset_mode
+    from rlmesh._client._remote_vector_env import _normalize_autoreset_mode
 
     normalized = _normalize_autoreset_mode({"autoreset_mode": autoreset.SAME_STEP})
 

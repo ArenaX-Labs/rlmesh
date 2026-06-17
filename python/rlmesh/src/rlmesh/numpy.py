@@ -5,12 +5,12 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
+from ._models.base import ModelBase
 from ._rlmesh import Tensor
-from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .models.base import ModelBase
-from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .sandbox._model import SandboxModel
+from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from ._sandbox._model import SandboxModel
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
 from .spaces._internals import space_bridge_from_value_bridge
@@ -172,6 +172,25 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
 
 
 @final
+class RemoteModel(RemoteModelBase[NumpyValue, NumpyValue]):
+    """NumPy-backed handle to a model (policy) server.
+
+    Bind it to an env with ``against(env)`` to get a session whose ``predict``
+    accepts and returns NumPy values, symmetric with :class:`RemoteEnv`.
+
+    Examples:
+        >>> from rlmesh.numpy import RemoteEnv, RemoteModel
+        >>> env = RemoteEnv("127.0.0.1:5555")
+        >>> model = RemoteModel("127.0.0.1:5556").against(env)
+        >>> obs, _ = env.reset(seed=0)
+        >>> model.reset()
+        >>> action = model.predict(obs)
+    """
+
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+
+
+@final
 class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     """NumPy-backed remote client for a vectorized RLMesh environment.
 
@@ -203,10 +222,9 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
 class Model(ModelBase[NumpyValue, NumpyValue]):
     """NumPy-backed model: ``predict`` works in NumPy values.
 
-    The NumPy-typed :class:`~rlmesh.models.base.ModelBase` -- ``Model(source, spec=...)``
-    where ``source`` is a predict callable, a ``ModelRecipe``, a ``kind='model'``
-    Recipe, or a registered name; ``run(env, seeds=[...])`` returns a typed
-    ``RunResult``. See :class:`~rlmesh.models.base.ModelBase`.
+    The NumPy-typed :class:`~rlmesh._models.base.ModelBase` -- ``Model(source, spec=...)``
+    where ``source`` is a predict callable; ``run(env, seeds=[...])`` returns a typed
+    ``RunResult``. See :class:`~rlmesh._models.base.ModelBase`.
 
     Examples:
         >>> from rlmesh.numpy import Model
@@ -282,6 +300,7 @@ __all__ = [
     "Model",
     "NumpyValue",
     "RemoteEnv",
+    "RemoteModel",
     "RemoteVectorEnv",
     "SandboxEnv",
     "SandboxInfo",

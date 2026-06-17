@@ -42,7 +42,7 @@ Constructing `EnvServer` directly in your own process ignores these variables. P
 ## API
 
 ```{eval-rst}
-.. autoclass:: rlmesh.server.EnvServer
+.. autoclass:: rlmesh.EnvServer
    :members:
    :show-inheritance:
 ```

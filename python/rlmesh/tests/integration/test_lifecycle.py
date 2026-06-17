@@ -10,7 +10,7 @@ import pytest
 if TYPE_CHECKING:
     import numpy as np
     from rlmesh import EnvServer, ServeOptions
-    from rlmesh.server import EnvLike as ServedEnv
+    from rlmesh._server import EnvLike as ServedEnv
 
     NumpyArray = np.ndarray[Any, Any]
 

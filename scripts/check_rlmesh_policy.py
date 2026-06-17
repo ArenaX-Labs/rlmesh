@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -121,6 +122,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol, workflow))
     errors.extend(_validate_workflow_editions(repo_root, workflow, release))
     errors.extend(_validate_adapters(repo_root))
+    errors.extend(_validate_python_public_modules(repo_root))
     errors.extend(
         _validate_api_surface(
             repo_root, api_surface, artifact_ids, release, package_family
@@ -220,6 +222,50 @@ def _validate_adapters(repo_root: Path) -> list[str]:
     if not vectors.is_dir():
         errors.append(f"adapter conformance vectors missing: {vectors}")
     return errors
+
+
+def _validate_python_public_modules(repo_root: Path) -> list[str]:
+    """Every shipped public (non-``_``) rlmesh module must define ``__all__``.
+
+    Without ``__all__`` a module implicitly exports every non-underscore top-level
+    name, so internal classes leak into IDE autocomplete/auto-import. The ``_``
+    prefix hides private *modules*; ``__all__`` curates what the public ones
+    expose.
+    """
+    errors: list[str] = []
+    pkg_root = repo_root / "python/rlmesh/src/rlmesh"
+    if not pkg_root.is_dir():
+        return [f"python package root missing: {pkg_root}"]
+    for entry in sorted(pkg_root.iterdir()):
+        name = entry.name
+        if name.startswith("_"):
+            continue
+        if entry.is_file() and name.endswith(".py"):
+            init = entry
+        elif entry.is_dir() and (entry / "__init__.py").is_file():
+            init = entry / "__init__.py"
+        else:
+            continue
+        if not _defines_dunder_all(init):
+            errors.append(
+                f"{init.relative_to(repo_root)}: public module must define __all__ "
+                "(curate the public surface; _-prefix internal modules)"
+            )
+    return errors
+
+
+def _defines_dunder_all(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            return True
+    return False
 
 
 def _validate_protocol_and_workflow(

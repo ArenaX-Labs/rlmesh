@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::spaces;
 
 /// One sub-environment's position within a routed predict request.
@@ -84,8 +86,9 @@ pub struct ModelObservation {
     pub reset: bool,
     /// Number of sub-environments in this route's batch.
     pub num_envs: usize,
-    /// The env contract (spaces/metadata) for decoding the observation.
-    pub env_contract: Option<spaces::EnvContract>,
+    /// The env contract (spaces/metadata) for decoding the observation. Shared
+    /// (`Arc`) so the per-predict hot path clones a refcount, not the contract.
+    pub env_contract: Option<Arc<spaces::EnvContract>>,
 }
 
 impl ModelObservation {

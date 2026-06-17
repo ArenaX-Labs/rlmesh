@@ -22,6 +22,7 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [lints]

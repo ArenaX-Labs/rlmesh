@@ -22,8 +22,8 @@ class _FakeProcess:
     sys.platform == "win32", reason="non-blocking pipe write test is POSIX-only"
 )
 def test_push_viewer_packet_does_not_hang_on_stalled_viewer() -> None:
-    from rlmesh.client import _viewer as viewer_mod
-    from rlmesh.client._viewer import ViewerMixin, ViewerProcess
+    from rlmesh._client import _viewer as viewer_mod
+    from rlmesh._client._viewer import ViewerMixin, ViewerProcess
 
     read_fd, write_fd = os.pipe()
     os.set_blocking(write_fd, False)
@@ -53,7 +53,7 @@ def test_push_viewer_packet_does_not_hang_on_stalled_viewer() -> None:
     sys.platform == "win32", reason="non-blocking pipe write test is POSIX-only"
 )
 def test_push_viewer_packet_writes_complete_frame_when_drained() -> None:
-    from rlmesh.client._viewer import ViewerMixin, ViewerProcess
+    from rlmesh._client._viewer import ViewerMixin, ViewerProcess
 
     read_fd, write_fd = os.pipe()
     os.set_blocking(write_fd, False)

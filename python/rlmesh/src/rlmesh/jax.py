@@ -5,11 +5,11 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
+from ._models.base import ModelBase
 from ._rlmesh import Tensor
-from .client import RemoteEnvBase, RemoteVectorEnvBase
-from .models.base import ModelBase
-from .sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from .spaces import Space, SpaceBridge
 from .spaces import space_from_spec as _space_from_spec
 from .spaces._internals import space_bridge_from_value_bridge
@@ -154,6 +154,17 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
 
 
 @final
+class RemoteModel(RemoteModelBase[JaxValue, JaxValue]):
+    """Experimental JAX-backed handle to a model (policy) server.
+
+    Bind it to an env with ``against(env)`` to get a session whose ``predict``
+    accepts and returns JAX values, symmetric with :class:`RemoteEnv`.
+    """
+
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
+
+
+@final
 class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
     """Experimental JAX-backed remote client for vectorized environments.
 
@@ -229,6 +240,7 @@ __all__ = [
     "JaxValue",
     "Model",
     "RemoteEnv",
+    "RemoteModel",
     "RemoteVectorEnv",
     "SandboxEnv",
     "SandboxInfo",

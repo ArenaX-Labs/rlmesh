@@ -82,14 +82,9 @@
   },
   "module_order": [
     "rlmesh",
-    "rlmesh.server",
-    "rlmesh.models.base",
-    "rlmesh.client",
     "rlmesh.numpy",
     "rlmesh.torch",
     "rlmesh.jax",
-    "rlmesh.sandbox",
-    "rlmesh.serving",
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs"
@@ -101,24 +96,6 @@
       "stability": "Stable",
       "status": "Stable core imports."
     },
-    "rlmesh.server": {
-      "title": "rlmesh.server",
-      "description": "Environment serving wrappers.",
-      "stability": "Stable",
-      "status": "Stable."
-    },
-    "rlmesh.models.base": {
-      "title": "rlmesh.models.base",
-      "description": "Shared model wrapper base classes and callback types.",
-      "stability": "Stable",
-      "status": "Stable."
-    },
-    "rlmesh.client": {
-      "title": "rlmesh.client",
-      "description": "Shared remote environment client base classes and endpoint helpers.",
-      "stability": "Stable",
-      "status": "Stable base behavior; prefer backend-specific public clients for user code."
-    },
     "rlmesh.numpy": {
       "title": "rlmesh.numpy",
       "description": "NumPy-backed clients, models, sandbox sessions, and tensor helpers.",
@@ -128,12 +105,6 @@
     "rlmesh.torch": {
       "title": "rlmesh.torch",
       "description": "Torch-backed clients, models, sandbox sessions, and tensor helpers.",
-      "stability": "Experimental",
-      "status": "Experimental."
-    },
-    "rlmesh.sandbox": {
-      "title": "rlmesh.sandbox",
-      "description": "Experimental Docker-backed sandbox session base classes.",
       "stability": "Experimental",
       "status": "Experimental."
     },
@@ -160,12 +131,6 @@
       "stability": "Experimental",
       "status": "Experimental.",
       "title": "rlmesh.jax"
-    },
-    "rlmesh.serving": {
-      "title": "rlmesh.serving",
-      "description": "Public helpers for loading environments to serve through RLMesh.",
-      "stability": "Experimental",
-      "status": "Experimental."
     }
   },
   "exports": {
@@ -195,18 +160,6 @@
     },
     "rlmesh.types": {
       "description": "Structural protocols and value aliases."
-    },
-    "rlmesh.server.EnvLike": {
-      "description": "Accepted environment shape for EnvServer."
-    },
-    "rlmesh.models.base.LifecycleCallback": {
-      "description": "No-argument callback used for model lifecycle events."
-    },
-    "rlmesh.models.base.PredictFn": {
-      "description": "Callable that maps one observation to one action."
-    },
-    "rlmesh.client.Transport": {
-      "description": "Endpoint transport selector: TCP or Unix sockets."
     },
     "rlmesh.numpy.NumpyValue": {
       "description": "Primitive, NumPy array, or nested RLMesh-compatible value."

@@ -19,8 +19,6 @@ from .gym_support import (
     make_gym_environment,
 )
 from .spec_resolution import (
-    apply_member_params,
-    expect_mapping,
     expect_num_envs,
     expect_str,
     expect_str_list,
@@ -34,8 +32,8 @@ from .spec_resolution import (
 )
 
 if TYPE_CHECKING:
+    from rlmesh._server import EnvLike
     from rlmesh.numpy import NumpyValue
-    from rlmesh.server import EnvLike
 
 
 def load_environment(
@@ -81,50 +79,14 @@ def load_environment(
     raise ImportError(msg)
 
 
-def load_env_from_spec(
-    spec: Mapping[str, object],
-    *,
-    setup_env: Mapping[str, object] | None = None,
-    kwargs: Mapping[str, object] | None = None,
-) -> object:
-    """Load an environment from a sandbox bootstrap spec.
-
-    ``setup_env``/``kwargs`` are the parsed ``RLMESH_PARAMS_JSON`` member selector;
-    they apply to recipe sources only (gym/hf sources predate it and ignore them).
-    """
+def load_env_from_spec(spec: Mapping[str, object]) -> object:
+    """Load an environment from a sandbox bootstrap spec (gym or hf)."""
     kind = expect_str(spec.get("kind"), "bootstrap spec.kind")
     if kind == "gym":
         return load_gym_env(spec)
     if kind == "hf":
         return load_hf_env(spec)
-    if kind == "recipe":
-        return load_recipe_env(spec, setup_env=setup_env, kwargs=kwargs)
     raise ValueError(f"unsupported bootstrap kind: {kind}")
-
-
-def load_recipe_env(
-    spec: Mapping[str, object],
-    *,
-    setup_env: Mapping[str, object] | None = None,
-    kwargs: Mapping[str, object] | None = None,
-) -> object:
-    """Construct an environment from a recipe bootstrap spec.
-
-    The build phase already shaped the image; this runs the recipe's runtime half
-    (setup + make) in-container via ``rlmesh.recipes.build``. Imported lazily to
-    avoid a recipes <-> bootstrap import cycle.
-    """
-    from rlmesh.recipes import Recipe, build
-
-    document = expect_mapping(spec.get("document"), "bootstrap spec.document")
-    num_envs = expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
-    vectorization_mode = expect_vectorization_mode(
-        spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
-    )
-    recipe = apply_member_params(
-        Recipe.from_dict(document), setup_env=setup_env, kwargs=kwargs
-    )
-    return build(recipe, num_envs=num_envs, vectorization_mode=vectorization_mode)
 
 
 class RecipeConstructionError(RuntimeError, ImportError):
@@ -133,7 +95,7 @@ class RecipeConstructionError(RuntimeError, ImportError):
     Wraps the import/attribute/not-callable boundary of resolving a
     ``module:callable`` factory; errors raised *inside* a loaded factory are not
     wrapped. Subclasses ``ImportError`` so existing ``except ImportError`` callers of
-    ``rlmesh.serving.load_env_entrypoint`` still catch the bad-entrypoint case.
+    ``rlmesh._serving.load_env_entrypoint`` still catch the bad-entrypoint case.
     """
 
 
@@ -148,9 +110,7 @@ def load_env_entrypoint(
         factory = resolve_entrypoint(entrypoint, label="env entrypoint")
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
         raise RecipeConstructionError(
-            f"could not load env entrypoint {entrypoint!r}: {exc}. Run "
-            "rlmesh.recipes.check(recipe) to validate the entrypoint shape without "
-            "importing dependencies."
+            f"could not load env entrypoint {entrypoint!r}: {exc}."
         ) from exc
     env = factory(**dict(kwargs or {}))
     if not looks_like_env(env):

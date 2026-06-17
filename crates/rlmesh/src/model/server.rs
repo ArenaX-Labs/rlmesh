@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::handler::ModelHandler;
+use super::handler::{ModelHandler, ModelRouteSetup};
 use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::wire::{
     ModelAction, model_action_to_endpoint_response, model_error, model_error_from_error,
@@ -80,12 +80,17 @@ where
     H: ModelHandler + 'static,
 {
     let handler = Arc::new(Mutex::new(handler));
+    // Obtain the route setup once, before serving: ConfigureRoute then resolves
+    // routes through it without taking the per-request handler lock, so
+    // configuring one route never blocks on an in-flight predict on another.
+    let route_setup = handler.lock().await.route_setup();
     let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
     let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
     let drain_timeout = options.drain_timeout;
     let close_timeout = options.close_timeout;
     let service = model_service(
         Arc::clone(&handler),
+        route_setup,
         token.to_string(),
         activity_tx,
         shutdown.clone(),
@@ -125,6 +130,7 @@ async fn close_model(
 
 struct ServedModelServer<H> {
     handler: Arc<Mutex<H>>,
+    route_setup: Option<Arc<dyn ModelRouteSetup>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
     token: String,
@@ -135,12 +141,13 @@ struct ServedModelServer<H> {
 
 #[derive(Debug, Clone)]
 pub(super) struct ModelRouteConfig {
-    pub(super) env_contract: Option<spaces::EnvContract>,
+    pub(super) env_contract: Option<Arc<spaces::EnvContract>>,
     pub(super) num_envs: usize,
 }
 
 fn model_service<H>(
     handler: Arc<Mutex<H>>,
+    route_setup: Option<Arc<dyn ModelRouteSetup>>,
     token: String,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     shutdown: rlmesh_grpc::lifecycle::ShutdownTrigger,
@@ -151,6 +158,7 @@ where
 {
     ModelServiceServer::new(ServedModelServer {
         handler,
+        route_setup,
         active_episodes: Arc::new(Mutex::new(HashMap::new())),
         route_configs: Arc::new(Mutex::new(HashMap::new())),
         token,
@@ -261,6 +269,7 @@ where
         self.authenticate(&request)?;
         let mut request_stream = request.into_inner();
         let handler = Arc::clone(&self.handler);
+        let route_setup = self.route_setup.clone();
         let active_episodes = Arc::clone(&self.active_episodes);
         let route_configs = Arc::clone(&self.route_configs);
         let activity_tx = self.activity_tx.clone();
@@ -321,6 +330,7 @@ where
                 let activity_guard = ActivityFinishedGuard::new(activity_tx.clone());
 
                 let handler = Arc::clone(&handler);
+                let route_setup = route_setup.clone();
                 let active_episodes = Arc::clone(&active_episodes);
                 let route_configs = Arc::clone(&route_configs);
                 let tx = tx.clone();
@@ -332,9 +342,14 @@ where
                     // per-route arrival order (or, for Close, after every route).
                     gate.wait().await;
 
-                    let response =
-                        handle_model_request(request, handler, active_episodes, route_configs)
-                            .await;
+                    let response = handle_model_request(
+                        request,
+                        handler,
+                        route_setup,
+                        active_episodes,
+                        route_configs,
+                    )
+                    .await;
 
                     // Release successors on this route *before* sending the
                     // response, so per-route ordering does not depend on the
@@ -390,6 +405,7 @@ where
 pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     request: JoinRequest,
     handler: Arc<Mutex<H>>,
+    route_setup: Option<Arc<dyn ModelRouteSetup>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> JoinResponse {
@@ -399,7 +415,7 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
 
     let kind = match request.kind {
         Some(join_request::Kind::ConfigureRoute(request)) => {
-            handle_configure_route(request, route_configs).await
+            handle_configure_route(request, route_setup.as_deref(), route_configs).await
         }
         Some(join_request::Kind::Predict(request)) => {
             handle_predict(request, handler, active_episodes, route_configs).await
@@ -422,6 +438,15 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                         };
                     }
                     route_configs.lock().await.remove(&route_key);
+                    if let Some(route_setup) = route_setup.as_deref()
+                        && let Err(error) = route_setup.close_route(&route_key).await
+                    {
+                        return JoinResponse {
+                            kind: Some(model_error(error.to_string())),
+                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            request_id,
+                        };
+                    }
                     Some(join_response::Kind::CloseRoute(CloseRouteResponse {}))
                 }
                 _ => Some(model_error("close_route missing route_id")),
@@ -440,6 +465,23 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     request_id,
                 };
             }
+            // Close drains every route globally above, so tear down every
+            // route's per-route setup and config too rather than leaking them
+            // for the server's lifetime. Drop the configs guard before the
+            // async close_route calls; re-lock only to clear.
+            let route_keys: Vec<String> = route_configs.lock().await.keys().cloned().collect();
+            if let Some(route_setup) = route_setup.as_deref() {
+                for route_key in &route_keys {
+                    if let Err(error) = route_setup.close_route(route_key).await {
+                        return JoinResponse {
+                            kind: Some(model_error_from_error(&error)),
+                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            request_id,
+                        };
+                    }
+                }
+            }
+            route_configs.lock().await.clear();
             Some(join_response::Kind::Close(CloseResponse {}))
         }
         None => Some(model_error("empty model request")),
@@ -454,6 +496,7 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
 
 async fn handle_configure_route(
     request: ConfigureRouteRequest,
+    route_setup: Option<&dyn ModelRouteSetup>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     let route = match request.context {
@@ -486,10 +529,20 @@ async fn handle_configure_route(
         ));
     }
     let num_envs = env_contract.num_envs as usize;
+    // Resolve the route's adapter before storing the config: a failure here
+    // fails configuration, so the client never predicts against an unresolved
+    // adapter. This runs off the predict-serialization lock (see
+    // `ModelRouteSetup`), so configuring one route never blocks on an in-flight
+    // predict on another.
+    if let Some(route_setup) = route_setup
+        && let Err(error) = route_setup.configure_route(&route_key, &env_contract).await
+    {
+        return Some(model_error_from_error(&error));
+    }
     route_configs.lock().await.insert(
         route_key,
         ModelRouteConfig {
-            env_contract: Some(env_contract),
+            env_contract: Some(Arc::new(env_contract)),
             num_envs,
         },
     );
@@ -773,6 +826,7 @@ mod tests {
     fn test_server() -> ServedModelServer<NoopModelHandler> {
         ServedModelServer {
             handler: Arc::new(Mutex::new(NoopModelHandler)),
+            route_setup: None,
             active_episodes: Arc::new(Mutex::new(HashMap::new())),
             route_configs: Arc::new(Mutex::new(HashMap::new())),
             token: String::new(),
@@ -970,6 +1024,46 @@ mod tests {
             RequestGate::Prev(_) => panic!("Close must produce an All gate over every route"),
         }
         assert_eq!(tails.len(), 0, "Close must clear every route tail");
+    }
+
+    #[tokio::test]
+    async fn close_tears_down_every_route_config() {
+        // Whole-session Close drains all episodes globally, so it must also
+        // clear every route's config rather than leaking it for the server's
+        // lifetime (a CloseRoute only tears down its own route).
+        let server = test_server();
+        {
+            let mut configs = server.route_configs.lock().await;
+            for key in ["session:a", "session:b"] {
+                configs.insert(
+                    key.to_string(),
+                    ModelRouteConfig {
+                        env_contract: None,
+                        num_envs: 1,
+                    },
+                );
+            }
+        }
+
+        let response = handle_model_request(
+            JoinRequest {
+                request_id: "close-1".to_string(),
+                kind: Some(join_request::Kind::Close(
+                    rlmesh_proto::model::v1::CloseRequest::default(),
+                )),
+            },
+            Arc::clone(&server.handler),
+            server.route_setup.clone(),
+            Arc::clone(&server.active_episodes),
+            Arc::clone(&server.route_configs),
+        )
+        .await;
+
+        assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
+        assert!(
+            server.route_configs.lock().await.is_empty(),
+            "Close must clear every route config"
+        );
     }
 
     #[tokio::test]

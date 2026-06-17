@@ -38,8 +38,8 @@ Two rules keep the set honest:
 - One shape in-repo. If an example needs its own `pyproject.toml` or lockfile, it is a Demo rather
   than an Example, and it belongs in the separate `rlmesh-examples` repository. In-repo examples
   share the repo environment.
-- Do not name an example "Recipe". `EnvRecipe` and `ModelRecipe` already own that word. An example
-  that teaches recipes is still just an example.
+- Do not name an example "Recipe". The `rlmesh.Recipe` document type already owns that word. An
+  example that builds a recipe is still just an example.
 
 ## Commit Messages
 

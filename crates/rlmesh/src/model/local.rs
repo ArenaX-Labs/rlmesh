@@ -168,7 +168,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// the session ends.
 pub struct ModelHandlerRuntimeModel<'a, H> {
     handler: &'a mut H,
-    env_contract: spaces::EnvContract,
+    env_contract: Arc<spaces::EnvContract>,
     num_envs: usize,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
 }
@@ -183,7 +183,7 @@ impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
     ) -> Self {
         Self {
             handler,
-            env_contract,
+            env_contract: Arc::new(env_contract),
             num_envs,
             active_episodes,
         }
@@ -202,7 +202,7 @@ where
         let mut observation = model_observation_from_endpoint_request(request)
             .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         let route = observation.route.clone();
-        observation.env_contract = Some(self.env_contract.clone());
+        observation.env_contract = Some(Arc::clone(&self.env_contract));
         observation.num_envs = self.num_envs;
         let mut active_episodes = self.active_episodes.lock().await;
         update_lifecycle(self.handler, &mut active_episodes, &observation)

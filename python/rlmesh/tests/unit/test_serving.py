@@ -3,11 +3,14 @@ from __future__ import annotations
 import pytest
 
 
-def test_serving_is_public_module() -> None:
+def test_serving_is_private_module() -> None:
     import rlmesh
+    import rlmesh._serving
 
-    assert hasattr(rlmesh, "serving")
-    assert rlmesh.serving.__all__ == [
+    # Serving helpers are internal (v0.1 surface lock): not a public top-level
+    # attribute, only reachable via the _-prefixed module.
+    assert not hasattr(rlmesh, "serving")
+    assert rlmesh._serving.__all__ == [
         "import_packages",
         "load_env",
         "load_env_entrypoint",
@@ -15,7 +18,7 @@ def test_serving_is_public_module() -> None:
 
 
 def test_load_env_entrypoint_loads_factory() -> None:
-    from rlmesh import serving
+    from rlmesh import _serving as serving
 
     env = serving.load_env_entrypoint(
         "rlmesh_system_fixtures.registry:make_env",

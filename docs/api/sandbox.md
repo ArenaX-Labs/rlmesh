@@ -7,7 +7,7 @@ process, connects a remote client to it, and stops the container when the sessio
 ## Session Info
 
 ```{eval-rst}
-.. autoclass:: rlmesh.sandbox.SandboxInfo
+.. autoclass:: rlmesh._sandbox.SandboxInfo
    :members:
    :show-inheritance:
 ```
@@ -15,19 +15,19 @@ process, connects a remote client to it, and stops the container when the sessio
 ## Base Sessions
 
 ```{eval-rst}
-.. autoclass:: rlmesh.sandbox.SandboxSessionBase
+.. autoclass:: rlmesh._sandbox.SandboxSessionBase
    :members:
    :show-inheritance:
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.sandbox.SandboxEnvBase
+.. autoclass:: rlmesh._sandbox.SandboxEnvBase
    :members:
    :show-inheritance:
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.sandbox.SandboxVectorEnvBase
+.. autoclass:: rlmesh._sandbox.SandboxVectorEnvBase
    :members:
    :show-inheritance:
 ```
@@ -45,18 +45,3 @@ inside the owned sandbox session.
 | `rlmesh.torch.SandboxVectorEnv` | `rlmesh.torch.RemoteVectorEnv` | Torch tensors and primitives |
 
 See {doc}`numpy` and {doc}`torch` for backend-specific class entries and helper functions.
-
-## Export
-
-`rlmesh.export` builds the image without starting a container; see the {doc}`../user-guide/sandbox`
-guide for usage.
-
-```{eval-rst}
-.. autofunction:: rlmesh.export
-```
-
-```{eval-rst}
-.. autoclass:: rlmesh.ExportResult
-   :members:
-   :show-inheritance:
-```
