@@ -33,13 +33,9 @@ code it exercises. Run a Python example from the repository root:
 uv run python examples/python/<dir>/<file>.py
 ```
 
-Two rules keep the set honest:
-
-- One shape in-repo. If an example needs its own `pyproject.toml` or lockfile, it is a Demo rather
-  than an Example, and it belongs in the separate `rlmesh-examples` repository. In-repo examples
-  share the repo environment.
-- Do not name an example "Recipe". The `rlmesh.Recipe` document type already owns that word. An
-  example that builds a recipe is still just an example.
+One rule keeps the set honest: an in-repo example shares the repo environment. If an example needs
+its own `pyproject.toml` or lockfile, it is a Demo rather than an Example, and it belongs in the
+separate `rlmesh-examples` repository.
 
 ## Commit Messages
 

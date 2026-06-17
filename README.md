@@ -29,9 +29,8 @@ are internal implementation detail with no stability promise. See the
 [compatibility](https://docs.rlmesh.dev/compatibility/) and
 [versioning](https://docs.rlmesh.dev/versioning/) policies.
 
-RLMesh is designed around a language-neutral model-environment boundary. Python and Rust are
-supported today. Additional language bindings are future work, not part of the current public
-surface.
+RLMesh is built around a language-neutral model-environment boundary. Python and Rust are supported
+today. Additional language bindings are future work, not part of the current public surface.
 
 ## Installation
 
