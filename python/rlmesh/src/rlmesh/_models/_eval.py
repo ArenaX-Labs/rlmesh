@@ -28,7 +28,7 @@ __all__ = [
     "resolve_route_adapter",
 ]
 
-# ponytail: bound the loop so a non-terminating env cannot hang it forever.
+# bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
 
 
@@ -400,7 +400,7 @@ def _shutdown(target: object) -> None:
     if isinstance(target, SandboxSessionBase):
         target.close()
         return
-    # ponytail: decide reason-passing by binding the signature, not by try/except
+    # decide reason-passing by binding the signature, not by try/except
     # around the call, so a TypeError raised *inside* the callable is never swallowed.
     import inspect
 

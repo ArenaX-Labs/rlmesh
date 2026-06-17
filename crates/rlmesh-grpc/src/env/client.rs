@@ -402,8 +402,6 @@ impl EnvClient {
         self.close_local();
     }
 
-    // ---- Private helpers ----
-
     fn close_local(&mut self) {
         self.request_tx.take();
         self.response_rx.take();

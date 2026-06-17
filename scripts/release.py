@@ -161,7 +161,7 @@ def main() -> None:
     if "--dry-run" in flags:
         run(
             "git", "checkout", "--", "."
-        )  # ponytail: dry-run must leave the tree as it found it
+        )  # dry-run must leave the tree as it found it
         print("dry run: build verified; no commit, tag, or publish made")
         return
 

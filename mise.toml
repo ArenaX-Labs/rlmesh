@@ -31,6 +31,7 @@ task.run_auto_install = false
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
+CARGO_HTTP_MULTIPLEXING = "false"
 
 # ──────────────────────────────────────────────
 # Setup

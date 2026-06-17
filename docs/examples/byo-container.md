@@ -1,8 +1,8 @@
 # Bring-Your-Own Container
 
-A bring-your-own container is a Docker image you build yourself: you write the Dockerfile and a small
-entrypoint, and RLMesh runs the image. The same image works locally and on the hosted platform.
-Sandbox helpers like `SandboxModel` are experimental.
+A bring-your-own container is a Docker image you build yourself: you write the Dockerfile and a
+small entrypoint, and RLMesh runs the image. The same image works locally and on the hosted
+platform. Sandbox helpers like `SandboxModel` are experimental.
 
 The runnable files live in `examples/python/byo_container`. There are two images: `env/` serves a
 Gymnasium environment, and `model/` serves a policy. Both serve on `RLMESH_ADDRESS` (default
@@ -93,8 +93,8 @@ while not done:
 
 The same loop drives a model that is already running: swap the construction line for
 `rlmesh.RemoteModel("127.0.0.1:50052").against(env)` (a distinct port, since the environment already
-holds `50051`). A prebuilt `image://` tag runs from its own baked
-configuration, so `SandboxModel` does not inject a bootstrap payload.
+holds `50051`). A prebuilt `image://` tag runs from its own baked configuration, so `SandboxModel`
+does not inject a bootstrap payload.
 
 The Dockerfile is
 {source}`examples/python/byo_container/model/Dockerfile <examples/python/byo_container/model/Dockerfile>`
@@ -104,8 +104,8 @@ and the entrypoint is
 ## Both Sides in a Sandbox
 
 The same drive loop runs when RLMesh owns both containers. A `SandboxEnv` builds the environment
-container from a Gymnasium or Hugging Face source, and a `SandboxModel` runs your prebuilt `image://`
-tag. A `try`/`finally` stops both owned containers when the run ends:
+container from a Gymnasium or Hugging Face source, and a `SandboxModel` runs your prebuilt
+`image://` tag. A `try`/`finally` stops both owned containers when the run ends:
 
 ```python
 import rlmesh
