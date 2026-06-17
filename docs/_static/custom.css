@@ -65,3 +65,13 @@
 .api-table th:first-child {
   white-space: nowrap;
 }
+
+.sidebar-version {
+  display: block;
+  margin-top: 0.35rem;
+  font-family: var(--font-stack--monospace);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  color: var(--color-sidebar-caption-text);
+}

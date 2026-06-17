@@ -1,0 +1,7 @@
+{% extends "!sidebar/brand.html" %}
+{% block brand_content %}
+  {{ super() }}
+  {%- if release %}
+  <span class="sidebar-version">v{{ release }}</span>
+  {%- endif %}
+{% endblock brand_content %}

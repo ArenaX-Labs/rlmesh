@@ -196,7 +196,7 @@ extlinks = {
 }
 
 html_theme = "furo"
-html_title = f"RLMesh {release}"
+html_title = "RLMesh"
 html_show_sphinx = False
 templates_path = ["_templates"]
 html_static_path = ["_static"]
