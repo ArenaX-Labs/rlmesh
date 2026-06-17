@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). RLM
 minor (`0.x`) release may include breaking changes, always called out under a Breaking heading with
 a migration note. See the versioning policy for details.
 
-## [0.1.0-rc.1] - 2026-06-16
+## [0.1.0-rc.1] - 2026-06-17
 
 First release candidate for 0.1.0. RLMesh connects models to environments across process,
 dependency, and machine boundaries with a Gymnasium-style API.

@@ -7,7 +7,7 @@ irreversible actions (pushing the tag, publishing to the registries) stay manual
 unless you pass --publish, and even then nothing is pushed to git for you.
 
 Flow:
-    preflight -> bump -> release:check -> commit + annotated tag -> print push command
+    preflight -> bump -> clean wheels -> release:check -> signed commit + signed tag -> print push command
     --dry-run : stop after release:check, make no commit or tag (tree left untouched)
     --publish : a separate mode; tag vX must already exist on HEAD (you pushed it),
                 skips bump/commit/tag and only publishes crates + wheels + GitHub Release
@@ -156,17 +156,19 @@ def main() -> None:
 
     preflight(version)
     run("mise", "run", "bump", version)
+    run("mise", "run", "release:python:clean")
     run("mise", "run", "release:check")
 
     if "--dry-run" in flags:
-        run(
-            "git", "checkout", "--", "."
-        )  # dry-run must leave the tree as it found it
+        run("git", "checkout", "--", ".")  # dry-run must leave the tree as it found it
         print("dry run: build verified; no commit, tag, or publish made")
         return
 
-    run("git", "commit", "-am", f"chore(release): {version}")
-    run("git", "tag", "-a", f"v{version}", "-m", changelog_section(version))
+    if out("git", "status", "--porcelain").strip():
+        run("git", "commit", "-S", "-am", f"chore(release): {version}")
+    else:
+        print(f"tree already at {version}; nothing to commit, tagging current HEAD")
+    run("git", "tag", "-s", f"v{version}", "-m", changelog_section(version))
     print(f"\ntagged v{version}. To publish, push then release:")
     print(f"  git push origin HEAD --tags")
     print(
