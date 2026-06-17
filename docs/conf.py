@@ -175,6 +175,7 @@ exclude_patterns = [
     ".DS_Store",
     "local-dev.md",
     "testing.md",
+    "release.md",
 ]
 
 myst_enable_extensions = ["colon_fence", "deflist"]

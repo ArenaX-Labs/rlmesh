@@ -99,5 +99,4 @@ editions/index
 
 changelog
 versioning
-release
 ```
