@@ -6,14 +6,14 @@
 
 `rlmesh.adapters` derives a model-to-environment IO adapter at runtime from two declarations: an
 environment tags its observation and action spaces, a model specifies the payload it ingests, and
-{func}`~rlmesh.adapters.resolve` matches them by role. It removes most of the per-(model,
+{func}`~rlmesh.adapters.resolve` matches them by role. This replaces most of the per-(model,
 environment) adapter code you would otherwise write by hand; cases the declarative specs do not
 cover fall back to an escape hatch (see Known limitations).
 
-Adapters connect the two sides of an eval: an environment publishes tags, a model declares a spec,
+The two sides of an eval connect through it: an environment publishes tags, a model declares a spec,
 and `resolve` bridges them.
 
-It is fully opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
+It is opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy
 backend (`pip install "rlmesh[numpy]"`).
 
 ## Tag the environment
@@ -127,7 +127,7 @@ when you pass `resolve(..., trust_entrypoints=True)`.
 
 ## Run a model with no glue
 
-The ergonomic path publishes the tags on the served environment and lets the model resolve the
+The shortest path publishes the tags on the served environment and lets the model resolve the
 adapter from the contract.
 
 ```python
@@ -208,8 +208,8 @@ the resolve-time invariants.
 
 ## Known limitations
 
-The system is tuned for the manipulation/VLA case: RGB cameras, proprioception, and an instruction.
-A few things are out of scope for now and fall back to an escape hatch.
+The system targets the manipulation/VLA case: RGB cameras, proprioception, and an instruction. A
+few things are out of scope for now and fall back to an escape hatch.
 
 | Area                                   | Status                                                                                                                                                                 |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
