@@ -38,8 +38,8 @@ while not (terminated or truncated):
 env.close()
 ```
 
-The server owns the Gymnasium environment and its dependencies. The client only needs the endpoint
-address and the spaces reported by the server.
+The server owns the Gymnasium environment and its dependencies. The client needs only the endpoint
+address and the spaces the server reports.
 
 ## Runnable Files
 

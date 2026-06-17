@@ -21,8 +21,8 @@ pip install "rlmesh[torch]"
 pip install "rlmesh[hf]"
 ```
 
-Use `gymnasium` when serving a Gymnasium environment (or `gym` for a legacy classic-Gym stack). Use
-`torch` only when you want client-side values decoded as Torch tensors. Use `hf` for host-side,
+Use `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. Use
+`torch` when you want client-side values decoded as Torch tensors. Use `hf` for host-side,
 container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container
 fetches them for you.
 
@@ -36,5 +36,5 @@ mise run setup
 ```
 
 Then run examples with `uv run`. Sandbox examples need Docker access. Optional example folders keep
-their own lockfiles and environments so heavier dependencies do not leak into the root development
+their own lockfiles and environments, so heavier dependencies stay out of the root development
 environment.

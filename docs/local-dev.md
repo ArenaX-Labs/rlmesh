@@ -4,7 +4,7 @@ orphan: true
 
 # Local Development
 
-This page covers the lightweight maintainer workflow for the RLMesh repository.
+This page covers the maintainer workflow for the RLMesh repository.
 
 ## Requirements
 
@@ -106,12 +106,7 @@ Serve it locally while editing:
 mise run docs:serve
 ```
 
-The output is written to `site/`.
-
-- Install command: `uv sync --only-group docs --frozen`
-- Build command:
-  `uv run --frozen --only-group docs sphinx-build -b dirhtml -W --keep-going docs site`
-- Output directory: `site`
+Both tasks write their output to `site/`.
 
 ## Release Gate
 

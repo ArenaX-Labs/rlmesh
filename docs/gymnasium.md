@@ -1,6 +1,6 @@
 # Gymnasium Compatibility
 
-RLMesh is built around the Gymnasium environment shape:
+RLMesh follows the Gymnasium environment shape:
 
 ```python
 env = gym.make("CartPole-v1")
@@ -12,7 +12,7 @@ wrappers can stay in place.
 
 ## Spaces
 
-RLMesh supports these Gymnasium spaces. The **Stability** column matches the API surface policy in
+RLMesh supports these Gymnasium spaces. The Stability column matches the API surface policy in
 `api_metadata.json`: `Stable` spaces follow the compatibility guarantees in {doc}`compatibility`,
 while `Experimental` spaces may still change.
 
@@ -50,12 +50,11 @@ Unsupported spaces fail directly instead of silently changing the environment co
 RLMesh checks values against their declared spaces a little differently from Gymnasium's
 `passive_env_checker`:
 
-- An out-of-bounds `Box` value, or an out-of-charset/length `Text` value, is **delivered with a
-  warning** (under the `rlmesh.conformance.warning` info key) rather than passed through silently,
-  and `NaN` is always rejected. See {doc}`compatibility` for the `strict`/`off` policy knob.
-- A value is **coerced to its declared dtype** before transport, whereas Gymnasium warns but
-  forwards the original dtype. A `float64` observation for a `float32` space is delivered as
-  `float32`.
+- An out-of-bounds `Box` value, or an out-of-charset/length `Text` value, is delivered with a
+  warning (under the `rlmesh.conformance.warning` info key) rather than passed through silently, and
+  `NaN` is always rejected. See {doc}`compatibility` for the `strict`/`off` policy knob.
+- A value is coerced to its declared dtype before transport, whereas Gymnasium warns but forwards
+  the original dtype. A `float64` observation for a `float32` space is delivered as `float32`.
 
 ## Conversion Helpers
 

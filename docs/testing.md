@@ -4,8 +4,8 @@ orphan: true
 
 # Testing
 
-RLMesh uses a small set of test layers so local iteration can stay fast while release checks still
-exercise packaged artifacts.
+RLMesh uses a few test layers so local iteration stays fast while release checks still exercise
+packaged artifacts.
 
 ## Fast Tests
 
@@ -48,9 +48,9 @@ Fixture scenarios and deterministic trace baselines live under `tests/system`.
 
 ## Installed-Artifact System Tests
 
-Installed-artifact system tests validate built Python wheels in clean `uv` environments. They
-exercise process boundaries, optional dependencies, deterministic traces, and artifact-level
-benchmark signal.
+Installed-artifact system tests validate built Python wheels in clean `uv` environments. They cover
+process boundaries, optional dependencies, deterministic traces, and artifact-level benchmark
+signal.
 
 List profiles and scenarios:
 
