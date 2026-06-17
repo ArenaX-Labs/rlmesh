@@ -57,12 +57,24 @@ pub(super) fn spawn_response_pump(
                     break;
                 }
                 Err(error) => {
-                    tracing::error!(
-                        code = ?error.code(),
-                        message = %error.message(),
-                        source = ?error.source(),
-                        "model join stream error from server"
-                    );
+                    // A stream error with nothing in flight is just the server
+                    // dropping the join stream at teardown (a broken-pipe h2
+                    // reset after the session closed); only worth an error when
+                    // callers are actually waiting on a response.
+                    if pending.lock().expect("pending map poisoned").is_empty() {
+                        tracing::debug!(
+                            code = ?error.code(),
+                            source = ?error.source(),
+                            "model join stream closed on teardown"
+                        );
+                    } else {
+                        tracing::error!(
+                            code = ?error.code(),
+                            message = %error.message(),
+                            source = ?error.source(),
+                            "model join stream error from server"
+                        );
+                    }
                     // Surface the real Status to every pending caller instead of
                     // letting them observe only an opaque "connection closed".
                     let code = error.code();

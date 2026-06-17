@@ -246,7 +246,11 @@ impl From<rlmesh_grpc::error::Error> for Error {
                 is_recoverable: error.is_recoverable,
             }),
             rlmesh_grpc::error::Error::Timeout(duration) => Self::Timeout(duration),
-            rlmesh_grpc::error::Error::Cancelled(message) => Self::Internal(message),
+            // A cancelled connect/handshake is a connection-establishment
+            // failure (e.g. the server's port is published but it isn't serving
+            // yet during boot), not an internal fault -- surface it as Connection
+            // so dial-retry treats it as transient.
+            rlmesh_grpc::error::Error::Cancelled(message) => Self::Connection(message),
             rlmesh_grpc::error::Error::Client(error) => Self::Connection(error.to_string()),
             // rlmesh_grpc::error::Error is #[non_exhaustive].
             other => Self::Internal(other.to_string()),
