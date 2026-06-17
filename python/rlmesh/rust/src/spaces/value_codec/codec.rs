@@ -388,9 +388,19 @@ fn encode_with_numpy(
         }
 
         let info = numpy.getattr("iinfo")?.call1((dtype_name,))?;
+        // Use a strict `< max+1`, with max+1 computed in Python's arbitrary-
+        // precision int (not the numpy scalar, which would wrap). iinfo.max
+        // such as 2**63-1 is not representable in f64 and rounds *up* to 2**63,
+        // so `<= max` would wrongly accept 2**63 and the int cast below would
+        // then overflow-wrap. max+1 is an exact power-of-two float, so `< max+1`
+        // is an exact boundary.
+        let max_exclusive = info.getattr("max")?.call_method1("__add__", (1,))?;
         let in_range = source
             .call_method1("__ge__", (info.getattr("min")?,))?
-            .call_method1("__and__", (source.call_method1("__le__", (info.getattr("max")?,))?,))?;
+            .call_method1(
+                "__and__",
+                (source.call_method1("__lt__", (max_exclusive,))?,),
+            )?;
         if !numpy.getattr("all")?.call1((in_range,))?.is_truthy()? {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "float value supplied for integer dtype {dtype_name} is not representable in integer dtype {dtype_name} range"
@@ -763,6 +773,48 @@ mod tests {
             assert!(
                 err.to_string().contains("not representable"),
                 "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn encode_rejects_float_at_int64_max_boundary() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let numpy = py.import("numpy").unwrap();
+            // Wide float bounds so only the dtype-range check (not the box
+            // bounds) decides; Int64::MAX is not representable in f64.
+            let space = BoxSpaceBuilder::scalar(-1e19, 1e19, vec![1])
+                .dtype(rlmesh_spaces::DType::Int64)
+                .build()
+                .unwrap();
+
+            // 2**63 is an exact f64 but one past i64::MAX (2**63 - 1). i64::MAX
+            // rounds *up* to 2**63 in f64, so a `<= max` check would wrongly
+            // accept this and the int cast would then overflow-wrap.
+            let over = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![9223372036854775808.0f64],))
+                .unwrap();
+            let err = encode_array_like_value_with_backend(py, &over, &space, ValueBackend::Auto)
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("not representable"),
+                "unexpected error: {err}"
+            );
+
+            // The largest in-range integral f64 (2**63 - 1024) still encodes.
+            let within = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![9223372036854774784.0f64],))
+                .unwrap();
+            assert!(
+                encode_array_like_value_with_backend(py, &within, &space, ValueBackend::Auto)
+                    .is_ok()
             );
         });
     }

@@ -198,6 +198,11 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
         Some(BoxBounds::Unbounded(_)) => Ok(()),
 
         Some(BoxBounds::Uniform(s)) => {
+            // NaN slips past `low > high` (every NaN comparison is false), then
+            // reads as "unbounded" at conformance -- reject it as a corrupt spec.
+            if s.low.is_nan() || s.high.is_nan() {
+                return err_space!(path, "Box", "scalar bounds invalid: NaN bound");
+            }
             if s.low > s.high {
                 return err_space!(path, "Box", "scalar bounds invalid: low > high");
             }
@@ -221,6 +226,13 @@ pub(crate) fn validate_box_at(space: &SpaceSpec, path: &str) -> Result<(), Space
                 );
             }
             for i in 0..numel {
+                if t.low[i].is_nan() || t.high[i].is_nan() {
+                    return err_space!(
+                        path,
+                        "Box",
+                        format!("tensor bounds invalid: NaN bound at element {i}")
+                    );
+                }
                 if t.low[i] > t.high[i] {
                     return err_space!(
                         path,
@@ -281,6 +293,15 @@ fn validate_typed_bounds(
     let low_scalars = decode_typed(low, dtype, path)?;
     let high_scalars = decode_typed(high, dtype, path)?;
     for (index, (lo, hi)) in low_scalars.iter().zip(high_scalars.iter()).enumerate() {
+        if matches!(*lo, Scalar::Float(v) if v.is_nan())
+            || matches!(*hi, Scalar::Float(v) if v.is_nan())
+        {
+            return err_space!(
+                path,
+                "Box",
+                format!("typed bounds invalid: NaN bound at element {index}")
+            );
+        }
         if scalar_gt(*lo, *hi, dtype) {
             return err_space!(
                 path,
@@ -386,6 +407,36 @@ mod tests {
             })),
         };
         assert!(crate::spaces::validate_space(&spec).is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_nan_bounds() {
+        // NaN slips past `low > high` (all NaN comparisons are false) and would
+        // read as "unbounded" at conformance, so validation must reject it --
+        // both for f64 Uniform bounds and dtype-typed float bounds.
+        let uniform = SpaceSpec {
+            shape: vec![1],
+            dtype: DType::Float64,
+            spec: Some(SpaceKind::Box(BoxSpec {
+                bounds: Some(BoxBounds::Uniform(UniformBounds {
+                    low: f64::NAN,
+                    high: 1.0,
+                })),
+            })),
+        };
+        assert!(crate::spaces::validate_space(&uniform).is_err());
+
+        let typed = SpaceSpec {
+            shape: vec![1],
+            dtype: DType::Float64,
+            spec: Some(SpaceKind::Box(BoxSpec {
+                bounds: Some(BoxBounds::TypedUniform(TypedUniformBounds {
+                    low: f64::NAN.to_le_bytes().to_vec(),
+                    high: 1.0f64.to_le_bytes().to_vec(),
+                })),
+            })),
+        };
+        assert!(crate::spaces::validate_space(&typed).is_err());
     }
 
     #[test]
