@@ -242,9 +242,10 @@ machinery: keep a registry keyed by the pair and consult it before resolving.
 Semantic roles are an open vocabulary of wire strings matched verbatim between independently
 authored tags and specs. The well-known conventions that ship with RLMesh are re-exported from the
 package (single-sourced from the native crate): the domain-agnostic roles `IMAGE_PRIMARY`,
-`IMAGE_SECONDARY`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL` and the arm-manipulation roles
-`IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS` (with bimanual `_2` variants) and their
-`ACTION_*` counterparts.
+`IMAGE_SECONDARY`, `INSTRUCTION`, `JOINT_POS`, `JOINT_VEL`; the arm-manipulation observation roles
+`IMAGE_WRIST`, `EEF_POS`, `EEF_ROT`, `GRIPPER_POS`; and the action roles `ACTION_DELTA_POS`,
+`ACTION_DELTA_ROT`, `ACTION_GRIPPER`. Bimanual `_2` variants exist for the per-arm roles
+`EEF_POS`, `EEF_ROT`, `GRIPPER_POS`, `ACTION_DELTA_POS`, `ACTION_DELTA_ROT`, and `ACTION_GRIPPER`.
 
 Rotation widths follow the declared encoding. `rlmesh.adapters.ROTATION_DIMS` maps each encoding to
 its dimension count:

@@ -25,7 +25,7 @@ shared mixin:
 - `close_viewer()` closes the window if one is open. It is also called on client `close()`.
 
 The viewer is best-effort and experimental. It launches a separate GUI process via
-`python -m rlmesh viewer` (the `rlmesh-cli` binary), so it needs a desktop host. The environment
+`python -m rlmesh viewer`, so it needs a desktop host. The environment
 must produce frames, typically `render_mode="rgb_array"`. Frame pushes are dropped instead of
 blocking the step loop when the viewer stalls.
 
