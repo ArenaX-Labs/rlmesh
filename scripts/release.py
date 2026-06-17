@@ -46,7 +46,9 @@ def run(*cmd: str) -> None:
 
 
 def out(*cmd: str) -> str:
-    return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return subprocess.run(
+        cmd, cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout
 
 
 def is_prerelease(version: str) -> bool:
@@ -56,7 +58,11 @@ def is_prerelease(version: str) -> bool:
 def changelog_section(version: str) -> str:
     """Extract the body of the `## [version]` changelog section (the tag message)."""
     text = CHANGELOG.read_text()
-    m = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: http|\Z)", text, re.DOTALL | re.MULTILINE)
+    m = re.search(
+        rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: http|\Z)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
     if not m or not m.group(1).strip():
         sys.exit(f"CHANGELOG.md has no curated '## [{version}]' section yet")
     return m.group(1).strip()
@@ -70,30 +76,59 @@ def preflight(version: str) -> None:
     tag = f"v{version}"
     if tag in out("git", "tag", "--list", tag).split():
         sys.exit(f"tag {tag} already exists")
-    latest = [t for t in out("git", "tag", "--sort=-creatordate", "--list", "v*").split() if t]
+    latest = [
+        t for t in out("git", "tag", "--sort=-creatordate", "--list", "v*").split() if t
+    ]
     if latest:
         print(f"latest release tag: {latest[0]} (new: {tag})")
     if "<!-- DRAFT" in CHANGELOG.read_text():
-        sys.exit("CHANGELOG.md still has <!-- DRAFT --> markers; curate them before releasing")
+        sys.exit(
+            "CHANGELOG.md still has <!-- DRAFT --> markers; curate them before releasing"
+        )
     changelog_section(version)  # fails if the version section is missing/empty
     print("preflight ok")
 
 
 def publish(version: str) -> None:
+    pep440 = (
+        version.replace("-beta.", "b").replace("-rc.", "rc").replace("-alpha.", "a")
+    )
+    dist = ROOT / "python/rlmesh/dist"
+    # Fail before the irreversible `cargo publish` if the wheels for THIS version
+    # aren't built: an empty/stale dist would otherwise upload nothing (or the
+    # wrong version) to PyPI after crates.io is already published.
+    if not [p for p in dist.glob("*.whl") if pep440 in p.name]:
+        found = sorted(p.name for p in dist.glob("*.whl"))
+        sys.exit(
+            f"no wheel for {pep440} in {dist}/ (build wheels before --publish); found: {found}"
+        )
     for crate in CRATE_ORDER:
         run("cargo", "publish", "-p", crate)
-    run("maturin", "upload", *[str(p) for p in (ROOT / "python/rlmesh/dist").glob("*")])
-    args = ["gh", "release", "create", f"v{version}", "--title", f"v{version}", "--notes", changelog_section(version)]
+    run("maturin", "upload", *[str(p) for p in dist.glob("*")])
+    args = [
+        "gh",
+        "release",
+        "create",
+        f"v{version}",
+        "--title",
+        f"v{version}",
+        "--notes",
+        changelog_section(version),
+    ]
     if is_prerelease(version):
         args.append("--prerelease")
     run(*args)
     print("published to crates.io + PyPI and cut the GitHub Release")
-    print(f"smoke: python -m pip install rlmesh=={version.replace('-beta.', 'b').replace('-rc.', 'rc').replace('-alpha.', 'a')}")
+    print(f"smoke: python -m pip install rlmesh=={pep440}")
 
 
 def selfcheck() -> None:
     text = "## [1.0.0]\n- a change\n\n[Unreleased]: http://x\n[1.0.0]: http://x\n"
-    m = re.search(r"^## \[1\.0\.0\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: http|\Z)", text, re.DOTALL | re.MULTILINE)
+    m = re.search(
+        r"^## \[1\.0\.0\][^\n]*\n(.*?)(?=^## |^\[[^\]]+\]: http|\Z)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
     assert "http" not in m.group(1), "changelog_section leaked link-reference lines"
     print("release self-check passed")
 
@@ -111,7 +146,9 @@ def main() -> None:
     if "--publish" in flags:
         tag = f"v{version}"
         if tag not in out("git", "tag", "--list", tag).split():
-            sys.exit(f"tag {tag} does not exist; run release.py {version} (then push) first")
+            sys.exit(
+                f"tag {tag} does not exist; run release.py {version} (then push) first"
+            )
         if tag not in out("git", "tag", "--points-at", "HEAD").split():
             sys.exit(f"tag {tag} is not on HEAD; check out the tagged commit first")
         publish(version)
@@ -122,7 +159,9 @@ def main() -> None:
     run("mise", "run", "release:check")
 
     if "--dry-run" in flags:
-        run("git", "checkout", "--", ".")  # ponytail: dry-run must leave the tree as it found it
+        run(
+            "git", "checkout", "--", "."
+        )  # ponytail: dry-run must leave the tree as it found it
         print("dry run: build verified; no commit, tag, or publish made")
         return
 
@@ -130,7 +169,9 @@ def main() -> None:
     run("git", "tag", "-a", f"v{version}", "-m", changelog_section(version))
     print(f"\ntagged v{version}. To publish, push then release:")
     print(f"  git push origin HEAD --tags")
-    print(f"  python scripts/release.py {version} --publish   # crates.io + PyPI + GitHub Release")
+    print(
+        f"  python scripts/release.py {version} --publish   # crates.io + PyPI + GitHub Release"
+    )
 
 
 if __name__ == "__main__":
