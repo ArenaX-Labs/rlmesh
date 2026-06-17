@@ -1,11 +1,10 @@
 # VLA adapters: tag each env, spec each model
 
-This example shows how a project using `rlmesh.adapters` is laid out so that models and environments
-can be added independently. There are no per-pair adapters: every (model, env) combination is
-derived at runtime by `rlmesh.adapters.resolve`, which matches an env's **tags** against a model's
-**spec** by semantic role.
+This example lays out a project that uses `rlmesh.adapters` so models and environments can be added
+independently. There are no per-pair adapters: `rlmesh.adapters.resolve` derives every (model, env)
+combination at runtime by matching an env's **tags** against a model's **spec** by semantic role.
 
-The split is deliberate. An environment only _tags_ its observation and action **spaces** — it names
+The split is deliberate. An environment only _tags_ its observation and action **spaces**: it names
 the role of each entry plus the few facts spaces cannot carry (image layout, rotation encoding,
 explicit ranges). Widths, dtypes and keys come from the gymnasium spaces. A model _fully specifies_
 its payload.
@@ -19,6 +18,7 @@ vla_adapters/
 ├── models/
 │   ├── __init__.py       # MODELS registry (one line per checkpoint)
 │   ├── act.py            # ACT-style chunking: stateful custom adapter (AdapterBase)
+│   ├── geovla.py         # GeoVLA's input payload + action layout
 │   ├── smolvla.py        # SmolVLA's input payload + action layout
 │   └── xvla.py           # X-VLA: rot6d proprio, 20-dim single/bimanual EE6D action
 └── envs/
@@ -28,7 +28,7 @@ vla_adapters/
     └── simpler_bridge.py # one camera, wxyz quat, nested obs keys
 ```
 
-3 model files + 3 env files cover 9 combinations without touching any model code. With bespoke
+4 model files + 3 env files cover 12 combinations without touching any model code. With bespoke
 adapters the same coverage is N x M hand-written classes.
 
 There are two custom-adapter escape hatches, used at different scopes:
@@ -59,10 +59,10 @@ Each run starts by printing `adapter.describe()` — the exact transformations t
 that pairing, e.g. for `xvla` on `libero`:
 
 - `agentview_image`/`robot0_eye_in_hand_image` are resized to 256x256,
-- `robot0_eef_quat` is converted `quat_xyzw -> rot6d`, and the second-arm proprio components resolve
-  to zero fill because this env declares no `_2` roles (the spec marks them `optional`),
-- the 20-dim EE6D action is sliced, `rot6d -> axis_angle` converted, and the second-arm dims are
-  dropped because the env does not consume them.
+- `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor`, and the second-arm proprio components
+  resolve to zero fill because this env declares no `_2` roles (the spec marks them `optional`),
+- the 20-dim EE6D action is sliced, `rot6d_rowmajor -> axis_angle` converted, and the second-arm dims
+  are dropped because the env does not consume them.
 
 X-VLA's spec never hardcodes zero padding for dims 11-20: it declares them as second-arm components,
 and the padding/dropping above is _derived_ from the env at resolve time. A bimanual env declaring

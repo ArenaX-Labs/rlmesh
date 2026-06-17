@@ -2,7 +2,7 @@
 
 Each example is small and copyable, and shares the repository environment. Run any of them with
 `uv run python examples/python/<dir>/<file>.py` from the repository root. Examples that need their
-own lockfile are Demos and live in the separate `rlmesh-examples` repository, not here.
+own lockfile are demos and live in the separate `rlmesh-examples` repository, not here.
 
 Most server/client examples default to `127.0.0.1:5555`; start the server in one terminal and the
 client in another.

@@ -83,6 +83,5 @@ uv run python examples/python/quickstart/eval_many.py \
   127.0.0.1:5556
 ```
 
-This is the simplest local version of running one evaluator across multiple environment runtimes.
-The client shape is identical for every endpoint, whether the server wraps a Gymnasium environment
-or a custom object.
+That is one evaluator running across multiple environment runtimes, locally. The client shape is the
+same for every endpoint, whether the server wraps a Gymnasium environment or a custom object.

@@ -95,8 +95,8 @@ environment's action.
 ## A project with many models and environments
 
 The VLA example lays out a project where models and environments are added independently. With no
-per-pair adapters, every (model, environment) combination is derived by `resolve`. The runnable
-harness is {source}`examples/python/vla_adapters/eval.py <examples/python/vla_adapters/eval.py>`.
+per-pair adapters, `resolve` derives every (model, environment) combination. The runnable harness is
+{source}`examples/python/vla_adapters/eval.py <examples/python/vla_adapters/eval.py>`.
 
 ```bash
 cd examples/python
@@ -113,7 +113,7 @@ vla_adapters/
 ```
 
 Each model is one spec module plus a loader; the registry is one line per checkpoint. The same goes
-for envs, so adding a fourth environment covers it against every model without touching model code.
+for envs, so adding an environment pairs it with every model without touching model code.
 
 ```python
 # models/smolvla.py

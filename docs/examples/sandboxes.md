@@ -25,8 +25,8 @@ env = SandboxEnv(
 )
 ```
 
-`packages` are installed in the sandbox image and `imports` are checked during startup. The client
-shape is the same as `RemoteEnv`, so a `try`/`finally` keeps the owned container from leaking:
+`packages` are installed in the sandbox image and `imports` are checked at startup. The client shape
+is the same as `RemoteEnv`, so a `try`/`finally` keeps the owned container from leaking:
 
 ```python
 MAX_STEPS = 45

@@ -1,7 +1,7 @@
 # Adapters quickstart
 
 The smallest end-to-end `rlmesh.adapters` example: an environment tags its spaces, a model declares
-its format, and they are paired automatically — no per-environment glue in the model.
+its format, and the pairing is derived at runtime with no per-environment glue in the model.
 
 ```sh
 cd examples/python/adapters

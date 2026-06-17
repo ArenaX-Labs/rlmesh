@@ -7,7 +7,7 @@ Run commands from the repository root.
 
 ## Gymnasium Sandbox
 
-Use this first. It builds a sandbox for Gymnasium `CartPole-v1`, samples actions, and stops the
+Start here. It builds a sandbox for Gymnasium `CartPole-v1`, samples actions, and stops the
 container when the script exits.
 
 ```bash

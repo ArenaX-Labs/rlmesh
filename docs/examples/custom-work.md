@@ -1,7 +1,7 @@
 # Custom Work
 
-RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. The quickstart is one
-custom environment served over gRPC and one model worker that connects to it.
+RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. The quickstart serves
+one custom environment over gRPC and connects one model worker to it.
 
 ## Custom Environment
 
@@ -89,5 +89,5 @@ for step in range(1, 65):
 env.close()
 ```
 
-That is the basic separation: the environment serves observations, and the model worker (or your own
-loop) returns actions.
+That is the separation: the environment serves observations, and the model worker (or your own loop)
+returns actions.
