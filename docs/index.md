@@ -45,7 +45,7 @@ Use that boundary to:
 - run multiple environment endpoints at the same time;
 - reuse existing Gymnasium registrations, wrappers, and environment objects with small changes;
 - package an environment or model as a container image and run it the same way locally or on the
-  hosted platform (see the bring-your-own-container examples).
+  hosted platform (see the {doc}`bring-your-own-container example <examples/byo-container>`).
 
 RLMesh has two surfaces, split by protocol. The framework is this repository. It speaks the gRPC
 runtime contract, so you author and run environments and models in Python or Rust, on one machine or

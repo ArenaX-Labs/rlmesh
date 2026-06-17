@@ -5,6 +5,7 @@ the {doc}`quickstart <quickstart>`, then read these for specific pieces.
 
 - {doc}`examples/custom-work`: drop in a custom environment or tiny model worker.
 - {doc}`examples/sandboxes`: start an owned Docker-backed environment process.
+- {doc}`examples/byo-container`: build your own env and model images and run them anywhere.
 - {doc}`examples/multiple-endpoints`: run one evaluator across multiple environment endpoints.
 - {doc}`examples/adapters`: pair any model with any environment through declarative IO adapters.
 
@@ -14,6 +15,7 @@ the {doc}`quickstart <quickstart>`, then read these for specific pieces.
 
 examples/custom-work
 examples/sandboxes
+examples/byo-container
 examples/multiple-endpoints
 examples/adapters
 ```
