@@ -2,8 +2,8 @@
 
 Space specifications and value model for RLMesh environments and bindings.
 
-Use this crate when you need to construct or inspect RLMesh environment contracts without depending
-on the full SDK. It is also re-exported by the higher-level `rlmesh` crate.
+Use this crate to construct or inspect RLMesh environment contracts without depending on the full
+SDK. The higher-level `rlmesh` crate also re-exports it.
 
 ## Installation
 
@@ -14,8 +14,8 @@ rlmesh-spaces = "0.1.0-rc.1"
 
 ## Status
 
-Internal implementation crate with no stability promise. The Rust API may change at any time and
-there is no plan to stabilize it; build on the `rlmesh` Python package instead. See the
+Internal implementation detail of RLMesh, with no stability promise and no plan to stabilize it.
+Build on the `rlmesh` Python package instead; see the
 [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links

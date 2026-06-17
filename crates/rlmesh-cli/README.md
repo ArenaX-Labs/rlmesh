@@ -2,7 +2,7 @@
 
 Command-line entrypoint for inspecting RLMesh distributions and running support commands.
 
-This crate publishes the `rlmesh` binary. The CLI is small: `version` for distribution inspection
+This crate publishes the `rlmesh` binary. The CLI is small: `version` for distribution inspection,
 plus internal viewer plumbing used by the Python package.
 
 ## Installation
@@ -19,10 +19,9 @@ rlmesh version
 
 ## Status
 
-Internal crate that publishes the `rlmesh` binary. Its Rust API is internal implementation detail
-with no stability promise. The CLI commands are a supported surface that we intend to stabilize;
-today the documented `version` command is the only stable command. See the
-[compatibility policy](https://docs.rlmesh.dev/compatibility/).
+The crate's Rust API is internal, with no stability promise. The CLI commands are a supported
+surface we intend to stabilize; today only `version` is stable. Stabilizing the rest is a near-term
+goal. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

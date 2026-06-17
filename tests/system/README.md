@@ -1,7 +1,7 @@
 # RLMesh System Tests
 
 System tests validate installed RLMesh Python wheels in clean `uv` environments. The runner lives in
-`tools/rlmesh_system`; this directory holds scenario profiles and deterministic trace baselines.
+`tools/rlmesh_system`. This directory holds the scenario profiles and deterministic trace baselines.
 
 ## Layout
 
@@ -74,12 +74,7 @@ mise run perf:check      # re-run and fail on drift against that baseline
 Baselines are machine-specific and live untracked at `target/python-validation/perf-baseline.json`.
 Capture a fresh baseline on a quiet machine before a refactor; run `perf:check` after. Thresholds
 are warn-first (see `thresholds_for` in `rlmesh_system.support.reports`): views gate at ~15-25%
-relative drift with small absolute floors, copy paths also watch MiB/s throughput.
-
-Version drift: `mise run test:python:floors --perf` runs the same benchmarks inside the
-dependency-floor environment (python 3.10, numpy 1.22, torch 1.11, jax 0.4.24) and compares against
-the local baseline warn-only, so a framework version that suddenly costs milliseconds shows up in
-the same report format.
+relative drift with small absolute floors, and copy paths also watch MiB/s throughput.
 
 Expected shape of results (what "healthy" looks like):
 

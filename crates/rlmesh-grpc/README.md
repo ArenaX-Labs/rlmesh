@@ -2,8 +2,8 @@
 
 gRPC clients, servers, and wire helpers for RLMesh model-environment protocols.
 
-Most applications should depend on the higher-level `rlmesh` crate. Use this crate when you are
-integrating at the transport layer or need direct access to the gRPC environment and model services.
+Most applications should depend on the higher-level `rlmesh` crate. Use this crate to integrate at
+the transport layer or to reach the gRPC environment and model services directly.
 
 ## Installation
 
@@ -14,8 +14,8 @@ rlmesh-grpc = "0.1.0-rc.1"
 
 ## Status
 
-Internal implementation crate with no stability promise. The Rust API may change at any time and
-there is no plan to stabilize it; build on the `rlmesh` Python package instead. See the
+Internal implementation detail of RLMesh, with no stability promise and no plan to stabilize it.
+Build on the `rlmesh` Python package instead; see the
 [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links

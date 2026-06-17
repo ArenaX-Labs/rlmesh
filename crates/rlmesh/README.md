@@ -1,11 +1,10 @@
 # rlmesh
 
-Rust facade crate for serving RLMesh environments and connecting Rust evaluators.
+Rust crate for serving RLMesh environments and connecting Rust evaluators.
 
-This is the Rust-side surface we intend to stabilize. The API is not stable yet and carries no
-compatibility promise for now, but stabilizing it is a near-term goal — unlike the other RLMesh
-crates, which stay internal with no stability promise. Most users should install the `rlmesh` Python
-package instead; reach for this crate only to work directly against the Rust layer.
+This is the Rust-side surface we intend to stabilize. It is not stable yet and carries no
+compatibility promise for now, but stabilizing it is a near-term goal. Most users should install the
+`rlmesh` Python package instead; reach for this crate to work directly against the Rust layer.
 
 ## Installation
 
@@ -14,11 +13,11 @@ package instead; reach for this crate only to work directly against the Rust lay
 rlmesh = "0.1.0-rc.1"
 ```
 
-## What It Provides
+## What it provides
 
-- `Env` and `SingleEnv` traits, plus the `SingleEnvAdapter` struct, for environment bindings.
+- The `Env` and `SingleEnv` traits and the `SingleEnvAdapter` struct for environment bindings.
 - `EnvServer` and `RemoteEnv` for serving and connecting to environments.
-- `ModelWorker` APIs for model-side workflows.
+- `ModelWorker` for model-side workflows.
 - Re-exported space, value, lifecycle, and error types used by the SDK.
 
 ## Examples
@@ -36,9 +35,9 @@ The boundary is language-neutral, so the same server also accepts the Python cli
 
 ## Status
 
-Rust facade crate — the Rust-side surface we intend to stabilize. The API is not stable yet and
-carries no compatibility promise for now, but stabilizing it is a near-term goal. Until then, build
-on the `rlmesh` Python package; see the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+This is the Rust-side surface we intend to stabilize. It is not stable yet and carries no
+compatibility promise for now, but stabilizing it is a near-term goal. Until then, build on the
+`rlmesh` Python package; see the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 
