@@ -58,10 +58,11 @@ matching edition string is enough for peers to interoperate.
 
 ## Rust crates
 
-The Rust crates are internal implementation detail today. They are published to crates.io so the
-Python extension can build, but the Rust API is not stable yet and carries no compatibility promise
-for now. Stabilizing it is a near-term goal (see the roadmap below); until then, build on the Python
-package. See {doc}`versioning`.
+Most Rust crates are internal implementation detail with no stability promise: they are published to
+crates.io so the Python extension can build, but their Rust API may change at any time and there is
+no plan to stabilize it. The `rlmesh` facade crate and the CLI commands are the exceptions — the
+Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the
+roadmap below); until then, build on the Python package. See {doc}`versioning`.
 
 ## Framework Version Floors
 
@@ -133,9 +134,9 @@ it ships.
   floor, and adapter forward-tolerance.
 - **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation
   against a real semantic change.
-- **Rust crate API, near term.** The Rust crates are unstable today, but stabilizing their public
-  API is an explicit near-term goal once the surface settles; the commitment is announced here when
-  it lands.
+- **Rust facade API, near term.** The `rlmesh` facade crate and the CLI commands are the Rust-side
+  surfaces we intend to stabilize once they settle; the other crates stay internal with no stability
+  promise. The commitment is announced here when it lands.
 - **v1.0, date not set.** Forward-compatibility guarantees — newer runtimes accept older stable
   clients, and sealed editions are never pruned — become binding, gated on the hardening above and a
   proven cross-version path.

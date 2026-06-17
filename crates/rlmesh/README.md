@@ -1,10 +1,11 @@
 # rlmesh
 
-Internal Rust crate for serving RLMesh environments and connecting Rust evaluators.
+Rust facade crate for serving RLMesh environments and connecting Rust evaluators.
 
-The Rust API is internal and not stable yet, with no compatibility promise for now; stabilizing it
-is a near-term goal. Most users should install the `rlmesh` Python package instead; reach for this
-crate only to work directly against the Rust layer.
+This is the Rust-side surface we intend to stabilize. The API is not stable yet and carries no
+compatibility promise for now, but stabilizing it is a near-term goal — unlike the other RLMesh
+crates, which stay internal with no stability promise. Most users should install the `rlmesh` Python
+package instead; reach for this crate only to work directly against the Rust layer.
 
 ## Installation
 
@@ -35,9 +36,9 @@ The boundary is language-neutral, so the same server also accepts the Python cli
 
 ## Status
 
-Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
-for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
-the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+Rust facade crate — the Rust-side surface we intend to stabilize. The API is not stable yet and
+carries no compatibility promise for now, but stabilizing it is a near-term goal. Until then, build
+on the `rlmesh` Python package; see the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

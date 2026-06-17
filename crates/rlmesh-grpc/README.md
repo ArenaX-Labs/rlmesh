@@ -14,9 +14,9 @@ rlmesh-grpc = "0.1.0-rc.1"
 
 ## Status
 
-Internal implementation crate. The Rust API is not stable yet and carries no compatibility promise
-for now; stabilizing it is a near-term goal. Until then, build on the `rlmesh` Python package; see
-the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+Internal implementation crate with no stability promise. The Rust API may change at any time and
+there is no plan to stabilize it; build on the `rlmesh` Python package instead. See the
+[compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 

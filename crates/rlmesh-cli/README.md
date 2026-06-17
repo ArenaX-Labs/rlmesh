@@ -19,9 +19,10 @@ rlmesh version
 
 ## Status
 
-Internal crate that publishes the `rlmesh` binary. The Rust API and CLI surface are not stable yet
-and carry no compatibility promise beyond the documented `version` command; stabilizing them is a
-near-term goal. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+Internal crate that publishes the `rlmesh` binary. Its Rust API is internal implementation detail
+with no stability promise. The CLI commands are a supported surface that we intend to stabilize;
+today the documented `version` command is the only stable command. See the
+[compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 
