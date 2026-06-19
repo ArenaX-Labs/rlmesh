@@ -12,12 +12,16 @@ if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
 
     from ..recipes._schema import ArtifactInput
+    from ..specs import EnvContract
     from ._eval import RunResult
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 LifecycleCallback = Callable[[], None]
 PredictFn = Callable[[ObsT], ActT]
+#: The native worker calls predict with the observation and the env contract
+#: (``None`` when none is published). Spec-less workers ignore the second arg.
+WorkerPredictFn = Callable[[ObsT, object | None], ActT]
 
 
 class ModelBase(Generic[ObsT, ActT]):
@@ -82,14 +86,22 @@ class ModelBase(Generic[ObsT, ActT]):
         self._trust_entrypoints = trust_entrypoints
         from ..adapters import ModelSpec
 
-        # Only a ModelSpec model resolves its adapter at run(env), so only it gets
-        # the fail-loud worker placeholder. A spec-less or DELEGATED (self-adapting)
-        # model serves its own predict directly.
-        worker_predict = (
-            cast("PredictFn[ObsT, ActT]", _unwired)
-            if isinstance(self._spec, ModelSpec)
-            else self._raw_predict
-        )
+        # The native worker calls predict with (observation, env_contract). A
+        # ModelSpec model resolves its adapter lazily from that contract on the
+        # serve path (mirroring run(env)); a spec-less or DELEGATED (self-adapting)
+        # model serves its own predict directly and ignores the contract.
+        worker_predict: WorkerPredictFn[ObsT, ActT]
+        if isinstance(self._spec, ModelSpec):
+            worker_predict = self._make_resolving_predict()
+        else:
+
+            def direct_predict(
+                observation: ObsT, _contract: object | None = None
+            ) -> ActT:
+                return self._raw_predict(observation)
+
+            worker_predict = direct_predict
+
         self._install_worker(worker_predict, self._on_reset)
 
     @property
@@ -99,7 +111,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def _install_worker(
         self,
-        predict_fn: PredictFn[ObsT, ActT],
+        predict_fn: WorkerPredictFn[ObsT, ActT],
         on_reset: LifecycleCallback | None,
     ) -> None:
         """Build the native model worker around ``predict_fn`` (the serve path)."""
@@ -108,9 +120,11 @@ class ModelBase(Generic[ObsT, ActT]):
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
 
-        def wrapped_predict(observation: Value) -> Value:
+        def wrapped_predict(
+            observation: Value, contract: object | None = None
+        ) -> Value:
             decoded = cast(ObsT, self._bridge.decode(observation))
-            action = predict_fn(decoded)
+            action = predict_fn(decoded, contract)
             return self._bridge.encode(action)
 
         self._worker: PyModel = PyModel(
@@ -119,6 +133,35 @@ class ModelBase(Generic[ObsT, ActT]):
             on_episode_end=self._on_episode_end,
             on_close=self._on_close,
         )
+
+    def _make_resolving_predict(self) -> WorkerPredictFn[ObsT, ActT]:
+        from ._eval import apply_action, apply_obs, resolve_adapter
+
+        bridge = type(self)._bridge
+        state: dict[str, object] = {"key": None, "adapter": None}
+
+        def resolving(observation: ObsT, contract: object | None) -> ActT:
+            if contract is None:
+                raise RuntimeError(
+                    "served spec'd model received an observation with no env "
+                    "contract; the env must dial in (ConfigureRoute) before predict"
+                )
+            env_contract = cast("EnvContract", contract)
+            key = repr(env_contract.to_dict())
+            if state["key"] != key:
+                adapter = resolve_adapter(
+                    self._spec, env_contract, self._trust_entrypoints
+                )
+                if adapter is not None:
+                    adapter.reset()
+                state["adapter"] = adapter
+                state["key"] = key
+            adapter = state["adapter"]
+            payload = apply_obs(adapter, observation, bridge)
+            action = self._raw_predict(cast(ObsT, payload))
+            return cast(ActT, apply_action(adapter, action, bridge))
+
+        return resolving
 
     def run(
         self,
@@ -163,20 +206,10 @@ class ModelBase(Generic[ObsT, ActT]):
     ) -> None:
         """Host this model as an endpoint (blocking).
 
-        A spec-less model serves directly. A spec'd model must be driven with
-        ``run(env)``: its adapter resolves from an env contract, which a passive
-        endpoint only sees on dial-in (not implemented), so serving the raw predict
-        would silently skip the spec's transforms.
+        A spec'd model resolves its adapter from the env contract delivered on
+        dial-in and applies it around predict; a spec-less or DELEGATED
+        (self-adapting) model serves its own predict directly.
         """
-        from ..adapters import ModelSpec
-
-        if isinstance(self._spec, ModelSpec):
-            raise NotImplementedError(
-                "serve() cannot host a spec'd model yet: its adapter resolves from "
-                "an env contract, which a served endpoint only sees on dial-in (not "
-                "implemented). Drive it with Model(model).run(env), or use "
-                "spec=DELEGATED if the model adapts its own observations."
-            )
         self._worker.serve(address, token, options)
 
     def run_local(self, env_address: str, *, token: str = "") -> None:
@@ -193,11 +226,4 @@ class ModelBase(Generic[ObsT, ActT]):
         return f"{type(self).__name__}()"
 
 
-def _unwired(_observation: object) -> object:
-    raise RuntimeError(
-        "this model has a spec; its adapter resolves from the env contract. Drive "
-        "it with .run(env) passing an env object, not serve()/run_local()."
-    )
-
-
-__all__ = ["LifecycleCallback", "ModelBase", "PredictFn"]
+__all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "WorkerPredictFn"]

@@ -152,6 +152,16 @@ class _Contract:
         self.observation_space: Any = None
         self.action_space: Any = None
 
+    def to_dict(self) -> dict[str, Any]:
+        # Stable fingerprint the served-model worker keys its adapter cache on
+        # (the native EnvContract exposes the same method).
+        return {
+            "metadata": self.metadata,
+            "num_envs": self.num_envs,
+            "observation_space": repr(self.observation_space),
+            "action_space": repr(self.action_space),
+        }
+
 
 class _LoopEnv:
     """A tiny in-process env (reset/step/env_contract) for the eval-loop test."""
@@ -394,10 +404,8 @@ def test_delegated_skips_resolution_even_when_tagged() -> None:
     assert result.num_episodes == 1
 
 
-def test_delegated_serves_real_predict_not_unwired(monkeypatch: Any) -> None:
-    # serve() only blocks a ModelSpec, so a DELEGATED (self-adapting) model is
-    # served. Its worker must be the real predict, not the _unwired placeholder
-    # that raises on the first observation.
+def _capture_worker(monkeypatch: Any) -> dict[str, Any]:
+    """Intercept the native worker install and capture the (obs, contract) predict."""
     from rlmesh.models import base as base_mod
 
     captured: dict[str, Any] = {}
@@ -407,15 +415,31 @@ def test_delegated_serves_real_predict_not_unwired(monkeypatch: Any) -> None:
         self._worker = object()
 
     monkeypatch.setattr(base_mod.ModelBase, "_install_worker", fake_install)
+    return captured
+
+
+def test_delegated_serves_real_predict_ignoring_contract(monkeypatch: Any) -> None:
+    # A DELEGATED (self-adapting) model serves its own predict directly; the worker
+    # is (obs, contract) but the contract is ignored (no adapter resolution).
+    captured = _capture_worker(monkeypatch)
 
     def sentinel(_obs: Any) -> str:
         return "real"
 
     Model(sentinel, spec=DELEGATED)
-    assert captured["predict"] is sentinel
+    assert captured["predict"]("anything", None) == "real"
+    assert captured["predict"]("anything", _Contract()) == "real"
+
+
+def test_specd_serve_worker_requires_contract(monkeypatch: Any) -> None:
+    # A ModelSpec model resolves its adapter from the env contract, so its serve
+    # worker fails loudly when an observation arrives with no contract (rather than
+    # silently skipping the spec's transforms, as the old serve() guard feared).
+    captured = _capture_worker(monkeypatch)
 
     Model(lambda _obs: 0, spec=_SPEC)
-    assert captured["predict"] is base_mod._unwired
+    with pytest.raises(RuntimeError, match="env contract"):
+        captured["predict"]("obs", None)
 
 
 def test_episode_at_step_cap_counts_as_truncation(monkeypatch: Any) -> None:
@@ -588,6 +612,88 @@ def test_model_server_resolves_and_runs_real_adapter() -> None:
     # predict saw the MODEL-format observation: image resized to the declared 8x8
     assert server._policy.shapes
     assert all(shape[:2] == (8, 8) for shape in server._policy.shapes)
+
+
+def _tagged_image_contract() -> _Contract:
+    """A contract carrying primary-image tags + real 16x16 obs / 1-dim action spaces."""
+    import gymnasium as gym
+
+    contract = _Contract(
+        metadata=dict(
+            EnvTags(
+                observation={"image": ImageTag(role=IMAGE_PRIMARY)},
+                action=ActionLayout(ActionComponent(ACTION_GRIPPER, 1)),
+            ).to_metadata()
+        )
+    )
+    contract.observation_space = gym.spaces.Dict(
+        {"image": gym.spaces.Box(low=0, high=255, shape=(16, 16, 3), dtype=np.uint8)}
+    )
+    contract.action_space = gym.spaces.Box(
+        low=-1.0, high=1.0, shape=(1,), dtype=np.float32
+    )
+    return contract
+
+
+def test_serve_worker_resolves_and_applies_adapter(monkeypatch: Any) -> None:
+    # The serve path (worker called with the env contract) resolves the adapter and
+    # applies transform_obs/transform_action around predict, exactly like run(env):
+    # predict sees the model-format 8x8 image, the env gets a length-1 action back.
+    captured = _capture_worker(monkeypatch)
+    server = Model(AdaptedPolicy)
+    worker = captured["predict"]
+
+    obs = {"image": np.zeros((16, 16, 3), dtype=np.uint8)}
+    action = worker(obs, _tagged_image_contract())
+
+    assert server._policy.shapes  # predict ran
+    assert server._policy.shapes[-1][:2] == (8, 8)  # adapter resized obs to 8x8
+    assert np.asarray(action, dtype=np.float32).reshape(-1).shape == (1,)
+
+
+def test_serve_worker_caches_then_reresolves_on_contract_change(
+    monkeypatch: Any,
+) -> None:
+    # Resolution is cached across steps with the same contract, and re-runs when the
+    # contract changes (a re-dial / new env), so a served model never reuses a stale
+    # adapter.
+    from rlmesh.models import _eval as eval_mod
+
+    calls = {"n": 0}
+    real = eval_mod._resolve_adapter
+
+    def counting(spec: Any, contract: Any, trust: Any) -> Any:
+        calls["n"] += 1
+        return real(spec, contract, trust)
+
+    monkeypatch.setattr(eval_mod, "_resolve_adapter", counting)
+    captured = _capture_worker(monkeypatch)
+    Model(AdaptedPolicy)
+    worker = captured["predict"]
+    obs = {"image": np.zeros((16, 16, 3), dtype=np.uint8)}
+
+    c1 = _tagged_image_contract()
+    worker(obs, c1)
+    worker(obs, c1)
+    assert calls["n"] == 1  # cached across same-contract steps
+
+    c2 = _tagged_image_contract()
+    c2.metadata = {**c2.metadata, "env_id": "other"}  # different fingerprint
+    worker(obs, c2)
+    assert calls["n"] == 2  # changed contract re-resolves
+
+
+def test_serve_worker_resolution_failure_is_loud(monkeypatch: Any) -> None:
+    # A spec'd model against a contract that cannot resolve (tagged but missing
+    # spaces) surfaces the AdapterResolutionError rather than hanging or silently
+    # skipping transforms.
+    captured = _capture_worker(monkeypatch)
+    Model(AdaptedPolicy)
+    worker = captured["predict"]
+
+    bad = _Contract(metadata=dict(_TAGS.to_metadata()))  # obs/action spaces are None
+    with pytest.raises(Exception):
+        worker({"image": np.zeros((16, 16, 3), dtype=np.uint8)}, bad)
 
 
 def test_instruction_seam_delivers_text_to_model() -> None:

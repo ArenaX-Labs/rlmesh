@@ -156,6 +156,9 @@ provenance = "github-attestations"
 version = "1.96.0"
 backend = "core:rust"
 
+[tools.rust.options]
+components = "clippy,rustfmt"
+
 [[tools.uv]]
 version = "0.11.19"
 backend = "aqua:astral-sh/uv"

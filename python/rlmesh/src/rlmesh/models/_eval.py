@@ -25,7 +25,15 @@ if TYPE_CHECKING:
     from ..adapters import Adapter
     from ..specs import EnvContract
 
-__all__ = ["EpisodeResult", "RunResult", "coerce_model", "evaluate"]
+__all__ = [
+    "EpisodeResult",
+    "RunResult",
+    "apply_action",
+    "apply_obs",
+    "coerce_model",
+    "evaluate",
+    "resolve_adapter",
+]
 
 # ponytail: bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
@@ -105,7 +113,7 @@ def evaluate(
     """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``)."""
     client, contract, owns_client = _connect(env_or_address, token, remote_env_cls)
     _reject_vector_env(contract)
-    adapter = _resolve_adapter(spec, contract, trust_entrypoints)
+    adapter = resolve_adapter(spec, contract, trust_entrypoints)
     text_keys = _text_input_keys(spec)
     if max_episodes is not None:
         n_episodes = max_episodes
@@ -168,18 +176,12 @@ def _run_episode(
     steps = 0
     terminated = truncated = False
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
-        if adapter is not None:
-            # The adapter codec speaks numpy; re-key it into the model's framework
-            # so a torch/jax/native predict gets its own value type, not ndarrays.
-            payload = _to_framework(adapter.transform_obs(obs), bridge)
-        else:
-            payload = obs
+        payload = apply_obs(adapter, obs, bridge)
         if instruction is not None and isinstance(payload, dict):
             for key in text_keys:
                 payload[key] = instruction
         action = predict(payload)
-        if adapter is not None:
-            action = adapter.transform_action(_to_numpy(action, bridge))
+        action = apply_action(adapter, action, bridge)
         obs, reward, terminated, truncated, _info = client.step(action)
         total += float(reward)
         steps += 1
@@ -197,7 +199,19 @@ def _run_episode(
     )
 
 
-def _resolve_adapter(
+def apply_obs(adapter: Any, obs: Any, bridge: ValueBridge | None) -> Any:
+    if adapter is None:
+        return obs
+    return _to_framework(adapter.transform_obs(obs), bridge)
+
+
+def apply_action(adapter: Any, action: Any, bridge: ValueBridge | None) -> Any:
+    if adapter is None:
+        return action
+    return adapter.transform_action(_to_numpy(action, bridge))
+
+
+def resolve_adapter(
     spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
 ) -> Adapter | None:
     from ..adapters import (

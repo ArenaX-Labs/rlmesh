@@ -75,8 +75,19 @@ impl ModelHandler for PyModelHandler {
                     .and_then(|spec| spec.observation_space.as_ref());
                 let obs = neutral_observation(py, observation_payload.as_ref(), observation_space)?;
 
+                // Hand the env contract to Python as a second argument so a served
+                // spec'd model can resolve its adapter against the env's tags/spaces
+                // (the in-process run() path resolves the same way). Spec-less and
+                // DELEGATED workers ignore it.
+                let contract_py = match env_contract.as_ref() {
+                    Some(contract) => {
+                        crate::spaces::env_contract_to_py(py, contract)?.into_bound(py)
+                    }
+                    None => py.None().into_bound(py),
+                };
+
                 let call_guard = profiler.start("model.predict.python_call");
-                let action = predict_fn.call1(py, (obs,))?;
+                let action = predict_fn.call1(py, (obs, contract_py))?;
                 let _ = call_guard.finish(obs_bytes_len);
 
                 let encode_guard = profiler.start("model.predict.encode_action");
@@ -294,7 +305,7 @@ submit! {
 import collections.abc
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value, object | None], Value], on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
     def run_local(self, env_address: str, token: str) -> None: ...
     def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
@@ -460,6 +471,38 @@ mod tests {
 
         let decoded = decode_batched_partial_values(Some(&payload), &space).unwrap();
         assert_eq!(decoded, vec![value]);
+    }
+
+    #[test]
+    fn env_contract_to_py_exposes_spaces_and_metadata_to_python() {
+        use crate::spaces::env_contract_to_py;
+        use rlmesh_spaces::{EnvContract, MetaMap, MetaValue};
+
+        Python::attach(|py| {
+            let space = instruction_space();
+            let mut metadata = MetaMap::default();
+            metadata.insert(
+                "rlmesh.adapter".to_string(),
+                MetaValue::String("tags".to_string()),
+            );
+            let contract = EnvContract {
+                observation_space: Some(space.clone()),
+                action_space: Some(space),
+                metadata: Some(metadata),
+                num_envs: 1,
+                ..Default::default()
+            };
+
+            let value = env_contract_to_py(py, &contract).unwrap();
+            let bound = value.bind(py);
+            let meta = bound.getattr("metadata").unwrap();
+            assert!(!meta.is_none());
+            assert!(bound.getattr("observation_space").is_ok());
+            assert_eq!(
+                bound.getattr("num_envs").unwrap().extract::<u32>().unwrap(),
+                1
+            );
+        });
     }
 
     #[test]
