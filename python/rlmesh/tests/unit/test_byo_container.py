@@ -14,16 +14,6 @@ import rlmesh
 import rlmesh._sandbox._model as model_mod
 
 
-def test_image_source_rejects_artifacts() -> None:
-    from rlmesh._spec._core import ArtifactInput
-
-    with pytest.raises(TypeError, match="does not accept artifacts"):
-        rlmesh.SandboxModel(
-            "image://m:latest",
-            artifacts=(ArtifactInput("w", "/w", local_dir="/tmp"),),
-        )
-
-
 class _StartProc:
     returncode = 0
     stdout = "container-abc\n"

@@ -5,7 +5,7 @@ def test_root_namespace_is_small() -> None:
     import rlmesh
 
     assert rlmesh.__all__ == [
-        "DELEGATED",
+        "NO_ADAPTER",
         "EnvServer",
         "EpisodeResult",
         "Model",
@@ -21,7 +21,6 @@ def test_root_namespace_is_small() -> None:
         "VectorEnvServer",
         "__version__",
         "adapters",
-        "hf_load",
         "spaces",
         "types",
     ]

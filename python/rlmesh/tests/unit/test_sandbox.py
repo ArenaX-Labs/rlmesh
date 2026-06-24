@@ -318,14 +318,3 @@ def test_sandbox_model_requires_image_source() -> None:
 
     with pytest.raises(TypeError, match="prebuilt image source"):
         SandboxModel("policy/run-test")
-
-
-def test_sandbox_model_image_rejects_artifacts() -> None:
-    from rlmesh._sandbox._model import SandboxModel
-    from rlmesh._spec._core import ArtifactInput
-
-    with pytest.raises(TypeError, match="does not accept artifacts="):
-        SandboxModel(
-            "image://m:1",
-            artifacts=[ArtifactInput("w", "/w", local_dir="/host")],
-        )

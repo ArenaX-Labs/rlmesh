@@ -12,8 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
-from .._spec._core import DELEGATED, ArtifactInput
 from .._value_conversion import from_value
+from ._adapter_mode import NO_ADAPTER
 
 if TYPE_CHECKING:
     from .._framework_bridge import ValueBridge
@@ -108,6 +108,7 @@ def evaluate(
     client, contract, owns_client = _connect(env_or_address, token, remote_env_cls)
     _reject_vector_env(contract)
     adapter = _resolve_adapter(spec, contract, trust_entrypoints)
+    env_bridge = _adapter_env_bridge(client, bridge) if adapter is not None else None
     text_keys = _text_input_keys(spec)
     if max_episodes is not None:
         n_episodes = max_episodes
@@ -131,6 +132,7 @@ def evaluate(
                     instruction,
                     text_keys,
                     bridge,
+                    env_bridge,
                 )
             )
             if on_episode_end is not None:
@@ -164,6 +166,7 @@ def _run_episode(
     instruction: str | None,
     text_keys: tuple[str, ...],
     bridge: ValueBridge | None = None,
+    env_bridge: ValueBridge | None = None,
 ) -> EpisodeResult:
     obs, _info = _reset(client, seed)
     if adapter is not None:
@@ -173,13 +176,14 @@ def _run_episode(
     total = 0.0
     steps = 0
     terminated = truncated = False
+    model_bridge = bridge if bridge is not None else env_bridge
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
         if adapter is not None:
             payload = from_value(
                 adapter.transform_obs_value(
-                    obs, input_bridge=bridge, custom_bridge=bridge
+                    obs, input_bridge=env_bridge, custom_bridge=env_bridge
                 ),
-                bridge,
+                model_bridge,
             )
         else:
             payload = obs
@@ -191,8 +195,8 @@ def _run_episode(
         action = predict(payload)
         if adapter is not None:
             action = from_value(
-                adapter.transform_action_value(action, action_bridge=bridge),
-                bridge,
+                adapter.transform_action_value(action, action_bridge=model_bridge),
+                env_bridge,
             )
         obs, reward, terminated, truncated, _info = client.step(action)
         total += float(reward)
@@ -219,7 +223,7 @@ def resolve_route_adapter(
     The serve-path counterpart of the run(env) resolution: a served model
     receives the env contract once per route (the ``ConfigureRoute`` RPC), so it
     resolves the adapter there rather than at connect. Returns ``None`` for a
-    spec-less / ``DELEGATED`` model (no transform). Raises on a spec/env mismatch
+    spec-less / ``NO_ADAPTER`` model (no transform). Raises on a spec/env mismatch
     so route configuration fails loudly instead of predicting wrongly.
     """
     from ..adapters import AdapterResolutionError
@@ -261,7 +265,9 @@ def adapted_predict(
         bridge,
     )
     action = predict(payload)
-    return from_value(adapter.transform_action_value(action, action_bridge=bridge), bridge)
+    return from_value(
+        adapter.transform_action_value(action, action_bridge=bridge), bridge
+    )
 
 
 def _resolve_adapter(
@@ -274,7 +280,7 @@ def _resolve_adapter(
         resolve_from_contract,
     )
 
-    if spec is DELEGATED:
+    if spec is NO_ADAPTER:
         return None
     metadata = contract.metadata if contract is not None else None
     tagged = EnvTags.from_metadata(metadata or {}) is not None
@@ -282,13 +288,13 @@ def _resolve_adapter(
         if tagged:
             raise AdapterResolutionError(
                 "the env publishes adapter tags but this model has spec=None; "
-                "pass spec=<ModelSpec> to adapt, or spec=DELEGATED if the model "
+                "pass spec=<ModelSpec> to adapt, or spec=NO_ADAPTER if the model "
                 "adapts its own observations"
             )
         return None
     if not isinstance(spec, ModelSpec):
         raise AdapterResolutionError(
-            f"a model spec must be a ModelSpec or DELEGATED; got {type(spec).__name__}"
+            f"a model spec must be a ModelSpec or NO_ADAPTER; got {type(spec).__name__}"
         )
     if contract is None:
         raise AdapterResolutionError(
@@ -313,15 +319,11 @@ def coerce_model(
     source: Any,
     *,
     spec: object | None,
-    artifacts: tuple[ArtifactInput, ...],
-    load_kwargs: dict[str, object] | None,
 ) -> CoercedModel:
     """Resolve a model source into a :class:`CoercedModel`.
 
-    The model source is a predict callable; ``artifacts``/``load_kwargs`` are
-    accepted for forward compatibility but are unused on the callable path.
+    The model source is a predict callable.
     """
-    _ = artifacts, load_kwargs
     if callable(source):
         return CoercedModel(source, spec, None, None, None)
     raise TypeError(
@@ -330,7 +332,7 @@ def coerce_model(
 
 
 def _text_input_keys(spec: object | None) -> tuple[str, ...]:
-    if spec is None or spec is DELEGATED:
+    if spec is None or spec is NO_ADAPTER:
         return ()
     from ..adapters import TextInput
 
@@ -363,6 +365,15 @@ def _remote_env(address: str, remote_env_cls: type | None) -> Any:
 
         remote_env_cls = RemoteEnv
     return remote_env_cls(address)
+
+
+def _adapter_env_bridge(
+    client: Any, fallback: ValueBridge | None
+) -> ValueBridge | None:
+    bridge = getattr(client, "_bridge", None)
+    if bridge is not None:
+        return cast("ValueBridge", bridge)
+    return fallback
 
 
 def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:

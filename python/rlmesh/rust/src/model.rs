@@ -43,7 +43,7 @@ struct PyModelHandler {
     on_close: Option<Py<PyAny>>,
     profiler: Arc<ProfileCollector>,
     // route_key -> the Python adapter resolved at configure_route (a Python None
-    // for a spec-less/DELEGATED route). Shared with the PyRouteSetup so the
+    // for a spec-less/NO_ADAPTER route). Shared with the PyRouteSetup so the
     // server resolves routes off the predict lock; predict only reads it.
     adapters: Adapters,
     // The route the server is currently processing, set by `enter_route` before
@@ -234,7 +234,7 @@ impl ModelHandler for PyModelHandler {
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
-        // Only a model with a configure_fn (the spec/DELEGATED-aware resolver)
+        // Only a model with a configure_fn (the spec/NO_ADAPTER-aware resolver)
         // does per-route setup. The setup shares the adapters map so predict sees
         // what configure resolves, and runs off the predict lock.
         let configure_fn = self.configure_fn.as_ref()?;

@@ -12,14 +12,12 @@ from __future__ import annotations
 import os
 import subprocess
 import time
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
     from .._client._remote_model import ModelSession
-    from .._spec._core import ArtifactInput
     from ..specs import EnvContract
 
 __all__ = ["SandboxModel"]
@@ -109,7 +107,6 @@ class SandboxModel:
         self,
         source: object,
         *,
-        artifacts: Sequence[ArtifactInput] = (),
         gpus: str | int | None = None,
     ) -> None:
         # BYO prebuilt container: ``image://<tag>`` is run directly, and the
@@ -119,11 +116,6 @@ class SandboxModel:
             raise TypeError(
                 "SandboxModel requires a prebuilt image source, e.g. "
                 f"image://my-model:latest; got {type(source).__name__}"
-            )
-        if artifacts:
-            raise TypeError(
-                "SandboxModel(image://...) does not accept artifacts=; bake the "
-                "weights into the image or mount them yourself"
             )
         self._image = prebuilt
         self._gpus = _normalize_gpus(gpus)

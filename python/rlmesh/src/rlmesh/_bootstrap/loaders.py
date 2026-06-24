@@ -32,8 +32,10 @@ from .spec_resolution import (
 )
 
 if TYPE_CHECKING:
-    from rlmesh._server import EnvLike
+    from rlmesh._server import EnvLike, VectorServerEnvLike
     from rlmesh.numpy import NumpyValue
+
+    ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
 
 def load_environment(
@@ -42,7 +44,7 @@ def load_environment(
     num_envs: int,
     vectorization_mode: str | None = None,
     kwargs: Mapping[str, object] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Load a Gymnasium/Gym environment for the interactive CLI."""
     import_errors: list[str] = []
     imports = list(package_names)
@@ -57,7 +59,7 @@ def load_environment(
 
         try:
             return cast(
-                "EnvLike",
+                "ServedEnv",
                 make_gym_environment(
                     module,
                     env_id=env_id,
@@ -103,7 +105,7 @@ def load_env_entrypoint(
     entrypoint: str,
     package_names: Sequence[str] = (),
     kwargs: Mapping[str, object] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Load an environment from a ``module:callable`` factory entrypoint."""
     try:
         import_packages(package_names)
@@ -118,7 +120,7 @@ def load_env_entrypoint(
             f"env entrypoint {entrypoint!r} did not return an environment "
             "with reset(...) and step(...)"
         )
-    return cast("EnvLike", env)
+    return cast("ServedEnv", env)
 
 
 def load_gym_env(spec: Mapping[str, object]) -> object:

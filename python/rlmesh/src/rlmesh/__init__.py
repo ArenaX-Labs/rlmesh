@@ -18,7 +18,7 @@ from . import _rlmesh as _rlmesh
 from . import adapters as adapters
 from . import spaces as spaces
 from . import types as types
-from ._models import DELEGATED, EpisodeResult, RunResult, hf_load
+from ._models import NO_ADAPTER, EpisodeResult, RunResult
 from ._native import (
     Model,
     RemoteEnv,
@@ -46,7 +46,7 @@ _register_python_peer_info()
 
 
 __all__ = [
-    "DELEGATED",
+    "NO_ADAPTER",
     "EnvServer",
     "EpisodeResult",
     "Model",
@@ -62,7 +62,6 @@ __all__ = [
     "VectorEnvServer",
     "__version__",
     "adapters",
-    "hf_load",
     "spaces",
     "types",
 ]

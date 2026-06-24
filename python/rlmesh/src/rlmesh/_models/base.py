@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from .._framework_bridge import ValueBridge
@@ -11,7 +11,6 @@ from ..types import Value
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
 
-    from .._spec._core import ArtifactInput
     from ._eval import RunResult
 
 ObsT = TypeVar("ObsT")
@@ -32,10 +31,9 @@ class ModelBase(Generic[ObsT, ActT]):
     Args:
         source: A predict callable.
         spec: Optional :class:`rlmesh.adapters.ModelSpec`; makes this an *adapted*
-            model.
+            model. Pass :data:`rlmesh.NO_ADAPTER` to explicitly skip adapter
+            resolution.
         on_reset / on_episode_end / on_close: Optional lifecycle callbacks.
-        artifacts / load_kwargs: Accepted for forward compatibility; unused for a
-            callable source.
         trust_entrypoints: Allow ``module:callable`` custom-input entrypoints in a
             spec to be imported during adapter resolution.
 
@@ -58,8 +56,6 @@ class ModelBase(Generic[ObsT, ActT]):
         on_reset: LifecycleCallback | None = None,
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
-        artifacts: Sequence[ArtifactInput] = (),
-        load_kwargs: Mapping[str, object] | None = None,
         trust_entrypoints: bool = False,
     ) -> None:
         self._bridge.ensure_available()
@@ -68,8 +64,6 @@ class ModelBase(Generic[ObsT, ActT]):
         coerced = coerce_model(
             source,
             spec=spec,
-            artifacts=tuple(artifacts),
-            load_kwargs=dict(load_kwargs) if load_kwargs else None,
         )
         self._raw_predict = cast("PredictFn[ObsT, ActT]", coerced.predict)
         self._spec = coerced.spec
@@ -82,7 +76,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
     @property
     def spec(self) -> object | None:
-        """The model's content: a ``ModelSpec``, ``DELEGATED``, or ``None``."""
+        """The model's content: a ``ModelSpec``, ``NO_ADAPTER``, or ``None``."""
         return self._spec
 
     def _install_worker(self, on_reset: LifecycleCallback | None) -> None:
@@ -91,7 +85,7 @@ class ModelBase(Generic[ObsT, ActT]):
         A spec'd model's adapter resolves per route at ``configure_route`` (the
         served endpoint receives the env contract there): ``configure`` resolves
         it from the route's contract and the native worker applies it around the
-        raw predict. A spec-less / ``DELEGATED`` model serves its own predict.
+        raw predict. A spec-less / ``NO_ADAPTER`` model serves its own predict.
         """
         try:
             from rlmesh._rlmesh import PyModel
@@ -178,7 +172,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
         A spec'd model resolves its adapter per route from the env contract the
         ``configure_route`` handshake delivers, then applies it around predict; a
-        spec-less / ``DELEGATED`` model serves its own predict directly.
+        spec-less / ``NO_ADAPTER`` model serves its own predict directly.
         """
         self._worker.serve(address, token, options)
 

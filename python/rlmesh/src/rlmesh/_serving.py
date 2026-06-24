@@ -14,14 +14,16 @@ Examples:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ._bootstrap.env import import_packages as _import_packages
 from ._bootstrap.env import load_env_entrypoint as _load_env_entrypoint
 from ._bootstrap.env import load_environment as _load_environment
 
 if TYPE_CHECKING:
-    from ._server import EnvLike
+    from ._server import EnvLike, VectorServerEnvLike
+
+    ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
 __all__ = [
     "import_packages",
@@ -37,7 +39,7 @@ def load_env(
     num_envs: int = 1,
     vectorization_mode: str | None = None,
     kwargs: Mapping[str, object] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Load a Gymnasium/Gym environment by registered id (e.g. ``"CartPole-v1"``).
 
     ``packages`` are imported first so their environments self-register; ``num_envs``
@@ -58,7 +60,7 @@ def load_env_entrypoint(
     *,
     packages: Sequence[str] = (),
     kwargs: Mapping[str, object] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Load an environment from a ``module:callable`` factory entrypoint.
 
     The callable must return an env exposing ``reset(...)``/``step(...)``;

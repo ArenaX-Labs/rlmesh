@@ -18,7 +18,9 @@ from rlmesh._serving import load_env as _serving_load_env
 from rlmesh._serving import load_env_entrypoint as _serving_load_env_entrypoint
 
 if TYPE_CHECKING:
-    from rlmesh._server import EnvLike
+    from rlmesh._server import EnvLike, VectorServerEnvLike
+
+    ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
 __all__ = [
     "ServeArgs",
@@ -164,25 +166,36 @@ def serve_from_args(args: ServeArgs) -> int:
                 args.kwargs,
             )
 
-        server_cls = (
-            VectorEnvServer
-            if args.entrypoint is None and args.num_envs > 1
-            else EnvServer
-        )
-
+        served_num_envs = _served_num_envs(env, fallback=args.num_envs)
         if args.transport == "unix":
             path = args.address
             if path is None:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
                 path = _default_unix_socket_path(source_name)
-            server = server_cls(env, path=path, transport="unix")
+            if served_num_envs > 1:
+                server = VectorEnvServer(
+                    cast("VectorServerEnvLike", env), path=path, transport="unix"
+                )
+            else:
+                server = EnvServer(
+                    cast("EnvLike[Any, Any]", env), path=path, transport="unix"
+                )
         else:
-            server = (
-                server_cls(env)
-                if args.address is None
-                else server_cls(env, args.address)
-            )
+            if served_num_envs > 1:
+                vector_env = cast("VectorServerEnvLike", env)
+                server = (
+                    VectorEnvServer(vector_env)
+                    if args.address is None
+                    else VectorEnvServer(vector_env, args.address)
+                )
+            else:
+                scalar_env = cast("EnvLike[Any, Any]", env)
+                server = (
+                    EnvServer(scalar_env)
+                    if args.address is None
+                    else EnvServer(scalar_env, args.address)
+                )
 
         if args.entrypoint is not None:
             print(f"✓ Environment entrypoint: {args.entrypoint}")
@@ -190,8 +203,8 @@ def serve_from_args(args: ServeArgs) -> int:
             print(f"✓ Environment: {args.env}")
         print(f"✓ Server address: {server.address}")
         print(f"✓ Transport: {args.transport}")
-        if args.entrypoint is None:
-            print(f"✓ Num envs: {args.num_envs}")
+        if args.entrypoint is None or served_num_envs > 1:
+            print(f"✓ Num envs: {served_num_envs}")
         print()
         print("Waiting for client connection...")
         print("Press Ctrl+C to stop", flush=True)
@@ -222,7 +235,7 @@ def load_environment(
     num_envs: int,
     vectorization_mode: str | None = None,
     kwargs: dict[str, Any] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Compatibility wrapper delegating to the public ``rlmesh._serving`` loader."""
     return _serving_load_env(
         env_id,
@@ -237,13 +250,23 @@ def load_env_entrypoint(
     entrypoint: str,
     package_names: list[str],
     kwargs: dict[str, Any] | None = None,
-) -> EnvLike:
+) -> ServedEnv:
     """Compatibility wrapper delegating to the public ``rlmesh._serving`` loader."""
     return _serving_load_env_entrypoint(
         entrypoint,
         packages=package_names,
         kwargs=kwargs,
     )
+
+
+def _served_num_envs(env: object, *, fallback: int) -> int:
+    num_envs = getattr(env, "num_envs", None)
+    if num_envs is None:
+        return fallback
+    try:
+        return int(num_envs)
+    except (TypeError, ValueError):
+        return fallback
 
 
 def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:

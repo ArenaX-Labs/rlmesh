@@ -73,8 +73,10 @@ def test_serve_env_dispatches_entrypoint_loader(
         return fake_env
 
     monkeypatch.setattr(serve_env, "load_env_entrypoint", load_env_entrypoint)
-    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured))
-    monkeypatch.setattr(rlmesh, "VectorEnvServer", _server_factory(captured))
+    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
+    monkeypatch.setattr(
+        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
+    )
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -94,9 +96,58 @@ def test_serve_env_dispatches_entrypoint_loader(
     assert captured["entrypoint"] == "rlmesh_system_fixtures.registry:make_env"
     assert captured["package_names"] == ["rlmesh_system_fixtures.registration"]
     assert captured["kwargs"] == {"fixture": "counter"}
+    assert captured["server_class"] == "EnvServer"
     assert captured["server_env"] is fake_env
     assert captured["server_args"] == ("127.0.0.1:0",)
     assert captured["served"] is True
+
+
+def test_serve_env_uses_vector_server_for_vector_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh
+    from rlmesh._cli import serve_env
+
+    captured: dict[str, object] = {}
+
+    class VectorEnv:
+        num_envs = 2
+
+    fake_env = VectorEnv()
+
+    def load_env_entrypoint(
+        entrypoint: str,
+        package_names: list[str],
+        kwargs: dict[str, Any] | None = None,
+    ) -> object:
+        captured["entrypoint"] = entrypoint
+        captured["package_names"] = package_names
+        captured["kwargs"] = kwargs
+        return fake_env
+
+    monkeypatch.setattr(serve_env, "load_env_entrypoint", load_env_entrypoint)
+    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
+    monkeypatch.setattr(
+        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
+    )
+
+    code = serve_env.serve_from_args(
+        serve_env.ServeArgs(
+            env=None,
+            entrypoint="rlmesh_system_fixtures.registry:make_vector_env",
+            transport="tcp",
+            address="127.0.0.1:0",
+            num_envs=1,
+            vectorization_mode=None,
+            package=[],
+            verbose=False,
+        )
+    )
+
+    assert code == 0
+    assert captured["entrypoint"] == "rlmesh_system_fixtures.registry:make_vector_env"
+    assert captured["server_class"] == "VectorEnvServer"
+    assert captured["server_env"] is fake_env
 
 
 def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,8 +172,10 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
         return fake_env
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
-    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured))
-    monkeypatch.setattr(rlmesh, "VectorEnvServer", _server_factory(captured))
+    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
+    monkeypatch.setattr(
+        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
+    )
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -144,6 +197,7 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["num_envs"] == 2
     assert captured["vectorization_mode"] == "sync"
     assert captured["kwargs"] == {"render_mode": "rgb_array"}
+    assert captured["server_class"] == "VectorEnvServer"
     assert captured["server_env"] is fake_env
     assert captured["server_args"] == ()
     assert captured["served"] is True
@@ -168,9 +222,12 @@ def test_serve_env_rejects_entrypoint_vectorization_options() -> None:
     assert code == 1
 
 
-def _server_factory(captured: dict[str, object]) -> type[object]:
+def _server_factory(
+    captured: dict[str, object], name: str = "EnvServer"
+) -> type[object]:
     class FakeServer:
         def __init__(self, env: object, *args: object, **kwargs: object) -> None:
+            captured["server_class"] = name
             captured["server_env"] = env
             captured["server_args"] = args
             captured["server_kwargs"] = kwargs

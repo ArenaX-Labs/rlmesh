@@ -90,7 +90,7 @@ class EnvServer:
             path=path,
             transport=transport,
         )
-        self._server: PyEnvServer = PyEnvServer(
+        self._server: PyEnvServer | PyVectorEnvServer = PyEnvServer(
             env=env,
             address=normalized_address,
             options=options,
@@ -176,7 +176,7 @@ class VectorEnvServer(EnvServer):
             path=path,
             transport=transport,
         )
-        self._server: PyVectorEnvServer = PyVectorEnvServer(
+        self._server = PyVectorEnvServer(
             env=env,
             address=normalized_address,
             options=options,

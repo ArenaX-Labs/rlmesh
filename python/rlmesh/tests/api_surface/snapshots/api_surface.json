@@ -1,7 +1,7 @@
 {
   "rlmesh": {
     "exports": [
-      "DELEGATED",
+      "NO_ADAPTER",
       "EnvServer",
       "EpisodeResult",
       "Model",
@@ -14,18 +14,13 @@
       "SandboxVectorEnv",
       "ServeOptions",
       "Tensor",
+      "VectorEnvServer",
       "__version__",
       "adapters",
-      "hf_load",
       "spaces",
       "types"
     ],
     "objects": {
-      "DELEGATED": {
-        "kind": "type alias",
-        "signature": "DELEGATED = _Delegated()",
-        "stability": "Stable"
-      },
       "EnvServer": {
         "kind": "class",
         "members": {
@@ -58,7 +53,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
+        "signature": "EnvServer(env: EnvLike[Any, Any], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "stability": "Stable"
       },
       "EpisodeResult": {
@@ -116,7 +111,12 @@
             "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "stability": "Stable"
+      },
+      "NO_ADAPTER": {
+        "kind": "type alias",
+        "signature": "NO_ADAPTER = _NoAdapter()",
         "stability": "Stable"
       },
       "RemoteEnv": {
@@ -386,7 +386,7 @@
             "signature": "shutdown()"
           }
         },
-        "signature": "SandboxModel(source: object, *, artifacts: Sequence[ArtifactInput] = (), gpus: str | int | None = None)",
+        "signature": "SandboxModel(source: object, *, gpus: str | int | None = None)",
         "stability": "Stable"
       },
       "SandboxVectorEnv": {
@@ -550,6 +550,41 @@
         "signature": "Tensor(buffer: object, shape: Sequence[int], dtype: str) -> Tensor",
         "stability": "Stable"
       },
+      "VectorEnvServer": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "env_contract": {
+            "kind": "property",
+            "signature": "property env_contract: EnvContract"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve() -> None"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown() -> None"
+          },
+          "spec": {
+            "kind": "property",
+            "signature": "property spec: EnvContract"
+          },
+          "start": {
+            "kind": "function",
+            "signature": "start() -> None"
+          },
+          "wait": {
+            "kind": "function",
+            "signature": "wait(timeout: float | None = None) -> bool"
+          }
+        },
+        "signature": "VectorEnvServer(env: VectorServerEnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
+        "stability": "Stable"
+      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = package_version('rlmesh')",
@@ -557,11 +592,6 @@
       },
       "adapters": {
         "kind": "module",
-        "stability": "Stable"
-      },
-      "hf_load": {
-        "kind": "function",
-        "signature": "hf_load(repo: str, *, revision: str | None = None, loader: str = 'transformers:AutoModel', trust_remote_code: bool = False, processor: str | None = None, local_dir: str | None = None, **kwargs: Any)",
         "stability": "Stable"
       },
       "spaces": {
@@ -619,7 +649,7 @@
             "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -999,7 +1029,7 @@
             "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -1270,7 +1300,7 @@
             "signature": "shutdown() -> None"
           }
         },
-        "signature": "SandboxModel(source: object, *, artifacts: Sequence[ArtifactInput] = (), gpus: str | int | None = None)",
+        "signature": "SandboxModel(source: object, *, gpus: str | int | None = None)",
         "stability": "Stable"
       },
       "SandboxVectorEnv": {
@@ -1934,7 +1964,7 @@
             "signature": "property spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, artifacts: Sequence[ArtifactInput] = (), load_kwargs: Mapping[str, object] | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
