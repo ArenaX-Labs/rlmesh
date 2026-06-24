@@ -92,18 +92,21 @@
 //! #[async_trait::async_trait]
 //! impl ModelHandler for MyModel {
 //!     async fn predict(&mut self, _obs: ModelObservation)
-//!         -> rlmesh::Result<BinaryPayload>
+//!         -> rlmesh::Result<Vec<SpaceValue>>
 //!     {
-//!         // Decode `_obs`, run your policy, then encode the action.
-//!         Ok(BinaryPayload::default())
+//!         // Read `_obs.decoded_lanes()`, run your policy, return one action per lane.
+//!         Ok(vec![SpaceValue::Discrete(0)])
 //!     }
 //! }
 //!
 //! # async fn run() -> rlmesh::Result<()> {
 //! // Drive a running env server for 100 episodes.
-//! ModelWorker::new(MyModel)
+//! let report = ModelWorker::new(MyModel)
 //!     .run_local_async(RunLocalOptions::parse("tcp://127.0.0.1:50051")?.for_episodes(100))
-//!     .await
+//!     .await?;
+//! // `report.telemetry_summary` carries the session's final telemetry summary.
+//! println!("ran {} steps", report.total_steps);
+//! Ok(())
 //! # }
 //! ```
 
@@ -128,8 +131,10 @@ pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
     ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelRouteSlot,
-    ModelWorker, RemoteModel, RunLocalOptions, ServeModelOptions, encode_action,
+    ModelWorker, RemoteModel, RunLocalOptions, ServeModelOptions, telemetry_summary_to_proto,
 };
+#[doc(no_inline)]
+pub use rlmesh_runtime::RuntimeReport;
 pub use serve_options::ServeOptions;
 pub use single::{SingleEnv, SingleEnvAdapter};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};

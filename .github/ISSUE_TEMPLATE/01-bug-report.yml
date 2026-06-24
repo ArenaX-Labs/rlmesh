@@ -123,7 +123,6 @@ body:
     id: additional-context
     attributes:
       label: Additional context
-      description:
-        Add links, screenshots, related issues, or anything else that helps explain the problem.
+      description: Add links, screenshots, related issues, or anything else that helps explain the problem.
     validations:
       required: false

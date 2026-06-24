@@ -1,8 +1,6 @@
 # Spaces
 
-RLMesh spaces are Python wrappers around native `SpaceSpec` values. They provide the familiar
-`sample`, `contains`, and `seed` methods while keeping the spec available for transport and
-conversion.
+RLMesh spaces are Python wrappers around native `SpaceSpec` values. They provide the familiar `sample`, `contains`, and `seed` methods while keeping the spec available for transport and conversion.
 
 ## Base Types
 
@@ -34,8 +32,7 @@ conversion.
 
 ## Fundamental Spaces
 
-`Box` and `Discrete` are stable. `MultiBinary`, `MultiDiscrete`, and `Text` are experimental and may
-change; see {doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
+`Box` and `Discrete` are stable. `MultiBinary`, `MultiDiscrete`, and `Text` are experimental and may change; see {doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.spaces.Box
@@ -74,8 +71,7 @@ change; see {doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
 
 ## Composite Spaces
 
-`Dict` is stable. `Tuple` is experimental and may change; see {doc}`/compatibility` and the
-per-space labels in {doc}`/gymnasium`.
+`Dict` is stable. `Tuple` is experimental and may change; see {doc}`/compatibility` and the per-space labels in {doc}`/gymnasium`.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.spaces.Tuple

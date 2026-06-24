@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package rlmesh.core.v1;
+
+// Advisory diagnostic identity of a handshake peer. Exchanged in both
+// directions (request and response). Absence-neutral: it never gates
+// compatibility and never changes the meaning of any interaction; it exists so
+// operators can attribute a session to a concrete build/runtime/host. It
+// subsumes the older scalar `client_name`/`client_version` (request) and
+// `server_version` (response): a peer's identity and build version are now read
+// from `component` + `package_version`.
+message PeerInfo {
+  // Logical component name, e.g. "rlmesh-runtime", "rlmesh-env",
+  // "rlmesh-model", "rlmesh-python".
+  string component = 1;
+  // Package/build version of the emitting peer, e.g. "0.1.0-rc.1".
+  string package_version = 2;
+  // Implementation language, e.g. "rust", "python".
+  string language = 3;
+  // Language runtime version, e.g. "3.11.4"; empty when not reported.
+  string language_version = 4;
+  // Operating system, e.g. "linux", "macos"; empty when not reported.
+  string os = 5;
+  // OS version/release; empty when not reported.
+  string os_version = 6;
+  // CPU architecture, e.g. "x86_64", "aarch64"; empty when not reported.
+  string arch = 7;
+  // High-value framework versions for debugging (e.g. {"numpy":"1.26.4",
+  // "torch":"2.3.1"}). Populated by the Python side in a later additive task.
+  map<string, string> framework_versions = 8;
+  // Forward-compat escape hatch for additional advisory key/value diagnostics.
+  map<string, string> extra = 15;
+}
+
+// Canonical handshake request shared by every service (env, model). Identity
+// and build version ride `peer_info`.
+message HandshakeRequest {
+  string protocol_generation = 1;
+  PeerInfo peer_info = 2;
+  map<string, string> capabilities = 3;
+
+  // Every workflow edition the client can operate under. The server selects
+  // the highest mutual edition; an empty intersection fails the handshake.
+  // Stable releases use bare sealed names (`YYYY.MM`). Prerelease and local
+  // builds use exact cohort suffixes (`YYYY.MM-<semver-prerelease>` or
+  // `YYYY.MM-dev.<git-token>`) so moving builds fail closed unless both sides
+  // explicitly offer the same cohort or a sealed fallback.
+  repeated string supported_workflow_editions = 4;
+}
+
+// Canonical handshake response shared by every service. Carries only
+// generation/edition/capability negotiation; service-specific payloads (e.g.
+// the env's EnvContract) ride a thin service-local wrapper around this message.
+message HandshakeResponse {
+  bool compatible = 1;
+  PeerInfo peer_info = 2;
+  string server_protocol_generation = 3;
+  string min_supported_protocol_generation = 4;
+  string error_message = 5;
+  map<string, string> capabilities = 6;
+
+  // Workflow editions the server supports, for diagnostics on failure.
+  repeated string supported_workflow_editions = 7;
+
+  // Edition governing this session; empty when compatible is false.
+  string selected_workflow_edition = 8;
+}
+
+message ShutdownRequest {
+  string reason = 1;
+}
+
+message ShutdownResponse {
+  bool accepted = 1;
+  string message = 2;
+}

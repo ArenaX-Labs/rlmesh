@@ -21,6 +21,10 @@ VERSION_RE = re.compile(
     r"(?:\+[A-Za-z0-9.-]+)?$",
     re.IGNORECASE,
 )
+RUST_SEMVER_RE = re.compile(
+    r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
+    r"(?:-(?P<channel>alpha|beta|rc)\.(?P<number>\d+))?$"
+)
 STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 STR_CONST_RE = re.compile(r'pub const (?P<name>[A-Z0-9_]+): &str =\s*"(?P<value>[^"]+)";')
 STR_SLICE_CONST_RE = re.compile(
@@ -29,6 +33,47 @@ STR_SLICE_CONST_RE = re.compile(
 )
 PY_STR_CONST_RE = re.compile(r'(?P<name>[A-Z0-9_]+)\s*=\s*"(?P<value>[^"]+)"')
 INT_CONST_RE = re.compile(r"(?P<name>[A-Z0-9_]+)\s*=\s*(?P<value>\d+)")
+# A proto package path: `rlmesh.<pkg>.vN`. The generation token must NOT match
+# this shape (it is an opaque handshake value, not a package namespace).
+PACKAGE_PATH_TOKEN_RE = re.compile(r"^rlmesh\.[a-z]+\.v\d+$")
+PROTO_PACKAGE_RE = re.compile(r"^\s*package\s+(?P<package>[A-Za-z0-9_.]+)\s*;", re.MULTILINE)
+# Workflow edition name shapes. A SEALED edition is the bare `YYYY.MM` base; an
+# official PROVISIONAL prerelease edition appends the full Rust SemVer
+# prerelease cohort (`YYYY.MM-X.Y.Z-{alpha,beta,rc}.N`). Local dev cohorts are
+# generated at build time and are not committed to `rlmesh.toml`.
+EDITION_BASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}$")
+EDITION_PRERELEASE_SUFFIX_RE = re.compile(
+    r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$"
+)
+
+
+def _split_edition_name(name: str) -> tuple[str, str | None]:
+    """Split a workflow edition name into ``(base, suffix)`` at its first ``-``.
+
+    A bare ``YYYY.MM`` yields ``(name, None)``; ``YYYY.MM-<cohort>`` yields
+    ``(base, suffix)``. Mirrors ``edition_sort_key`` in ``rlmesh-proto/src/lib.rs``.
+    """
+    base, sep, suffix = name.partition("-")
+    return (base, suffix if sep else None)
+
+
+def _canonical_spec_sha256(spec_path: Path) -> str:
+    r"""SHA-256 of a sealed spec document over its canonical bytes.
+
+    Canonicalization: decode UTF-8 rejecting a BOM, normalize CRLF/CR to LF,
+    ensure exactly one trailing ``\\n``, then sha256. It is
+    whitespace/encoding-only — never semantic Markdown normalization, which
+    could erase a real spec difference. ``.gitattributes``
+    (`docs/editions/*.md text eol=lf`) keeps the on-disk bytes stable across
+    checkouts.
+    """
+    raw = spec_path.read_bytes()
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ValueError(f"{spec_path} has a UTF-8 BOM; edition specs must be BOM-free")
+    text = raw.decode("utf-8")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.rstrip("\n") + "\n"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -115,8 +160,8 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
                     f"workspace dependency {artifact.name} is {actual}, expected {expected}"
                 )
 
-    errors.extend(_validate_protocol_and_workflow(repo_root, protocol, workflow))
-    errors.extend(_validate_workflow_editions(repo_root, workflow, release))
+    errors.extend(_validate_protocol_and_workflow(repo_root, protocol))
+    errors.extend(_validate_workflow_editions(repo_root, workflow, release, workspace_version))
     errors.extend(_validate_adapters(repo_root))
     errors.extend(_validate_python_public_modules(repo_root))
     errors.extend(
@@ -264,9 +309,7 @@ def _defines_dunder_all(path: Path) -> bool:
     return False
 
 
-def _validate_protocol_and_workflow(
-    repo_root: Path, protocol: dict[str, Any], workflow: dict[str, Any]
-) -> list[str]:
+def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     source = repo_root / "crates/rlmesh-proto/src/lib.rs"
     source_text = source.read_text(encoding="utf-8")
@@ -280,10 +323,6 @@ def _validate_protocol_and_workflow(
             "[protocol].minimum_generation",
             protocol.get("minimum_generation"),
         ),
-        "CURRENT_WORKFLOW_EDITION": (
-            "[workflow].current_edition",
-            workflow.get("current_edition"),
-        ),
     }
     for name, (manifest_key, value) in expected.items():
         if not isinstance(value, str):
@@ -294,49 +333,42 @@ def _validate_protocol_and_workflow(
                 f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
             )
 
-    # The current edition's status + spec checksum constants must match its
-    # manifest entry (which _validate_workflow_editions verifies against the spec
-    # file), keeping the content-pin the runtime ships honest with the contract.
-    current_edition = workflow.get("current_edition")
-    editions = workflow.get("editions")
-    current_entry = editions.get(current_edition, {}) if isinstance(editions, dict) else {}
-    edition_consts = {
-        "CURRENT_WORKFLOW_EDITION_STATUS": (
-            f'[workflow.editions."{current_edition}"].status',
-            current_entry.get("status"),
-        ),
-        "CURRENT_WORKFLOW_EDITION_SPEC_SHA256": (
-            f'[workflow.editions."{current_edition}"].spec_sha256',
-            current_entry.get("spec_sha256"),
-        ),
-    }
-    for name, (manifest_key, value) in edition_consts.items():
-        if not isinstance(value, str):
-            errors.append(f"{manifest_key} must be a string")
-        elif constants.get(name) != value:
-            errors.append(
-                f"{name} is {constants.get(name)!r}, manifest declares {value!r}"
-            )
-
-    supported = workflow.get("supported_editions")
-    if not isinstance(supported, list) or not all(
-        isinstance(item, str) for item in supported
-    ):
-        errors.append("[workflow].supported_editions must be a list of strings")
-    elif constants.get("CURRENT_WORKFLOW_EDITION") not in supported:
+    if "CURRENT_WORKFLOW_EDITION_SPEC_SHA256" in source_text:
         errors.append(
-            "[workflow].supported_editions must include [workflow].current_edition"
+            f"{source}: remove CURRENT_WORKFLOW_EDITION_SPEC_SHA256; provisional "
+            "editions are release/dev cohorts, not docs hashes"
         )
-    else:
-        supported_constant = _rust_str_slice_const(
-            source_text, "SUPPORTED_WORKFLOW_EDITIONS", constants
+    if 'env!("RLMESH_CURRENT_WORKFLOW_EDITION")' not in source_text:
+        errors.append(
+            f"{source}: CURRENT_WORKFLOW_EDITION must come from build-time cohort env"
         )
-        if supported_constant is None:
-            errors.append(f"{source}: missing SUPPORTED_WORKFLOW_EDITIONS string slice")
-        elif supported_constant != supported:
+    if "&[CURRENT_WORKFLOW_EDITION]" not in source_text:
+        errors.append(
+            f"{source}: SUPPORTED_WORKFLOW_EDITIONS must include CURRENT_WORKFLOW_EDITION"
+        )
+
+    # Guard the protocol-generation token's *shape*. The token is an opaque
+    # handshake value, not a proto package path: it must not look like a
+    # per-package namespace (`rlmesh.<pkg>.vN`) and must not collide with any
+    # declared proto package. This keeps Axis 1 (generation) visually and
+    # semantically distinct from Axis 4 (package vN). See versioning-governance §3.
+    declared_packages = _declared_proto_packages(repo_root)
+    for manifest_key, value in (
+        ("[protocol].current_generation", protocol.get("current_generation")),
+        ("[protocol].minimum_generation", protocol.get("minimum_generation")),
+    ):
+        if not isinstance(value, str):
+            continue
+        if PACKAGE_PATH_TOKEN_RE.match(value):
             errors.append(
-                "SUPPORTED_WORKFLOW_EDITIONS is "
-                f"{supported_constant!r}, manifest declares {supported!r}"
+                f"{manifest_key} {value!r} is shaped like a proto package path "
+                "(rlmesh.<pkg>.vN); the generation token must be an opaque "
+                "non-package string (e.g. rlmesh-protocol-1)"
+            )
+        if value in declared_packages:
+            errors.append(
+                f"{manifest_key} {value!r} collides with a declared proto package; "
+                "the generation token must not name a real package"
             )
 
     for token in _forbidden_unpublished_protocol_tokens():
@@ -355,21 +387,64 @@ def _validate_protocol_and_workflow(
 
 
 def _validate_workflow_editions(
-    repo_root: Path, workflow: dict[str, Any], release: dict[str, Any]
+    repo_root: Path,
+    workflow: dict[str, Any],
+    release: dict[str, Any],
+    workspace_version: str | None,
 ) -> list[str]:
     errors: list[str] = []
     editions = workflow.get("editions")
     if not isinstance(editions, dict):
         return ["missing [workflow.editions] table"]
 
+    base_edition = workflow.get("base_edition")
+    if not isinstance(base_edition, str):
+        errors.append("[workflow].base_edition must be a string")
+        base_edition = ""
+    elif not EDITION_BASE_RE.match(base_edition):
+        errors.append("[workflow].base_edition must be `YYYY.MM` (zero-padded)")
+
+    current_edition = workflow.get("current_edition")
+    if not isinstance(current_edition, str):
+        errors.append("[workflow].current_edition must be a string")
+        current_edition = ""
+
+    if workspace_version is not None and base_edition:
+        expected_current = _official_current_edition(base_edition, workspace_version)
+        if expected_current is None:
+            errors.append(f"workspace version {workspace_version!r} is not valid Rust SemVer")
+        elif current_edition and current_edition != expected_current:
+            errors.append(
+                f"[workflow].current_edition is {current_edition!r}, expected "
+                f"{expected_current!r} for workspace version {workspace_version!r}"
+            )
+
     supported = workflow.get("supported_editions")
+    if not isinstance(supported, list) or not all(
+        isinstance(item, str) for item in supported
+    ):
+        errors.append("[workflow].supported_editions must be a list of strings")
+        supported = []
+    elif current_edition and current_edition not in supported:
+        errors.append("[workflow].supported_editions must include [workflow].current_edition")
+
     for edition in supported if isinstance(supported, list) else []:
-        if isinstance(edition, str) and edition not in editions:
+        if edition not in editions:
             errors.append(
                 f'supported edition {edition!r} has no [workflow.editions."{edition}"] entry'
             )
 
     release_status = release.get("status")
+    if workspace_version is not None:
+        expected_status = _release_status_for_version(workspace_version)
+        if expected_status is None:
+            errors.append(f"workspace version {workspace_version!r} is not valid Rust SemVer")
+        elif release_status != expected_status:
+            errors.append(
+                f"[release].status is {release_status!r}, expected {expected_status!r} "
+                f"from workspace version {workspace_version!r}"
+            )
+
     for edition, entry in editions.items():
         prefix = f'[workflow.editions."{edition}"]'
         if not isinstance(entry, dict):
@@ -385,10 +460,29 @@ def _validate_workflow_editions(
                 "seal the edition first"
             )
 
-        # Sealing is a stable-only act: a sealed edition records the stable
-        # (non-prerelease) version that sealed it and is retained forever, so a
-        # newer build keeps offering it to still negotiate with an older peer.
-        # Provisional editions carry no sealed_in and may change freely.
+        base, suffix = _split_edition_name(edition)
+        if not EDITION_BASE_RE.match(base):
+            errors.append(
+                f"{prefix}: edition name base {base!r} must be `YYYY.MM` (zero-padded)"
+            )
+        if suffix is None:
+            if status != "sealed":
+                errors.append(
+                    f"{prefix}: a bare `YYYY.MM` name is sealed, but status is {status!r}; "
+                    "a provisional edition's name must carry a SemVer prerelease suffix"
+                )
+        else:
+            if not EDITION_PRERELEASE_SUFFIX_RE.match(suffix):
+                errors.append(
+                    f"{prefix}: provisional suffix {suffix!r} must be full Rust SemVer "
+                    "prerelease (`X.Y.Z-{alpha,beta,rc}.N`)"
+                )
+            if status != "provisional":
+                errors.append(
+                    f"{prefix}: a suffixed edition is provisional, but status is {status!r}; "
+                    "a sealed edition is named by its bare `YYYY.MM` base alone"
+                )
+
         sealed_in = entry.get("sealed_in")
         if status == "sealed":
             if not isinstance(sealed_in, str) or not STABLE_VERSION_RE.match(sealed_in):
@@ -413,21 +507,39 @@ def _validate_workflow_editions(
             errors.append(f"{prefix}.spec does not exist: {spec}")
             continue
 
-        # Every edition records its spec checksum: provisional editions are
-        # content-pinned (peers interoperate only on a matching contract), and a
-        # sealed edition's checksum is its frozen identity. Either way it must
-        # match the spec file on disk.
         spec_sha256 = entry.get("spec_sha256")
-        if not isinstance(spec_sha256, str):
-            errors.append(f"{prefix}.spec_sha256 is required (content-pin)")
-        else:
-            actual = hashlib.sha256(spec_path.read_bytes()).hexdigest()
-            if actual != spec_sha256:
-                noun = "sealed" if status == "sealed" else "provisional"
+        if status == "sealed":
+            try:
+                actual = _canonical_spec_sha256(spec_path)
+            except ValueError as exc:
+                errors.append(f"{prefix}: {exc}")
+                continue
+            if not isinstance(spec_sha256, str):
+                errors.append(f"{prefix}.spec_sha256 is required for sealed editions")
+            elif actual != spec_sha256:
                 errors.append(
-                    f"{prefix}: {noun} spec {spec} sha256 is {actual}, "
+                    f"{prefix}: sealed spec {spec} canonical sha256 is {actual}, "
                     f"manifest declares {spec_sha256}"
                 )
+        elif spec_sha256 is not None:
+            errors.append(
+                f"{prefix}.spec_sha256 is only recorded once the edition is sealed"
+            )
+
+    seen_provisional_by_base: dict[str, str] = {}
+    for edition in supported:
+        base, suffix = _split_edition_name(edition)
+        if suffix is None:
+            continue
+        prior = seen_provisional_by_base.get(base)
+        if prior is not None:
+            errors.append(
+                f"[workflow].supported_editions has two provisional editions for "
+                f"date {base!r} ({prior!r} and {edition!r}); keep at most one "
+                "moving cohort per base, plus an optional sealed fallback"
+            )
+        else:
+            seen_provisional_by_base[base] = edition
 
     return errors
 
@@ -502,8 +614,8 @@ def _validate_api_surface(
     if api_surface.get("stability_policy") != "stable-labels":
         errors.append("[api_surface].stability_policy must be 'stable-labels'")
 
-    if release.get("status") not in {"alpha", "beta", "stable"}:
-        errors.append("[release].status must be alpha, beta, or stable")
+    if release.get("status") not in {"alpha", "beta", "rc", "stable"}:
+        errors.append("[release].status must be alpha, beta, rc, or stable")
 
     for key in ("metadata", "contract_snapshot"):
         value = python.get(key)
@@ -588,7 +700,29 @@ def _package_family_for_version(version: str) -> str:
     return str(major)
 
 
+def _declared_proto_packages(repo_root: Path) -> set[str]:
+    """Collect every `package` declared under the proto tree."""
+    proto_root = repo_root / "crates/rlmesh-proto/proto"
+    packages: set[str] = set()
+    if not proto_root.exists():
+        return packages
+    for proto_file in proto_root.rglob("*.proto"):
+        text = proto_file.read_text(encoding="utf-8")
+        packages.update(match.group("package") for match in PROTO_PACKAGE_RE.finditer(text))
+    return packages
+
+
 def _forbidden_unpublished_protocol_tokens() -> list[str]:
+    """Legacy protocol identifiers that must never reappear in `rlmesh-proto`.
+
+    Each token is assembled from fragments ON PURPOSE, not for cleverness: the
+    whole point of this guard is that these legacy names are eradicated from the
+    tree, so the literals must not appear verbatim *anywhere* — including in this
+    checker. A literal here would make a plain "is `<token>` gone yet?" grep/audit
+    false-positive on the guard's own source, and would self-match if the scan
+    were ever widened beyond `rlmesh-proto/src/lib.rs`. Read the fragments below to
+    recover each legacy name; do not inline them.
+    """
     return [
         "_".join(["LEGACY", "0", "1", "A" + "BI", "VERSION"]),
         "".join(["A", "BI", "_VERSION"]),
@@ -596,6 +730,22 @@ def _forbidden_unpublished_protocol_tokens() -> list[str]:
         "_".join(["is", "a" + "bi", "compatible"]),
         ".".join(["rlmesh", "v1"]),
     ]
+
+
+def _release_status_for_version(version: str) -> str | None:
+    match = RUST_SEMVER_RE.match(version)
+    if match is None:
+        return None
+    return match.group("channel") or "stable"
+
+
+def _official_current_edition(base_edition: str, workspace_version: str) -> str | None:
+    status = _release_status_for_version(workspace_version)
+    if status is None:
+        return None
+    if status == "stable":
+        return base_edition
+    return f"{base_edition}-{workspace_version}"
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

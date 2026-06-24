@@ -1,7 +1,7 @@
 use rlmesh_grpc::env::{ResetRequest as ProtoResetRequest, StepRequest as ProtoStepRequest};
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
-    meta_map_to_proto, render_request_to_proto, render_result_from_proto, value_bytes,
+    decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto, render_request_to_proto, render_result_from_proto,
 };
 
 use super::types::{
@@ -11,7 +11,7 @@ use super::wire::{
     proto_episode_metadata_to_public, protocol_error_to_error, validate_action_count,
     validate_count,
 };
-use crate::{ConnectAddress, Error, Result, spaces};
+use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, spaces};
 
 /// A client handle to a remote environment server.
 ///
@@ -27,6 +27,9 @@ pub struct RemoteEnv {
     observation_space: std::sync::Arc<spaces::SpaceSpec>,
     action_space: std::sync::Arc<spaces::SpaceSpec>,
     num_envs: usize,
+    /// The env's negotiation offer (generations/editions/capabilities) captured
+    /// at handshake, for three-way (relay) session-floor reconciliation.
+    session_offer: rlmesh_proto::SessionOffer,
 }
 
 impl RemoteEnv {
@@ -61,6 +64,7 @@ impl RemoteEnv {
             .await
             .map_err(Error::from)?;
         let handshake = inner.handshake().await.map_err(Error::from)?;
+        let session_offer = handshake.session_offer();
         let env_contract = rlmesh_grpc::wire::env_contract_from_proto(handshake.env_contract)
             .map_err(|error| {
                 Error::Internal(format!("invalid spaces spec from remote env: {error}"))
@@ -84,12 +88,23 @@ impl RemoteEnv {
             observation_space,
             action_space,
             num_envs: handshake.num_envs,
+            session_offer,
         })
     }
 
     /// The address this client is connected to.
     pub fn address(&self) -> &str {
         self.inner.address()
+    }
+
+    /// The env's negotiation offer captured at handshake (supported protocol
+    /// generations, workflow editions, and advertised capabilities).
+    ///
+    /// Pass this to [`RemoteModel::connect_with_env_offer`](crate::RemoteModel::connect_with_env_offer)
+    /// so the runtime can reconcile the three-way (relay) session floor across
+    /// env, model, and runtime (see versioning-governance §7).
+    pub fn session_offer(&self) -> &rlmesh_proto::SessionOffer {
+        &self.session_offer
     }
 
     /// Tear down the session locally without waiting for a Close round-trip.
@@ -130,20 +145,40 @@ impl RemoteEnv {
             .reset(ProtoResetRequest {
                 seeds: req.seeds,
                 options: req.options.as_ref().map(meta_map_to_proto),
-                timeout_ms: req.timeout_ms,
+                // Native timeout_ms is i64 (>=0); proto field is uint64.
+                timeout_ms: req.timeout_ms.max(0) as u64,
                 // Forward the requested lanes: empty = whole-vector reset; a
                 // non-empty list is a partial reset the server routes to
-                // reset_subset (honored only by envs that support it).
-                env_indices: req.env_indices,
+                // reset_subset (honored only by envs that support it). Lane
+                // offsets must be non-negative array indices: reject a negative
+                // lane loudly rather than clamping it to 0, which would silently
+                // reset the wrong lane and misalign the paired seed.
+                env_indices: req
+                    .env_indices
+                    .into_iter()
+                    .map(|index| {
+                        u32::try_from(index).map_err(|_| {
+                            Error::Environment(EnvironmentError {
+                                code: ErrorCode::InvalidAction,
+                                message: format!(
+                                    "partial reset: env_index {index} must be a \
+                                     non-negative lane offset"
+                                ),
+                                is_recoverable: false,
+                            })
+                        })
+                    })
+                    .collect::<Result<Vec<u32>>>()?,
             })
             .await
             .map_err(Error::from)?;
 
-        let observation_payload =
-            value_bytes(response.observation.as_ref()).map_err(protocol_error_to_error)?;
-        let observations =
-            decode_batched_partial_values(observation_payload.as_ref(), &observation_space)
-                .map_err(protocol_error_to_error)?;
+        let observations = decode_batched_partial_values(
+            response.observation.as_ref(),
+            &observation_space,
+            self.num_envs,
+        )
+        .map_err(protocol_error_to_error)?;
         validate_count(&observations, self.num_envs, "observations")
             .map_err(|error| Error::Environment(error.into()))?;
 
@@ -172,22 +207,24 @@ impl RemoteEnv {
         let response = self
             .inner
             .step(ProtoStepRequest {
-                action: Some(bytes_value(
+                action: Some(
                     encode_batched_partial_values(&req.actions, &action_space)
                         .map_err(protocol_error_to_error)?,
-                )),
-                timeout_ms: req.timeout_ms,
+                ),
+                // Native timeout_ms is i64 (>=0); proto field is uint64.
+                timeout_ms: req.timeout_ms.max(0) as u64,
                 // Full-width step; subset-stepping is reserved-but-deferred.
                 env_indices: Vec::new(),
             })
             .await
             .map_err(Error::from)?;
 
-        let observation_payload =
-            value_bytes(response.observation.as_ref()).map_err(protocol_error_to_error)?;
-        let observations =
-            decode_batched_partial_values(observation_payload.as_ref(), &observation_space)
-                .map_err(protocol_error_to_error)?;
+        let observations = decode_batched_partial_values(
+            response.observation.as_ref(),
+            &observation_space,
+            self.num_envs,
+        )
+        .map_err(protocol_error_to_error)?;
         let terminated = response
             .terminated_mask
             .iter()

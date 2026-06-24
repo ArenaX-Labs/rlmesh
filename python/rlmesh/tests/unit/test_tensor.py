@@ -118,18 +118,6 @@ def test_tensor_memoryview_int64_roundtrips_values() -> None:
     assert view.tolist() == [-(2**62), 2**62]
 
 
-def test_tensor_bfloat16_buffer_is_rejected() -> None:
-    import rlmesh
-
-    tensor = rlmesh.Tensor(b"\x00\x3f", [1], "bfloat16")
-
-    with pytest.raises(BufferError, match="__dlpack__"):
-        memoryview(tensor)
-
-    # tobytes() remains the supported byte-level escape hatch.
-    assert tensor.tobytes() == b"\x00\x3f"
-
-
 def test_tensor_scalar_memoryview() -> None:
     import struct
 

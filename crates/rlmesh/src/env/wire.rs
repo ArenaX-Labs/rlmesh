@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use rlmesh_grpc::env::{
-    CloseResponse as ProtoCloseResponse, Environment, RenderRequest as ProtoRenderRequest,
+    CloseEnvsResponse as ProtoCloseResponse, Environment, RenderRequest as ProtoRenderRequest,
     RenderResponse as ProtoRenderResponse, ResetRequest as ProtoResetRequest,
     ResetResponse as ProtoResetResponse, StepRequest as ProtoStepRequest,
     StepResponse as ProtoStepResponse,
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
-    meta_map_to_proto, render_result_to_proto, value_bytes,
+    decode_batched_partial_values, encode_batched_partial_values, meta_map_from_proto,
+    meta_map_to_proto, render_result_to_proto,
 };
 
 use super::Env;
@@ -111,7 +111,7 @@ impl<E: Env> WireEnvAdapter<E> {
                 .map_err(protocol_error_to_env_error)?;
 
         Ok(ProtoResetResponse {
-            observation: Some(bytes_value(observations)),
+            observation: Some(observations),
             infos: result.info.as_ref().map(meta_map_to_proto),
             episode_ids: result.episode_ids,
         })
@@ -184,8 +184,9 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .reset(ResetRequest {
                 seeds: req.seeds,
                 options: req.options.map(meta_map_from_proto),
-                timeout_ms: req.timeout_ms,
-                env_indices: req.env_indices,
+                // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
+                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+                env_indices: proto_env_indices_to_native(req.env_indices),
             })
             .await
             .map_err(gym_error_to_env_error)?;
@@ -206,8 +207,9 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .reset_subset(ResetRequest {
                 seeds: req.seeds,
                 options: req.options.map(meta_map_from_proto),
-                timeout_ms: req.timeout_ms,
-                env_indices: req.env_indices,
+                // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
+                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+                env_indices: proto_env_indices_to_native(req.env_indices),
             })
             .await
             .map_err(gym_error_to_env_error)?;
@@ -219,12 +221,13 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
         &mut self,
         req: ProtoStepRequest,
     ) -> std::result::Result<ProtoStepResponse, EnvError> {
-        let action_payload =
-            value_bytes(req.action.as_ref()).map_err(protocol_error_to_env_error)?;
+        // N is authoritative (num_envs); a wrong-width/count action is a client
+        // fault, so a decode failure maps to InvalidAction (not Internal).
+        let num_envs = self.inner.num_envs();
         let actions =
-            decode_batched_partial_values(action_payload.as_ref(), self.inner.action_space())
-                .map_err(protocol_error_to_env_error)?;
-        validate_action_count(&actions, self.inner.num_envs())?;
+            decode_batched_partial_values(req.action.as_ref(), self.inner.action_space(), num_envs)
+                .map_err(|err| EnvError::new(EnvErrorCode::InvalidAction, err.to_string()))?;
+        validate_action_count(&actions, num_envs)?;
 
         let mut warnings = Vec::new();
         for action in &actions {
@@ -235,7 +238,8 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .inner
             .step(StepRequest {
                 actions,
-                timeout_ms: req.timeout_ms,
+                // Proto timeout_ms is uint64; native is i64.
+                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
             })
             .await
             .map_err(gym_error_to_env_error)?;
@@ -256,7 +260,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
                 .map_err(protocol_error_to_env_error)?;
 
         Ok(ProtoStepResponse {
-            observation: Some(bytes_value(observations)),
+            observation: Some(observations),
             rewards: result.rewards,
             terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
             truncated_mask: result.truncated.into_iter().map(u8::from).collect(),
@@ -280,7 +284,8 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
             .inner
             .render(RenderRequest {
                 env_index: render_env_index(&req.mask)?,
-                timeout_ms: req.timeout_ms,
+                // Proto timeout_ms is uint64; native is i64.
+                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
             })
             .await
             .map_err(gym_error_to_env_error)?;
@@ -323,14 +328,16 @@ fn public_episode_metadata_to_proto(
     Ok(rlmesh_proto::env::v1::EpisodeMetadata {
         episode_id: value.episode_id.clone(),
         seed: value.seed,
-        env_index: value.env_index,
+        // Native env_index is i32 (>=0 lane offset); proto field is uint32.
+        env_index: value.env_index.max(0) as u32,
         step_count: value.step_count,
         cumulative_reward: value.cumulative_reward,
         terminated: value.terminated,
         truncated: value.truncated,
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
-        duration_ms: value.duration_ms,
+        // Native duration_ms is i64 (>=0); proto field is uint64.
+        duration_ms: value.duration_ms.max(0) as u64,
         final_info: value.final_info.as_ref().map(meta_map_to_proto),
     })
 }
@@ -345,16 +352,28 @@ pub(super) fn proto_episode_metadata_to_public(
     Ok(EpisodeMetadata {
         episode_id: value.episode_id,
         seed: value.seed,
-        env_index: value.env_index,
+        // Proto env_index is uint32; native field is i32 (lane offsets fit i32).
+        env_index: i32::try_from(value.env_index).unwrap_or(i32::MAX),
         step_count: value.step_count,
         cumulative_reward: value.cumulative_reward,
         terminated: value.terminated,
         truncated: value.truncated,
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
-        duration_ms: value.duration_ms,
+        // Proto duration_ms is uint64; native field is i64.
+        duration_ms: i64::try_from(value.duration_ms).unwrap_or(i64::MAX),
         final_info: value.final_info.map(meta_map_from_proto),
     })
+}
+
+/// Convert wire lane indices (uint32) to the native i32 representation. Lane
+/// offsets always fit i32; an unrepresentable value is clamped rather than
+/// wrapped so a foreign index is rejected loudly downstream.
+fn proto_env_indices_to_native(env_indices: Vec<u32>) -> Vec<i32> {
+    env_indices
+        .into_iter()
+        .map(|index| i32::try_from(index).unwrap_or(i32::MAX))
+        .collect()
 }
 
 fn render_env_index(mask: &[u8]) -> std::result::Result<Option<usize>, EnvError> {
@@ -531,7 +550,7 @@ mod tests {
             self.last_render_request = Some(req);
             Ok(RenderResult {
                 frame: Some(spaces::RenderFrame {
-                    png_frame: vec![1, 2, 3],
+                    frame: vec![1, 2, 3],
                 }),
             })
         }
@@ -598,9 +617,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let reset_payload = value_bytes(reset.observation.as_ref()).unwrap().unwrap();
         let reset_obs =
-            decode_batched_partial_values(Some(&reset_payload), env.observation_space()).unwrap();
+            decode_batched_partial_values(reset.observation.as_ref(), env.observation_space(), 2)
+                .unwrap();
         assert_eq!(reset_obs.len(), 2);
 
         let actions = [
@@ -611,9 +630,7 @@ mod tests {
         let step = Environment::step(
             &mut env,
             ProtoStepRequest {
-                action: Some(bytes_value(
-                    encode_batched_partial_values(&actions, &action_space).unwrap(),
-                )),
+                action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
                 env_indices: vec![],
             },
@@ -621,9 +638,9 @@ mod tests {
         .await
         .unwrap();
 
-        let step_payload = value_bytes(step.observation.as_ref()).unwrap().unwrap();
         let step_obs =
-            decode_batched_partial_values(Some(&step_payload), env.observation_space()).unwrap();
+            decode_batched_partial_values(step.observation.as_ref(), env.observation_space(), 2)
+                .unwrap();
         assert_eq!(step_obs.len(), 2);
         assert_eq!(step.rewards, vec![1.0, 2.0]);
         assert_eq!(step.terminated_mask, vec![0, 1]);
@@ -638,9 +655,7 @@ mod tests {
         let error = Environment::step(
             &mut env,
             ProtoStepRequest {
-                action: Some(bytes_value(
-                    encode_batched_partial_values(&actions, &action_space).unwrap(),
-                )),
+                action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
                 env_indices: vec![],
             },
@@ -665,7 +680,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(result.png_frame.is_some());
+        assert!(result.frame.is_some());
     }
 
     #[tokio::test]

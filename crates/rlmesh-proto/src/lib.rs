@@ -1,15 +1,16 @@
 //! Generated RLMesh protobuf bindings and protocol-level constants.
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 /// Current RLMesh protocol generation.
 ///
 /// This is intentionally not the package version. Package patch releases can
 /// move independently when the wire contract remains compatible.
-pub const PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
+pub const PROTOCOL_GENERATION: &str = "rlmesh-protocol-1";
 
 /// Oldest protocol generation accepted by this crate.
-pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
+pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh-protocol-1";
 
 /// Protocol generations this build can speak, oldest ([`MIN_SUPPORTED_PROTOCOL_GENERATION`])
 /// to newest ([`PROTOCOL_GENERATION`]). A peer is wire-compatible only when its
@@ -20,24 +21,26 @@ pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh.protocol.v1";
 pub const SUPPORTED_PROTOCOL_GENERATIONS: &[&str] = &[PROTOCOL_GENERATION];
 
 /// Current workflow semantics edition.
-pub const CURRENT_WORKFLOW_EDITION: &str = "2026.06";
+///
+/// Stable releases use a bare sealed `YYYY.MM` label. Prerelease and local
+/// source builds use a suffixed cohort (`YYYY.MM-<semver-prerelease>` or
+/// `YYYY.MM-dev.<git-token>`) so moving builds only interoperate with the same
+/// cohort unless both sides explicitly advertise a sealed fallback edition.
+pub const CURRENT_WORKFLOW_EDITION: &str = env!("RLMESH_CURRENT_WORKFLOW_EDITION");
+
+/// Bare `YYYY.MM` workflow edition base for this build.
+pub const WORKFLOW_EDITION_BASE: &str = env!("RLMESH_WORKFLOW_EDITION_BASE");
+
+/// Build cohort used to spell [`CURRENT_WORKFLOW_EDITION`].
+pub const BUILD_COHORT: &str = env!("RLMESH_BUILD_COHORT");
+
+/// Source of the build cohort: `release`, `package`, or `git`.
+pub const BUILD_SOURCE: &str = env!("RLMESH_BUILD_SOURCE");
 
 /// Workflow editions this crate can operate under. Each edition names an
-/// immutable behavioral contract documented in `docs/editions/<edition>.md`.
+/// immutable behavioral contract documented in `docs/editions/<base>.md` (the
+/// spec file is keyed by the bare `YYYY.MM` base, never the suffixed cohort).
 pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] = &[CURRENT_WORKFLOW_EDITION];
-
-/// Lifecycle status of [`CURRENT_WORKFLOW_EDITION`]: `"provisional"` (the spec
-/// may still change and is content-pinned) or `"sealed"` (frozen at GA and
-/// identified by its string alone). Mirrors `rlmesh.toml`.
-pub const CURRENT_WORKFLOW_EDITION_STATUS: &str = "provisional";
-
-/// SHA-256 of [`CURRENT_WORKFLOW_EDITION`]'s spec document. Provisional editions
-/// interoperate only when both peers report this checksum. That keeps the
-/// still-mutable contract from silently diverging across beta builds.
-/// `check_rlmesh_policy.py` cross-checks this value against the file and
-/// `rlmesh.toml`.
-pub const CURRENT_WORKFLOW_EDITION_SPEC_SHA256: &str =
-    "3827ecdfb7ad3c756c88587101675a412083252027720e4d0f7daa588f431d1e";
 
 /// Stable capability names exchanged during handshake.
 ///
@@ -82,10 +85,46 @@ pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
     is_protocol_generation_supported(client) && is_protocol_generation_supported(server)
 }
 
+/// Ordering key for a workflow edition name: `(base, cohort?, suffix)`.
+///
+/// The name is split at its **first** `-` into a `YYYY.MM` base and an optional
+/// cohort suffix:
+/// - `base` compares lexicographically — the zero-padded fixed-width `YYYY.MM`
+///   makes that chronological, so a newer date always outranks an older one.
+/// - `cohort?` is `true` for a suffixed prerelease/dev cohort and `false` for a
+///   bare sealed fallback, so an exact matching moving cohort wins over its
+///   sealed fallback when both peers support it.
+/// - `suffix` is the full cohort as a deterministic third tiebreak; two
+///   same-date cohorts are ordered by suffix rather than by iteration order.
+///
+/// This comparator must NOT be applied to protocol generation tokens
+/// (`rlmesh-protocol-1` is hyphenated and would split at `-`, collapsing all
+/// generations to the base `"rlmesh"`); generations are ordered by
+/// [`generation_sort_key`] (numeric-suffix order), not this comparator.
+pub fn edition_sort_key(edition: &str) -> (&str, bool, &str) {
+    match edition.split_once('-') {
+        Some((base, suffix)) => (base, true, suffix),
+        None => (edition, false, ""),
+    }
+}
+
+/// Order `rlmesh-protocol-<N>` generation tokens by their numeric suffix so a
+/// two-digit generation sorts above a single-digit one (`-10` > `-2`), which a
+/// plain lexicographic `.max()` gets wrong. The full token is the tiebreak, so a
+/// token with no parseable numeric suffix still has a stable order.
+pub fn generation_sort_key(generation: &str) -> (u64, &str) {
+    let numeric = generation
+        .rsplit_once('-')
+        .and_then(|(_, suffix)| suffix.parse::<u64>().ok())
+        .unwrap_or(0);
+    (numeric, generation)
+}
+
 /// Select the workflow edition governing a session from a peer's offer.
 ///
-/// Returns the highest edition both peers support; the zero-padded `YYYY.MM`
-/// format makes lexicographic order chronological. `None` means there is no
+/// Returns the highest edition both peers support, ordered by
+/// [`edition_sort_key`] (newest date, then exact moving cohort over sealed
+/// fallback, then a deterministic suffix tiebreak). `None` means there is no
 /// mutual edition and the handshake must report `compatible = false`. Only
 /// explicitly supported editions are eligible. Unknown editions in the offer are
 /// ignored, never accepted on the assumption they are compatible.
@@ -94,7 +133,146 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
         .iter()
         .copied()
         .filter(|edition| offered.iter().any(|offer| offer.trim() == *edition))
-        .max()
+        .max_by_key(|edition| edition_sort_key(edition))
+}
+
+/// One participant's offer in a three-way (relay) session negotiation: the set
+/// of protocol generations and workflow editions it can speak, and the
+/// capabilities it advertises. Built for the env, the model, and the runtime;
+/// [`negotiate_session_floor`] reconciles all three.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOffer {
+    /// Protocol generations this participant can speak.
+    pub generations: Vec<String>,
+    /// Workflow editions this participant can operate under.
+    pub editions: Vec<String>,
+    /// Capabilities this participant advertises (keys of the handshake map whose
+    /// value is `"true"`; an absent key means the feature is unavailable).
+    pub capabilities: HashMap<String, String>,
+}
+
+impl SessionOffer {
+    /// Build an offer from string slices, taking only the advertised (value
+    /// `"true"`) capabilities. Whitespace around generations/editions is trimmed.
+    pub fn new(generations: &[&str], editions: &[&str], capabilities: &[&str]) -> Self {
+        Self {
+            generations: generations.iter().map(|g| g.trim().to_string()).collect(),
+            editions: editions.iter().map(|e| e.trim().to_string()).collect(),
+            capabilities: capability_map(capabilities),
+        }
+    }
+
+    /// This build's own (runtime) offer: the full supported generation and
+    /// edition windows plus the named capabilities it can carry through the relay.
+    pub fn runtime(capabilities: &[&str]) -> Self {
+        Self {
+            generations: SUPPORTED_PROTOCOL_GENERATIONS
+                .iter()
+                .map(|g| (*g).to_string())
+                .collect(),
+            editions: supported_workflow_editions(),
+            capabilities: capability_map(capabilities),
+        }
+    }
+}
+
+/// The reconciled three-way session floor produced by [`negotiate_session_floor`].
+///
+/// A session is bound to these values: the runtime decode-rebuilds env<->model
+/// envelopes (prost drops unknown fields), so it can only faithfully carry the
+/// shape that env AND model AND runtime all understand. The floor is therefore
+/// the highest mutual generation, the highest mutual edition, and the capability
+/// intersection across all three. See versioning-governance §7.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFloor {
+    /// Highest protocol generation all three participants support.
+    pub selected_protocol_generation: String,
+    /// Highest workflow edition all three participants support.
+    pub selected_workflow_edition: String,
+    /// Capabilities present in all three offers (the intersection).
+    pub active_capabilities: HashMap<String, String>,
+}
+
+/// Reconcile a three-way (relay) session to its floor over the env, model and
+/// runtime offers.
+///
+/// Returns the highest mutual protocol generation, the highest mutual workflow
+/// edition (max over the 3-way intersection, using `YYYY.MM` lexicographic =
+/// chronological order), and the capability intersection across all three. The
+/// runtime is the binding authority because it re-frames traffic, so the floor —
+/// not any pairwise upper bound — is what a session may use.
+///
+/// Returns `None` when generation OR edition has no value common to all three;
+/// the caller must then fail the session before any Join stream opens. Whitespace
+/// around offered generations/editions is trimmed; empty strings never match.
+pub fn negotiate_session_floor(
+    env: &SessionOffer,
+    model: &SessionOffer,
+    runtime: &SessionOffer,
+) -> Option<SessionFloor> {
+    // Generations and editions are BOTH three-way-intersected by
+    // `highest_mutual`, but they order differently. Generation tokens
+    // (`rlmesh-protocol-<N>`) must order by their numeric suffix
+    // (`generation_sort_key`) so `-10` ranks above `-2`; plain lexicographic
+    // `.max()` would wrongly pick `-2`, and `edition_sort_key` would split them
+    // at `-` and collapse every generation to the base `"rlmesh"`. Editions
+    // order by `edition_sort_key`. Each gets its own comparator so the two never
+    // leak.
+    let selected_protocol_generation = highest_mutual(
+        &env.generations,
+        &model.generations,
+        &runtime.generations,
+        generation_sort_key,
+    )?;
+    let selected_workflow_edition = highest_mutual(
+        &env.editions,
+        &model.editions,
+        &runtime.editions,
+        edition_sort_key,
+    )?;
+
+    // Capability intersection: a capability is active only when all three
+    // advertise it (value "true"). The runtime must carry any field the feature
+    // needs, so env<->model agreement alone is insufficient.
+    let active_capabilities = env
+        .capabilities
+        .iter()
+        .filter(|(name, value)| {
+            value.as_str() == "true"
+                && has_capability(&model.capabilities, name)
+                && has_capability(&runtime.capabilities, name)
+        })
+        .map(|(name, _)| (name.clone(), "true".to_string()))
+        .collect();
+
+    Some(SessionFloor {
+        selected_protocol_generation,
+        selected_workflow_edition,
+        active_capabilities,
+    })
+}
+
+/// Highest value present in all three sets (after trimming), ranked by `key`, or
+/// `None` if the three-way intersection is empty. Empty strings never match.
+///
+/// `key` is the per-axis comparator: protocol generations pass
+/// [`generation_sort_key`] (numeric-suffix order, so `-10` outranks `-2`), while
+/// workflow editions pass [`edition_sort_key`]. Keeping it a parameter means the
+/// edition comparator can never accidentally order the hyphenated generation
+/// tokens, and the generation comparator never splits an edition at its `-`.
+fn highest_mutual<'a, K: Ord>(
+    a: &'a [String],
+    b: &[String],
+    c: &[String],
+    key: impl Fn(&'a str) -> K,
+) -> Option<String> {
+    a.iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .filter(|value| b.iter().any(|other| other.trim() == *value))
+        .filter(|value| c.iter().any(|other| other.trim() == *value))
+        .max_by_key(|value| key(value))
+        .map(|value| value.to_string())
 }
 
 /// The outcome of evaluating a client handshake offer against this build.
@@ -131,60 +309,6 @@ pub fn evaluate_handshake(
     }
 }
 
-/// Verify a provisional edition's content pin against peer handshake metadata.
-///
-/// The selected edition is pinned when this build or the peer treats it as
-/// provisional. That includes older peers that omit status/checksum fields; they
-/// fail as unpinned instead of slipping through.
-///
-/// In pinned mode, the peer's `spec_sha256` must equal this build's
-/// [`CURRENT_WORKFLOW_EDITION_SPEC_SHA256`]. A mismatch or absent checksum means
-/// two beta builds carry different mutable contracts under the same edition
-/// string, so they cannot interoperate. A sealed edition that both peers
-/// recognize is identified by its string alone. The error includes both build
-/// versions so operators can spot the stale beta.
-pub fn check_provisional_edition_pin(
-    selected_edition: &str,
-    peer_status: &str,
-    peer_spec_sha256: &str,
-    peer_version: &str,
-) -> Result<(), String> {
-    let we_pin = selected_edition == CURRENT_WORKFLOW_EDITION
-        && CURRENT_WORKFLOW_EDITION_STATUS == "provisional";
-    if !we_pin && peer_status != "provisional" {
-        return Ok(());
-    }
-    if peer_spec_sha256 == CURRENT_WORKFLOW_EDITION_SPEC_SHA256 {
-        return Ok(());
-    }
-    let this_version = env!("CARGO_PKG_VERSION");
-    Err(format!(
-        "provisional workflow edition {selected_edition} checksum differs between peers: \
-         this build {this_version}{this_tag} spec {this_sha} vs peer \
-         {peer_version}{peer_tag} spec {peer_sha}; run matching releases",
-        this_tag = prerelease_tag(this_version),
-        peer_tag = prerelease_tag(peer_version),
-        this_sha = short_sha(CURRENT_WORKFLOW_EDITION_SPEC_SHA256),
-        peer_sha = short_sha(peer_spec_sha256),
-    ))
-}
-
-fn short_sha(sha: &str) -> &str {
-    // peer_spec_sha256 is untrusted wire input: slice on a char boundary, not a byte index
-    match sha.char_indices().nth(12) {
-        Some((idx, _)) => &sha[..idx],
-        None => sha,
-    }
-}
-
-fn prerelease_tag(version: &str) -> &'static str {
-    if version.contains('-') {
-        " (beta)"
-    } else {
-        " (release)"
-    }
-}
-
 /// Return supported workflow editions as owned strings for protobuf messages.
 pub fn supported_workflow_editions() -> Vec<String> {
     SUPPORTED_WORKFLOW_EDITIONS
@@ -206,16 +330,131 @@ pub fn has_capability(map: &HashMap<String, String>, name: &str) -> bool {
     map.get(name).is_some_and(|value| value == "true")
 }
 
-pub mod common {
-    pub mod v1 {
-        tonic::include_proto!("rlmesh.common.v1");
-    }
-}
-
 pub mod core {
     pub mod v1 {
         tonic::include_proto!("rlmesh.core.v1");
     }
+}
+
+/// Advisory runtime identity supplied by a non-Rust host (e.g. the Python SDK)
+/// to enrich the handshake [`PeerInfo`](core::v1::PeerInfo).
+///
+/// Every field is optional and best-effort. When set process-wide via
+/// [`set_peer_info_override`], [`peer_info`] merges these values over the
+/// Rust-detected defaults: a non-empty override field wins, an empty/absent one
+/// falls back to the Rust-detected value (`os`/`arch`/`package_version`). The
+/// `component` passed to [`peer_info`] is always honored; an override
+/// `component` is ignored so each call site keeps naming itself.
+///
+/// This is purely additive diagnostics: PeerInfo never gates compatibility.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PeerInfoOverride {
+    /// Implementation language, e.g. `"python"`. Empty leaves the Rust default.
+    pub language: String,
+    /// Language runtime version, e.g. `"3.11.4"`.
+    pub language_version: String,
+    /// Package/build version of the host SDK. Empty falls back to this crate's.
+    pub package_version: String,
+    /// Operating system, e.g. `"linux"`, `"macos"`. Empty falls back to the
+    /// Rust-detected [`std::env::consts::OS`].
+    pub os: String,
+    /// OS version/release.
+    pub os_version: String,
+    /// CPU architecture, e.g. `"x86_64"`. Empty falls back to the Rust-detected
+    /// [`std::env::consts::ARCH`].
+    pub arch: String,
+    /// High-value framework versions for debugging (e.g. `{"numpy":"1.26.4"}`).
+    pub framework_versions: HashMap<String, String>,
+    /// Additional advisory key/value diagnostics.
+    pub extra: HashMap<String, String>,
+}
+
+/// Process-wide host identity override consulted by [`peer_info`].
+///
+/// `None` (the default) means no override: pure-Rust peers handshake exactly as
+/// before. A Python-hosted process sets this once at import; the value applies
+/// to every handshake the process performs (it is the only host).
+static PEER_INFO_OVERRIDE: RwLock<Option<PeerInfoOverride>> = RwLock::new(None);
+
+/// Install (or replace) the process-wide [`PeerInfoOverride`] consulted by
+/// [`peer_info`]. Intended for non-Rust hosts (the Python SDK) to report their
+/// real runtime. Idempotent and thread-safe; passing the value again overwrites.
+pub fn set_peer_info_override(info: PeerInfoOverride) {
+    if let Ok(mut guard) = PEER_INFO_OVERRIDE.write() {
+        *guard = Some(info);
+    }
+}
+
+/// Build advisory [`PeerInfo`](core::v1::PeerInfo) diagnostics for a handshake.
+///
+/// `component` names the emitting participant (e.g. `"rlmesh-runtime"`,
+/// `"rlmesh-env"`, `"rlmesh-model"`). The build version, language, OS and arch
+/// default to this crate's compile environment (`language="rust"`, empty
+/// `language_version`/`os_version`/`framework_versions`).
+///
+/// When a process-wide [`PeerInfoOverride`] has been installed via
+/// [`set_peer_info_override`] (e.g. by the Python SDK), its non-empty fields win
+/// over the Rust defaults, falling back to the Rust-detected
+/// `os`/`arch`/`package_version` for any empty override field. The `component`
+/// argument is always preserved so each call site keeps naming itself. PeerInfo
+/// is advisory only and never gates compatibility.
+pub fn peer_info(component: &str) -> core::v1::PeerInfo {
+    let mut extra = HashMap::new();
+    extra.insert(
+        "rlmesh.workflow.base".to_string(),
+        WORKFLOW_EDITION_BASE.to_string(),
+    );
+    extra.insert(
+        "rlmesh.workflow.edition".to_string(),
+        CURRENT_WORKFLOW_EDITION.to_string(),
+    );
+    extra.insert("rlmesh.build.cohort".to_string(), BUILD_COHORT.to_string());
+    extra.insert("rlmesh.build.source".to_string(), BUILD_SOURCE.to_string());
+
+    let mut info = core::v1::PeerInfo {
+        component: component.to_string(),
+        package_version: env!("CARGO_PKG_VERSION").to_string(),
+        language: "rust".to_string(),
+        language_version: String::new(),
+        os: std::env::consts::OS.to_string(),
+        os_version: String::new(),
+        arch: std::env::consts::ARCH.to_string(),
+        framework_versions: HashMap::new(),
+        extra,
+    };
+
+    if let Ok(guard) = PEER_INFO_OVERRIDE.read()
+        && let Some(over) = guard.as_ref()
+    {
+        // Python (or other host) values win when present; empty fields keep the
+        // Rust-detected fallback. `component` is never overridden.
+        if !over.language.is_empty() {
+            info.language = over.language.clone();
+        }
+        if !over.language_version.is_empty() {
+            info.language_version = over.language_version.clone();
+        }
+        if !over.package_version.is_empty() {
+            info.package_version = over.package_version.clone();
+        }
+        if !over.os.is_empty() {
+            info.os = over.os.clone();
+        }
+        if !over.os_version.is_empty() {
+            info.os_version = over.os_version.clone();
+        }
+        if !over.arch.is_empty() {
+            info.arch = over.arch.clone();
+        }
+        if !over.framework_versions.is_empty() {
+            info.framework_versions = over.framework_versions.clone();
+        }
+        if !over.extra.is_empty() {
+            info.extra.extend(over.extra.clone());
+        }
+    }
+
+    info
 }
 
 pub mod env {
@@ -239,10 +478,9 @@ pub mod model {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
-        CURRENT_WORKFLOW_EDITION_STATUS, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        SUPPORTED_WORKFLOW_EDITIONS, check_provisional_edition_pin, evaluate_handshake,
-        is_protocol_generation_compatible, negotiate_workflow_edition, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        SUPPORTED_WORKFLOW_EDITIONS, evaluate_handshake, is_protocol_generation_compatible,
+        negotiate_workflow_edition, supported_workflow_editions,
     };
 
     fn offer(editions: &[&str]) -> Vec<String> {
@@ -250,14 +488,59 @@ mod tests {
     }
 
     #[test]
-    fn short_sha_slices_on_char_boundary() {
-        use super::short_sha;
-        // byte 12 lands mid-codepoint (11 ASCII + a 2-byte char spanning bytes
-        // 11-12), so a raw &sha[..12] would panic; we take the first 12 chars.
-        assert_eq!(short_sha("abcdefghijkééé"), "abcdefghijké");
-        // all multibyte: take the first 12 chars, not 12 bytes.
-        assert_eq!(short_sha("ααααααααααααα"), "αααααααααααα");
-        assert_eq!(short_sha("short"), "short");
+    fn peer_info_default_then_override_merges_python_with_rust_fallback() {
+        use super::{PeerInfoOverride, peer_info, set_peer_info_override};
+        use std::collections::HashMap;
+
+        // No override installed yet: a pure-Rust peer reports the Rust defaults.
+        let rust_info = peer_info("rlmesh-env");
+        assert_eq!(rust_info.component, "rlmesh-env");
+        assert_eq!(rust_info.language, "rust");
+        assert!(rust_info.language_version.is_empty());
+        assert!(rust_info.framework_versions.is_empty());
+        let detected_os = rust_info.os.clone();
+        let detected_arch = rust_info.arch.clone();
+        let detected_pkg = rust_info.package_version.clone();
+
+        // Install a Python-style override with `os`/`package_version` left empty
+        // so the Rust-detected fallbacks fill them.
+        let mut frameworks = HashMap::new();
+        frameworks.insert("numpy".to_string(), "1.26.4".to_string());
+        set_peer_info_override(PeerInfoOverride {
+            language: "python".to_string(),
+            language_version: "3.11.4".to_string(),
+            package_version: String::new(),
+            os: String::new(),
+            os_version: "ubuntu-22.04".to_string(),
+            arch: "aarch64".to_string(),
+            framework_versions: frameworks,
+            extra: HashMap::new(),
+        });
+
+        let py_info = peer_info("rlmesh-env");
+        // component still names this call site; not taken from the override.
+        assert_eq!(py_info.component, "rlmesh-env");
+        // Python values win.
+        assert_eq!(py_info.language, "python");
+        assert_eq!(py_info.language_version, "3.11.4");
+        assert_eq!(py_info.os_version, "ubuntu-22.04");
+        assert_eq!(py_info.arch, "aarch64");
+        assert_eq!(
+            py_info.framework_versions.get("numpy").map(String::as_str),
+            Some("1.26.4")
+        );
+        // Empty override fields fall back to the Rust-detected values.
+        assert_eq!(py_info.os, detected_os);
+        assert_eq!(py_info.package_version, detected_pkg);
+        assert_eq!(
+            py_info
+                .extra
+                .get("rlmesh.workflow.edition")
+                .map(String::as_str),
+            Some(CURRENT_WORKFLOW_EDITION)
+        );
+        // `arch` was overridden, so it differs from the detected value here.
+        let _ = detected_arch;
     }
 
     #[test]
@@ -279,7 +562,7 @@ mod tests {
         assert!(SUPPORTED_PROTOCOL_GENERATIONS.contains(&MIN_SUPPORTED_PROTOCOL_GENERATION));
         // The current generation is accepted; nothing past it is.
         assert!(is_protocol_generation_supported(PROTOCOL_GENERATION));
-        assert!(!is_protocol_generation_supported("rlmesh.protocol.v2"));
+        assert!(!is_protocol_generation_supported("rlmesh-protocol-2"));
     }
 
     #[test]
@@ -294,12 +577,12 @@ mod tests {
     #[test]
     fn unknown_protocol_generation_is_not_compatible() {
         assert!(!is_protocol_generation_compatible(
-            "rlmesh.protocol.v2",
+            "rlmesh-protocol-2",
             PROTOCOL_GENERATION
         ));
         assert!(!is_protocol_generation_compatible(
             PROTOCOL_GENERATION,
-            "rlmesh.protocol.v2"
+            "rlmesh-protocol-2"
         ));
         assert!(!is_protocol_generation_compatible("", PROTOCOL_GENERATION));
         assert!(!is_protocol_generation_compatible(
@@ -331,8 +614,9 @@ mod tests {
 
     #[test]
     fn negotiation_trims_offered_editions() {
+        let padded = format!(" {CURRENT_WORKFLOW_EDITION} ");
         assert_eq!(
-            negotiate_workflow_edition(&offer(&[" 2026.06 "])),
+            negotiate_workflow_edition(&[padded]),
             Some(CURRENT_WORKFLOW_EDITION)
         );
     }
@@ -367,43 +651,203 @@ mod tests {
 
         // A protocol mismatch is never compatible, even with a valid edition.
         let bad_protocol =
-            evaluate_handshake("rlmesh.protocol.v2", &offer(&[CURRENT_WORKFLOW_EDITION]));
+            evaluate_handshake("rlmesh-protocol-2", &offer(&[CURRENT_WORKFLOW_EDITION]));
         assert!(!bad_protocol.protocol_compatible);
         assert!(!bad_protocol.is_compatible());
     }
 
     #[test]
-    fn provisional_edition_pin_rejects_mismatched_spec() {
-        // Matching checksum: accepted.
-        assert!(
-            check_provisional_edition_pin(
-                CURRENT_WORKFLOW_EDITION,
-                CURRENT_WORKFLOW_EDITION_STATUS,
-                CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
-                "0.1.0-beta.2",
-            )
-            .is_ok()
+    fn session_floor_picks_highest_mutual_generation_and_edition() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // All three share g2 and g3 → g3 wins; share e1 and e2 → e2 wins.
+        let env = SessionOffer::new(&["g1", "g2", "g3"], &["2026.01", "2026.06"], &[]);
+        let model = SessionOffer::new(&["g2", "g3"], &["2026.06", "2026.01"], &[]);
+        let runtime = SessionOffer::new(&["g2", "g3", "g4"], &["2026.06"], &[]);
+
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        assert_eq!(floor.selected_protocol_generation, "g3");
+        assert_eq!(floor.selected_workflow_edition, "2026.06");
+        assert!(floor.active_capabilities.is_empty());
+    }
+
+    #[test]
+    fn session_floor_intersects_capabilities_across_all_three() {
+        use super::{SessionOffer, has_capability, negotiate_session_floor};
+        // shared: present in all three. env_model_only: env+model but not runtime.
+        // runtime_only: runtime alone. None but "shared" survive the intersection.
+        let env = SessionOffer::new(&["g1"], &["e1"], &["shared", "env_model_only", "env_only"]);
+        let model = SessionOffer::new(&["g1"], &["e1"], &["shared", "env_model_only"]);
+        let runtime = SessionOffer::new(&["g1"], &["e1"], &["shared", "runtime_only"]);
+
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        assert_eq!(floor.active_capabilities.len(), 1);
+        assert!(has_capability(&floor.active_capabilities, "shared"));
+        assert!(!has_capability(
+            &floor.active_capabilities,
+            "env_model_only"
+        ));
+        assert!(!has_capability(&floor.active_capabilities, "runtime_only"));
+        assert!(!has_capability(&floor.active_capabilities, "env_only"));
+    }
+
+    #[test]
+    fn session_floor_is_none_when_no_three_way_mutual_generation() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // env<->runtime share g1, model<->runtime share g2, but the THREE share
+        // no generation → None even though editions agree.
+        let env = SessionOffer::new(&["g1"], &["e1"], &[]);
+        let model = SessionOffer::new(&["g2"], &["e1"], &[]);
+        let runtime = SessionOffer::new(&["g1", "g2"], &["e1"], &[]);
+        assert!(negotiate_session_floor(&env, &model, &runtime).is_none());
+    }
+
+    #[test]
+    fn session_floor_is_none_when_no_three_way_mutual_edition() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // The pivotal case: env<->runtime share 2026.01 and model<->runtime share
+        // 2026.06, but the THREE share no edition → None even though generations
+        // agree.
+        let env = SessionOffer::new(&["g1"], &["2026.01"], &[]);
+        let model = SessionOffer::new(&["g1"], &["2026.06"], &[]);
+        let runtime = SessionOffer::new(&["g1"], &["2026.01", "2026.06"], &[]);
+        assert!(negotiate_session_floor(&env, &model, &runtime).is_none());
+    }
+
+    #[test]
+    fn session_floor_trims_and_ignores_empty_offers() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // Whitespace is trimmed so a padded offer still matches; empty strings
+        // never match (so a participant offering only "" has no mutual value).
+        let env = SessionOffer::new(&[" g1 "], &[" 2026.06 "], &[]);
+        let model = SessionOffer::new(&["g1"], &["2026.06"], &[]);
+        let runtime = SessionOffer::new(&["g1", ""], &["2026.06"], &[]);
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("trimmed match");
+        assert_eq!(floor.selected_protocol_generation, "g1");
+        assert_eq!(floor.selected_workflow_edition, "2026.06");
+
+        let empty_gen = SessionOffer::new(&[""], &["2026.06"], &[]);
+        assert!(negotiate_session_floor(&empty_gen, &model, &runtime).is_none());
+    }
+
+    #[test]
+    fn session_floor_for_single_generation_single_edition_build() {
+        use super::{
+            CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, SessionOffer, capabilities,
+            has_capability, negotiate_session_floor,
+        };
+        // The behavior this build actually ships: one generation, one edition.
+        // The floor is trivially that pair, and the capability intersection is
+        // exactly the capabilities all three carry.
+        let env = SessionOffer::new(
+            &[PROTOCOL_GENERATION],
+            &[CURRENT_WORKFLOW_EDITION],
+            &[capabilities::SPACES_CORE_V1, capabilities::ENV_SERVICE_V1],
         );
-
-        // Provisional + different checksum: refused, naming both builds.
-        let err = check_provisional_edition_pin(
-            CURRENT_WORKFLOW_EDITION,
-            "provisional",
-            "deadbeefdeadbeef",
-            "0.1.0-beta.1",
-        )
-        .unwrap_err();
-        assert!(err.contains(CURRENT_WORKFLOW_EDITION));
-        assert!(err.contains("0.1.0-beta.1"));
-
-        // A different (older, sealed) edition is identified by its string alone.
-        assert!(check_provisional_edition_pin("2025.01", "sealed", "deadbeef", "9.9.9").is_ok());
-
-        // A peer that omits the status/checksum while this build is provisional is
-        // refused, not accepted as unpinned.
-        assert!(
-            check_provisional_edition_pin(CURRENT_WORKFLOW_EDITION, "", "", "0.1.0-beta.0")
-                .is_err()
+        let model = SessionOffer::new(
+            &[PROTOCOL_GENERATION],
+            &[CURRENT_WORKFLOW_EDITION],
+            &[capabilities::SPACES_CORE_V1, capabilities::MODEL_SERVICE_V1],
         );
+        let runtime = SessionOffer::runtime(&[capabilities::SPACES_CORE_V1]);
+
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("single-edition floor");
+        assert_eq!(floor.selected_protocol_generation, PROTOCOL_GENERATION);
+        assert_eq!(floor.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
+        // Only the capability all three carry survives.
+        assert!(has_capability(
+            &floor.active_capabilities,
+            capabilities::SPACES_CORE_V1
+        ));
+        assert_eq!(floor.active_capabilities.len(), 1);
+    }
+
+    #[test]
+    fn session_floor_capability_requires_value_true_in_all_three() {
+        use super::{SessionOffer, has_capability, negotiate_session_floor};
+        // A capability advertised with value != "true" by any participant is not
+        // active (has_capability gates on "true"); mirror that in the floor.
+        let mut env = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
+        let model = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
+        let runtime = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
+        // Downgrade env's advertisement to a non-"true" value.
+        env.capabilities
+            .insert("cap".to_string(), "maybe".to_string());
+
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("floor");
+        assert!(!has_capability(&floor.active_capabilities, "cap"));
+    }
+
+    #[test]
+    fn edition_ordering_prefers_exact_cohort_then_newer_date() {
+        use super::edition_sort_key;
+
+        // Exact moving cohorts beat their own sealed fallback. This lets two
+        // matching prerelease/dev peers use the newest cohort while still allowing
+        // fallback to the sealed edition when the moving cohorts differ.
+        assert!(edition_sort_key("2026.06-0.1.0-rc.1") > edition_sort_key("2026.06"));
+
+        // newer-date-wins: a newer date outranks an older one regardless of
+        // cohort status.
+        assert!(edition_sort_key("2026.09-0.2.0-beta.1") > edition_sort_key("2026.06"));
+        assert!(edition_sort_key("2026.09") > edition_sort_key("2026.06-0.1.0-rc.1"));
+
+        // deterministic suffix tiebreak: two same-date cohorts order by
+        // their full suffix, never by iteration order, so two honest builds
+        // never disagree on the winner.
+        assert!(edition_sort_key("2026.06-0.1.0-rc.2") > edition_sort_key("2026.06-0.1.0-rc.1"));
+
+        // negotiate_workflow_edition applies the same key: offered against a
+        // hypothetical multi-edition supported set, the highest by key wins. With
+        // the single supported edition this build ships, the current edition is
+        // selected when offered alongside older/newer noise.
+        assert_eq!(
+            negotiate_workflow_edition(&offer(&["2025.01", CURRENT_WORKFLOW_EDITION, "2099.12"])),
+            Some(CURRENT_WORKFLOW_EDITION)
+        );
+    }
+
+    #[test]
+    fn session_floor_generation_comparator_does_not_split_hyphenated_tokens() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // Generations are hyphenated (`rlmesh-protocol-N`). The edition
+        // comparator splits at the first `-`, which would collapse every
+        // generation to base "rlmesh" and order them by nothing. Prove the
+        // generation path keeps plain `.max()`: with three real hyphenated
+        // generations shared by all parties, the lexicographically-highest one
+        // (`rlmesh-protocol-3`) is selected — not an arbitrary collapsed pick.
+        let gens = &[
+            "rlmesh-protocol-1",
+            "rlmesh-protocol-2",
+            "rlmesh-protocol-3",
+        ];
+        let env = SessionOffer::new(gens, &["2026.06"], &[]);
+        let model = SessionOffer::new(gens, &["2026.06"], &[]);
+        let runtime = SessionOffer::new(gens, &["2026.06"], &[]);
+
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        assert_eq!(floor.selected_protocol_generation, "rlmesh-protocol-3");
+
+        // The boundary the generation comparator actually exists for: a
+        // two-digit generation must outrank a single-digit one. Plain
+        // lexicographic `.max()` would wrongly pick `-2` over `-10`; the numeric
+        // `generation_sort_key` correctly selects `-10`.
+        let gens = &[
+            "rlmesh-protocol-1",
+            "rlmesh-protocol-2",
+            "rlmesh-protocol-10",
+        ];
+        let env = SessionOffer::new(gens, &["2026.06"], &[]);
+        let model = SessionOffer::new(gens, &["2026.06"], &[]);
+        let runtime = SessionOffer::new(gens, &["2026.06"], &[]);
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        assert_eq!(floor.selected_protocol_generation, "rlmesh-protocol-10");
+
+        // And the edition path still uses edition_sort_key: an exact cohort
+        // beats its sealed fallback within the three-way intersection.
+        let env = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
+        let model = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
+        let runtime = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        assert_eq!(floor.selected_workflow_edition, "2026.06-0.1.0-rc.1");
     }
 }

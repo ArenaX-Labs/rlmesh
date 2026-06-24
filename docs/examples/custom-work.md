@@ -1,12 +1,10 @@
 # Custom Work
 
-RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. The quickstart serves
-one custom environment over gRPC and connects one model worker to it.
+RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. The quickstart serves one custom environment over gRPC and connects one model worker to it.
 
 ## Custom Environment
 
-{source}`examples/python/quickstart/serve.py <examples/python/quickstart/serve.py>` defines a tiny
-`CounterEnv` without importing Gymnasium, then serves it with `EnvServer`:
+{source}`examples/python/quickstart/serve.py <examples/python/quickstart/serve.py>` defines a tiny `CounterEnv` without importing Gymnasium, then serves it with `EnvServer`:
 
 ```python
 import rlmesh
@@ -38,9 +36,7 @@ print(f"serving CounterEnv on {server.address}")
 server.serve()
 ```
 
-Replace `CounterEnv` with your own environment object if it has the same shape: an
-`observation_space`, an `action_space`, `reset(seed=None, options=None)`, `step(action)`, and
-`close()`. Run it:
+Replace `CounterEnv` with your own environment object if it has the same shape: an `observation_space`, an `action_space`, `reset(seed=None, options=None)`, `step(action)`, and `close()`. Run it:
 
 ```bash
 uv run python examples/python/quickstart/serve.py
@@ -48,9 +44,7 @@ uv run python examples/python/quickstart/serve.py
 
 ## Custom Model
 
-{source}`examples/python/quickstart/model.py <examples/python/quickstart/model.py>` wraps a
-prediction function as a model worker. `predict` takes an observation and returns an action; `Model`
-runs episodes against the served endpoint:
+{source}`examples/python/quickstart/model.py <examples/python/quickstart/model.py>` wraps a prediction function as a model worker. `predict` takes an observation and returns an action; `Model` runs episodes against the served endpoint:
 
 ```python
 from rlmesh.numpy import Model
@@ -72,9 +66,7 @@ uv run python examples/python/quickstart/model.py --episodes 1
 
 ## Drive It Yourself
 
-If you would rather step the environment by hand instead of handing it to a `Model`,
-{source}`examples/python/quickstart/eval.py <examples/python/quickstart/eval.py>` opens a
-`RemoteEnv` and runs a sampled-action loop:
+If you would rather step the environment by hand instead of handing it to a `Model`, {source}`examples/python/quickstart/eval.py <examples/python/quickstart/eval.py>` opens a `RemoteEnv` and runs a sampled-action loop:
 
 ```python
 from rlmesh.numpy import RemoteEnv
@@ -89,5 +81,4 @@ for step in range(1, 65):
 env.close()
 ```
 
-That is the separation: the environment serves observations, and the model worker (or your own loop)
-returns actions.
+That is the separation: the environment serves observations, and the model worker (or your own loop) returns actions.

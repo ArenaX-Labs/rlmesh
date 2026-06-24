@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    CloseRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest, PredictRequest,
+    CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest, PredictRequest,
     join_request, join_response,
 };
 use tokio::net::TcpListener;
@@ -26,15 +26,13 @@ struct RecordingHandler {
 
 #[async_trait]
 impl ModelHandler for RecordingHandler {
-    async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload> {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         self.predictions.push((
             observation.episode_id().to_string(),
             observation.step(),
             observation.env_index(),
         ));
-        Ok(spaces::BinaryPayload {
-            data: vec![1, 2, 3],
-        })
+        Ok(vec![spaces::SpaceValue::Discrete(0)])
     }
 
     async fn on_reset(&mut self, observation: &ModelObservation) -> Result<()> {
@@ -58,9 +56,7 @@ fn raw_observation(
     is_reset: bool,
 ) -> ModelObservation {
     ModelObservation {
-        observation: Some(spaces::BinaryPayload {
-            data: vec![env_index as u8, step as u8],
-        }),
+        observation: None,
         route: ModelRouteContext {
             session_id: "test-session".to_string(),
             route_id: "test-route".to_string(),
@@ -188,9 +184,16 @@ struct SmokeModel {
 
 #[async_trait]
 impl ModelHandler for SmokeModel {
-    async fn predict(&mut self, _observation: ModelObservation) -> Result<spaces::BinaryPayload> {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         self.predicts.fetch_add(1, Ordering::SeqCst);
-        Ok(spaces::BinaryPayload { data: vec![0] })
+        // One action per lane; the action space is a Uint8 Box[1] (SmokeEnv).
+        Ok((0..observation.num_envs)
+            .map(|_| {
+                spaces::SpaceValue::Box(
+                    spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+                )
+            })
+            .collect())
     }
 
     async fn on_close(&mut self) -> Result<()> {
@@ -315,7 +318,7 @@ fn run_local_and_serve_options_cover_all_axes() {
 }
 
 #[tokio::test]
-async fn served_model_configure_route_requires_env_contract() {
+async fn served_model_configure_route_requires_env_spec() {
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::ConfigureRoute(ConfigureRouteRequest {
@@ -325,7 +328,8 @@ async fn served_model_configure_route_requires_env_contract() {
                     request_id: "configure-1".to_string(),
                     ..Default::default()
                 }),
-                env_contract: None,
+                env_spec: None,
+                ..Default::default()
             })),
             request_id: "configure-1".to_string(),
         },
@@ -372,8 +376,8 @@ async fn served_model_predict_mirrors_route_context() {
         Arc::new(Mutex::new(HashMap::from([(
             "session-1:route-1".to_string(),
             ModelRouteConfig {
-                env_contract: None,
-                num_envs: 1,
+                env_contract: Some(std::sync::Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
             },
         )]))),
     )
@@ -387,8 +391,13 @@ async fn served_model_predict_mirrors_route_context() {
     }
 }
 
+// NOTE: the former `served_model_predict_rejects_route_wider_than_opened_route`
+// test was removed in the C8 EnvSpec split. The model now receives only the
+// stable `EnvSpec` (no `num_envs`), so the configured route no longer carries a
+// lane bound to clamp predict slots against; the per-predict lane count is taken
+// from the request's slots. There is no contract-derived width to reject.
 #[tokio::test]
-async fn served_model_predict_rejects_route_wider_than_opened_route() {
+async fn served_model_predict_uses_slot_count_as_lane_count() {
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::Predict(PredictRequest {
@@ -422,14 +431,19 @@ async fn served_model_predict_rejects_route_wider_than_opened_route() {
         Arc::new(Mutex::new(HashMap::from([(
             "session-1:route-1".to_string(),
             ModelRouteConfig {
-                env_contract: None,
-                num_envs: 1,
+                env_contract: Some(std::sync::Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
             },
         )]))),
     )
     .await;
 
-    assert!(matches!(response.kind, Some(join_response::Kind::Error(_))));
+    // A two-slot predict against a configured route now succeeds: the model
+    // takes the lane count from the slots rather than a contract bound.
+    assert!(matches!(
+        response.kind,
+        Some(join_response::Kind::Predict(_))
+    ));
 }
 
 #[tokio::test]
@@ -450,14 +464,14 @@ async fn served_model_close_route_drains_route_episodes() {
             "session-1:route-1".to_string(),
             ModelRouteConfig {
                 env_contract: None,
-                num_envs: 1,
+                floor: None,
             },
         ),
         (
             "session-1:route-2".to_string(),
             ModelRouteConfig {
                 env_contract: None,
-                num_envs: 1,
+                floor: None,
             },
         ),
     ])));
@@ -521,7 +535,7 @@ async fn served_model_close_drains_all_active_episodes() {
 
     let response = handle_model_request(
         JoinRequest {
-            kind: Some(join_request::Kind::Close(CloseRequest {
+            kind: Some(join_request::Kind::Close(CloseParticipantRequest {
                 reason: "session complete".to_string(),
             })),
             request_id: "close-1".to_string(),
@@ -626,7 +640,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     client.handshake().await.unwrap();
 
     // The public adapter lets external RuntimeDriver embedders drive a remote
-    // env without re-implementing the take_last_telemetry choreography.
+    // env without re-implementing the take_last_endpoint_total_ns choreography.
     let mut adapter = crate::EnvClientRuntimeEnv::new(client);
     let reset = adapter
         .reset(rlmesh_proto::env::v1::ResetRequest {
@@ -638,8 +652,8 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
         .await
         .expect("adapter reset must succeed");
     assert!(
-        reset.telemetry.is_some(),
-        "adapter must encapsulate and surface per-call telemetry"
+        reset.endpoint_total_ns.is_some(),
+        "adapter must encapsulate and surface the per-call endpoint duration"
     );
 
     env_server.abort();
@@ -745,6 +759,126 @@ async fn remote_model_connects_resets_and_predicts() {
 }
 
 #[tokio::test]
+async fn remote_model_reconciles_three_way_floor_and_pins_route() {
+    // The runtime is client to both peers. connect_with_env_offer handshakes the
+    // model, reconciles the three-way floor against the env's offer, and pins the
+    // route to it. With a single generation/edition the floor is the build's
+    // values, and configure_route succeeds (the served model honors the floor).
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    // An env that offers exactly this build's window.
+    let env_offer = rlmesh_proto::SessionOffer::new(
+        &[rlmesh_proto::PROTOCOL_GENERATION],
+        &[rlmesh_proto::CURRENT_WORKFLOW_EDITION],
+        &[rlmesh_proto::capabilities::SPACES_CORE_V1],
+    );
+    let mut model = crate::RemoteModel::connect_with_env_offer(
+        &address,
+        "",
+        SmokeEnv::new().env_contract,
+        env_offer,
+    )
+    .await
+    .expect("model server did not start");
+
+    let floor = model.session_floor();
+    assert_eq!(
+        floor.selected_protocol_generation,
+        rlmesh_proto::PROTOCOL_GENERATION
+    );
+    assert_eq!(
+        floor.selected_workflow_edition,
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+    );
+
+    // The route configures (the pinned floor is accepted by the served model).
+    model.reset();
+    let action = model
+        .predict(spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(action, spaces::SpaceValue::Box(_)));
+    drop(model);
+
+    let mut shutdown_client = rlmesh_grpc::ModelClient::connect(&address, "")
+        .await
+        .unwrap();
+    shutdown_client.handshake().await.unwrap();
+    assert!(shutdown_client.shutdown("done").await.unwrap().accepted);
+    shutdown_and_join(server).await;
+}
+
+#[tokio::test]
+async fn remote_model_fails_fast_when_no_three_way_floor() {
+    // If the env offers no edition this runtime/model can speak, the session
+    // fails before any route is configured, with a diagnostic naming all three
+    // offers. (The model handshake still happens; the floor reconciliation is
+    // what fails.)
+    let predicts = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let bound = ModelWorker::new(SmokeModel {
+        predicts: Arc::clone(&predicts),
+        closes: Arc::clone(&closes),
+    })
+    .bind_async(
+        ServeModelOptions::new(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .serve_options(ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        }),
+    )
+    .await
+    .unwrap();
+    let (port, server) = spawn_bound_server(bound);
+
+    let address = format!("tcp://127.0.0.1:{port}");
+    // The env offers only a future edition no peer here implements.
+    let env_offer =
+        rlmesh_proto::SessionOffer::new(&[rlmesh_proto::PROTOCOL_GENERATION], &["2099.01"], &[]);
+    let message = match crate::RemoteModel::connect_with_env_offer(
+        &address,
+        "",
+        SmokeEnv::new().env_contract,
+        env_offer,
+    )
+    .await
+    {
+        Ok(_) => panic!("a session with no mutual edition must fail to connect"),
+        Err(err) => err.to_string(),
+    };
+    assert!(
+        message.contains("no mutual session floor") && message.contains("2099.01"),
+        "expected a three-way floor diagnostic naming the offers, got: {message}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn remote_model_predict_requires_reset() {
     let predicts = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
@@ -801,13 +935,15 @@ async fn two_remote_models_in_one_process_use_distinct_route_keys() {
         async fn predict(
             &mut self,
             observation: ModelObservation,
-        ) -> Result<spaces::BinaryPayload> {
+        ) -> Result<Vec<spaces::SpaceValue>> {
             let key = format!(
                 "{}:{}",
                 observation.route.session_id, observation.route.route_id
             );
             self.keys.lock().await.push(key);
-            Ok(spaces::BinaryPayload { data: vec![0] })
+            Ok(vec![spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+            )])
         }
     }
 
@@ -928,7 +1064,7 @@ struct OrderingHandler {
 
 #[async_trait]
 impl ModelHandler for OrderingHandler {
-    async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload> {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         let route_id = observation.route.route_id.clone();
         let step = observation.step();
         self.predict_order
@@ -942,9 +1078,7 @@ impl ModelHandler for OrderingHandler {
         if step == 0 {
             tokio::time::sleep(self.slow_delay).await;
         }
-        Ok(spaces::BinaryPayload {
-            data: vec![step as u8],
-        })
+        Ok(vec![spaces::SpaceValue::Discrete(step)])
     }
 
     async fn on_reset(&mut self, observation: &ModelObservation) -> Result<()> {
@@ -1024,15 +1158,21 @@ fn configure_route_request(route_id: &str, request_id: &str) -> JoinRequest {
                 request_id: request_id.to_string(),
                 ..Default::default()
             }),
-            env_contract: Some(rlmesh_proto::env::v1::EnvContract {
+            env_spec: Some(rlmesh_proto::core::v1::EnvSpec {
                 id: "Ordering-v0".to_string(),
-                autoreset_mode: Default::default(),
                 observation_space: None,
-                action_space: None,
+                // The typed worker encodes the action, so the route needs a real
+                // action space; OrderingHandler returns Discrete.
+                action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
+                    shape: vec![],
+                    dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+                    spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
+                        rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
+                    )),
+                }),
                 metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
             }),
+            ..Default::default()
         })),
         request_id: request_id.to_string(),
     }
@@ -1206,7 +1346,7 @@ async fn close_drains_after_in_flight_same_route_predict() {
         .unwrap();
     req_tx
         .send(JoinRequest {
-            kind: Some(join_request::Kind::Close(CloseRequest {
+            kind: Some(join_request::Kind::Close(CloseParticipantRequest {
                 reason: "done".to_string(),
             })),
             request_id: "close".to_string(),
@@ -1270,15 +1410,21 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
                 request_id: "cfg".to_string(),
                 ..Default::default()
             }),
-            env_contract: Some(rlmesh_proto::env::v1::EnvContract {
+            env_spec: Some(rlmesh_proto::core::v1::EnvSpec {
                 id: "Ordering-v0".to_string(),
-                autoreset_mode: Default::default(),
                 observation_space: None,
-                action_space: None,
+                // The typed worker encodes the action, so the route needs a real
+                // action space; OrderingHandler returns Discrete.
+                action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
+                    shape: vec![],
+                    dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+                    spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
+                        rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
+                    )),
+                }),
                 metadata: None,
-                render_mode: String::new(),
-                num_envs: 1,
             }),
+            ..Default::default()
         })
         .await
         .unwrap();

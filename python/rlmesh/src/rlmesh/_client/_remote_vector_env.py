@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
 from .._framework_bridge import ValueBridge
 from ..spaces import Space, SpaceBridge, space_from_spec
 from ..specs import EnvContract, SpaceSpec
-from ..types import Metadata, Value
+from ..types import Metadata
 from ._endpoint import Transport, normalize_connect_address
-from ._viewer import EMPTY_METADATA, RenderPacket, ViewerMixin, ViewerProcess
+from ._metadata import EMPTY_METADATA
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyVectorEnvClient, ResetInfo, StepInfo
@@ -20,7 +20,7 @@ ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
 
 
-class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
+class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
     """Base class for backend-specific vector-environment remote clients.
 
     Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
@@ -38,7 +38,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
     _bridge: ClassVar[ValueBridge]
     _space_bridge: ClassVar[SpaceBridge[Any] | None] = None
     _address: str
-    _viewer_warning_emitted: bool
 
     def __init__(
         self,
@@ -103,8 +102,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         self._env_contract: EnvContract = self._client.handshake()
         self._single_observation_space: Space[ValueT] | None = None
         self._single_action_space: Space[ActionT] | None = None
-        self._viewer: ViewerProcess | None = None
-        self._viewer_warning_emitted = False
 
     @property
     def address(self) -> str:
@@ -171,9 +168,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
             return EMPTY_METADATA
         return _normalize_autoreset_mode(cast(Mapping[str, object], metadata))
 
-    def _render_client(self) -> PyVectorEnvClient:
-        return self._client
-
     @property
     def observation_space_spec(self) -> SpaceSpec:
         """Native observation space spec reported by the endpoint."""
@@ -206,7 +200,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         else:
             seeds = [seed]
         obs, info = self._client.reset(seeds=seeds, options=options)
-        self._refresh_viewer()
         return cast(ValueT, self._bridge.decode(obs)), info
 
     def step(self, actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]:
@@ -221,7 +214,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         obs, rewards, terminated, truncated, info = self._client.step(
             self._encode_actions(actions)
         )
-        self._refresh_viewer(pace=True)
         return (
             cast(ValueT, self._bridge.decode(obs)),
             cast(ValueT, self._bridge.decode(rewards)),
@@ -268,13 +260,6 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
         Returns:
             A decoded render frame, or ``None`` when the environment has no frame.
         """
-        if self._viewer is not None and self._viewer.env_index == env_index:
-            frame, packet = cast(
-                tuple[Value | None, RenderPacket],
-                self._client.render_bundle(env_index=env_index),
-            )
-            self._push_viewer_packet(packet)
-            return cast(ValueT | None, self._bridge.decode(frame))
         return cast(
             ValueT | None,
             self._bridge.decode(self._client.render(env_index=env_index)),
@@ -282,12 +267,10 @@ class RemoteVectorEnvBase(ViewerMixin, Generic[ValueT, ActionT]):
 
     def close(self) -> None:
         """Detach this client from the remote endpoint."""
-        self._shutdown_viewer()
         self._client.close()
 
     def shutdown(self, reason: str = "owner shutdown") -> bool:
         """Request owner-level shutdown of the remote vector environment endpoint."""
-        self._shutdown_viewer()
         return bool(self._client.shutdown(reason))
 
     def __repr__(self) -> str:

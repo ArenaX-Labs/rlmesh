@@ -5,10 +5,7 @@
 pinning; signatures may still change before the stable release.
 ```
 
-`rlmesh._serving` exposes a small surface for constructing an environment to serve through
-{py:class}`~rlmesh.EnvServer`. It promotes the loaders previously hidden in `rlmesh._cli.serve_env`
-so that scripts and downstream runners can build an environment by Gymnasium id or by
-`module:callable` entrypoint.
+`rlmesh._serving` exposes a small surface for constructing an environment to serve through {py:class}`~rlmesh.EnvServer`. It promotes the loaders previously hidden in `rlmesh._cli.serve_env` so that scripts and downstream runners can build an environment by Gymnasium id or by `module:callable` entrypoint.
 
 ```python
 import rlmesh

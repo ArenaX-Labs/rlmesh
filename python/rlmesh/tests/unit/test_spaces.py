@@ -138,7 +138,7 @@ def test_text_default_is_unrestricted_and_explicit_charset_is_restrictive() -> N
     assert not finite.contains("a b")
 
 
-@pytest.mark.parametrize("dtype", ["int8", "uint64", "bfloat16"])
+@pytest.mark.parametrize("dtype", ["int8", "uint64"])
 def test_native_box_samples_support_extended_dtypes(dtype: str) -> None:
     from rlmesh import Tensor, spaces
 

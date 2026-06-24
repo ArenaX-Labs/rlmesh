@@ -1,79 +1,55 @@
-use rlmesh_proto::common::v1::MessageBytes;
+use prost::bytes::Bytes;
 use rlmesh_proto::spaces::v1::SpaceValue;
 use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-use super::codec::{decode_space_value, encode_space_value};
+use super::leaves::{decode_leaves, encode_leaves};
 
-pub fn encode_value_bytes(
-    value: &native::SpaceValue,
-    space: &native::SpaceSpec,
-) -> Result<MessageBytes, ProtocolError> {
-    Ok(MessageBytes {
-        data: encode_space_value(value, space)?.into_owned(),
-    })
+/// Wrap leaf byte slabs into a wire [`SpaceValue`].
+pub fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
+    SpaceValue { leaves }
 }
 
-pub fn bytes_value(value: MessageBytes) -> SpaceValue {
-    SpaceValue { bytes: Some(value) }
+/// The leaf slabs of a wire value, if present.
+pub fn value_leaves(payload: Option<&SpaceValue>) -> Option<&[Bytes]> {
+    payload.map(|payload| payload.leaves.as_slice())
 }
 
+/// Encode a single typed value into a wire [`SpaceValue`].
 pub fn encode_value(
     value: &native::SpaceValue,
     space: &native::SpaceSpec,
 ) -> Result<SpaceValue, ProtocolError> {
-    Ok(bytes_value(encode_value_bytes(value, space)?))
+    Ok(leaves_value(encode_leaves(value, space)?))
 }
 
-pub fn value_bytes(payload: Option<&SpaceValue>) -> Result<Option<MessageBytes>, ProtocolError> {
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-    Ok(payload.bytes.clone())
-}
-
-pub fn value_bytes_ref(
-    payload: Option<&SpaceValue>,
-) -> Result<Option<&MessageBytes>, ProtocolError> {
-    let Some(payload) = payload else {
-        return Ok(None);
-    };
-    Ok(payload.bytes.as_ref())
-}
-
-pub fn decode_value_bytes(
-    payload: Option<&MessageBytes>,
-    space: &native::SpaceSpec,
-) -> Result<Option<native::SpaceValue>, ProtocolError> {
-    let Some(bytes) = payload else {
-        return Ok(None);
-    };
-    Ok(Some(decode_space_value(&bytes.data, space)?))
-}
-
+/// Decode a wire [`SpaceValue`] back to a typed value (`None` when absent).
 pub fn decode_value(
     payload: Option<&SpaceValue>,
     space: &native::SpaceSpec,
 ) -> Result<Option<native::SpaceValue>, ProtocolError> {
-    decode_value_bytes(value_bytes_ref(payload)?, space)
-}
-
-pub fn binary_to_bytes(value: &native::BinaryPayload) -> MessageBytes {
-    MessageBytes {
-        data: value.data.clone(),
+    match value_leaves(payload) {
+        Some(leaves) => Ok(Some(decode_leaves(leaves, space)?)),
+        None => Ok(None),
     }
 }
 
-pub fn bytes_to_binary(value: MessageBytes) -> Result<native::BinaryPayload, ProtocolError> {
-    Ok(native::BinaryPayload { data: value.data })
+pub fn binary_to_bytes(value: &native::BinaryPayload) -> Bytes {
+    Bytes::from(value.data.clone())
+}
+
+pub fn bytes_to_binary(value: Bytes) -> Result<native::BinaryPayload, ProtocolError> {
+    Ok(native::BinaryPayload {
+        data: value.to_vec(),
+    })
 }
 
 pub fn optional_bytes_to_binary(
-    payload: Option<&MessageBytes>,
+    payload: Option<&Bytes>,
 ) -> Result<Option<native::BinaryPayload>, ProtocolError> {
-    let Some(data) = payload.cloned() else {
+    let Some(data) = payload else {
         return Ok(None);
     };
-    Ok(Some(bytes_to_binary(data)?))
+    Ok(Some(bytes_to_binary(data.clone())?))
 }

@@ -1,8 +1,6 @@
 # Models
 
-Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint.
-The framework backend controls how observations are decoded before `predict_fn` runs and how
-returned actions are encoded.
+Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint. The framework backend controls how observations are decoded before `predict_fn` runs and how returned actions are encoded.
 
 ## Base Model
 

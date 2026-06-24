@@ -4,9 +4,7 @@ The Torch backend is experimental.
 
 ## What This Backend Changes
 
-`rlmesh.torch` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
-APIs, but decodes tensor leaves to Torch tensors. Space wrappers returned from Torch clients also
-sample Torch-compatible values.
+`rlmesh.torch` keeps the same environment, model, and sandbox behavior as the shared RLMesh client APIs, but decodes tensor leaves to Torch tensors. Space wrappers returned from Torch clients also sample Torch-compatible values.
 
 Install it with:
 
@@ -24,9 +22,7 @@ pip install "rlmesh[torch]"
 
 ## Memory Sharing and Mutation
 
-Decoded observations are owned, writable copies, so `predict_fn` can normalize in place
-(`img.div_(255)`) without corrupting the wire buffer. `as_tensor(tensor)` is the zero-copy opt-in:
-the Torch tensor shares memory with the RLMesh tensor over DLPack.
+Decoded observations are owned, writable copies, so `predict_fn` can normalize in place (`img.div_(255)`) without corrupting the wire buffer. `as_tensor(tensor)` is the zero-copy opt-in: the Torch tensor shares memory with the RLMesh tensor over DLPack.
 
 ```{warning}
 A zero-copy `as_tensor(tensor)` view shares memory. RLMesh flags the export read-only, but Torch,
@@ -37,8 +33,7 @@ shared view as read-only, or pass `copy=True`.
 
 Conversion details:
 
-- Decode uses `torch.utils.dlpack.from_dlpack`; `bool` tensors fall back to a buffer copy on Torch
-  older than 2.2 (no bool DLPack support there).
+- Decode uses `torch.utils.dlpack.from_dlpack`; `bool` tensors fall back to a buffer copy on Torch older than 2.2 (no bool DLPack support there).
 - `uint16`, `uint32`, and `uint64` dtypes require Torch 2.3 or newer.
 - Encode (`from_tensor`) detaches, moves to CPU, and exports over DLPack; NumPy is not required.
 

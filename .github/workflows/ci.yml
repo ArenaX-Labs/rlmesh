@@ -37,8 +37,8 @@ jobs:
           install: true
           install_args: --locked
           cache_key: >-
-            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{
-            hashFiles('mise.lock') }}
+            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{ hashFiles('mise.lock') }}
+
           cache: true
 
       - name: Install Rust components
@@ -100,8 +100,8 @@ jobs:
           install: true
           install_args: --locked
           cache_key: >-
-            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{
-            hashFiles('mise.lock') }}
+            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{ hashFiles('mise.lock') }}
+
           cache: true
 
       - name: Cache Rust artifacts

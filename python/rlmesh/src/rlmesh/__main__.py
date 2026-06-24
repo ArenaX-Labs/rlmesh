@@ -18,14 +18,14 @@ _DISTRIBUTION_ENV = "RLMESH_CLI_DISTRIBUTION"
 def _run_extension_cli(argv: list[str]) -> int:
     import rlmesh._rlmesh as _rlmesh
 
-    # run_cli only exists in builds with the 'viewer' cargo feature; lean
-    # wheels omit it (and the GUI stack) entirely.
+    # run_cli only exists in builds with the 'cli' cargo feature; lean
+    # wheels omit it (and the embedded CLI) entirely.
     run_cli = cast(
         "Callable[[list[str]], int] | None", getattr(_rlmesh, "run_cli", None)
     )
     if run_cli is None:
         raise ImportError(
-            "the rlmesh native module was built without the 'viewer' feature"
+            "the rlmesh native module was built without the 'cli' feature"
         )
     return int(run_cli(argv))
 

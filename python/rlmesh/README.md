@@ -1,11 +1,8 @@
 # RLMesh
 
-RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments,
-connects clients over local or remote transports, and adapts values for plain Python, NumPy, and
-Torch users.
+RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments, connects clients over local or remote transports, and adapts values for plain Python, NumPy, and Torch users.
 
-> Pre-1.0 (`0.x`): the stable API may change in a minor release, with a migration note, so pin a
-> minor range for active projects.
+> Pre-1.0 (`0.x`): the stable API may change in a minor release, with a migration note, so pin a minor range for active projects.
 
 ## Installation
 
@@ -70,9 +67,6 @@ Runnable examples and exact commands live in the repository under `examples/pyth
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See
-[LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-APACHE) and
-[LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-MIT).
+Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See [LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-APACHE) and [LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/LICENSE-MIT).
 
-Python wheels also include third-party notices in
-[THIRD_PARTY_NOTICES.md](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/THIRD_PARTY_NOTICES.md).
+Python wheels also include third-party notices in [THIRD_PARTY_NOTICES.md](https://github.com/ArenaX-Labs/rlmesh/blob/main/python/rlmesh/THIRD_PARTY_NOTICES.md).

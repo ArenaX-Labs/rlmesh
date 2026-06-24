@@ -2,8 +2,7 @@ syntax = "proto3";
 
 package rlmesh.model.v1;
 
-import "rlmesh/core/v1/telemetry.proto";
-import "rlmesh/env/v1/contract.proto";
+import "rlmesh/core/v1/contract.proto";
 import "rlmesh/spaces/v1/value.proto";
 
 // Runtime-owned model execution context.
@@ -14,14 +13,26 @@ import "rlmesh/spaces/v1/value.proto";
 message PredictContext {
   string session_id = 1;
   string route_id = 2;
+  // The producer's correlation id for this request. The model client copies it
+  // onto the envelope `JoinRequest.request_id` (tag 5) — the field the server
+  // demuxes responses on and the authoritative correlation id — and it is echoed
+  // back inside `PredictResponse.context`. It rides here (not only on the
+  // envelope) because the client API takes a `PredictRequest`, so this is the
+  // producer's channel for assigning and reading back the id (e.g. the runtime's
+  // phase/step-labeled ids and its route-mismatch error). Both copies always
+  // carry the same value; tag 5 is authoritative for response routing.
   string request_id = 3;
   repeated PredictSlot slots = 4;
 }
 
 // Identity for one row in a predict observation/action batch.
 message PredictSlot {
-  int32 env_index = 1;
+  // Lane index within the env vector; always a non-negative array offset.
+  uint32 env_index = 1;
   string episode_id = 2;
+  // Monotonic step counter; always non-negative. Typed `int64` to match the
+  // native runtime counter and `EpisodeMetadata.step_count`, so the value rides
+  // the wire with no signed<->unsigned conversion on either side.
   int64 step = 3;
   bool reset = 4;
 }
@@ -30,8 +41,34 @@ message ConfigureRouteRequest {
   // Runtime route being configured. route_id is required.
   PredictContext context = 1;
 
-  // RLMesh contract for all later Predict calls on this route.
-  rlmesh.env.v1.EnvContract env_contract = 2;
+  // Stable env spec for all later Predict calls on this route. The model only
+  // needs the observation/action interface; the runtime owns the orchestration
+  // knobs (num_envs/render_mode/autoreset) and never forwards them here.
+  rlmesh.core.v1.EnvSpec env_spec = 2;
+
+  // Reconciled three-way session floor (see versioning-governance §7). The
+  // runtime is the binding authority: it decode-rebuilds env<->model envelopes,
+  // so a session runs at the FLOOR of env + model + runtime. These fields are
+  // AUTHORITATIVE over the model's own (pairwise, possibly higher) handshake
+  // result, which was only an upper bound. The model pins itself to the floor.
+
+  // Highest mutual protocol generation across env, model and runtime.
+  string selected_protocol_generation = 3;
+
+  // Highest mutual workflow edition across env, model and runtime.
+  string selected_workflow_edition = 4;
+
+  // Capability intersection across all three participants. A capability whose
+  // feature requires the runtime to carry a field is active only when present
+  // here, never merely on the env<->model pair.
+  map<string, string> active_capabilities = 5;
+
+  // NOTE: tag 6 was an EnvSpec consistency fingerprint, cut from the freeze. The
+  // model derives its whole route spec from the single forwarded env_spec, so
+  // there is no independent spec to drift against; the length/dtype/leaf-count
+  // guards catch every byte-count drift. Re-add (proto3-additive, 0 = skip) only
+  // when a real consumer exists: mid-route respec/epochs, env-side attestation,
+  // or a second independent model implementation that validates its own spec.
 }
 
 message ConfigureRouteResponse {}
@@ -63,20 +100,26 @@ message CloseRouteResponse {}
 // Request graceful shutdown of the model participant after the runtime reaches
 // a normal terminal condition. Fault paths may still rely on pod/runtime
 // timeouts.
-message CloseRequest {
+message CloseParticipantRequest {
   string reason = 1;
 }
 
-message CloseResponse {}
+message CloseParticipantResponse {}
 
+// Bands (aligned with EnvErrorCode; UNSPECIFIED and shared concepts share
+// numbers across the two enums): 0 = unspecified; 1-9 client/recoverable;
+// 10-19 fatal/internal. The bands are a labeling convention only: a model
+// handler fault is reported as INTERNAL (10) with an explicit `is_recoverable`
+// flag, so recoverability is NOT derivable from the code. Readers MUST consult
+// the `is_recoverable` field on ModelError.
 enum ModelErrorCode {
   MODEL_ERROR_CODE_UNSPECIFIED = 0;
-  MODEL_ERROR_CODE_INVALID_REQUEST = 1;
-  MODEL_ERROR_CODE_NOT_CONFIGURED = 2;
-  MODEL_ERROR_CODE_BUSY = 3;
+  MODEL_ERROR_CODE_INVALID_REQUEST = 2;
+  MODEL_ERROR_CODE_NOT_CONFIGURED = 3;
+  MODEL_ERROR_CODE_BUSY = 4;
   MODEL_ERROR_CODE_INTERNAL = 10;
-  MODEL_ERROR_CODE_CANCELLED = 11;
-  MODEL_ERROR_CODE_CLOSED = 12;
+  MODEL_ERROR_CODE_CANCELLED = 12;
+  MODEL_ERROR_CODE_CLOSED = 13;
 }
 
 message ModelError {
@@ -91,10 +134,12 @@ message JoinRequest {
     ConfigureRouteRequest configure_route = 1;
     PredictRequest predict = 2;
     CloseRouteRequest close_route = 3;
-    CloseRequest close = 4;
+    CloseParticipantRequest close = 4;
   }
 
-  string request_id = 20;
+  // Per-message correlation id, harmonized to tag 5 across all four Join
+  // messages (env + model, request + response). 1-byte tag on the hot path.
+  string request_id = 5;
 }
 
 message JoinResponse {
@@ -102,10 +147,16 @@ message JoinResponse {
     ConfigureRouteResponse configure_route = 1;
     PredictResponse predict = 2;
     CloseRouteResponse close_route = 3;
-    CloseResponse close = 4;
+    CloseParticipantResponse close = 4;
     ModelError error = 10;
   }
 
-  rlmesh.core.v1.OperationTelemetry telemetry = 20;
-  string request_id = 21;
+  // Per-message correlation id, harmonized to tag 5 (was 21).
+  string request_id = 5;
+
+  // Hot per-step endpoint-local op duration, in nanoseconds. A bare scalar is
+  // the cheapest forward-compatible wire shape (one varint key + one varint
+  // value, no nested framing, no string), carrying per-step timing without a
+  // nested message. `optional` preserves "no timing available" vs "0 ns".
+  optional uint64 endpoint_total_ns = 6;
 }

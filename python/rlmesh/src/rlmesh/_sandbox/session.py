@@ -88,16 +88,6 @@ class _RemoteHandleBase(Protocol):
         """Render a frame from the remote environment."""
         ...
 
-    def open_viewer(
-        self, *, env_index: int = 0, fps: float | None | str = "env"
-    ) -> None:
-        """Open a local render viewer for the remote environment."""
-        ...
-
-    def close_viewer(self) -> None:
-        """Close the local render viewer if one is open."""
-        ...
-
     def close(self) -> None:
         """Detach from the remote endpoint."""
         ...

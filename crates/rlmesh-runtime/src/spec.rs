@@ -1,9 +1,11 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use rlmesh_proto::env::v1::{AutoresetMode, EnvContract};
+use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
 use rlmesh_proto::spaces::v1::SpaceSpec;
 use serde::{Deserialize, Serialize};
+
+use crate::hooks::TelemetrySummaryEvent;
 
 /// Empty fallback returned by the internal `*_validated` accessors only on the
 /// unreachable path where the space is absent despite validation (see their
@@ -45,10 +47,10 @@ impl RuntimeSessionSpec {
         if self.num_envs == 0 {
             return Err("runtime num_envs must be greater than zero".to_string());
         }
-        if self.env_contract.observation_space.is_none() {
+        if self.observation_space().is_none() {
             return Err("runtime env_contract is missing observation_space".to_string());
         }
-        if self.env_contract.action_space.is_none() {
+        if self.action_space().is_none() {
             return Err("runtime env_contract is missing action_space".to_string());
         }
         if self.max_episodes == Some(0) {
@@ -121,7 +123,10 @@ impl RuntimeSessionSpec {
     /// trivial to construct; this accessor never panics. The driver validates
     /// the spec before running and uses the infallible internal accessor.
     pub fn observation_space(&self) -> Option<&SpaceSpec> {
-        self.env_contract.observation_space.as_ref()
+        self.env_contract
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.observation_space.as_ref())
     }
 
     /// Returns the action space, or `None` if the spec has not been
@@ -129,20 +134,21 @@ impl RuntimeSessionSpec {
     ///
     /// See [`RuntimeSessionSpec::observation_space`] for why this is fallible.
     pub fn action_space(&self) -> Option<&SpaceSpec> {
-        self.env_contract.action_space.as_ref()
+        self.env_contract
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.action_space.as_ref())
     }
 
     /// Observation space for internal use after [`validate`](Self::validate)
     /// has confirmed it is present.
     pub(crate) fn observation_space_validated(&self) -> &SpaceSpec {
         debug_assert!(
-            self.env_contract.observation_space.is_some(),
+            self.observation_space().is_some(),
             "observation_space accessed before validate()"
         );
         // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
-        self.env_contract
-            .observation_space
-            .as_ref()
+        self.observation_space()
             .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 
@@ -150,23 +156,26 @@ impl RuntimeSessionSpec {
     /// confirmed it is present.
     pub(crate) fn action_space_validated(&self) -> &SpaceSpec {
         debug_assert!(
-            self.env_contract.action_space.is_some(),
+            self.action_space().is_some(),
             "action_space accessed before validate()"
         );
         // LazyLock<SpaceSpec> derefs to &SpaceSpec on the unreachable None path.
-        self.env_contract
-            .action_space
-            .as_ref()
-            .unwrap_or_else(|| &EMPTY_SPACE_SPEC)
+        self.action_space().unwrap_or_else(|| &EMPTY_SPACE_SPEC)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeReport {
     pub session_id: String,
     pub route_id: String,
     pub total_steps: i64,
     pub total_episodes: i64,
+    /// Final session-total telemetry summary the driver computed at session
+    /// end, or `None` when no telemetry window elapsed (e.g. a zero-step or
+    /// sub-window run). Held as the runtime's own native
+    /// [`TelemetrySummaryEvent`] so this crate stays transport-agnostic; the
+    /// facade serializes it onto the wire `TelemetryWindow` shape.
+    pub telemetry_summary: Option<TelemetrySummaryEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,7 +325,7 @@ mod duration_millis {
 mod tests {
     use std::time::Duration;
 
-    use rlmesh_proto::env::v1::{AutoresetMode, EnvContract};
+    use rlmesh_proto::core::v1::{AutoresetMode, EnvContract, EnvSpec};
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use serde_json::json;
 
@@ -331,9 +340,12 @@ mod tests {
             env_id: "env-id".to_string(),
             workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             env_contract: EnvContract {
-                observation_space: Some(SpaceSpec::default()),
-                action_space: Some(SpaceSpec::default()),
-                num_envs: 1,
+                spec: Some(EnvSpec {
+                    observation_space: Some(SpaceSpec::default()),
+                    action_space: Some(SpaceSpec::default()),
+                    ..Default::default()
+                }),
+                num_envs: Some(1),
                 ..Default::default()
             },
             num_envs: 1,
@@ -383,7 +395,7 @@ mod tests {
         // done lane itself, so the driver never needs per-lane reset.
         let mut spec = valid_spec();
         spec.num_envs = 4;
-        spec.env_contract.num_envs = 4;
+        spec.env_contract.num_envs = Some(4);
         spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
 
         assert!(spec.validate().is_ok());
@@ -397,7 +409,7 @@ mod tests {
         for mode in [AutoresetMode::Disabled, AutoresetMode::Unspecified] {
             let mut spec = valid_spec();
             spec.num_envs = 4;
-            spec.env_contract.num_envs = 4;
+            spec.env_contract.num_envs = Some(4);
             spec.env_contract.autoreset_mode = mode as i32;
 
             let error = spec.validate().unwrap_err();

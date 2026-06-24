@@ -1,21 +1,21 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use rlmesh_grpc::wire::{binary_to_bytes, bytes_value, optional_bytes_to_binary, value_bytes};
-use rlmesh_proto::core::v1::{OperationMetric, OperationTelemetry, operation_metric};
+use rlmesh_grpc::wire::value_leaves;
 use rlmesh_proto::model::v1::{
     ModelError, ModelErrorCode, PredictContext, PredictRequest, PredictResponse, PredictSlot,
-    join_request, join_response,
+    join_response,
 };
+use rlmesh_proto::spaces::v1::SpaceValue;
 
 use super::types::{ModelObservation, ModelRouteContext, ModelRouteSlot};
 use crate::{Error, Result, spaces};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ModelAction {
-    pub(super) action: Option<spaces::BinaryPayload>,
+    /// Finished wire value built by the worker (codec already ran).
+    pub(super) action: Option<SpaceValue>,
     pub(super) route: ModelRouteContext,
-    pub(super) telemetry: Option<OperationTelemetry>,
 }
 
 pub(super) fn model_error(message: impl Into<String>) -> join_response::Kind {
@@ -43,31 +43,13 @@ pub(super) fn model_error_from_error(error: &Error) -> join_response::Kind {
     })
 }
 
-pub(super) fn model_join_request_operation(kind: Option<&join_request::Kind>) -> &'static str {
-    match kind {
-        Some(join_request::Kind::ConfigureRoute(_)) => "model.configure_route",
-        Some(join_request::Kind::Predict(_)) => "model.predict",
-        Some(join_request::Kind::CloseRoute(_)) => "model.close_route",
-        Some(join_request::Kind::Close(_)) => "model.close",
-        None => "model.unknown",
-    }
-}
-
-pub(super) fn model_operation_telemetry(
-    operation: &str,
-    started_at: Instant,
-) -> OperationTelemetry {
-    OperationTelemetry {
-        operation: operation.to_string(),
-        component_id: String::new(),
-        metrics: vec![OperationMetric {
-            name: "endpoint.total".to_string(),
-            labels: Default::default(),
-            value: Some(operation_metric::Value::DurationNs(
-                started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64,
-            )),
-        }],
-    }
+/// Endpoint-local op duration in nanoseconds for the per-step
+/// `JoinResponse.endpoint_total_ns` scalar. Replaces the old nested per-step
+/// telemetry message construction (and with it the dead `labels` map and the
+/// always-empty `component_id` — the runtime attributes by connection).
+/// Saturates at `u64::MAX`.
+pub(super) fn model_endpoint_total_ns(started_at: Instant) -> u64 {
+    started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 pub(super) fn model_observation_from_endpoint_request(
@@ -78,7 +60,7 @@ pub(super) fn model_observation_from_endpoint_request(
     validate_predict_route(&route)?;
 
     Ok(ModelObservation {
-        observation: optional_bytes_to_binary(value_bytes(request.observation.as_ref())?.as_ref())?,
+        observation: value_leaves(request.observation.as_ref()).map(<[_]>::to_vec),
         reset: route.primary_reset(),
         num_envs,
         env_contract: None,
@@ -87,11 +69,31 @@ pub(super) fn model_observation_from_endpoint_request(
 }
 
 pub(super) fn model_action_to_endpoint_response(action: ModelAction) -> PredictResponse {
-    let _telemetry = action.telemetry;
     PredictResponse {
         context: Some((&action.route).into()),
-        action: action.action.as_ref().map(binary_to_bytes).map(bytes_value),
+        action: action.action,
     }
+}
+
+/// Structurally validate each per-lane action against the route's action space
+/// before the codec encodes it. The spec-directed codec would otherwise silently
+/// drop or reinterpret a mismatched typed action (extra Dict keys are skipped by
+/// the spec-key walk; a wrong-dtype Box leaf is emitted as raw bytes and read
+/// back at the spec dtype), and that value/spec mismatch never reaches the env's
+/// own validation. Range deviations (Box bounds) pass through — those are the
+/// env's validation policy to decide.
+pub(super) fn check_actions_conform(
+    action_space: &spaces::SpaceSpec,
+    actions: &[spaces::SpaceValue],
+) -> Result<()> {
+    for (lane, action) in actions.iter().enumerate() {
+        if let spaces::Conformance::Structural(err) = spaces::conform(action_space, action) {
+            return Err(Error::model(format!(
+                "model action for lane {lane} does not match the action space: {err}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn model_route_from_proto(route: Option<PredictContext>) -> Result<ModelRouteContext> {
@@ -120,12 +122,7 @@ fn validate_predict_route(route: &ModelRouteContext) -> Result<()> {
                 "model route slot {index} missing episode_id"
             )));
         }
-        if slot.env_index < 0 {
-            return Err(Error::Internal(format!(
-                "model route slot {index} has negative env_index {}",
-                slot.env_index
-            )));
-        }
+        // Wire env_index is uint32, so a slot's native i32 is always >= 0 here.
         if !env_indexes.insert(slot.env_index) {
             return Err(Error::Internal(format!(
                 "model route has duplicate env_index {}",
@@ -163,7 +160,9 @@ impl From<PredictSlot> for ModelRouteSlot {
     fn from(value: PredictSlot) -> Self {
         Self {
             episode_id: value.episode_id,
-            env_index: value.env_index,
+            // Proto env_index is uint32; native is i32. `step` is int64 on both
+            // sides, so it carries across with no conversion.
+            env_index: i32::try_from(value.env_index).unwrap_or(i32::MAX),
             step: value.step,
             reset: value.reset,
         }
@@ -174,7 +173,9 @@ impl From<&ModelRouteSlot> for PredictSlot {
     fn from(value: &ModelRouteSlot) -> Self {
         Self {
             episode_id: value.episode_id.clone(),
-            env_index: value.env_index,
+            // Native env_index is i32 (>=0); proto field is uint32. `step` is
+            // int64 on both sides, so it carries across with no conversion.
+            env_index: value.env_index.max(0) as u32,
             step: value.step,
             reset: value.reset,
         }
@@ -190,6 +191,31 @@ mod tests {
             join_response::Kind::Error(error) => error,
             other => panic!("expected model error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn check_actions_conform_rejects_structural_mismatch() {
+        let space = spaces::spaces::BoxSpaceBuilder::scalar(0.0, 1.0, vec![1])
+            .dtype(spaces::DType::Uint8)
+            .build()
+            .unwrap();
+        let boxed = |data: Vec<u8>, shape: Vec<i64>| {
+            spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(data, shape, spaces::DType::Uint8).unwrap(),
+            )
+        };
+
+        // Matching kind/shape/dtype passes (one lane and many).
+        assert!(check_actions_conform(&space, &[boxed(vec![0], vec![1])]).is_ok());
+        assert!(
+            check_actions_conform(&space, &[boxed(vec![0], vec![1]), boxed(vec![1], vec![1])])
+                .is_ok()
+        );
+
+        // A Discrete value for a Box space is a structural mismatch.
+        assert!(check_actions_conform(&space, &[spaces::SpaceValue::Discrete(0)]).is_err());
+        // A wrong-shape Box would otherwise mis-encode -> rejected.
+        assert!(check_actions_conform(&space, &[boxed(vec![0, 1], vec![2])]).is_err());
     }
 
     #[test]

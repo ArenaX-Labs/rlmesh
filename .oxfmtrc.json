@@ -4,15 +4,9 @@
     ".venv/**",
     ".venv*/**",
     ".zed/**",
-    "node_modules/**",
     "target/**",
     "**/dist/**",
-    "**/.output/**",
-    "**/.astro/**",
-    "**/.tanstack/**",
-    "**/*.gen.ts",
     "**/*.proto",
     "site/*"
-  ],
-  "proseWrap": "always"
+  ]
 }

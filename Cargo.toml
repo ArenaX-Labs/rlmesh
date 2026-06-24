@@ -73,17 +73,13 @@ tempfile = "3"
 uuid = "1"
 
 # Python Bindings
-pyo3 = "0.28"
-pyo3-build-config = "0.28"
-pyo3-stub-gen = { version = "0.22.3", default-features = false }
-# Build-time proc macro for stripping inert `#[gen_stub(...)]` attributes when
-# the runtime stub generator is off.
-pyo3-stub-gen-derive = "0.22.3"
+pyo3 = "0.29"
+pyo3-build-config = "0.29"
+pyo3-stub-gen = { version = "0.23", default-features = false }
+pyo3-stub-gen-derive = "0.23"
 
-# GUI / CLI
+# CLI
 clap = "4.6"
-egui = "0.34"
-eframe = { version = "0.34", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

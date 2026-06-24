@@ -5,11 +5,11 @@ fn main() {
     }
 
     let config = pyo3_build_config::get();
-    if let Some(lib_dir) = &config.lib_dir {
+    if let Some(lib_dir) = &config.lib_dir() {
         println!("cargo:rustc-link-search=native={lib_dir}");
         println!("cargo:rustc-link-arg=-Wl,-rpath,{lib_dir}");
     }
-    if let Some(lib_name) = &config.lib_name {
+    if let Some(lib_name) = &config.lib_name() {
         println!("cargo:rustc-link-lib={lib_name}");
     }
     pyo3_build_config::add_python_framework_link_args();

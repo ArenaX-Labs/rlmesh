@@ -151,16 +151,6 @@ class SandboxEnvBase(SandboxSessionBase[RemoteEnvHandle], Generic[ValueT, Action
         """Render a frame from the sandboxed environment."""
         return cast(ValueT | None, self._remote_env.render(env_index=env_index))
 
-    def open_viewer(
-        self, *, env_index: int = 0, fps: float | None | str = "env"
-    ) -> None:
-        """Open a local render viewer for the sandboxed environment."""
-        self._remote_env.open_viewer(env_index=env_index, fps=fps)
-
-    def close_viewer(self) -> None:
-        """Close the local render viewer if one is open."""
-        self._remote_env.close_viewer()
-
 
 class SandboxVectorEnvBase(
     SandboxSessionBase[RemoteVectorEnvHandle],
@@ -304,13 +294,3 @@ class SandboxVectorEnvBase(
     def render(self, *, env_index: int = 0) -> ValueT | None:
         """Render a frame from one sandboxed environment."""
         return cast(ValueT | None, self._remote_env.render(env_index=env_index))
-
-    def open_viewer(
-        self, *, env_index: int = 0, fps: float | None | str = "env"
-    ) -> None:
-        """Open a local render viewer for one sandboxed environment."""
-        self._remote_env.open_viewer(env_index=env_index, fps=fps)
-
-    def close_viewer(self) -> None:
-        """Close the local render viewer if one is open."""
-        self._remote_env.close_viewer()

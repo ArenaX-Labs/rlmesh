@@ -13,9 +13,13 @@ pub use dtype::{DType, dtype_size};
 pub use meta::{MetaMap, MetaValue};
 pub use render::{BinaryPayload, RenderFrame, RenderRequest, RenderResult};
 pub use request::{CloseRequest, CloseResult, ResetRequest, ResetResult, StepRequest, StepResult};
-pub use scalar::{Scalar, ScalarError, decode_scalars, encode_i64_scalars, encode_scalars};
+pub use scalar::{
+    Scalar, ScalarError, check_int_in_dtype_range, decode_scalars, encode_i64_scalars,
+    encode_scalars,
+};
 pub use spaces::{
-    Conformance, PolicyOutcome, SpaceValue, ValidationPolicy, conform, contains, validate_space,
+    Conformance, PolicyOutcome, SpaceValue, ValidationPolicy, assemble_value, conform, contains,
+    flatten_leaves, leaf_specs, validate_space,
 };
 pub use tensor::{
     DLPackType, Device, Storage, Tensor, TensorError, contiguous_strides, dlpack_type,
@@ -23,7 +27,6 @@ pub use tensor::{
 };
 pub use types::{
     AutoresetMode, BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract,
-    MultiBinaryDims, MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec,
-    SpaceType, TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
-    UnknownAutoresetMode,
+    MultiBinarySpec, MultiDiscreteSpec, SpaceKind, SpaceSpec, SpaceType, TextSpec, TupleSpec,
+    TypedElementwiseBounds, TypedUniformBounds, UniformBounds, UnknownAutoresetMode,
 };

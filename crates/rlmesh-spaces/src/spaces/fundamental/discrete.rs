@@ -1,4 +1,5 @@
 use crate::errors::{SpaceError, err_space};
+use crate::scalar::check_int_in_dtype_range;
 use crate::spaces::{SpaceKind, SpaceSpec, SpaceValue};
 use crate::{DType, DiscreteSpec};
 
@@ -68,8 +69,11 @@ pub(crate) fn validate_discrete_at(space: &SpaceSpec, path: &str) -> Result<(), 
         return err_space!(path, "Discrete", "n must be > 0");
     }
 
-    // Gymnasium allows any start (including negative). This is mostly a sanity check:
-    // ensure start + (n-1) doesn't overflow i64 if someone later computes max value.
+    // The wire encodes the absolute Discrete index at the declared dtype, so the
+    // whole valid range [start, start + (n-1)] must fit it — otherwise a legal
+    // value silently wraps (or is rejected) on encode. Reject at construction,
+    // symmetric with MultiDiscrete's nvec[i]-1 guard. Gymnasium allows any start
+    // (including negative); checked_add also guards i64 overflow.
     let max = d
         .start
         .checked_add(d.n - 1)
@@ -77,7 +81,15 @@ pub(crate) fn validate_discrete_at(space: &SpaceSpec, path: &str) -> Result<(), 
             path: path.to_string(),
             msg: "[Discrete] start + (n-1) overflowed i64".to_string(),
         })?;
-    let _ = max;
+    for bound in [d.start, max] {
+        if check_int_in_dtype_range(bound, space.dtype).is_err() {
+            return err_space!(
+                path,
+                "Discrete",
+                format!("value {bound} does not fit dtype {}", space.dtype)
+            );
+        }
+    }
 
     Ok(())
 }
@@ -125,8 +137,37 @@ pub(crate) fn contains_discrete(
 
 #[cfg(test)]
 mod tests {
+    use crate::DType;
     use crate::spaces::fundamental::DiscreteBuilder;
     use crate::spaces::{SpaceValue, contains};
+
+    #[test]
+    fn range_must_fit_declared_dtype() {
+        // start + (n-1) = 259 does not fit u8 -> reject at construction, not a
+        // silent wrap / unencodable-valid-value, symmetric with MultiDiscrete.
+        assert!(
+            DiscreteBuilder::new(10)
+                .start(250)
+                .dtype(DType::Uint8)
+                .build()
+                .is_err()
+        );
+        // max index 255 fits u8 exactly -> ok.
+        assert!(
+            DiscreteBuilder::new(256)
+                .dtype(DType::Uint8)
+                .build()
+                .is_ok()
+        );
+        // A negative start does not fit unsigned u8 -> reject.
+        assert!(
+            DiscreteBuilder::new(2)
+                .start(-1)
+                .dtype(DType::Uint8)
+                .build()
+                .is_err()
+        );
+    }
 
     #[test]
     fn test_discrete_contains() {

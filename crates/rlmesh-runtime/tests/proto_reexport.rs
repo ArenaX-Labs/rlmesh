@@ -1,9 +1,8 @@
 //! Checks that runtime protocol types are reachable through `rlmesh_proto`.
 
-use rlmesh_runtime::rlmesh_proto::common::v1::MessageBytes;
 use rlmesh_runtime::rlmesh_proto::env::v1::{ResetRequest, ResetResponse, StepRequest};
 use rlmesh_runtime::rlmesh_proto::model::v1::{PredictRequest, PredictResponse};
-use rlmesh_runtime::rlmesh_proto::spaces::v1::SpaceSpec;
+use rlmesh_runtime::rlmesh_proto::spaces::v1::{SpaceSpec, SpaceValue};
 
 #[tokio::test]
 async fn proto_types_are_reachable_through_runtime_reexport() {
@@ -13,7 +12,7 @@ async fn proto_types_are_reachable_through_runtime_reexport() {
     let _predict_request = PredictRequest::default();
     let _predict_response = PredictResponse::default();
     let _space_spec = SpaceSpec::default();
-    let _message_bytes = MessageBytes::default();
+    let _space_value = SpaceValue::default();
 
     use rlmesh_runtime::RuntimeEnv;
     let mut env = NoopEnv;
@@ -31,7 +30,7 @@ impl rlmesh_runtime::RuntimeEnv for NoopEnv {
     ) -> Result<rlmesh_runtime::RuntimeEnvReset, rlmesh_runtime::RuntimeError> {
         Ok(rlmesh_runtime::RuntimeEnvReset {
             response: Default::default(),
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -41,7 +40,7 @@ impl rlmesh_runtime::RuntimeEnv for NoopEnv {
     ) -> Result<rlmesh_runtime::RuntimeEnvStep, rlmesh_runtime::RuntimeError> {
         Ok(rlmesh_runtime::RuntimeEnvStep {
             response: Default::default(),
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 }

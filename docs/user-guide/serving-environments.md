@@ -22,8 +22,7 @@ server.wait()
 
 ## Environment Shape
 
-RLMesh works with standard Gymnasium environments from `gym.make(...)` and with custom objects that
-follow the same shape:
+RLMesh works with standard Gymnasium environments from `gym.make(...)` and with custom objects that follow the same shape:
 
 - `observation_space`
 - `action_space`
@@ -31,16 +30,13 @@ follow the same shape:
 - `step(action) -> (obs, reward, terminated, truncated, info)`
 - `close()`
 
-Vectorized environments can expose `num_envs`, `single_observation_space`, and
-`single_action_space`.
+Vectorized environments can expose `num_envs`, `single_observation_space`, and `single_action_space`.
 
-Common Gymnasium wrappers can stay in place. RLMesh reads the spaces and calls the wrapped methods
-through the normal Gymnasium API.
+Common Gymnasium wrappers can stay in place. RLMesh reads the spaces and calls the wrapped methods through the normal Gymnasium API.
 
 ## Environment Contract
 
-When `EnvServer` wraps the environment, it creates an {py:class}`~rlmesh.specs.EnvContract`. Clients
-receive that contract during connection.
+When `EnvServer` wraps the environment, it creates an {py:class}`~rlmesh.specs.EnvContract`. Clients receive that contract during connection.
 
 ```python
 server = rlmesh.EnvServer(env, "127.0.0.1:5555")
@@ -52,8 +48,7 @@ print(contract.action_space.kind)
 print(contract.num_envs)
 ```
 
-`server.spec` is an alias for `server.env_contract`. See {doc}`../api/contracts` for contract
-fields.
+`server.spec` is an alias for `server.env_contract`. See {doc}`../api/contracts` for contract fields.
 
 ## Addresses
 
@@ -74,18 +69,13 @@ rlmesh.EnvServer(env, path="/tmp/rlmesh-env.sock")
 
 ## Readiness
 
-RLMesh exposes two machine-readable readiness signals. Use them instead of parsing startup prints;
-the human-readable output is not a stable interface.
+RLMesh exposes two machine-readable readiness signals. Use them instead of parsing startup prints; the human-readable output is not a stable interface.
 
 ### gRPC Health Service
 
-RLMesh's Rust gRPC serve paths serve the standard
-[`grpc.health.v1`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) health service,
-separate from the env/model RPCs. Overall server health, the empty `""` service name, reports
-`SERVING` once the listener accepts connections.
+RLMesh's Rust gRPC serve paths serve the standard [`grpc.health.v1`](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) health service, separate from the env/model RPCs. Overall server health, the empty `""` service name, reports `SERVING` once the listener accepts connections.
 
-Any standard health client can probe it, for example with
-[`grpc-health-probe`](https://github.com/grpc-ecosystem/grpc-health-probe):
+Any standard health client can probe it, for example with [`grpc-health-probe`](https://github.com/grpc-ecosystem/grpc-health-probe):
 
 ```sh
 grpc-health-probe -addr 127.0.0.1:5555
@@ -102,9 +92,7 @@ until that lands, use the ready file descriptor below for the Python CLI path.
 
 ### Ready File Descriptor (CLI)
 
-The env-serve CLI (`python -m rlmesh._cli.serve_env`) accepts `--ready-fd <int>`. RLMesh writes one
-line containing the resolved bind address, for example `tcp://127.0.0.1:54321`, then closes the file
-descriptor. This works when the bind port is `0` because the line carries the resolved address.
+The env-serve CLI (`python -m rlmesh._cli.serve_env`) accepts `--ready-fd <int>`. RLMesh writes one line containing the resolved bind address, for example `tcp://127.0.0.1:54321`, then closes the file descriptor. This works when the bind port is `0` because the line carries the resolved address.
 
 ```sh
 # Open fd 3 onto a file, point --ready-fd at it, then read the address back.

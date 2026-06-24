@@ -1,8 +1,0 @@
-syntax = "proto3";
-
-package rlmesh.common.v1;
-
-// Raw protocol payload bytes.
-message MessageBytes {
-  bytes data = 1;
-}

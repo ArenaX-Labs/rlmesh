@@ -1,19 +1,22 @@
 [release]
-status = "beta"
+status = "rc"
 package_family = "0.1"
 
 [workflow]
-current_edition = "2026.06"
-supported_editions = ["2026.06"]
+base_edition = "2026.06"
+current_edition = "2026.06-0.1.0-rc.1"
+supported_editions = ["2026.06-0.1.0-rc.1"]
 
-[workflow.editions."2026.06"]
+# Provisional prerelease edition: the suffix is the full Rust SemVer release
+# cohort. Stable releases seal the bare `YYYY.MM` edition and record a spec
+# checksum there; provisional prerelease cohorts are not spec-checksum pinned.
+[workflow.editions."2026.06-0.1.0-rc.1"]
 status = "provisional"
 spec = "docs/editions/2026.06.md"
-spec_sha256 = "3827ecdfb7ad3c756c88587101675a412083252027720e4d0f7daa588f431d1e"
 
 [protocol]
-current_generation = "rlmesh.protocol.v1"
-minimum_generation = "rlmesh.protocol.v1"
+current_generation = "rlmesh-protocol-1"
+minimum_generation = "rlmesh-protocol-1"
 
 [api_surface]
 stability_policy = "stable-labels"

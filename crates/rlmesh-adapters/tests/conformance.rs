@@ -17,10 +17,7 @@ use serde_json::{Value as Json, json};
 
 /// Whether a dtype is a float family (controls integer-vs-float JSON output).
 fn is_float_dtype(dtype: DType) -> bool {
-    matches!(
-        dtype,
-        DType::Float16 | DType::Bfloat16 | DType::Float32 | DType::Float64
-    )
+    matches!(dtype, DType::Float16 | DType::Float32 | DType::Float64)
 }
 
 fn cases_dir() -> PathBuf {

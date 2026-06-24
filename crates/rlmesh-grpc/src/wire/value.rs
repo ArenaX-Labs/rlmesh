@@ -8,6 +8,7 @@
 mod batch;
 mod codec;
 mod interaction;
+mod leaves;
 mod payload;
 mod scalars;
 
@@ -16,17 +17,14 @@ mod proptests;
 #[cfg(test)]
 mod tests;
 
-pub use batch::{
-    decode_batch_bytes, decode_batched_partial_values, encode_batch_bytes,
-    encode_batched_partial_values,
-};
-pub use codec::{decode_space_value_bytes, encode_space_value_bytes};
+pub use batch::{decode_batched_partial_values, encode_batched_partial_values};
 pub use interaction::{
     render_request_to_proto, render_result_from_proto, render_result_to_proto,
     reset_request_to_proto, reset_result_from_proto, reset_result_to_proto, step_request_to_proto,
     step_result_from_proto, step_result_to_proto,
 };
+pub use leaves::{decode_leaf_slab, decode_leaves, encode_leaf_slab, encode_leaves};
 pub use payload::{
-    binary_to_bytes, bytes_to_binary, bytes_value, decode_value, decode_value_bytes, encode_value,
-    encode_value_bytes, optional_bytes_to_binary, value_bytes, value_bytes_ref,
+    binary_to_bytes, bytes_to_binary, decode_value, encode_value, leaves_value,
+    optional_bytes_to_binary, value_leaves,
 };

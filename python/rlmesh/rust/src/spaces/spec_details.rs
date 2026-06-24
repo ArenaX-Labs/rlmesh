@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList};
 use rlmesh_spaces::scalar::{Scalar, decode_scalars};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec};
+use rlmesh_spaces::{BoxBounds, BoxSpec, DType};
 
 use super::spec_view::PySpaceSpec;
 use crate::spaces::utils::dtype_name;
@@ -67,25 +67,31 @@ fn space_spec_details_impl<'py>(
             details.set_item("n", spec.n)?;
             details.set_item("start", spec.start)?;
         }
-        SpaceKind::MultiBinary(spec) => match &spec.n {
-            Some(MultiBinaryDims::Size(size)) => {
-                details.set_item("size", *size)?;
+        // The MultiBinary marker carries no fields; dimensions come from
+        // `shape`. A rank-1 shape surfaces as a scalar `size`, higher ranks as
+        // `dims`, mirroring Gymnasium's scalar-vs-vector MultiBinary.
+        SpaceKind::MultiBinary(_) => {
+            if space.shape.len() == 1 {
+                details.set_item("size", space.shape[0])?;
+            } else {
+                details.set_item("dims", space.shape.clone())?;
             }
-            Some(MultiBinaryDims::Dims(dims)) => {
-                details.set_item("dims", dims.clone())?;
-            }
-            None => {}
-        },
-        SpaceKind::MultiDiscrete(spec) => match &spec.nvec {
-            Some(MultiDiscreteNvec::Flat(vector)) => {
-                details.set_item("nvec", vector.clone())?;
-            }
-            Some(MultiDiscreteNvec::Shaped(matrix)) => {
-                let rows = matrix.clone();
+        }
+        // `nvec` is stored flat (row-major). A rank-2 shape is reshaped back to
+        // the nested `[[...], [...]]` matrix form; lower ranks stay flat.
+        SpaceKind::MultiDiscrete(spec) => {
+            if space.shape.len() == 2 {
+                let cols = space.shape[1].max(0) as usize;
+                let rows: Vec<Vec<i64>> = if cols == 0 {
+                    Vec::new()
+                } else {
+                    spec.nvec.chunks(cols).map(|chunk| chunk.to_vec()).collect()
+                };
                 details.set_item("nvec", rows)?;
+            } else {
+                details.set_item("nvec", spec.nvec.clone())?;
             }
-            None => {}
-        },
+        }
         SpaceKind::Text(spec) => {
             details.set_item("min_length", spec.min_length)?;
             details.set_item("max_length", spec.max_length)?;

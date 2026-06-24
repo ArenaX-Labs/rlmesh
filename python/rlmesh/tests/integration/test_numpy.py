@@ -95,34 +95,3 @@ def test_numpy_asarray_is_writable_copy() -> None:
         rlmesh_numpy.asarray(tensor),
         np.arange(4, dtype=np.float32),
     )
-
-
-def test_numpy_bfloat16_roundtrip_with_ml_dtypes() -> None:
-    ml_dtypes = pytest.importorskip("ml_dtypes")
-    from rlmesh import Tensor
-    from rlmesh import numpy as rlmesh_numpy
-
-    source = np.asarray([[1.0, -2.0], [0.5, 3.0]], dtype=ml_dtypes.bfloat16)
-    tensor = rlmesh_numpy.from_array(source)
-
-    assert isinstance(tensor, Tensor)
-    assert tensor.dtype == "bfloat16"
-
-    restored = rlmesh_numpy.asarray(tensor)
-    assert restored.dtype == ml_dtypes.bfloat16
-    np.testing.assert_array_equal(restored, source)
-
-
-def test_numpy_bfloat16_without_ml_dtypes_raises_actionable_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import sys
-
-    from rlmesh import Tensor
-    from rlmesh import numpy as rlmesh_numpy
-
-    tensor = Tensor(b"\x80\x3f", [1], "bfloat16")
-    monkeypatch.setitem(sys.modules, "ml_dtypes", None)
-
-    with pytest.raises(ImportError, match=r"rlmesh\[bfloat16\]"):
-        rlmesh_numpy.asarray(tensor)

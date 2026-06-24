@@ -11,17 +11,16 @@ use std::time::{Duration, Instant};
 use rlmesh_grpc::lifecycle::{
     ActivityFinishedGuard, IdleActivity, await_close_with_timeout, start_idle_shutdown,
 };
-use rlmesh_grpc::wire::env_contract_from_proto;
+use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
-    CloseResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
+    CloseParticipantResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
     HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest,
     ShutdownRequest, ShutdownResponse, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS,
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    check_provisional_edition_pin, evaluate_handshake, supported_workflow_editions,
+    evaluate_handshake, peer_info, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -30,9 +29,8 @@ use tonic::{Request, Response, Status, Streaming};
 use super::handler::{ModelHandler, ModelRouteSetup};
 use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::wire::{
-    ModelAction, model_action_to_endpoint_response, model_error, model_error_from_error,
-    model_join_request_operation, model_observation_from_endpoint_request,
-    model_operation_telemetry,
+    ModelAction, check_actions_conform, model_action_to_endpoint_response, model_endpoint_total_ns,
+    model_error, model_error_from_error, model_observation_from_endpoint_request,
 };
 use crate::bound::BoundListener;
 use crate::{BindAddress, Error, Result, ServeOptions, spaces};
@@ -142,7 +140,19 @@ struct ServedModelServer<H> {
 #[derive(Debug, Clone)]
 pub(super) struct ModelRouteConfig {
     pub(super) env_contract: Option<Arc<spaces::EnvContract>>,
-    pub(super) num_envs: usize,
+    /// The reconciled three-way (relay) session floor the runtime pinned this
+    /// route to via `ConfigureRoute`. Authoritative over the model's own
+    /// (pairwise) handshake result. Stored/logged here; full enforcement is
+    /// minimal while the build holds a single generation and edition.
+    pub(super) floor: Option<RouteFloor>,
+}
+
+/// Floor the runtime pinned a route to (from `ConfigureRouteRequest`).
+#[derive(Debug, Clone)]
+pub(super) struct RouteFloor {
+    pub(super) selected_protocol_generation: String,
+    pub(super) selected_workflow_edition: String,
+    pub(super) active_capabilities: HashMap<String, String>,
 }
 
 fn model_service<H>(
@@ -180,76 +190,57 @@ where
         request: Request<HandshakeRequest>,
     ) -> std::result::Result<Response<HandshakeResponse>, Status> {
         self.authenticate(&request)?;
-        let request = request.into_inner();
+        let request = request
+            .into_inner()
+            .base
+            .ok_or_else(|| Status::invalid_argument("handshake request missing base"))?;
         let compat = evaluate_handshake(
             &request.protocol_generation,
             &request.supported_workflow_editions,
         );
-        // Symmetric provisional-pin check: the client verifies our pin on the
-        // response, and we verify the client's pin here. An old client that
-        // omits it fails closed.
-        let pin_error = if compat.is_compatible() {
-            check_provisional_edition_pin(
-                compat.selected_edition.unwrap_or_default(),
-                &request.offered_edition_status,
-                &request.offered_edition_spec_sha256,
-                &request.client_version,
-            )
-            .err()
-        } else {
-            None
-        };
-        let compatible = compat.is_compatible() && pin_error.is_none();
+        // Moving prerelease/dev editions are pinned by their cohort suffix; an
+        // exact name match in negotiation is the compatibility check.
+        let compatible = compat.is_compatible();
         Ok(Response::new(HandshakeResponse {
-            compatible,
-            server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-            min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
-            error_message: if compatible {
-                String::new()
-            } else if let Some(err) = pin_error {
-                err
-            } else if !compat.protocol_compatible {
-                format!(
-                    "protocol generation {} not compatible with server {}",
-                    request.protocol_generation, PROTOCOL_GENERATION
-                )
-            } else if request.supported_workflow_editions.is_empty() {
-                format!(
-                    "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
-                    supported_workflow_editions().join(", ")
-                )
-            } else {
-                format!(
-                    "no mutually supported workflow edition; client offered [{}], server supports [{}]",
-                    request.supported_workflow_editions.join(", "),
-                    supported_workflow_editions().join(", ")
-                )
-            },
-            capabilities: capability_map(&[
-                capabilities::MODEL_SERVICE_V1,
-                capabilities::SPACES_CORE_V1,
-                // The served model pipelines Join-stream requests (see `join`).
-                // Advisory: lets clients detect that overlapping predicts will
-                // actually pipeline rather than serialize behind the handler.
-                capabilities::MODEL_CONCURRENT_PREDICT_V1,
-            ]),
-            selected_workflow_edition: if compatible {
-                compat.selected_edition.unwrap_or_default().to_string()
-            } else {
-                String::new()
-            },
-            supported_workflow_editions: supported_workflow_editions(),
-            server_version: env!("CARGO_PKG_VERSION").to_string(),
-            selected_edition_spec_sha256: if compatible {
-                CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string()
-            } else {
-                String::new()
-            },
-            selected_edition_status: if compatible {
-                CURRENT_WORKFLOW_EDITION_STATUS.to_string()
-            } else {
-                String::new()
-            },
+            base: Some(rlmesh_proto::core::v1::HandshakeResponse {
+                compatible,
+                peer_info: Some(peer_info("rlmesh-model")),
+                server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+                min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
+                error_message: if compatible {
+                    String::new()
+                } else if !compat.protocol_compatible {
+                    format!(
+                        "protocol generation {} not compatible with server {}",
+                        request.protocol_generation, PROTOCOL_GENERATION
+                    )
+                } else if request.supported_workflow_editions.is_empty() {
+                    format!(
+                        "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
+                        supported_workflow_editions().join(", ")
+                    )
+                } else {
+                    format!(
+                        "no mutually supported workflow edition; client offered [{}], server supports [{}]",
+                        request.supported_workflow_editions.join(", "),
+                        supported_workflow_editions().join(", ")
+                    )
+                },
+                capabilities: capability_map(&[
+                    capabilities::MODEL_SERVICE_V1,
+                    capabilities::SPACES_CORE_V1,
+                    // The served model pipelines Join-stream requests (see `join`).
+                    // Advisory: lets clients detect that overlapping predicts will
+                    // actually pipeline rather than serialize behind the handler.
+                    capabilities::MODEL_CONCURRENT_PREDICT_V1,
+                ]),
+                selected_workflow_edition: if compatible {
+                    compat.selected_edition.unwrap_or_default().to_string()
+                } else {
+                    String::new()
+                },
+                supported_workflow_editions: supported_workflow_editions(),
+            }),
         }))
     }
 
@@ -379,11 +370,16 @@ where
         request: Request<ShutdownRequest>,
     ) -> std::result::Result<Response<ShutdownResponse>, Status> {
         self.authenticate(&request)?;
-        let request = request.into_inner();
+        let request = request
+            .into_inner()
+            .base
+            .ok_or_else(|| Status::invalid_argument("shutdown request missing base"))?;
         if !self.serve_options.allow_remote_shutdown {
             return Ok(Response::new(ShutdownResponse {
-                accepted: false,
-                message: "remote shutdown is disabled for this model endpoint".to_string(),
+                base: Some(rlmesh_proto::core::v1::ShutdownResponse {
+                    accepted: false,
+                    message: "remote shutdown is disabled for this model endpoint".to_string(),
+                }),
             }));
         }
         self.shutdown.trigger(if request.reason.is_empty() {
@@ -392,12 +388,14 @@ where
             request.reason.clone()
         });
         Ok(Response::new(ShutdownResponse {
-            accepted: true,
-            message: if request.reason.is_empty() {
-                "shutdown accepted".to_string()
-            } else {
-                format!("shutdown accepted: {}", request.reason)
-            },
+            base: Some(rlmesh_proto::core::v1::ShutdownResponse {
+                accepted: true,
+                message: if request.reason.is_empty() {
+                    "shutdown accepted".to_string()
+                } else {
+                    format!("shutdown accepted: {}", request.reason)
+                },
+            }),
         }))
     }
 }
@@ -410,7 +408,6 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> JoinResponse {
     let request_id = request.request_id.clone();
-    let operation = model_join_request_operation(request.kind.as_ref());
     let started_at = Instant::now();
 
     let kind = match request.kind {
@@ -433,7 +430,7 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     if let Err(error) = drain_result {
                         return JoinResponse {
                             kind: Some(model_error(error.to_string())),
-                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
                             request_id,
                         };
                     }
@@ -443,7 +440,7 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     {
                         return JoinResponse {
                             kind: Some(model_error(error.to_string())),
-                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
                             request_id,
                         };
                     }
@@ -461,7 +458,7 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             if let Err(error) = drain_result {
                 return JoinResponse {
                     kind: Some(model_error(error.to_string())),
-                    telemetry: Some(model_operation_telemetry(operation, started_at)),
+                    endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
                     request_id,
                 };
             }
@@ -475,21 +472,21 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     if let Err(error) = route_setup.close_route(route_key).await {
                         return JoinResponse {
                             kind: Some(model_error_from_error(&error)),
-                            telemetry: Some(model_operation_telemetry(operation, started_at)),
+                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
                             request_id,
                         };
                     }
                 }
             }
             route_configs.lock().await.clear();
-            Some(join_response::Kind::Close(CloseResponse {}))
+            Some(join_response::Kind::Close(CloseParticipantResponse {}))
         }
         None => Some(model_error("empty model request")),
     };
 
     JoinResponse {
         kind,
-        telemetry: Some(model_operation_telemetry(operation, started_at)),
+        endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
         request_id,
     }
 }
@@ -515,20 +512,59 @@ async fn handle_configure_route(
             ));
         }
     };
-    let env_contract = match request.env_contract {
-        Some(env_contract) => env_contract,
-        None => return Some(model_error("configure_route missing env_contract")),
+    let env_spec = match request.env_spec {
+        Some(env_spec) => env_spec,
+        None => return Some(model_error("configure_route missing env_spec")),
     };
-    let env_contract = match env_contract_from_proto(env_contract) {
+    // The runtime is the binding authority for the three-way (relay) floor: it
+    // decode-rebuilds env<->model envelopes, so these values override the model's
+    // own (pairwise, possibly higher) handshake result. Today there is a single
+    // generation and edition, so we store/log the floor rather than re-deriving
+    // behavior from it; full enforcement lands when a second edition exists.
+    let floor = if request.selected_workflow_edition.is_empty()
+        && request.selected_protocol_generation.is_empty()
+    {
+        // Older runtime that predates floor propagation: nothing to pin.
+        None
+    } else {
+        let floor = RouteFloor {
+            selected_protocol_generation: request.selected_protocol_generation,
+            selected_workflow_edition: request.selected_workflow_edition,
+            active_capabilities: request.active_capabilities,
+        };
+        // Minimal enforcement: the floor is authoritative over this model's own
+        // handshake. Reject a route the runtime pinned to an edition this build
+        // cannot drive, instead of silently running it under the wrong semantics.
+        // (With a single edition this never fires; the path exists so the floor
+        // is honored, not merely logged, once a second edition lands.)
+        if let Err(error) = enforce_route_floor(&floor) {
+            return Some(model_error(error));
+        }
+        tracing::debug!(
+            route = %route_id,
+            selected_protocol_generation = %floor.selected_protocol_generation,
+            selected_workflow_edition = %floor.selected_workflow_edition,
+            active_capabilities = ?floor.active_capabilities,
+            "model route pinned to runtime-reconciled session floor"
+        );
+        Some(floor)
+    };
+    // The model receives only the stable EnvSpec; the orchestration knobs
+    // (num_envs/render_mode/autoreset) are runtime-owned and default here.
+    let env_contract = match env_spec_from_proto(env_spec) {
         Ok(env_contract) => env_contract,
         Err(error) => return Some(model_error(error.to_string())),
     };
-    if env_contract.num_envs == 0 {
+    // The worker encodes every predict's action against this route's action
+    // space (typed predict, D10). It is carried by the EnvSpec in this very
+    // handshake, so a missing one dooms every future predict on the route —
+    // reject it once, here at setup, instead of failing late on first predict.
+    // (observation_space stays optional: a None observation is a valid relay.)
+    if env_contract.action_space.is_none() {
         return Some(model_error(
-            "configure_route env_contract.num_envs must be positive",
+            "route EnvSpec has no action_space; a model worker cannot encode actions without it",
         ));
     }
-    let num_envs = env_contract.num_envs as usize;
     // Resolve the route's adapter before storing the config: a failure here
     // fails configuration, so the client never predicts against an unresolved
     // adapter. This runs off the predict-serialization lock (see
@@ -543,12 +579,44 @@ async fn handle_configure_route(
         route_key,
         ModelRouteConfig {
             env_contract: Some(Arc::new(env_contract)),
-            num_envs,
+            floor,
         },
     );
     Some(join_response::Kind::ConfigureRoute(
         ConfigureRouteResponse {},
     ))
+}
+
+/// Honor the runtime-reconciled three-way floor on the route: the runtime is the
+/// binding authority, so a floor naming a generation/edition this model build
+/// cannot speak is a hard configuration error, not a silently-downgraded run.
+///
+/// Minimal by design while a single generation and edition exist: it checks
+/// membership/equality against this build's window. The capability intersection
+/// is advisory (absence-neutral) and is carried for diagnostics; it never fails
+/// configuration here.
+fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
+    if !rlmesh_proto::is_protocol_generation_supported(&floor.selected_protocol_generation) {
+        return Err(format!(
+            "runtime pinned this route to protocol generation {:?}, which this model build \
+             does not support (supports {:?})",
+            floor.selected_protocol_generation,
+            rlmesh_proto::SUPPORTED_PROTOCOL_GENERATIONS,
+        ));
+    }
+    if floor.selected_workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
+        return Err(format!(
+            "runtime pinned this route to workflow edition {:?}, which this model build does \
+             not implement (implements {:?})",
+            floor.selected_workflow_edition,
+            rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+        ));
+    }
+    // The active capability set is advisory; absence is semantically neutral, so
+    // an unrecognized active capability never fails the route. Touch it so the
+    // floor is read in full (and to anchor future per-capability gating).
+    let _active_capabilities = &floor.active_capabilities;
+    Ok(())
 }
 
 async fn handle_predict<H: ModelHandler + 'static>(
@@ -568,22 +636,44 @@ async fn handle_predict<H: ModelHandler + 'static>(
             .cloned()
             .ok_or_else(|| Error::model("model route was not configured"))?;
         observation.env_contract = config.env_contract;
-        observation.num_envs = config.num_envs;
-        if observation.route.slots.len() > config.num_envs {
-            return Err(Error::model(
-                "predict route has more slots than configured route",
-            ));
+        // The route runs at the runtime-reconciled floor (authoritative over
+        // this model's own handshake). With a single edition this is the build's
+        // edition; trace it so the active session value is observable.
+        if let Some(floor) = config.floor.as_ref() {
+            tracing::trace!(
+                selected_workflow_edition = %floor.selected_workflow_edition,
+                "predict on route pinned to session floor"
+            );
         }
+        // The route config no longer carries num_envs (the model gets only the
+        // stable EnvSpec); the per-predict lane count comes from the slots,
+        // already set by `model_observation_from_endpoint_request`.
 
         let mut handler = handler.lock().await;
         let mut active_episodes = active_episodes.lock().await;
         update_lifecycle(&mut *handler, &mut active_episodes, &observation).await?;
-        let action = handler.predict(observation).await?;
+        // Capture the action space + lane count before predict consumes the obs;
+        // the worker owns the typed->wire encode (D10).
+        let num_envs = observation.num_envs;
+        let action_space = observation
+            .env_contract
+            .as_ref()
+            .and_then(|contract| contract.action_space.clone())
+            .ok_or_else(|| Error::model("model route contract missing action space"))?;
+        let actions = handler.predict(observation).await?;
+        if actions.len() != num_envs {
+            return Err(Error::model(format!(
+                "predict returned {} actions for {num_envs} lanes",
+                actions.len()
+            )));
+        }
+        check_actions_conform(&action_space, &actions)?;
+        let wire = rlmesh_grpc::wire::encode_batched_partial_values(&actions, &action_space)
+            .map_err(|err| Error::model(err.to_string()))?;
         Ok::<_, Error>(join_response::Kind::Predict(
             model_action_to_endpoint_response(ModelAction {
-                action: Some(action),
+                action: Some(wire),
                 route,
-                telemetry: None,
             }),
         ))
     }
@@ -818,8 +908,8 @@ mod tests {
         async fn predict(
             &mut self,
             _observation: super::super::types::ModelObservation,
-        ) -> Result<spaces::BinaryPayload> {
-            Ok(spaces::BinaryPayload { data: Vec::new() })
+        ) -> Result<Vec<spaces::SpaceValue>> {
+            Ok(Vec::new())
         }
     }
 
@@ -838,16 +928,15 @@ mod tests {
 
     fn handshake_request(offered_editions: &[&str]) -> HandshakeRequest {
         HandshakeRequest {
-            protocol_generation: PROTOCOL_GENERATION.to_string(),
-            client_name: "client".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: Default::default(),
-            supported_workflow_editions: offered_editions
-                .iter()
-                .map(|edition| edition.to_string())
-                .collect(),
-            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
-            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
+            base: Some(rlmesh_proto::core::v1::HandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                peer_info: Some(peer_info("rlmesh-model-test-client")),
+                capabilities: Default::default(),
+                supported_workflow_editions: offered_editions
+                    .iter()
+                    .map(|edition| edition.to_string())
+                    .collect(),
+            }),
         }
     }
 
@@ -865,39 +954,12 @@ mod tests {
                     .unwrap()
                     .into_inner();
 
-            assert!(response.compatible, "offer {offer:?} must be accepted");
-            assert_eq!(response.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
+            let base = response.base.expect("handshake response includes base");
+            assert!(base.compatible, "offer {offer:?} must be accepted");
+            assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
             assert_eq!(
-                response.supported_workflow_editions,
+                base.supported_workflow_editions,
                 supported_workflow_editions()
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn handshake_rejects_mismatched_provisional_pin() {
-        let server = test_server();
-
-        // A client offering the current provisional edition with a different
-        // (or absent) spec checksum must be refused, even though protocol and
-        // edition negotiation otherwise succeed.
-        for bad_pin in ["deadbeef".to_string(), String::new()] {
-            let mut request = handshake_request(&[CURRENT_WORKFLOW_EDITION]);
-            request.offered_edition_spec_sha256 = bad_pin.clone();
-
-            let response = ModelServiceTrait::handshake(&server, Request::new(request))
-                .await
-                .unwrap()
-                .into_inner();
-
-            assert!(
-                !response.compatible,
-                "mismatched pin {bad_pin:?} must be rejected"
-            );
-            assert!(
-                response.error_message.contains("provisional"),
-                "unexpected error for pin {bad_pin:?}: {}",
-                response.error_message
             );
         }
     }
@@ -1039,7 +1101,7 @@ mod tests {
                     key.to_string(),
                     ModelRouteConfig {
                         env_contract: None,
-                        num_envs: 1,
+                        floor: None,
                     },
                 );
             }
@@ -1049,7 +1111,7 @@ mod tests {
             JoinRequest {
                 request_id: "close-1".to_string(),
                 kind: Some(join_request::Kind::Close(
-                    rlmesh_proto::model::v1::CloseRequest::default(),
+                    rlmesh_proto::model::v1::CloseParticipantRequest::default(),
                 )),
             },
             Arc::clone(&server.handler),
@@ -1077,16 +1139,13 @@ mod tests {
                     .unwrap()
                     .into_inner();
 
-            assert!(!response.compatible, "offer {offer:?} must be rejected");
-            assert!(response.error_message.contains("workflow edition"));
+            let base = response.base.expect("handshake response includes base");
+            assert!(!base.compatible, "offer {offer:?} must be rejected");
+            assert!(base.error_message.contains("workflow edition"));
             if offer.is_empty() {
-                assert!(
-                    response
-                        .error_message
-                        .contains("predate edition negotiation")
-                );
+                assert!(base.error_message.contains("predate edition negotiation"));
             }
-            assert!(response.selected_workflow_edition.is_empty());
+            assert!(base.selected_workflow_edition.is_empty());
         }
     }
 }

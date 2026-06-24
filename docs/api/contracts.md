@@ -19,10 +19,7 @@ Immutable description of an environment endpoint.
 - `RemoteVectorEnv.spec`
 - sandbox session `env_contract` and `spec` properties
 
-The server builds the contract when it wraps the Python environment. For Gymnasium environments,
-`id` comes from `env.spec.id` when available and falls back to `"UnknownEnv-v1"`. Spaces are parsed
-from `observation_space` and `action_space` for single environments, or from
-`single_observation_space` and `single_action_space` for vector environments.
+The server builds the contract when it wraps the Python environment. For Gymnasium environments, `id` comes from `env.spec.id` when available and falls back to `"UnknownEnv-v1"`. Spaces are parsed from `observation_space` and `action_space` for single environments, or from `single_observation_space` and `single_action_space` for vector environments.
 
 | Attribute           | Type                        | Meaning                                                            |
 | ------------------- | --------------------------- | ------------------------------------------------------------------ |
@@ -35,8 +32,7 @@ from `observation_space` and `action_space` for single environments, or from
 | `observation_space` | `SpaceSpec`                 | Native spec for one observation.                                   |
 | `action_space`      | `SpaceSpec`                 | Native spec for one action.                                        |
 
-`to_dict()` returns a serializable dictionary containing the same fields, with nested space specs
-converted to dictionaries.
+`to_dict()` returns a serializable dictionary containing the same fields, with nested space specs converted to dictionaries.
 
 ## SpaceSpec
 
@@ -45,8 +41,7 @@ converted to dictionaries.
 Immutable native description of a space.
 ```
 
-`SpaceSpec` is the wire-safe description of a space. A `Space` wrapper is the Python object that can
-sample, seed, and validate values from that spec.
+`SpaceSpec` is the wire-safe description of a space. A `Space` wrapper is the Python object that can sample, seed, and validate values from that spec.
 
 | Attribute or method | Type                   | Meaning                                                             |
 | ------------------- | ---------------------- | ------------------------------------------------------------------- |
@@ -58,8 +53,7 @@ sample, seed, and validate values from that spec.
 | `to_space()`        | `rlmesh._rlmesh.Space` | Native sampler and validator for the spec.                          |
 | `to_gym_space()`    | `object`               | Best-effort conversion to a Gymnasium space.                        |
 
-Use `rlmesh.spaces.space_from_spec(spec)` for a Python wrapper around a `SpaceSpec`. Use
-`rlmesh.spaces.to_gymnasium_space(spec)` when code expects a Gymnasium space object.
+Use `rlmesh.spaces.space_from_spec(spec)` for a Python wrapper around a `SpaceSpec`. Use `rlmesh.spaces.to_gymnasium_space(spec)` when code expects a Gymnasium space object.
 
 ## ServeOptions
 
@@ -84,15 +78,12 @@ Pass options to `EnvServer(..., options=options)` or model-serving APIs that acc
 Native tensor value used at the dependency-free RLMesh value boundary.
 ```
 
-`Tensor` is a validated transport container: immutable element bytes plus shape, dtype, and stride
-metadata, with DLPack and buffer-protocol edges. It is not an ndarray. Compute, slicing, and
-broadcasting belong to the frameworks. The NumPy, Torch, and JAX backends convert tensor leaves to
-backend arrays or tensors.
+`Tensor` is a validated transport container: immutable element bytes plus shape, dtype, and stride metadata, with DLPack and buffer-protocol edges. It is not an ndarray. Compute, slicing, and broadcasting belong to the frameworks. The NumPy, Torch, and JAX backends convert tensor leaves to backend arrays or tensors.
 
 | Attribute or method   | Type         | Meaning                                                       |
 | --------------------- | ------------ | ------------------------------------------------------------- |
 | `shape`               | `list[int]`  | Tensor dimensions.                                            |
-| `dtype`               | `str`        | Element dtype name (for example `"float32"`, `"bfloat16"`).   |
+| `dtype`               | `str`        | Element dtype name (for example `"float32"`).                 |
 | `ndim`                | `int`        | Number of dimensions.                                         |
 | `size`                | `int`        | Number of elements.                                           |
 | `nbytes`              | `int`        | Element data size in bytes.                                   |
@@ -107,8 +98,4 @@ backend arrays or tensors.
 | `__dlpack_device__()` | `(int, int)` | DLPack device tuple, `(kDLCPU, 0)`.                           |
 | `from_dlpack(obj)`    | `Tensor`     | Static method; imports (and copies) from any DLPack producer. |
 
-Use `rlmesh.numpy.asarray(tensor)` to get a writable NumPy copy of an RLMesh tensor
-(`numpy.from_dlpack(tensor)` for a zero-copy, read-only view), `rlmesh.torch.as_tensor(tensor)` to
-view or copy it as a Torch tensor, and `rlmesh.jax.asarray(tensor)` to import it as a JAX array.
-`bfloat16` tensors are not representable through the buffer protocol; use DLPack or `tobytes()` for
-those.
+Use `rlmesh.numpy.asarray(tensor)` to get a writable NumPy copy of an RLMesh tensor (`numpy.from_dlpack(tensor)` for a zero-copy, read-only view), `rlmesh.torch.as_tensor(tensor)` to view or copy it as a Torch tensor, and `rlmesh.jax.asarray(tensor)` to import it as a JAX array.

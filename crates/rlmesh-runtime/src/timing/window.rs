@@ -1,16 +1,83 @@
+//! Windowed / aggregate telemetry accumulation.
+//!
+//! # Canonical telemetry key space (cardinality invariant)
+//!
+//! Per-route telemetry series are keyed by `(operation, component_id, name)`.
+//! To keep per-route memory constant, the `(operation, name)` pairs the runtime
+//! emits are a closed, enumerated set (see `CANONICAL_TIMING_KEYS` /
+//! `CANONICAL_METRIC_KEYS`):
+//!   - `model.predict` × {`rpc.total`, `endpoint.total`}
+//!   - `env.step`      × {`rpc.total`, `endpoint.total`, `batch.size`}
+//!   - `env.reset`     × {`endpoint.total`}
+//!
+//! BANNED as key components (high-cardinality / per-event): `episode_id`,
+//! `request_id`, `step`, `seed`, free-form peer labels. `component_id` is bounded
+//! by the connected-component count and is fine. `record_timing` / `record_metric`
+//! `debug_assert!` the pair is canonical.
+//!
+//! NOTE: this guard covers ONLY the fixed compile-time key set above. Future
+//! dynamic user tags (`rlmesh.profile.span`) require a SEPARATE release-mode
+//! per-route cap + overflow bucket; this debug-only guard does NOT satisfy that
+//! requirement.
+
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use rlmesh_proto::core::v1::{OperationTelemetry, operation_metric};
-
 use crate::hooks::{
-    MetricKind, MetricSummary, RuntimeRouteContext, TelemetrySummaryEvent, TelemetryWindowEvent,
-    TimingSummary,
+    EpisodeTelemetryRollup, MetricKind, MetricSummary, RuntimeRouteContext, TelemetrySummaryEvent,
+    TelemetryWindowEvent, TimingSummary,
 };
 
 use super::StepTimingSample;
 use super::reservoir::{DurationReservoir, ValueReservoir};
 use super::stats::{average_f64, average_ms, percentile_f64_samples, percentile_ms};
+
+/// Canonical string handle for the endpoint-local op-duration metric. Mirrors
+/// `MetricKey::METRIC_KEY_ENDPOINT_TOTAL`; the dual-write `key_name` the future
+/// windowed channel emits alongside the enum.
+const ENDPOINT_TOTAL_KEY_NAME: &str = "endpoint.total";
+
+/// Canonical string handle for the per-step lane count (num_envs / slot count).
+/// Mirrors `MetricKey::METRIC_KEY_BATCH_SIZE`.
+const BATCH_SIZE_KEY_NAME: &str = "batch.size";
+
+/// Canonical string handle for the host-observed per-op round-trip duration.
+const RPC_TOTAL_KEY_NAME: &str = "rpc.total";
+
+/// Canonical `(operation, name)` pairs for duration series. See the module doc.
+const CANONICAL_TIMING_KEYS: &[(&str, &str)] = &[
+    ("model.predict", RPC_TOTAL_KEY_NAME),
+    ("model.predict", ENDPOINT_TOTAL_KEY_NAME),
+    ("env.step", RPC_TOTAL_KEY_NAME),
+    ("env.step", ENDPOINT_TOTAL_KEY_NAME),
+    ("env.reset", ENDPOINT_TOTAL_KEY_NAME),
+];
+
+/// Canonical `(operation, name)` pairs for non-duration metric series.
+const CANONICAL_METRIC_KEYS: &[(&str, &str)] = &[("env.step", BATCH_SIZE_KEY_NAME)];
+
+/// Debug-only allowlist guard locking the duration key space. Never panics in
+/// release. Covers ONLY today's fixed key set — dynamic user tags need a
+/// separate release-mode cap + overflow bucket (see module doc).
+fn assert_canonical_timing_key(operation: &str, name: &str) {
+    debug_assert!(
+        CANONICAL_TIMING_KEYS
+            .iter()
+            .any(|(op, n)| *op == operation && *n == name),
+        "non-canonical timing key ({operation:?}, {name:?}); see window.rs canonical key space"
+    );
+}
+
+/// Forward guard for the metric key space (today's only caller passes the
+/// canonical pair). Never panics in release.
+fn assert_canonical_metric_key(operation: &str, name: &str) {
+    debug_assert!(
+        CANONICAL_METRIC_KEYS
+            .iter()
+            .any(|(op, n)| *op == operation && *n == name),
+        "non-canonical metric key ({operation:?}, {name:?}); see window.rs canonical key space"
+    );
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct TelemetryWindowAccumulator {
@@ -27,9 +94,9 @@ pub(crate) struct TelemetryWindowAccumulator {
     // session, so they are bounded reservoirs rather than raw Vecs to keep
     // memory constant while preserving representative summary statistics.
     total_timing_samples: BTreeMap<TimingKey, DurationReservoir>,
-    // Non-duration metrics (byte counts / generic numbers) from
-    // OperationTelemetry. Window samples are cleared each flush; total samples
-    // persist for the session summary under the same reservoir bound.
+    // Non-duration metrics (byte counts / generic numbers). Window samples are
+    // cleared each flush; total samples persist for the session summary under
+    // the same reservoir bound.
     metric_samples: BTreeMap<MetricKey, ValueReservoir>,
     total_metric_samples: BTreeMap<MetricKey, ValueReservoir>,
     model_wait_samples: Vec<Duration>,
@@ -38,6 +105,12 @@ pub(crate) struct TelemetryWindowAccumulator {
     total_env_step_samples: DurationReservoir,
     round_trip_samples: Vec<Duration>,
     total_round_trip_samples: DurationReservoir,
+    // O(1) running per-episode scalars, folded in `record_step` /
+    // `record_endpoint_total` and snapshotted by `episode_rollup` at episode
+    // completion. Reset (not cleared) per episode — distinct from the window
+    // Vecs (cleared per flush) and the session reservoirs; it deliberately
+    // survives window flushes so an episode spanning multiple windows is whole.
+    episode: EpisodeAccum,
 }
 
 impl Default for TelemetryWindowAccumulator {
@@ -61,7 +134,74 @@ impl Default for TelemetryWindowAccumulator {
             total_env_step_samples: DurationReservoir::default(),
             round_trip_samples: Vec::new(),
             total_round_trip_samples: DurationReservoir::default(),
+            episode: EpisodeAccum::default(),
         }
+    }
+}
+
+/// O(1) running per-episode aggregates. Folded in `record_step` (per-step model
+/// wait, env step, bytes) and `record_endpoint_total` (per-step endpoint-local
+/// op duration for `model.predict` / `env.step` only), reset by `rollup` at
+/// episode completion. No per-step allocation; no min/max retention (no
+/// consumer). NOT cleared by the window `reset()`.
+#[derive(Debug, Clone, Default)]
+struct EpisodeAccum {
+    step_count: u64,
+    model_wait_sum: Duration,
+    env_step_sum: Duration,
+    round_trip_sum: Duration,
+    endpoint_op_sum: Duration,
+    endpoint_op_count: u64,
+    request_bytes_total: u64,
+    response_bytes_total: u64,
+}
+
+impl EpisodeAccum {
+    fn record_step(&mut self, model_wait: Duration, env_step: Duration, req: u64, resp: u64) {
+        self.step_count += 1;
+        self.model_wait_sum += model_wait;
+        self.env_step_sum += env_step;
+        self.round_trip_sum += model_wait + env_step;
+        self.request_bytes_total += req;
+        self.response_bytes_total += resp;
+    }
+
+    /// Fold one per-step endpoint-local op duration. Only the per-step ops
+    /// (`model.predict`, `env.step`) are folded; `env.reset` is excluded so the
+    /// average is a coherent per-op value, not a cross-op blend with a
+    /// once-per-episode reset.
+    fn record_endpoint_op(&mut self, duration: Duration) {
+        self.endpoint_op_sum += duration;
+        self.endpoint_op_count += 1;
+    }
+
+    /// Snapshot the accumulated scalars into a rollup and reset for the next
+    /// episode. `episode_record_id` / `env_index` are filled by the driver from
+    /// the completed episode's record.
+    fn rollup(&mut self) -> EpisodeTelemetryRollup {
+        let rollup = EpisodeTelemetryRollup {
+            episode_record_id: String::new(),
+            env_index: 0,
+            step_count: self.step_count,
+            model_latency_ms_avg: episode_avg_ms(self.model_wait_sum, self.step_count),
+            env_latency_ms_avg: episode_avg_ms(self.env_step_sum, self.step_count),
+            round_trip_ms_avg: episode_avg_ms(self.round_trip_sum, self.step_count),
+            endpoint_op_ms_avg: episode_avg_ms(self.endpoint_op_sum, self.endpoint_op_count),
+            request_bytes_total: self.request_bytes_total,
+            response_bytes_total: self.response_bytes_total,
+        };
+        *self = Self::default();
+        rollup
+    }
+}
+
+/// Mean of a duration sum over a count, in milliseconds; `None` for an empty
+/// accumulator (distinct from a real `0.0`).
+fn episode_avg_ms(sum: Duration, count: u64) -> Option<f64> {
+    if count == 0 {
+        None
+    } else {
+        Some(sum.as_secs_f64() * 1000.0 / count as f64)
     }
 }
 
@@ -77,23 +217,7 @@ struct MetricKey {
     operation: String,
     component_id: String,
     name: String,
-    kind: MetricKindKey,
-}
-
-/// Ordered, hashable mirror of [`MetricKind`] for use as a map key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum MetricKindKey {
-    ByteCount,
-    Number,
-}
-
-impl From<MetricKindKey> for MetricKind {
-    fn from(kind: MetricKindKey) -> Self {
-        match kind {
-            MetricKindKey::ByteCount => MetricKind::ByteCount,
-            MetricKindKey::Number => MetricKind::Number,
-        }
-    }
+    kind: MetricKind,
 }
 
 impl TelemetryWindowAccumulator {
@@ -112,6 +236,14 @@ impl TelemetryWindowAccumulator {
             .push(sample.model_wait + sample.env_step);
         self.total_round_trip_samples
             .push(sample.model_wait + sample.env_step);
+        // Per-episode running scalars (O(1), allocation-free); reset at episode
+        // completion via `episode_rollup`, NOT at window flush.
+        self.episode.record_step(
+            sample.model_wait,
+            sample.env_step,
+            sample.request_bytes as u64,
+            sample.response_bytes as u64,
+        );
         // (env_step / model_wait totals pushed above.)
         self.record_timing(
             "model.predict",
@@ -127,6 +259,15 @@ impl TelemetryWindowAccumulator {
         );
     }
 
+    /// Snapshot the per-episode running scalars into an [`EpisodeTelemetryRollup`]
+    /// and reset the accumulator for the next episode. The driver fills in
+    /// `episode_record_id` / `env_index` from the completed episode's record.
+    /// NOT cleared by `reset()` (window flush) — the accumulator spans the whole
+    /// episode and survives window boundaries.
+    pub(crate) fn episode_rollup(&mut self) -> EpisodeTelemetryRollup {
+        self.episode.rollup()
+    }
+
     pub(crate) fn record_timing(
         &mut self,
         operation: impl Into<String>,
@@ -139,6 +280,8 @@ impl TelemetryWindowAccumulator {
             component_id: component_id.into(),
             name: name.into(),
         };
+        // Cardinality guard (debug/test only; never a release panic). See module doc.
+        assert_canonical_timing_key(&key.operation, &key.name);
         self.timing_samples
             .entry(key.clone())
             .or_default()
@@ -149,60 +292,44 @@ impl TelemetryWindowAccumulator {
             .push(duration);
     }
 
-    pub(crate) fn record_operation_telemetry(
+    /// Record the per-step endpoint-local op duration carried by the new hot
+    /// scalar `JoinResponse.endpoint_total_ns`. The nested per-step telemetry
+    /// message (with its always-empty `component_id` and dead `labels`) is gone:
+    /// the runtime attributes by connection, so the authoritative `component_id`
+    /// comes from route state, and the metric maps
+    /// onto `MetricKey::EndpointTotal` (string handle "endpoint.total", the
+    /// dual-write `key_name` for the future windowed channel).
+    pub(crate) fn record_endpoint_total(
         &mut self,
-        fallback_component_id: &str,
-        telemetry: Option<&OperationTelemetry>,
+        operation: &str,
+        component_id: &str,
+        endpoint_total_ns: Option<u64>,
     ) {
-        let Some(telemetry) = telemetry else {
+        let Some(duration_ns) = endpoint_total_ns else {
             return;
         };
-        let operation = if telemetry.operation.is_empty() {
-            "unknown"
-        } else {
-            telemetry.operation.as_str()
-        };
-        let component_id = if telemetry.component_id.is_empty() {
-            fallback_component_id
-        } else {
-            telemetry.component_id.as_str()
-        };
-        for metric in &telemetry.metrics {
-            let name = if metric.name.is_empty() {
-                "unspecified"
-            } else {
-                metric.name.as_str()
-            };
-            match metric.value {
-                Some(operation_metric::Value::DurationNs(duration_ns)) => {
-                    self.record_timing(
-                        operation,
-                        component_id,
-                        name,
-                        Duration::from_nanos(duration_ns),
-                    );
-                }
-                Some(operation_metric::Value::ByteCount(bytes)) => {
-                    self.record_metric(
-                        operation,
-                        component_id,
-                        name,
-                        MetricKindKey::ByteCount,
-                        bytes as f64,
-                    );
-                }
-                Some(operation_metric::Value::Number(number)) => {
-                    self.record_metric(
-                        operation,
-                        component_id,
-                        name,
-                        MetricKindKey::Number,
-                        number,
-                    );
-                }
-                None => {}
-            }
+        let duration = Duration::from_nanos(duration_ns);
+        // Fold per-step ops only into the per-episode endpoint average; `env.reset`
+        // is a distinct once-per-episode op and would blend the per-op average.
+        if operation == "model.predict" || operation == "env.step" {
+            self.episode.record_endpoint_op(duration);
         }
+        self.record_timing(operation, component_id, ENDPOINT_TOTAL_KEY_NAME, duration);
+    }
+
+    /// Record the per-step lane count (num_envs / slot count) as a non-duration
+    /// metric. Already computable per step, so it is promoted now (the design's
+    /// `batch_size` row); `queue_depth` is deferred until a pipelined driver
+    /// exists (today's driver loop is strictly serial). Attributed to the env
+    /// component, which owns the lane count.
+    pub(crate) fn record_batch_size(&mut self, component_id: &str, num_envs: u32) {
+        self.record_metric(
+            "env.step",
+            component_id,
+            BATCH_SIZE_KEY_NAME,
+            MetricKind::Number,
+            f64::from(num_envs),
+        );
     }
 
     fn record_metric(
@@ -210,9 +337,11 @@ impl TelemetryWindowAccumulator {
         operation: &str,
         component_id: &str,
         name: &str,
-        kind: MetricKindKey,
+        kind: MetricKind,
         value: f64,
     ) {
+        // Cardinality guard (debug/test only); see module doc.
+        assert_canonical_metric_key(operation, name);
         let key = MetricKey {
             operation: operation.to_string(),
             component_id: component_id.to_string(),
@@ -389,7 +518,7 @@ fn metric_summaries(samples: &BTreeMap<MetricKey, ValueReservoir>) -> Vec<Metric
                 operation: key.operation.clone(),
                 component_id: key.component_id.clone(),
                 name: key.name.clone(),
-                kind: key.kind.into(),
+                kind: key.kind,
                 // Report the true number of observed samples, not the bounded
                 // reservoir size.
                 sample_count: reservoir.seen(),

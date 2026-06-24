@@ -524,7 +524,7 @@ impl PyEnvironment {
         let _ = total_guard.finish(frame_bytes);
 
         Ok(SingleRenderResult {
-            frame: result.map(|raw| NativeRenderFrame { png_frame: raw }),
+            frame: result.map(|raw| NativeRenderFrame { frame: raw }),
         })
     }
 
@@ -783,7 +783,7 @@ impl PyEnvironment {
         let _ = total_guard.finish(frame_bytes);
 
         Ok(RenderResult {
-            frame: result.map(|raw| NativeRenderFrame { png_frame: raw }),
+            frame: result.map(|raw| NativeRenderFrame { frame: raw }),
         })
     }
 

@@ -1,14 +1,16 @@
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS, PROTOCOL_GENERATION,
-    SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map, check_provisional_edition_pin,
-    core::v1::OperationTelemetry,
+    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
+    core::v1::{
+        HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
+        ShutdownResponse as CoreShutdownResponse,
+    },
     is_protocol_generation_supported,
     model::v1::{
-        CloseRequest, CloseRouteRequest, ConfigureRouteRequest, HandshakeRequest, JoinRequest,
-        JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, ShutdownResponse,
-        join_request, join_response, model_service_client::ModelServiceClient,
+        CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest,
+        JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, join_request,
+        join_response, model_service_client::ModelServiceClient,
     },
-    supported_workflow_editions,
+    peer_info, supported_workflow_editions,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,8 +53,18 @@ pub struct ModelClient {
     request_tx: Option<mpsc::Sender<JoinRequest>>,
     pending: PendingResponses,
     request_counter: Arc<AtomicU64>,
-    last_telemetry: Option<OperationTelemetry>,
+    /// Endpoint-local op duration (ns) attached to the last Join response. The
+    /// nested per-step telemetry message was replaced by this hot scalar
+    /// (`JoinResponse.endpoint_total_ns`).
+    last_endpoint_total_ns: Option<u64>,
     server_capabilities: HashMap<String, String>,
+    /// The model's offered protocol generations, learned at handshake. Today a
+    /// server advertises only `server_protocol_generation`, so this holds that
+    /// single value; it feeds the three-way session-floor reconciliation.
+    server_supported_generations: Vec<String>,
+    /// The model's offered workflow editions, learned at handshake. Feeds the
+    /// three-way session-floor reconciliation.
+    server_supported_editions: Vec<String>,
 }
 
 impl ModelClient {
@@ -77,8 +89,10 @@ impl ModelClient {
             request_tx: None,
             pending: Default::default(),
             request_counter: Arc::new(AtomicU64::new(0)),
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
             server_capabilities: HashMap::new(),
+            server_supported_generations: Vec::new(),
+            server_supported_editions: Vec::new(),
         })
     }
 
@@ -99,8 +113,10 @@ impl ModelClient {
         &self.address
     }
 
-    pub fn take_last_telemetry(&mut self) -> Option<OperationTelemetry> {
-        self.last_telemetry.take()
+    /// Take the endpoint-local op duration (ns) attached to the most recent
+    /// Join response, if any (`JoinResponse.endpoint_total_ns`).
+    pub fn take_last_endpoint_total_ns(&mut self) -> Option<u64> {
+        self.last_endpoint_total_ns.take()
     }
 
     /// Whether the server advertised that it pipelines Join-stream predicts
@@ -114,22 +130,35 @@ impl ModelClient {
         )
     }
 
+    /// The model's negotiation offer learned at handshake: its supported
+    /// protocol generations, workflow editions, and advertised capabilities.
+    ///
+    /// The runtime (client to both the env and the model) feeds this into
+    /// [`rlmesh_proto::negotiate_session_floor`] to reconcile the three-way
+    /// session floor. Empty before [`handshake`](Self::handshake) completes.
+    pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {
+        rlmesh_proto::SessionOffer {
+            generations: self.server_supported_generations.clone(),
+            editions: self.server_supported_editions.clone(),
+            capabilities: self.server_capabilities.clone(),
+        }
+    }
+
     pub async fn handshake(&mut self) -> Result<(), GrpcError> {
         if self.state != ClientState::Connected {
             return Err(crate::error::ClientError::NotConnected.into());
         }
 
-        let request = self.authorized_request(HandshakeRequest {
-            protocol_generation: PROTOCOL_GENERATION.to_string(),
-            client_name: "rlmesh-rust-model-grpc".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: capability_map(&[
-                capabilities::MODEL_SERVICE_V1,
-                capabilities::SPACES_CORE_V1,
-            ]),
-            supported_workflow_editions: supported_workflow_editions(),
-            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
-            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
+        let request = self.authorized_request(rlmesh_proto::model::v1::HandshakeRequest {
+            base: Some(CoreHandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                peer_info: Some(peer_info("rlmesh-model")),
+                capabilities: capability_map(&[
+                    capabilities::MODEL_SERVICE_V1,
+                    capabilities::SPACES_CORE_V1,
+                ]),
+                supported_workflow_editions: supported_workflow_editions(),
+            }),
         })?;
 
         let response = self
@@ -137,18 +166,19 @@ impl ModelClient {
             .handshake(request)
             .await
             .map_err(crate::error::status_to_grpc_error)?
-            .into_inner();
+            .into_inner()
+            .base
+            .ok_or_else(|| {
+                GrpcError::from(ProtocolError::HandshakeFailed(
+                    "handshake response missing base".to_string(),
+                ))
+            })?;
 
         if !response.compatible {
             return Err(ProtocolError::HandshakeFailed(response.error_message).into());
         }
-        check_provisional_edition_pin(
-            &response.selected_workflow_edition,
-            &response.selected_edition_status,
-            &response.selected_edition_spec_sha256,
-            &response.server_version,
-        )
-        .map_err(ProtocolError::HandshakeFailed)?;
+        // Moving prerelease/dev editions are pinned by their cohort suffix; an
+        // exact name match in negotiation is the compatibility check.
         if !is_protocol_generation_supported(&response.server_protocol_generation) {
             return Err(ProtocolError::HandshakeFailed(format!(
                 "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
@@ -156,6 +186,11 @@ impl ModelClient {
             ))
             .into());
         }
+        // Record the model's offered window for the three-way session-floor
+        // reconciliation. A server advertises a single generation scalar today,
+        // so the offered generation set is that one value.
+        self.server_supported_generations = vec![response.server_protocol_generation];
+        self.server_supported_editions = response.supported_workflow_editions;
         self.server_capabilities = response.capabilities;
 
         self.setup_join_stream().await?;
@@ -181,7 +216,7 @@ impl ModelClient {
                 request_id,
             })
             .await?;
-        self.last_telemetry = response.telemetry.clone();
+        self.last_endpoint_total_ns = response.endpoint_total_ns;
         match response.kind {
             Some(join_response::Kind::ConfigureRoute(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
@@ -208,7 +243,7 @@ impl ModelClient {
                 request_id,
             })
             .await?;
-        self.last_telemetry = response.telemetry.clone();
+        self.last_endpoint_total_ns = response.endpoint_total_ns;
 
         match response.kind {
             Some(join_response::Kind::Predict(predict)) => Ok(predict),
@@ -236,7 +271,7 @@ impl ModelClient {
                 request_id,
             })
             .await?;
-        self.last_telemetry = response.telemetry.clone();
+        self.last_endpoint_total_ns = response.endpoint_total_ns;
         match response.kind {
             Some(join_response::Kind::CloseRoute(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
@@ -264,7 +299,7 @@ impl ModelClient {
         self.ensure_ready()?;
 
         let request = JoinRequest {
-            kind: Some(join_request::Kind::Close(CloseRequest {
+            kind: Some(join_request::Kind::Close(CloseParticipantRequest {
                 reason: reason.into(),
             })),
             request_id: self.next_request_id(),
@@ -273,14 +308,14 @@ impl ModelClient {
         let response = tokio::time::timeout(timeout, self.send_on_stream(request))
             .await
             .map_err(|_| GrpcError::Timeout(timeout))??;
-        self.last_telemetry = response.telemetry.clone();
+        self.last_endpoint_total_ns = response.endpoint_total_ns;
         self.state = ClientState::Closed;
 
         match response.kind {
             Some(join_response::Kind::Close(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
-                expected: "CloseResponse".to_string(),
+                expected: "CloseParticipantResponse".to_string(),
                 actual: format!("{:?}", response.kind),
             }
             .into()),
@@ -290,20 +325,28 @@ impl ModelClient {
     pub async fn shutdown(
         &mut self,
         reason: impl Into<String>,
-    ) -> Result<ShutdownResponse, GrpcError> {
+    ) -> Result<CoreShutdownResponse, GrpcError> {
         if self.state == ClientState::Closed {
             return Err(crate::error::ClientError::NotConnected.into());
         }
 
         let request = self.authorized_request(ShutdownRequest {
-            reason: reason.into(),
+            base: Some(CoreShutdownRequest {
+                reason: reason.into(),
+            }),
         })?;
         let response = self
             .client
             .shutdown(request)
             .await
             .map_err(crate::error::status_to_grpc_error)?
-            .into_inner();
+            .into_inner()
+            .base
+            .ok_or_else(|| {
+                GrpcError::from(ProtocolError::HandshakeFailed(
+                    "shutdown response missing base".to_string(),
+                ))
+            })?;
 
         if response.accepted {
             self.state = ClientState::Closed;
@@ -480,8 +523,10 @@ mod tests {
             request_tx: Some(request_tx),
             pending: Arc::clone(&pending),
             request_counter: Arc::new(AtomicU64::new(0)),
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
             server_capabilities: HashMap::new(),
+            server_supported_generations: Vec::new(),
+            server_supported_editions: Vec::new(),
         };
         (client, request_rx, pending)
     }
@@ -500,7 +545,7 @@ mod tests {
         JoinResponse {
             request_id: request_id.to_string(),
             kind: Some(join_response::Kind::Predict(PredictResponse::default())),
-            telemetry: None,
+            endpoint_total_ns: None,
         }
     }
 

@@ -3,18 +3,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rlmesh_grpc::wire::{env_contract_from_proto, env_contract_to_proto};
+use rlmesh_grpc::wire::{
+    encode_batched_partial_values, env_contract_from_proto, env_contract_to_proto,
+};
 use rlmesh_proto::model::v1::PredictRequest;
 use rlmesh_runtime::{
     NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeModel,
-    RuntimeModelPrediction, RuntimeSessionSpec,
+    RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
 };
 use tokio::sync::Mutex;
 
 use super::handler::ModelHandler;
 use super::lifecycle::{finish_lifecycle, update_lifecycle};
 use super::wire::{
-    ModelAction, model_action_to_endpoint_response, model_observation_from_endpoint_request,
+    ModelAction, check_actions_conform, model_action_to_endpoint_response,
+    model_observation_from_endpoint_request,
 };
 use crate::{ConnectAddress, Error, Result, spaces};
 
@@ -23,7 +26,7 @@ pub(super) async fn run_local<H>(
     env_address: ConnectAddress,
     max_episodes: Option<u64>,
     base_seed: Option<i64>,
-) -> Result<()>
+) -> Result<RuntimeReport>
 where
     H: ModelHandler + 'static,
 {
@@ -33,6 +36,14 @@ where
     let handshake = env.handshake().await.map_err(Error::from)?;
     let env_contract = env_contract_from_proto(handshake.env_contract)
         .map_err(|err| Error::Internal(format!("invalid spaces spec from env: {err}")))?;
+    // The handler returns typed actions the runtime encodes against this space;
+    // a missing one would fail every predict, so reject at connect, not mid-run.
+    if env_contract.action_space.is_none() {
+        return Err(Error::Internal(
+            "env contract has no action_space; a model cannot encode actions without it"
+                .to_string(),
+        ));
+    }
     let env_id = if env_contract.id.is_empty() {
         "local-env".to_string()
     } else {
@@ -67,7 +78,6 @@ where
     let result = RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run()
         .await
-        .map(|_| ())
         .map_err(|err| Error::Internal(err.to_string()));
 
     if result.is_ok() {
@@ -119,7 +129,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
         })?;
         Ok(RuntimeEnvReset {
             response,
-            telemetry: self.inner.take_last_telemetry(),
+            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
         })
     }
 
@@ -138,7 +148,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
         })?;
         Ok(RuntimeEnvStep {
             response,
-            telemetry: self.inner.take_last_telemetry(),
+            endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
         })
     }
 
@@ -208,18 +218,38 @@ where
         update_lifecycle(self.handler, &mut active_episodes, &observation)
             .await
             .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
-        let action = self
+        let num_envs = self.num_envs;
+        let action_space = self.env_contract.action_space.clone().ok_or_else(|| {
+            rlmesh_runtime::RuntimeError::model_rpc(
+                "local-model",
+                Error::model("model route contract missing action space"),
+            )
+        })?;
+        let actions = self
             .handler
             .predict(observation)
             .await
             .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        if actions.len() != num_envs {
+            return Err(rlmesh_runtime::RuntimeError::model_rpc(
+                "local-model",
+                Error::model(format!(
+                    "predict returned {} actions for {num_envs} lanes",
+                    actions.len()
+                )),
+            ));
+        }
+        check_actions_conform(&action_space, &actions)
+            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let wire = encode_batched_partial_values(&actions, &action_space).map_err(|err| {
+            rlmesh_runtime::RuntimeError::model_rpc("local-model", Error::model(err.to_string()))
+        })?;
         Ok(RuntimeModelPrediction {
             response: model_action_to_endpoint_response(ModelAction {
-                action: Some(action),
+                action: Some(wire),
                 route,
-                telemetry: None,
             }),
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 }

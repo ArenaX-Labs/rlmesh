@@ -17,11 +17,11 @@ pub use driver::{
     RuntimeModelPrediction,
 };
 pub use hooks::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
-    LogEvent, LogLevel, MetricKind, MetricSummary, ModelConnectedEvent, NoopRuntimeHooks,
-    ObservationEmittedEvent, RuntimeHooks, RuntimeRouteContext, SessionEndedEvent,
-    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent,
-    TelemetryWindowEvent, TimingSummary,
+    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent,
+    EpisodeTelemetryRollup, HookError, LogEvent, LogLevel, MetricKind, MetricSummary,
+    ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent, RuntimeHooks,
+    RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 

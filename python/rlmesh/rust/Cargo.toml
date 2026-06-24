@@ -27,10 +27,11 @@ doc = false
 required-features = ["stub-gen"]
 
 [features]
-default = ["viewer"]
+default = ["cli"]
 abi3-py311 = ["pyo3/abi3-py311"]
-# Bundles the egui/eframe render viewer into the extension.
-viewer = ["dep:rlmesh-cli"]
+# Bundles the embedded `rlmesh` CLI (the `_rlmesh.run_cli` entrypoint) into the
+# extension.
+cli = ["dep:rlmesh-cli"]
 # Links pyo3-stub-gen for dev-time `_rlmesh.pyi` generation.
 stub-gen = ["dep:pyo3-stub-gen"]
 
@@ -39,6 +40,7 @@ rlmesh = { workspace = true }
 rlmesh-adapters = { workspace = true }
 rlmesh-cli = { workspace = true, optional = true }
 rlmesh-grpc = { workspace = true }
+rlmesh-proto = { workspace = true }
 rlmesh-sandbox = { workspace = true }
 rlmesh-spaces = { workspace = true }
 

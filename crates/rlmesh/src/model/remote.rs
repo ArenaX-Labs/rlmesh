@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use rlmesh_grpc::wire::{
-    bytes_value, decode_batched_partial_values, encode_batched_partial_values,
-    env_contract_to_proto, value_bytes,
+    decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
     CloseRouteRequest, ConfigureRouteRequest, PredictContext, PredictRequest, PredictSlot,
 };
+use rlmesh_proto::{SessionFloor, SessionOffer, capabilities, negotiate_session_floor};
 use uuid::Uuid;
 
 use crate::{ConnectAddress, Error, Result, spaces};
@@ -53,7 +53,19 @@ pub struct RemoteModel {
     /// `step == 0`) keeps it correct even though this client cannot observe an
     /// episode's end from the server.
     pending_reset: bool,
+    /// The reconciled three-way (relay) session floor — the highest generation
+    /// and edition, and the capability intersection, that the env, the model,
+    /// and this runtime all support. Sent to the model in `ConfigureRoute` as
+    /// AUTHORITATIVE over its own (pairwise) handshake result. See
+    /// versioning-governance §7.
+    floor: SessionFloor,
 }
+
+/// The capabilities this runtime can faithfully carry through the relay. The
+/// runtime decode-rebuilds env<->model envelopes, so only a capability whose
+/// field this build understands may be active at the floor. Today that is the
+/// core spaces codec.
+const RUNTIME_RELAY_CAPABILITIES: &[&str] = &[capabilities::SPACES_CORE_V1];
 
 /// Per-instance session id. The served model caches route configs, the
 /// resolved adapter, and active episodes keyed by `session_id:route_id`, so a
@@ -62,6 +74,26 @@ pub struct RemoteModel {
 /// contract/adapter/lifecycle.
 fn new_session_id() -> String {
     format!("remote-model-{}", Uuid::new_v4())
+}
+
+/// Build the fail-fast diagnostic when the three-way session floor is empty,
+/// naming each participant's offered generations and editions so an operator can
+/// see which tier has no mutual value.
+fn session_floor_error(env: &SessionOffer, model: &SessionOffer, runtime: &SessionOffer) -> Error {
+    Error::Internal(format!(
+        "no mutual session floor across the relay: \
+         env={{generations: {:?}, editions: {:?}}}, \
+         model={{generations: {:?}, editions: {:?}}}, \
+         runtime={{generations: {:?}, editions: {:?}}}; \
+         the runtime decode-rebuilds env<->model traffic, so a session can only \
+         run at a generation and edition all three support",
+        env.generations,
+        env.editions,
+        model.generations,
+        model.editions,
+        runtime.generations,
+        runtime.editions,
+    ))
 }
 
 /// Coerce an env contract to the single lane this client drives. A zero-width
@@ -89,6 +121,12 @@ impl RemoteModel {
     /// it pins the observation/action spaces this client encodes and decodes
     /// with, and is sent once to configure the model's route. It must carry both
     /// an observation and an action space.
+    ///
+    /// Without an explicit env offer this assumes the env speaks this build's
+    /// own generation/edition window (true while the window holds a single
+    /// generation and edition). For a genuine three-way reconciliation against a
+    /// remote env's advertised window, use
+    /// [`connect_with_env_offer`](Self::connect_with_env_offer).
     pub async fn connect(address: &str, env_contract: spaces::EnvContract) -> Result<Self> {
         Self::connect_with_token(address, "", env_contract).await
     }
@@ -99,6 +137,33 @@ impl RemoteModel {
         address: &str,
         token: &str,
         env_contract: spaces::EnvContract,
+    ) -> Result<Self> {
+        // No explicit env offer: take the runtime's own supported window as the
+        // env offer. With a single-generation/single-edition build the floor is
+        // unaffected; the fail-fast machinery still runs.
+        let env_offer = SessionOffer::runtime(RUNTIME_RELAY_CAPABILITIES);
+        Self::connect_with_env_offer(address, token, env_contract, env_offer).await
+    }
+
+    /// Connect to a model server and reconcile the **three-way (relay) session
+    /// floor** against the env's advertised offer.
+    ///
+    /// The runtime is the binding authority: it decode-rebuilds env<->model
+    /// envelopes, so a session can only run at the FLOOR of env + model +
+    /// runtime (versioning-governance §7). This handshakes the **model first**
+    /// to learn its window, then reconciles the floor over (env ∩ model ∩
+    /// runtime) via [`negotiate_session_floor`]. With no mutual generation or
+    /// edition across all three it **fails before any route is configured**,
+    /// naming each participant's offer. The resulting floor is sent to the model
+    /// in `ConfigureRoute` as authoritative over the model's own handshake.
+    ///
+    /// `env_offer` is the env's advertised window; take it from
+    /// [`RemoteEnv::session_offer`](crate::RemoteEnv::session_offer).
+    pub async fn connect_with_env_offer(
+        address: &str,
+        token: &str,
+        env_contract: spaces::EnvContract,
+        env_offer: SessionOffer,
     ) -> Result<Self> {
         let address = ConnectAddress::parse(address)?;
         let observation_space = Arc::new(
@@ -115,10 +180,20 @@ impl RemoteModel {
         );
         let env_contract = single_lane_contract(env_contract)?;
 
+        // Model first: the runtime learns the model's window before it can
+        // reconcile the floor. (The env was already handshaked by the caller;
+        // its offer narrows the floor here.)
         let mut inner = rlmesh_grpc::ModelClient::connect(&address.to_string(), token)
             .await
             .map_err(Error::from)?;
         inner.handshake().await.map_err(Error::from)?;
+        let model_offer = inner.model_session_offer();
+
+        // Reconcile the three-way floor; a missing mutual generation/edition
+        // fails the session before any Join/ConfigureRoute is sent.
+        let runtime_offer = SessionOffer::runtime(RUNTIME_RELAY_CAPABILITIES);
+        let floor = negotiate_session_floor(&env_offer, &model_offer, &runtime_offer)
+            .ok_or_else(|| session_floor_error(&env_offer, &model_offer, &runtime_offer))?;
 
         Ok(Self {
             inner,
@@ -133,7 +208,13 @@ impl RemoteModel {
             episode_id: None,
             step: 0,
             pending_reset: false,
+            floor,
         })
+    }
+
+    /// The reconciled three-way session floor this session runs at.
+    pub fn session_floor(&self) -> &SessionFloor {
+        &self.floor
     }
 
     /// The address this client is connected to.
@@ -179,7 +260,7 @@ impl RemoteModel {
         // one-lane batched-partial payload): the served model decodes it with
         // decode_batched_partial_values, so a plain single-value encoding would
         // be misread as carrying a batch dimension.
-        let observation_bytes = encode_batched_partial_values(
+        let observation_value = encode_batched_partial_values(
             std::slice::from_ref(&observation),
             &self.observation_space,
         )
@@ -198,23 +279,28 @@ impl RemoteModel {
                 slots: vec![PredictSlot {
                     env_index: 0,
                     episode_id,
+                    // `step` is int64 on both the native and proto side.
                     step: self.step,
                     reset,
                 }],
             }),
-            observation: Some(bytes_value(observation_bytes)),
+            observation: Some(observation_value),
         };
 
         let response = self.inner.predict(request).await.map_err(Error::from)?;
 
-        let action_bytes = value_bytes(response.action.as_ref())
-            .map_err(|error| Error::Internal(error.to_string()))?;
-        let mut actions = decode_batched_partial_values(action_bytes.as_ref(), &self.action_space)
-            .map_err(|error| Error::Internal(error.to_string()))?;
-        let action = actions
-            .drain(..)
-            .next()
-            .ok_or_else(|| Error::Internal("predict response missing action".into()))?;
+        // Single-lane route: decode with N=1 and assert exactly one action,
+        // never silently take the first lane (§5).
+        let mut actions =
+            decode_batched_partial_values(response.action.as_ref(), &self.action_space, 1)
+                .map_err(|error| Error::Internal(error.to_string()))?;
+        if actions.len() != 1 {
+            return Err(Error::Internal(format!(
+                "predict returned {} actions for a single-env route",
+                actions.len()
+            )));
+        }
+        let action = actions.remove(0);
 
         // Advance only once a fully-decoded action is in hand, so a malformed
         // (action-less) response leaves step/pending_reset intact for a retry,
@@ -253,7 +339,12 @@ impl RemoteModel {
                     request_id: format!("{}:configure_route", self.route_id),
                     slots: Vec::new(),
                 }),
-                env_contract: Some(env_contract_to_proto(&self.env_contract)),
+                env_spec: Some(env_spec_to_proto(&self.env_contract)),
+                // Pin the model to the reconciled three-way floor: authoritative
+                // over the model's own (pairwise) handshake result.
+                selected_protocol_generation: self.floor.selected_protocol_generation.clone(),
+                selected_workflow_edition: self.floor.selected_workflow_edition.clone(),
+                active_capabilities: self.floor.active_capabilities.clone(),
             })
             .await
             .map_err(Error::from)

@@ -22,7 +22,6 @@ futures = { workspace = true }
 half = { workspace = true }
 hyper-util = { workspace = true, features = ["tokio"] }
 prost = { workspace = true }
-prost-types = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

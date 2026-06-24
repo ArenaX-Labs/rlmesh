@@ -1,6 +1,5 @@
 //! Tonic transport server for the EnvService.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,19 +16,17 @@ use crate::env::episode::{EpisodeTracker, LaneState};
 use crate::error::EnvError;
 use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
-use crate::wire::value_bytes_ref;
+use crate::wire::value_leaves;
 use rlmesh_spaces::AutoresetMode;
 
-use rlmesh_proto::core::v1::{OperationMetric, OperationTelemetry, operation_metric};
 use rlmesh_proto::env::v1::{
-    CloseResponse, EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode, HandshakeRequest,
-    HandshakeResponse, JoinRequest, JoinResponse, ShutdownRequest, ShutdownResponse,
-    env_service_server::EnvService, join_request, join_response,
+    CloseEnvsResponse, EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode,
+    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, ShutdownRequest,
+    ShutdownResponse, env_service_server::EnvService, join_request, join_response,
 };
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS,
     MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    check_provisional_edition_pin, evaluate_handshake, supported_workflow_editions,
+    evaluate_handshake, peer_info, supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -42,17 +39,18 @@ use super::env_error_to_proto;
 /// environment mutex, preventing overlapping access to the wrapped environment.
 async fn run_env_op_with_deadline<F, T>(
     op: F,
-    timeout_ms: i64,
+    timeout_ms: u64,
     operation: &str,
 ) -> Result<T, EnvError>
 where
     F: std::future::Future<Output = Result<T, EnvError>>,
 {
-    if timeout_ms <= 0 {
+    // timeout_ms comes off the wire as uint64; 0 means "no timeout".
+    if timeout_ms == 0 {
         return op.await;
     }
 
-    let timeout_duration = Duration::from_millis(timeout_ms as u64);
+    let timeout_duration = Duration::from_millis(timeout_ms);
     tokio::pin!(op);
 
     match tokio::time::timeout(timeout_duration, op.as_mut()).await {
@@ -205,8 +203,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         name = "rlmesh.grpc.server.handshake",
         skip_all,
         fields(
-            client_name = %request.get_ref().client_name,
-            client_version = %request.get_ref().client_version
+            peer_component = %request.get_ref().base.as_ref().and_then(|b| b.peer_info.as_ref()).map(|p| p.component.as_str()).unwrap_or(""),
+            peer_version = %request.get_ref().base.as_ref().and_then(|b| b.peer_info.as_ref()).map(|p| p.package_version.as_str()).unwrap_or("")
         )
     )]
     async fn handshake(
@@ -214,50 +212,43 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         request: Request<HandshakeRequest>,
     ) -> Result<Response<HandshakeResponse>, Status> {
         self.authenticate(&request)?;
-        let req = request.into_inner();
+        let req = request
+            .into_inner()
+            .base
+            .ok_or_else(|| Status::invalid_argument("handshake request missing base"))?;
 
+        // Peer identity/version now ride PeerInfo (subsuming the old
+        // client_name/client_version scalars); missing PeerInfo reports empty.
+        let peer = req.peer_info.clone().unwrap_or_default();
         tracing::info!(
             "Handshake from {} v{} (protocol {}, offered editions [{}])",
-            req.client_name,
-            req.client_version,
+            peer.component,
+            peer.package_version,
             req.protocol_generation,
             req.supported_workflow_editions.join(", ")
         );
 
         let compat = evaluate_handshake(&req.protocol_generation, &req.supported_workflow_editions);
-        // Provisional editions interoperate only between matching builds. The
-        // client verifies our pin on the response; we verify the client's pin
-        // here as the symmetric check. An old client that omits it fails closed.
-        let pin_error = if compat.is_compatible() {
-            check_provisional_edition_pin(
-                compat.selected_edition.unwrap_or_default(),
-                &req.offered_edition_status,
-                &req.offered_edition_spec_sha256,
-                &req.client_version,
-            )
-            .err()
-        } else {
-            None
-        };
-        let compatible = compat.is_compatible() && pin_error.is_none();
+        // Moving prerelease/dev editions are pinned by their cohort suffix; an
+        // exact name match in negotiation is the compatibility check.
+        let compatible = compat.is_compatible();
 
         let env_contract = if compatible {
             let env = self.env.lock().await;
             let mut contract = env_contract_to_proto(env.env_contract());
-            contract.num_envs = env.num_envs() as u32;
+            contract.num_envs = Some(env.num_envs() as u32);
             Some(contract)
         } else {
             None
         };
 
-        let res = HandshakeResponse {
+        let base = rlmesh_proto::core::v1::HandshakeResponse {
             compatible,
+            peer_info: Some(peer_info("rlmesh-env")),
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
             min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
-            } else if let Some(err) = pin_error {
-                err
             } else if !compat.protocol_compatible {
                 format!(
                     "protocol generation {} not compatible with server {}",
@@ -279,27 +270,18 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
                 capabilities::ENV_SERVICE_V1,
                 capabilities::SPACES_CORE_V1,
             ]),
-            env_contract,
             selected_workflow_edition: if compatible {
                 compat.selected_edition.unwrap_or_default().to_string()
             } else {
                 String::new()
             },
             supported_workflow_editions: supported_workflow_editions(),
-            server_version: env!("CARGO_PKG_VERSION").to_string(),
-            selected_edition_spec_sha256: if compatible {
-                CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string()
-            } else {
-                String::new()
-            },
-            selected_edition_status: if compatible {
-                CURRENT_WORKFLOW_EDITION_STATUS.to_string()
-            } else {
-                String::new()
-            },
         };
 
-        Ok(Response::new(res))
+        Ok(Response::new(HandshakeResponse {
+            base: Some(base),
+            env_contract,
+        }))
     }
 
     type JoinStream = ReceiverStream<Result<JoinResponse, Status>>;
@@ -406,12 +388,18 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         request: Request<ShutdownRequest>,
     ) -> Result<Response<ShutdownResponse>, Status> {
         self.authenticate(&request)?;
-        let request = request.into_inner();
+        let request = request
+            .into_inner()
+            .base
+            .ok_or_else(|| Status::invalid_argument("shutdown request missing base"))?;
 
         if !self.serve_options.allow_remote_shutdown {
             return Ok(Response::new(ShutdownResponse {
-                accepted: false,
-                message: "remote shutdown is disabled for this environment endpoint".to_string(),
+                base: Some(rlmesh_proto::core::v1::ShutdownResponse {
+                    accepted: false,
+                    message: "remote shutdown is disabled for this environment endpoint"
+                        .to_string(),
+                }),
             }));
         }
 
@@ -422,12 +410,14 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         });
 
         Ok(Response::new(ShutdownResponse {
-            accepted: true,
-            message: if request.reason.is_empty() {
-                "shutdown accepted".to_string()
-            } else {
-                format!("shutdown accepted: {}", request.reason)
-            },
+            base: Some(rlmesh_proto::core::v1::ShutdownResponse {
+                accepted: true,
+                message: if request.reason.is_empty() {
+                    "shutdown accepted".to_string()
+                } else {
+                    format!("shutdown accepted: {}", request.reason)
+                },
+            }),
         }))
     }
 }
@@ -446,7 +436,6 @@ async fn handle_env_request<E: Environment>(
     episode_tracker: Arc<Mutex<EpisodeTracker>>,
 ) -> JoinResponse {
     let request_id = req.request_id.clone();
-    let operation = join_request_operation(req.kind.as_ref());
     let endpoint_started = Instant::now();
 
     let kind = match req.kind {
@@ -495,7 +484,8 @@ async fn handle_env_request<E: Environment>(
                         // lanes keep their active id. Returned ids are full-width.
                         for (i, &env_idx) in env_indices.iter().enumerate() {
                             let seed = seeds.get(i).copied();
-                            tracker.start_episode(env_idx, seed);
+                            // Wire env_index is uint32; the tracker keys on i32.
+                            tracker.start_episode(env_idx as i32, seed);
                         }
                         (0..num_envs)
                             .map(|env_idx| {
@@ -671,7 +661,7 @@ async fn handle_env_request<E: Environment>(
 
             match result {
                 Ok(ok) => {
-                    let frame_bytes = ok.png_frame.as_ref().map(Vec::len).unwrap_or(0);
+                    let frame_bytes = ok.frame.as_ref().map(Vec::len).unwrap_or(0);
                     tracing::debug!(frame_bytes, "env render completed");
                     Some(join_response::Kind::Render(ok))
                 }
@@ -685,7 +675,9 @@ async fn handle_env_request<E: Environment>(
             let mut tracker = episode_tracker.lock().await;
             let final_episodes = tracker.complete_all("client close");
 
-            Some(join_response::Kind::Close(CloseResponse { final_episodes }))
+            Some(join_response::Kind::Close(CloseEnvsResponse {
+                final_episodes,
+            }))
         }
         None => Some(join_response::Kind::Error(ProtoEnvError {
             code: ProtoEnvErrorCode::Internal as i32,
@@ -698,7 +690,15 @@ async fn handle_env_request<E: Environment>(
 
     let response = JoinResponse {
         kind,
-        telemetry: Some(operation_telemetry(operation, endpoint_started.elapsed())),
+        // Hot per-step endpoint-local duration carried as the bare scalar
+        // (replaces the old nested telemetry message). The empty-component_id
+        // and dead-labels bugs vanish with the nested shape.
+        endpoint_total_ns: Some(
+            endpoint_started
+                .elapsed()
+                .as_nanos()
+                .min(u128::from(u64::MAX)) as u64,
+        ),
         request_id,
     };
     tracing::debug!(
@@ -718,7 +718,7 @@ async fn handle_env_request<E: Environment>(
 /// guessing would start phantom or seed-misaligned episodes.
 fn validate_partial_reset(
     partial: bool,
-    env_indices: &[i32],
+    env_indices: &[u32],
     seeds: &[i64],
     num_envs: usize,
 ) -> Result<(), String> {
@@ -735,9 +735,7 @@ fn validate_partial_reset(
     }
     let mut seen = std::collections::HashSet::with_capacity(env_indices.len());
     for &idx in env_indices {
-        if idx < 0 {
-            return Err(format!("partial reset: negative env_index {idx}"));
-        }
+        // Wire env_index is uint32, so a negative index is unrepresentable.
         if idx as usize >= num_envs {
             return Err(format!(
                 "partial reset: env_index {idx} out of range for num_envs {num_envs}"
@@ -842,16 +840,6 @@ fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'static str {
     }
 }
 
-fn join_request_operation(kind: Option<&join_request::Kind>) -> &'static str {
-    match kind {
-        Some(join_request::Kind::Reset(_)) => "env.reset",
-        Some(join_request::Kind::Step(_)) => "env.step",
-        Some(join_request::Kind::Render(_)) => "env.render",
-        Some(join_request::Kind::Close(_)) => "env.close",
-        None => "env.unknown",
-    }
-}
-
 fn join_response_kind_name(kind: Option<&join_response::Kind>) -> &'static str {
     match kind {
         Some(join_response::Kind::Reset(_)) => "reset_ok",
@@ -873,32 +861,16 @@ fn join_response_payload_bytes(response: &JoinResponse) -> usize {
             space_value_len(ok.observation.as_ref())
                 + ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0)
         }
-        Some(join_response::Kind::Render(ok)) => ok.png_frame.as_ref().map(Vec::len).unwrap_or(0),
+        Some(join_response::Kind::Render(ok)) => ok.frame.as_ref().map(Vec::len).unwrap_or(0),
         Some(join_response::Kind::Error(error)) => error.message.len() + error.debug_info.len(),
         _ => 0,
     }
 }
 
 fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> usize {
-    value_bytes_ref(payload)
-        .ok()
-        .flatten()
-        .map(|payload| payload.data.len())
+    value_leaves(payload)
+        .map(|leaves| leaves.iter().map(|leaf| leaf.len()).sum())
         .unwrap_or(0)
-}
-
-fn operation_telemetry(operation: &str, endpoint_total: Duration) -> OperationTelemetry {
-    OperationTelemetry {
-        operation: operation.to_string(),
-        component_id: String::new(),
-        metrics: vec![OperationMetric {
-            name: "endpoint.total".to_string(),
-            labels: HashMap::new(),
-            value: Some(operation_metric::Value::DurationNs(
-                endpoint_total.as_nanos().try_into().unwrap_or(u64::MAX),
-            )),
-        }],
-    }
 }
 
 fn extract_env_final_info(
@@ -962,13 +934,12 @@ mod tests {
     use async_trait::async_trait;
     use rlmesh_proto::env::v1::env_service_server::EnvService;
     use rlmesh_proto::env::v1::{
-        CloseResponse, HandshakeRequest, RenderRequest, RenderResponse, ResetRequest,
+        CloseEnvsResponse, HandshakeRequest, RenderRequest, RenderResponse, ResetRequest,
         ResetResponse, StepRequest, StepResponse,
     };
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
-        CURRENT_WORKFLOW_EDITION_STATUS, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        capabilities, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        capabilities, peer_info, supported_workflow_editions,
     };
     use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
     use tonic::Request;
@@ -1027,7 +998,7 @@ mod tests {
             .await
             .expect("correct token must be accepted")
             .into_inner();
-        assert!(response.compatible);
+        assert!(response.base.unwrap().compatible);
     }
 
     #[tokio::test]
@@ -1044,34 +1015,7 @@ mod tests {
         .await
         .expect("no-token server accepts requests")
         .into_inner();
-        assert!(response.compatible);
-    }
-
-    #[tokio::test]
-    async fn handshake_rejects_mismatched_provisional_pin() {
-        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
-
-        // Protocol and edition negotiation succeed, but a differing (or absent)
-        // client spec checksum must still fail the provisional handshake.
-        for bad_pin in ["deadbeef".to_string(), String::new()] {
-            let mut request = handshake_request(PROTOCOL_GENERATION, &[CURRENT_WORKFLOW_EDITION]);
-            request.offered_edition_spec_sha256 = bad_pin.clone();
-
-            let response = EnvService::handshake(&server, Request::new(request))
-                .await
-                .expect("handshake returns a response")
-                .into_inner();
-
-            assert!(
-                !response.compatible,
-                "mismatched pin {bad_pin:?} must be rejected"
-            );
-            assert!(
-                response.error_message.contains("provisional"),
-                "unexpected error for pin {bad_pin:?}: {}",
-                response.error_message
-            );
-        }
+        assert!(response.base.unwrap().compatible);
     }
 
     fn contract(
@@ -1177,8 +1121,8 @@ mod tests {
         async fn render(&mut self, _req: RenderRequest) -> Result<RenderResponse, EnvError> {
             Ok(RenderResponse::default())
         }
-        async fn close(&mut self) -> Result<CloseResponse, EnvError> {
-            Ok(CloseResponse::default())
+        async fn close(&mut self) -> Result<CloseEnvsResponse, EnvError> {
+            Ok(CloseEnvsResponse::default())
         }
     }
 
@@ -1193,16 +1137,15 @@ mod tests {
 
     fn handshake_request(protocol_generation: &str, offered_editions: &[&str]) -> HandshakeRequest {
         HandshakeRequest {
-            protocol_generation: protocol_generation.to_string(),
-            client_name: "client".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: Default::default(),
-            supported_workflow_editions: offered_editions
-                .iter()
-                .map(|edition| edition.to_string())
-                .collect(),
-            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
-            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
+            base: Some(rlmesh_proto::core::v1::HandshakeRequest {
+                protocol_generation: protocol_generation.to_string(),
+                peer_info: Some(peer_info("rlmesh-env-test-client")),
+                capabilities: Default::default(),
+                supported_workflow_editions: offered_editions
+                    .iter()
+                    .map(|edition| edition.to_string())
+                    .collect(),
+            }),
         }
     }
 
@@ -1221,7 +1164,7 @@ mod tests {
         let env = Arc::new(Mutex::new(env));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
-        let step_req = |timeout_ms: i64, id: &str| JoinRequest {
+        let step_req = |timeout_ms: u64, id: &str| JoinRequest {
             kind: Some(join_request::Kind::Step(StepRequest {
                 timeout_ms,
                 ..Default::default()
@@ -1358,27 +1301,69 @@ mod tests {
         .unwrap()
         .into_inner();
 
-        assert!(response.compatible);
-        assert_eq!(response.server_protocol_generation, PROTOCOL_GENERATION);
+        assert!(response.env_contract.is_some());
+        let base = response.base.unwrap();
+        assert!(base.compatible);
+        assert_eq!(base.server_protocol_generation, PROTOCOL_GENERATION);
         assert_eq!(
-            response.min_supported_protocol_generation,
+            base.min_supported_protocol_generation,
             MIN_SUPPORTED_PROTOCOL_GENERATION
         );
-        assert_eq!(response.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
+        assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
         assert_eq!(
-            response.supported_workflow_editions,
+            base.supported_workflow_editions,
             supported_workflow_editions()
         );
-        assert!(response.env_contract.is_some());
+        // PeerInfo is populated both directions; the response names the env.
+        assert_eq!(base.peer_info.as_ref().unwrap().component, "rlmesh-env");
+        assert!(base.capabilities.contains_key(capabilities::ENV_SERVICE_V1));
+        assert!(base.capabilities.contains_key(capabilities::SPACES_CORE_V1));
+    }
+
+    #[tokio::test]
+    async fn handshake_carries_python_supplied_peer_info() {
+        use std::collections::HashMap;
+
+        use rlmesh_proto::{PeerInfoOverride, set_peer_info_override};
+
+        // Simulate the Python SDK stamping its runtime identity at import: a
+        // python-hosted peer reports language/version + framework versions. This
+        // is the process-wide override the handshake builder merges in.
+        let mut frameworks = HashMap::new();
+        frameworks.insert("numpy".to_string(), "1.26.4".to_string());
+        set_peer_info_override(PeerInfoOverride {
+            language: "python".to_string(),
+            language_version: "3.11.4".to_string(),
+            package_version: "0.1.0rc1".to_string(),
+            os: "linux".to_string(),
+            os_version: "ubuntu-22.04".to_string(),
+            arch: "x86_64".to_string(),
+            framework_versions: frameworks,
+            extra: HashMap::new(),
+        });
+
+        let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
+        let response = EnvService::handshake(
+            &server,
+            Request::new(handshake_request(
+                PROTOCOL_GENERATION,
+                &[CURRENT_WORKFLOW_EDITION],
+            )),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+
+        let peer = response.base.unwrap().peer_info.unwrap();
+        // The component still names this call site; the rest is python-supplied.
+        assert_eq!(peer.component, "rlmesh-env");
+        assert_eq!(peer.language, "python");
+        assert!(!peer.language_version.is_empty());
+        assert_eq!(peer.language_version, "3.11.4");
         assert!(
-            response
-                .capabilities
-                .contains_key(capabilities::ENV_SERVICE_V1)
-        );
-        assert!(
-            response
-                .capabilities
-                .contains_key(capabilities::SPACES_CORE_V1)
+            peer.framework_versions.contains_key("numpy"),
+            "python handshake should carry framework versions, got {:?}",
+            peer.framework_versions
         );
     }
 
@@ -1397,10 +1382,11 @@ mod tests {
         .unwrap()
         .into_inner();
 
-        assert!(!response.compatible);
-        assert!(response.error_message.contains("protocol generation"));
-        assert!(response.selected_workflow_edition.is_empty());
         assert!(response.env_contract.is_none());
+        let base = response.base.unwrap();
+        assert!(!base.compatible);
+        assert!(base.error_message.contains("protocol generation"));
+        assert!(base.selected_workflow_edition.is_empty());
     }
 
     #[tokio::test]
@@ -1418,9 +1404,10 @@ mod tests {
         .unwrap()
         .into_inner();
 
-        assert!(response.compatible);
-        assert_eq!(response.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
         assert!(response.env_contract.is_some());
+        let base = response.base.unwrap();
+        assert!(base.compatible);
+        assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
     }
 
     #[tokio::test]
@@ -1436,21 +1423,18 @@ mod tests {
             .unwrap()
             .into_inner();
 
-            assert!(!response.compatible, "offer {offer:?} must be rejected");
-            assert!(response.error_message.contains("workflow edition"));
+            assert!(response.env_contract.is_none());
+            let base = response.base.unwrap();
+            assert!(!base.compatible, "offer {offer:?} must be rejected");
+            assert!(base.error_message.contains("workflow edition"));
             if offer.is_empty() {
-                assert!(
-                    response
-                        .error_message
-                        .contains("predate edition negotiation")
-                );
+                assert!(base.error_message.contains("predate edition negotiation"));
             }
             assert_eq!(
-                response.supported_workflow_editions,
+                base.supported_workflow_editions,
                 supported_workflow_editions()
             );
-            assert!(response.selected_workflow_edition.is_empty());
-            assert!(response.env_contract.is_none());
+            assert!(base.selected_workflow_edition.is_empty());
         }
     }
 
@@ -1568,7 +1552,7 @@ mod tests {
         )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
-        let reset = |env_indices: Vec<i32>, seeds: Vec<i64>| JoinRequest {
+        let reset = |env_indices: Vec<u32>, seeds: Vec<i64>| JoinRequest {
             kind: Some(join_request::Kind::Reset(ProtoResetRequest {
                 env_indices,
                 seeds,
@@ -1601,11 +1585,7 @@ mod tests {
             super::handle_env_request(reset(vec![2], vec![]), env.clone(), tracker.clone()).await,
             "out of range",
         );
-        // Negative lane.
-        expect_invalid(
-            super::handle_env_request(reset(vec![-1], vec![]), env.clone(), tracker.clone()).await,
-            "negative",
-        );
+        // Negative lanes are unrepresentable now that env_indices is uint32.
         // Duplicate lane.
         expect_invalid(
             super::handle_env_request(reset(vec![0, 0], vec![]), env.clone(), tracker.clone())

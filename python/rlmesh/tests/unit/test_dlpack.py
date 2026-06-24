@@ -78,15 +78,6 @@ def test_dlpack_copy_exports_fresh_buffer() -> None:
     assert _capsule_name_is(capsule, b"dltensor_versioned")
 
 
-def test_dlpack_bfloat16_exports() -> None:
-    import rlmesh
-
-    tensor = rlmesh.Tensor(b"\x00\x3f", [1], "bfloat16")
-
-    capsule = tensor.__dlpack__()
-    assert _capsule_name_is(capsule, b"dltensor")
-
-
 def test_numpy_from_dlpack_roundtrip() -> None:
     np = pytest.importorskip("numpy")
     import rlmesh

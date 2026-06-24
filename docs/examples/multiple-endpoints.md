@@ -2,13 +2,11 @@
 
 Run more than one environment endpoint, then connect one evaluator to all of them.
 
-The runnable evaluator is
-{source}`examples/python/quickstart/eval_many.py <examples/python/quickstart/eval_many.py>`.
+The runnable evaluator is {source}`examples/python/quickstart/eval_many.py <examples/python/quickstart/eval_many.py>`.
 
 ## Start Two Servers
 
-Each environment is served by `rlmesh.EnvServer`. The Gymnasium server wraps a registered
-environment:
+Each environment is served by `rlmesh.EnvServer`. The Gymnasium server wraps a registered environment:
 
 ```python
 import gymnasium as gym
@@ -37,8 +35,7 @@ uv run python examples/python/quickstart/serve.py --address 127.0.0.1:5556
 
 ## Evaluate Both
 
-`eval_many.py` opens a `RemoteEnv` per address and runs the same sampled-action loop against each
-endpoint:
+`eval_many.py` opens a `RemoteEnv` per address and runs the same sampled-action loop against each endpoint:
 
 ```python
 def evaluate(address: str, max_steps: int) -> str:
@@ -83,5 +80,4 @@ uv run python examples/python/quickstart/eval_many.py \
   127.0.0.1:5556
 ```
 
-That is one evaluator running across multiple environment runtimes, locally. The client shape is the
-same for every endpoint, whether the server wraps a Gymnasium environment or a custom object.
+That is one evaluator running across multiple environment runtimes, locally. The client shape is the same for every endpoint, whether the server wraps a Gymnasium environment or a custom object.

@@ -1,6 +1,5 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
-use rlmesh_spaces::MultiBinaryDims;
 use rlmesh_spaces::spaces::*;
 
 pub fn make_multibinary<'py>(
@@ -8,23 +7,18 @@ pub fn make_multibinary<'py>(
     spaces: &Bound<'py, PyAny>,
     space: &SpaceSpec,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let dims = match &space.spec {
-        Some(SpaceKind::MultiBinary(spec)) => spec,
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "spec.multi_binary missing",
-            ));
-        }
-    };
+    if !matches!(&space.spec, Some(SpaceKind::MultiBinary(_))) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "spec.multi_binary missing",
+        ));
+    }
 
-    let n_value = match &dims.n {
-        Some(MultiBinaryDims::Size(size)) => (*size).into_pyobject(py)?.unbind().into_any(),
-        Some(MultiBinaryDims::Dims(dims)) => dims.clone().into_pyobject(py)?.unbind().into_any(),
-        None => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "MultiBinarySpec.n missing",
-            ));
-        }
+    // Dimensions live in `SpaceSpec.shape`: a rank-1 shape maps to a scalar
+    // `MultiBinary(n)`, higher ranks to `MultiBinary([d0, d1, ...])`.
+    let n_value = if space.shape.len() == 1 {
+        space.shape[0].into_pyobject(py)?.unbind().into_any()
+    } else {
+        space.shape.clone().into_pyobject(py)?.unbind().into_any()
     };
 
     spaces.getattr("MultiBinary")?.call1((n_value,))

@@ -101,11 +101,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
           },
           "serve": {
             "kind": "function",
@@ -138,10 +138,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -157,10 +153,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -224,10 +216,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -247,10 +235,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -330,10 +314,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -349,10 +329,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -428,10 +404,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -451,10 +423,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -636,11 +604,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
           },
           "serve": {
             "kind": "function",
@@ -673,10 +641,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -692,10 +656,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -759,10 +719,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -782,10 +738,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -838,10 +790,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -857,10 +805,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -932,10 +876,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -955,10 +895,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -1048,11 +984,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
           },
           "serve": {
             "kind": "function",
@@ -1090,10 +1026,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -1109,10 +1041,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -1176,10 +1104,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -1199,10 +1123,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -1255,10 +1175,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -1274,10 +1190,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -1376,10 +1288,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -1399,10 +1307,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -2015,11 +1919,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
           },
           "serve": {
             "kind": "function",
@@ -2052,10 +1956,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -2071,10 +1971,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -2138,10 +2034,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -2161,10 +2053,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: ViewerFPS = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -2217,10 +2105,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -2236,10 +2120,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",
@@ -2311,10 +2191,6 @@
             "kind": "function",
             "signature": "close() -> None"
           },
-          "close_viewer": {
-            "kind": "function",
-            "signature": "close_viewer() -> None"
-          },
           "env_contract": {
             "kind": "property",
             "signature": "property env_contract: EnvContract"
@@ -2334,10 +2210,6 @@
           "observation_space_spec": {
             "kind": "property",
             "signature": "property observation_space_spec: SpaceSpec"
-          },
-          "open_viewer": {
-            "kind": "function",
-            "signature": "open_viewer(*, env_index: int = 0, fps: float | None | str = 'env') -> None"
           },
           "render": {
             "kind": "function",

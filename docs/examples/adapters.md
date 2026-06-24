@@ -1,20 +1,16 @@
 # Adapters Example
 
-These examples show {doc}`../user-guide/adapters`: an environment tags its spaces, a model declares
-its format, and the pairing is derived at runtime. Both need the NumPy backend and run with no GPU
-or simulator.
+These examples show {doc}`../user-guide/adapters`: an environment tags its spaces, a model declares its format, and the pairing is derived at runtime. Both need the NumPy backend and run with no GPU or simulator.
 
 ## Smallest serve-and-run loop
 
-One process serves a tagged environment and runs an adapted model against it. The runnable file is
-{source}`examples/python/adapters/serve_and_run.py <examples/python/adapters/serve_and_run.py>`.
+One process serves a tagged environment and runs an adapted model against it. The runnable file is {source}`examples/python/adapters/serve_and_run.py <examples/python/adapters/serve_and_run.py>`.
 
 ```bash
 uv run python examples/python/adapters/serve_and_run.py
 ```
 
-The environment tags its spaces: each observation entry and action component gets a semantic role
-plus the few facts the spaces cannot carry (rotation encoding, ranges, clipping).
+The environment tags its spaces: each observation entry and action component gets a semantic role plus the few facts the spaces cannot carry (rotation encoding, ranges, clipping).
 
 ```python
 import rlmesh.adapters as adapt
@@ -36,8 +32,7 @@ ENV_TAGS = adapt.EnvTags(
 )
 ```
 
-The model declares its own format, written without any knowledge of an environment: a 224x224 image,
-a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action.
+The model declares its own format, written without any knowledge of an environment: a 224x224 image, a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action.
 
 ```python
 MODEL_SPEC = adapt.ModelSpec(
@@ -62,8 +57,7 @@ MODEL_SPEC = adapt.ModelSpec(
 )
 ```
 
-The `predict` function works purely in the model's format; the payload already arrives shaped to
-`MODEL_SPEC`, so there is no per-environment glue inside it.
+The `predict` function works purely in the model's format; the payload already arrives shaped to `MODEL_SPEC`, so there is no per-environment glue inside it.
 
 ```python
 def predict(payload: dict[str, Any]) -> Any:
@@ -72,8 +66,7 @@ def predict(payload: dict[str, Any]) -> Any:
     return np.zeros(MODEL_SPEC.action.dim, dtype=np.float32)
 ```
 
-The env is served with its tags published in the contract, then `Model(spec=...).run(env)` resolves
-the adapter from that contract and runs the episode.
+The env is served with its tags published in the contract, then `Model(spec=...).run(env)` resolves the adapter from that contract and runs the episode.
 
 ```python
 import rlmesh
@@ -87,16 +80,11 @@ print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).describe())
 Model(predict, spec=MODEL_SPEC).run(client, max_episodes=1)
 ```
 
-The script first prints `resolve_from_contract(...).describe()`, the exact transformations chosen:
-the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is
-remapped, and the model's `rot6d` action is converted `rot6d -> axis_angle` and clipped into the
-environment's action.
+The script first prints `resolve_from_contract(...).describe()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped, and the model's `rot6d` action is converted `rot6d -> axis_angle` and clipped into the environment's action.
 
 ## A project with many models and environments
 
-The VLA example lays out a project where models and environments are added independently. With no
-per-pair adapters, `resolve` derives every (model, environment) combination. The runnable harness is
-{source}`examples/python/vla_adapters/eval.py <examples/python/vla_adapters/eval.py>`.
+The VLA example lays out a project where models and environments are added independently. With no per-pair adapters, `resolve` derives every (model, environment) combination. The runnable harness is {source}`examples/python/vla_adapters/eval.py <examples/python/vla_adapters/eval.py>`.
 
 ```bash
 cd examples/python
@@ -112,8 +100,7 @@ vla_adapters/
 └── overrides/         # complete adapter overwrites for special pairings
 ```
 
-Each model is one spec module plus a loader; the registry is one line per checkpoint. The same goes
-for envs, so adding an environment pairs it with every model without touching model code.
+Each model is one spec module plus a loader; the registry is one line per checkpoint. The same goes for envs, so adding an environment pairs it with every model without touching model code.
 
 ```python
 # models/smolvla.py
@@ -140,8 +127,7 @@ SPEC = adapt.ModelSpec(
 )
 ```
 
-The harness picks the most specific mechanism per pairing: a pair-level override, the model's own
-adapter factory, or plain spec resolution from the env's tags and spaces.
+The harness picks the most specific mechanism per pairing: a pair-level override, the model's own adapter factory, or plain spec resolution from the env's tags and spaces.
 
 ```python
 def build_adapter(model_name, env_name, env):
@@ -158,8 +144,7 @@ def build_adapter(model_name, env_name, env):
     )
 ```
 
-`metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a
-`StateLayout`, so the same specs that pair with the Dict envs resolve against it unchanged.
+`metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a `StateLayout`, so the same specs that pair with the Dict envs resolve against it unchanged.
 
 ```python
 # envs/metaworld.py — one flat leaf split by index range
@@ -171,9 +156,7 @@ def build_adapter(model_name, env_name, env):
 ),
 ```
 
-The example also demonstrates the escape hatches. `act.py` is an ACT-style policy whose temporal
-ensembling is stateful, so its `ChunkEnsembleAdapter` subclasses `AdapterBase` and wraps the
-resolved adapter, adding only the ensemble.
+The example also demonstrates the escape hatches. `act.py` is an ACT-style policy whose temporal ensembling is stateful, so its `ChunkEnsembleAdapter` subclasses `AdapterBase` and wraps the resolved adapter, adding only the ensemble.
 
 ```python
 class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
@@ -189,9 +172,7 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
         return self._inner.transform_action(ensembled)
 ```
 
-Against a served endpoint, pass `--address`. For a plain pairing the harness hands `Model(spec=...)`
-the env and the adapter is built from the handshake; an escape-hatch pairing builds the adapter
-explicitly and wraps the predict function.
+Against a served endpoint, pass `--address`. For a plain pairing the harness hands `Model(spec=...)` the env and the adapter is built from the handshake; an escape-hatch pairing builds the adapter explicitly and wraps the predict function.
 
 ```bash
 uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.0.1:5555

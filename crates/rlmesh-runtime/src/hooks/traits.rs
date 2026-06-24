@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use rlmesh_proto::common::v1::MessageBytes;
+use prost::bytes::Bytes;
 
 use super::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
@@ -53,7 +53,7 @@ pub trait RuntimeHooks: Send + Sync {
     async fn transform_action(
         &self,
         event: ActionReceivedEvent,
-    ) -> Result<Option<MessageBytes>, HookError> {
+    ) -> Result<Option<Vec<Bytes>>, HookError> {
         Ok(event.action)
     }
 
@@ -69,7 +69,7 @@ pub trait RuntimeHooks: Send + Sync {
     async fn transform_observation(
         &self,
         event: ObservationEmittedEvent,
-    ) -> Result<Option<MessageBytes>, HookError> {
+    ) -> Result<Option<Vec<Bytes>>, HookError> {
         Ok(event.observation)
     }
 

@@ -30,13 +30,13 @@ pub use rlmesh_spaces::request::CloseRequest;
 pub use rlmesh_spaces::scalar::{
     Scalar, ScalarError, decode_scalars, encode_i64_scalars, encode_scalars,
 };
-pub use rlmesh_spaces::spaces::{SpaceValue, contains, validate_space};
+pub use rlmesh_spaces::spaces::{Conformance, SpaceValue, conform, contains, validate_space};
 pub use rlmesh_spaces::tensor::{
     DLPackType, Device, Storage, Tensor, TensorError, contiguous_strides, dlpack_type,
     dtype_from_dlpack,
 };
 pub use rlmesh_spaces::types::{
-    BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract, MultiBinaryDims,
-    MultiBinarySpec, MultiDiscreteNvec, MultiDiscreteSpec, SpaceKind, SpaceSpec, SpaceType,
-    TextSpec, TupleSpec, TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
+    BoxBounds, BoxSpec, DictSpec, DiscreteSpec, ElementwiseBounds, EnvContract, MultiBinarySpec,
+    MultiDiscreteSpec, SpaceKind, SpaceSpec, SpaceType, TextSpec, TupleSpec,
+    TypedElementwiseBounds, TypedUniformBounds, UniformBounds,
 };

@@ -79,7 +79,6 @@ def _install_native_docs_stub() -> None:
     native.Value = object
     native.ResetInfo = dict[str, object]
     native.StepInfo = dict[str, object]
-    native.RenderBundle = dict[str, object]
     native.SandboxRunInfo = dict[str, object]
 
     # Adapter wire vocabulary, single-sourced from the rlmesh-adapters crate at

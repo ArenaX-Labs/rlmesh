@@ -63,32 +63,17 @@ def asarray(tensor: Tensor) -> NumpyArray:
         tensor: RLMesh tensor value to convert.
 
     Returns:
-        A writable NumPy array with a copy of the tensor data. ``bfloat16``
-        tensors require the ``ml_dtypes`` package (``rlmesh[bfloat16]``).
+        A writable NumPy array with a copy of the tensor data.
     """
     ensure_available()
     import numpy as np
 
     shape = tuple(tensor.shape)
-    if tensor.dtype == "bfloat16":
-        dtype = _bfloat16_dtype()
-    else:
-        dtype = np.dtype(tensor.dtype)
+    dtype = np.dtype(tensor.dtype)
     # ``bytearray`` yields a writable buffer, so the resulting array is writable
     # (np.frombuffer over immutable ``bytes`` would be read-only).
     array = np.frombuffer(bytearray(tensor.tobytes()), dtype=dtype)
     return cast(NumpyArray, np.reshape(array, shape if shape else ()))
-
-
-def _bfloat16_dtype() -> Any:
-    try:
-        import ml_dtypes
-    except ImportError as exc:
-        raise ImportError(
-            "bfloat16 tensors require ml_dtypes for NumPy conversion. "
-            "Install rlmesh[bfloat16]."
-        ) from exc
-    return ml_dtypes.bfloat16
 
 
 def from_array(array: object) -> Tensor | PrimitiveValue:

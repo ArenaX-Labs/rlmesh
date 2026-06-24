@@ -45,5 +45,4 @@ observations, rewards, terminations, truncations, infos = envs.step(actions)
 envs.close()
 ```
 
-`RemoteEnv` accepts endpoints with exactly one environment. If the endpoint reports more than one
-environment, connect with `RemoteVectorEnv` instead.
+`RemoteEnv` accepts endpoints with exactly one environment. If the endpoint reports more than one environment, connect with `RemoteVectorEnv` instead.

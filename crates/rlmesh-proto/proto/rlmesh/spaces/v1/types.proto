@@ -6,23 +6,14 @@ enum DType {
   D_TYPE_UNSPECIFIED = 0;
   D_TYPE_BOOL = 1;
   D_TYPE_UINT8 = 2;
-  D_TYPE_INT32 = 3;
-  D_TYPE_INT64 = 4;
-  D_TYPE_FLOAT16 = 5;
-  D_TYPE_FLOAT32 = 6;
-  D_TYPE_FLOAT64 = 7;
-  D_TYPE_INT8 = 8;
-  D_TYPE_INT16 = 9;
-  D_TYPE_UINT16 = 10;
-  D_TYPE_UINT32 = 11;
-  D_TYPE_UINT64 = 12;
-  D_TYPE_BFLOAT16 = 13;
-}
-
-message VectorInt {
-  repeated int64 data = 1;
-}
-
-message MatrixInt {
-  repeated VectorInt data = 1;
+  D_TYPE_UINT16 = 3;
+  D_TYPE_UINT32 = 4;
+  D_TYPE_UINT64 = 5;
+  D_TYPE_INT8 = 6;
+  D_TYPE_INT16 = 7;
+  D_TYPE_INT32 = 8;
+  D_TYPE_INT64 = 9;
+  D_TYPE_FLOAT16 = 10;
+  D_TYPE_FLOAT32 = 11;
+  D_TYPE_FLOAT64 = 12;
 }

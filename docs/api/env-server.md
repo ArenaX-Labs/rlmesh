@@ -1,15 +1,10 @@
 # Env Server
 
-`EnvServer` owns a Python environment object and exposes it as an RLMesh environment endpoint. The
-served endpoint supports both local loopback use and process boundaries where a model or evaluator
-connects through `RemoteEnv` or `RemoteVectorEnv`.
+`EnvServer` owns a Python environment object and exposes it as an RLMesh environment endpoint. The served endpoint supports both local loopback use and process boundaries where a model or evaluator connects through `RemoteEnv` or `RemoteVectorEnv`.
 
 ## Environment Contract
 
-The server inspects the environment once during construction and caches an
-{py:class}`~rlmesh.specs.EnvContract`. The contract describes the endpoint id, spaces, render mode,
-metadata, and number of environments. `EnvServer.spec` is an alias for `EnvServer.env_contract` so
-code that expects a Gymnasium-style `spec` field can still reach the same RLMesh contract.
+The server inspects the environment once during construction and caches an {py:class}`~rlmesh.specs.EnvContract`. The contract describes the endpoint id, spaces, render mode, metadata, and number of environments. `EnvServer.spec` is an alias for `EnvServer.env_contract` so code that expects a Gymnasium-style `spec` field can still reach the same RLMesh contract.
 
 ```python
 server = rlmesh.EnvServer(env, "127.0.0.1:5555")
@@ -22,9 +17,7 @@ See {doc}`contracts` for contract fields.
 
 ## Bind Address Environment Variables
 
-When RLMesh serves an environment through its bootstrap entrypoint (for example inside a sandbox
-container), the bind address follows a single canonical contract so that hosts and downstream images
-agree on where the environment listens:
+When RLMesh serves an environment through its bootstrap entrypoint (for example inside a sandbox container), the bind address follows a single canonical contract so that hosts and downstream images agree on where the environment listens:
 
 | Variable             | Meaning                                                                                        |
 | -------------------- | ---------------------------------------------------------------------------------------------- |
@@ -33,11 +26,7 @@ agree on where the environment listens:
 | `RLMESH_ENV_ADDRESS` | Deprecated alias for `RLMESH_ADDRESS`; read only when it is unset.                             |
 | `RLMESH_ENV_PORT`    | Deprecated alias for `RLMESH_PORT`; read only when both addresses are unset.                   |
 
-`RLMESH_ADDRESS` is the preferred knob; it accepts the same forms as the `EnvServer` `address`
-argument, so a non-default host or a Unix socket can be selected without code changes.
-`RLMESH_ENV_ADDRESS` / `RLMESH_ENV_PORT` are deprecated aliases kept for backward compatibility.
-Constructing `EnvServer` directly in your own process ignores these variables. Pass
-`address`/`host`/`port` explicitly.
+`RLMESH_ADDRESS` is the preferred knob; it accepts the same forms as the `EnvServer` `address` argument, so a non-default host or a Unix socket can be selected without code changes. `RLMESH_ENV_ADDRESS` / `RLMESH_ENV_PORT` are deprecated aliases kept for backward compatibility. Constructing `EnvServer` directly in your own process ignores these variables. Pass `address`/`host`/`port` explicitly.
 
 ## API
 

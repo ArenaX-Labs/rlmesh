@@ -1,7 +1,6 @@
 # Quickstart Example
 
-The smallest copyable RLMesh server/client loop. Full walkthrough:
-[docs.rlmesh.dev quickstart](https://docs.rlmesh.dev/quickstart) (or `docs/quickstart.md`).
+The smallest copyable RLMesh server/client loop. Full walkthrough: [docs.rlmesh.dev quickstart](https://docs.rlmesh.dev/quickstart) (or `docs/quickstart.md`).
 
 From the repository root, serve an env:
 

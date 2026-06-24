@@ -31,7 +31,7 @@ pub(super) struct Reservoir<T> {
 pub(super) type DurationReservoir = Reservoir<Duration>;
 
 /// Reservoir specialized to floating-point metric samples (byte counts /
-/// generic numbers exposed via OperationTelemetry).
+/// generic numbers exposed via the windowed `MetricSummary` channel).
 pub(super) type ValueReservoir = Reservoir<f64>;
 
 impl<T: Copy> Reservoir<T> {

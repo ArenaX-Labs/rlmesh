@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use image::ImageFormat;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyTuple};
+use pyo3::types::{PyAny, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
@@ -229,10 +229,7 @@ impl ClientCore {
         })?;
 
         let message = result.frame;
-        let frame_bytes_len = message
-            .as_ref()
-            .map(|frame| frame.png_frame.len())
-            .unwrap_or(0);
+        let frame_bytes_len = message.as_ref().map(|frame| frame.frame.len()).unwrap_or(0);
         let _ = rpc_guard.finish(frame_bytes_len);
         Ok(message)
     }
@@ -280,8 +277,7 @@ enum RpcOutcome<T> {
 /// Emits a `PyEnvClient`/`PyVectorEnvClient` pyclass: the struct, the methods
 /// shared by both facades (connect/handshake/spaces/render/close/shutdown), and
 /// the `$extra` methods that differ (reset/step, plus `num_envs` on the vector
-/// facade). `render`/`render_packet`/`render_bundle` are projections of one
-/// render RPC.
+/// facade).
 macro_rules! client_class {
     ($Class:ident, $role:literal, { $($extra:tt)* }) => {
         #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
@@ -344,54 +340,6 @@ macro_rules! client_class {
                     Some(frame) => Ok(decode_render_frame(py, &frame)?.into_any().unbind()),
                     None => Ok(py.None()),
                 }
-            }
-
-            #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-            fn render_packet(
-                &mut self,
-                py: Python<'_>,
-                env_index: usize,
-                timeout_seconds: Option<f64>,
-            ) -> PyResult<Py<PyAny>> {
-                let _span = self.core.span("render_packet");
-                let timeout = self.core.resolve_timeout(timeout_seconds)?;
-                let frame = self.core.render_message(
-                    py,
-                    env_index,
-                    "client.render_packet.rpc",
-                    timeout,
-                )?;
-                match frame {
-                    Some(frame) => Ok(PyBytes::new(py, render_packet(&frame)).into_any().unbind()),
-                    None => Ok(py.None()),
-                }
-            }
-
-            #[pyo3(signature = (env_index=0, *, timeout_seconds=None))]
-            fn render_bundle(
-                &mut self,
-                py: Python<'_>,
-                env_index: usize,
-                timeout_seconds: Option<f64>,
-            ) -> PyResult<Py<PyAny>> {
-                let _span = self.core.span("render_bundle");
-                let timeout = self.core.resolve_timeout(timeout_seconds)?;
-                let frame = self.core.render_message(
-                    py,
-                    env_index,
-                    "client.render_bundle.rpc",
-                    timeout,
-                )?;
-                let (frame_value, packet) = match frame {
-                    Some(frame) => (
-                        decode_render_frame(py, &frame)?.into_any().unbind(),
-                        PyBytes::new(py, render_packet(&frame)).into_any().unbind(),
-                    ),
-                    None => (py.None(), py.None()),
-                };
-                Ok(PyTuple::new(py, [frame_value.bind(py), packet.bind(py)])?
-                    .into_any()
-                    .unbind())
             }
 
             fn close(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -606,8 +554,6 @@ class PyEnvClient:
     def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None, *, timeout_seconds: float | None = None) -> tuple[Value, ResetInfo]: ...
     def step(self, actions: Value, *, timeout_seconds: float | None = None) -> tuple[Value, float, bool, bool, StepInfo]: ...
     def render(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> Value | None: ...
-    def render_packet(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> bytes | None: ...
-    def render_bundle(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> tuple[Value | None, bytes | None]: ...
     def close(self) -> None: ...
     def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
@@ -628,8 +574,6 @@ class PyVectorEnvClient:
     def reset(self, seeds: list[int] | None = None, options: dict[str, object] | None = None, *, timeout_seconds: float | None = None) -> tuple[Value, ResetInfo]: ...
     def step(self, actions: object, *, timeout_seconds: float | None = None) -> tuple[Value, Value, Value, Value, StepInfo]: ...
     def render(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> Value | None: ...
-    def render_packet(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> bytes | None: ...
-    def render_bundle(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> tuple[Value | None, bytes | None]: ...
     def close(self) -> None: ...
     def shutdown(self, reason: str = "owner shutdown") -> bool: ...
 "#
@@ -720,7 +664,7 @@ fn decode_render_frame<'py>(
 fn decode_render_bytes(frame: &NativeRenderFrame) -> Result<DecodedRenderFrame, String> {
     use image::DynamicImage;
 
-    let image = image::load_from_memory_with_format(&frame.png_frame, ImageFormat::Png)
+    let image = image::load_from_memory_with_format(&frame.frame, ImageFormat::Png)
         .map_err(|err| err.to_string())?;
 
     let (width, height) = (image.width() as usize, image.height() as usize);
@@ -737,10 +681,6 @@ fn decode_render_bytes(frame: &NativeRenderFrame) -> Result<DecodedRenderFrame, 
         vec![height, width, channels]
     };
     Ok(DecodedRenderFrame { shape, raw })
-}
-
-fn render_packet(frame: &NativeRenderFrame) -> &[u8] {
-    frame.png_frame.as_slice()
 }
 
 fn vector_f64_to_py<'py>(py: Python<'py>, values: &[f64]) -> PyResult<Py<PyAny>> {
@@ -769,7 +709,7 @@ mod tests {
         PngEncoder::new(&mut encoded)
             .write_image(raw, width, height, color.into())
             .unwrap();
-        NativeRenderFrame { png_frame: encoded }
+        NativeRenderFrame { frame: encoded }
     }
 
     #[test]

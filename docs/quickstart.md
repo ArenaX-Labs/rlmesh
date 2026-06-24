@@ -38,8 +38,7 @@ while not (terminated or truncated):
 env.close()
 ```
 
-The server owns the Gymnasium environment and its dependencies. The client needs only the endpoint
-address and the spaces the server reports.
+The server owns the Gymnasium environment and its dependencies. The client needs only the endpoint address and the spaces the server reports.
 
 ## Runnable Files
 
@@ -61,5 +60,4 @@ Swap in another Gymnasium registration with `--env-id`:
 uv run python examples/python/quickstart/serve_gymnasium.py --env-id Acrobot-v1
 ```
 
-For the smallest custom environment object, use `examples/python/quickstart/serve.py`. It implements
-a tiny Gymnasium-style `CounterEnv` without installing Gymnasium.
+For the smallest custom environment object, use `examples/python/quickstart/serve.py`. It implements a tiny Gymnasium-style `CounterEnv` without installing Gymnasium.

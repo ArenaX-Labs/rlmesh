@@ -214,7 +214,6 @@ mod tests {
     use crate::spaces::fundamental::BoxSpaceBuilder;
     use crate::spaces::{Conformance, conform, contains};
     use crate::tensor::{Storage, Tensor};
-    use half::bf16;
 
     fn box_space(low: f64, high: f64, shape: Vec<i64>, dtype: DType) -> SpaceSpec {
         BoxSpaceBuilder::scalar(low, high, shape)
@@ -340,29 +339,6 @@ mod tests {
                 .expect("valid tensor"),
         );
         assert!(contains(&space, &value).is_ok());
-    }
-
-    #[test]
-    fn test_box_contains_bfloat16_bounds() {
-        let space = box_space(0.0, 1.0, vec![2], DType::Bfloat16);
-
-        let in_bounds: Vec<u8> = [bf16::from_f32(0.25), bf16::from_f32(1.0)]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        let valid = SpaceValue::Box(
-            Tensor::from_vec(in_bounds, vec![2], DType::Bfloat16).expect("valid tensor"),
-        );
-        assert!(contains(&space, &valid).is_ok());
-
-        let out_of_bounds: Vec<u8> = [bf16::from_f32(0.25), bf16::from_f32(2.5)]
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        let invalid = SpaceValue::Box(
-            Tensor::from_vec(out_of_bounds, vec![2], DType::Bfloat16).expect("valid tensor"),
-        );
-        assert!(contains(&space, &invalid).is_err());
     }
 
     #[test]
@@ -558,28 +534,45 @@ mod tests {
     }
 
     #[test]
-    fn test_box_contains_fractional_float_bound_int_dtype_is_exact() {
-        let space = box_space(0.5, 10.0, vec![1], DType::Int64);
-        let zero = SpaceValue::Box(
-            Tensor::from_vec(0i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+    fn test_box_rejects_fractional_float_bound_on_int_dtype() {
+        // A fractional float-form bound on an integer dtype cannot be packed
+        // onto the bytes-only wire without truncation (0.5 -> 0), which would
+        // silently widen the space's admitted set. Reject it at construction.
+        let err = BoxSpaceBuilder::scalar(0.5, 10.0, vec![1])
+            .dtype(DType::Int64)
+            .build()
+            .expect_err("fractional int-dtype bound must be rejected");
+        assert!(
+            err.to_string().contains("finite whole number"),
+            "unexpected error: {err}"
         );
-        assert!(contains(&space, &zero).is_err(), "0 < 0.5 must be rejected");
+        // An infinite bound on an integer dtype is rejected for the same reason
+        // (it would saturate to the dtype min/max).
+        assert!(
+            BoxSpaceBuilder::scalar(f64::NEG_INFINITY, 10.0, vec![1])
+                .dtype(DType::Int64)
+                .build()
+                .is_err()
+        );
 
-        // 1 is in [0.5, 10.0].
+        // Integral float bounds round-trip exactly and remain valid.
+        let space = box_space(0.0, 10.0, vec![1], DType::Int64);
         let one = SpaceValue::Box(
             Tensor::from_vec(1i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
         );
         assert!(contains(&space, &one).is_ok());
-
-        // 10 is in bounds (== high); 11 is above.
-        let ten = SpaceValue::Box(
-            Tensor::from_vec(10i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
+        let neg = SpaceValue::Box(
+            Tensor::from_vec((-1i64).to_le_bytes().to_vec(), vec![1], DType::Int64)
+                .expect("tensor"),
         );
-        assert!(contains(&space, &ten).is_ok());
+        assert!(contains(&space, &neg).is_err(), "-1 < 0 must be rejected");
         let eleven = SpaceValue::Box(
             Tensor::from_vec(11i64.to_le_bytes().to_vec(), vec![1], DType::Int64).expect("tensor"),
         );
-        assert!(contains(&space, &eleven).is_err());
+        assert!(
+            contains(&space, &eleven).is_err(),
+            "11 > 10 must be rejected"
+        );
     }
 
     #[test]

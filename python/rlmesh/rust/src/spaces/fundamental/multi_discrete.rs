@@ -1,7 +1,6 @@
 use crate::spaces::utils::dtype_to_py;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
-use rlmesh_spaces::MultiDiscreteNvec;
 use rlmesh_spaces::spaces::*;
 
 pub fn make_multidiscrete<'py>(
@@ -20,19 +19,16 @@ pub fn make_multidiscrete<'py>(
 
     let np = py.import("numpy")?;
     let dtype = dtype_to_py(py, space.dtype)?;
-    let nvec_value = match &nvec_spec.nvec {
-        Some(MultiDiscreteNvec::Flat(vector)) => {
-            np.getattr("array")?.call1((vector.clone(), &dtype))?
-        }
-        Some(MultiDiscreteNvec::Shaped(matrix)) => {
-            let rows: Vec<Vec<i64>> = matrix.clone();
-            np.getattr("array")?.call1((rows, &dtype))?
-        }
-        None => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "MultiDiscreteSpec.nvec missing",
-            ));
-        }
+    // `nvec` is flat (row-major); reshape it back to the logical `shape` so a
+    // rank-2 MultiDiscrete materializes as a 2-D nvec array for Gymnasium.
+    let flat = np
+        .getattr("array")?
+        .call1((nvec_spec.nvec.clone(), &dtype))?;
+    let nvec_value = if space.shape.len() > 1 {
+        let shape: Vec<i64> = space.shape.clone();
+        flat.call_method1("reshape", (shape,))?
+    } else {
+        flat
     };
 
     let kwargs = PyDict::new(py);

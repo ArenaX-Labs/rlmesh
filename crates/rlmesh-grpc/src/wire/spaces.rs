@@ -1,26 +1,31 @@
 use std::collections::BTreeMap;
 
-use rlmesh_proto::env::v1 as env_proto;
+use rlmesh_proto::core::v1 as core_proto;
 use rlmesh_proto::spaces::v1 as proto;
 use rlmesh_proto::spaces::v1::meta_value::Kind as MetaKind;
 use rlmesh_spaces as native;
 
 use crate::error::ProtocolError;
 
-pub fn env_contract_to_proto(spec: &native::EnvContract) -> env_proto::EnvContract {
-    env_proto::EnvContract {
+/// Map the stable spec slice (id + spaces + metadata) of a native FLAT
+/// [`native::EnvContract`] into the nested proto [`core_proto::EnvSpec`].
+pub fn env_spec_to_proto(spec: &native::EnvContract) -> core_proto::EnvSpec {
+    core_proto::EnvSpec {
         id: spec.id.clone(),
         action_space: spec.action_space.as_ref().map(space_spec_to_proto),
         observation_space: spec.observation_space.as_ref().map(space_spec_to_proto),
         metadata: spec.metadata.as_ref().map(meta_map_to_proto),
-        render_mode: spec.render_mode.clone(),
-        num_envs: spec.num_envs,
-        autoreset_mode: i32::from(spec.autoreset_mode),
     }
 }
 
-pub fn env_contract_from_proto(
-    spec: env_proto::EnvContract,
+/// Map a proto [`core_proto::EnvSpec`] into a native FLAT [`native::EnvContract`].
+///
+/// `EnvSpec` carries only the stable observation/action interface; the
+/// orchestration knobs the model ignores (`num_envs`/`render_mode`/
+/// `autoreset_mode`) are left at their native defaults, matching the model's
+/// existing behavior of ignoring them.
+pub fn env_spec_from_proto(
+    spec: core_proto::EnvSpec,
 ) -> Result<native::EnvContract, ProtocolError> {
     Ok(native::EnvContract {
         id: spec.id,
@@ -30,12 +35,44 @@ pub fn env_contract_from_proto(
             .map(space_spec_from_proto)
             .transpose()?,
         metadata: spec.metadata.map(meta_map_from_proto),
-        render_mode: spec.render_mode,
-        num_envs: spec.num_envs,
+        // The model never reads these; default them.
+        render_mode: String::new(),
+        num_envs: 0,
+        autoreset_mode: native::AutoresetMode::default(),
+    })
+}
+
+/// Flatten a native FLAT [`native::EnvContract`] into the nested proto
+/// [`core_proto::EnvContract`] (the nesting lives entirely in the wire codec;
+/// the native type stays flat for all consumers).
+pub fn env_contract_to_proto(spec: &native::EnvContract) -> core_proto::EnvContract {
+    core_proto::EnvContract {
+        spec: Some(env_spec_to_proto(spec)),
+        // Native `num_envs` is a plain u32; carry it as the optional proto field.
+        num_envs: Some(spec.num_envs),
+        render_mode: spec.render_mode.clone(),
+        autoreset_mode: i32::from(spec.autoreset_mode),
+    }
+}
+
+/// Reassemble a native FLAT [`native::EnvContract`] from the nested proto
+/// [`core_proto::EnvContract`].
+pub fn env_contract_from_proto(
+    contract: core_proto::EnvContract,
+) -> Result<native::EnvContract, ProtocolError> {
+    // `env_spec_from_proto` already builds the full contract (id + spaces +
+    // metadata); overlay only the orchestration knobs the spec leaves at their
+    // defaults, so a new `EnvSpec` field need not be re-listed here.
+    Ok(native::EnvContract {
+        render_mode: contract.render_mode,
+        // Absent `optional num_envs` decodes to 0, identical to the previous
+        // plain-`uint32` behavior.
+        num_envs: contract.num_envs.unwrap_or(0),
         // proto UNSPECIFIED/DISABLED decode to Disabled; an unknown mode is
         // rejected loudly rather than silently folded.
-        autoreset_mode: native::AutoresetMode::try_from(spec.autoreset_mode)
+        autoreset_mode: native::AutoresetMode::try_from(contract.autoreset_mode)
             .map_err(|e| ProtocolError::DecodeError(e.to_string()))?,
+        ..env_spec_from_proto(contract.spec.unwrap_or_default())?
     })
 }
 
@@ -43,53 +80,59 @@ pub fn space_spec_to_proto(spec: &native::SpaceSpec) -> proto::SpaceSpec {
     proto::SpaceSpec {
         shape: spec.shape.clone(),
         dtype: proto_dtype_from_native(spec.dtype) as i32,
-        spec: spec.spec.as_ref().map(space_kind_to_proto),
+        spec: spec
+            .spec
+            .as_ref()
+            .map(|kind| space_kind_to_proto(kind, spec.dtype)),
     }
 }
 
 pub fn space_spec_from_proto(spec: proto::SpaceSpec) -> Result<native::SpaceSpec, ProtocolError> {
-    let decoded = native::SpaceSpec {
-        shape: spec.shape,
-        dtype: native_dtype_from_proto(spec.dtype)?,
-        spec: spec.spec.map(space_kind_from_proto).transpose()?,
+    let dtype = native_dtype_from_proto(spec.dtype)?;
+    let shape = spec.shape;
+    let kind = spec
+        .spec
+        .map(|kind| space_kind_from_proto(kind, dtype, &shape))
+        .transpose()?;
+    let spec = native::SpaceSpec {
+        shape,
+        dtype,
+        spec: kind,
     };
-    validate_typed_bound_lengths(&decoded)?;
-    Ok(decoded)
+    // Hold a peer-supplied spec to the same invariants the local builders
+    // enforce (positive shape dims, Dict key/space parity, MultiBinary/
+    // MultiDiscrete dtype rules, Box bound integrality). Without this, a
+    // malformed spec only surfaces at the first `contains()` -- or, worse,
+    // panics on an unchecked shape product. Validating at wire decode fails
+    // fast at handshake instead.
+    native::validate_space(&spec).map_err(|err| ProtocolError::DecodeError(err.to_string()))?;
+    Ok(spec)
 }
 
-/// Fail fast on malformed typed Box bounds at wire decode instead of letting a
-/// bad spec handshake successfully and only error on the first `contains()`.
-/// Bounds bytes are little-endian scalars in the space's dtype (the codebase
-/// assumes little-endian hosts throughout): one scalar for uniform bounds,
-/// `numel` scalars elementwise.
-fn validate_typed_bound_lengths(spec: &native::SpaceSpec) -> Result<(), ProtocolError> {
-    let Some(native::SpaceKind::Box(box_spec)) = &spec.spec else {
-        return Ok(());
-    };
-    let (low, high, count) = match &box_spec.bounds {
-        Some(native::BoxBounds::TypedUniform(bounds)) => (&bounds.low, &bounds.high, 1),
-        Some(native::BoxBounds::TypedElementwise(bounds)) => {
-            let numel = checked_box_shape_numel(&spec.shape)?;
-            (&bounds.low, &bounds.high, numel)
-        }
-        _ => return Ok(()),
-    };
-    let elem = native::dtype_size(spec.dtype);
+/// Fail fast on malformed Box bounds at wire decode (handshake time) instead of
+/// only erroring on the first `contains()`. Bounds bytes are little-endian
+/// scalars in the space's dtype: one scalar for uniform, `numel` elementwise.
+fn validate_bound_byte_lengths(
+    low: &[u8],
+    high: &[u8],
+    count: usize,
+    dtype: native::DType,
+) -> Result<(), ProtocolError> {
+    let elem = native::dtype_size(dtype);
     if elem == 0 {
         return Err(ProtocolError::DecodeError(
-            "typed Box bounds require a concrete dtype".to_string(),
+            "Box bounds require a concrete dtype".to_string(),
         ));
     }
     let expected = count.checked_mul(elem).ok_or_else(|| {
-        ProtocolError::DecodeError("typed Box bounds byte length overflowed".to_string())
+        ProtocolError::DecodeError("Box bounds byte length overflowed".to_string())
     })?;
     for (name, bytes) in [("low", low), ("high", high)] {
         if bytes.len() != expected {
             return Err(ProtocolError::DecodeError(format!(
-                "typed Box bounds `{name}` carries {} bytes; expected {expected} \
-                 ({count} {:?} scalar(s))",
+                "Box bounds `{name}` carries {} bytes; expected {expected} \
+                 ({count} {dtype:?} scalar(s))",
                 bytes.len(),
-                spec.dtype,
             )));
         }
     }
@@ -116,10 +159,10 @@ fn checked_box_shape_numel(shape: &[i64]) -> Result<usize, ProtocolError> {
     })
 }
 
-fn space_kind_to_proto(kind: &native::SpaceKind) -> proto::space_spec::Spec {
+fn space_kind_to_proto(kind: &native::SpaceKind, dtype: native::DType) -> proto::space_spec::Spec {
     match kind {
         native::SpaceKind::Box(spec) => proto::space_spec::Spec::Box(proto::BoxSpec {
-            bounds: spec.bounds.as_ref().map(box_bounds_to_proto),
+            bounds: spec.bounds.as_ref().map(|b| box_bounds_to_proto(b, dtype)),
         }),
         native::SpaceKind::Discrete(spec) => {
             proto::space_spec::Spec::Discrete(proto::DiscreteSpec {
@@ -127,14 +170,12 @@ fn space_kind_to_proto(kind: &native::SpaceKind) -> proto::space_spec::Spec {
                 start: spec.start,
             })
         }
-        native::SpaceKind::MultiBinary(spec) => {
-            proto::space_spec::Spec::MultiBinary(proto::MultiBinarySpec {
-                n: spec.n.as_ref().map(multibinary_n_to_proto),
-            })
+        native::SpaceKind::MultiBinary(_) => {
+            proto::space_spec::Spec::MultiBinary(proto::MultiBinarySpec {})
         }
         native::SpaceKind::MultiDiscrete(spec) => {
             proto::space_spec::Spec::MultiDiscrete(proto::MultiDiscreteSpec {
-                nvec: spec.nvec.as_ref().map(multidiscrete_nvec_to_proto),
+                nvec: spec.nvec.clone(),
             })
         }
         native::SpaceKind::Text(spec) => proto::space_spec::Spec::Text(proto::TextSpec {
@@ -154,10 +195,15 @@ fn space_kind_to_proto(kind: &native::SpaceKind) -> proto::space_spec::Spec {
 
 fn space_kind_from_proto(
     kind: proto::space_spec::Spec,
+    dtype: native::DType,
+    shape: &[i64],
 ) -> Result<native::SpaceKind, ProtocolError> {
     Ok(match kind {
         proto::space_spec::Spec::Box(spec) => native::SpaceKind::Box(native::BoxSpec {
-            bounds: spec.bounds.map(box_bounds_from_proto).transpose()?,
+            bounds: spec
+                .bounds
+                .map(|b| box_bounds_from_proto(b, dtype, shape))
+                .transpose()?,
         }),
         proto::space_spec::Spec::Discrete(spec) => {
             native::SpaceKind::Discrete(native::DiscreteSpec {
@@ -165,15 +211,11 @@ fn space_kind_from_proto(
                 start: spec.start,
             })
         }
-        proto::space_spec::Spec::MultiBinary(spec) => {
-            native::SpaceKind::MultiBinary(native::MultiBinarySpec {
-                n: spec.n.map(multibinary_n_from_proto).transpose()?,
-            })
+        proto::space_spec::Spec::MultiBinary(_) => {
+            native::SpaceKind::MultiBinary(native::MultiBinarySpec)
         }
         proto::space_spec::Spec::MultiDiscrete(spec) => {
-            native::SpaceKind::MultiDiscrete(native::MultiDiscreteSpec {
-                nvec: spec.nvec.map(multidiscrete_nvec_from_proto).transpose()?,
-            })
+            native::SpaceKind::MultiDiscrete(native::MultiDiscreteSpec { nvec: spec.nvec })
         }
         proto::space_spec::Spec::Text(spec) => native::SpaceKind::Text(native::TextSpec {
             min_length: spec.min_length,
@@ -198,31 +240,51 @@ fn space_kind_from_proto(
     })
 }
 
-fn box_bounds_to_proto(bounds: &native::BoxBounds) -> proto::box_spec::Bounds {
+/// Map native [`BoxBounds`](native::BoxBounds) onto the wire `BoxSpec.bounds`.
+///
+/// The native type has FOUR bound variants but the wire has only TWO arms
+/// (`Uniform`/`Elementwise`), both carrying raw little-endian dtype bytes:
+/// - `Uniform`/`Elementwise` hold `f64` and are encoded into the dtype's byte
+///   width here (`encode_float_bound`), losing nothing for float dtypes and
+///   round-tripping integer dtypes whose float-form bound is representable
+///   (out-of-range/fractional bounds are rejected at construction in
+///   `rlmesh-spaces`, so they never reach this point).
+/// - `TypedUniform`/`TypedElementwise` already hold exact dtype bytes and pass
+///   through verbatim.
+///
+/// The decoder ([`box_bounds_from_proto`]) reverses this by `dtype.is_float()`:
+/// a float dtype decodes back to `Uniform`/`Elementwise` (`f64`), an integer
+/// dtype to `TypedUniform`/`TypedElementwise` (bytes). So a float-form bound on
+/// an integer dtype intentionally round-trips as a `Typed*` variant, not its
+/// original float variant — the bytes, not the Rust variant, are the contract.
+fn box_bounds_to_proto(
+    bounds: &native::BoxBounds,
+    dtype: native::DType,
+) -> proto::box_spec::Bounds {
     match bounds {
         native::BoxBounds::Unbounded(value) => proto::box_spec::Bounds::Unbounded(*value),
-        native::BoxBounds::Uniform(bounds) => {
-            proto::box_spec::Bounds::Uniform(proto::UniformBounds {
-                low: bounds.low,
-                high: bounds.high,
-            })
-        }
-        native::BoxBounds::Elementwise(bounds) => {
+        // Float bounds are encoded into the space's dtype as little-endian bytes.
+        native::BoxBounds::Uniform(b) => proto::box_spec::Bounds::Uniform(proto::UniformBounds {
+            low: encode_float_bound(b.low, dtype),
+            high: encode_float_bound(b.high, dtype),
+        }),
+        native::BoxBounds::Elementwise(b) => {
             proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
-                low: bounds.low.clone(),
-                high: bounds.high.clone(),
+                low: encode_float_bounds(&b.low, dtype),
+                high: encode_float_bounds(&b.high, dtype),
             })
         }
-        native::BoxBounds::TypedUniform(bounds) => {
-            proto::box_spec::Bounds::TypedUniform(proto::TypedUniformBounds {
-                low: bounds.low.clone(),
-                high: bounds.high.clone(),
+        // Integer bounds already carry exact dtype bytes; pass them through.
+        native::BoxBounds::TypedUniform(b) => {
+            proto::box_spec::Bounds::Uniform(proto::UniformBounds {
+                low: b.low.clone(),
+                high: b.high.clone(),
             })
         }
-        native::BoxBounds::TypedElementwise(bounds) => {
-            proto::box_spec::Bounds::TypedElementwise(proto::TypedElementwiseBounds {
-                low: bounds.low.clone(),
-                high: bounds.high.clone(),
+        native::BoxBounds::TypedElementwise(b) => {
+            proto::box_spec::Bounds::Elementwise(proto::ElementwiseBounds {
+                low: b.low.clone(),
+                high: b.high.clone(),
             })
         }
     }
@@ -230,85 +292,97 @@ fn box_bounds_to_proto(bounds: &native::BoxBounds) -> proto::box_spec::Bounds {
 
 fn box_bounds_from_proto(
     bounds: proto::box_spec::Bounds,
+    dtype: native::DType,
+    shape: &[i64],
 ) -> Result<native::BoxBounds, ProtocolError> {
     Ok(match bounds {
         proto::box_spec::Bounds::Unbounded(value) => native::BoxBounds::Unbounded(value),
-        proto::box_spec::Bounds::Uniform(bounds) => {
-            native::BoxBounds::Uniform(native::UniformBounds {
-                low: bounds.low,
-                high: bounds.high,
-            })
+        proto::box_spec::Bounds::Uniform(b) => {
+            validate_bound_byte_lengths(&b.low, &b.high, 1, dtype)?;
+            if dtype.is_float() {
+                native::BoxBounds::Uniform(native::UniformBounds {
+                    low: decode_float_bound(&b.low, dtype),
+                    high: decode_float_bound(&b.high, dtype),
+                })
+            } else {
+                native::BoxBounds::TypedUniform(native::TypedUniformBounds {
+                    low: b.low,
+                    high: b.high,
+                })
+            }
         }
-        proto::box_spec::Bounds::Elementwise(bounds) => {
-            native::BoxBounds::Elementwise(native::ElementwiseBounds {
-                low: bounds.low,
-                high: bounds.high,
-            })
-        }
-        proto::box_spec::Bounds::TypedUniform(bounds) => {
-            native::BoxBounds::TypedUniform(native::TypedUniformBounds {
-                low: bounds.low,
-                high: bounds.high,
-            })
-        }
-        proto::box_spec::Bounds::TypedElementwise(bounds) => {
-            native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
-                low: bounds.low,
-                high: bounds.high,
-            })
+        proto::box_spec::Bounds::Elementwise(b) => {
+            let numel = checked_box_shape_numel(shape)?;
+            validate_bound_byte_lengths(&b.low, &b.high, numel, dtype)?;
+            if dtype.is_float() {
+                native::BoxBounds::Elementwise(native::ElementwiseBounds {
+                    low: decode_float_bounds(&b.low, dtype),
+                    high: decode_float_bounds(&b.high, dtype),
+                })
+            } else {
+                native::BoxBounds::TypedElementwise(native::TypedElementwiseBounds {
+                    low: b.low,
+                    high: b.high,
+                })
+            }
         }
     })
 }
 
-fn multibinary_n_to_proto(value: &native::MultiBinaryDims) -> proto::multi_binary_spec::N {
-    match value {
-        native::MultiBinaryDims::Size(size) => proto::multi_binary_spec::N::Size(*size),
-        native::MultiBinaryDims::Dims(dims) => {
-            proto::multi_binary_spec::N::Dims(proto::VectorInt { data: dims.clone() })
-        }
+/// Encode a single float `Uniform`/`Elementwise` bound into the space's dtype
+/// as little-endian bytes, exactly `dtype_size(dtype)` wide.
+///
+/// Float dtypes carry the value in their own width. An integer/bool dtype Box
+/// can still hold a float-form bound (e.g. `BoxSpaceBuilder::scalar(0.0, 1.0,
+/// ..).dtype(Uint8)`); such a bound must be packed at the integer dtype's width
+/// so the bytes-only wire round-trips it (the decoder reads it back as a
+/// `TypedUniform`/`TypedElementwise`). Float→int casts saturate (Rust `as`), so
+/// an infinite half-open side clamps to the dtype's min/max rather than panics.
+fn encode_float_bound(value: f64, dtype: native::DType) -> Vec<u8> {
+    use native::DType;
+    match dtype {
+        DType::Float16 => half::f16::from_f64(value).to_le_bytes().to_vec(),
+        DType::Float32 => (value as f32).to_le_bytes().to_vec(),
+        DType::Float64 | DType::Unspecified => value.to_le_bytes().to_vec(),
+        DType::Bool => vec![u8::from(value != 0.0)],
+        DType::Uint8 => (value as u8).to_le_bytes().to_vec(),
+        DType::Uint16 => (value as u16).to_le_bytes().to_vec(),
+        DType::Uint32 => (value as u32).to_le_bytes().to_vec(),
+        DType::Uint64 => (value as u64).to_le_bytes().to_vec(),
+        DType::Int8 => (value as i8).to_le_bytes().to_vec(),
+        DType::Int16 => (value as i16).to_le_bytes().to_vec(),
+        DType::Int32 => (value as i32).to_le_bytes().to_vec(),
+        DType::Int64 => (value as i64).to_le_bytes().to_vec(),
     }
 }
 
-fn multibinary_n_from_proto(
-    value: proto::multi_binary_spec::N,
-) -> Result<native::MultiBinaryDims, ProtocolError> {
-    Ok(match value {
-        proto::multi_binary_spec::N::Size(size) => native::MultiBinaryDims::Size(size),
-        proto::multi_binary_spec::N::Dims(dims) => native::MultiBinaryDims::Dims(dims.data),
-    })
+fn encode_float_bounds(values: &[f64], dtype: native::DType) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|value| encode_float_bound(*value, dtype))
+        .collect()
 }
 
-fn multidiscrete_nvec_to_proto(
-    value: &native::MultiDiscreteNvec,
-) -> proto::multi_discrete_spec::Nvec {
-    match value {
-        native::MultiDiscreteNvec::Flat(vector) => {
-            proto::multi_discrete_spec::Nvec::Flat(proto::VectorInt {
-                data: vector.clone(),
-            })
+/// Decode one float bound from `dtype_size(dtype)` little-endian bytes. Callers
+/// must validate the byte length first (see `validate_bound_byte_lengths`).
+fn decode_float_bound(bytes: &[u8], dtype: native::DType) -> f64 {
+    match dtype {
+        native::DType::Float16 => half::f16::from_le_bytes([bytes[0], bytes[1]]).to_f64(),
+        native::DType::Float32 => {
+            f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64
         }
-        native::MultiDiscreteNvec::Shaped(matrix) => {
-            proto::multi_discrete_spec::Nvec::Shaped(proto::MatrixInt {
-                data: matrix
-                    .iter()
-                    .map(|row| proto::VectorInt { data: row.clone() })
-                    .collect(),
-            })
-        }
+        _ => f64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]),
     }
 }
 
-fn multidiscrete_nvec_from_proto(
-    value: proto::multi_discrete_spec::Nvec,
-) -> Result<native::MultiDiscreteNvec, ProtocolError> {
-    Ok(match value {
-        proto::multi_discrete_spec::Nvec::Flat(vector) => {
-            native::MultiDiscreteNvec::Flat(vector.data)
-        }
-        proto::multi_discrete_spec::Nvec::Shaped(matrix) => {
-            native::MultiDiscreteNvec::Shaped(matrix.data.into_iter().map(|row| row.data).collect())
-        }
-    })
+fn decode_float_bounds(bytes: &[u8], dtype: native::DType) -> Vec<f64> {
+    let elem = native::dtype_size(dtype);
+    bytes
+        .chunks_exact(elem)
+        .map(|chunk| decode_float_bound(chunk, dtype))
+        .collect()
 }
 
 pub fn meta_map_to_proto(value: &native::MetaMap) -> proto::MetaMap {
@@ -333,9 +407,9 @@ pub(crate) fn meta_value_to_proto(value: &native::MetaValue) -> proto::MetaValue
     let kind = match value {
         native::MetaValue::Null => None,
         native::MetaValue::Bool(value) => Some(MetaKind::Bool(*value)),
-        native::MetaValue::Int(value) => Some(MetaKind::Int(*value)),
-        native::MetaValue::Float(value) => Some(MetaKind::Float(*value)),
-        native::MetaValue::String(value) => Some(MetaKind::Str(value.clone())),
+        native::MetaValue::Int(value) => Some(MetaKind::Integer(*value)),
+        native::MetaValue::Float(value) => Some(MetaKind::Number(*value)),
+        native::MetaValue::String(value) => Some(MetaKind::Text(value.clone())),
         native::MetaValue::Bytes(value) => Some(MetaKind::Bytes(value.clone())),
         native::MetaValue::List(value) => Some(MetaKind::List(proto::MetaList {
             items: value.iter().map(meta_value_to_proto).collect(),
@@ -349,9 +423,9 @@ pub(crate) fn meta_value_from_proto(value: proto::MetaValue) -> native::MetaValu
     match value.kind {
         None => native::MetaValue::Null,
         Some(MetaKind::Bool(value)) => native::MetaValue::Bool(value),
-        Some(MetaKind::Int(value)) => native::MetaValue::Int(value),
-        Some(MetaKind::Float(value)) => native::MetaValue::Float(value),
-        Some(MetaKind::Str(value)) => native::MetaValue::String(value),
+        Some(MetaKind::Integer(value)) => native::MetaValue::Int(value),
+        Some(MetaKind::Number(value)) => native::MetaValue::Float(value),
+        Some(MetaKind::Text(value)) => native::MetaValue::String(value),
         Some(MetaKind::Bytes(value)) => native::MetaValue::Bytes(value),
         Some(MetaKind::List(value)) => {
             native::MetaValue::List(value.items.into_iter().map(meta_value_from_proto).collect())
@@ -359,6 +433,27 @@ pub(crate) fn meta_value_from_proto(value: proto::MetaValue) -> native::MetaValu
         Some(MetaKind::Map(value)) => native::MetaValue::Map(meta_map_from_proto(value)),
     }
 }
+
+// Compile-time guard that the native `DType` discriminants stay byte-identical
+// to the generated proto `DType` enum. The bridge fns below map by variant, but
+// every `as i32` cast on a dtype relies on the numbers agreeing; this block
+// fails the build the instant they drift. `rlmesh-spaces` stays proto-free, so
+// the assert lives here, where both enums are in scope.
+const _: () = {
+    assert!(native::DType::Unspecified as i32 == proto::DType::Unspecified as i32);
+    assert!(native::DType::Bool as i32 == proto::DType::Bool as i32);
+    assert!(native::DType::Uint8 as i32 == proto::DType::Uint8 as i32);
+    assert!(native::DType::Uint16 as i32 == proto::DType::Uint16 as i32);
+    assert!(native::DType::Uint32 as i32 == proto::DType::Uint32 as i32);
+    assert!(native::DType::Uint64 as i32 == proto::DType::Uint64 as i32);
+    assert!(native::DType::Int8 as i32 == proto::DType::Int8 as i32);
+    assert!(native::DType::Int16 as i32 == proto::DType::Int16 as i32);
+    assert!(native::DType::Int32 as i32 == proto::DType::Int32 as i32);
+    assert!(native::DType::Int64 as i32 == proto::DType::Int64 as i32);
+    assert!(native::DType::Float16 as i32 == proto::DType::Float16 as i32);
+    assert!(native::DType::Float32 as i32 == proto::DType::Float32 as i32);
+    assert!(native::DType::Float64 as i32 == proto::DType::Float64 as i32);
+};
 
 fn proto_dtype_from_native(dtype: native::DType) -> proto::DType {
     match dtype {
@@ -375,7 +470,6 @@ fn proto_dtype_from_native(dtype: native::DType) -> proto::DType {
         native::DType::Uint16 => proto::DType::Uint16,
         native::DType::Uint32 => proto::DType::Uint32,
         native::DType::Uint64 => proto::DType::Uint64,
-        native::DType::Bfloat16 => proto::DType::Bfloat16,
     }
 }
 
@@ -396,7 +490,6 @@ fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
         proto::DType::Uint16 => native::DType::Uint16,
         proto::DType::Uint32 => native::DType::Uint32,
         proto::DType::Uint64 => native::DType::Uint64,
-        proto::DType::Bfloat16 => native::DType::Bfloat16,
     })
 }
 
@@ -406,7 +499,7 @@ mod tests {
 
     #[test]
     fn autoreset_mode_native_and_proto_agree() {
-        use rlmesh_proto::env::v1::AutoresetMode as Proto;
+        use rlmesh_proto::core::v1::AutoresetMode as Proto;
         use rlmesh_spaces::AutoresetMode as Native;
         // Known values decode identically; proto UNSPECIFIED (0) and DISABLED (3)
         // both map to the native DISABLED safe default.
@@ -439,7 +532,6 @@ mod tests {
             native::DType::Uint16,
             native::DType::Uint32,
             native::DType::Uint64,
-            native::DType::Bfloat16,
         ];
         for dtype in all {
             let wire = proto_dtype_from_native(dtype) as i32;
@@ -521,6 +613,32 @@ mod tests {
     }
 
     #[test]
+    fn integer_dtype_float_uniform_bound_encodes_at_dtype_width() {
+        // A float-form Uniform bound on an integer Box (e.g.
+        // `BoxSpaceBuilder::scalar(0.0, 1.0, ..).dtype(Uint8)`) must pack at the
+        // dtype's width (1 byte for Uint8), not as raw 8-byte f64, so the
+        // bytes-only wire round-trips it instead of failing length validation.
+        let spec = box_spec(
+            native::DType::Uint8,
+            native::BoxBounds::Uniform(native::UniformBounds {
+                low: 0.0,
+                high: 1.0,
+            }),
+            vec![1],
+        );
+        let decoded = roundtrip(&spec);
+        let native::SpaceKind::Box(b) = decoded.spec.unwrap() else {
+            panic!("expected Box");
+        };
+        // An integer dtype decodes the byte-form bound back as TypedUniform.
+        let native::BoxBounds::TypedUniform(t) = b.bounds.unwrap() else {
+            panic!("expected typed-uniform bounds for an integer dtype");
+        };
+        assert_eq!(t.low, vec![0u8]);
+        assert_eq!(t.high, vec![1u8]);
+    }
+
+    #[test]
     fn test_typed_bounds_bytes_survive_the_wire() {
         // The raw bytes of an i64::MAX bound must be preserved exactly; an f64
         // path would have rounded them.
@@ -556,7 +674,7 @@ mod tests {
             vec![2],
         );
         let err = space_spec_from_proto(space_spec_to_proto(&spec)).expect_err("must fail fast");
-        assert!(err.to_string().contains("typed Box bounds"));
+        assert!(err.to_string().contains("Box bounds"));
     }
 
     #[test]

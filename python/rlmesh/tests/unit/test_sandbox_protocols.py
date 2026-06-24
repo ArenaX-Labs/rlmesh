@@ -28,8 +28,6 @@ def test_remote_handle_protocols_share_a_common_base() -> None:
         "observation_space_spec",
         "action_space_spec",
         "render",
-        "open_viewer",
-        "close_viewer",
         "close",
     )
     # Shared members are defined on the base, not on the leaf protocols.

@@ -1,7 +1,6 @@
 # Sandbox Examples
 
-Sandbox helpers are experimental. Use them when an environment needs an owned Docker-backed process
-instead of a separate server terminal.
+Sandbox helpers are experimental. Use them when an environment needs an owned Docker-backed process instead of a separate server terminal.
 
 The runnable files live in `examples/python/sandbox`.
 
@@ -25,8 +24,7 @@ env = SandboxEnv(
 )
 ```
 
-`packages` are installed in the sandbox image and `imports` are checked at startup. The client shape
-is the same as `RemoteEnv`, so a `try`/`finally` keeps the owned container from leaking:
+`packages` are installed in the sandbox image and `imports` are checked at startup. The client shape is the same as `RemoteEnv`, so a `try`/`finally` keeps the owned container from leaking:
 
 ```python
 MAX_STEPS = 45
@@ -44,8 +42,7 @@ finally:
     env.close()
 ```
 
-The runnable file is
-{source}`examples/python/sandbox/gym_sandbox.py <examples/python/sandbox/gym_sandbox.py>`.
+The runnable file is {source}`examples/python/sandbox/gym_sandbox.py <examples/python/sandbox/gym_sandbox.py>`.
 
 ## Hugging Face Sandbox
 
@@ -67,8 +64,7 @@ env = SandboxEnv(
 )
 ```
 
-The selector chooses suite `cartpole_suite`, task `0`. The example uses `SandboxEnv` because it
-requests one environment. Use `SandboxVectorEnv` when serving more than one:
+The selector chooses suite `cartpole_suite`, task `0`. The example uses `SandboxEnv` because it requests one environment. Use `SandboxVectorEnv` when serving more than one:
 
 ```python
 from rlmesh.numpy import SandboxVectorEnv
@@ -76,8 +72,6 @@ from rlmesh.numpy import SandboxVectorEnv
 envs = SandboxVectorEnv("CartPole-v1", num_envs=2)
 ```
 
-The demo is intentionally unpinned; for real evaluations, pin the repository to a full commit SHA
-and keep `trust_remote_code=False` unless you have reviewed the source.
+The demo is intentionally unpinned; for real evaluations, pin the repository to a full commit SHA and keep `trust_remote_code=False` unless you have reviewed the source.
 
-The runnable file is
-{source}`examples/python/sandbox/hf_sandbox.py <examples/python/sandbox/hf_sandbox.py>`.
+The runnable file is {source}`examples/python/sandbox/hf_sandbox.py <examples/python/sandbox/hf_sandbox.py>`.

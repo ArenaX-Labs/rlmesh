@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 
-use half::{bf16, f16};
+use half::f16;
 use thiserror::Error;
 
 use crate::dtype::{DType, dtype_size};
@@ -303,7 +303,6 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
         DType::Uint32 => out.extend_from_slice(&(value.as_i64() as u32).to_le_bytes()),
         DType::Uint64 => out.extend_from_slice(&(value.as_i64() as u64).to_le_bytes()),
         DType::Float16 => out.extend_from_slice(&f16::from_f64(float_value(value)).to_le_bytes()),
-        DType::Bfloat16 => out.extend_from_slice(&bf16::from_f64(float_value(value)).to_le_bytes()),
         DType::Float32 => out.extend_from_slice(&(float_value(value) as f32).to_le_bytes()),
         DType::Float64 => out.extend_from_slice(&float_value(value).to_le_bytes()),
         DType::Unspecified => unreachable!("checked by the public entry points"),
@@ -346,7 +345,6 @@ pub fn decode_scalars(bytes: &[u8], dtype: DType) -> Result<Vec<Scalar>, ScalarE
             DType::Int64 => Scalar::Int(i64::from_le_bytes(le_bytes(chunk))),
             DType::Uint64 => Scalar::Int(u64::from_le_bytes(le_bytes(chunk)) as i64),
             DType::Float16 => Scalar::Float(f16::from_le_bytes(le_bytes(chunk)).to_f64()),
-            DType::Bfloat16 => Scalar::Float(bf16::from_le_bytes(le_bytes(chunk)).to_f64()),
             DType::Float32 => Scalar::Float(f32::from_le_bytes(le_bytes(chunk)) as f64),
             DType::Float64 => Scalar::Float(f64::from_le_bytes(le_bytes(chunk))),
             DType::Unspecified => unreachable!("checked above"),
@@ -363,9 +361,62 @@ fn le_bytes<const N: usize>(chunk: &[u8]) -> [u8; N] {
 mod tests {
     use super::*;
 
+    /// Cross-language byte contract (value-encoding-v1): the little-endian bytes
+    /// the wire codec emits for these float values are IEEE-754 facts that the
+    /// Python side (numpy `.tobytes()` / `ml_dtypes`) and the PyO3 packer MUST
+    /// reproduce exactly. The `f16 double-rounding` row is the sentinel: it rounds
+    /// to 0x3C01 only with single `f64->f16` rounding; a regression to
+    /// `f16::from_f32(x as f32)` double-rounds it to 0x3C00 and fails here.
+    /// Keep in sync with `python/rlmesh/tests/unit/test_value_encoding_golden.py`.
+    #[test]
+    fn value_encoding_v1_float_golden() {
+        // 1.0 + 2^-11 (the f16 1.0<->1.0009765625 midpoint) + 2^-25 (a hair above,
+        // below f32 precision near 1.0 so f32 collapses it back onto the midpoint).
+        let double_rounding = 1.0_f64 + 1.0 / 2048.0 + 1.0 / 33_554_432.0;
+        let cases: &[(&str, f64, DType, &[u8])] = &[
+            ("f16 +0.0", 0.0, DType::Float16, &[0x00, 0x00]),
+            ("f16 -0.0", -0.0, DType::Float16, &[0x00, 0x80]),
+            ("f16 1.0", 1.0, DType::Float16, &[0x00, 0x3C]),
+            ("f16 +inf", f64::INFINITY, DType::Float16, &[0x00, 0x7C]),
+            ("f16 -inf", f64::NEG_INFINITY, DType::Float16, &[0x00, 0xFC]),
+            ("f16 max finite", 65504.0, DType::Float16, &[0xFF, 0x7B]),
+            (
+                "f16 min subnormal",
+                1.0 / 16_777_216.0,
+                DType::Float16,
+                &[0x01, 0x00],
+            ), // 2^-24
+            ("f16 NaN(quiet)", f64::NAN, DType::Float16, &[0x00, 0x7E]),
+            (
+                "f16 double-rounding",
+                double_rounding,
+                DType::Float16,
+                &[0x01, 0x3C],
+            ),
+            ("f32 1.0", 1.0, DType::Float32, &[0x00, 0x00, 0x80, 0x3F]),
+            ("f32 -0.0", -0.0, DType::Float32, &[0x00, 0x00, 0x00, 0x80]),
+            (
+                "f64 1.0",
+                1.0,
+                DType::Float64,
+                &[0, 0, 0, 0, 0, 0, 0xF0, 0x3F],
+            ),
+            (
+                "f64 -0.0",
+                -0.0,
+                DType::Float64,
+                &[0, 0, 0, 0, 0, 0, 0, 0x80],
+            ),
+        ];
+        for (label, value, dtype, want) in cases {
+            let got = encode_scalars(&[Scalar::Float(*value)], *dtype).expect("encode");
+            assert_eq!(&got, want, "{label}: got {got:02x?}, want {want:02x?}");
+        }
+    }
+
     #[test]
     fn test_scalar_roundtrip_all_dtypes() {
-        let cases: [(DType, Vec<Scalar>); 13] = [
+        let cases: [(DType, Vec<Scalar>); 12] = [
             (DType::Bool, vec![Scalar::Bool(true), Scalar::Bool(false)]),
             (DType::Uint8, vec![Scalar::Int(0), Scalar::Int(255)]),
             (DType::Int8, vec![Scalar::Int(-128), Scalar::Int(127)]),
@@ -378,10 +429,6 @@ mod tests {
             (
                 DType::Float16,
                 vec![Scalar::Float(1.5), Scalar::Float(-2.0)],
-            ),
-            (
-                DType::Bfloat16,
-                vec![Scalar::Float(1.0), Scalar::Float(-2.0)],
             ),
             (
                 DType::Float32,
@@ -601,7 +648,6 @@ mod tests {
                 DType::Uint32 => 0..=u32::MAX as i64,
                 DType::Int64 | DType::Uint64 => i64::MIN..=i64::MAX,
                 DType::Float16 => -2048..=2048,
-                DType::Bfloat16 => -256..=256,
                 DType::Float32 => -(1 << 24)..=(1 << 24),
                 DType::Float64 => -(1 << 53)..=(1 << 53),
                 DType::Unspecified => unreachable!("not generated"),

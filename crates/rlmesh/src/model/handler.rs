@@ -46,8 +46,13 @@ pub trait ModelRouteSetup: Send + Sync {
 pub trait ModelHandler: Send {
     /// Produce an action for `observation`.
     ///
-    /// Returns encoded action bytes as a
-    /// [`BinaryPayload`](crate::spaces::BinaryPayload).
+    /// Read the observation with
+    /// [`decoded_lanes`](ModelObservation::decoded_lanes) (or
+    /// [`decoded`](ModelObservation::decoded) for a single-env route) and return
+    /// **one typed action per lane** — `Vec` length `== observation.num_envs`
+    /// (`== PredictContext.slots.len()`); a single-env route returns a 1-element
+    /// `Vec`. The codec turns the typed values into wire leaves; policy code
+    /// never touches bytes.
     ///
     /// Return [`Error::model`](crate::Error::model) or
     /// [`Error::model_recoverable`](crate::Error::model_recoverable) when the
@@ -63,7 +68,7 @@ pub trait ModelHandler: Send {
     /// Per-route lifecycle order is preserved. Calls for different routes may
     /// interleave, still one at a time. The `model.concurrent_predict.v1`
     /// handshake capability advertises this pipelining to clients.
-    async fn predict(&mut self, observation: ModelObservation) -> Result<spaces::BinaryPayload>;
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
 
     /// Per-route setup invoked at `ConfigureRoute`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or

@@ -11,6 +11,7 @@ use super::codec::{
     space_value_to_py_with_backend, tensor_from_shape,
 };
 use super::metadata::normalize_py_value;
+use crate::spaces::tensor::{extract_tensor, wrap_native_tensor};
 use crate::spaces::utils::dtype_name;
 
 pub(crate) fn batched_space_values_to_py_with_backend<'py>(
@@ -311,6 +312,31 @@ fn batched_items<'py>(
     value: &Bound<'py, PyAny>,
     num_envs: usize,
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    // A native rlmesh Tensor is what the framework bridges hand back for an
+    // N-stacked array action (numpy/torch/jax `from_array` -> `Tensor`), and it
+    // is not Python-iterable, so split it along the leading lane axis into
+    // per-lane native tensors instead of failing on `try_iter`. This keeps the
+    // vectorized path symmetric with the single-env one, which encodes a native
+    // tensor directly via `encode_native_tensor`.
+    if let Some(tensor) = extract_tensor(value)? {
+        let lanes = tensor.inner.unstack().map_err(|err| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "cannot split a batched tensor action into per-lane values: {err}"
+            ))
+        })?;
+        if lanes.len() != num_envs {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {num_envs} batched values, got {}",
+                lanes.len()
+            )));
+        }
+        let py = value.py();
+        return lanes
+            .into_iter()
+            .map(|lane| wrap_native_tensor(py, lane))
+            .collect();
+    }
+
     let normalized = normalize_py_value(value)?;
     let items = normalized.try_iter()?.collect::<PyResult<Vec<_>>>()?;
     if items.len() != num_envs {
@@ -324,11 +350,60 @@ fn batched_items<'py>(
 
 #[cfg(test)]
 mod tests {
-    use super::batched_space_values_to_py_with_backend;
+    use super::{
+        batched_space_values_to_py_with_backend, py_any_to_batched_space_values_with_backend,
+    };
     use crate::spaces::ValueBackend;
+    use crate::spaces::tensor::wrap_native_tensor;
     use pyo3::Python;
     use rlmesh_spaces::spaces::BoxSpaceBuilder;
     use rlmesh_spaces::{DType, SpaceValue, Tensor};
+
+    #[test]
+    fn native_tensor_action_splits_into_lanes() {
+        Python::attach(|py| {
+            // A vectorized Box action space; the framework bridges hand back one
+            // native (N, *shape) Tensor, which must split into N per-lane values
+            // (regression: `try_iter` on a non-iterable PyTensor used to fail).
+            let space = BoxSpaceBuilder::scalar(0.0, 255.0, vec![2])
+                .dtype(DType::Uint8)
+                .build()
+                .unwrap();
+            let stacked = wrap_native_tensor(
+                py,
+                Tensor::from_slice(&[1u8, 2, 3, 4], &[2, 2], DType::Uint8).unwrap(),
+            )
+            .unwrap();
+
+            let lanes = py_any_to_batched_space_values_with_backend(
+                py,
+                &stacked,
+                &space,
+                2,
+                ValueBackend::Native,
+            )
+            .unwrap();
+            assert_eq!(
+                lanes,
+                vec![
+                    SpaceValue::Box(Tensor::from_slice(&[1u8, 2], &[2], DType::Uint8).unwrap()),
+                    SpaceValue::Box(Tensor::from_slice(&[3u8, 4], &[2], DType::Uint8).unwrap()),
+                ]
+            );
+
+            // Wrong N must hard-error, never silently mis-split the slab.
+            assert!(
+                py_any_to_batched_space_values_with_backend(
+                    py,
+                    &stacked,
+                    &space,
+                    3,
+                    ValueBackend::Native,
+                )
+                .is_err()
+            );
+        });
+    }
 
     #[test]
     fn batched_box_decode_propagates_inhomogeneous_shape_error() {

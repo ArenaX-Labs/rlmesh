@@ -5,14 +5,13 @@ mod code {
     pub const INT: u8 = 0;
     pub const UINT: u8 = 1;
     pub const FLOAT: u8 = 2;
-    pub const BFLOAT: u8 = 4;
     pub const BOOL: u8 = 6;
 }
 
 /// A DLPack `DLDataType` triple describing a tensor element type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DLPackType {
-    /// `DLDataTypeCode` (0 = int, 1 = uint, 2 = float, 4 = bfloat, 6 = bool).
+    /// `DLDataTypeCode` (0 = int, 1 = uint, 2 = float, 6 = bool).
     pub code: u8,
     /// Element width in bits.
     pub bits: u8,
@@ -36,7 +35,6 @@ pub fn dlpack_type(dtype: DType) -> Option<DLPackType> {
         DType::Float16 => (code::FLOAT, 16),
         DType::Float32 => (code::FLOAT, 32),
         DType::Float64 => (code::FLOAT, 64),
-        DType::Bfloat16 => (code::BFLOAT, 16),
     };
     Some(DLPackType {
         code,
@@ -64,7 +62,6 @@ pub fn dtype_from_dlpack(ty: DLPackType) -> Option<DType> {
         (code::FLOAT, 16) => Some(DType::Float16),
         (code::FLOAT, 32) => Some(DType::Float32),
         (code::FLOAT, 64) => Some(DType::Float64),
-        (code::BFLOAT, 16) => Some(DType::Bfloat16),
         _ => None,
     }
 }
@@ -89,7 +86,6 @@ mod tests {
             (DType::Float16, 2, 16),
             (DType::Float32, 2, 32),
             (DType::Float64, 2, 64),
-            (DType::Bfloat16, 4, 16),
         ];
         for (dtype, code, bits) in expected {
             let ty = dlpack_type(dtype).expect("supported dtype");
@@ -139,6 +135,14 @@ mod tests {
             dtype_from_dlpack(DLPackType {
                 code: 5,
                 bits: 64,
+                lanes: 1
+            }),
+            None
+        );
+        assert_eq!(
+            dtype_from_dlpack(DLPackType {
+                code: 4,
+                bits: 16,
                 lanes: 1
             }),
             None

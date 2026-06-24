@@ -1,6 +1,9 @@
 /// Element data type for tensor values exchanged across the wire.
 ///
-/// Discriminants match the `rlmesh.spaces.v1.DType` proto enum.
+/// Discriminants are kept byte-identical to the `rlmesh.spaces.v1.DType` proto
+/// enum. The equality is enforced at compile time by a cross-check in
+/// `rlmesh-grpc` (`wire::spaces`); `rlmesh-spaces` stays free of a
+/// `rlmesh-proto` dependency, so the assert cannot live here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(i32)]
 pub enum DType {
@@ -8,17 +11,16 @@ pub enum DType {
     Unspecified = 0,
     Bool = 1,
     Uint8 = 2,
-    Int32 = 3,
-    Int64 = 4,
-    Float16 = 5,
-    Float32 = 6,
-    Float64 = 7,
-    Int8 = 8,
-    Int16 = 9,
-    Uint16 = 10,
-    Uint32 = 11,
-    Uint64 = 12,
-    Bfloat16 = 13,
+    Uint16 = 3,
+    Uint32 = 4,
+    Uint64 = 5,
+    Int8 = 6,
+    Int16 = 7,
+    Int32 = 8,
+    Int64 = 9,
+    Float16 = 10,
+    Float32 = 11,
+    Float64 = 12,
 }
 
 impl TryFrom<i32> for DType {
@@ -29,17 +31,16 @@ impl TryFrom<i32> for DType {
             0 => Ok(Self::Unspecified),
             1 => Ok(Self::Bool),
             2 => Ok(Self::Uint8),
-            3 => Ok(Self::Int32),
-            4 => Ok(Self::Int64),
-            5 => Ok(Self::Float16),
-            6 => Ok(Self::Float32),
-            7 => Ok(Self::Float64),
-            8 => Ok(Self::Int8),
-            9 => Ok(Self::Int16),
-            10 => Ok(Self::Uint16),
-            11 => Ok(Self::Uint32),
-            12 => Ok(Self::Uint64),
-            13 => Ok(Self::Bfloat16),
+            3 => Ok(Self::Uint16),
+            4 => Ok(Self::Uint32),
+            5 => Ok(Self::Uint64),
+            6 => Ok(Self::Int8),
+            7 => Ok(Self::Int16),
+            8 => Ok(Self::Int32),
+            9 => Ok(Self::Int64),
+            10 => Ok(Self::Float16),
+            11 => Ok(Self::Float32),
+            12 => Ok(Self::Float64),
             _ => Err("invalid dtype"),
         }
     }
@@ -53,21 +54,20 @@ impl From<DType> for i32 {
 
 impl DType {
     /// Every dtype, including `Unspecified`, in discriminant order.
-    pub const ALL: [DType; 14] = [
+    pub const ALL: [DType; 13] = [
         DType::Unspecified,
         DType::Bool,
         DType::Uint8,
+        DType::Uint16,
+        DType::Uint32,
+        DType::Uint64,
+        DType::Int8,
+        DType::Int16,
         DType::Int32,
         DType::Int64,
         DType::Float16,
         DType::Float32,
         DType::Float64,
-        DType::Int8,
-        DType::Int16,
-        DType::Uint16,
-        DType::Uint32,
-        DType::Uint64,
-        DType::Bfloat16,
     ];
 
     /// The canonical lowercase dtype name (for example `"float32"`).
@@ -86,11 +86,10 @@ impl DType {
             DType::Uint16 => "uint16",
             DType::Uint32 => "uint32",
             DType::Uint64 => "uint64",
-            DType::Bfloat16 => "bfloat16",
         }
     }
 
-    /// Parse a canonical dtype name. Only the 13 concrete dtypes are
+    /// Parse a canonical dtype name. Only the 12 concrete dtypes are
     /// recognized; `"unspecified"` and unknown names return `None`.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -106,7 +105,6 @@ impl DType {
             "uint16" => Some(DType::Uint16),
             "uint32" => Some(DType::Uint32),
             "uint64" => Some(DType::Uint64),
-            "bfloat16" => Some(DType::Bfloat16),
             _ => None,
         }
     }
@@ -131,10 +129,7 @@ impl DType {
     /// Whether this is a floating-point dtype.
     #[must_use]
     pub const fn is_float(self) -> bool {
-        matches!(
-            self,
-            DType::Float16 | DType::Float32 | DType::Float64 | DType::Bfloat16
-        )
+        matches!(self, DType::Float16 | DType::Float32 | DType::Float64)
     }
 }
 
@@ -149,7 +144,7 @@ pub const fn dtype_size(dtype: DType) -> usize {
     match dtype {
         DType::Unspecified => 0,
         DType::Bool | DType::Uint8 | DType::Int8 => 1,
-        DType::Float16 | DType::Bfloat16 | DType::Int16 | DType::Uint16 => 2,
+        DType::Float16 | DType::Int16 | DType::Uint16 => 2,
         DType::Int32 | DType::Uint32 | DType::Float32 => 4,
         DType::Int64 | DType::Uint64 | DType::Float64 => 8,
     }
@@ -170,7 +165,12 @@ mod tests {
     #[test]
     fn test_dtype_rejects_unknown_values() {
         assert!(DType::try_from(-1).is_err());
-        assert!(DType::try_from(14).is_err());
+        for unused in [13, 20, 30, 99] {
+            assert!(
+                DType::try_from(unused).is_err(),
+                "{unused} should be invalid"
+            );
+        }
     }
 
     #[test]
@@ -196,7 +196,6 @@ mod tests {
             (DType::Uint8, 1),
             (DType::Int8, 1),
             (DType::Float16, 2),
-            (DType::Bfloat16, 2),
             (DType::Int16, 2),
             (DType::Uint16, 2),
             (DType::Int32, 4),

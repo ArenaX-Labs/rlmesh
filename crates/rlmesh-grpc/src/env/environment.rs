@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 pub use rlmesh_proto::env::v1::{
-    CloseResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
+    CloseEnvsResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
 };
 use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
@@ -66,5 +66,5 @@ pub trait Environment: Send + Sync {
     async fn render(&mut self, req: RenderRequest) -> Result<RenderResponse, EnvError>;
 
     /// Close the environment or vector.
-    async fn close(&mut self) -> Result<CloseResponse, EnvError>;
+    async fn close(&mut self) -> Result<CloseEnvsResponse, EnvError>;
 }

@@ -26,10 +26,6 @@ pub(super) fn float_to_int(value: f64) -> Result<i64, ProtocolError> {
     Ok(value as i64)
 }
 
-pub(super) fn encode_scalar(value: i64, dtype: native::DType) -> Result<Vec<u8>, ProtocolError> {
-    encode_scalars(&[ScalarValue::Int(value)], dtype)
-}
-
 pub(super) fn encode_int_sequence(
     values: &[i64],
     dtype: native::DType,
@@ -40,20 +36,6 @@ pub(super) fn encode_int_sequence(
         .map(ScalarValue::Int)
         .collect::<Vec<_>>();
     encode_scalars(&scalars, dtype)
-}
-
-pub(super) fn decode_scalar(bytes: &[u8], dtype: native::DType) -> Result<i64, ProtocolError> {
-    let values = decode_scalars(bytes, dtype)?;
-    let Some(value) = values.first() else {
-        return Err(ProtocolError::DecodeError(
-            "expected one scalar value".to_string(),
-        ));
-    };
-    Ok(match value {
-        ScalarValue::Bool(value) => i64::from(*value),
-        ScalarValue::Int(value) => *value,
-        ScalarValue::Float(value) => float_to_int(*value)?,
-    })
 }
 
 pub(super) fn decode_int_sequence(
@@ -96,10 +78,9 @@ pub(super) fn decode_scalars(
             "cannot decode scalar bytes with unspecified dtype".to_string(),
         ));
     }
-    // The wire codec has always silently dropped trailing bytes that do not
-    // form a whole element; keep that leniency for compatibility.
-    let whole = bytes.len() - bytes.len() % native::dtype_size(dtype);
-    native::decode_scalars(&bytes[..whole], dtype)
+    // No pre-trim: the leaf codec enforces exact length before decoding, so
+    // trailing bytes are a hard error, not silently dropped.
+    native::decode_scalars(bytes, dtype)
         .map_err(|err| ProtocolError::DecodeError(err.to_string()))
         .map(|scalars| {
             scalars

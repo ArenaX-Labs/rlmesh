@@ -1,7 +1,6 @@
 # Examples
 
-The examples are small on purpose. Each one shows one part of the model-environment loop. Start with
-the {doc}`quickstart <quickstart>`, then read these for specific pieces.
+The examples are small on purpose. Each one shows one part of the model-environment loop. Start with the {doc}`quickstart <quickstart>`, then read these for specific pieces.
 
 - {doc}`examples/custom-work`: drop in a custom environment or tiny model worker.
 - {doc}`examples/sandboxes`: start an owned Docker-backed environment process.

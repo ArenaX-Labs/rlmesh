@@ -1,0 +1,24 @@
+dictionaries = ["en_us"]
+words = [
+  # Project
+  "rlmesh",
+
+  # Math
+  "numel",
+  "elementwise",
+  "nvec",
+  "arange",
+
+  # Tools
+  "mise",
+  "prek",
+  "rustup",
+  "rustfmt",
+  "clippy",
+  "oxfmt",
+
+  # Misc
+  "cli",
+  "blayone",
+]
+ignore_paths = ["target/**", "**/*.lock"]

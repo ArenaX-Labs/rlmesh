@@ -171,8 +171,8 @@ mod tests {
         async fn predict(
             &mut self,
             _observation: ModelObservation,
-        ) -> crate::Result<spaces::BinaryPayload> {
-            Ok(spaces::BinaryPayload { data: Vec::new() })
+        ) -> crate::Result<Vec<spaces::SpaceValue>> {
+            Ok(Vec::new())
         }
 
         async fn enter_route(&mut self, route_key: &str) -> crate::Result<()> {

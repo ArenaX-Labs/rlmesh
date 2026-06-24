@@ -4,9 +4,7 @@ use rand::RngExt;
 use rand::rngs::StdRng;
 use rlmesh_spaces::scalar::decode_scalars;
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
-use rlmesh_spaces::{
-    BoxBounds, BoxSpec, DType, MultiBinaryDims, MultiDiscreteNvec, Scalar, encode_scalars,
-};
+use rlmesh_spaces::{BoxBounds, BoxSpec, DType, Scalar, encode_scalars};
 
 use crate::spaces::tensor::make_tensor;
 use crate::spaces::utils::dtype_name;
@@ -32,8 +30,8 @@ pub(super) fn sample_space_value<'py>(
             let value = rng.random_range(spec.start..(spec.start + spec.n));
             Ok(value.into_pyobject(py)?.into_any())
         }
-        SpaceKind::MultiBinary(spec) => {
-            let shape = multi_binary_shape(space, spec);
+        SpaceKind::MultiBinary(_) => {
+            let shape = multi_binary_shape(space);
             sample_boolean_array(py, space, &shape, rng)
         }
         SpaceKind::MultiDiscrete(spec) => sample_multi_discrete(py, space, spec, rng),
@@ -245,15 +243,8 @@ fn normal_sample(rng: &mut StdRng) -> f64 {
     (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
 }
 
-fn multi_binary_shape(space: &SpaceSpec, spec: &rlmesh_spaces::MultiBinarySpec) -> Vec<usize> {
-    if !space.shape.is_empty() {
-        return space.shape.iter().map(|dim| *dim as usize).collect();
-    }
-    match &spec.n {
-        Some(MultiBinaryDims::Size(size)) => vec![*size as usize],
-        Some(MultiBinaryDims::Dims(dims)) => dims.iter().map(|dim| *dim as usize).collect(),
-        None => vec![],
-    }
+fn multi_binary_shape(space: &SpaceSpec) -> Vec<usize> {
+    space.shape.iter().map(|dim| *dim as usize).collect()
 }
 
 fn sample_boolean_array<'py>(
@@ -275,14 +266,8 @@ fn sample_multi_discrete<'py>(
     spec: &rlmesh_spaces::MultiDiscreteSpec,
     rng: &mut StdRng,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let nvec: Vec<i64> = match &spec.nvec {
-        Some(MultiDiscreteNvec::Flat(vector)) => vector.clone(),
-        Some(MultiDiscreteNvec::Shaped(matrix)) => {
-            matrix.iter().flat_map(|row| row.iter().copied()).collect()
-        }
-        None => vec![],
-    };
-    let scalars = nvec
+    let scalars = spec
+        .nvec
         .iter()
         .map(|n| {
             if *n <= 0 {
@@ -293,12 +278,9 @@ fn sample_multi_discrete<'py>(
             Ok(Scalar::Int(rng.random_range(0..*n)))
         })
         .collect::<PyResult<Vec<_>>>()?;
-    let shape = match &spec.nvec {
-        Some(MultiDiscreteNvec::Shaped(matrix)) => {
-            vec![matrix.len(), matrix.first().map_or(0, |row| row.len())]
-        }
-        _ => vec![nvec.len()],
-    };
+    // The logical shape lives in `SpaceSpec.shape` (flat for rank-1, `[rows,
+    // cols]` for a matrix).
+    let shape: Vec<usize> = space.shape.iter().map(|dim| *dim as usize).collect();
     tensor_from_scalars(py, &scalars, shape, space.dtype)
 }
 

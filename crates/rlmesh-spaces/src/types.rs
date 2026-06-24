@@ -55,28 +55,19 @@ pub struct DiscreteSpec {
     pub start: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MultiBinarySpec {
-    pub n: Option<MultiBinaryDims>,
-}
+/// Empty marker for a MultiBinary space: its dimensions come entirely from
+/// [`SpaceSpec::shape`] (rank-1 `[n]` for a flat vector, rank-N for a tensor of
+/// bits). The proto `MultiBinarySpec` carries no fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MultiBinarySpec;
 
-/// Size description for a MultiBinary space (the proto `n` oneof).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MultiBinaryDims {
-    Size(i64),
-    Dims(Vec<i64>),
-}
-
+/// Per-element category counts for a MultiDiscrete space, flattened row-major
+/// (C order). The logical shape lives in [`SpaceSpec::shape`] (rank-1 `[len]`
+/// for a flat vector, rank-2 `[rows, cols]` for a matrix); `nvec` always holds
+/// `numel(shape)` entries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MultiDiscreteSpec {
-    pub nvec: Option<MultiDiscreteNvec>,
-}
-
-/// Count layout for a MultiDiscrete space (the proto `nvec` oneof).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MultiDiscreteNvec {
-    Flat(Vec<i64>),
-    Shaped(Vec<Vec<i64>>),
+    pub nvec: Vec<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

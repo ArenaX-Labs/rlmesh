@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rlmesh_proto::common::v1::MessageBytes;
+use prost::bytes::Bytes;
+use rlmesh_proto::core::v1::{EnvContract, EnvSpec};
 use rlmesh_proto::env::v1::{
-    EnvContract, EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
+    EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::model::v1::{CloseRouteRequest, PredictRequest, PredictResponse};
 use rlmesh_proto::spaces::v1::{SpaceSpec, SpaceValue};
@@ -362,11 +363,11 @@ impl RuntimeEnv for TestEnv {
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
             response: ResetResponse {
-                observation: Some(bytes_value(payload([1]))),
+                observation: Some(leaves_value(payload([1]))),
                 infos: None,
                 episode_ids: vec!["episode-1".to_string()],
             },
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -375,7 +376,7 @@ impl RuntimeEnv for TestEnv {
         let terminal = step >= self.terminal_after;
         Ok(RuntimeEnvStep {
             response: StepResponse {
-                observation: Some(bytes_value(payload([step as u8]))),
+                observation: Some(leaves_value(payload([step as u8]))),
                 rewards: vec![1.0],
                 terminated_mask: vec![u8::from(terminal)],
                 truncated_mask: vec![0],
@@ -393,7 +394,7 @@ impl RuntimeEnv for TestEnv {
                 episode_ids: vec![],
                 env_indices: vec![],
             },
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -427,8 +428,8 @@ impl RuntimeModel for TestModel {
         let observation_bytes = request
             .observation
             .as_ref()
-            .and_then(|value| value.bytes.as_ref())
-            .map(|message| message.data.clone())
+            .and_then(|value| value.leaves.first())
+            .map(|leaf| leaf.to_vec())
             .unwrap_or_default();
         self.seen_observations
             .lock()
@@ -437,9 +438,9 @@ impl RuntimeModel for TestModel {
         Ok(RuntimeModelPrediction {
             response: PredictResponse {
                 context: request.context,
-                action: Some(bytes_value(payload([0]))),
+                action: Some(leaves_value(payload([0]))),
             },
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -480,7 +481,7 @@ impl RuntimeHooks for RecordingHooks {
     async fn transform_action(
         &self,
         event: ActionReceivedEvent,
-    ) -> Result<Option<MessageBytes>, HookError> {
+    ) -> Result<Option<Vec<Bytes>>, HookError> {
         if self.fail_action_transform {
             return Err(HookError::Message("transform failed".to_string()));
         }
@@ -490,13 +491,20 @@ impl RuntimeHooks for RecordingHooks {
     async fn transform_observation(
         &self,
         event: rlmesh_runtime::ObservationEmittedEvent,
-    ) -> Result<Option<MessageBytes>, HookError> {
+    ) -> Result<Option<Vec<Bytes>>, HookError> {
         let Some(marker) = self.observation_marker else {
             return Ok(event.observation);
         };
-        Ok(event.observation.map(|mut value| {
-            value.data.insert(0, marker);
-            value
+        // `Bytes` is immutable, so prepend the marker to the first leaf by
+        // building a fresh buffer (the marker stays byte 0 of leaf 0).
+        Ok(event.observation.map(|mut leaves| {
+            if let Some(first) = leaves.first_mut() {
+                let mut prefixed = Vec::with_capacity(first.len() + 1);
+                prefixed.push(marker);
+                prefixed.extend_from_slice(first);
+                *first = Bytes::from(prefixed);
+            }
+            leaves
         }))
     }
 
@@ -506,7 +514,8 @@ impl RuntimeHooks for RecordingHooks {
     ) -> Result<(), HookError> {
         let bytes = event
             .observation
-            .map(|value| value.data)
+            .and_then(|leaves| leaves.into_iter().next())
+            .map(|leaf| leaf.to_vec())
             .unwrap_or_default();
         self.emitted_observations
             .lock()
@@ -541,9 +550,12 @@ fn one_episode_spec() -> RuntimeSessionSpec {
         env_id: "TestEnv-v0".to_string(),
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
-            observation_space: Some(SpaceSpec::default()),
-            action_space: Some(SpaceSpec::default()),
-            num_envs: 1,
+            spec: Some(EnvSpec {
+                observation_space: Some(SpaceSpec::default()),
+                action_space: Some(SpaceSpec::default()),
+                ..Default::default()
+            }),
+            num_envs: Some(1),
             ..Default::default()
         },
         num_envs: 1,
@@ -554,14 +566,12 @@ fn one_episode_spec() -> RuntimeSessionSpec {
     }
 }
 
-fn payload<const N: usize>(data: [u8; N]) -> MessageBytes {
-    MessageBytes {
-        data: data.to_vec(),
-    }
+fn payload<const N: usize>(data: [u8; N]) -> Bytes {
+    Bytes::copy_from_slice(&data)
 }
 
-fn bytes_value(value: MessageBytes) -> SpaceValue {
-    SpaceValue { bytes: Some(value) }
+fn leaves_value(data: Bytes) -> SpaceValue {
+    SpaceValue { leaves: vec![data] }
 }
 
 /// A NEXT_STEP vector env with a per-lane terminal schedule. It mimics the env
@@ -610,11 +620,11 @@ impl RuntimeEnv for VectorTestEnv {
         let episode_ids = (0..n).map(|lane| Self::episode_id(lane, 0)).collect();
         Ok(RuntimeEnvReset {
             response: ResetResponse {
-                observation: Some(bytes_value(payload([0]))),
+                observation: Some(leaves_value(payload([0]))),
                 infos: None,
                 episode_ids,
             },
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -641,7 +651,7 @@ impl RuntimeEnv for VectorTestEnv {
                     terminated_mask[lane] = 1;
                     completed_episodes.push(EpisodeMetadata {
                         episode_id: id.clone(),
-                        env_index: lane as i32,
+                        env_index: lane as u32,
                         step_count: self.lane_step[lane] as i64,
                         cumulative_reward: self.lane_step[lane] as f64,
                         terminated: true,
@@ -657,7 +667,7 @@ impl RuntimeEnv for VectorTestEnv {
 
         Ok(RuntimeEnvStep {
             response: StepResponse {
-                observation: Some(bytes_value(payload([0]))),
+                observation: Some(leaves_value(payload([0]))),
                 rewards,
                 terminated_mask,
                 truncated_mask: vec![0u8; n],
@@ -666,7 +676,7 @@ impl RuntimeEnv for VectorTestEnv {
                 episode_ids,
                 env_indices: vec![],
             },
-            telemetry: None,
+            endpoint_total_ns: None,
         })
     }
 
@@ -685,10 +695,13 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
         env_id: "VectorTestEnv-v0".to_string(),
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
-            observation_space: Some(SpaceSpec::default()),
-            action_space: Some(SpaceSpec::default()),
-            num_envs: num_envs as u32,
-            autoreset_mode: rlmesh_proto::env::v1::AutoresetMode::NextStep as i32,
+            spec: Some(EnvSpec {
+                observation_space: Some(SpaceSpec::default()),
+                action_space: Some(SpaceSpec::default()),
+                ..Default::default()
+            }),
+            num_envs: Some(num_envs as u32),
+            autoreset_mode: rlmesh_proto::core::v1::AutoresetMode::NextStep as i32,
             ..Default::default()
         },
         num_envs,

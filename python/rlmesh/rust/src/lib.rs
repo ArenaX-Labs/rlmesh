@@ -2,21 +2,23 @@ mod adapters;
 mod client;
 mod lifecycle;
 mod model;
+mod peer_info;
 mod sandbox;
 mod server;
 mod spaces;
 mod telemetry;
+mod telemetry_view;
 mod types;
 
-#[cfg(feature = "viewer")]
+#[cfg(feature = "cli")]
 use std::ffi::OsString;
 #[cfg(feature = "stub-gen")]
 use std::path::PathBuf;
 
-#[cfg(feature = "viewer")]
+#[cfg(feature = "cli")]
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-#[cfg(all(feature = "viewer", feature = "stub-gen"))]
+#[cfg(all(feature = "cli", feature = "stub-gen"))]
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::gen_type_alias_from_python;
@@ -32,9 +34,9 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
-// Viewer support is feature-gated (on by default) so a lean wheel can opt out
-// of linking egui/eframe via `--no-default-features`.
-#[cfg(feature = "viewer")]
+// The embedded `rlmesh` CLI is feature-gated (on by default) so a lean wheel
+// can opt out of linking `rlmesh-cli` via `--no-default-features`.
+#[cfg(feature = "cli")]
 #[cfg_attr(
     feature = "stub-gen",
     gen_stub_pyfunction(
@@ -69,10 +71,14 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<model::PyModel>()?;
     m.add_class::<model::PyModelClient>()?;
+    m.add_class::<telemetry_view::PyTelemetrySummary>()?;
+    m.add_class::<telemetry_view::PyTelemetryTiming>()?;
+    m.add_class::<telemetry_view::PyTelemetryMetric>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
-    #[cfg(feature = "viewer")]
+    #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
+    m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_start_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_stop_env, m)?)?;
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;

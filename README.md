@@ -4,33 +4,19 @@
 
 **Gymnasium-compatible infrastructure for model-environment evaluation.**
 
-[![CI](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/rlmesh.svg)](https://pypi.org/project/rlmesh/)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://pypi.org/project/rlmesh/)
-[![crates.io](https://img.shields.io/crates/v/rlmesh.svg)](https://crates.io/crates/rlmesh)
-[![Docs](https://img.shields.io/badge/docs-rlmesh.dev-blue.svg)](https://docs.rlmesh.dev)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![CI](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml/badge.svg)](https://github.com/ArenaX-Labs/rlmesh/actions/workflows/ci.yml) [![PyPI](https://img.shields.io/pypi/v/rlmesh.svg)](https://pypi.org/project/rlmesh/) [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://pypi.org/project/rlmesh/) [![crates.io](https://img.shields.io/crates/v/rlmesh.svg)](https://crates.io/crates/rlmesh) [![Docs](https://img.shields.io/badge/docs-rlmesh.dev-blue.svg)](https://docs.rlmesh.dev) [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 </div>
 
-RLMesh connects models to environments for evaluation. The Python SDK serves Gymnasium-style
-environments and lets evaluators call `reset`, `step`, `render`, and `close` over local or remote
-transports. Rust crates provide the lower-level runtime, protocol, and packaging layers.
+RLMesh connects models to environments for evaluation. The Python SDK serves Gymnasium-style environments and lets evaluators call `reset`, `step`, `render`, and `close` over local or remote transports. Rust crates provide the lower-level runtime, protocol, and packaging layers.
 
 ## Project Status
 
-The current release, **0.1.0-rc.1**, is a release candidate for 0.1.0: the `2026.06` workflow
-edition is still provisional and seals at the final 0.1.0.
+The current release, **0.1.0-rc.1**, is a release candidate for 0.1.0: the `2026.06` workflow edition is still provisional and seals at the final 0.1.0.
 
-RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release
-may change a stable API with a migration note, so pin a minor range for active projects. The
-`rlmesh` facade crate and the CLI commands are the Rust-side surfaces we aim to stabilize; the other
-crates are internal implementation detail with no stability promise. See the
-[compatibility](https://docs.rlmesh.dev/compatibility/) and
-[versioning](https://docs.rlmesh.dev/versioning/) policies.
+RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we aim to stabilize; the other crates are internal implementation detail with no stability promise. See the [compatibility](https://docs.rlmesh.dev/compatibility/) and [versioning](https://docs.rlmesh.dev/versioning/) policies.
 
-RLMesh is built around a language-neutral model-environment boundary. Python and Rust are supported
-today. Additional language bindings are future work, not part of the current public surface.
+RLMesh is built around a language-neutral model-environment boundary. Python and Rust are supported today. Additional language bindings are future work, not part of the current public surface.
 
 ## Installation
 
@@ -74,28 +60,18 @@ while not (terminated or truncated):
 env.close()
 ```
 
-For runnable files and exact commands, see [`examples/python`](examples/python). Start with the
-quickstart, then try sandbox examples for Docker-backed environments or the optional MuJoCo and
-Pygame examples for heavier dependency stacks.
+For runnable files and exact commands, see [`examples/python`](examples/python). Start with the quickstart, then try sandbox examples for Docker-backed environments or the optional MuJoCo and Pygame examples for heavier dependency stacks.
 
 ## Building the Rust SDK
 
-The gRPC crates generate their stubs from `.proto` files at build time. Building any of them
-(`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`) from source, including a plain
-`cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler `protoc` on
-the system. Install it from your package manager (for example `apt install protobuf-compiler` or
-`brew install protobuf`), or point `PROTOC` at an existing binary. The Python package has no such
-requirement; its wheels ship pre-built.
+The gRPC crates generate their stubs from `.proto` files at build time. Building any of them (`rlmesh`, `rlmesh-grpc`, `rlmesh-runtime`, `rlmesh-sandbox`) from source, including a plain `cargo add rlmesh && cargo build` from crates.io, requires the Protocol Buffers compiler `protoc` on the system. Install it from your package manager (for example `apt install protobuf-compiler` or `brew install protobuf`), or point `PROTOC` at an existing binary. The Python package has no such requirement; its wheels ship pre-built.
 
 ## Packages
 
 - Python package: [`rlmesh`](python/rlmesh/README.md)
 - Rust SDK: [`crates/rlmesh`](crates/rlmesh/README.md)
 - CLI: [`rlmesh-cli`](crates/rlmesh-cli/README.md)
-- Supporting crates: [`rlmesh-spaces`](crates/rlmesh-spaces/README.md),
-  [`rlmesh-proto`](crates/rlmesh-proto/README.md), [`rlmesh-grpc`](crates/rlmesh-grpc/README.md),
-  [`rlmesh-runtime`](crates/rlmesh-runtime/README.md), and
-  [`rlmesh-sandbox`](crates/rlmesh-sandbox/README.md)
+- Supporting crates: [`rlmesh-spaces`](crates/rlmesh-spaces/README.md), [`rlmesh-proto`](crates/rlmesh-proto/README.md), [`rlmesh-grpc`](crates/rlmesh-grpc/README.md), [`rlmesh-runtime`](crates/rlmesh-runtime/README.md), and [`rlmesh-sandbox`](crates/rlmesh-sandbox/README.md)
 
 ## Resources
 
@@ -109,8 +85,7 @@ requirement; its wheels ship pre-built.
 
 ## Contributing
 
-Issues and focused pull requests are welcome. Larger API, architecture, or roadmap changes should
-start with an issue first. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines.
+Issues and focused pull requests are welcome. Larger API, architecture, or roadmap changes should start with an issue first. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines.
 
 ## License
 

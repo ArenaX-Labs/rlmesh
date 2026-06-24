@@ -2,8 +2,7 @@
 
 Command-line entrypoint for inspecting RLMesh distributions and running support commands.
 
-This crate publishes the `rlmesh` binary. The CLI is small: `version` for distribution inspection,
-plus internal viewer plumbing used by the Python package.
+This crate publishes the `rlmesh` binary. The CLI is small: today it exposes `version` for distribution inspection. It is also embedded in the Python package as the `python -m rlmesh` entrypoint.
 
 ## Installation
 
@@ -19,9 +18,7 @@ rlmesh version
 
 ## Status
 
-The crate's Rust API is internal, with no stability promise. The CLI commands are a supported
-surface we intend to stabilize; today only `version` is stable. Stabilizing the rest is a near-term
-goal. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+The crate's Rust API is internal, with no stability promise. The CLI commands are a supported surface we intend to stabilize; today only `version` is stable. Stabilizing the rest is a near-term goal. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## Links
 
@@ -31,6 +28,4 @@ goal. See the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
 
 ## License
 
-Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See
-[LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-APACHE) and
-[LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-MIT).
+Licensed under either of Apache License, Version 2.0 or the MIT license, at your option. See [LICENSE-APACHE](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-APACHE) and [LICENSE-MIT](https://github.com/ArenaX-Labs/rlmesh/blob/main/LICENSE-MIT).

@@ -1,4 +1,4 @@
-use rlmesh_proto::common::v1::MessageBytes;
+use prost::bytes::Bytes;
 use rlmesh_proto::model::v1::{CloseRouteRequest, PredictContext, PredictRequest, PredictSlot};
 use rlmesh_proto::spaces::v1::SpaceValue;
 
@@ -23,8 +23,8 @@ impl RequestPhase {
     }
 }
 
-fn bytes_value(value: MessageBytes) -> SpaceValue {
-    SpaceValue { bytes: Some(value) }
+fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
+    SpaceValue { leaves }
 }
 
 #[derive(Debug)]
@@ -111,7 +111,9 @@ impl RouteState {
         self.slots
             .iter()
             .map(|slot| PredictSlot {
-                env_index: slot.env_index,
+                // Native env_index is i32 (>=0); proto field is uint32. `step` is
+                // int64 on both sides, so it carries across with no conversion.
+                env_index: slot.env_index.max(0) as u32,
                 episode_id: slot
                     .episode
                     .as_ref()
@@ -195,7 +197,7 @@ impl RouteState {
 
     pub(crate) fn predict_request(
         &mut self,
-        observation: Option<MessageBytes>,
+        observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
     ) -> PredictRequest {
         PredictRequest {
@@ -205,7 +207,7 @@ impl RouteState {
                 request_id: self.next_request_id(phase.as_str()),
                 slots: self.slots(),
             }),
-            observation: observation.map(bytes_value),
+            observation: observation.map(leaves_value),
         }
     }
 

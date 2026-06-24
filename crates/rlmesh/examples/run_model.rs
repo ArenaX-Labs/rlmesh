@@ -11,21 +11,18 @@
 //! ```
 #![allow(clippy::print_stdout)]
 
-use rlmesh::encode_action;
 use rlmesh::prelude::*;
-use rlmesh::spaces::{self, SpaceValue};
+use rlmesh::spaces::SpaceValue;
 
-/// A model that always takes action 0. The action is encoded against the
-/// environment's action space, so the same `predict` works for any discrete
-/// env without hand-packing bytes.
-struct ConstantModel {
-    action_space: SpaceSpec,
-}
+/// A model that always takes action 0, one per lane. The codec encodes the
+/// typed value against the route's action space, so the same `predict` works
+/// for any discrete env without hand-packing bytes.
+struct ConstantModel;
 
 #[async_trait::async_trait]
 impl ModelHandler for ConstantModel {
-    async fn predict(&mut self, _obs: ModelObservation) -> rlmesh::Result<BinaryPayload> {
-        encode_action(&SpaceValue::Discrete(0), &self.action_space)
+    async fn predict(&mut self, obs: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
+        Ok((0..obs.num_envs).map(|_| SpaceValue::Discrete(0)).collect())
     }
 }
 
@@ -35,11 +32,7 @@ async fn main() -> rlmesh::Result<()> {
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:5555".to_string());
 
-    let model = ConstantModel {
-        action_space: spaces::spaces::DiscreteBuilder::new(2)
-            .build()
-            .expect("discrete action space spec is valid"),
-    };
+    let model = ConstantModel;
 
     println!("driving model against {address} for 3 episodes");
     ModelWorker::new(model)

@@ -23,10 +23,6 @@ ResetInfo: TypeAlias = dict[str, object]
 
 StepInfo: TypeAlias = dict[str, object]
 
-class RenderBundle(TypedDict):
-    frame: Value | None
-    packet: bytes | None
-
 class SandboxRunInfo(TypedDict):
     requested_source: str
     resolved_source: str

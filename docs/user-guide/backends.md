@@ -4,8 +4,7 @@ Framework backends control how values are decoded at the Python boundary.
 
 ## Plain Python
 
-Top-level `rlmesh.RemoteEnv`, `rlmesh.RemoteVectorEnv`, and `rlmesh.Model` preserve RLMesh-native
-values and Python primitives without requiring NumPy or Torch.
+Top-level `rlmesh.RemoteEnv`, `rlmesh.RemoteVectorEnv`, and `rlmesh.Model` preserve RLMesh-native values and Python primitives without requiring NumPy or Torch.
 
 ```python
 import rlmesh
@@ -15,8 +14,7 @@ env = rlmesh.RemoteEnv("127.0.0.1:5555")
 
 ## NumPy
 
-Use NumPy for examples and notebooks. Tensor leaves decode to NumPy arrays, while Python primitives
-and nested containers are preserved.
+Use NumPy for examples and notebooks. Tensor leaves decode to NumPy arrays, while Python primitives and nested containers are preserved.
 
 ```python
 from rlmesh.numpy import RemoteEnv
@@ -30,8 +28,7 @@ Install it with:
 pip install "rlmesh[numpy]"
 ```
 
-The space wrappers returned by `env.observation_space` and `env.action_space` also use the NumPy
-backend, so `sample()` returns NumPy-compatible values where tensor leaves are involved.
+The space wrappers returned by `env.observation_space` and `env.action_space` also use the NumPy backend, so `sample()` returns NumPy-compatible values where tensor leaves are involved.
 
 ## Torch
 
@@ -49,13 +46,11 @@ Install it with:
 pip install "rlmesh[torch]"
 ```
 
-Torch decoding happens at the client boundary. The server can remain a normal Gymnasium environment
-and does not need to import Torch unless the environment itself needs it.
+Torch decoding happens at the client boundary. The server can remain a normal Gymnasium environment and does not need to import Torch unless the environment itself needs it.
 
 ## JAX
 
-The JAX backend is experimental. Tensor leaves decode to JAX arrays, which are immutable by
-construction.
+The JAX backend is experimental. Tensor leaves decode to JAX arrays, which are immutable by construction.
 
 ```python
 from rlmesh.jax import RemoteEnv

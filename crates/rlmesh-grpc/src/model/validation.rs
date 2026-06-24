@@ -37,12 +37,7 @@ pub(super) fn validate_predict_route(context: &PredictContext) -> Result<(), Grp
                 "model route slot {index} missing episode_id"
             )));
         }
-        if slot.env_index < 0 {
-            return Err(decode_error(format!(
-                "model route slot {index} has negative env_index {}",
-                slot.env_index
-            )));
-        }
+        // env_index is uint32 on the wire, so a negative value is unrepresentable.
         if !env_indexes.insert(slot.env_index) {
             return Err(decode_error(format!(
                 "model route has duplicate env_index {}",

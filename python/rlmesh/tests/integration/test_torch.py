@@ -86,7 +86,6 @@ def _torch_as_tensor_without_readonly_warning(rlmesh_torch: Any, tensor: object)
         ("uint32", [0, 1, 70_000]),
         ("uint64", [0, 1, 2**40]),
         ("float16", [1.5, -2.0, 0.25]),
-        ("bfloat16", [1.0, -2.0, 0.5]),
         ("float32", [1.5, -2.0, 0.25]),
         ("float64", [1.5, -2.0, 0.25]),
     ],

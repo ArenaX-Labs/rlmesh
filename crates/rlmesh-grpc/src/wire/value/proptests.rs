@@ -3,8 +3,7 @@ use rlmesh_spaces as native;
 use rlmesh_spaces::{DType, Tensor, dtype_size};
 
 use super::{
-    decode_batched_partial_values, decode_value_bytes, encode_batched_partial_values,
-    encode_value_bytes,
+    decode_batched_partial_values, decode_leaves, encode_batched_partial_values, encode_leaves,
 };
 
 fn concrete_dtype() -> impl Strategy<Value = DType> {
@@ -44,12 +43,10 @@ proptest! {
             Tensor::from_vec(data.clone(), shape, dtype).expect("valid tensor"),
         );
 
-        let payload = encode_value_bytes(&value, &space).expect("encode");
-        prop_assert_eq!(payload.data.as_slice(), data.as_slice());
+        let leaves = encode_leaves(&value, &space).expect("encode");
+        prop_assert_eq!(leaves[0].as_ref(), data.as_slice());
 
-        let decoded = decode_value_bytes(Some(&payload), &space)
-            .expect("decode")
-            .expect("present");
+        let decoded = decode_leaves(&leaves, &space).expect("decode");
         prop_assert_eq!(decoded, value);
     }
 
@@ -73,9 +70,10 @@ proptest! {
             .collect();
 
         let payload = encode_batched_partial_values(&values, &space).expect("encode");
-        prop_assert_eq!(payload.data.len(), data.len() * count);
+        prop_assert_eq!(payload.leaves[0].len(), data.len() * count);
 
-        let decoded = decode_batched_partial_values(Some(&payload), &space).expect("decode");
+        let decoded =
+            decode_batched_partial_values(Some(&payload), &space, count).expect("decode");
         prop_assert_eq!(decoded, values);
     }
 }

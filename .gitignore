@@ -42,4 +42,5 @@ target/
 .claude/
 
 # Proposal / design scratch lives in the workspace cabinet, never in-repo
+.research
 docs/proposals/

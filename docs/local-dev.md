@@ -8,11 +8,9 @@ This page covers the maintainer workflow for the RLMesh repository.
 
 ## Requirements
 
-Install Git and [mise](https://mise.jdx.dev/getting-started.html). The remaining tools are pinned in
-`mise.toml`, including Python, Rust, uv, Protobuf tooling, and release build helpers.
+Install Git and [mise](https://mise.jdx.dev/getting-started.html). The remaining tools are pinned in `mise.toml`, including Python, Rust, uv, Protobuf tooling, and release build helpers.
 
-The root `mise.toml` also creates and sources the repository `.venv` automatically when mise is
-active.
+The root `mise.toml` also creates and sources the repository `.venv` automatically when mise is active.
 
 ## Setup
 
@@ -82,11 +80,9 @@ mise run build:rust
 mise run build:python
 ```
 
-Local wheel builds may use plain `linux_*` tags for smoke testing. Release wheels must use
-uploadable platform tags such as `manylinux`, `musllinux`, `macosx`, or `win`.
+Local wheel builds may use plain `linux_*` tags for smoke testing. Release wheels must use uploadable platform tags such as `manylinux`, `musllinux`, `macosx`, or `win`.
 
-Build the linux-glibc wheel pair consumed by container images (skips when the wheels for the current
-version and architecture already exist):
+Build the linux-glibc wheel pair consumed by container images (skips when the wheels for the current version and architecture already exist):
 
 ```bash
 mise run build:python:docker

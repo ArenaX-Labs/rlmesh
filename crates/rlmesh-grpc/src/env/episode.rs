@@ -58,12 +58,18 @@ impl Episode {
     ) -> EpisodeMetadata {
         let end_timestamp_ns = unix_nanos_now();
 
-        let duration_ms = self.start_time.elapsed().as_millis() as i64;
+        // Proto duration_ms is uint64; clamp the u128 elapsed millis into it.
+        let duration_ms = self
+            .start_time
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64;
 
         EpisodeMetadata {
             episode_id: self.id,
             seed: self.seed,
-            env_index: self.env_index,
+            // Native env_index is i32 (>=0 lane offset); proto field is uint32.
+            env_index: self.env_index.max(0) as u32,
             step_count: self.step_count,
             cumulative_reward: self.cumulative_reward,
             terminated,

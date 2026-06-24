@@ -21,7 +21,7 @@ struct ViewState {
     format: Option<CString>,
 }
 
-/// Python `struct`-module format code for a dtype. `bfloat16` has no code.
+/// Python `struct`-module format code for a dtype.
 ///
 /// 64-bit integers use `"q"`/`"Q"`: the `"l"`/`"L"` codes are platform
 /// `long`, which is 32-bit on LLP64 targets such as Windows.
@@ -39,7 +39,7 @@ fn buffer_format(dtype: DType) -> Option<&'static str> {
         DType::Float16 => Some("e"),
         DType::Float32 => Some("f"),
         DType::Float64 => Some("d"),
-        DType::Bfloat16 | DType::Unspecified => None,
+        DType::Unspecified => None,
     }
 }
 
@@ -274,9 +274,9 @@ impl PyTensor {
         let borrowed = slf.borrow();
         let dtype = borrowed.inner.dtype();
         let Some(format) = buffer_format(dtype) else {
-            return Err(pyo3::exceptions::PyBufferError::new_err(
-                "bfloat16 tensors do not support the buffer protocol; use __dlpack__ or tobytes()",
-            ));
+            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
+                "dtype {dtype} does not support the buffer protocol"
+            )));
         };
         if !borrowed.inner.is_contiguous()
             && (flags & pyo3::ffi::PyBUF_STRIDES) != pyo3::ffi::PyBUF_STRIDES

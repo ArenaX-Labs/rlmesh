@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use half::{bf16, f16};
+use half::f16;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
@@ -376,24 +376,31 @@ fn encode_with_numpy(
         .getattr("dtype")?
         .getattr("kind")?
         .extract::<String>()?;
-    if resolve_dtype(space.dtype).is_integer() && kind == "f" {
-        let rint = numpy.getattr("rint")?.call1((&source,))?;
-        let integral = source.call_method1("__eq__", (&rint,))?;
-        let finite = numpy.getattr("isfinite")?.call1((&source,))?;
-        let clean = integral.call_method1("__and__", (finite,))?;
-        if !numpy.getattr("all")?.call1((&clean,))?.is_truthy()? {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "float value supplied for integer dtype {dtype_name} is not integral"
-            )));
+    // An integer dtype must reject any out-of-range element on encode, mirroring
+    // the native `check_int_in_dtype_range` guard — otherwise the `asarray` cast
+    // below silently overflow-wraps (e.g. 300 -> 44 for uint8) and the numpy
+    // backend disagrees byte-for-byte with the native path. We check both float
+    // sources (which also must be exactly integral) and integer/bool sources.
+    if resolve_dtype(space.dtype).is_integer() && matches!(kind.as_str(), "f" | "i" | "u" | "b") {
+        if kind == "f" {
+            let rint = numpy.getattr("rint")?.call1((&source,))?;
+            let integral = source.call_method1("__eq__", (&rint,))?;
+            let finite = numpy.getattr("isfinite")?.call1((&source,))?;
+            let clean = integral.call_method1("__and__", (finite,))?;
+            if !numpy.getattr("all")?.call1((&clean,))?.is_truthy()? {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "float value supplied for integer dtype {dtype_name} is not integral"
+                )));
+            }
         }
 
         let info = numpy.getattr("iinfo")?.call1((dtype_name,))?;
         // Use a strict `< max+1`, with max+1 computed in Python's arbitrary-
-        // precision int (not the numpy scalar, which would wrap). iinfo.max
-        // such as 2**63-1 is not representable in f64 and rounds *up* to 2**63,
-        // so `<= max` would wrongly accept 2**63 and the int cast below would
-        // then overflow-wrap. max+1 is an exact power-of-two float, so `< max+1`
-        // is an exact boundary.
+        // precision int (`iinfo.max` is a Python int, not a numpy scalar that
+        // would wrap). iinfo.max such as 2**63-1 is not representable in f64 and
+        // rounds *up* to 2**63, so `<= max` would wrongly accept 2**63 and the
+        // int cast below would then overflow-wrap. max+1 is an exact power-of-two
+        // float, so `< max+1` is an exact boundary.
         let max_exclusive = info.getattr("max")?.call_method1("__add__", (1,))?;
         let in_range = source
             .call_method1("__ge__", (info.getattr("min")?,))?
@@ -403,7 +410,7 @@ fn encode_with_numpy(
             )?;
         if !numpy.getattr("all")?.call1((in_range,))?.is_truthy()? {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "float value supplied for integer dtype {dtype_name} is not representable in integer dtype {dtype_name} range"
+                "value supplied for integer dtype {dtype_name} is not representable in its range"
             )));
         }
     }
@@ -564,7 +571,7 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
         DType::Uint8 => out.push(value.extract::<u8>()?),
         DType::Int8 => out.extend(value.extract::<i8>()?.to_le_bytes()),
         DType::Int16 => out.extend(value.extract::<i16>()?.to_le_bytes()),
-        DType::Int32 => out.extend((value.extract::<i64>()? as i32).to_le_bytes()),
+        DType::Int32 => out.extend(value.extract::<i32>()?.to_le_bytes()),
         DType::Int64 => out.extend(value.extract::<i64>()?.to_le_bytes()),
         DType::Uint16 => out.extend(value.extract::<u16>()?.to_le_bytes()),
         DType::Uint32 => out.extend(value.extract::<u32>()?.to_le_bytes()),
@@ -573,8 +580,9 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
             out.extend((value.extract::<f64>()? as f32).to_le_bytes());
         }
         DType::Float64 => out.extend(value.extract::<f64>()?.to_le_bytes()),
-        DType::Float16 => out.extend(f16::from_f32(value.extract::<f64>()? as f32).to_le_bytes()),
-        DType::Bfloat16 => out.extend(bf16::from_f64(value.extract::<f64>()?).to_le_bytes()),
+        // Single rounding f64 -> f16, matching native `f16::from_f64` + numpy.
+        // (`from_f32(x as f32)` double-rounds and diverges on borderline values.)
+        DType::Float16 => out.extend(f16::from_f64(value.extract::<f64>()?).to_le_bytes()),
     }
     Ok(())
 }
@@ -666,6 +674,25 @@ mod tests {
                 })),
             })),
         }
+    }
+
+    #[test]
+    fn f16_pack_single_rounds_not_double_rounds() {
+        // value-encoding-v1 sentinel (mirrors scalar.rs `value_encoding_v1_float_golden`):
+        // 1.0 + 2^-11 + 2^-25 packs to f16 0x3C01 with single f64->f16 rounding;
+        // the old `from_f32(x as f32)` double-rounded it to 0x3C00.
+        Python::attach(|py| {
+            let dr = 1.0_f64 + 1.0 / 2048.0 + 1.0 / 33_554_432.0;
+            let value = pyo3::types::PyFloat::new(py, dr);
+            let mut out = Vec::new();
+            super::pack_scalar_bytes(value.as_any(), rlmesh_spaces::DType::Float16, &mut out)
+                .unwrap();
+            assert_eq!(
+                out,
+                vec![0x01, 0x3C],
+                "f16 must single-round, got {out:02x?}"
+            );
+        });
     }
 
     #[test]
@@ -773,6 +800,46 @@ mod tests {
             assert!(
                 err.to_string().contains("not representable"),
                 "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn encode_rejects_out_of_range_integer_array() {
+        Python::attach(|py| {
+            if !numpy_available(py) {
+                return;
+            }
+            let numpy = py.import("numpy").unwrap();
+            let space = BoxSpaceBuilder::scalar(0.0, 255.0, vec![2])
+                .dtype(rlmesh_spaces::DType::Uint8)
+                .build()
+                .unwrap();
+
+            // An int64 array whose element exceeds uint8 must be rejected, not
+            // silently overflow-wrapped (300 -> 44) the way numpy's cast does —
+            // matching the native `check_int_in_dtype_range` encode guard.
+            let over = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![300i64, 0],))
+                .unwrap();
+            let err = encode_array_like_value_with_backend(py, &over, &space, ValueBackend::Auto)
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("not representable"),
+                "unexpected error: {err}"
+            );
+
+            // In-range integers still encode.
+            let within = numpy
+                .getattr("asarray")
+                .unwrap()
+                .call1((vec![255i64, 0],))
+                .unwrap();
+            assert!(
+                encode_array_like_value_with_backend(py, &within, &space, ValueBackend::Auto)
+                    .is_ok()
             );
         });
     }

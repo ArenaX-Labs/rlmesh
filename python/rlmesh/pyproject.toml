@@ -14,12 +14,7 @@ keywords = [
   "runtime",
 ]
 license = "MIT OR Apache-2.0"
-license-files = [
-  "LICENSE-MIT",
-  "LICENSE-APACHE",
-  "THIRD_PARTY_NOTICES.md",
-  "third_party_licenses/**/*",
-]
+license-files = ["LICENSE-MIT", "LICENSE-APACHE", "THIRD_PARTY_NOTICES.md"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -71,10 +66,6 @@ torch = ["torch>=1.11"]
 # jaxlib as a dependency until 0.4.31, so both must be pinned explicitly.
 jax = ["jax>=0.4.24", "jaxlib>=0.4.24"]
 
-# NumPy has no native bfloat16 dtype; ml_dtypes supplies one for
-# rlmesh.numpy.asarray on bfloat16 tensors.
-bfloat16 = ["ml_dtypes"]
-
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"
 
@@ -86,7 +77,7 @@ build-backend = "maturin"
 module-name = "rlmesh._rlmesh"
 python-source = "src"
 no-default-features = true
-features = ["viewer", { feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
+features = ["cli", { feature = "pyo3/abi3-py311", python-version = ">=3.11" }]
 exclude = [
   ".pytest_cache/**",
   "dist/**",

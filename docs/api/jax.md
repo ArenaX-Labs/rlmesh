@@ -4,9 +4,7 @@ The JAX backend is experimental.
 
 ## What This Backend Changes
 
-`rlmesh.jax` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
-APIs, but decodes tensor leaves to JAX arrays. Space wrappers returned from JAX clients also sample
-JAX-compatible values.
+`rlmesh.jax` keeps the same environment, model, and sandbox behavior as the shared RLMesh client APIs, but decodes tensor leaves to JAX arrays. Space wrappers returned from JAX clients also sample JAX-compatible values.
 
 Install it with:
 
@@ -24,14 +22,10 @@ pip install "rlmesh[jax]"
 
 ## Conversion Semantics
 
-- `asarray(tensor)` imports over DLPack. XLA shares RLMesh's 64-byte-aligned buffers zero-copy and
-  copies otherwise; JAX arrays are immutable either way, so there is no mutation hazard.
-- `from_array(array)` moves the array to CPU if needed, blocks until ready, and copies the elements
-  into a fresh RLMesh tensor.
-- `int64`, `uint64`, and `float64` values require JAX 64-bit mode
-  (`jax.config.update("jax_enable_x64", True)`); without it JAX itself demotes those dtypes.
-- Requires `jax >= 0.4.24`, the first release with DLPack `bool` support. `ensure_available`
-  enforces the floor at runtime.
+- `asarray(tensor)` imports over DLPack. XLA shares RLMesh's 64-byte-aligned buffers zero-copy and copies otherwise; JAX arrays are immutable either way, so there is no mutation hazard.
+- `from_array(array)` moves the array to CPU if needed, blocks until ready, and copies the elements into a fresh RLMesh tensor.
+- `int64`, `uint64`, and `float64` values require JAX 64-bit mode (`jax.config.update("jax_enable_x64", True)`); without it JAX itself demotes those dtypes.
+- Requires `jax >= 0.4.24`, the first release with DLPack `bool` support. `ensure_available` enforces the floor at runtime.
 
 ## Value Helpers
 

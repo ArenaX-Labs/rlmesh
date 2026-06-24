@@ -4,14 +4,10 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::spaces::BinaryPayload;
 use rlmesh::{
     BindAddress, ConnectAddress, Error as RLMeshError, ModelEpisodeEnd, ModelHandler,
     ModelLaneReset, ModelObservation, ModelRouteSetup, ModelWorker, RemoteModel, RunLocalOptions,
     ServeModelOptions,
-};
-use rlmesh_grpc::wire::{
-    binary_to_bytes, decode_batched_partial_values, encode_batched_partial_values,
 };
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;
@@ -20,9 +16,11 @@ use std::sync::{Arc, Mutex};
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::{
     ValueBackend, batched_space_values_to_py_neutral, env_contract_to_py, extract_space_spec,
-    make_space, py_any_to_meta_map, py_any_to_space_value_with_backend, space_value_to_py_neutral,
+    make_space, py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
+    py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
+use crate::telemetry_view::PyTelemetrySummary;
 use crate::types::to_py_err;
 
 /// Process-wide multi-threaded runtime shared by Python model clients. The Join
@@ -136,7 +134,7 @@ impl PyModelHandler {
 
 #[async_trait]
 impl ModelHandler for PyModelHandler {
-    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<BinaryPayload> {
+    async fn predict(&mut self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
         let predict_fn = Python::attach(|py| self.predict_fn.clone_ref(py));
         // The adapter for this route was resolved at configure_route (or is a
         // Python None for a spec-less route / the never-configured run_local path).
@@ -147,20 +145,47 @@ impl ModelHandler for PyModelHandler {
             .get(&route_key(&observation.route))
             .map(|adapter| Python::attach(|py| adapter.clone_ref(py)));
         let profiler = Arc::clone(&self.profiler);
-        let observation_payload = observation.observation.clone();
-        let env_contract = observation.env_contract.clone();
-        let obs_bytes_len = observation_payload
+        // Observation wire-byte volume for the predict spans (cheap: sums leaf
+        // lengths, no decode/copy). Action encoding now happens in the Rust
+        // worker (outside this fn), so only the obs side is measurable here; the
+        // old `model.predict.encode_action` span moved with it.
+        let obs_bytes_len = observation
+            .observation
             .as_ref()
-            .map(|payload| payload.data.len())
+            .map(|leaves| leaves.iter().map(|leaf| leaf.len()).sum::<usize>())
             .unwrap_or(0);
 
         let predict_total_guard = profiler.start("model.predict.total");
-        let action_bytes = tokio::task::spawn_blocking(move || {
-            Python::attach(|py| -> PyResult<Vec<u8>> {
-                let observation_space = env_contract
+        let actions = tokio::task::spawn_blocking(move || {
+            Python::attach(|py| -> PyResult<Vec<SpaceValue>> {
+                // Decode to typed lanes INSIDE the blocking task: it copies slab
+                // bytes into per-lane Tensor storage, so running it on the async
+                // gRPC worker would stall unrelated RPCs under a large/vector
+                // observation. An absent observation yields no lanes and a Python
+                // `None` (the spec-less / never-configured path).
+                let lanes = if observation.observation.is_some() {
+                    observation.decoded_lanes().map_err(|err| {
+                        pyo3::exceptions::PyRuntimeError::new_err(format!(
+                            "failed to decode model observation: {err}"
+                        ))
+                    })?
+                } else {
+                    Vec::new()
+                };
+                let observation_space = observation
+                    .env_contract
                     .as_ref()
                     .and_then(|spec| spec.observation_space.as_ref());
-                let obs = neutral_observation(py, observation_payload.as_ref(), observation_space)?;
+                let obs = match (observation_space, lanes.len()) {
+                    (_, 0) => py.None().bind(py).clone(),
+                    (Some(space), 1) => space_value_to_py_neutral(py, &lanes[0], space)?,
+                    (Some(space), _) => batched_space_values_to_py_neutral(py, &lanes, space)?,
+                    (None, _) => {
+                        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                            "model worker requires observation space metadata",
+                        ));
+                    }
+                };
 
                 let call_guard = profiler.start("model.predict.python_call");
                 let adapter_arg = match adapter.as_ref() {
@@ -170,8 +195,8 @@ impl ModelHandler for PyModelHandler {
                 let action = predict_fn.call1(py, (obs, adapter_arg))?;
                 let _ = call_guard.finish(obs_bytes_len);
 
-                let encode_guard = profiler.start("model.predict.encode_action");
-                let action_space = env_contract
+                let action_space = observation
+                    .env_contract
                     .as_ref()
                     .and_then(|spec| spec.action_space.as_ref())
                     .ok_or_else(|| {
@@ -179,25 +204,34 @@ impl ModelHandler for PyModelHandler {
                             "model worker requires action space metadata",
                         )
                     })?;
-                let encoded = py_any_to_space_value_with_backend(
-                    py,
-                    action.bind(py),
-                    action_space,
-                    ValueBackend::Native,
-                )?;
-                let bytes = space_value_to_raw_bytes(&encoded, action_space)?;
-                let _ = encode_guard.finish(bytes.len());
-                Ok(bytes)
+                // One typed action per lane; the worker owns typed->wire encoding.
+                // Single-env routes take a scalar action; vectorized routes take a
+                // batched (N-stacked) action, mirroring the observation handling.
+                if observation.num_envs == 1 {
+                    let encoded = py_any_to_space_value_with_backend(
+                        py,
+                        action.bind(py),
+                        action_space,
+                        ValueBackend::Native,
+                    )?;
+                    Ok(vec![encoded])
+                } else {
+                    py_any_to_batched_space_values_with_backend(
+                        py,
+                        action.bind(py),
+                        action_space,
+                        observation.num_envs,
+                        ValueBackend::Native,
+                    )
+                }
             })
         })
         .await
         .map_err(|err| RLMeshError::Internal(format!("predict task panicked: {err}")))?
         .map_err(|err| RLMeshError::Internal(err.to_string()))?;
 
-        let action_bytes_len = action_bytes.len();
-        let _ = predict_total_guard.finish(obs_bytes_len + action_bytes_len);
-
-        Ok(BinaryPayload { data: action_bytes })
+        let _ = predict_total_guard.finish(obs_bytes_len);
+        Ok(actions)
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
@@ -316,7 +350,12 @@ impl PyModel {
         })
     }
 
-    fn run_local(&self, py: Python<'_>, env_address: &str, token: &str) -> PyResult<()> {
+    fn run_local(
+        &self,
+        py: Python<'_>,
+        env_address: &str,
+        token: &str,
+    ) -> PyResult<Option<PyTelemetrySummary>> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.run_local.total");
@@ -337,18 +376,19 @@ impl PyModel {
             current_route: None,
         });
 
-        py.detach(|| {
-            self.runtime.block_on(async move {
-                ModelWorker::new(handler)
-                    .run_local_async(RunLocalOptions::new(env_address))
-                    .await
+        let report = py
+            .detach(|| {
+                self.runtime.block_on(async move {
+                    ModelWorker::new(handler)
+                        .run_local_async(RunLocalOptions::new(env_address))
+                        .await
+                })
             })
-        })
-        .map_err(to_py_err)?;
+            .map_err(to_py_err)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(())
+        Ok(telemetry_summary_view(&report))
     }
 
     fn run_local_for_episodes(
@@ -357,7 +397,7 @@ impl PyModel {
         env_address: &str,
         token: &str,
         max_episodes: u64,
-    ) -> PyResult<()> {
+    ) -> PyResult<Option<PyTelemetrySummary>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
             env_address = env_address,
@@ -382,18 +422,21 @@ impl PyModel {
             current_route: None,
         });
 
-        py.detach(|| {
-            self.runtime.block_on(async move {
-                ModelWorker::new(handler)
-                    .run_local_async(RunLocalOptions::new(env_address).for_episodes(max_episodes))
-                    .await
+        let report = py
+            .detach(|| {
+                self.runtime.block_on(async move {
+                    ModelWorker::new(handler)
+                        .run_local_async(
+                            RunLocalOptions::new(env_address).for_episodes(max_episodes),
+                        )
+                        .await
+                })
             })
-        })
-        .map_err(to_py_err)?;
+            .map_err(to_py_err)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(())
+        Ok(telemetry_summary_view(&report))
     }
 
     #[pyo3(signature = (address, token, options=None))]
@@ -442,6 +485,17 @@ impl PyModel {
     }
 }
 
+/// Build the Python-facing session telemetry view from a finished runtime
+/// report. `None` when no telemetry window elapsed (a zero-step / sub-window
+/// run). This is the model worker's real caller of the canonical host->proto
+/// telemetry mapping (`rlmesh::telemetry_summary_to_proto`).
+fn telemetry_summary_view(report: &rlmesh::RuntimeReport) -> Option<PyTelemetrySummary> {
+    report
+        .telemetry_summary
+        .as_ref()
+        .map(|summary| PyTelemetrySummary::new(rlmesh::telemetry_summary_to_proto(summary)))
+}
+
 #[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
@@ -450,8 +504,8 @@ import collections.abc
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value, object], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
-    def run_local(self, env_address: str, token: str) -> None: ...
-    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
+    def run_local(self, env_address: str, token: str) -> TelemetrySummary | None: ...
+    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> TelemetrySummary | None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
@@ -610,173 +664,11 @@ fn native_env_contract_from_py(contract: &Bound<'_, PyAny>) -> PyResult<EnvContr
     })
 }
 
-fn neutral_observation<'py>(
-    py: Python<'py>,
-    payload: Option<&BinaryPayload>,
-    observation_space: Option<&SpaceSpec>,
-) -> PyResult<Bound<'py, PyAny>> {
-    let Some(payload) = payload else {
-        return Ok(py.None().bind(py).clone());
-    };
-
-    let Some(observation_space) = observation_space else {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "model worker requires observation space metadata",
-        ));
-    };
-
-    let payload = binary_to_bytes(payload);
-    let values =
-        decode_batched_partial_values(Some(&payload), observation_space).map_err(|err| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "failed to decode model observation payload against observation space: {err}"
-            ))
-        })?;
-    if values.len() == 1 {
-        space_value_to_py_neutral(py, &values[0], observation_space)
-    } else {
-        batched_space_values_to_py_neutral(py, &values, observation_space)
-    }
-}
-
-fn space_value_to_raw_bytes(value: &SpaceValue, space: &SpaceSpec) -> PyResult<Vec<u8>> {
-    // The env-side wire adapter decodes the model action via
-    // decode_batched_partial_values, so encode through the matching
-    // encode_batched_partial_values to stay byte-compatible. For the raw-batch
-    // spaces (Box/Discrete/MultiBinary/MultiDiscrete) this yields the same
-    // contiguous bytes as before; for Text/Dict/Tuple it produces the proto
-    // payload the env decoder expects, so text-action envs are now servable.
-    let single = std::slice::from_ref(value);
-    encode_batched_partial_values(single, space)
-        .map(|payload| payload.data)
-        .map_err(|err| {
-            pyo3::exceptions::PyTypeError::new_err(format!(
-                "failed to encode model action for {:?} space: {err}",
-                space.space_type()
-            ))
-        })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Adapters, PyRouteSetup, neutral_observation, space_value_to_raw_bytes};
+    use super::{Adapters, PyRouteSetup};
     use pyo3::Python;
-    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
     use rlmesh::ModelRouteSetup;
-    use rlmesh::spaces::BinaryPayload;
-    use rlmesh_grpc::wire::{
-        binary_to_bytes, decode_batched_partial_values, encode_batched_partial_values,
-    };
-    use rlmesh_spaces::SpaceValue;
-    use rlmesh_spaces::spaces::{DictSpaceBuilder, TextBuilder};
-
-    fn instruction_space() -> rlmesh_spaces::SpaceSpec {
-        DictSpaceBuilder::new()
-            .insert("instruction", TextBuilder::new(32).build().unwrap())
-            .build()
-            .unwrap()
-    }
-
-    fn instruction_value(value: &str) -> SpaceValue {
-        SpaceValue::Dict(
-            [(
-                "instruction".to_string(),
-                SpaceValue::Text(value.to_string()),
-            )]
-            .into_iter()
-            .collect(),
-        )
-    }
-
-    #[test]
-    fn neutral_observation_decodes_one_lane_batched_partial_payload_as_single_value() {
-        Python::attach(|py| {
-            let space = instruction_space();
-            let payload =
-                encode_batched_partial_values(&[instruction_value("pick cup")], &space).unwrap();
-            let payload = BinaryPayload { data: payload.data };
-
-            let observation = neutral_observation(py, Some(&payload), Some(&space)).unwrap();
-            let observation = observation.cast::<PyDict>().unwrap();
-
-            assert_eq!(
-                observation
-                    .get_item("instruction")
-                    .unwrap()
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "pick cup"
-            );
-        });
-    }
-
-    #[test]
-    fn neutral_observation_decodes_multi_lane_payload_as_batched_value() {
-        Python::attach(|py| {
-            let space = instruction_space();
-            let payload = encode_batched_partial_values(
-                &[
-                    instruction_value("pick cup"),
-                    instruction_value("open drawer"),
-                ],
-                &space,
-            )
-            .unwrap();
-            let payload = BinaryPayload { data: payload.data };
-
-            let observation = neutral_observation(py, Some(&payload), Some(&space)).unwrap();
-            let observation = observation.cast::<PyDict>().unwrap();
-            let instructions = observation.get_item("instruction").unwrap().unwrap();
-
-            assert_eq!(instructions.len().unwrap(), 2);
-            assert_eq!(
-                instructions
-                    .get_item(1)
-                    .unwrap()
-                    .extract::<String>()
-                    .unwrap(),
-                "open drawer"
-            );
-        });
-    }
-
-    #[test]
-    fn text_action_encodes_to_env_decodable_bytes() {
-        let space = TextBuilder::new(32).build().unwrap();
-        let value = SpaceValue::Text("press button".to_string());
-
-        let bytes = space_value_to_raw_bytes(&value, &space).unwrap();
-        let payload = binary_to_bytes(&BinaryPayload { data: bytes });
-
-        let decoded = decode_batched_partial_values(Some(&payload), &space).unwrap();
-        assert_eq!(decoded, vec![value]);
-    }
-
-    #[test]
-    fn dict_action_encodes_to_env_decodable_bytes() {
-        let space = instruction_space();
-        let value = instruction_value("open drawer");
-
-        let bytes = space_value_to_raw_bytes(&value, &space).unwrap();
-        let payload = binary_to_bytes(&BinaryPayload { data: bytes });
-
-        let decoded = decode_batched_partial_values(Some(&payload), &space).unwrap();
-        assert_eq!(decoded, vec![value]);
-    }
-
-    #[test]
-    fn raw_action_bytes_match_batched_partial_encoding() {
-        // Box/Discrete/etc. must stay byte-identical to the wire batch encoding.
-        let space = instruction_space();
-        let value = instruction_value("pick cup");
-
-        let raw = space_value_to_raw_bytes(&value, &space).unwrap();
-        let expected = encode_batched_partial_values(std::slice::from_ref(&value), &space)
-            .unwrap()
-            .data;
-        assert_eq!(raw, expected);
-    }
 
     #[test]
     fn close_route_evicts_the_route_adapter() {

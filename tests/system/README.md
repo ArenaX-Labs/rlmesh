@@ -1,15 +1,13 @@
 # RLMesh System Tests
 
-System tests validate installed RLMesh Python wheels in clean `uv` environments. The runner lives in
-`tools/rlmesh_system`. This directory holds the scenario profiles and deterministic trace baselines.
+System tests validate installed RLMesh Python wheels in clean `uv` environments. The runner lives in `tools/rlmesh_system`. This directory holds the scenario profiles and deterministic trace baselines.
 
 ## Layout
 
 - `profiles/*.toml`: profile, environment, dependency, and scenario definitions.
 - `traces/`: committed deterministic trace baselines.
 
-The private env/model fixture package installed into each clean venv lives in
-`tools/rlmesh_system_fixtures`.
+The private env/model fixture package installed into each clean venv lives in `tools/rlmesh_system_fixtures`.
 
 ## Commands
 
@@ -58,31 +56,20 @@ model = "gymnasium.pendulum_zero_numpy"
 env = { gym = "Pendulum-v1", packages = ["gymnasium"] }
 ```
 
-IsaacSim and longer soak hooks are intentionally not part of this profile set yet; add them later as
-explicit profiles when the simulator launch contract is ready.
+IsaacSim and longer soak hooks are intentionally not part of this profile set yet; add them later as explicit profiles when the simulator launch contract is ready.
 
 ## Performance Drift
 
-The `perf` profile times the tensor conversion paths (NumPy/Torch/JAX views, encode/import copies)
-at 1 KiB / 1 MiB / 8 MiB in clean installed-wheel venvs:
+The `perf` profile times the tensor conversion paths (NumPy/Torch/JAX views, encode/import copies) at 1 KiB / 1 MiB / 8 MiB in clean installed-wheel venvs:
 
 ```bash
 mise run perf:baseline   # run the perf profile and store the local baseline
 mise run perf:check      # re-run and fail on drift against that baseline
 ```
 
-Baselines are machine-specific and live untracked at `target/python-validation/perf-baseline.json`.
-Capture a fresh baseline on a quiet machine before a refactor; run `perf:check` after. Thresholds
-are warn-first (see `thresholds_for` in `rlmesh_system.support.reports`): views gate at ~15-25%
-relative drift with small absolute floors, and copy paths also watch MiB/s throughput.
+Baselines are machine-specific and live untracked at `target/python-validation/perf-baseline.json`. Capture a fresh baseline on a quiet machine before a refactor; run `perf:check` after. Thresholds are warn-first (see `thresholds_for` in `rlmesh_system.support.reports`): views gate at ~15-25% relative drift with small absolute floors, and copy paths also watch MiB/s throughput.
 
 Expected shape of results (what "healthy" looks like):
 
-- Framework `readonly` rows are shared/read-only Tensor-to-framework paths: NumPy uses
-  `np.from_dlpack(tensor)`, Torch uses `rlmesh.torch.as_tensor(tensor)`, and JAX uses
-  `rlmesh.jax.asarray(tensor)`. Median times should stay flat as size grows 8000x; reported
-  throughput therefore _rises_ with size. If readonly rows start scaling with size, a copy snuck in.
-- Framework `copy` rows are writable or independent Tensor-to-framework paths:
-  `rlmesh.numpy.asarray(tensor)`, `rlmesh.torch.as_tensor(tensor, copy=True)`, and
-  `rlmesh.jax.asarray(tensor).copy()`. Times should scale linearly with size and throughput should
-  plateau at memory bandwidth.
+- Framework `readonly` rows are shared/read-only Tensor-to-framework paths: NumPy uses `np.from_dlpack(tensor)`, Torch uses `rlmesh.torch.as_tensor(tensor)`, and JAX uses `rlmesh.jax.asarray(tensor)`. Median times should stay flat as size grows 8000x; reported throughput therefore _rises_ with size. If readonly rows start scaling with size, a copy snuck in.
+- Framework `copy` rows are writable or independent Tensor-to-framework paths: `rlmesh.numpy.asarray(tensor)`, `rlmesh.torch.as_tensor(tensor, copy=True)`, and `rlmesh.jax.asarray(tensor).copy()`. Times should scale linearly with size and throughput should plateau at memory bandwidth.

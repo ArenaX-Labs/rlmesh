@@ -4,8 +4,7 @@ orphan: true
 
 # Testing
 
-RLMesh uses a few test layers so local iteration stays fast while release checks still exercise
-packaged artifacts.
+RLMesh uses a few test layers so local iteration stays fast while release checks still exercise packaged artifacts.
 
 ## Fast Tests
 
@@ -26,8 +25,7 @@ mise run test:python:integration
 
 ## API Surface Tests
 
-The Python API surface tests check exported symbols, native stub exports, and the stable API surface
-snapshot:
+The Python API surface tests check exported symbols, native stub exports, and the stable API surface snapshot:
 
 ```bash
 mise run test:python:api-surface
@@ -37,8 +35,7 @@ Run these when changing public Python modules, generated native stubs, or packag
 
 ## System Harness Tests
 
-The system harness tests validate the runner and private fixture package without building or
-installing a wheel:
+The system harness tests validate the runner and private fixture package without building or installing a wheel:
 
 ```bash
 mise run test:system:harness
@@ -48,9 +45,7 @@ Fixture scenarios and deterministic trace baselines live under `tests/system`.
 
 ## Installed-Artifact System Tests
 
-Installed-artifact system tests validate built Python wheels in clean `uv` environments. They cover
-process boundaries, optional dependencies, deterministic traces, and artifact-level benchmark
-signal.
+Installed-artifact system tests validate built Python wheels in clean `uv` environments. They cover process boundaries, optional dependencies, deterministic traces, and artifact-level benchmark signal.
 
 List profiles and scenarios:
 
@@ -82,8 +77,7 @@ mise run test:system:clean
 
 ## Release Check
 
-The local release gate combines static checks, tests, package verification, wheel builds, and
-installed-artifact validation:
+The local release gate combines static checks, tests, package verification, wheel builds, and installed-artifact validation:
 
 ```bash
 mise run release:check

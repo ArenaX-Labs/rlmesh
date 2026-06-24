@@ -31,6 +31,7 @@ task.run_auto_install = false
 
 [env]
 UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
+UV_CACHE_DIR = "target/uv-cache"
 CARGO_HTTP_MULTIPLEXING = "false"
 
 # ──────────────────────────────────────────────
@@ -209,24 +210,12 @@ run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-g
 description = "Check rlmesh.toml, artifact versions, and compatibility constants"
 run = "python scripts/check_rlmesh_policy.py"
 
-[tasks."protocol:breaking"]
-description = "Check protobuf compatibility against the public protocol baseline"
-run = "buf breaking crates/rlmesh-proto/proto --against \"${RLMESH_PROTO_BREAKING_AGAINST:-crates/rlmesh-proto/baselines/rlmesh.protocol.v1}\""
-
 # ──────────────────────────────────────────────
 # Check (non-mutating)
 # ──────────────────────────────────────────────
 [tasks."check"]
 description = "Run non-mutating verification checks"
-depends = [
-  "fmt:check",
-  "lint",
-  "typecheck",
-  "docs:rust:check",
-  "stubs:check",
-  "policy:check",
-  "protocol:breaking",
-]
+depends = ["fmt:check", "lint", "typecheck", "docs:rust:check", "stubs:check", "policy:check"]
 
 # ──────────────────────────────────────────────
 # Test
@@ -320,6 +309,7 @@ run = [
 
 [tasks."release:python:wheels"]
 description = "Build release Python wheels supported by the current host"
+env = { RLMESH_RELEASE_BUILD = "1" }
 run = "case \"$(uname -s)\" in Darwin) mise run release:python:wheels:macos ;; Linux) mise run release:python:wheels:linux ;; *) echo 'unsupported release wheel host; use macOS for the full wheel matrix or Linux for Linux/Windows wheels' >&2; exit 1 ;; esac"
 
 [tasks."release:python:clean"]
@@ -373,6 +363,7 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set l
 
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
+env = { RLMESH_RELEASE_BUILD = "1" }
 run = [
   "cargo package -p rlmesh-proto --allow-dirty",
   "cargo package -p rlmesh-spaces --allow-dirty",
@@ -386,6 +377,7 @@ run = "python scripts/check_release_artifact_licenses.py"
 
 [tasks."release:check"]
 description = "Run the local release gate without publishing"
+env = { RLMESH_RELEASE_BUILD = "1" }
 run = [
   "mise run check",
   "mise run test",

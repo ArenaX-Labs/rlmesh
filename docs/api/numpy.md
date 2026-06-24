@@ -4,9 +4,7 @@ Use the NumPy backend for examples, notebooks, and model code that already works
 
 ## What This Backend Changes
 
-`rlmesh.numpy` keeps the same environment, model, and sandbox behavior as the shared RLMesh client
-APIs, but decodes tensor leaves to NumPy arrays. Space wrappers returned from NumPy clients also
-sample NumPy-compatible values.
+`rlmesh.numpy` keeps the same environment, model, and sandbox behavior as the shared RLMesh client APIs, but decodes tensor leaves to NumPy arrays. Space wrappers returned from NumPy clients also sample NumPy-compatible values.
 
 Install it with:
 
@@ -25,14 +23,8 @@ pip install "rlmesh[numpy]"
 
 ## Conversion Semantics
 
-- `asarray(tensor)` returns a **writable copy** of the tensor bytes, matching Gymnasium where
-  `reset`/`step` observations are writable (so `obs /= 255.0` works). For a zero-copy, read-only
-  view that shares the tensor buffer, use `numpy.from_dlpack(tensor)` or the buffer protocol.
-- `from_array(array)` always copies: it makes the array C-contiguous and serializes its bytes into a
-  fresh RLMesh tensor.
-- `bfloat16` tensors have no buffer-protocol format, so `asarray` copies through raw bytes and needs
-  the optional [ml_dtypes](https://github.com/jax-ml/ml_dtypes) package. Install `rlmesh[bfloat16]`.
-  Without it, `asarray` raises an `ImportError` naming that extra.
+- `asarray(tensor)` returns a **writable copy** of the tensor bytes, matching Gymnasium where `reset`/`step` observations are writable (so `obs /= 255.0` works). For a zero-copy, read-only view that shares the tensor buffer, use `numpy.from_dlpack(tensor)` or the buffer protocol.
+- `from_array(array)` always copies: it makes the array C-contiguous and serializes its bytes into a fresh RLMesh tensor.
 
 ## Value Helpers
 

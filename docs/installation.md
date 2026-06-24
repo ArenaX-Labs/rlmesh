@@ -6,8 +6,7 @@ Install the Python package:
 pip install "rlmesh[gymnasium,numpy]"
 ```
 
-RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend
-for examples and notebooks.
+RLMesh supports Python 3.10 and newer. Start with Gymnasium for environments and the NumPy backend for examples and notebooks.
 
 ## Optional Extras
 
@@ -21,10 +20,7 @@ pip install "rlmesh[torch]"
 pip install "rlmesh[hf]"
 ```
 
-Use `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. Use
-`torch` when you want client-side values decoded as Torch tensors. Use `hf` for host-side,
-container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container
-fetches them for you.
+Use `gymnasium` when serving a Gymnasium environment, or `gym` for a legacy classic-Gym stack. Use `torch` when you want client-side values decoded as Torch tensors. Use `hf` for host-side, container-less resolution of `hf://` model weights and EnvHub sources; in a sandbox the container fetches them for you.
 
 ## Repository Examples
 
@@ -35,6 +31,4 @@ mise install
 mise run setup
 ```
 
-Then run examples with `uv run`. Sandbox examples need Docker access. Optional example folders keep
-their own lockfiles and environments, so heavier dependencies stay out of the root development
-environment.
+Then run examples with `uv run`. Sandbox examples need Docker access. Optional example folders keep their own lockfiles and environments, so heavier dependencies stay out of the root development environment.

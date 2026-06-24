@@ -1,5 +1,4 @@
 mod cli;
-mod viewer;
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
@@ -38,7 +37,6 @@ async fn run_cli_with_writers(
 
     match cli.command {
         Command::Version => version(stdout),
-        Command::Viewer(args) => viewer::run(&args),
     }
 }
 
@@ -85,7 +83,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn help_lists_real_commands_and_hides_viewer() {
+    async fn help_lists_real_commands_and_omits_viewer() {
         let (code, stdout, stderr) = run_for_test(&["--help"]).await;
 
         assert_eq!(code, 0);

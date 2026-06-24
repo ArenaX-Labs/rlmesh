@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-use rlmesh_proto::core::v1::{OperationMetric, OperationTelemetry, operation_metric};
-
 use super::stats::percentile_ms;
 use super::{PhaseTiming, StepTimingSample, TelemetryWindowAccumulator};
 use crate::hooks::RuntimeRouteContext;
@@ -35,18 +33,9 @@ fn percentile_uses_sorted_window_samples() {
 fn telemetry_window_includes_generic_runtime_and_endpoint_timings() {
     let mut accumulator = TelemetryWindowAccumulator::default();
     accumulator.started_at = Instant::now() - Duration::from_secs(2);
-    accumulator.record_operation_telemetry(
-        "model-a",
-        Some(&OperationTelemetry {
-            operation: "model.predict".to_string(),
-            component_id: String::new(),
-            metrics: vec![OperationMetric {
-                name: "endpoint.total".to_string(),
-                labels: Default::default(),
-                value: Some(operation_metric::Value::DurationNs(2_000_000)),
-            }],
-        }),
-    );
+    // The per-step endpoint duration now arrives as the bare scalar
+    // (JoinResponse.endpoint_total_ns), keyed by (operation, component_id).
+    accumulator.record_endpoint_total("model.predict", "model-a", Some(2_000_000));
     accumulator.record_step(StepTimingSample {
         model_wait: Duration::from_millis(10),
         env_step: Duration::from_millis(20),
@@ -87,18 +76,7 @@ fn session_lifetime_samples_stay_bounded() {
     // would grow to STEPS in length before the reservoir bound was added.
     const STEPS: u64 = 100_000;
     for step in 0..STEPS {
-        accumulator.record_operation_telemetry(
-            "model-a",
-            Some(&OperationTelemetry {
-                operation: "model.predict".to_string(),
-                component_id: String::new(),
-                metrics: vec![OperationMetric {
-                    name: "endpoint.total".to_string(),
-                    labels: Default::default(),
-                    value: Some(operation_metric::Value::DurationNs(2_000_000)),
-                }],
-            }),
-        );
+        accumulator.record_endpoint_total("model.predict", "model-a", Some(2_000_000));
         accumulator.record_step(StepTimingSample {
             model_wait: Duration::from_millis(step % 50),
             env_step: Duration::from_millis(step % 30),
@@ -130,30 +108,13 @@ fn session_lifetime_samples_stay_bounded() {
 }
 
 #[test]
-fn records_byte_count_and_number_metrics() {
+fn records_batch_size_as_a_number_metric() {
     use crate::hooks::MetricKind;
 
     let mut accumulator = TelemetryWindowAccumulator::default();
     accumulator.started_at = Instant::now() - Duration::from_secs(2);
-    accumulator.record_operation_telemetry(
-        "env-a",
-        Some(&OperationTelemetry {
-            operation: "env.step".to_string(),
-            component_id: String::new(),
-            metrics: vec![
-                OperationMetric {
-                    name: "payload.bytes".to_string(),
-                    labels: Default::default(),
-                    value: Some(operation_metric::Value::ByteCount(2048)),
-                },
-                OperationMetric {
-                    name: "batch.size".to_string(),
-                    labels: Default::default(),
-                    value: Some(operation_metric::Value::Number(8.0)),
-                },
-            ],
-        }),
-    );
+    // batch_size (lanes per step) is promoted now as a non-duration metric row.
+    accumulator.record_batch_size("env-a", 8);
     accumulator.record_step(StepTimingSample {
         model_wait: Duration::from_millis(10),
         env_step: Duration::from_millis(20),
@@ -167,21 +128,13 @@ fn records_byte_count_and_number_metrics() {
         .flush("session-a", RuntimeRouteContext::default())
         .unwrap();
 
-    let bytes = event
-        .metrics
-        .iter()
-        .find(|metric| metric.name == "payload.bytes")
-        .expect("byte_count metric recorded");
-    assert_eq!(bytes.kind, MetricKind::ByteCount);
-    assert_eq!(bytes.sample_count, 1);
-    assert_eq!(bytes.avg, Some(2048.0));
-
     let number = event
         .metrics
         .iter()
         .find(|metric| metric.name == "batch.size")
         .expect("number metric recorded");
     assert_eq!(number.kind, MetricKind::Number);
+    assert_eq!(number.sample_count, 1);
     assert_eq!(number.avg, Some(8.0));
 }
 
@@ -220,4 +173,168 @@ fn telemetry_summary_keeps_samples_after_window_flush() {
     assert_eq!(summary.env_latency_ms_avg, Some(30.0));
     assert_eq!(summary.model_latency_ms_avg, Some(20.0));
     assert_eq!(summary.round_trip_ms_avg, Some(50.0));
+}
+
+#[test]
+fn episode_rollup_reports_averages_and_resets_between_episodes() {
+    let mut accumulator = TelemetryWindowAccumulator::default();
+
+    // Episode 1: two steps. model_wait {10, 30}, env_step {20, 40}.
+    // Two per-step model.predict endpoint totals (2ms, 4ms) -> avg 3ms.
+    accumulator.record_endpoint_total("model.predict", "model-a", Some(2_000_000));
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(10),
+        env_step: Duration::from_millis(20),
+        request_bytes: 3,
+        response_bytes: 4,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+    accumulator.record_endpoint_total("model.predict", "model-a", Some(4_000_000));
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(30),
+        env_step: Duration::from_millis(40),
+        request_bytes: 5,
+        response_bytes: 6,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+
+    let rollup = accumulator.episode_rollup();
+    assert_eq!(rollup.step_count, 2);
+    assert_eq!(rollup.model_latency_ms_avg, Some(20.0)); // (10 + 30) / 2
+    assert_eq!(rollup.env_latency_ms_avg, Some(30.0)); // (20 + 40) / 2
+    assert_eq!(rollup.round_trip_ms_avg, Some(50.0)); // (30 + 70) / 2
+    assert_eq!(rollup.endpoint_op_ms_avg, Some(3.0)); // (2 + 4) / 2
+    assert_eq!(rollup.request_bytes_total, 8);
+    assert_eq!(rollup.response_bytes_total, 10);
+    // Identity is seeded empty; the driver fills it from the episode record.
+    assert_eq!(rollup.episode_record_id, "");
+    assert_eq!(rollup.env_index, 0);
+
+    // Episode 2: one step. The accumulator must have reset — episode 1 must not leak.
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(5),
+        env_step: Duration::from_millis(7),
+        request_bytes: 1,
+        response_bytes: 2,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+    let rollup2 = accumulator.episode_rollup();
+    assert_eq!(rollup2.step_count, 1);
+    assert_eq!(rollup2.model_latency_ms_avg, Some(5.0));
+    assert_eq!(rollup2.env_latency_ms_avg, Some(7.0));
+    assert_eq!(rollup2.round_trip_ms_avg, Some(12.0));
+    assert_eq!(rollup2.request_bytes_total, 1);
+    assert_eq!(rollup2.response_bytes_total, 2);
+    // No endpoint sample this episode -> avg is None, not 0.0.
+    assert_eq!(rollup2.endpoint_op_ms_avg, None);
+}
+
+#[test]
+fn episode_rollup_endpoint_avg_excludes_reset() {
+    // Pins the shipped semantics: env.reset endpoint duration is NOT folded into
+    // the per-episode endpoint average (only model.predict / env.step are).
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.record_endpoint_total("env.reset", "env-a", Some(100_000_000)); // 100ms, excluded
+    accumulator.record_endpoint_total("model.predict", "model-a", Some(2_000_000)); // 2ms
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(1),
+        env_step: Duration::from_millis(1),
+        request_bytes: 1,
+        response_bytes: 1,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+    accumulator.record_endpoint_total("env.step", "env-a", Some(4_000_000)); // 4ms
+    let rollup = accumulator.episode_rollup();
+    // Only predict (2ms) + step (4ms) count -> avg 3ms; the 100ms reset is excluded.
+    assert_eq!(rollup.endpoint_op_ms_avg, Some(3.0));
+}
+
+#[test]
+fn episode_rollup_is_empty_before_any_step() {
+    // No steps -> None averages and zero totals, not 0.0 averages.
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    let rollup = accumulator.episode_rollup();
+    assert_eq!(rollup.step_count, 0);
+    assert_eq!(rollup.model_latency_ms_avg, None);
+    assert_eq!(rollup.env_latency_ms_avg, None);
+    assert_eq!(rollup.round_trip_ms_avg, None);
+    assert_eq!(rollup.endpoint_op_ms_avg, None);
+    assert_eq!(rollup.request_bytes_total, 0);
+}
+
+#[test]
+fn episode_accumulator_survives_window_flush() {
+    // The per-episode accumulator spans the whole episode and must NOT be cleared
+    // by a window flush (reset() clears only the window Vecs).
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.started_at = Instant::now() - Duration::from_secs(2);
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(10),
+        env_step: Duration::from_millis(20),
+        request_bytes: 1,
+        response_bytes: 1,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+    // Flush mid-episode; clears the window Vecs, not the episode accumulator.
+    let _ = accumulator
+        .flush("session-a", RuntimeRouteContext::default())
+        .unwrap();
+    accumulator.started_at = Instant::now() - Duration::from_secs(2);
+    accumulator.record_step(StepTimingSample {
+        model_wait: Duration::from_millis(30),
+        env_step: Duration::from_millis(40),
+        request_bytes: 1,
+        response_bytes: 1,
+        env_component_id: "env-a",
+        model_component_id: "model-a",
+    });
+
+    let rollup = accumulator.episode_rollup();
+    assert_eq!(rollup.step_count, 2); // spans the flush
+    assert_eq!(rollup.model_latency_ms_avg, Some(20.0)); // (10 + 30) / 2
+    assert_eq!(rollup.env_latency_ms_avg, Some(30.0)); // (20 + 40) / 2
+}
+
+#[test]
+#[should_panic(expected = "non-canonical timing key")]
+fn cardinality_guard_rejects_off_allowlist_timing_key() {
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.record_timing(
+        "model.predict",
+        "model-a",
+        "free.form.label",
+        Duration::ZERO,
+    );
+}
+
+#[test]
+fn cardinality_guard_accepts_canonical_keys() {
+    let mut accumulator = TelemetryWindowAccumulator::default();
+    accumulator.record_timing(
+        "model.predict",
+        "model-a",
+        "rpc.total",
+        Duration::from_millis(1),
+    );
+    accumulator.record_timing(
+        "model.predict",
+        "model-a",
+        "endpoint.total",
+        Duration::from_millis(1),
+    );
+    accumulator.record_timing("env.step", "env-a", "rpc.total", Duration::from_millis(1));
+    accumulator.record_timing(
+        "env.step",
+        "env-a",
+        "endpoint.total",
+        Duration::from_millis(1),
+    );
+    accumulator.record_endpoint_total("env.reset", "env-a", Some(1_000_000));
+    // batch.size is the only canonical non-duration metric (exercises the metric guard).
+    accumulator.record_batch_size("env-a", 4);
 }

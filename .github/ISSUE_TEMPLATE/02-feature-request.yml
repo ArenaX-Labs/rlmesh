@@ -11,8 +11,6 @@ body:
     id: idea
     attributes:
       label: Idea
-      description:
-        What are you trying to do, what is missing today, and what would you like RLMesh to do? Link
-        related projects, use cases, or alternatives if useful.
+      description: What are you trying to do, what is missing today, and what would you like RLMesh to do? Link related projects, use cases, or alternatives if useful.
     validations:
       required: true

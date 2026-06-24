@@ -1,7 +1,6 @@
 # RLMesh System Fixtures
 
-The private fixture package installed into clean system-test venvs. It holds the envs, models,
-artifact checks, and trace drivers used by `tools/rlmesh_system`.
+The private fixture package installed into clean system-test venvs. It holds the envs, models, artifact checks, and trace drivers used by `tools/rlmesh_system`.
 
 ## Adding Fixtures
 

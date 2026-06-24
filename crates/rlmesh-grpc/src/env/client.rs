@@ -9,16 +9,18 @@ use tokio_stream::wrappers::ReceiverStream;
 #[cfg(unix)]
 use tower::service_fn;
 
-use rlmesh_proto::core::v1::OperationTelemetry;
+use rlmesh_proto::core::v1::{
+    EnvContract, HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
+    ShutdownResponse as CoreShutdownResponse,
+};
 use rlmesh_proto::env::v1::{
-    CloseResponse, EnvContract, HandshakeRequest, JoinRequest, JoinResponse, RenderRequest,
-    RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, ShutdownResponse, StepRequest,
+    CloseEnvsResponse, HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse,
+    RenderRequest, RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, StepRequest,
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    CURRENT_WORKFLOW_EDITION_SPEC_SHA256, CURRENT_WORKFLOW_EDITION_STATUS, PROTOCOL_GENERATION,
-    SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map, check_provisional_edition_pin,
-    is_protocol_generation_supported, supported_workflow_editions,
+    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
+    is_protocol_generation_supported, peer_info, supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
@@ -40,6 +42,23 @@ pub struct EnvHandshake {
     pub capabilities: std::collections::HashMap<String, String>,
 }
 
+impl EnvHandshake {
+    /// The env's negotiation offer for three-way (relay) session-floor
+    /// reconciliation: its supported protocol generations, workflow editions,
+    /// and advertised capabilities.
+    ///
+    /// A server advertises a single `server_protocol_generation` scalar today,
+    /// so the offered generation set is that one value. Feeds
+    /// [`rlmesh_proto::negotiate_session_floor`] as the env's offer.
+    pub fn session_offer(&self) -> rlmesh_proto::SessionOffer {
+        rlmesh_proto::SessionOffer {
+            generations: vec![self.server_protocol_generation.clone()],
+            editions: self.supported_workflow_editions.clone(),
+            capabilities: self.capabilities.clone(),
+        }
+    }
+}
+
 /// Environment client that connects to an EnvService server.
 pub struct EnvClient {
     /// Inner tonic client for unary RPCs (Handshake, Check).
@@ -56,8 +75,10 @@ pub struct EnvClient {
     response_rx: Option<mpsc::Receiver<Result<JoinResponse, tonic::Status>>>,
     /// Counter for generating unique request IDs.
     request_counter: u64,
-    /// Telemetry attached to the last Join response.
-    last_telemetry: Option<OperationTelemetry>,
+    /// Endpoint-local op duration (ns) attached to the last Join response. The
+    /// nested per-step telemetry message was replaced by this hot scalar
+    /// (`JoinResponse.endpoint_total_ns`).
+    last_endpoint_total_ns: Option<u64>,
 }
 
 impl EnvClient {
@@ -122,7 +143,7 @@ impl EnvClient {
             request_tx: None,
             response_rx: None,
             request_counter: 0,
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
         })
     }
 
@@ -149,9 +170,10 @@ impl EnvClient {
         self.state
     }
 
-    /// Take telemetry attached to the most recent Join response, if any.
-    pub fn take_last_telemetry(&mut self) -> Option<OperationTelemetry> {
-        self.last_telemetry.take()
+    /// Take the endpoint-local op duration (ns) attached to the most recent
+    /// Join response, if any (`JoinResponse.endpoint_total_ns`).
+    pub fn take_last_endpoint_total_ns(&mut self) -> Option<u64> {
+        self.last_endpoint_total_ns.take()
     }
 
     /// Perform the handshake RPC. The Join bidi stream (the env's exclusive
@@ -168,60 +190,61 @@ impl EnvClient {
 
         let res = self.send_handshake().await?;
 
-        if !res.compatible {
-            return Err(ProtocolError::HandshakeFailed(res.error_message).into());
+        // The env Handshake returns a thin service-specific wrapper: the
+        // shared negotiation result is in `base`, the env contract alongside it.
+        let env_contract = res.env_contract;
+        let base = res.base.ok_or_else(|| {
+            GrpcError::from(ProtocolError::HandshakeFailed(
+                "handshake response missing base".to_string(),
+            ))
+        })?;
+
+        if !base.compatible {
+            return Err(ProtocolError::HandshakeFailed(base.error_message).into());
         }
-        check_provisional_edition_pin(
-            &res.selected_workflow_edition,
-            &res.selected_edition_status,
-            &res.selected_edition_spec_sha256,
-            &res.server_version,
-        )
-        .map_err(ProtocolError::HandshakeFailed)?;
-        if !is_protocol_generation_supported(&res.server_protocol_generation) {
+        // Moving prerelease/dev editions are pinned by their cohort suffix; an
+        // exact name match in negotiation is the compatibility check.
+        if !is_protocol_generation_supported(&base.server_protocol_generation) {
             return Err(ProtocolError::HandshakeFailed(format!(
                 "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
-                res.server_protocol_generation
+                base.server_protocol_generation
             ))
             .into());
         }
 
-        let env_contract = res.env_contract.ok_or_else(|| {
+        let env_contract = env_contract.ok_or_else(|| {
             GrpcError::from(ProtocolError::HandshakeFailed(
                 "no env_contract in response".to_string(),
             ))
         })?;
         validate_env_contract(&env_contract)?;
-        let num_envs = usize::try_from(env_contract.num_envs)
+        let num_envs = usize::try_from(env_contract.num_envs.unwrap_or(0))
             .unwrap_or(usize::MAX)
             .max(1);
         let handshake = EnvHandshake {
             env_contract,
             num_envs,
-            server_protocol_generation: res.server_protocol_generation,
-            workflow_edition: res.selected_workflow_edition,
-            supported_workflow_editions: res.supported_workflow_editions,
-            capabilities: res.capabilities,
+            server_protocol_generation: base.server_protocol_generation,
+            workflow_edition: base.selected_workflow_edition,
+            supported_workflow_editions: base.supported_workflow_editions,
+            capabilities: base.capabilities,
         };
         self.state = ClientState::Ready;
 
         Ok(handshake)
     }
 
-    async fn send_handshake(
-        &mut self,
-    ) -> Result<rlmesh_proto::env::v1::HandshakeResponse, GrpcError> {
+    async fn send_handshake(&mut self) -> Result<HandshakeResponse, GrpcError> {
         let req = HandshakeRequest {
-            protocol_generation: PROTOCOL_GENERATION.to_string(),
-            client_name: "rlmesh-rust-grpc".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
-            capabilities: capability_map(&[
-                capabilities::ENV_SERVICE_V1,
-                capabilities::SPACES_CORE_V1,
-            ]),
-            supported_workflow_editions: supported_workflow_editions(),
-            offered_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
-            offered_edition_status: CURRENT_WORKFLOW_EDITION_STATUS.to_string(),
+            base: Some(CoreHandshakeRequest {
+                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                peer_info: Some(peer_info("rlmesh-env")),
+                capabilities: capability_map(&[
+                    capabilities::ENV_SERVICE_V1,
+                    capabilities::SPACES_CORE_V1,
+                ]),
+                supported_workflow_editions: supported_workflow_editions(),
+            }),
         };
 
         Ok(self
@@ -248,7 +271,7 @@ impl EnvClient {
         };
 
         let res = self.send_on_stream(env_req).await?;
-        self.last_telemetry = res.telemetry.clone();
+        self.last_endpoint_total_ns = res.endpoint_total_ns;
 
         match res.kind {
             Some(join_response::Kind::Reset(ok)) => Ok(ok),
@@ -277,7 +300,7 @@ impl EnvClient {
         };
 
         let res = self.send_on_stream(env_req).await?;
-        self.last_telemetry = res.telemetry.clone();
+        self.last_endpoint_total_ns = res.endpoint_total_ns;
 
         match res.kind {
             Some(join_response::Kind::Step(ok)) => Ok(ok),
@@ -306,7 +329,7 @@ impl EnvClient {
         };
 
         let res = self.send_on_stream(env_req).await?;
-        self.last_telemetry = res.telemetry.clone();
+        self.last_endpoint_total_ns = res.endpoint_total_ns;
 
         match res.kind {
             Some(join_response::Kind::Render(ok)) => Ok(ok),
@@ -326,7 +349,7 @@ impl EnvClient {
     /// detaches the session and remains available for a subsequent client to
     /// connect and run a new session. It does not stop the server process; use
     /// [`EnvClient::shutdown`] or the server's idle/drain policy for that.
-    pub async fn close(&mut self) -> Result<CloseResponse, GrpcError> {
+    pub async fn close(&mut self) -> Result<CloseEnvsResponse, GrpcError> {
         self.ensure_ready()?;
 
         // A client that never opened the Join stream holds none of the server's
@@ -337,12 +360,12 @@ impl EnvClient {
         // avoid (see `ensure_join_stream`). Short-circuit to a local-only close.
         if self.request_tx.is_none() || self.response_rx.is_none() {
             self.close_local();
-            return Ok(CloseResponse::default());
+            return Ok(CloseEnvsResponse::default());
         }
 
         let env_req = JoinRequest {
             kind: Some(join_request::Kind::Close(
-                rlmesh_proto::env::v1::CloseRequest {
+                rlmesh_proto::env::v1::CloseEnvsRequest {
                     reason: "client close".to_string(),
                 },
             )),
@@ -350,14 +373,14 @@ impl EnvClient {
         };
 
         let res = self.send_on_stream(env_req).await?;
-        self.last_telemetry = res.telemetry.clone();
+        self.last_endpoint_total_ns = res.endpoint_total_ns;
         self.close_local();
 
         match res.kind {
             Some(join_response::Kind::Close(ok)) => Ok(ok),
             Some(join_response::Kind::Error(e)) => Err(proto_error_to_env_error(e).into()),
             _ => Err(ProtocolError::UnexpectedMessage {
-                expected: "CloseResponse".to_string(),
+                expected: "CloseEnvsResponse".to_string(),
                 actual: format!("{:?}", res.kind),
             }
             .into()),
@@ -368,7 +391,7 @@ impl EnvClient {
     pub async fn shutdown(
         &mut self,
         reason: impl Into<String>,
-    ) -> Result<ShutdownResponse, GrpcError> {
+    ) -> Result<CoreShutdownResponse, GrpcError> {
         if self.state == ClientState::Closed {
             return Err(ClientError::NotConnected.into());
         }
@@ -376,11 +399,19 @@ impl EnvClient {
         let response = self
             .client
             .shutdown(self.authorized_request(ShutdownRequest {
-                reason: reason.into(),
+                base: Some(CoreShutdownRequest {
+                    reason: reason.into(),
+                }),
             })?)
             .await
             .map_err(crate::error::status_to_grpc_error)?
-            .into_inner();
+            .into_inner()
+            .base
+            .ok_or_else(|| {
+                GrpcError::from(ProtocolError::HandshakeFailed(
+                    "shutdown response missing base".to_string(),
+                ))
+            })?;
 
         if response.accepted {
             self.close_local();
@@ -527,13 +558,18 @@ impl EnvClient {
 }
 
 fn validate_env_contract(env_contract: &EnvContract) -> Result<(), GrpcError> {
-    if env_contract.observation_space.is_none() {
+    let spec = env_contract.spec.as_ref().ok_or_else(|| {
+        GrpcError::from(ProtocolError::HandshakeFailed(
+            "env_contract missing spec".to_string(),
+        ))
+    })?;
+    if spec.observation_space.is_none() {
         return Err(ProtocolError::HandshakeFailed(
             "env_contract missing observation_space".to_string(),
         )
         .into());
     }
-    if env_contract.action_space.is_none() {
+    if spec.action_space.is_none() {
         return Err(ProtocolError::HandshakeFailed(
             "env_contract missing action_space".to_string(),
         )
@@ -545,15 +581,19 @@ fn validate_env_contract(env_contract: &EnvContract) -> Result<(), GrpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rlmesh_proto::core::v1::{
+        EnvSpec, HandshakeResponse as CoreHandshakeResponse,
+        ShutdownResponse as CoreShutdownResponse,
+    };
     use rlmesh_proto::env::v1::env_service_server::{EnvService, EnvServiceServer};
     use rlmesh_proto::env::v1::{
-        CloseRequest, CloseResponse, HandshakeRequest, HandshakeResponse, ShutdownRequest,
-        ShutdownResponse, StepResponse,
+        CloseEnvsRequest, CloseEnvsResponse, HandshakeRequest, HandshakeResponse, ShutdownResponse,
+        StepResponse,
     };
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, CURRENT_WORKFLOW_EDITION_SPEC_SHA256,
-        MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
+        supported_workflow_editions,
     };
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::ReceiverStream;
@@ -616,29 +656,40 @@ mod tests {
         ) -> std::result::Result<RenderResponse, crate::error::EnvError> {
             Ok(RenderResponse::default())
         }
-        async fn close(&mut self) -> std::result::Result<CloseResponse, crate::error::EnvError> {
-            Ok(CloseResponse::default())
+        async fn close(
+            &mut self,
+        ) -> std::result::Result<CloseEnvsResponse, crate::error::EnvError> {
+            Ok(CloseEnvsResponse::default())
         }
     }
 
     #[test]
     fn validate_env_contract_requires_spaces() {
         let valid = EnvContract {
-            observation_space: Some(SpaceSpec::default()),
-            action_space: Some(SpaceSpec::default()),
+            spec: Some(EnvSpec {
+                observation_space: Some(SpaceSpec::default()),
+                action_space: Some(SpaceSpec::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert!(validate_env_contract(&valid).is_ok());
 
         let missing_observation = EnvContract {
-            action_space: Some(SpaceSpec::default()),
+            spec: Some(EnvSpec {
+                action_space: Some(SpaceSpec::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let err = validate_env_contract(&missing_observation).unwrap_err();
         assert!(err.to_string().contains("missing observation_space"));
 
         let missing_action = EnvContract {
-            observation_space: Some(SpaceSpec::default()),
+            spec: Some(EnvSpec {
+                observation_space: Some(SpaceSpec::default()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let err = validate_env_contract(&missing_action).unwrap_err();
@@ -658,22 +709,22 @@ mod tests {
             request_tx: Some(request_tx),
             response_rx: Some(response_rx),
             request_counter: 0,
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
         };
 
         response_tx
             .send(Ok(JoinResponse {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Step(StepResponse::default())),
-                telemetry: None,
+                endpoint_total_ns: None,
             }))
             .await
             .unwrap();
         response_tx
             .send(Ok(JoinResponse {
                 request_id: "target".to_string(),
-                kind: Some(join_response::Kind::Close(CloseResponse::default())),
-                telemetry: None,
+                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
+                endpoint_total_ns: None,
             }))
             .await
             .unwrap();
@@ -681,7 +732,7 @@ mod tests {
         let response = client
             .send_on_stream(JoinRequest {
                 request_id: "target".to_string(),
-                kind: Some(join_request::Kind::Close(CloseRequest::default())),
+                kind: Some(join_request::Kind::Close(CloseEnvsRequest::default())),
             })
             .await
             .unwrap();
@@ -703,7 +754,7 @@ mod tests {
             request_tx: Some(request_tx),
             response_rx: Some(response_rx),
             request_counter: 0,
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
         };
 
         // The response pump propagates a transport Status (e.g. a response that
@@ -749,14 +800,14 @@ mod tests {
             request_tx: Some(request_tx),
             response_rx: Some(response_rx),
             request_counter: 0,
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
         };
 
         response_tx
             .send(Ok(JoinResponse {
                 request_id: "grpc-req-1".to_string(),
-                kind: Some(join_response::Kind::Close(CloseResponse::default())),
-                telemetry: None,
+                kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
+                endpoint_total_ns: None,
             }))
             .await
             .unwrap();
@@ -785,7 +836,7 @@ mod tests {
             request_tx: None,
             response_rx: None,
             request_counter: 0,
-            last_telemetry: None,
+            last_endpoint_total_ns: None,
         };
 
         let response = client.close().await.unwrap();
@@ -876,19 +927,24 @@ mod tests {
             _request: Request<HandshakeRequest>,
         ) -> std::result::Result<Response<HandshakeResponse>, Status> {
             Ok(Response::new(HandshakeResponse {
-                compatible: true,
-                server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-                min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
-                selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
-                selected_edition_spec_sha256: CURRENT_WORKFLOW_EDITION_SPEC_SHA256.to_string(),
-                supported_workflow_editions: supported_workflow_editions(),
-                env_contract: Some(EnvContract {
-                    observation_space: Some(SpaceSpec::default()),
-                    action_space: Some(SpaceSpec::default()),
-                    num_envs: 1,
+                base: Some(CoreHandshakeResponse {
+                    compatible: true,
+                    server_protocol_generation: PROTOCOL_GENERATION.to_string(),
+                    min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION
+                        .to_string(),
+                    selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+                    supported_workflow_editions: supported_workflow_editions(),
                     ..Default::default()
                 }),
-                ..Default::default()
+                env_contract: Some(EnvContract {
+                    spec: Some(EnvSpec {
+                        observation_space: Some(SpaceSpec::default()),
+                        action_space: Some(SpaceSpec::default()),
+                        ..Default::default()
+                    }),
+                    num_envs: Some(1),
+                    ..Default::default()
+                }),
             }))
         }
 
@@ -906,8 +962,10 @@ mod tests {
             _request: Request<ShutdownRequest>,
         ) -> std::result::Result<Response<ShutdownResponse>, Status> {
             Ok(Response::new(ShutdownResponse {
-                accepted: true,
-                ..Default::default()
+                base: Some(CoreShutdownResponse {
+                    accepted: true,
+                    ..Default::default()
+                }),
             }))
         }
     }

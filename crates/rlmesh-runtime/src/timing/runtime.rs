@@ -39,6 +39,10 @@ impl RuntimeTiming {
         self.window.flush(session_id, route)
     }
 
+    pub(crate) fn episode_rollup(&mut self) -> crate::hooks::EpisodeTelemetryRollup {
+        self.window.episode_rollup()
+    }
+
     pub(crate) fn telemetry_summary(
         &self,
         session_id: &str,

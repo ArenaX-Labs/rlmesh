@@ -38,8 +38,6 @@ allow = [
   "Unicode-3.0",
 ]
 exceptions = [
-  # egui embeds default font assets when the default_fonts feature is enabled.
-  { crate = "epaint_default_fonts@0.34.3", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
   # pyo3-stub-gen pulls Unicode name data through rustpython-parser for stub checks.
   { crate = "unicode_names2@1.3.0", allow = ["Unicode-DFS-2016"] },
 ]
@@ -50,8 +48,16 @@ wildcards = "deny"
 highlight = "simplest-path"
 
 # Architecture boundary: only protocol-aware crates may depend on rlmesh-proto
-# directly.
-deny = [{ name = "rlmesh-proto", wrappers = ["rlmesh", "rlmesh-grpc", "rlmesh-runtime"] }]
+# directly. rlmesh-python is protocol-aware: it stamps handshake PeerInfo and
+# serializes the runtime's session telemetry onto the wire TelemetryWindow.
+deny = [
+  { name = "rlmesh-proto", wrappers = [
+    "rlmesh",
+    "rlmesh-grpc",
+    "rlmesh-runtime",
+    "rlmesh-python",
+  ] },
+]
 
 [sources]
 unknown-registry = "deny"

@@ -19,6 +19,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -142,6 +143,7 @@ def main() -> None:
     if len(args) != 1 or flags - {"--dry-run", "--publish"}:
         sys.exit(__doc__)
     version = args[0]
+    os.environ.setdefault("RLMESH_RELEASE_BUILD", "1")
 
     if "--publish" in flags:
         tag = f"v{version}"
@@ -170,7 +172,7 @@ def main() -> None:
         print(f"tree already at {version}; nothing to commit, tagging current HEAD")
     run("git", "tag", "-s", f"v{version}", "-m", changelog_section(version))
     print(f"\ntagged v{version}. To publish, push then release:")
-    print(f"  git push origin HEAD --tags")
+    print("  git push origin HEAD --tags")
     print(
         f"  python scripts/release.py {version} --publish   # crates.io + PyPI + GitHub Release"
     )
