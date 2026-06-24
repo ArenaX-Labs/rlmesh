@@ -115,6 +115,13 @@ def _install_native_docs_stub() -> None:
         setattr(native, name, _native_unavailable)
 
     native.__all__ = sorted(name for name in vars(native) if not name.startswith("_"))
+
+    def _native_getattr(name: str) -> Any:
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        return _native_type(name) if name[:1].isupper() else _native_unavailable
+
+    native.__getattr__ = _native_getattr  # type: ignore[method-assign]
     sys.modules["rlmesh._rlmesh"] = native
 
 
