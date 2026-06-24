@@ -3,22 +3,23 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Current RLMesh protocol generation.
+/// Identity of the frozen wire substrate: the `core` handshake plus the `spaces`
+/// value transport the runtime relays between env and model. NOT the package
+/// version, NOT the product semver, and NOT a per-service version — it names the
+/// one shared byte contract every component is built against, decoupled from all
+/// of them.
 ///
-/// This is intentionally not the package version. Package patch releases can
-/// move independently when the wire contract remains compatible.
-pub const PROTOCOL_GENERATION: &str = "rlmesh-protocol-1";
-
-/// Oldest protocol generation accepted by this crate.
-pub const MIN_SUPPORTED_PROTOCOL_GENERATION: &str = "rlmesh-protocol-1";
-
-/// Protocol generations this build can speak, oldest ([`MIN_SUPPORTED_PROTOCOL_GENERATION`])
-/// to newest ([`PROTOCOL_GENERATION`]). A peer is wire-compatible only when its
-/// generation is inside this window. Adding a generation appends it and bumps
-/// `PROTOCOL_GENERATION`; dropping one raises `MIN_SUPPORTED_PROTOCOL_GENERATION`.
-/// Do not lower it past a generation that may still be deployed. While the
-/// window holds one generation, compatibility is exact equality.
-pub const SUPPORTED_PROTOCOL_GENERATIONS: &[&str] = &[PROTOCOL_GENERATION];
+/// Compatibility is plain equality: a peer is compatible iff its token equals
+/// this. There is no support window and no range negotiation. The wire grows
+/// additively forever under this single token; workflow *behavior* rides on
+/// editions and optional *features* on capabilities, so neither forces a bump.
+///
+/// This is a failsafe, not a version counter: in the normal course it is never
+/// bumped. Bumping it to `rlmesh-wire-v2` is a deliberate, public hard pivot — a
+/// build that intentionally will not interoperate with `rlmesh-wire-v1` — reserved
+/// for a wire break that additive growth, editions, and capabilities genuinely
+/// cannot absorb.
+pub const PROTOCOL_GENERATION: &str = "rlmesh-wire-v1";
 
 /// Current workflow semantics edition.
 ///
@@ -72,17 +73,11 @@ pub mod capabilities {
     pub const MODEL_CONCURRENT_PREDICT_V1: &str = "rlmesh.model.concurrent_predict.v1";
 }
 
-/// Whether this build can speak the given protocol generation.
+/// Whether the given protocol generation is the one this build speaks. Plain
+/// equality — there is no support window. Whitespace is trimmed so a padded wire
+/// value still matches.
 pub fn is_protocol_generation_supported(generation: &str) -> bool {
-    SUPPORTED_PROTOCOL_GENERATIONS.contains(&generation.trim())
-}
-
-/// Return whether a client and server protocol generation can interoperate: both must lie in
-/// this build's supported generation window. While the window holds a single generation this
-/// is exact equality; once a v2 is added (with v1 still supported), a v1 peer and a v2 peer
-/// interoperate.
-pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
-    is_protocol_generation_supported(client) && is_protocol_generation_supported(server)
+    generation.trim() == PROTOCOL_GENERATION
 }
 
 /// Ordering key for a workflow edition name: `(base, cohort?, suffix)`.
@@ -97,27 +92,14 @@ pub fn is_protocol_generation_compatible(client: &str, server: &str) -> bool {
 /// - `suffix` is the full cohort as a deterministic third tiebreak; two
 ///   same-date cohorts are ordered by suffix rather than by iteration order.
 ///
-/// This comparator must NOT be applied to protocol generation tokens
-/// (`rlmesh-protocol-1` is hyphenated and would split at `-`, collapsing all
-/// generations to the base `"rlmesh"`); generations are ordered by
-/// [`generation_sort_key`] (numeric-suffix order), not this comparator.
+/// Applies to workflow editions only. Protocol generations are compared by plain
+/// equality ([`is_protocol_generation_supported`]), never ordered — there is no
+/// generation window to pick a highest from.
 pub fn edition_sort_key(edition: &str) -> (&str, bool, &str) {
     match edition.split_once('-') {
         Some((base, suffix)) => (base, true, suffix),
         None => (edition, false, ""),
     }
-}
-
-/// Order `rlmesh-protocol-<N>` generation tokens by their numeric suffix so a
-/// two-digit generation sorts above a single-digit one (`-10` > `-2`), which a
-/// plain lexicographic `.max()` gets wrong. The full token is the tiebreak, so a
-/// token with no parseable numeric suffix still has a stable order.
-pub fn generation_sort_key(generation: &str) -> (u64, &str) {
-    let numeric = generation
-        .rsplit_once('-')
-        .and_then(|(_, suffix)| suffix.parse::<u64>().ok())
-        .unwrap_or(0);
-    (numeric, generation)
 }
 
 /// Select the workflow edition governing a session from a peer's offer.
@@ -136,14 +118,14 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
         .max_by_key(|edition| edition_sort_key(edition))
 }
 
-/// One participant's offer in a three-way (relay) session negotiation: the set
-/// of protocol generations and workflow editions it can speak, and the
-/// capabilities it advertises. Built for the env, the model, and the runtime;
-/// [`negotiate_session_floor`] reconciles all three.
+/// One participant's offer in a three-way (relay) session negotiation: the
+/// workflow editions it can operate under and the capabilities it advertises.
+/// Built for the env, the model, and the runtime; [`negotiate_session_floor`]
+/// reconciles all three. Protocol generation is NOT part of the offer — it is
+/// gated by plain equality at each pairwise handshake, so a session that reaches
+/// floor negotiation already shares one generation across all three.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOffer {
-    /// Protocol generations this participant can speak.
-    pub generations: Vec<String>,
     /// Workflow editions this participant can operate under.
     pub editions: Vec<String>,
     /// Capabilities this participant advertises (keys of the handshake map whose
@@ -153,23 +135,18 @@ pub struct SessionOffer {
 
 impl SessionOffer {
     /// Build an offer from string slices, taking only the advertised (value
-    /// `"true"`) capabilities. Whitespace around generations/editions is trimmed.
-    pub fn new(generations: &[&str], editions: &[&str], capabilities: &[&str]) -> Self {
+    /// `"true"`) capabilities. Whitespace around editions is trimmed.
+    pub fn new(editions: &[&str], capabilities: &[&str]) -> Self {
         Self {
-            generations: generations.iter().map(|g| g.trim().to_string()).collect(),
             editions: editions.iter().map(|e| e.trim().to_string()).collect(),
             capabilities: capability_map(capabilities),
         }
     }
 
-    /// This build's own (runtime) offer: the full supported generation and
-    /// edition windows plus the named capabilities it can carry through the relay.
+    /// This build's own (runtime) offer: the supported edition window plus the
+    /// named capabilities it can carry through the relay.
     pub fn runtime(capabilities: &[&str]) -> Self {
         Self {
-            generations: SUPPORTED_PROTOCOL_GENERATIONS
-                .iter()
-                .map(|g| (*g).to_string())
-                .collect(),
             editions: supported_workflow_editions(),
             capabilities: capability_map(capabilities),
         }
@@ -181,12 +158,12 @@ impl SessionOffer {
 /// A session is bound to these values: the runtime decode-rebuilds env<->model
 /// envelopes (prost drops unknown fields), so it can only faithfully carry the
 /// shape that env AND model AND runtime all understand. The floor is therefore
-/// the highest mutual generation, the highest mutual edition, and the capability
-/// intersection across all three. See versioning-governance §7.
+/// the highest mutual edition and the capability intersection across all three.
+/// Protocol generation is not a floor axis — it is gated by equality at each
+/// pairwise handshake, so all three already agree on it here. See
+/// versioning-governance §7.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFloor {
-    /// Highest protocol generation all three participants support.
-    pub selected_protocol_generation: String,
     /// Highest workflow edition all three participants support.
     pub selected_workflow_edition: String,
     /// Capabilities present in all three offers (the intersection).
@@ -196,34 +173,21 @@ pub struct SessionFloor {
 /// Reconcile a three-way (relay) session to its floor over the env, model and
 /// runtime offers.
 ///
-/// Returns the highest mutual protocol generation, the highest mutual workflow
-/// edition (max over the 3-way intersection, using `YYYY.MM` lexicographic =
-/// chronological order), and the capability intersection across all three. The
-/// runtime is the binding authority because it re-frames traffic, so the floor —
-/// not any pairwise upper bound — is what a session may use.
+/// Returns the highest mutual workflow edition (max over the 3-way intersection,
+/// ranked by [`edition_sort_key`]) and the capability intersection across all
+/// three. The runtime is the binding authority because it re-frames traffic, so
+/// the floor — not any pairwise upper bound — is what a session may use.
+/// Protocol generation is not reconciled here: it is gated by equality at each
+/// pairwise handshake, so all three already share it by the time this runs.
 ///
-/// Returns `None` when generation OR edition has no value common to all three;
-/// the caller must then fail the session before any Join stream opens. Whitespace
-/// around offered generations/editions is trimmed; empty strings never match.
+/// Returns `None` when no edition is common to all three; the caller must then
+/// fail the session before any Join stream opens. Whitespace around offered
+/// editions is trimmed; empty strings never match.
 pub fn negotiate_session_floor(
     env: &SessionOffer,
     model: &SessionOffer,
     runtime: &SessionOffer,
 ) -> Option<SessionFloor> {
-    // Generations and editions are BOTH three-way-intersected by
-    // `highest_mutual`, but they order differently. Generation tokens
-    // (`rlmesh-protocol-<N>`) must order by their numeric suffix
-    // (`generation_sort_key`) so `-10` ranks above `-2`; plain lexicographic
-    // `.max()` would wrongly pick `-2`, and `edition_sort_key` would split them
-    // at `-` and collapse every generation to the base `"rlmesh"`. Editions
-    // order by `edition_sort_key`. Each gets its own comparator so the two never
-    // leak.
-    let selected_protocol_generation = highest_mutual(
-        &env.generations,
-        &model.generations,
-        &runtime.generations,
-        generation_sort_key,
-    )?;
     let selected_workflow_edition = highest_mutual(
         &env.editions,
         &model.editions,
@@ -246,20 +210,13 @@ pub fn negotiate_session_floor(
         .collect();
 
     Some(SessionFloor {
-        selected_protocol_generation,
         selected_workflow_edition,
         active_capabilities,
     })
 }
 
-/// Highest value present in all three sets (after trimming), ranked by `key`, or
-/// `None` if the three-way intersection is empty. Empty strings never match.
-///
-/// `key` is the per-axis comparator: protocol generations pass
-/// [`generation_sort_key`] (numeric-suffix order, so `-10` outranks `-2`), while
-/// workflow editions pass [`edition_sort_key`]. Keeping it a parameter means the
-/// edition comparator can never accidentally order the hyphenated generation
-/// tokens, and the generation comparator never splits an edition at its `-`.
+/// Highest edition present in all three sets (after trimming), ranked by `key`,
+/// or `None` if the three-way intersection is empty. Empty strings never match.
 fn highest_mutual<'a, K: Ord>(
     a: &'a [String],
     b: &[String],
@@ -301,10 +258,7 @@ pub fn evaluate_handshake(
     offered_workflow_editions: &[String],
 ) -> HandshakeCompatibility {
     HandshakeCompatibility {
-        protocol_compatible: is_protocol_generation_compatible(
-            client_protocol_generation,
-            PROTOCOL_GENERATION,
-        ),
+        protocol_compatible: is_protocol_generation_supported(client_protocol_generation),
         selected_edition: negotiate_workflow_edition(offered_workflow_editions),
     }
 }
@@ -478,9 +432,9 @@ pub mod model {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        SUPPORTED_WORKFLOW_EDITIONS, evaluate_handshake, is_protocol_generation_compatible,
-        negotiate_workflow_edition, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, SUPPORTED_WORKFLOW_EDITIONS,
+        evaluate_handshake, is_protocol_generation_supported, negotiate_workflow_edition,
+        supported_workflow_editions,
     };
 
     fn offer(editions: &[&str]) -> Vec<String> {
@@ -555,40 +509,17 @@ mod tests {
     }
 
     #[test]
-    fn supported_generations_span_min_to_current() {
-        use super::{SUPPORTED_PROTOCOL_GENERATIONS, is_protocol_generation_supported};
-        // Both endpoints of the window are in the supported set.
-        assert!(SUPPORTED_PROTOCOL_GENERATIONS.contains(&PROTOCOL_GENERATION));
-        assert!(SUPPORTED_PROTOCOL_GENERATIONS.contains(&MIN_SUPPORTED_PROTOCOL_GENERATION));
-        // The current generation is accepted; nothing past it is.
+    fn protocol_generation_is_plain_equality() {
+        // The only generation check is equality with this build's generation —
+        // there is no support window. Whitespace is trimmed; anything else is a
+        // hard mismatch (a deliberate major break).
         assert!(is_protocol_generation_supported(PROTOCOL_GENERATION));
-        assert!(!is_protocol_generation_supported("rlmesh-protocol-2"));
-    }
-
-    #[test]
-    fn current_protocol_generation_is_compatible() {
-        assert!(is_protocol_generation_compatible(
-            PROTOCOL_GENERATION,
-            PROTOCOL_GENERATION
-        ));
-        assert_eq!(MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION);
-    }
-
-    #[test]
-    fn unknown_protocol_generation_is_not_compatible() {
-        assert!(!is_protocol_generation_compatible(
-            "rlmesh-protocol-2",
-            PROTOCOL_GENERATION
-        ));
-        assert!(!is_protocol_generation_compatible(
-            PROTOCOL_GENERATION,
-            "rlmesh-protocol-2"
-        ));
-        assert!(!is_protocol_generation_compatible("", PROTOCOL_GENERATION));
-        assert!(!is_protocol_generation_compatible(
-            "0.1.0",
-            PROTOCOL_GENERATION
-        ));
+        assert!(is_protocol_generation_supported(&format!(
+            " {PROTOCOL_GENERATION} "
+        )));
+        assert!(!is_protocol_generation_supported("rlmesh-wire-v2"));
+        assert!(!is_protocol_generation_supported(""));
+        assert!(!is_protocol_generation_supported("0.1.0"));
     }
 
     #[test]
@@ -651,21 +582,21 @@ mod tests {
 
         // A protocol mismatch is never compatible, even with a valid edition.
         let bad_protocol =
-            evaluate_handshake("rlmesh-protocol-2", &offer(&[CURRENT_WORKFLOW_EDITION]));
+            evaluate_handshake("rlmesh-wire-v2", &offer(&[CURRENT_WORKFLOW_EDITION]));
         assert!(!bad_protocol.protocol_compatible);
         assert!(!bad_protocol.is_compatible());
     }
 
     #[test]
-    fn session_floor_picks_highest_mutual_generation_and_edition() {
+    fn session_floor_picks_highest_mutual_edition() {
         use super::{SessionOffer, negotiate_session_floor};
-        // All three share g2 and g3 → g3 wins; share e1 and e2 → e2 wins.
-        let env = SessionOffer::new(&["g1", "g2", "g3"], &["2026.01", "2026.06"], &[]);
-        let model = SessionOffer::new(&["g2", "g3"], &["2026.06", "2026.01"], &[]);
-        let runtime = SessionOffer::new(&["g2", "g3", "g4"], &["2026.06"], &[]);
+        // All three share e1 and e2 → e2 wins. Generation is not a floor axis; it
+        // is gated by equality at the handshake before this runs.
+        let env = SessionOffer::new(&["2026.01", "2026.06"], &[]);
+        let model = SessionOffer::new(&["2026.06", "2026.01"], &[]);
+        let runtime = SessionOffer::new(&["2026.06"], &[]);
 
         let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
-        assert_eq!(floor.selected_protocol_generation, "g3");
         assert_eq!(floor.selected_workflow_edition, "2026.06");
         assert!(floor.active_capabilities.is_empty());
     }
@@ -675,9 +606,9 @@ mod tests {
         use super::{SessionOffer, has_capability, negotiate_session_floor};
         // shared: present in all three. env_model_only: env+model but not runtime.
         // runtime_only: runtime alone. None but "shared" survive the intersection.
-        let env = SessionOffer::new(&["g1"], &["e1"], &["shared", "env_model_only", "env_only"]);
-        let model = SessionOffer::new(&["g1"], &["e1"], &["shared", "env_model_only"]);
-        let runtime = SessionOffer::new(&["g1"], &["e1"], &["shared", "runtime_only"]);
+        let env = SessionOffer::new(&["e1"], &["shared", "env_model_only", "env_only"]);
+        let model = SessionOffer::new(&["e1"], &["shared", "env_model_only"]);
+        let runtime = SessionOffer::new(&["e1"], &["shared", "runtime_only"]);
 
         let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
         assert_eq!(floor.active_capabilities.len(), 1);
@@ -691,67 +622,51 @@ mod tests {
     }
 
     #[test]
-    fn session_floor_is_none_when_no_three_way_mutual_generation() {
-        use super::{SessionOffer, negotiate_session_floor};
-        // env<->runtime share g1, model<->runtime share g2, but the THREE share
-        // no generation → None even though editions agree.
-        let env = SessionOffer::new(&["g1"], &["e1"], &[]);
-        let model = SessionOffer::new(&["g2"], &["e1"], &[]);
-        let runtime = SessionOffer::new(&["g1", "g2"], &["e1"], &[]);
-        assert!(negotiate_session_floor(&env, &model, &runtime).is_none());
-    }
-
-    #[test]
     fn session_floor_is_none_when_no_three_way_mutual_edition() {
         use super::{SessionOffer, negotiate_session_floor};
         // The pivotal case: env<->runtime share 2026.01 and model<->runtime share
-        // 2026.06, but the THREE share no edition → None even though generations
-        // agree.
-        let env = SessionOffer::new(&["g1"], &["2026.01"], &[]);
-        let model = SessionOffer::new(&["g1"], &["2026.06"], &[]);
-        let runtime = SessionOffer::new(&["g1"], &["2026.01", "2026.06"], &[]);
+        // 2026.06, but the THREE share no edition → None.
+        let env = SessionOffer::new(&["2026.01"], &[]);
+        let model = SessionOffer::new(&["2026.06"], &[]);
+        let runtime = SessionOffer::new(&["2026.01", "2026.06"], &[]);
         assert!(negotiate_session_floor(&env, &model, &runtime).is_none());
     }
 
     #[test]
     fn session_floor_trims_and_ignores_empty_offers() {
         use super::{SessionOffer, negotiate_session_floor};
-        // Whitespace is trimmed so a padded offer still matches; empty strings
+        // Whitespace is trimmed so a padded edition still matches; empty strings
         // never match (so a participant offering only "" has no mutual value).
-        let env = SessionOffer::new(&[" g1 "], &[" 2026.06 "], &[]);
-        let model = SessionOffer::new(&["g1"], &["2026.06"], &[]);
-        let runtime = SessionOffer::new(&["g1", ""], &["2026.06"], &[]);
+        let env = SessionOffer::new(&[" 2026.06 "], &[]);
+        let model = SessionOffer::new(&["2026.06"], &[]);
+        let runtime = SessionOffer::new(&["2026.06", ""], &[]);
         let floor = negotiate_session_floor(&env, &model, &runtime).expect("trimmed match");
-        assert_eq!(floor.selected_protocol_generation, "g1");
         assert_eq!(floor.selected_workflow_edition, "2026.06");
 
-        let empty_gen = SessionOffer::new(&[""], &["2026.06"], &[]);
-        assert!(negotiate_session_floor(&empty_gen, &model, &runtime).is_none());
+        let empty_edition = SessionOffer::new(&[""], &[]);
+        assert!(negotiate_session_floor(&empty_edition, &model, &runtime).is_none());
     }
 
     #[test]
-    fn session_floor_for_single_generation_single_edition_build() {
+    fn session_floor_for_single_edition_build() {
         use super::{
-            CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, SessionOffer, capabilities,
-            has_capability, negotiate_session_floor,
+            CURRENT_WORKFLOW_EDITION, SessionOffer, capabilities, has_capability,
+            negotiate_session_floor,
         };
-        // The behavior this build actually ships: one generation, one edition.
-        // The floor is trivially that pair, and the capability intersection is
-        // exactly the capabilities all three carry.
+        // The behavior this build actually ships: one edition. The floor is
+        // trivially that edition, and the capability intersection is exactly the
+        // capabilities all three carry.
         let env = SessionOffer::new(
-            &[PROTOCOL_GENERATION],
             &[CURRENT_WORKFLOW_EDITION],
             &[capabilities::SPACES_CORE_V1, capabilities::ENV_SERVICE_V1],
         );
         let model = SessionOffer::new(
-            &[PROTOCOL_GENERATION],
             &[CURRENT_WORKFLOW_EDITION],
             &[capabilities::SPACES_CORE_V1, capabilities::MODEL_SERVICE_V1],
         );
         let runtime = SessionOffer::runtime(&[capabilities::SPACES_CORE_V1]);
 
         let floor = negotiate_session_floor(&env, &model, &runtime).expect("single-edition floor");
-        assert_eq!(floor.selected_protocol_generation, PROTOCOL_GENERATION);
         assert_eq!(floor.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
         // Only the capability all three carry survives.
         assert!(has_capability(
@@ -766,9 +681,9 @@ mod tests {
         use super::{SessionOffer, has_capability, negotiate_session_floor};
         // A capability advertised with value != "true" by any participant is not
         // active (has_capability gates on "true"); mirror that in the floor.
-        let mut env = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
-        let model = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
-        let runtime = SessionOffer::new(&["g1"], &["e1"], &["cap"]);
+        let mut env = SessionOffer::new(&["e1"], &["cap"]);
+        let model = SessionOffer::new(&["e1"], &["cap"]);
+        let runtime = SessionOffer::new(&["e1"], &["cap"]);
         // Downgrade env's advertisement to a non-"true" value.
         env.capabilities
             .insert("cap".to_string(), "maybe".to_string());
@@ -807,46 +722,14 @@ mod tests {
     }
 
     #[test]
-    fn session_floor_generation_comparator_does_not_split_hyphenated_tokens() {
+    fn session_floor_prefers_exact_edition_cohort_over_sealed_fallback() {
         use super::{SessionOffer, negotiate_session_floor};
-        // Generations are hyphenated (`rlmesh-protocol-N`). The edition
-        // comparator splits at the first `-`, which would collapse every
-        // generation to base "rlmesh" and order them by nothing. Prove the
-        // generation path keeps plain `.max()`: with three real hyphenated
-        // generations shared by all parties, the lexicographically-highest one
-        // (`rlmesh-protocol-3`) is selected — not an arbitrary collapsed pick.
-        let gens = &[
-            "rlmesh-protocol-1",
-            "rlmesh-protocol-2",
-            "rlmesh-protocol-3",
-        ];
-        let env = SessionOffer::new(gens, &["2026.06"], &[]);
-        let model = SessionOffer::new(gens, &["2026.06"], &[]);
-        let runtime = SessionOffer::new(gens, &["2026.06"], &[]);
-
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
-        assert_eq!(floor.selected_protocol_generation, "rlmesh-protocol-3");
-
-        // The boundary the generation comparator actually exists for: a
-        // two-digit generation must outrank a single-digit one. Plain
-        // lexicographic `.max()` would wrongly pick `-2` over `-10`; the numeric
-        // `generation_sort_key` correctly selects `-10`.
-        let gens = &[
-            "rlmesh-protocol-1",
-            "rlmesh-protocol-2",
-            "rlmesh-protocol-10",
-        ];
-        let env = SessionOffer::new(gens, &["2026.06"], &[]);
-        let model = SessionOffer::new(gens, &["2026.06"], &[]);
-        let runtime = SessionOffer::new(gens, &["2026.06"], &[]);
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
-        assert_eq!(floor.selected_protocol_generation, "rlmesh-protocol-10");
-
-        // And the edition path still uses edition_sort_key: an exact cohort
-        // beats its sealed fallback within the three-way intersection.
-        let env = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
-        let model = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
-        let runtime = SessionOffer::new(gens, &["2026.06", "2026.06-0.1.0-rc.1"], &[]);
+        // The floor uses edition_sort_key: when all three offer both the exact
+        // moving cohort and its sealed fallback, the exact cohort is selected.
+        let editions = &["2026.06", "2026.06-0.1.0-rc.1"];
+        let env = SessionOffer::new(editions, &[]);
+        let model = SessionOffer::new(editions, &[]);
+        let runtime = SessionOffer::new(editions, &[]);
         let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
         assert_eq!(floor.selected_workflow_edition, "2026.06-0.1.0-rc.1");
     }

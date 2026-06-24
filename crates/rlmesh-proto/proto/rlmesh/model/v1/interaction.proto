@@ -52,8 +52,10 @@ message ConfigureRouteRequest {
   // AUTHORITATIVE over the model's own (pairwise, possibly higher) handshake
   // result, which was only an upper bound. The model pins itself to the floor.
 
-  // Highest mutual protocol generation across env, model and runtime.
-  string selected_protocol_generation = 3;
+  // tag 3 was selected_protocol_generation, cut with the support-window
+  // machinery: generation is plain equality gated at each pairwise handshake, so
+  // by the time a route is configured all three already share it — the floor
+  // adds nothing. Only the edition floor (a true 3-way min) needs carrying.
 
   // Highest mutual workflow edition across env, model and runtime.
   string selected_workflow_edition = 4;

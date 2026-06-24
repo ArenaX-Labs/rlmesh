@@ -785,9 +785,8 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     let (port, server) = spawn_bound_server(bound);
 
     let address = format!("tcp://127.0.0.1:{port}");
-    // An env that offers exactly this build's window.
+    // An env that offers exactly this build's edition.
     let env_offer = rlmesh_proto::SessionOffer::new(
-        &[rlmesh_proto::PROTOCOL_GENERATION],
         &[rlmesh_proto::CURRENT_WORKFLOW_EDITION],
         &[rlmesh_proto::capabilities::SPACES_CORE_V1],
     );
@@ -801,10 +800,6 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     .expect("model server did not start");
 
     let floor = model.session_floor();
-    assert_eq!(
-        floor.selected_protocol_generation,
-        rlmesh_proto::PROTOCOL_GENERATION
-    );
     assert_eq!(
         floor.selected_workflow_edition,
         rlmesh_proto::CURRENT_WORKFLOW_EDITION
@@ -857,8 +852,7 @@ async fn remote_model_fails_fast_when_no_three_way_floor() {
 
     let address = format!("tcp://127.0.0.1:{port}");
     // The env offers only a future edition no peer here implements.
-    let env_offer =
-        rlmesh_proto::SessionOffer::new(&[rlmesh_proto::PROTOCOL_GENERATION], &["2099.01"], &[]);
+    let env_offer = rlmesh_proto::SessionOffer::new(&["2099.01"], &[]);
     let message = match crate::RemoteModel::connect_with_env_offer(
         &address,
         "",

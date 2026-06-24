@@ -282,7 +282,7 @@ sealed_in = "0.1.0"
 spec_sha256 = "already-sealed"
 
 [protocol]
-current_generation = "rlmesh-protocol-1"
+current_generation = "rlmesh-wire-v1"
 """
     prerelease_manifest = _update_workflow_manifest(
         sealed_manifest,

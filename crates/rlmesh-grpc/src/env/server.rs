@@ -25,8 +25,8 @@ use rlmesh_proto::env::v1::{
     ShutdownResponse, env_service_server::EnvService, join_request, join_response,
 };
 use rlmesh_proto::{
-    MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    evaluate_handshake, peer_info, supported_workflow_editions,
+    PROTOCOL_GENERATION, capabilities, capability_map, evaluate_handshake, peer_info,
+    supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -246,7 +246,6 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             compatible,
             peer_info: Some(peer_info("rlmesh-env")),
             server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-            min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
                 String::new()
             } else if !compat.protocol_compatible {
@@ -938,8 +937,8 @@ mod tests {
         ResetResponse, StepRequest, StepResponse,
     };
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        capabilities, peer_info, supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, peer_info,
+        supported_workflow_editions,
     };
     use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
     use tonic::Request;
@@ -1305,10 +1304,6 @@ mod tests {
         let base = response.base.unwrap();
         assert!(base.compatible);
         assert_eq!(base.server_protocol_generation, PROTOCOL_GENERATION);
-        assert_eq!(
-            base.min_supported_protocol_generation,
-            MIN_SUPPORTED_PROTOCOL_GENERATION
-        );
         assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
         assert_eq!(
             base.supported_workflow_editions,

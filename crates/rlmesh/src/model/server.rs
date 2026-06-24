@@ -19,8 +19,8 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION, capabilities, capability_map,
-    evaluate_handshake, peer_info, supported_workflow_editions,
+    PROTOCOL_GENERATION, capabilities, capability_map, evaluate_handshake, peer_info,
+    supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -147,10 +147,10 @@ pub(super) struct ModelRouteConfig {
     pub(super) floor: Option<RouteFloor>,
 }
 
-/// Floor the runtime pinned a route to (from `ConfigureRouteRequest`).
+/// Floor the runtime pinned a route to (from `ConfigureRouteRequest`). Generation
+/// is not part of the floor — it is gated by equality at the handshake.
 #[derive(Debug, Clone)]
 pub(super) struct RouteFloor {
-    pub(super) selected_protocol_generation: String,
     pub(super) selected_workflow_edition: String,
     pub(super) active_capabilities: HashMap<String, String>,
 }
@@ -206,7 +206,6 @@ where
                 compatible,
                 peer_info: Some(peer_info("rlmesh-model")),
                 server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-                min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION.to_string(),
                 error_message: if compatible {
                     String::new()
                 } else if !compat.protocol_compatible {
@@ -519,16 +518,13 @@ async fn handle_configure_route(
     // The runtime is the binding authority for the three-way (relay) floor: it
     // decode-rebuilds env<->model envelopes, so these values override the model's
     // own (pairwise, possibly higher) handshake result. Today there is a single
-    // generation and edition, so we store/log the floor rather than re-deriving
-    // behavior from it; full enforcement lands when a second edition exists.
-    let floor = if request.selected_workflow_edition.is_empty()
-        && request.selected_protocol_generation.is_empty()
-    {
+    // edition, so we store/log the floor rather than re-deriving behavior from it;
+    // full enforcement lands when a second edition exists.
+    let floor = if request.selected_workflow_edition.is_empty() {
         // Older runtime that predates floor propagation: nothing to pin.
         None
     } else {
         let floor = RouteFloor {
-            selected_protocol_generation: request.selected_protocol_generation,
             selected_workflow_edition: request.selected_workflow_edition,
             active_capabilities: request.active_capabilities,
         };
@@ -542,7 +538,6 @@ async fn handle_configure_route(
         }
         tracing::debug!(
             route = %route_id,
-            selected_protocol_generation = %floor.selected_protocol_generation,
             selected_workflow_edition = %floor.selected_workflow_edition,
             active_capabilities = ?floor.active_capabilities,
             "model route pinned to runtime-reconciled session floor"
@@ -588,22 +583,14 @@ async fn handle_configure_route(
 }
 
 /// Honor the runtime-reconciled three-way floor on the route: the runtime is the
-/// binding authority, so a floor naming a generation/edition this model build
-/// cannot speak is a hard configuration error, not a silently-downgraded run.
+/// binding authority, so a floor naming an edition this model build cannot speak
+/// is a hard configuration error, not a silently-downgraded run. Generation is
+/// not checked here — it was already gated by equality at the handshake.
 ///
-/// Minimal by design while a single generation and edition exist: it checks
-/// membership/equality against this build's window. The capability intersection
-/// is advisory (absence-neutral) and is carried for diagnostics; it never fails
-/// configuration here.
+/// Minimal by design while a single edition exists: it checks equality against
+/// this build's edition. The capability intersection is advisory (absence-neutral)
+/// and is carried for diagnostics; it never fails configuration here.
 fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
-    if !rlmesh_proto::is_protocol_generation_supported(&floor.selected_protocol_generation) {
-        return Err(format!(
-            "runtime pinned this route to protocol generation {:?}, which this model build \
-             does not support (supports {:?})",
-            floor.selected_protocol_generation,
-            rlmesh_proto::SUPPORTED_PROTOCOL_GENERATIONS,
-        ));
-    }
     if floor.selected_workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
         return Err(format!(
             "runtime pinned this route to workflow edition {:?}, which this model build does \

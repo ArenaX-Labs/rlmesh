@@ -2,38 +2,18 @@ syntax = "proto3";
 
 package rlmesh.core.v1;
 
-// Advisory diagnostic identity of a handshake peer. Exchanged in both
-// directions (request and response). Absence-neutral: it never gates
-// compatibility and never changes the meaning of any interaction; it exists so
-// operators can attribute a session to a concrete build/runtime/host. It
-// subsumes the older scalar `client_name`/`client_version` (request) and
-// `server_version` (response): a peer's identity and build version are now read
-// from `component` + `package_version`.
 message PeerInfo {
-  // Logical component name, e.g. "rlmesh-runtime", "rlmesh-env",
-  // "rlmesh-model", "rlmesh-python".
   string component = 1;
-  // Package/build version of the emitting peer, e.g. "0.1.0-rc.1".
   string package_version = 2;
-  // Implementation language, e.g. "rust", "python".
   string language = 3;
-  // Language runtime version, e.g. "3.11.4"; empty when not reported.
   string language_version = 4;
-  // Operating system, e.g. "linux", "macos"; empty when not reported.
   string os = 5;
-  // OS version/release; empty when not reported.
   string os_version = 6;
-  // CPU architecture, e.g. "x86_64", "aarch64"; empty when not reported.
   string arch = 7;
-  // High-value framework versions for debugging (e.g. {"numpy":"1.26.4",
-  // "torch":"2.3.1"}). Populated by the Python side in a later additive task.
   map<string, string> framework_versions = 8;
-  // Forward-compat escape hatch for additional advisory key/value diagnostics.
   map<string, string> extra = 15;
 }
 
-// Canonical handshake request shared by every service (env, model). Identity
-// and build version ride `peer_info`.
 message HandshakeRequest {
   string protocol_generation = 1;
   PeerInfo peer_info = 2;
@@ -54,8 +34,12 @@ message HandshakeRequest {
 message HandshakeResponse {
   bool compatible = 1;
   PeerInfo peer_info = 2;
+  // Compatible only when this exactly equals the peer's own generation. No
+  // support window: a bump is a deliberate public major break (v2 won't talk to
+  // v1), so this is plain equality, not range negotiation.
   string server_protocol_generation = 3;
-  string min_supported_protocol_generation = 4;
+  // tag 4 was min_supported_protocol_generation, cut with the support window: a
+  // single-generation equality contract has no floor to advertise.
   string error_message = 5;
   map<string, string> capabilities = 6;
 

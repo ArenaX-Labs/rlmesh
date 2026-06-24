@@ -5,13 +5,6 @@ package rlmesh.core.v1;
 import "rlmesh/spaces/v1/meta.proto";
 import "rlmesh/spaces/v1/spaces.proto";
 
-// Stable environment specification handed to every participant.
-//
-// `EnvSpec` is the slice of the environment contract that defines what the
-// observation/action interface looks like. It is deliberately free of any
-// orchestration knob (autoreset, vectorization, render mode): the model only
-// needs this stable view to encode/decode and never reasons about how many
-// lanes the runtime drives or how it autoresets them.
 message EnvSpec {
   string id = 1;
   rlmesh.spaces.v1.SpaceSpec action_space = 2;
@@ -19,10 +12,6 @@ message EnvSpec {
   rlmesh.spaces.v1.MetaMap metadata = 4;
 }
 
-// RLMesh-native environment contract exchanged during handshake and model
-// route configuration. Wraps the stable [EnvSpec] with the runtime-owned
-// orchestration knobs (vectorization, render mode, autoreset). The model side
-// receives only the embedded `spec`; the full contract is for the runtime/env.
 message EnvContract {
   EnvSpec spec = 1;
   // Number of vectorized lanes the runtime drives. Optional so a genuine
@@ -35,11 +24,6 @@ message EnvContract {
   AutoresetMode autoreset_mode = 4;
 }
 
-// Per-lane autoreset convention. Mirrors gymnasium's AutoresetMode.
-// UNSPECIFIED decodes as DISABLED (explicit reset only). Gym-derived contracts
-// set NEXT_STEP explicitly because gym writes the mode into metadata.
-//
-// FROZEN: 0 == DISABLED, do not repurpose.
 enum AutoresetMode {
   AUTORESET_MODE_UNSPECIFIED = 0;
   // Terminal obs + `terminated` at step t; the env internally resets the done

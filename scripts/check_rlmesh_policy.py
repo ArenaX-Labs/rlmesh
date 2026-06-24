@@ -327,10 +327,6 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
             "[protocol].current_generation",
             protocol.get("current_generation"),
         ),
-        "MIN_SUPPORTED_PROTOCOL_GENERATION": (
-            "[protocol].minimum_generation",
-            protocol.get("minimum_generation"),
-        ),
     }
     for name, (manifest_key, value) in expected.items():
         if not isinstance(value, str):
@@ -363,7 +359,6 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
     declared_packages = _declared_proto_packages(repo_root)
     for manifest_key, value in (
         ("[protocol].current_generation", protocol.get("current_generation")),
-        ("[protocol].minimum_generation", protocol.get("minimum_generation")),
     ):
         if not isinstance(value, str):
             continue
@@ -371,7 +366,7 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
             errors.append(
                 f"{manifest_key} {value!r} is shaped like a proto package path "
                 "(rlmesh.<pkg>.vN); the generation token must be an opaque "
-                "non-package string (e.g. rlmesh-protocol-1)"
+                "non-package string (e.g. rlmesh-wire-v1)"
             )
         if value in declared_packages:
             errors.append(

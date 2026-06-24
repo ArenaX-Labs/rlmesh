@@ -19,8 +19,8 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
-    is_protocol_generation_supported, peer_info, supported_workflow_editions,
+    PROTOCOL_GENERATION, capabilities, capability_map, is_protocol_generation_supported, peer_info,
+    supported_workflow_editions,
 };
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
@@ -44,15 +44,12 @@ pub struct EnvHandshake {
 
 impl EnvHandshake {
     /// The env's negotiation offer for three-way (relay) session-floor
-    /// reconciliation: its supported protocol generations, workflow editions,
-    /// and advertised capabilities.
-    ///
-    /// A server advertises a single `server_protocol_generation` scalar today,
-    /// so the offered generation set is that one value. Feeds
+    /// reconciliation: its workflow editions and advertised capabilities.
+    /// Generation is gated separately by equality at the handshake (see
+    /// `server_protocol_generation`), so it is not part of the floor offer. Feeds
     /// [`rlmesh_proto::negotiate_session_floor`] as the env's offer.
     pub fn session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
-            generations: vec![self.server_protocol_generation.clone()],
             editions: self.supported_workflow_editions.clone(),
             capabilities: self.capabilities.clone(),
         }
@@ -202,11 +199,12 @@ impl EnvClient {
         if !base.compatible {
             return Err(ProtocolError::HandshakeFailed(base.error_message).into());
         }
-        // Moving prerelease/dev editions are pinned by their cohort suffix; an
-        // exact name match in negotiation is the compatibility check.
+        // Protocol generation is plain equality: the server must speak the exact
+        // generation this client was built against, or the session is a hard
+        // mismatch (a deliberate major break).
         if !is_protocol_generation_supported(&base.server_protocol_generation) {
             return Err(ProtocolError::HandshakeFailed(format!(
-                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                "server protocol generation {} does not match this client ({PROTOCOL_GENERATION})",
                 base.server_protocol_generation
             ))
             .into());
@@ -592,8 +590,7 @@ mod tests {
     };
     use rlmesh_proto::spaces::v1::SpaceSpec;
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, MIN_SUPPORTED_PROTOCOL_GENERATION, PROTOCOL_GENERATION,
-        supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, supported_workflow_editions,
     };
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::ReceiverStream;
@@ -930,8 +927,6 @@ mod tests {
                 base: Some(CoreHandshakeResponse {
                     compatible: true,
                     server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-                    min_supported_protocol_generation: MIN_SUPPORTED_PROTOCOL_GENERATION
-                        .to_string(),
                     selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
                     supported_workflow_editions: supported_workflow_editions(),
                     ..Default::default()

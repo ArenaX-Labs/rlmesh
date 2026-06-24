@@ -15,8 +15,10 @@ status = "provisional"
 spec = "docs/editions/2026.06.md"
 
 [protocol]
-current_generation = "rlmesh-protocol-1"
-minimum_generation = "rlmesh-protocol-1"
+# Single generation, equality-only: there is no support window, so no
+# minimum_generation. A bump is a deliberate public major break (v2 won't talk
+# to v1), gated by plain equality at the handshake.
+current_generation = "rlmesh-wire-v1"
 
 [api_surface]
 stability_policy = "stable-labels"

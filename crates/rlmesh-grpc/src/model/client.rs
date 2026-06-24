@@ -1,5 +1,5 @@
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, SUPPORTED_PROTOCOL_GENERATIONS, capabilities, capability_map,
+    PROTOCOL_GENERATION, capabilities, capability_map,
     core::v1::{
         HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
         ShutdownResponse as CoreShutdownResponse,
@@ -58,10 +58,6 @@ pub struct ModelClient {
     /// (`JoinResponse.endpoint_total_ns`).
     last_endpoint_total_ns: Option<u64>,
     server_capabilities: HashMap<String, String>,
-    /// The model's offered protocol generations, learned at handshake. Today a
-    /// server advertises only `server_protocol_generation`, so this holds that
-    /// single value; it feeds the three-way session-floor reconciliation.
-    server_supported_generations: Vec<String>,
     /// The model's offered workflow editions, learned at handshake. Feeds the
     /// three-way session-floor reconciliation.
     server_supported_editions: Vec<String>,
@@ -91,7 +87,6 @@ impl ModelClient {
             request_counter: Arc::new(AtomicU64::new(0)),
             last_endpoint_total_ns: None,
             server_capabilities: HashMap::new(),
-            server_supported_generations: Vec::new(),
             server_supported_editions: Vec::new(),
         })
     }
@@ -138,7 +133,6 @@ impl ModelClient {
     /// session floor. Empty before [`handshake`](Self::handshake) completes.
     pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
-            generations: self.server_supported_generations.clone(),
             editions: self.server_supported_editions.clone(),
             capabilities: self.server_capabilities.clone(),
         }
@@ -177,19 +171,16 @@ impl ModelClient {
         if !response.compatible {
             return Err(ProtocolError::HandshakeFailed(response.error_message).into());
         }
-        // Moving prerelease/dev editions are pinned by their cohort suffix; an
-        // exact name match in negotiation is the compatibility check.
+        // Protocol generation is plain equality: the server must speak the exact
+        // generation this client was built against, or the session is a hard
+        // mismatch (a deliberate major break).
         if !is_protocol_generation_supported(&response.server_protocol_generation) {
             return Err(ProtocolError::HandshakeFailed(format!(
-                "server protocol generation {} is unsupported by this client (supports {SUPPORTED_PROTOCOL_GENERATIONS:?})",
+                "server protocol generation {} does not match this client ({PROTOCOL_GENERATION})",
                 response.server_protocol_generation
             ))
             .into());
         }
-        // Record the model's offered window for the three-way session-floor
-        // reconciliation. A server advertises a single generation scalar today,
-        // so the offered generation set is that one value.
-        self.server_supported_generations = vec![response.server_protocol_generation];
         self.server_supported_editions = response.supported_workflow_editions;
         self.server_capabilities = response.capabilities;
 
@@ -525,7 +516,6 @@ mod tests {
             request_counter: Arc::new(AtomicU64::new(0)),
             last_endpoint_total_ns: None,
             server_capabilities: HashMap::new(),
-            server_supported_generations: Vec::new(),
             server_supported_editions: Vec::new(),
         };
         (client, request_rx, pending)

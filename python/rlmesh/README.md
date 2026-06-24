@@ -1,6 +1,6 @@
 # RLMesh
 
-RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments, connects clients over local or remote transports, and adapts values for plain Python, NumPy, and Torch users.
+RLMesh is a Python SDK for model-environment evaluation. It serves Gymnasium-style environments, connects clients over local or remote transports, and adapts values for plain Python, NumPy, Torch, and JAX users.
 
 > Pre-1.0 (`0.x`): the stable API may change in a minor release, with a migration note, so pin a minor range for active projects.
 
@@ -18,6 +18,7 @@ Install optional adapters as needed:
 pip install "rlmesh[numpy]"
 pip install "rlmesh[gymnasium]"
 pip install "rlmesh[torch]"
+pip install "rlmesh[jax]"
 ```
 
 ## Quickstart
@@ -32,10 +33,10 @@ In one process, serve any Gymnasium-compatible environment:
 
 ```python
 import gymnasium as gym
-import rlmesh
+from rlmesh import EnvServer
 
 env = gym.make("CartPole-v1")
-rlmesh.EnvServer(env, "127.0.0.1:5555").serve()
+EnvServer(env, "127.0.0.1:5555").serve()
 ```
 
 In another process, connect to it as a remote environment:
@@ -53,8 +54,6 @@ while not (terminated or truncated):
 
 env.close()
 ```
-
-Runnable examples and exact commands live in the repository under `examples/python`.
 
 ## Links
 

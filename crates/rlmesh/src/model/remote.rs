@@ -82,17 +82,10 @@ fn new_session_id() -> String {
 fn session_floor_error(env: &SessionOffer, model: &SessionOffer, runtime: &SessionOffer) -> Error {
     Error::Internal(format!(
         "no mutual session floor across the relay: \
-         env={{generations: {:?}, editions: {:?}}}, \
-         model={{generations: {:?}, editions: {:?}}}, \
-         runtime={{generations: {:?}, editions: {:?}}}; \
+         env={{editions: {:?}}}, model={{editions: {:?}}}, runtime={{editions: {:?}}}; \
          the runtime decode-rebuilds env<->model traffic, so a session can only \
-         run at a generation and edition all three support",
-        env.generations,
-        env.editions,
-        model.generations,
-        model.editions,
-        runtime.generations,
-        runtime.editions,
+         run at an edition all three support",
+        env.editions, model.editions, runtime.editions,
     ))
 }
 
@@ -342,7 +335,6 @@ impl RemoteModel {
                 env_spec: Some(env_spec_to_proto(&self.env_contract)),
                 // Pin the model to the reconciled three-way floor: authoritative
                 // over the model's own (pairwise) handshake result.
-                selected_protocol_generation: self.floor.selected_protocol_generation.clone(),
                 selected_workflow_edition: self.floor.selected_workflow_edition.clone(),
                 active_capabilities: self.floor.active_capabilities.clone(),
             })
