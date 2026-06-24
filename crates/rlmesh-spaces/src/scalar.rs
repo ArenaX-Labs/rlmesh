@@ -302,7 +302,7 @@ fn encode_one(out: &mut Vec<u8>, value: Scalar, dtype: DType) {
         DType::Uint16 => out.extend_from_slice(&(value.as_i64() as u16).to_le_bytes()),
         DType::Uint32 => out.extend_from_slice(&(value.as_i64() as u32).to_le_bytes()),
         DType::Uint64 => out.extend_from_slice(&(value.as_i64() as u64).to_le_bytes()),
-        DType::Float16 => out.extend_from_slice(&f16::from_f64(float_value(value)).to_le_bytes()),
+        DType::Float16 => out.extend_from_slice(&f64_to_f16_bits(float_value(value)).to_le_bytes()),
         DType::Float32 => out.extend_from_slice(&(float_value(value) as f32).to_le_bytes()),
         DType::Float64 => out.extend_from_slice(&float_value(value).to_le_bytes()),
         DType::Unspecified => unreachable!("checked by the public entry points"),
@@ -315,6 +315,34 @@ fn float_value(value: Scalar) -> f64 {
         Scalar::Int(value) => value as f64,
         Scalar::Float(value) => value,
     }
+}
+
+/// Correctly round an `f64` to IEEE-754 binary16 bits (round to nearest, ties to
+/// even). Portable and identical on every architecture.
+///
+/// Two steps with an intermediate **round-to-odd** to f32: cast f64->f32 (round
+/// to nearest), and if that was inexact force the f32 mantissa's low bit set.
+/// An odd f32 is never an exact f16 midpoint, so the following f32->f16
+/// round-to-nearest cannot double-round — it equals a direct f64->f16 rounding
+/// (Boldo & Melquiond, "When double rounding is odd"; valid because f32 carries
+/// 13 more mantissa bits than f16). `half::f16::from_f32` is correctly rounded on
+/// every arch (its f32->f16 fallback keeps all 23 mantissa bits).
+///
+/// `half::f16::from_f64` cannot be used directly: NONE of its f64->f16 paths is
+/// correct on every input. The x86 F16C path does `f as f32` then f32->f16, and
+/// the software fallback (`from_f64_const`) truncates the low 32 mantissa bits
+/// (`val >> 32`) — each double-rounds on a different (disjoint) set of inputs;
+/// only aarch64 hardware rounds f64->f16 directly. See VoidStarKat/half-rs#116
+/// (open). numpy / `ml_dtypes` round directly, so the wire must too — hence the
+/// f32->f16-only route above, which uses half's one reliable path.
+pub fn f64_to_f16_bits(value: f64) -> u16 {
+    let nearest = value as f32;
+    let odd = if f64::from(nearest) == value {
+        nearest
+    } else {
+        f32::from_bits(nearest.to_bits() | 1)
+    };
+    f16::from_f32(odd).to_bits()
 }
 
 /// Decode little-endian element bytes of `dtype` into scalars.
@@ -365,8 +393,10 @@ mod tests {
     /// the wire codec emits for these float values are IEEE-754 facts that the
     /// Python side (numpy `.tobytes()` / `ml_dtypes`) and the PyO3 packer MUST
     /// reproduce exactly. The `f16 double-rounding` row is the sentinel: it rounds
-    /// to 0x3C01 only with single `f64->f16` rounding; a regression to
-    /// `f16::from_f32(x as f32)` double-rounds it to 0x3C00 and fails here.
+    /// to 0x3C01 only with single `f64->f16` rounding; a regression to any path
+    /// that goes through f32 first (`f16::from_f32(x as f32)`, or half's x86 F16C
+    /// path that the codec sidesteps with `from_f64_const`) double-rounds it to
+    /// 0x3C00 and fails here — caught on x86_64 even when aarch64 stays correct.
     /// Keep in sync with `python/rlmesh/tests/unit/test_value_encoding_golden.py`.
     #[test]
     fn value_encoding_v1_float_golden() {
@@ -475,7 +505,39 @@ mod tests {
         // avoids double rounding before the f16 conversion.
         let value = (1 << 24) + 1;
         let encoded = encode_scalars(&[Scalar::Int(value)], DType::Float16).expect("encode");
-        assert_eq!(encoded, f16::from_f64(value as f64).to_le_bytes().to_vec());
+        assert_eq!(
+            encoded,
+            f64_to_f16_bits(value as f64).to_le_bytes().to_vec()
+        );
+    }
+
+    #[test]
+    fn f64_to_f16_bits_rounds_corners_correctly() {
+        // Overflow boundary: 65504 is max finite (0x7BFF); 65519 still rounds down
+        // to it; 65520 is the round-to-even midpoint to infinity; above is inf.
+        assert_eq!(f64_to_f16_bits(65504.0), 0x7BFF);
+        assert_eq!(f64_to_f16_bits(65519.0), 0x7BFF);
+        assert_eq!(f64_to_f16_bits(65520.0), 0x7C00);
+        assert_eq!(f64_to_f16_bits(70000.0), 0x7C00);
+
+        // Subnormals: 2^-24 is the smallest subnormal (0x0001); 2^-25 is exactly
+        // half of it and ties to even (zero); a hair above 2^-25 rounds up to it.
+        assert_eq!(f64_to_f16_bits(2.0f64.powi(-24)), 0x0001);
+        assert_eq!(f64_to_f16_bits(2.0f64.powi(-25)), 0x0000);
+        assert_eq!(f64_to_f16_bits(2.0f64.powi(-25) * 1.5), 0x0001);
+        // Largest subnormal 1023 * 2^-24, then the smallest normal 2^-14.
+        assert_eq!(f64_to_f16_bits(1023.0 * 2.0f64.powi(-24)), 0x03FF);
+        assert_eq!(f64_to_f16_bits(2.0f64.powi(-14)), 0x0400);
+
+        // Sign is carried; the negative sentinel mirrors the positive one.
+        let sentinel = 1.0_f64 + 1.0 / 2048.0 + 1.0 / 33_554_432.0;
+        assert_eq!(f64_to_f16_bits(sentinel), 0x3C01);
+        assert_eq!(f64_to_f16_bits(-sentinel), 0xBC01);
+        assert_eq!(f64_to_f16_bits(-2.0), 0xC000);
+
+        // Far underflow flushes to signed zero.
+        assert_eq!(f64_to_f16_bits(2.0f64.powi(-30)), 0x0000);
+        assert_eq!(f64_to_f16_bits(-0.0), 0x8000);
     }
 
     #[test]

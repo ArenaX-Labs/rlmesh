@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use half::f16;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyList, PyString, PyTuple};
 use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
@@ -580,9 +579,14 @@ fn pack_scalar_bytes(value: &Bound<'_, PyAny>, dtype: DType, out: &mut Vec<u8>) 
             out.extend((value.extract::<f64>()? as f32).to_le_bytes());
         }
         DType::Float64 => out.extend(value.extract::<f64>()?.to_le_bytes()),
-        // Single rounding f64 -> f16, matching native `f16::from_f64` + numpy.
-        // (`from_f32(x as f32)` double-rounds and diverges on borderline values.)
-        DType::Float16 => out.extend(f16::from_f64(value.extract::<f64>()?).to_le_bytes()),
+        // Single rounding f64 -> f16 via the native codec's portable conversion,
+        // matching numpy. `half::f16::from_f64` cannot be used: on x86 it rounds
+        // through f32 (F16C `f as f32`, and the software fallback truncates the
+        // low 32 mantissa bits), double-rounding borderline values; only aarch64
+        // hardware is correct. `f64_to_f16_bits` rounds directly on every arch.
+        DType::Float16 => {
+            out.extend(rlmesh_spaces::f64_to_f16_bits(value.extract::<f64>()?).to_le_bytes())
+        }
     }
     Ok(())
 }

@@ -1,9 +1,11 @@
 pub mod errors;
 
+mod display;
 pub mod dtype;
 pub mod meta;
 pub mod render;
 pub mod request;
+pub mod sample;
 pub mod scalar;
 pub mod spaces;
 pub mod tensor;
@@ -13,9 +15,10 @@ pub use dtype::{DType, dtype_size};
 pub use meta::{MetaMap, MetaValue};
 pub use render::{BinaryPayload, RenderFrame, RenderRequest, RenderResult};
 pub use request::{CloseRequest, CloseResult, ResetRequest, ResetResult, StepRequest, StepResult};
+pub use sample::{ChaCha12Rng, sample_seeded, sample_with};
 pub use scalar::{
     Scalar, ScalarError, check_int_in_dtype_range, decode_scalars, encode_i64_scalars,
-    encode_scalars,
+    encode_scalars, f64_to_f16_bits,
 };
 pub use spaces::{
     Conformance, PolicyOutcome, SpaceValue, ValidationPolicy, assemble_value, conform, contains,

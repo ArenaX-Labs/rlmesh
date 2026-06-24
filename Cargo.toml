@@ -66,6 +66,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Utilities
+chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"
 image = { version = "0.25", default-features = false }
 rand = "0.10"

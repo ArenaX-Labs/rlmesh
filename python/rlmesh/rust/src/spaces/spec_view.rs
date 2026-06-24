@@ -5,7 +5,7 @@ use pyo3::types::{PyAny, PyDict, PyModule};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rand::SeedableRng;
-use rand::rngs::StdRng;
+use rlmesh_spaces::ChaCha12Rng;
 use rlmesh_spaces::spaces::{
     BoxSpaceBuilder, DictSpaceBuilder, DiscreteBuilder, MultiBinaryBuilder, MultiDiscreteBuilder,
     SpaceSpec, TextBuilder, TupleSpaceBuilder,
@@ -196,7 +196,7 @@ impl PyEnvContract {
 #[pyclass(module = "rlmesh._rlmesh", name = "Space")]
 pub struct PySpace {
     spec: SpaceSpec,
-    rng: Mutex<StdRng>,
+    rng: Mutex<ChaCha12Rng>,
 }
 
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
@@ -235,7 +235,7 @@ impl PySpace {
         let seed = seed.unwrap_or_else(rand::random);
         // Recover from a poisoned mutex: a prior sample() that raised a Python
         // exception while holding the guard must not permanently brick the RNG.
-        *self.rng.lock().unwrap_or_else(|err| err.into_inner()) = StdRng::seed_from_u64(seed);
+        *self.rng.lock().unwrap_or_else(|err| err.into_inner()) = ChaCha12Rng::seed_from_u64(seed);
         Some(seed)
     }
 
@@ -275,7 +275,7 @@ impl PySpace {
     fn new(spec: SpaceSpec) -> Self {
         Self {
             spec,
-            rng: Mutex::new(StdRng::seed_from_u64(rand::random())),
+            rng: Mutex::new(ChaCha12Rng::seed_from_u64(rand::random())),
         }
     }
 }
