@@ -6,18 +6,10 @@
 //! adapters [`SpaceView`]); the model side is its declared spec (JSON).
 //! [`adapters_resolve`] joins and resolves them into a plan handle.
 //!
-//! Values cross the boundary in a small tagged-tuple encoding produced by
-//! `rlmesh.adapters.helpers.codec`:
-//!
-//! - `("a", dtype, shape, bytes)` — a dense array (little-endian element
-//!   bytes, matching the repo-wide tensor/scalar codec)
-//! - `("b", bytes)` — an encoded image (PNG/JPEG), decoded here to an RGB
-//!   uint8 HWC array (codec-level bridge behavior, not part of the pinned v1
-//!   semantics)
-//! - `("t", str)` — text
-//! - `("n", float)` — a scalar number
-//! - `("l", [encoded, ...])` — a list
-//! - `("m", {key: encoded})` — a nested mapping
+//! Values cross the boundary as the canonical Python RLMesh value tree:
+//! `Tensor`, `str`, `bytes`, numbers, lists/tuples, and nested mappings.
+//! Framework-specific conversion (NumPy/Torch/JAX) stays in Python; this binding
+//! only bridges the canonical value tree into `rlmesh-adapters`.
 //!
 //! Custom inputs are never evaluated here: the plan keeps them as holes
 //! ([`SkipCustoms`]) and the Python wrapper runs the user's callable on the
@@ -25,16 +17,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     EnvTags, ModelInput, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
     resolve, roles,
 };
-use rlmesh_spaces::{DType, Tensor};
 use serde::de::DeserializeOwned;
 
 /// Deserialize a spec JSON string with a field-path-annotated error.
@@ -172,62 +163,46 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn decode_value(encoded: &Bound<'_, PyAny>) -> PyResult<Value> {
-    let tuple = encoded.cast::<PyTuple>()?;
-    let tag: String = tuple.get_item(0)?.extract()?;
-    match tag.as_str() {
-        "a" => {
-            let dtype = DType::from_name(&tuple.get_item(1)?.extract::<String>()?)
-                .ok_or_else(|| PyValueError::new_err("unsupported array dtype".to_owned()))?;
-            let shape: Vec<i64> = tuple.get_item(2)?.extract()?;
-            let raw: Vec<u8> = tuple.get_item(3)?.extract()?;
-            // `Tensor::from_vec` validates that the byte length matches the
-            // shape and dtype, so a short or mismatched buffer is a clean
-            // error rather than a panic in the chunker.
-            let tensor = Tensor::from_vec(raw, shape, dtype)
-                .map_err(|err| PyValueError::new_err(format!("invalid array value: {err}")))?;
-            Ok(Value::Tensor(tensor))
-        }
-        "b" => {
-            let raw: Vec<u8> = tuple.get_item(1)?.extract()?;
-            let decoded = image::load_from_memory(&raw)
-                .map_err(|err| {
-                    PyValueError::new_err(format!("could not decode image bytes: {err}"))
-                })?
-                .to_rgb8();
-            let (width, height) = decoded.dimensions();
-            let tensor = Tensor::from_vec(
-                decoded.into_raw(),
-                vec![i64::from(height), i64::from(width), 3],
-                DType::Uint8,
-            )
-            .map_err(|err| PyValueError::new_err(format!("invalid decoded image: {err}")))?;
-            Ok(Value::Tensor(tensor))
-        }
-        "t" => Ok(Value::Text(tuple.get_item(1)?.extract()?)),
-        "n" => Ok(Value::Number(tuple.get_item(1)?.extract()?)),
-        "l" => {
-            let items = tuple.get_item(1)?;
-            let list = items.cast::<PyList>()?;
-            let mut out = Vec::with_capacity(list.len());
-            for item in list.iter() {
-                out.push(decode_value(&item)?);
-            }
-            Ok(Value::List(out))
-        }
-        "m" => {
-            let entries = tuple.get_item(1)?;
-            let dict = entries.cast::<PyDict>()?;
-            let mut out: BTreeMap<String, Value> = BTreeMap::new();
-            for (key, item) in dict.iter() {
-                out.insert(key.extract()?, decode_value(&item)?);
-            }
-            Ok(Value::Map(out))
-        }
-        other => Err(PyValueError::new_err(format!(
-            "unknown bridge value tag {other:?}"
-        ))),
+fn decode_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if let Some(tensor) = crate::spaces::extract_tensor(value)? {
+        return Ok(Value::Tensor(tensor.inner.clone()));
     }
+    if let Ok(text) = value.cast::<PyString>() {
+        return Ok(Value::Text(text.extract()?));
+    }
+    if let Ok(bytes) = value.cast::<PyBytes>() {
+        return Ok(Value::Bytes(bytes.as_bytes().to_vec()));
+    }
+    if value.cast::<PyBool>().is_ok() {
+        return Ok(Value::Number(f64::from(value.extract::<bool>()?)));
+    }
+    if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() {
+        return Ok(Value::Number(value.extract()?));
+    }
+    if let Ok(dict) = value.cast::<PyDict>() {
+        let mut out: BTreeMap<String, Value> = BTreeMap::new();
+        for (key, item) in dict.iter() {
+            out.insert(key.extract()?, decode_value(&item)?);
+        }
+        return Ok(Value::Map(out));
+    }
+    if let Ok(list) = value.cast::<PyList>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            out.push(decode_value(&item)?);
+        }
+        return Ok(Value::List(out));
+    }
+    if let Ok(tuple) = value.cast::<PyTuple>() {
+        let mut out = Vec::with_capacity(tuple.len());
+        for item in tuple.iter() {
+            out.push(decode_value(&item)?);
+        }
+        return Ok(Value::List(out));
+    }
+    Err(PyTypeError::new_err(
+        "unsupported adapter value type; expected Tensor, str, bytes, number, list, tuple, or dict",
+    ))
 }
 
 /// Decode only the top-level observation entries the adapter reads.
@@ -245,21 +220,13 @@ fn top_level_key(key: &str) -> &str {
 }
 
 fn decode_referenced_obs(
-    encoded: &Bound<'_, PyAny>,
+    value: &Bound<'_, PyAny>,
     referenced: &BTreeSet<String>,
 ) -> PyResult<BTreeMap<String, Value>> {
-    let tuple = encoded.cast::<PyTuple>()?;
-    let tag: String = tuple.get_item(0)?.extract()?;
-    if tag != "m" {
-        return Err(PyValueError::new_err(
-            "expected a mapping observation".to_owned(),
-        ));
-    }
     // Referenced keys may be dotted (nested Dict paths); decode the whole
     // top-level entry that contains each.
     let top_level: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
-    let entries = tuple.get_item(1)?;
-    let dict = entries.cast::<PyDict>()?;
+    let dict = value.cast::<PyDict>()?;
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
     for (key, value) in dict.iter() {
         let key: String = key.extract()?;
@@ -272,50 +239,23 @@ fn decode_referenced_obs(
 
 fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
-        Value::Tensor(tensor) => {
-            let shape = PyTuple::new(py, tensor.shape().iter())?;
-            let bytes = tensor.to_contiguous_bytes();
-            let data = PyBytes::new(py, &bytes);
-            Ok(PyTuple::new(
-                py,
-                [
-                    "a".into_pyobject(py)?.into_any(),
-                    tensor.dtype().name().into_pyobject(py)?.into_any(),
-                    shape.into_any(),
-                    data.into_any(),
-                ],
-            )?
-            .into_any())
-        }
-        Value::Text(text) => Ok(PyTuple::new(
-            py,
-            [
-                "t".into_pyobject(py)?.into_any(),
-                text.into_pyobject(py)?.into_any(),
-            ],
-        )?
-        .into_any()),
-        Value::Number(number) => Ok(PyTuple::new(
-            py,
-            [
-                "n".into_pyobject(py)?.into_any(),
-                number.into_pyobject(py)?.into_any(),
-            ],
-        )?
-        .into_any()),
+        Value::Tensor(tensor) => crate::spaces::wrap_native_tensor(py, tensor.clone()),
+        Value::Text(text) => Ok(text.into_pyobject(py)?.into_any()),
+        Value::Bytes(bytes) => Ok(PyBytes::new(py, bytes).into_any()),
+        Value::Number(number) => Ok(number.into_pyobject(py)?.into_any()),
         Value::List(items) => {
             let list = PyList::empty(py);
             for item in items {
                 list.append(encode_value(py, item)?)?;
             }
-            Ok(PyTuple::new(py, ["l".into_pyobject(py)?.into_any(), list.into_any()])?.into_any())
+            Ok(list.into_any())
         }
         Value::Map(entries) => {
             let dict = PyDict::new(py);
             for (key, item) in entries {
                 dict.set_item(key, encode_value(py, item)?)?;
             }
-            Ok(PyTuple::new(py, ["m".into_pyobject(py)?.into_any(), dict.into_any()])?.into_any())
+            Ok(dict.into_any())
         }
     }
 }
@@ -363,7 +303,7 @@ impl PyAdapterPlan {
             .collect()
     }
 
-    /// Apply the observation plans to a bridge-encoded observation map.
+    /// Apply the observation plans to a canonical value-tree observation map.
     ///
     /// Returns `{model_key: encoded_value}`; custom inputs are omitted
     /// (the caller fills them from the raw host observation).
@@ -384,7 +324,7 @@ impl PyAdapterPlan {
         Ok(out)
     }
 
-    /// Apply the action plan to a bridge-encoded model action.
+    /// Apply the action plan to a canonical value-tree model action.
     fn transform_action<'py>(
         &self,
         py: Python<'py>,

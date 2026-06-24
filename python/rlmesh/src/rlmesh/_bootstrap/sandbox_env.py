@@ -49,10 +49,18 @@ def main(
         spec["vectorization_mode"] = vectorization_mode
 
     try:
-        from rlmesh import EnvServer
+        from rlmesh import EnvServer, VectorEnvServer
         from rlmesh._server import EnvLike as ServedEnv
+        from rlmesh._server import VectorServerEnvLike as ServedVectorEnv
 
-        env = cast(ServedEnv, load_env_from_spec(spec))
+        raw_env = load_env_from_spec(spec)
+        num_envs_value = int(spec.get("num_envs") or 1)
+        if num_envs_value > 1:
+            server_cls = VectorEnvServer
+            env = cast(ServedVectorEnv, raw_env)
+        else:
+            server_cls = EnvServer
+            env = cast(ServedEnv, raw_env)
         # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
         # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
         # deprecated aliases read after the new names.
@@ -60,14 +68,14 @@ def main(
             "RLMESH_ENV_ADDRESS"
         )
         if address:
-            server = EnvServer(env, address)
+            server = server_cls(env, address)
         else:
             port = int(
                 os.environ.get("RLMESH_PORT")
                 or os.environ.get("RLMESH_ENV_PORT")
                 or "50051"
             )
-            server = EnvServer(env, host="0.0.0.0", port=port)
+            server = server_cls(env, host="0.0.0.0", port=port)
         print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()
         return 0

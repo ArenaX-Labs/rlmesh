@@ -118,7 +118,7 @@ impl SmokeEnv {
 }
 
 #[async_trait]
-impl crate::SingleEnv for SmokeEnv {
+impl crate::Env for SmokeEnv {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         &self.obs_space
     }
@@ -228,7 +228,7 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
         let reset_seeds = Arc::new(Mutex::new(Vec::new()));
         let env = SmokeEnv::recording(Arc::clone(&reset_seeds));
         // Bind first so the listener is accepting before run_local connects.
-        let bound = crate::EnvServer::new(crate::SingleEnvAdapter::new(env))
+        let bound = crate::EnvServer::new(env)
             .bind(BindAddress::Tcp {
                 host: "127.0.0.1".to_string(),
                 port: 0,
@@ -629,7 +629,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     let env_server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(rlmesh_grpc::env::env_service(
-                crate::env::WireEnvAdapter::new(crate::SingleEnvAdapter::new(SmokeEnv::new())),
+                crate::env::WireEnvAdapter::new(crate::env::ScalarEnvAdapter::new(SmokeEnv::new())),
             ))
             .serve_with_incoming(TcpListenerStream::new(listener))
             .await

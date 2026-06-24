@@ -71,12 +71,9 @@ impl PySpaceSpec {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "SpaceSpec(kind={:?}, shape={:?}, dtype={:?})",
-            self.kind(),
-            self.inner.shape,
-            self.dtype()
-        )
+        // Gymnasium-style spec rendering, e.g. `Box(-1.0, 1.0, (3,), float32)`
+        // or `Discrete(4, start=-1)` (rlmesh_spaces::Display for SpaceSpec).
+        self.inner.to_string()
     }
 }
 
@@ -262,12 +259,8 @@ impl PySpace {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "Space(kind={:?}, shape={:?}, dtype={:?})",
-            self.kind(),
-            self.spec.shape,
-            self.dtype()
-        )
+        // Mirror the spec's Gymnasium-style rendering (see PySpaceSpec).
+        self.spec.to_string()
     }
 }
 

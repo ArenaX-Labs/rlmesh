@@ -9,8 +9,9 @@
 //!
 //! Most deployments have one environment server and one model worker.
 //!
-//! - **Serve an environment.** Implement [`Env`] for vectorized environments,
-//!   or [`SingleEnv`] for a single environment, then host it with [`EnvServer`].
+//! - **Serve an environment.** Implement [`Env`] for one environment and host
+//!   it with [`EnvServer`]. Implement [`VectorEnv`] and use
+//!   [`VectorEnvServer`] only for an explicit local batching fast path.
 //!
 //! - **Drive or serve a model.** Implement [`ModelHandler`], then run it against
 //!   a remote environment with [`ModelWorker::run_local`] or serve it as an
@@ -48,7 +49,6 @@
 //! impl Env for MyEnv {
 //!     fn observation_space(&self) -> &SpaceSpec { &self.observation_space }
 //!     fn action_space(&self) -> &SpaceSpec { &self.action_space }
-//!     fn num_envs(&self) -> usize { 1 }
 //!     fn env_contract(&self) -> &EnvContract { &self.contract }
 //!
 //!     // Env methods use the two-arg std::result::Result form.
@@ -118,13 +118,14 @@ mod error;
 pub mod model;
 pub mod prelude;
 pub mod serve_options;
-mod single;
 pub mod spaces;
 
 pub use address::{BindAddress, ConnectAddress};
 pub use env::{
     BoundEnvServer, CloseRequest, CloseResult, Env, EnvServer, EpisodeMetadata, RemoteEnv,
-    RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest, StepResult,
+    RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest,
+    StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
+    VectorResetResult, VectorStepRequest, VectorStepResult,
 };
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
@@ -135,7 +136,6 @@ pub use model::{
 #[doc(no_inline)]
 pub use rlmesh_runtime::RuntimeReport;
 pub use serve_options::ServeOptions;
-pub use single::{SingleEnv, SingleEnvAdapter};
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 
 #[cfg(test)]

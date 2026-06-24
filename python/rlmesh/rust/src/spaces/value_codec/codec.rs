@@ -6,7 +6,7 @@ use rlmesh_spaces::spaces::{SpaceKind, SpaceSpec};
 use rlmesh_spaces::{Conformance, DType, Scalar, SpaceValue, Tensor, conform};
 
 use super::ValueBackend;
-use super::metadata::normalize_py_value;
+use super::normalization::normalize_space_value_input;
 use crate::spaces::tensor::{extract_tensor, make_tensor, wrap_native_tensor};
 use crate::spaces::utils::dtype_name;
 
@@ -171,7 +171,7 @@ fn py_any_to_space_value_unchecked(
             })?,
         ),
         Some(SpaceKind::Discrete(_)) => {
-            let normalized = normalize_py_value(value)?;
+            let normalized = normalize_space_value_input(value)?;
             let value = if let Ok(flag) = normalized.extract::<bool>() {
                 i64::from(flag)
             } else if let Ok(number) = normalized.extract::<i64>() {
@@ -198,10 +198,10 @@ fn py_any_to_space_value_unchecked(
             SpaceValue::MultiDiscrete(decode_i64_sequence_bytes(&bytes, space.dtype)?)
         }
         Some(SpaceKind::Text(_)) => {
-            SpaceValue::Text(normalize_py_value(value)?.extract::<String>()?)
+            SpaceValue::Text(normalize_space_value_input(value)?.extract::<String>()?)
         }
         Some(SpaceKind::Dict(spec)) => {
-            let normalized = normalize_py_value(value)?;
+            let normalized = normalize_space_value_input(value)?;
             let dict = normalized.cast::<PyDict>()?;
             let mut values = BTreeMap::new();
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {

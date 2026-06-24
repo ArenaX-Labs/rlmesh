@@ -41,16 +41,27 @@ pub(super) fn apply_image(
 /// into `[0, 255]` (a `[0, 1]` image is scaled, a `[0, 255]` image passes
 /// through), so it is neither floored to black nor saturated to white.
 pub fn decode_image(value: &Value, src_range: Option<(f64, f64)>) -> Result<Tensor, ApplyError> {
-    let Value::Tensor(tensor) = value else {
-        return Err(ApplyError::new(
-            "expected an image array observation value (encoded image bytes \
-             are a binding-level concern)"
-                .to_owned(),
-        ));
+    let tensor = match value {
+        Value::Tensor(tensor) => tensor.clone(),
+        Value::Bytes(raw) => {
+            let decoded = image::load_from_memory(raw)
+                .map_err(|err| ApplyError::new(format!("could not decode image bytes: {err}")))?
+                .to_rgb8();
+            let (width, height) = decoded.dimensions();
+            value::tensor_from_u8(
+                vec![i64::from(height), i64::from(width), 3],
+                decoded.into_raw(),
+            )
+        }
+        _ => {
+            return Err(ApplyError::new(
+                "expected an image array observation value or encoded image bytes".to_owned(),
+            ));
+        }
     };
     Ok(value::tensor_from_u8(
         tensor.shape().to_vec(),
-        value::to_u8_pixels(tensor, src_range),
+        value::to_u8_pixels(&tensor, src_range),
     ))
 }
 
@@ -275,6 +286,7 @@ pub fn add_lead_dims(tensor: Tensor, count: u32) -> Tensor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageEncoder;
 
     #[test]
     fn decode_scales_unit_float_images_instead_of_truncating() {
@@ -312,6 +324,25 @@ mod tests {
         let image = Value::Tensor(value::tensor_from_u8(vec![1, 1, 3], vec![10, 20, 30]));
         let decoded = decode_image(&image, Some((0.0, 255.0))).expect("decode");
         assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30]);
+    }
+
+    #[test]
+    fn encoded_image_bytes_decode_to_rgb_tensor() {
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&[10, 20, 30], 1, 1, image::ColorType::Rgb8.into())
+            .expect("encode png");
+
+        let decoded = decode_image(&Value::Bytes(encoded), None).expect("decode");
+
+        assert_eq!(decoded.shape(), &[1, 1, 3]);
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30]);
+    }
+
+    #[test]
+    fn invalid_encoded_image_bytes_are_rejected() {
+        let err = decode_image(&Value::Bytes(b"not an image".to_vec()), None).unwrap_err();
+        assert!(err.message.contains("could not decode image bytes"));
     }
 
     #[test]

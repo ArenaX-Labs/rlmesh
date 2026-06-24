@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from .._spec._core import DELEGATED, ArtifactInput
+from .._value_conversion import from_value
 
 if TYPE_CHECKING:
     from .._framework_bridge import ValueBridge
@@ -174,9 +175,12 @@ def _run_episode(
     terminated = truncated = False
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
         if adapter is not None:
-            # The adapter codec speaks numpy; re-key it into the model's framework
-            # so a torch/jax/native predict gets its own value type, not ndarrays.
-            payload = _to_framework(adapter.transform_obs(obs), bridge)
+            payload = from_value(
+                adapter.transform_obs_value(
+                    obs, input_bridge=bridge, custom_bridge=bridge
+                ),
+                bridge,
+            )
         else:
             payload = obs
         if instruction is not None and isinstance(payload, dict):
@@ -186,7 +190,10 @@ def _run_episode(
                 payload[key] = instruction
         action = predict(payload)
         if adapter is not None:
-            action = adapter.transform_action(_to_numpy(action, bridge))
+            action = from_value(
+                adapter.transform_action_value(action, action_bridge=bridge),
+                bridge,
+            )
         obs, reward, terminated, truncated, _info = client.step(action)
         total += float(reward)
         steps += 1
@@ -247,9 +254,14 @@ def adapted_predict(
     """
     if adapter is None:
         return predict(observation)
-    payload = _to_framework(adapter.transform_obs(observation), bridge)
+    payload = from_value(
+        adapter.transform_obs_value(
+            observation, input_bridge=bridge, custom_bridge=bridge
+        ),
+        bridge,
+    )
     action = predict(payload)
-    return adapter.transform_action(_to_numpy(action, bridge))
+    return from_value(adapter.transform_action_value(action, action_bridge=bridge), bridge)
 
 
 def _resolve_adapter(
@@ -295,29 +307,6 @@ def _reject_vector_env(contract: EnvContract | None) -> None:
             f"Model.run() drives a single env, but the env reports num_envs={num_envs}; "
             "use num_envs=1 (the per-episode loop reads scalar reward/termination)."
         )
-
-
-def _to_framework(payload: Any, bridge: ValueBridge | None) -> Any:
-    """Re-key the adapter's numpy payload into the model's framework values.
-
-    The adapter codec always decodes to numpy; a torch/jax/native predict must
-    receive its own value type. A numpy model already matches, so skip the
-    round-trip; otherwise go numpy -> Value -> framework.
-    """
-    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
-
-    if bridge is None or bridge is _numpy_bridge:
-        return payload
-    return bridge.decode(_numpy_bridge.encode(payload))
-
-
-def _to_numpy(action: Any, bridge: ValueBridge | None) -> Any:
-    """Convert the model's action back to numpy for the adapter (inverse of above)."""
-    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
-
-    if bridge is None or bridge is _numpy_bridge:
-        return action
-    return _numpy_bridge.decode(bridge.encode(action))
 
 
 def coerce_model(

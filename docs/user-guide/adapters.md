@@ -1,14 +1,10 @@
 # Adapters
 
-```{note}
-`rlmesh.adapters` is **experimental**: it may change or disappear. Pin versions; see {doc}`/compatibility`.
-```
-
 `rlmesh.adapters` derives a model-to-environment IO adapter at runtime from two declarations: an environment tags its observation and action spaces, a model specifies the payload it ingests, and {func}`~rlmesh.adapters.resolve` matches them by role. This replaces most of the per-(model, environment) adapter code you would otherwise write by hand; cases the declarative specs do not cover fall back to an escape hatch (see Known limitations).
 
 The two sides of an eval connect through it: an environment publishes tags, a model declares a spec, and `resolve` bridges them.
 
-It is opt-in. Nothing here is imported by the core Gymnasium loop, and it needs the NumPy backend (`pip install "rlmesh[numpy]"`).
+It is opt-in. Nothing here is imported by the core Gymnasium loop. Direct adapter calls and the examples below use the NumPy backend (`pip install "rlmesh[numpy]"`); model runtime paths use the active RLMesh backend.
 
 ## Tag the environment
 

@@ -231,6 +231,27 @@ def test_smolvla_obs_matches_bespoke_adapter():
     assert payload["instruction"] == "pick up the bowl"
 
 
+def test_adapter_value_path_uses_native_tensor_leaves():
+    from rlmesh._rlmesh import Tensor
+    from rlmesh.numpy import _numpy_bridge
+
+    obs = make_obs()
+    adapter = resolve(LIBERO_ENV, SMOLVLA)
+    payload = adapter.transform_obs_value(
+        obs, input_bridge=_numpy_bridge, custom_bridge=_numpy_bridge
+    )
+
+    assert isinstance(payload["observation.images.image"], Tensor)
+    assert isinstance(payload["observation.images.image2"], Tensor)
+    assert payload["instruction"] == "pick up the bowl"
+
+    action = adapter.transform_action_value(
+        np.array([0.1, -0.2, 0.3, 0.4, -0.5, 0.6, 0.7], dtype=np.float32),
+        action_bridge=_numpy_bridge,
+    )
+    assert isinstance(action, Tensor)
+
+
 def test_smolvla_omits_missing_instruction():
     obs = make_obs()
     del obs["instruction"]
@@ -796,6 +817,24 @@ def test_undecodable_image_bytes_is_an_error():
     )
     with pytest.raises(ValueError, match="could not decode image bytes"):
         resolve(env, spec).transform_obs({"rgb": b"not an image"})
+
+
+def test_bytes_are_rejected_for_non_image_adapter_inputs():
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"state": adapt.StateTag(role=adapt.EEF_POS)},
+            action=SMOLVLA.action,
+        ),
+        obs_space=gym.spaces.Dict({"state": box(3)}),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
+        action=SMOLVLA.action,
+    )
+
+    with pytest.raises(ValueError, match="bytes values are only valid"):
+        resolve(env, spec).transform_obs({"state": b"not an image"})
 
 
 def test_bilinear_resize_preserves_constant_images():
@@ -1406,11 +1445,12 @@ def test_negative_u32_fields_rejected_by_rust_codec() -> None:
         )
 
 
-def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
-    from rlmesh.adapters.helpers.codec import encode_value
+def test_value_bridge_encodes_numpy_bool_scalar_as_python_bool() -> None:
+    from rlmesh._value_conversion import to_value
+    from rlmesh.numpy import _numpy_bridge
 
-    assert encode_value(np.bool_(True)) == ("n", 1.0)
-    assert encode_value(np.bool_(False)) == ("n", 0.0)
+    assert to_value(np.bool_(True), _numpy_bridge) is True
+    assert to_value(np.bool_(False), _numpy_bridge) is False
 
 
 # ---------------------------------------------------------------------------

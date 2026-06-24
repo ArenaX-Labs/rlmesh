@@ -7,11 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from ._client import Transport, normalize_bind_address
 from .specs import EnvContract
-from .types import EnvLike as BaseEnvLike
-from .types import VectorEnvLike
+from .types import EnvLike, VectorEnvLike
 
 try:
-    from rlmesh._rlmesh import PyEnvServer
+    from rlmesh._rlmesh import PyEnvServer, PyVectorEnvServer
 except ImportError as e:
     raise ImportError("Failed to import _rlmesh native module.") from e
 
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 
     from .adapters import EnvTags
 
-EnvLike = BaseEnvLike[Any, Any] | VectorEnvLike[Any, Any, Any]
+VectorServerEnvLike = VectorEnvLike[Any, Any, Any]
 
 
 class EnvServer:
@@ -68,7 +67,7 @@ class EnvServer:
 
     def __init__(
         self,
-        env: EnvLike,
+        env: EnvLike[Any, Any],
         address: str | None = None,
         *,
         host: str | None = None,
@@ -151,4 +150,37 @@ class EnvServer:
         self.shutdown()
 
 
-__all__ = ["EnvLike", "EnvServer"]
+class VectorEnvServer(EnvServer):
+    """Serves an explicitly vectorized RLMesh-compatible environment."""
+
+    def __init__(
+        self,
+        env: VectorServerEnvLike,
+        address: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        path: str | None = None,
+        transport: Transport | None = None,
+        options: ServeOptions | None = None,
+        tags: EnvTags | None = None,
+    ) -> None:
+        if tags is not None:
+            from .adapters import tag
+
+            env = tag(env, tags)
+        normalized_address = normalize_bind_address(
+            address,
+            host=host,
+            port=port,
+            path=path,
+            transport=transport,
+        )
+        self._server: PyVectorEnvServer = PyVectorEnvServer(
+            env=env,
+            address=normalized_address,
+            options=options,
+        )
+
+
+__all__ = ["EnvLike", "EnvServer", "VectorEnvServer", "VectorServerEnvLike"]

@@ -12,6 +12,7 @@ EXPECTED_NATIVE_EXPORTS = [
     "PyEnvServer",
     "PyModel",
     "PyVectorEnvClient",
+    "PyVectorEnvServer",
     "RLMeshException",
     "ServeOptions",
     "Space",

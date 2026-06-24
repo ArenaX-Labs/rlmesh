@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rlmesh::{
-    CloseResult as EnvCloseResult, Env as RLMeshEnv, ResetRequest as EnvResetRequest,
-    ResetResult as EnvResetResult, StepRequest as EnvStepRequest, StepResult as EnvStepResult,
+    Env as RLMeshEnv, VectorCloseResult as EnvCloseResult, VectorEnv as RLMeshVectorEnv,
+    VectorResetRequest as EnvResetRequest, VectorResetResult as EnvResetResult,
+    VectorStepRequest as EnvStepRequest, VectorStepResult as EnvStepResult,
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
@@ -278,10 +279,27 @@ impl PyEnvironment {
     }
 }
 
-pub fn build_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
+pub fn build_scalar_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
     let env = PyEnvironment::new(env)?;
     if env.uses_single_env_api() {
         Ok(PyServerEnv::Single(PySingleEnv(env)))
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "EnvServer serves one environment. Use VectorEnvServer for vectorized environments.",
+        ))
+    }
+}
+
+pub fn build_vector_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
+    let env = PyEnvironment::new(env)?;
+    if env.uses_single_env_api() {
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "VectorEnvServer requires a vectorized environment. Use EnvServer for one environment.",
+        ))
+    } else if env.num_envs < 2 {
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "VectorEnvServer requires num_envs >= 2",
+        ))
     } else {
         Ok(PyServerEnv::Vector(PyVectorEnv(env)))
     }
@@ -834,75 +852,50 @@ impl RLMeshEnv for PySingleEnv {
         &self.0.action_space
     }
 
-    fn num_envs(&self) -> usize {
-        1
-    }
-
     fn env_contract(&self) -> &EnvContract {
         &self.0.env_contract
     }
 
-    async fn reset(&mut self, req: EnvResetRequest) -> Result<EnvResetResult, EnvRuntimeError> {
-        let result = self
-            .0
-            .reset_single(SingleResetRequest {
-                seed: req.seeds.first().copied(),
-                options: req.options,
-                timeout_ms: req.timeout_ms,
-            })
+    async fn reset(
+        &mut self,
+        req: SingleResetRequest,
+    ) -> Result<SingleResetResult, EnvRuntimeError> {
+        self.0
+            .reset_single(req)
             .await
-            .map_err(env_error_to_runtime_error)?;
-
-        Ok(EnvResetResult {
-            observations: result.observation.into_iter().collect(),
-            info: result.info,
-            episode_ids: result.episode_id.into_iter().collect(),
-        })
+            .map_err(env_error_to_runtime_error)
     }
 
-    async fn step(&mut self, req: EnvStepRequest) -> Result<EnvStepResult, EnvRuntimeError> {
-        let action = req.actions.into_iter().next();
-        let result = self
-            .0
-            .step_single(SingleStepRequest {
-                action,
-                timeout_ms: req.timeout_ms,
-            })
+    async fn step(&mut self, req: SingleStepRequest) -> Result<SingleStepResult, EnvRuntimeError> {
+        self.0
+            .step_single(req)
             .await
-            .map_err(env_error_to_runtime_error)?;
-
-        Ok(EnvStepResult {
-            observations: result.observation.into_iter().collect(),
-            rewards: vec![result.reward],
-            terminated: vec![result.terminated],
-            truncated: vec![result.truncated],
-            info: result.info,
-            completed_episodes: vec![],
-            episode_ids: vec![],
-        })
+            .map_err(env_error_to_runtime_error)
     }
 
-    async fn render(&mut self, req: RenderRequest) -> Result<RenderResult, EnvRuntimeError> {
+    async fn render(
+        &mut self,
+        req: SingleRenderRequest,
+    ) -> Result<SingleRenderResult, EnvRuntimeError> {
         self.0
             .render_single(req)
             .await
             .map_err(env_error_to_runtime_error)
     }
 
-    async fn close(&mut self, req: CloseRequest) -> Result<EnvCloseResult, EnvRuntimeError> {
-        let _ = self
-            .0
+    async fn close(
+        &mut self,
+        req: SingleCloseRequest,
+    ) -> Result<SingleCloseResult, EnvRuntimeError> {
+        self.0
             .close_single(req)
             .await
-            .map_err(env_error_to_runtime_error)?;
-        Ok(EnvCloseResult {
-            final_episodes: vec![],
-        })
+            .map_err(env_error_to_runtime_error)
     }
 }
 
 #[async_trait]
-impl RLMeshEnv for PyVectorEnv {
+impl RLMeshVectorEnv for PyVectorEnv {
     fn observation_space(&self) -> &SpaceSpec {
         &self.0.observation_space
     }

@@ -4,14 +4,13 @@
 //! facade surface stays curated and the two request families do not collide:
 //!
 //! - The crate-root [`crate::ResetRequest`] / [`crate::StepRequest`] (and their
-//!   results) are the **vectorized env-layer** requests (`seeds: Vec`,
-//!   `actions: Vec`, batched observations) used by [`crate::RemoteEnv`].
-//! - The **single-env** request family lives under [`request`]
-//!   (`rlmesh::spaces::request::ResetRequest`, ...) and is what the
-//!   [`crate::SingleEnv`] trait consumes.
+//!   results) are the scalar env requests used by [`crate::Env`] and
+//!   [`crate::RemoteEnv`].
+//! - The vectorized env request family is exported under explicit
+//!   `Vector*` names such as [`crate::VectorResetRequest`].
 //!
-//! Keeping the single-env family namespaced under `request` removes the
-//! same-named `rlmesh::ResetRequest` vs `rlmesh::spaces::ResetRequest` clash.
+//! Keeping the lower-level request family namespaced under `request` makes the
+//! scalar facade the default without flattening every transport type.
 
 // Namespaced submodules. The single-env request family is reached via
 // `rlmesh::spaces::request::{ResetRequest, StepRequest, ResetResult, ...}`.
@@ -19,10 +18,9 @@ pub use rlmesh_spaces::{dtype, errors, meta, render, request, scalar, spaces, te
 
 pub use rlmesh_spaces::errors::{EnvRuntimeError, SpaceError};
 
-// Curated flat re-exports. Note we intentionally do NOT flatten the single-env
-// request family (ResetRequest/StepRequest/ResetResult/StepResult/CloseResult)
-// here — use `request::*` for those — but `CloseRequest`, `RenderRequest`, and
-// `RenderFrame`/`RenderResult` are shared with the env layer and re-exported.
+// Curated flat re-exports. Note we intentionally do NOT flatten the request
+// family here — use `request::*` for those — but `CloseRequest`,
+// `RenderRequest`, and `RenderFrame`/`RenderResult` are shared and re-exported.
 pub use rlmesh_spaces::dtype::{DType, dtype_size};
 pub use rlmesh_spaces::meta::{MetaMap, MetaValue};
 pub use rlmesh_spaces::render::{BinaryPayload, RenderFrame, RenderRequest, RenderResult};

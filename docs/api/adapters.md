@@ -1,14 +1,10 @@
 # Adapters
 
-```{note}
-`rlmesh.adapters` is **experimental**: it may change or disappear. Pin versions; see {doc}`/compatibility`.
-```
-
 `rlmesh.adapters` derives the preprocessing and postprocessing between an environment and a model from declarative descriptions, instead of a hand-written adapter per pair.
 
 The split is asymmetric. An environment tags its observation and action spaces: it names the semantic role of each entry plus the few facts the spaces cannot carry (image layout, rotation encoding, an explicit value range). A model fully specifies the payload it ingests and the action it emits. {func}`~rlmesh.adapters.resolve` matches the two by role and produces an {class}`~rlmesh.adapters.Adapter`; widths, dtypes, and keys come from the gymnasium spaces. See {doc}`../user-guide/adapters` for a guided walkthrough.
 
-Install it with the NumPy backend:
+Install the NumPy backend for direct adapter calls and the examples below:
 
 ```bash
 pip install "rlmesh[numpy]"

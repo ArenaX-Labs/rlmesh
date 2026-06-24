@@ -93,6 +93,7 @@ fn dec(value: &Json) -> Value {
 fn enc(value: &Value) -> Json {
     match value {
         Value::Text(text) => json!({"kind": "text", "data": text}),
+        Value::Bytes(_) => panic!("bytes have no conformance vector encoding"),
         Value::Number(number) => panic!("bare number {number} has no vector encoding"),
         Value::List(items) => json!({
             "kind": "list",

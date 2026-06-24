@@ -48,7 +48,7 @@ impl CounterEnv {
 }
 
 #[async_trait::async_trait]
-impl SingleEnv for CounterEnv {
+impl Env for CounterEnv {
     fn observation_space(&self) -> &SpaceSpec {
         &self.observation_space
     }
@@ -61,24 +61,18 @@ impl SingleEnv for CounterEnv {
         &self.contract
     }
 
-    async fn reset(
-        &mut self,
-        _req: spaces::request::ResetRequest,
-    ) -> Result<spaces::request::ResetResult, EnvRuntimeError> {
+    async fn reset(&mut self, _req: ResetRequest) -> Result<ResetResult, EnvRuntimeError> {
         self.step = 0;
-        Ok(spaces::request::ResetResult {
+        Ok(ResetResult {
             observation: Some(SpaceValue::Discrete(self.step)),
             info: None,
             episode_id: None,
         })
     }
 
-    async fn step(
-        &mut self,
-        _req: spaces::request::StepRequest,
-    ) -> Result<spaces::request::StepResult, EnvRuntimeError> {
+    async fn step(&mut self, _req: StepRequest) -> Result<StepResult, EnvRuntimeError> {
         self.step += 1;
-        Ok(spaces::request::StepResult {
+        Ok(StepResult {
             observation: Some(SpaceValue::Discrete(self.step % 5)),
             reward: 1.0,
             terminated: self.step >= 3,
@@ -94,11 +88,8 @@ impl SingleEnv for CounterEnv {
         Ok(spaces::RenderResult::default())
     }
 
-    async fn close(
-        &mut self,
-        _req: spaces::CloseRequest,
-    ) -> Result<spaces::request::CloseResult, EnvRuntimeError> {
-        Ok(spaces::request::CloseResult)
+    async fn close(&mut self, _req: spaces::CloseRequest) -> Result<CloseResult, EnvRuntimeError> {
+        Ok(CloseResult)
     }
 }
 
@@ -108,9 +99,8 @@ async fn main() -> rlmesh::Result<()> {
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:5555".to_string());
 
-    // Bind first so the resolved address is known before serving, then host the
-    // single env as a one-element vectorized server.
-    let server = EnvServer::new(SingleEnvAdapter::new(CounterEnv::new()))
+    // Bind first so the resolved address is known before serving.
+    let server = EnvServer::new(CounterEnv::new())
         .bind(BindAddress::parse(&address)?)
         .await?;
     println!("serving CounterEnv on {}", server.local_addr());

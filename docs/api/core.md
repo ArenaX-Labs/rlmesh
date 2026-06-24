@@ -6,7 +6,8 @@ The top-level client and model classes are dependency-free wrappers around RLMes
 
 | Import                    | Description                                                       |
 | ------------------------- | ----------------------------------------------------------------- |
-| `rlmesh.EnvServer`        | Serve a Gymnasium-compatible environment endpoint.                |
+| `rlmesh.EnvServer`        | Serve one Gymnasium-compatible environment endpoint.              |
+| `rlmesh.VectorEnvServer`  | Serve an explicit vector environment endpoint.                    |
 | `rlmesh.RemoteEnv`        | Connect to one environment and preserve RLMesh-native values.     |
 | `rlmesh.RemoteVectorEnv`  | Connect to a vector endpoint and preserve RLMesh-native values.   |
 | `rlmesh.SandboxEnv`       | Build an env image and own the container behind a single client.  |

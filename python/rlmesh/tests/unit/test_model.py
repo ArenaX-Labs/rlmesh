@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -87,23 +87,27 @@ def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
     _reject_vector_env(None)  # an env with no contract is fine
 
 
-def test_to_framework_rekeys_adapter_numpy_payload() -> None:
+def test_rekey_value_converts_between_framework_backends() -> None:
     torch = pytest.importorskip("torch")
     import numpy as np
-    from rlmesh._models._eval import _to_framework, _to_numpy
+    from rlmesh._value_conversion import rekey_value
     from rlmesh.numpy import _numpy_bridge
     from rlmesh.torch import _torch_bridge
 
     payload = {"image": np.zeros((2, 2), dtype="float32")}
-    framework = _to_framework(payload, _torch_bridge)
+    framework = cast(
+        "dict[str, object]",
+        rekey_value(
+            payload, source_bridge=_numpy_bridge, target_bridge=_torch_bridge
+        ),
+    )
     assert isinstance(framework["image"], torch.Tensor)
 
-    # A numpy model already matches, so the round-trip is skipped entirely.
-    assert _to_framework(payload, _numpy_bridge) is payload
-    assert _to_framework(payload, None) is payload
-
-    # The action the model returns is converted back to numpy for the adapter.
-    np_action = _to_numpy(torch.tensor([1.0, 2.0]), _torch_bridge)
+    np_action = rekey_value(
+        torch.tensor([1.0, 2.0]),
+        source_bridge=_torch_bridge,
+        target_bridge=_numpy_bridge,
+    )
     assert isinstance(np_action, np.ndarray)
     assert np_action.tolist() == [1.0, 2.0]
 

@@ -13,8 +13,8 @@ rlmesh = "0.1.0-rc.2"
 
 ## What it provides
 
-- The `Env` and `SingleEnv` traits and the `SingleEnvAdapter` struct for environment bindings.
-- `EnvServer` and `RemoteEnv` for serving and connecting to environments.
+- The scalar `Env` trait and explicit `VectorEnv` trait for environment bindings.
+- `EnvServer` / `RemoteEnv` and `VectorEnvServer` / `RemoteVectorEnv` for serving and connecting to environments.
 - `ModelWorker` for model-side workflows.
 - Re-exported space, value, lifecycle, and error types used by the SDK.
 

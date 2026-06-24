@@ -291,8 +291,15 @@ def assert_connect_rejected_with_value_error(address: str, pattern: str) -> None
 def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
     import rlmesh
 
+    server_cls = (
+        rlmesh.VectorEnvServer
+        if hasattr(env, "num_envs")
+        or hasattr(env, "single_observation_space")
+        or hasattr(env, "single_action_space")
+        else rlmesh.EnvServer
+    )
     try:
-        return rlmesh.EnvServer(
+        return server_cls(
             cast("ServedEnv", env),
             host="127.0.0.1",
             port=0,
@@ -302,6 +309,13 @@ def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
         if "Operation not permitted" in str(exc):
             pytest.skip("local tcp bind is not permitted in this environment")
         raise
+
+
+def test_env_server_rejects_vector_env_shape() -> None:
+    import rlmesh
+
+    with pytest.raises(TypeError, match="Use VectorEnvServer"):
+        rlmesh.EnvServer(TinyVectorEnv(), host="127.0.0.1", port=0)
 
 
 def test_remote_close_detaches_without_stopping_endpoint() -> None:
@@ -673,31 +687,14 @@ def test_env_server_wait_rejects_invalid_timeout(timeout: float) -> None:
     assert env.close_calls == 1
 
 
-def test_remote_env_accepts_one_env_vector_endpoint() -> None:
+def test_vector_env_server_rejects_one_env_vector_endpoint() -> None:
     import rlmesh
 
     _ = pytest.importorskip("numpy")
 
     env = TinyOneVectorEnv()
-    server = env_server(env)
-    server.start()
-    try:
-        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
-        try:
-            observation, info = remote.reset(seed=123)
-            assert observation == 0
-            assert info["seed"] == 123
-
-            observation, reward, terminated, truncated, _info = remote.step(0)
-            assert observation == 1
-            assert reward == 1.0
-            assert terminated is False
-            assert truncated is False
-            assert env.last_actions_shape == (1,)
-        finally:
-            remote.close()
-    finally:
-        server.shutdown()
+    with pytest.raises(ValueError, match="num_envs >= 2"):
+        rlmesh.VectorEnvServer(env, host="127.0.0.1", port=0)
 
 
 def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
@@ -725,30 +722,12 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     assert env.close_calls == 1
 
 
-def test_remote_vector_env_keeps_one_env_action_batch_shape() -> None:
-    import numpy as np
-    from rlmesh import numpy as rlmesh_numpy
+def test_env_server_rejects_one_env_vector_shape() -> None:
+    import rlmesh
 
     env = TinyOneVectorEnv()
-    server = env_server(env)
-    server.start()
-    try:
-        remote = connect_with_retry(rlmesh_numpy.RemoteVectorEnv, server.address)
-        try:
-            observations, info = remote.reset(seed=123)
-            assert observations == [0]
-            assert info["seed"] == 123
-
-            observations, rewards, terminated, truncated, _info = remote.step([0])
-            assert observations == [1]
-            np.testing.assert_array_equal(rewards, np.asarray([1.0]))
-            np.testing.assert_array_equal(terminated, np.asarray([False]))
-            np.testing.assert_array_equal(truncated, np.asarray([False]))
-            assert env.last_actions_shape == (1,)
-        finally:
-            remote.close()
-    finally:
-        server.shutdown()
+    with pytest.raises(TypeError, match="Use VectorEnvServer"):
+        rlmesh.EnvServer(env, host="127.0.0.1", port=0)
 
 
 def test_remote_vector_space_properties_load_from_contract() -> None:

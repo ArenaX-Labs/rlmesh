@@ -55,6 +55,9 @@ pub fn numeric_vector(value: &Value) -> Result<Vec<f32>, ApplyError> {
             };
             numeric_vector(data)
         }
+        Value::Bytes(_) => Err(ApplyError::new(
+            "bytes values are only valid for image adapter inputs".to_owned(),
+        )),
         Value::Text(_) => Err(ApplyError::new(
             "expected a numeric value, got text".to_owned(),
         )),

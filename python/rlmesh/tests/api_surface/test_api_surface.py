@@ -18,6 +18,7 @@ def test_root_namespace_is_small() -> None:
         "SandboxVectorEnv",
         "ServeOptions",
         "Tensor",
+        "VectorEnvServer",
         "__version__",
         "adapters",
         "hf_load",

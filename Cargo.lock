@@ -1524,6 +1524,7 @@ dependencies = [
 name = "rlmesh-adapters"
 version = "0.1.0-rc.2"
 dependencies = [
+ "image",
  "rlmesh-spaces",
  "serde",
  "serde_json",
@@ -1578,7 +1579,6 @@ name = "rlmesh-python"
 version = "0.1.0-rc.2"
 dependencies = [
  "async-trait",
- "half",
  "image",
  "pyo3",
  "pyo3-build-config",

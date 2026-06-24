@@ -1,4 +1,4 @@
-"""Generalized env-to-model adapters (experimental).
+"""Generalized env-to-model adapters.
 
 Instead of writing one bespoke adapter per environment/model pair,
 environments *tag* their observation and action spaces once with
@@ -50,8 +50,9 @@ conformance vectors shipped with that crate. This package keeps the
 host-language half: spec construction and serialization, entrypoint trust
 gating, custom callables, and the custom-adapter base class.
 
-This package requires NumPy (install ``rlmesh[numpy]``). Encoded image
-bytes (PNG/JPEG) in observations are decoded natively -- no Pillow.
+Direct adapter calls use the NumPy backend (install ``rlmesh[numpy]``).
+Model runtime paths use the active RLMesh backend. Encoded image bytes
+(PNG/JPEG) in observations are decoded natively -- no Pillow.
 """
 
 from .adapter import Adapter, AdapterBase

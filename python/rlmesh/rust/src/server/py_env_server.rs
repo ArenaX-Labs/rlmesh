@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh::env::WireEnvAdapter;
+use rlmesh::env::{ScalarEnvAdapter, WireEnvAdapter};
 use rlmesh::{BindAddress, ServeOptions};
 use rlmesh_grpc::env::{Environment, env_service_from_shared};
 use rlmesh_grpc::lifecycle::{
@@ -24,7 +24,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 #[cfg(unix)]
 use tokio_stream::wrappers::UnixListenerStream;
 
-use super::py_environment::{PyServerEnv, build_server_env};
+use super::py_environment::{PyServerEnv, build_scalar_server_env, build_vector_server_env};
 use crate::lifecycle::PyServeOptions;
 use crate::spaces::env_contract_to_py;
 use crate::types::to_py_err;
@@ -71,10 +71,10 @@ pub struct PyEnvServer {
 #[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
 #[pymethods]
-impl PyEnvServer {
-    /// Create a new RLMesh environment server.
+impl PyVectorEnvServer {
+    /// Create a new vectorized RLMesh environment server.
     /// # Arguments
-    /// * `env` - Python gymnasium.Env or gymnasium.vector.VectorEnv object
+    /// * `env` - Python gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
     #[new]
     #[pyo3(signature = (env, address=None, *, options=None))]
@@ -83,105 +83,174 @@ impl PyEnvServer {
         address: Option<&str>,
         options: Option<PyServeOptions>,
     ) -> PyResult<Self> {
-        crate::telemetry::init_tracing("env_server");
-        let shutdown = ShutdownTrigger::new();
+        Ok(Self {
+            inner: construct_server(env, address, options, build_vector_server_env)?,
+        })
+    }
 
-        let py_env = build_server_env(env)?;
-        let env_contract = py_env.env_contract().clone();
+    fn address(&self) -> String {
+        self.inner.address()
+    }
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "failed to create tokio runtime: {}",
-                e
-            ))
-        })?;
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "EnvContract", imports = ()))]
+    fn env_contract<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.inner.env_contract(py)
+    }
 
-        let bind_target = match address {
-            Some(address) => BindAddress::parse(address).map_err(to_py_err)?,
-            None => BindAddress::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-            },
-        };
+    #[getter]
+    #[gen_stub(override_return_type(type_repr = "EnvContract", imports = ()))]
+    fn spec<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.inner.spec(py)
+    }
 
-        let (address, listener) = match bind_target {
-            BindAddress::Tcp { host, port } => {
-                let host_owned = host.to_string();
-                let listener: TcpListener = runtime
-                    .block_on(async { TcpListener::bind((host_owned.as_str(), port)).await })
-                    .map_err(|e| {
-                        PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                            "failed to bind tcp listener: {}",
-                            e
-                        ))
-                    })?;
-                let bound_addr = listener.local_addr().map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                        "failed to read bound tcp address: {}",
+    fn serve(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner.serve(py)
+    }
+
+    fn start(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner.start(py)
+    }
+
+    #[pyo3(signature = (timeout=None))]
+    fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<bool> {
+        self.inner.wait(py, timeout)
+    }
+
+    fn shutdown(&self, py: Python<'_>) -> PyResult<()> {
+        self.inner.shutdown(py)
+    }
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh")]
+pub struct PyVectorEnvServer {
+    inner: PyEnvServer,
+}
+
+fn construct_server(
+    env: Py<PyAny>,
+    address: Option<&str>,
+    options: Option<PyServeOptions>,
+    build_env: fn(Py<PyAny>) -> PyResult<PyServerEnv>,
+) -> PyResult<PyEnvServer> {
+    crate::telemetry::init_tracing("env_server");
+    let shutdown = ShutdownTrigger::new();
+
+    let py_env = build_env(env)?;
+    let env_contract = py_env.env_contract().clone();
+
+    let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "failed to create tokio runtime: {}",
+            e
+        ))
+    })?;
+
+    let bind_target = match address {
+        Some(address) => BindAddress::parse(address).map_err(to_py_err)?,
+        None => BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        },
+    };
+
+    let (address, listener) = match bind_target {
+        BindAddress::Tcp { host, port } => {
+            let host_owned = host.to_string();
+            let listener: TcpListener = runtime
+                .block_on(async { TcpListener::bind((host_owned.as_str(), port)).await })
+                .map_err(|e| {
+                    PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
+                        "failed to bind tcp listener: {}",
                         e
                     ))
                 })?;
+            let bound_addr = listener.local_addr().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                    "failed to read bound tcp address: {}",
+                    e
+                ))
+            })?;
+
+            (
+                format!("tcp://{}", bound_addr),
+                BoundListener::Tcp(listener),
+            )
+        }
+        BindAddress::Unix { path: socket_path } => {
+            #[cfg(not(unix))]
+            {
+                let _ = socket_path;
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    "unix sockets are not supported on Windows; use tcp://host:port instead",
+                ));
+            }
+
+            #[cfg(unix)]
+            {
+                if socket_path.exists() {
+                    std::fs::remove_file(&socket_path).map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
+                            "failed to remove stale unix socket '{}': {}",
+                            socket_path.display(),
+                            e
+                        ))
+                    })?;
+                }
+
+                // UnixListener registration requires an entered Tokio runtime.
+                let listener = {
+                    let _guard = runtime.enter();
+                    UnixListener::bind(&socket_path).map_err(|e| {
+                        PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
+                            "failed to bind unix socket '{}': {}",
+                            socket_path.display(),
+                            e
+                        ))
+                    })?
+                };
 
                 (
-                    format!("tcp://{}", bound_addr),
-                    BoundListener::Tcp(listener),
+                    format!("unix://{}", socket_path.display()),
+                    BoundListener::Unix {
+                        listener,
+                        path: socket_path,
+                    },
                 )
             }
-            BindAddress::Unix { path: socket_path } => {
-                #[cfg(not(unix))]
-                {
-                    let _ = socket_path;
-                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                        "unix sockets are not supported on Windows; use tcp://host:port instead",
-                    ));
-                }
+        }
+    };
 
-                #[cfg(unix)]
-                {
-                    if socket_path.exists() {
-                        std::fs::remove_file(&socket_path).map_err(|e| {
-                            PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                                "failed to remove stale unix socket '{}': {}",
-                                socket_path.display(),
-                                e
-                            ))
-                        })?;
-                    }
+    Ok(PyEnvServer {
+        address,
+        env_contract,
+        state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
+            env: py_env,
+            runtime,
+            listener,
+            options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
+        }))),
+        shutdown,
+    })
+}
 
-                    // UnixListener registration requires an entered Tokio runtime.
-                    let listener = {
-                        let _guard = runtime.enter();
-                        UnixListener::bind(&socket_path).map_err(|e| {
-                            PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                                "failed to bind unix socket '{}': {}",
-                                socket_path.display(),
-                                e
-                            ))
-                        })?
-                    };
-
-                    (
-                        format!("unix://{}", socket_path.display()),
-                        BoundListener::Unix {
-                            listener,
-                            path: socket_path,
-                        },
-                    )
-                }
-            }
-        };
-
-        Ok(Self {
-            address,
-            env_contract,
-            state: StdMutex::new(ServerState::Ready(Box::new(ServerResources {
-                env: py_env,
-                runtime,
-                listener,
-                options: options.map(PyServeOptions::into_rust).unwrap_or_default(),
-            }))),
-            shutdown,
-        })
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyEnvServer {
+    /// Create a new RLMesh environment server.
+    /// # Arguments
+    /// * `env` - Python gymnasium.Env object
+    /// * `address` - Optional bind address shortcut
+    #[new]
+    #[pyo3(signature = (env, address=None, *, options=None))]
+    fn new(
+        env: Py<PyAny>,
+        address: Option<&str>,
+        options: Option<PyServeOptions>,
+    ) -> PyResult<Self> {
+        construct_server(env, address, options, build_scalar_server_env)
     }
 
     /// Get the server address.
@@ -472,7 +541,13 @@ fn run_server(
 
         match env {
             PyServerEnv::Single(env) => {
-                run_env_server(WireEnvAdapter::new(env), listener, options, shutdown).await
+                run_env_server(
+                    WireEnvAdapter::new(ScalarEnvAdapter::new(env)),
+                    listener,
+                    options,
+                    shutdown,
+                )
+                .await
             }
             PyServerEnv::Vector(env) => {
                 run_env_server(WireEnvAdapter::new(env), listener, options, shutdown).await

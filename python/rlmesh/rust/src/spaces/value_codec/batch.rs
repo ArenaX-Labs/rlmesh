@@ -1,3 +1,9 @@
+//! Batched `SpaceValue` conversion.
+//!
+//! This module owns lane splitting and stacking policy for Python-facing vector
+//! APIs. Python clients may pre-encode obvious framework array batches for
+//! performance, but this codec remains the conformance and shape authority.
+
 use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
@@ -10,7 +16,7 @@ use super::codec::{
     encode_i64_sequence_bytes, py_any_to_space_value_with_backend, space_value_to_py_neutral,
     space_value_to_py_with_backend, tensor_from_shape,
 };
-use super::metadata::normalize_py_value;
+use super::normalization::normalize_space_value_input;
 use crate::spaces::tensor::{extract_tensor, wrap_native_tensor};
 use crate::spaces::utils::dtype_name;
 
@@ -110,7 +116,7 @@ pub(crate) fn py_any_to_batched_space_values_with_backend(
 
     match space.spec.as_ref() {
         Some(SpaceKind::Dict(spec)) => {
-            let normalized = normalize_py_value(value)?;
+            let normalized = normalize_space_value_input(value)?;
             let dict = normalized.cast::<PyDict>()?;
             let child_batches = spec
                 .keys
@@ -337,7 +343,7 @@ fn batched_items<'py>(
             .collect();
     }
 
-    let normalized = normalize_py_value(value)?;
+    let normalized = normalize_space_value_input(value)?;
     let items = normalized.try_iter()?.collect::<PyResult<Vec<_>>>()?;
     if items.len() != num_envs {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(

@@ -30,7 +30,7 @@ def test_space_spec_debug_shape_is_private() -> None:
     details = cast(dict[str, object], spec._details())
     assert details["n"] == 3
     assert spec._to_dict()["kind"] == "discrete"
-    assert repr(space) == "Discrete(kind='discrete', shape=[], dtype='int64')"
+    assert repr(space) == "Discrete(3, start=1)"
 
 
 def test_native_space_seed_accepts_no_argument() -> None:

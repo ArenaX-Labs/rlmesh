@@ -9,7 +9,7 @@ use pyo3::types::{PyAny, PyTuple};
 use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
-use rlmesh::{ConnectAddress, RemoteEnv, ResetResult, StepResult};
+use rlmesh::{ConnectAddress, RemoteVectorEnv, VectorResetResult, VectorStepResult};
 use rlmesh_spaces::spaces::SpaceSpec;
 use rlmesh_spaces::{RenderFrame as NativeRenderFrame, RenderRequest as NativeRenderRequest};
 
@@ -37,7 +37,7 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
 
 /// Shared core for single and vector env facades.
 struct ClientCore {
-    client: RemoteEnv,
+    client: RemoteVectorEnv,
     runtime: &'static tokio::runtime::Runtime,
     address: String,
     observation_space: SpaceSpec,
@@ -79,6 +79,16 @@ impl ClientCore {
         let action_space =
             require_contract_space(client.env_contract().action_space.clone(), "action_space")?;
         let num_envs = client.num_envs();
+        if role == "env_client" && num_envs != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Endpoint {normalized_address:?} serves {num_envs} environments. Use RemoteVectorEnv instead."
+            )));
+        }
+        if role == "vector_env_client" && num_envs < 2 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "RemoteVectorEnv requires an endpoint with num_envs >= 2",
+            ));
+        }
         let _ = connect_guard.finish(0);
 
         Ok(Self {
@@ -131,7 +141,7 @@ impl ClientCore {
     fn run_rpc<F, T>(&mut self, py: Python<'_>, timeout: Option<Duration>, make: F) -> PyResult<T>
     where
         F: for<'a> FnOnce(
-                &'a mut RemoteEnv,
+                &'a mut RemoteVectorEnv,
             )
                 -> std::pin::Pin<Box<dyn Future<Output = rlmesh::Result<T>> + 'a>>
             + Send,
@@ -184,10 +194,10 @@ impl ClientCore {
         seeds: Vec<i64>,
         options: Option<rlmesh_spaces::MetaMap>,
         timeout: Option<Duration>,
-    ) -> PyResult<ResetResult> {
+    ) -> PyResult<VectorResetResult> {
         let timeout_ms = Self::timeout_ms(timeout);
         self.run_rpc(py, timeout, move |client| {
-            Box::pin(client.reset(rlmesh::ResetRequest {
+            Box::pin(client.reset(rlmesh::VectorResetRequest {
                 seeds,
                 options,
                 timeout_ms,
@@ -202,10 +212,10 @@ impl ClientCore {
         py: Python<'_>,
         actions: Vec<rlmesh_spaces::SpaceValue>,
         timeout: Option<Duration>,
-    ) -> PyResult<StepResult> {
+    ) -> PyResult<VectorStepResult> {
         let timeout_ms = Self::timeout_ms(timeout);
         self.run_rpc(py, timeout, move |client| {
-            Box::pin(client.step(rlmesh::StepRequest {
+            Box::pin(client.step(rlmesh::VectorStepRequest {
                 actions,
                 timeout_ms,
             }))
@@ -584,9 +594,9 @@ fn connect_remote_env(
     runtime: &tokio::runtime::Runtime,
     address: ConnectAddress,
     connect_timeout_seconds: Option<f64>,
-) -> PyResult<RemoteEnv> {
+) -> PyResult<RemoteVectorEnv> {
     let timeout = optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
-    let connect = RemoteEnv::connect_to(address);
+    let connect = RemoteVectorEnv::connect_to(address);
     match timeout {
         Some(timeout) => runtime
             .block_on(async { tokio::time::timeout(timeout, connect).await })

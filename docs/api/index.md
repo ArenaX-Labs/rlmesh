@@ -10,7 +10,7 @@ Use this when you need exact imports, methods, and backend behavior.
 - {doc}`remote-envs`: remote client base classes and endpoint behavior.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`models`: model worker wrappers.
-- {doc}`adapters`: experimental declarative model-to-environment IO layer — maps a model's observations and actions to an environment's spaces.
+- {doc}`adapters`: declarative model-to-environment IO layer for mapping a model's observations and actions to an environment's spaces.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
 - {doc}`types`: structural protocols and shared value aliases.

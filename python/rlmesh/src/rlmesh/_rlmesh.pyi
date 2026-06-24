@@ -38,6 +38,7 @@ __all__ = [
     "PyModel",
     "PyModelClient",
     "PyVectorEnvClient",
+    "PyVectorEnvServer",
     "ROTATION_DIMS",
     "ServeOptions",
     "Space",
@@ -133,14 +134,14 @@ class AdapterPlan:
         """
     def transform_obs(self, raw_obs: typing.Any) -> builtins.dict[builtins.str, typing.Any]:
         r"""
-        Apply the observation plans to a bridge-encoded observation map.
+        Apply the observation plans to a canonical value-tree observation map.
         
         Returns `{model_key: encoded_value}`; custom inputs are omitted
         (the caller fills them from the raw host observation).
         """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
-        Apply the action plan to a bridge-encoded model action.
+        Apply the action plan to a canonical value-tree model action.
         """
 
 @typing.final
@@ -196,7 +197,7 @@ class PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
-        * `env` - Python gymnasium.Env or gymnasium.vector.VectorEnv object
+        * `env` - Python gymnasium.Env object
         * `address` - Optional bind address shortcut
         """
     def address(self) -> builtins.str:
@@ -256,6 +257,25 @@ class PyVectorEnvClient:
     def render(self, env_index: int = 0, *, timeout_seconds: float | None = None) -> Value | None: ...
     def close(self) -> None: ...
     def shutdown(self, reason: str = 'owner shutdown') -> bool: ...
+
+@typing.final
+class PyVectorEnvServer:
+    @property
+    def env_contract(self) -> EnvContract: ...
+    @property
+    def spec(self) -> EnvContract: ...
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None) -> PyVectorEnvServer:
+        r"""
+        Create a new vectorized RLMesh environment server.
+        # Arguments
+        * `env` - Python gymnasium.vector.VectorEnv object
+        * `address` - Optional bind address shortcut
+        """
+    def address(self) -> builtins.str: ...
+    def serve(self) -> None: ...
+    def start(self) -> None: ...
+    def wait(self, timeout: typing.Optional[builtins.float] = None) -> builtins.bool: ...
+    def shutdown(self) -> None: ...
 
 @typing.final
 class ServeOptions:

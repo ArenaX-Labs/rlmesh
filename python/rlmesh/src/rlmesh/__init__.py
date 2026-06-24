@@ -30,7 +30,7 @@ from ._native import (
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import ServeOptions, Tensor
-from ._server import EnvServer
+from ._server import EnvServer, VectorEnvServer
 
 try:
     __version__ = package_version("rlmesh")
@@ -59,6 +59,7 @@ __all__ = [
     "SandboxVectorEnv",
     "ServeOptions",
     "Tensor",
+    "VectorEnvServer",
     "__version__",
     "adapters",
     "hf_load",

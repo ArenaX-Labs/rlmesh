@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
 def serve_from_args(args: ServeArgs) -> int:
     """Handle `env serve` command arguments."""
     try:
-        from rlmesh import EnvServer
+        from rlmesh import EnvServer, VectorEnvServer
 
         if args.transport == "unix" and os.name == "nt":
             raise ValueError(
@@ -164,16 +164,24 @@ def serve_from_args(args: ServeArgs) -> int:
                 args.kwargs,
             )
 
+        server_cls = (
+            VectorEnvServer
+            if args.entrypoint is None and args.num_envs > 1
+            else EnvServer
+        )
+
         if args.transport == "unix":
             path = args.address
             if path is None:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
                 path = _default_unix_socket_path(source_name)
-            server = EnvServer(env, path=path, transport="unix")
+            server = server_cls(env, path=path, transport="unix")
         else:
             server = (
-                EnvServer(env) if args.address is None else EnvServer(env, args.address)
+                server_cls(env)
+                if args.address is None
+                else server_cls(env, args.address)
             )
 
         if args.entrypoint is not None:

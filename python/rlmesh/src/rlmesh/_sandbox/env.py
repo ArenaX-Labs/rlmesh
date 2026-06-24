@@ -198,6 +198,8 @@ class SandboxVectorEnvBase(
         repo_root: str | PathLike[str] | None = None,
         **env_make_kwargs: object,
     ) -> None:
+        if num_envs < 2:
+            raise ValueError("SandboxVectorEnv requires num_envs >= 2")
         super().__init__(
             source,
             base_image=base_image,

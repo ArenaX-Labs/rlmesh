@@ -52,6 +52,7 @@ def _install_native_docs_stub() -> None:
         "PyEnvServer",
         "PyModel",
         "PyVectorEnvClient",
+        "PyVectorEnvServer",
         "ServeOptions",
         "Space",
         "SpaceSpec",

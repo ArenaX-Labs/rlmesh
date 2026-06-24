@@ -67,21 +67,19 @@ fn facade_error_mapping_hides_core_error_types() {
 
 #[test]
 fn curated_spaces_facade_separates_the_two_request_families() {
-    // The crate-root request types are the vectorized env-layer family.
+    // The crate-root request types are the scalar env family.
     let env_layer = crate::ResetRequest {
-        seeds: vec![1, 2, 3],
-        ..Default::default()
-    };
-    assert_eq!(env_layer.seeds.len(), 3);
-
-    // The single-env request family is namespaced under `spaces::request`,
-    // resolving the previous same-named `rlmesh::ResetRequest` vs
-    // `rlmesh::spaces::ResetRequest` glob collision.
-    let single_env = crate::spaces::request::ResetRequest {
         seed: Some(7),
         ..Default::default()
     };
-    assert_eq!(single_env.seed, Some(7));
+    assert_eq!(env_layer.seed, Some(7));
+
+    // The vector env request family is explicit.
+    let vector_env = crate::VectorResetRequest {
+        seeds: vec![1, 2, 3],
+        ..Default::default()
+    };
+    assert_eq!(vector_env.seeds.len(), 3);
 
     // The two families are genuinely distinct types reachable through curated
     // (non-glob) paths.
@@ -92,5 +90,5 @@ fn curated_spaces_facade_separates_the_two_request_families() {
             "env-layer and single-env ResetRequest must be distinct types"
         );
     }
-    assert_distinct::<crate::ResetRequest, crate::spaces::request::ResetRequest>();
+    assert_distinct::<crate::ResetRequest, crate::VectorResetRequest>();
 }

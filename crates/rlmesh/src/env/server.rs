@@ -4,12 +4,12 @@ use rlmesh_grpc::env::Environment;
 use rlmesh_grpc::lifecycle::{await_close_with_timeout, start_idle_shutdown};
 use tokio::sync::Mutex;
 
-use super::Env;
-use super::wire::WireEnvAdapter;
+use super::wire::{ScalarEnvAdapter, WireEnvAdapter};
+use super::{Env, VectorEnv};
 use crate::bound::BoundListener;
 use crate::{BindAddress, EnvironmentError, Error, Result, ServeOptions};
 
-/// Hosts an [`Env`] as a gRPC environment server.
+/// Hosts a scalar [`Env`] as a gRPC environment server.
 ///
 /// Construct with [`EnvServer::new`], then either [`bind`](EnvServer::bind) to
 /// reserve the socket and learn the resolved address before serving, or
@@ -31,6 +31,84 @@ impl<E: Env + 'static> EnvServer<E> {
     /// The returned [`BoundEnvServer`] exposes [`BoundEnvServer::local_addr`]
     /// so callers can learn the resolved address (e.g. the OS-assigned port
     /// when binding to port 0) before awaiting shutdown.
+    pub async fn bind(self, addr: BindAddress) -> Result<BoundEnvServer> {
+        self.bind_with_options(addr, ServeOptions::default()).await
+    }
+
+    /// Bind the server to `addr` with explicit [`ServeOptions`].
+    pub async fn bind_with_options(
+        self,
+        addr: BindAddress,
+        options: ServeOptions,
+    ) -> Result<BoundEnvServer> {
+        let shutdown = rlmesh_grpc::lifecycle::ShutdownTrigger::new();
+        let activity_tx = start_idle_shutdown(options.idle_timeout, shutdown.clone());
+        let drain_timeout = options.drain_timeout;
+        let close_timeout = options.close_timeout;
+        let grpc_options = rlmesh_grpc::ServeOptions::from(options);
+
+        let listener = BoundListener::bind(addr).await?;
+        let local_addr = listener.local_addr()?;
+
+        let env = Arc::new(Mutex::new(WireEnvAdapter::new(ScalarEnvAdapter::new(
+            self.env,
+        ))));
+        let service = rlmesh_grpc::env::env_service_from_shared(
+            Arc::clone(&env),
+            shutdown.clone(),
+            grpc_options,
+            activity_tx,
+        );
+        let (_health_reporter, health_service) =
+            rlmesh_grpc::health::serving_health_service().await;
+        let router = tonic::transport::Server::builder()
+            .add_service(health_service)
+            .add_service(service);
+        let env: Arc<Mutex<dyn Environment + Send + Sync>> = env;
+
+        Ok(BoundEnvServer {
+            listener,
+            router,
+            shutdown,
+            env,
+            local_addr,
+            drain_timeout,
+            close_timeout,
+        })
+    }
+
+    /// Bind to `addr` and serve until shutdown, with default [`ServeOptions`].
+    ///
+    /// Equivalent to [`bind`](EnvServer::bind) followed by
+    /// [`BoundEnvServer::serve`], for callers that do not need the resolved
+    /// address up front.
+    pub async fn serve(self, addr: BindAddress) -> Result<()> {
+        self.serve_with_options(addr, ServeOptions::default()).await
+    }
+
+    /// Bind to `addr` and serve until shutdown, with explicit [`ServeOptions`].
+    pub async fn serve_with_options(self, addr: BindAddress, options: ServeOptions) -> Result<()> {
+        self.bind_with_options(addr, options).await?.serve().await
+    }
+}
+
+/// Hosts a [`VectorEnv`] as a gRPC environment server.
+///
+/// Use this only when the endpoint intentionally owns multiple environment
+/// lanes in one process. The scalar [`EnvServer`] is the default.
+pub struct VectorEnvServer<E: VectorEnv> {
+    env: E,
+}
+
+impl<E: VectorEnv> VectorEnvServer<E> {
+    /// Wrap a [`VectorEnv`] implementation to be served.
+    pub fn new(env: E) -> Self {
+        Self { env }
+    }
+}
+
+impl<E: VectorEnv + 'static> VectorEnvServer<E> {
+    /// Bind the server to `addr` without yet serving.
     pub async fn bind(self, addr: BindAddress) -> Result<BoundEnvServer> {
         self.bind_with_options(addr, ServeOptions::default()).await
     }
@@ -76,10 +154,6 @@ impl<E: Env + 'static> EnvServer<E> {
     }
 
     /// Bind to `addr` and serve until shutdown, with default [`ServeOptions`].
-    ///
-    /// Equivalent to [`bind`](EnvServer::bind) followed by
-    /// [`BoundEnvServer::serve`], for callers that do not need the resolved
-    /// address up front.
     pub async fn serve(self, addr: BindAddress) -> Result<()> {
         self.serve_with_options(addr, ServeOptions::default()).await
     }

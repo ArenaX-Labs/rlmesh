@@ -103,10 +103,9 @@ class Space(Generic[OutputT]):
         return spec_to_dict(self._spec) == spec_to_dict(other._spec)
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}(kind={self.kind!r}, "
-            f"shape={self.shape!r}, dtype={self.dtype!r})"
-        )
+        # Gymnasium-style rendering from the native spec's Display, e.g.
+        # `Box(-1.0, 1.0, (3,), float32)` / `Discrete(4, start=-1)`.
+        return repr(self._spec)
 
     def __getattr__(self, name: str) -> object:
         raise AttributeError(

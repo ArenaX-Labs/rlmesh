@@ -74,6 +74,7 @@ def test_serve_env_dispatches_entrypoint_loader(
 
     monkeypatch.setattr(serve_env, "load_env_entrypoint", load_env_entrypoint)
     monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured))
+    monkeypatch.setattr(rlmesh, "VectorEnvServer", _server_factory(captured))
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -121,6 +122,7 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
     monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured))
+    monkeypatch.setattr(rlmesh, "VectorEnvServer", _server_factory(captured))
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -231,6 +233,7 @@ def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
     monkeypatch.setattr(rlmesh, "EnvServer", FakeServer)
+    monkeypatch.setattr(rlmesh, "VectorEnvServer", FakeServer)
 
     read_fd, write_fd = os.pipe()
     try:

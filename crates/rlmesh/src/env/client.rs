@@ -5,7 +5,9 @@ use rlmesh_grpc::wire::{
 };
 
 use super::types::{
-    CloseResult, RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest, StepResult,
+    CloseResult as VectorCloseResult, RenderRequest, RenderResult,
+    ResetRequest as VectorResetRequest, ResetResult as VectorResetResult,
+    StepRequest as VectorStepRequest, StepResult as VectorStepResult,
 };
 use super::wire::{
     proto_episode_metadata_to_public, protocol_error_to_error, validate_action_count,
@@ -13,15 +15,14 @@ use super::wire::{
 };
 use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, spaces};
 
-/// A client handle to a remote environment server.
+/// A client handle to a remote vector environment server.
 ///
-/// Connect with [`RemoteEnv::connect`] (or [`RemoteEnv::connect_with_token`]
-/// for an authenticated endpoint), then drive the env by hand with
-/// [`reset`](RemoteEnv::reset) / [`step`](RemoteEnv::step), the same
-/// vectorized request family an [`Env`](crate::Env) implementor serves. Use
-/// this when your code is the client; to hand control to a policy instead, see
-/// [`ModelWorker`](crate::ModelWorker).
-pub struct RemoteEnv {
+/// Connect with [`RemoteVectorEnv::connect`] (or
+/// [`RemoteVectorEnv::connect_with_token`] for an authenticated endpoint), then
+/// drive the env by hand with [`reset`](RemoteVectorEnv::reset) /
+/// [`step`](RemoteVectorEnv::step), the same vectorized request family a
+/// [`VectorEnv`](crate::VectorEnv) implementor serves.
+pub struct RemoteVectorEnv {
     inner: rlmesh_grpc::EnvClient,
     env_contract: spaces::EnvContract,
     observation_space: std::sync::Arc<spaces::SpaceSpec>,
@@ -32,7 +33,7 @@ pub struct RemoteEnv {
     session_offer: rlmesh_proto::SessionOffer,
 }
 
-impl RemoteEnv {
+impl RemoteVectorEnv {
     /// Connect to an env server at `address` and perform the handshake.
     ///
     /// `address` accepts the same forms as
@@ -49,7 +50,7 @@ impl RemoteEnv {
 
     /// Connect to an env server that requires a bearer token (see
     /// [`ServeOptions::token`](crate::ServeOptions::token)). An empty token
-    /// behaves like [`RemoteEnv::connect`].
+    /// behaves like [`RemoteVectorEnv::connect`].
     pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
         Self::connect_to_with_token(ConnectAddress::parse(address)?, token).await
     }
@@ -113,7 +114,7 @@ impl RemoteEnv {
     /// episodes as truncated and frees the exclusive session slot once it
     /// observes the stream end (after any still-draining operation finishes).
     /// Final episode metadata from the server is forfeited. Prefer
-    /// [`RemoteEnv::close`]; use this when close cannot complete (e.g. it
+    /// [`RemoteVectorEnv::close`]; use this when close cannot complete (e.g. it
     /// timed out behind a long-draining server operation).
     pub fn detach(&mut self) {
         self.inner.detach();
@@ -136,8 +137,8 @@ impl RemoteEnv {
     ///
     /// Returns [`Error::Environment`](crate::Error::Environment) if the env
     /// reports a failure or returns a batch whose size does not match
-    /// [`num_envs`](RemoteEnv::num_envs), or a transport error on RPC failure.
-    pub async fn reset(&mut self, req: ResetRequest) -> Result<ResetResult> {
+    /// [`num_envs`](RemoteVectorEnv::num_envs), or a transport error on RPC failure.
+    pub async fn reset(&mut self, req: VectorResetRequest) -> Result<VectorResetResult> {
         let observation_space = std::sync::Arc::clone(&self.observation_space);
 
         let response = self
@@ -182,7 +183,7 @@ impl RemoteEnv {
         validate_count(&observations, self.num_envs, "observations")
             .map_err(|error| Error::Environment(error.into()))?;
 
-        Ok(ResetResult {
+        Ok(VectorResetResult {
             observations,
             info: response.infos.map(meta_map_from_proto),
             episode_ids: response.episode_ids,
@@ -191,14 +192,14 @@ impl RemoteEnv {
 
     /// Apply one action per sub-environment and return the batched transition.
     ///
-    /// `req.actions` must contain exactly [`num_envs`](RemoteEnv::num_envs)
+    /// `req.actions` must contain exactly [`num_envs`](RemoteVectorEnv::num_envs)
     /// actions.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Environment`](crate::Error::Environment) on an env
     /// failure or batch-size mismatch, or a transport error on RPC failure.
-    pub async fn step(&mut self, req: StepRequest) -> Result<StepResult> {
+    pub async fn step(&mut self, req: VectorStepRequest) -> Result<VectorStepResult> {
         let action_space = std::sync::Arc::clone(&self.action_space);
         let observation_space = std::sync::Arc::clone(&self.observation_space);
 
@@ -252,7 +253,7 @@ impl RemoteEnv {
         validate_count(&response.rewards, env_count, "rewards values")
             .map_err(|error| Error::Environment(error.into()))?;
 
-        Ok(StepResult {
+        Ok(VectorStepResult {
             observations,
             rewards: response.rewards,
             terminated,
@@ -275,11 +276,11 @@ impl RemoteEnv {
 
     /// Close this client session and return final episode metadata.
     ///
-    /// This does not shut down the server. Use [`RemoteEnv::shutdown`] when
+    /// This does not shut down the server. Use [`RemoteVectorEnv::shutdown`] when
     /// remote shutdown is enabled.
-    pub async fn close(&mut self) -> Result<CloseResult> {
+    pub async fn close(&mut self) -> Result<VectorCloseResult> {
         let response = self.inner.close().await.map_err(Error::from)?;
-        Ok(CloseResult {
+        Ok(VectorCloseResult {
             final_episodes: response
                 .final_episodes
                 .into_iter()
@@ -291,7 +292,7 @@ impl RemoteEnv {
 
     /// Ask the server to shut itself down, returning whether it accepted.
     ///
-    /// Unlike [`close`](RemoteEnv::close), this stops the *server*, but only if
+    /// Unlike [`close`](RemoteVectorEnv::close), this stops the *server*, but only if
     /// it was started with
     /// [`ServeOptions::allow_remote_shutdown`](crate::ServeOptions::allow_remote_shutdown);
     /// otherwise the request is declined and this returns `Ok(false)`.
@@ -302,6 +303,124 @@ impl RemoteEnv {
             .await
             .map_err(Error::from)?;
         Ok(response.accepted)
+    }
+}
+
+/// A client handle to one remote environment.
+///
+/// `RemoteEnv` is scalar-only. It rejects endpoints that report more than one
+/// environment; use [`RemoteVectorEnv`] when the endpoint is intentionally
+/// vectorized.
+pub struct RemoteEnv {
+    inner: RemoteVectorEnv,
+}
+
+impl RemoteEnv {
+    /// Connect to a scalar env server at `address` and perform the handshake.
+    pub async fn connect(address: &str) -> Result<Self> {
+        Self::connect_to(ConnectAddress::parse(address)?).await
+    }
+
+    /// Connect to a scalar env server that requires a bearer token.
+    pub async fn connect_with_token(address: &str, token: &str) -> Result<Self> {
+        Self::connect_to_with_token(ConnectAddress::parse(address)?, token).await
+    }
+
+    /// Connect to an already-parsed [`ConnectAddress`].
+    pub async fn connect_to(address: ConnectAddress) -> Result<Self> {
+        Self::connect_to_with_token(address, "").await
+    }
+
+    async fn connect_to_with_token(address: ConnectAddress, token: &str) -> Result<Self> {
+        let inner = RemoteVectorEnv::connect_to_with_token(address, token).await?;
+        if inner.num_envs() != 1 {
+            return Err(Error::Internal(format!(
+                "RemoteEnv connects to one environment, but the endpoint reports num_envs={}; \
+                 use RemoteVectorEnv instead",
+                inner.num_envs()
+            )));
+        }
+        Ok(Self { inner })
+    }
+
+    /// The address this client is connected to.
+    pub fn address(&self) -> &str {
+        self.inner.address()
+    }
+
+    /// The env's negotiation offer captured at handshake.
+    pub fn session_offer(&self) -> &rlmesh_proto::SessionOffer {
+        self.inner.session_offer()
+    }
+
+    /// Tear down the session locally without waiting for a Close round-trip.
+    pub fn detach(&mut self) {
+        self.inner.detach();
+    }
+
+    /// The environment contract reported by the server at handshake.
+    pub fn env_contract(&self) -> &spaces::EnvContract {
+        self.inner.env_contract()
+    }
+
+    /// Reset the remote environment and return the initial observation.
+    pub async fn reset(
+        &mut self,
+        req: spaces::request::ResetRequest,
+    ) -> Result<spaces::request::ResetResult> {
+        let result = self
+            .inner
+            .reset(VectorResetRequest {
+                seeds: req.seed.into_iter().collect(),
+                options: req.options,
+                timeout_ms: req.timeout_ms,
+                env_indices: Vec::new(),
+            })
+            .await?;
+
+        Ok(spaces::request::ResetResult {
+            observation: result.observations.into_iter().next(),
+            info: result.info,
+            episode_id: result.episode_ids.into_iter().next(),
+        })
+    }
+
+    /// Apply one action and return the transition.
+    pub async fn step(
+        &mut self,
+        req: spaces::request::StepRequest,
+    ) -> Result<spaces::request::StepResult> {
+        let result = self
+            .inner
+            .step(VectorStepRequest {
+                actions: req.action.into_iter().collect(),
+                timeout_ms: req.timeout_ms,
+            })
+            .await?;
+
+        Ok(spaces::request::StepResult {
+            observation: result.observations.into_iter().next(),
+            reward: result.rewards.into_iter().next().unwrap_or_default(),
+            terminated: result.terminated.into_iter().next().unwrap_or_default(),
+            truncated: result.truncated.into_iter().next().unwrap_or_default(),
+            info: result.info,
+        })
+    }
+
+    /// Request a render frame from the remote environment.
+    pub async fn render(&mut self, req: RenderRequest) -> Result<RenderResult> {
+        self.inner.render(req).await
+    }
+
+    /// Close this client session.
+    pub async fn close(&mut self) -> Result<spaces::request::CloseResult> {
+        let _ = self.inner.close().await?;
+        Ok(spaces::request::CloseResult)
+    }
+
+    /// Ask the server to shut itself down, returning whether it accepted.
+    pub async fn shutdown(&mut self, reason: impl Into<String>) -> Result<bool> {
+        self.inner.shutdown(reason).await
     }
 }
 

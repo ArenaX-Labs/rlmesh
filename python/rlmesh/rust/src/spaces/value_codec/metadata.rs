@@ -4,6 +4,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyList, PyTuple};
 use rlmesh_spaces::{MetaMap, MetaValue};
 
+use super::normalization::normalize_metadata_value;
+
 pub(crate) fn meta_map_to_pydict<'py>(
     py: Python<'py>,
     value: &MetaMap,
@@ -15,21 +17,8 @@ pub(crate) fn meta_map_to_pydict<'py>(
     Ok(dict)
 }
 
-pub(super) fn normalize_py_value<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    if value.hasattr("_asdict")? {
-        return value.call_method0("_asdict");
-    }
-    if value.hasattr("tolist")? {
-        return value.call_method0("tolist");
-    }
-    if value.hasattr("item")? {
-        return value.call_method0("item");
-    }
-    Ok(value.clone())
-}
-
 pub(crate) fn py_any_to_meta_map(value: &Bound<'_, PyAny>) -> PyResult<MetaMap> {
-    let normalized = normalize_py_value(value)?;
+    let normalized = normalize_metadata_value(value)?;
     let dict = normalized.cast::<PyDict>()?;
     let mut fields = BTreeMap::new();
     for (key, item) in dict.iter() {
@@ -39,7 +28,7 @@ pub(crate) fn py_any_to_meta_map(value: &Bound<'_, PyAny>) -> PyResult<MetaMap> 
 }
 
 fn py_any_to_meta_value(value: &Bound<'_, PyAny>) -> PyResult<MetaValue> {
-    let normalized = normalize_py_value(value)?;
+    let normalized = normalize_metadata_value(value)?;
 
     if normalized.is_none() {
         return Ok(MetaValue::Null);

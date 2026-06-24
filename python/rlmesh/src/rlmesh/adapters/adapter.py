@@ -8,8 +8,9 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 
+from .._value_conversion import ValueBridge, from_value, to_value
 from ..numpy import NumpyArray, ensure_available
-from .helpers.codec import decode_value, encode_value
+from ..types import Value
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:
@@ -20,6 +21,12 @@ ActionT = TypeVar("ActionT")
 # A raw env observation handed to an adapter: a mapping of named leaves for a
 # Dict space, or a single bare leaf (array) for a flat (non-Dict) space.
 RawObs = Mapping[str, Any] | NumpyArray
+
+
+def _numpy_value_bridge() -> ValueBridge:
+    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
+
+    return _numpy_bridge
 
 
 @dataclass(frozen=True)
@@ -144,8 +151,14 @@ class Adapter(AdapterBase[NumpyArray]):
         self._obs_enc_shims = obs_enc_shims
         self._action_enc_shims = action_enc_shims
 
-    def transform_obs(self, raw_obs: RawObs) -> dict[str, Any]:
-        """Convert a raw env observation into the model input payload.
+    def transform_obs_value(
+        self,
+        raw_obs: RawObs,
+        *,
+        input_bridge: ValueBridge | None = None,
+        custom_bridge: ValueBridge | None = None,
+    ) -> dict[str, Value]:
+        """Convert a raw env observation into a canonical Value-tree payload.
 
         Only the observation keys the plan actually reads are encoded and
         sent across the native boundary, so an unused -- possibly
@@ -153,7 +166,6 @@ class Adapter(AdapterBase[NumpyArray]):
         still see the full raw observation. Inputs that request frame history
         are stacked here from a rolling buffer, cleared by :meth:`reset`.
         """
-        ensure_available()
         # A flat (non-Dict) observation is a single leaf: present it under the
         # reserved "." key the plan references for a StateLayout-tagged env.
         obs: Mapping[str, Any] = (
@@ -162,27 +174,49 @@ class Adapter(AdapterBase[NumpyArray]):
         selected = {
             key: obs[key] for key in self._plan.referenced_obs_keys() if key in obs
         }
-        encoded = self._plan.transform_obs(encode_value(selected))
-        payload: dict[str, Any] = {
-            key: decode_value(value) for key, value in encoded.items()
-        }
+        payload = cast(
+            "dict[str, Value]",
+            self._plan.transform_obs(to_value(selected, input_bridge)),
+        )
         # Repack custom-encoded keys from their resolved base encoding into the
         # model's convention, before stacking (so a stacked input stacks the
         # model's representation).
+        numpy_bridge = _numpy_value_bridge()
         for shim in self._obs_enc_shims:
             if shim.model_key in payload:
-                payload[shim.model_key] = self._apply_obs_enc(
-                    shim, payload[shim.model_key]
+                payload[shim.model_key] = to_value(
+                    self._apply_obs_enc(
+                        shim, from_value(payload[shim.model_key], numpy_bridge)
+                    ),
+                    numpy_bridge,
                 )
         for key, depth in self._stacks.items():
             if key in payload:
-                payload[key] = self._stack_frames(key, payload[key], depth)
+                payload[key] = to_value(
+                    self._stack_frames(
+                        key, from_value(payload[key], numpy_bridge), depth
+                    ),
+                    numpy_bridge,
+                )
         for key, transform in self._customs.items():
             # Custom inputs see the full observation (not just the plan's
             # referenced keys), normalized to a mapping -- identical to raw_obs
             # for a Dict env, and {".": leaf} for a flat one.
-            payload[key] = transform(obs)
+            payload[key] = to_value(transform(obs), custom_bridge)
         return payload
+
+    def transform_obs(self, raw_obs: RawObs) -> dict[str, Any]:
+        """Convert a raw env observation into the model input payload."""
+        bridge = _numpy_value_bridge()
+        return cast(
+            "dict[str, Any]",
+            from_value(
+                self.transform_obs_value(
+                    raw_obs, input_bridge=bridge, custom_bridge=bridge
+                ),
+                bridge,
+            ),
+        )
 
     def _stack_frames(self, key: str, frame: Any, depth: int) -> NumpyArray:
         import numpy as np
@@ -274,13 +308,33 @@ class Adapter(AdapterBase[NumpyArray]):
             action[shim.offset : stop] = converted
         return action
 
+    def transform_action_value(
+        self,
+        raw_action: object,
+        *,
+        action_bridge: ValueBridge | None = None,
+    ) -> Value:
+        """Convert a model action vector into a canonical env action value."""
+        if self._action_enc_shims:
+            ensure_available()
+            numpy_bridge = _numpy_value_bridge()
+            raw_action = self._apply_action_enc(
+                from_value(to_value(raw_action, action_bridge), numpy_bridge)
+            )
+            action_value = to_value(raw_action, numpy_bridge)
+        else:
+            action_value = to_value(raw_action, action_bridge)
+        return cast("Value", self._plan.transform_action(action_value))
+
     def transform_action(self, raw_action: object) -> NumpyArray:
         """Convert a model action vector into the env action vector."""
-        ensure_available()
-        raw_action = self._apply_action_enc(raw_action)
+        bridge = _numpy_value_bridge()
         return cast(
             "NumpyArray",
-            decode_value(self._plan.transform_action(encode_value(raw_action))),
+            from_value(
+                self.transform_action_value(raw_action, action_bridge=bridge),
+                bridge,
+            ),
         )
 
     def describe(self) -> str:

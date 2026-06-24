@@ -1,3 +1,11 @@
+"""Gymnasium <-> RLMesh space schema conversion.
+
+This module converts *space descriptions*, not runtime values. Keep runtime
+payload conversion in ``rlmesh._value_conversion`` and PyO3 ``SpaceValue``
+codecs. The Python paths here exist for Gymnasium compatibility/version quirks;
+anything outside those narrow cases should fall back to the native parser.
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -61,9 +69,7 @@ def from_gymnasium_space(space: object) -> Space[Value]:
     if isinstance(space, gym_spaces.Tuple):
         return Tuple(from_gymnasium_space(child) for child in gym_space.spaces)
 
-    from .._rlmesh import space_spec_from_gym_space
-
-    return space_from_spec(space_spec_from_gym_space(space))
+    return _space_from_native_gym_parser(space)
 
 
 def to_gymnasium_space(space: Space[Any] | SpaceSpec) -> object:
@@ -189,9 +195,7 @@ def _box_from_gymnasium(space: Any) -> Box:
             dtype=str(getattr(space, "dtype", "float32")),
         )
 
-    from .._rlmesh import space_spec_from_gym_space
-
-    return cast(Box, space_from_spec(space_spec_from_gym_space(space)))
+    return cast(Box, _space_from_native_gym_parser(space))
 
 
 def _box_to_gymnasium(gym_spaces: Any, spec: SpaceSpec) -> object:
@@ -231,6 +235,11 @@ def _multi_discrete_from_gymnasium(space: Any) -> MultiDiscrete:
     if nvec.ndim == 1:
         return MultiDiscrete([int(value) for value in nvec.tolist()])
 
+    return cast(MultiDiscrete, _space_from_native_gym_parser(space))
+
+
+def _space_from_native_gym_parser(space: object) -> Space[Value]:
+    """Parse a Gymnasium space through the native schema converter."""
     from .._rlmesh import space_spec_from_gym_space
 
-    return cast(MultiDiscrete, space_from_spec(space_spec_from_gym_space(space)))
+    return space_from_spec(space_spec_from_gym_space(space))

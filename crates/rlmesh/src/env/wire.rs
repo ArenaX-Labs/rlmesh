@@ -11,10 +11,11 @@ use rlmesh_grpc::wire::{
     meta_map_to_proto, render_result_to_proto,
 };
 
-use super::Env;
 use super::types::{
-    CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest, ResetResult, StepRequest,
+    CloseRequest, EpisodeMetadata, RenderRequest, ResetRequest as VectorResetRequest,
+    ResetResult as VectorResetResult, StepRequest as VectorStepRequest,
 };
+use super::{Env, VectorEnv};
 use crate::spaces;
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
@@ -79,8 +80,101 @@ pub struct WireEnvAdapter<E> {
     warned: HashSet<(String, String)>,
 }
 
+/// Internal adapter bridging a scalar [`Env`] to the vectorized wire layer.
+#[doc(hidden)]
+pub struct ScalarEnvAdapter<E> {
+    inner: E,
+}
+
+impl<E> ScalarEnvAdapter<E> {
+    /// Wrap a scalar [`Env`] implementation.
+    #[doc(hidden)]
+    pub fn new(inner: E) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl<E: Env> VectorEnv for ScalarEnvAdapter<E> {
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        self.inner.observation_space()
+    }
+
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        self.inner.action_space()
+    }
+
+    fn num_envs(&self) -> usize {
+        1
+    }
+
+    fn env_contract(&self) -> &spaces::EnvContract {
+        self.inner.env_contract()
+    }
+
+    async fn reset(
+        &mut self,
+        req: VectorResetRequest,
+    ) -> std::result::Result<VectorResetResult, spaces::EnvRuntimeError> {
+        let result = self
+            .inner
+            .reset(spaces::request::ResetRequest {
+                seed: req.seeds.first().copied(),
+                options: req.options,
+                timeout_ms: req.timeout_ms,
+            })
+            .await?;
+
+        Ok(VectorResetResult {
+            observations: result.observation.into_iter().collect(),
+            info: result.info,
+            episode_ids: result.episode_id.into_iter().collect(),
+        })
+    }
+
+    async fn step(
+        &mut self,
+        req: VectorStepRequest,
+    ) -> std::result::Result<super::VectorStepResult, spaces::EnvRuntimeError> {
+        let result = self
+            .inner
+            .step(spaces::request::StepRequest {
+                action: req.actions.into_iter().next(),
+                timeout_ms: req.timeout_ms,
+            })
+            .await?;
+
+        Ok(super::VectorStepResult {
+            observations: result.observation.into_iter().collect(),
+            rewards: vec![result.reward],
+            terminated: vec![result.terminated],
+            truncated: vec![result.truncated],
+            info: result.info,
+            completed_episodes: vec![],
+            episode_ids: vec![],
+        })
+    }
+
+    async fn render(
+        &mut self,
+        req: RenderRequest,
+    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
+        self.inner.render(req).await
+    }
+
+    async fn close(
+        &mut self,
+        req: CloseRequest,
+    ) -> std::result::Result<super::VectorCloseResult, spaces::EnvRuntimeError> {
+        let _ = self.inner.close(req).await?;
+        Ok(super::VectorCloseResult {
+            final_episodes: vec![],
+        })
+    }
+}
+
 impl<E> WireEnvAdapter<E> {
-    /// Wrap an [`Env`] for the wire layer.
+    /// Wrap a [`VectorEnv`] for the wire layer.
     #[doc(hidden)]
     pub fn new(inner: E) -> Self {
         Self {
@@ -91,12 +185,12 @@ impl<E> WireEnvAdapter<E> {
     }
 }
 
-impl<E: Env> WireEnvAdapter<E> {
+impl<E: VectorEnv> WireEnvAdapter<E> {
     /// Encode a public [`ResetResult`] into the proto reset response, validating
     /// the observation batch width. Shared by `reset` and `reset_subset`.
     fn encode_reset_response(
         &mut self,
-        mut result: ResetResult,
+        mut result: VectorResetResult,
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
         validate_count(&result.observations, self.inner.num_envs(), "observations")?;
 
@@ -158,7 +252,7 @@ impl<E: Env> WireEnvAdapter<E> {
 }
 
 #[async_trait]
-impl<E: Env> Environment for WireEnvAdapter<E> {
+impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
     fn observation_space(&self) -> &spaces::SpaceSpec {
         self.inner.observation_space()
     }
@@ -181,7 +275,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
         let result = self
             .inner
-            .reset(ResetRequest {
+            .reset(VectorResetRequest {
                 seeds: req.seeds,
                 options: req.options.map(meta_map_from_proto),
                 // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
@@ -204,7 +298,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
         let result = self
             .inner
-            .reset_subset(ResetRequest {
+            .reset_subset(VectorResetRequest {
                 seeds: req.seeds,
                 options: req.options.map(meta_map_from_proto),
                 // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
@@ -236,7 +330,7 @@ impl<E: Env> Environment for WireEnvAdapter<E> {
 
         let mut result = self
             .inner
-            .step(StepRequest {
+            .step(VectorStepRequest {
                 actions,
                 // Proto timeout_ms is uint64; native is i64.
                 timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
@@ -434,7 +528,10 @@ mod tests {
     use crate::{BindAddress, Result, ServeOptions};
 
     use super::super::{
-        CloseResult, EnvServer, RemoteEnv, RenderResult, ResetRequest, ResetResult, StepResult,
+        RemoteVectorEnv as RemoteEnv, RenderResult, VectorCloseResult as CloseResult, VectorEnv,
+        VectorEnvServer as EnvServer, VectorResetRequest as ResetRequest,
+        VectorResetResult as ResetResult, VectorStepRequest as StepRequest,
+        VectorStepResult as StepResult,
     };
 
     struct DummyEnv {
@@ -477,7 +574,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Env for DummyEnv {
+    impl VectorEnv for DummyEnv {
         fn observation_space(&self) -> &spaces::SpaceSpec {
             &self.obs_space
         }
@@ -930,7 +1027,7 @@ mod tests {
             let reset = client.reset(ResetRequest::default()).await.unwrap();
             assert_eq!(reset.observations.len(), client.num_envs());
             let step = client
-                .step(StepRequest {
+                .step(VectorStepRequest {
                     actions: vec![
                         spaces::SpaceValue::Discrete(0),
                         spaces::SpaceValue::Discrete(1),

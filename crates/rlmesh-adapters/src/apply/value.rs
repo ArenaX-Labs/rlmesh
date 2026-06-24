@@ -23,6 +23,7 @@ use crate::error::ApplyError;
 pub enum Value {
     Tensor(Tensor),
     Text(String),
+    Bytes(Vec<u8>),
     Number(f64),
     List(Vec<Value>),
     Map(BTreeMap<String, Value>),
