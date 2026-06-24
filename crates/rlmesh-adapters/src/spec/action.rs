@@ -43,7 +43,7 @@ pub struct ActionComponent {
 
 /// Ordered action components plus optional clipping bounds.
 ///
-/// Deserialization goes through [`ActionLayoutWire`] so a duplicate component
+/// Deserialization goes through `ActionLayoutWire` so a duplicate component
 /// role is rejected by the authoritative codec — matching Rust `resolve`
 /// (`plan_action`), which rejects a repeated action role (it would build the
 /// action by repetition instead of a real mapping). Without this the

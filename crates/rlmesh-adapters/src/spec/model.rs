@@ -32,7 +32,7 @@ pub enum ModelInput {
 
 /// Declarative description of a model's input payload and action output.
 ///
-/// Deserialization goes through [`ModelSpecWire`] so duplicate input keys are
+/// Deserialization goes through `ModelSpecWire` so duplicate input keys are
 /// rejected by the authoritative codec — matching Python
 /// `ModelSpec.__post_init__` and Rust `resolve` (both of which reject a repeated
 /// key). Without this the normalize/publish door would bless a spec the read

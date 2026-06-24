@@ -39,7 +39,7 @@ pub enum StateContainer {
 
 /// A numeric state input expected by a model.
 ///
-/// Deserialization goes through [`StateInputWire`] so an empty `components` list
+/// Deserialization goes through `StateInputWire` so an empty `components` list
 /// is rejected by the authoritative codec — matching Python
 /// `StateInput.__post_init__` (which needs `components=(...)` or a single
 /// `role=`). Without this the normalize/publish door would bless a state input

@@ -7,10 +7,12 @@ backend = "aqua:bufbuild/buf"
 [tools.buf."platforms.linux-x64"]
 checksum = "sha256:18498bdadbdce80792ce08c2c59e0c49f157aa3f5d9b0f9c6e3db795be208b9d"
 url = "https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Linux-x86_64.tar.gz"
+provenance = "minisign"
 
 [tools.buf."platforms.macos-arm64"]
 checksum = "sha256:9cec23658df093d50f3318580e17f1e309d45b817927f22e9de30f78f3d4d45b"
 url = "https://github.com/bufbuild/buf/releases/download/v1.70.0/buf-Darwin-arm64.tar.gz"
+provenance = "minisign"
 
 [tools.buf."platforms.windows-x64"]
 checksum = "sha256:96422e4313efe2741946f31f57ab4000c440b48d14936992ab98e94c16322f6f"
@@ -61,22 +63,6 @@ checksum = "sha256:e2874ecb0bb39816d1e5af60a920875bba5831182a46dad629a206bfcc4cb
 url = "https://github.com/jdx/fnox/releases/download/v1.25.1/fnox-x86_64-pc-windows-msvc.zip"
 url_api = "https://api.github.com/repos/jdx/fnox/releases/assets/422647962"
 provenance = "github-attestations"
-
-[[tools.git-cliff]]
-version = "2.13.1"
-backend = "aqua:orhun/git-cliff"
-
-[tools.git-cliff."platforms.linux-x64"]
-checksum = "sha256:200d2535da6d9703f3bcc8a4d159c3b55eacdb01cf2148c55b3eee9dd04d5249"
-url = "https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-unknown-linux-musl.tar.gz"
-
-[tools.git-cliff."platforms.macos-arm64"]
-checksum = "sha256:21547ae4a0421164070ab75c2522864ea5565858a011fabc5f583061b20f1226"
-url = "https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-aarch64-apple-darwin.tar.gz"
-
-[tools.git-cliff."platforms.windows-x64"]
-checksum = "sha256:3ae3a5549e85c7ad5b20192ebcfee4371269deca51255f6f2f2e051c6541f5ca"
-url = "https://github.com/orhun/git-cliff/releases/download/v2.13.1/git-cliff-2.13.1-x86_64-pc-windows-msvc.zip"
 
 [[tools.node]]
 version = "24.16.0"
@@ -138,13 +124,13 @@ version = "3.11.15"
 backend = "core:python"
 
 [tools.python."platforms.linux-x64"]
-checksum = "sha256:4b79bcb83a22961c8972f8d1d4780bd8925f0b52688d95b090a488f31c8b1139"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.11.15+20260602-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+checksum = "sha256:0604cd029b142dc223e131f17f5941c0c8d2d5074997c8178b515b19eea2a6c2"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.11.15+20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [tools.python."platforms.macos-arm64"]
-checksum = "sha256:f1461690377000ee2161af52db780b7c1a200549fff7c8064e47e1ee1832265b"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260602/cpython-3.11.15+20260602-aarch64-apple-darwin-install_only_stripped.tar.gz"
+checksum = "sha256:2318799eaf104f8a29bc09a93b0851b05dbbcb4ce9a5f045ddea169c0c7ff3a5"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.11.15+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
 [tools.python."platforms.windows-x64"]
@@ -155,6 +141,9 @@ provenance = "github-attestations"
 [[tools.rust]]
 version = "1.96.0"
 backend = "core:rust"
+
+[tools.rust.options]
+components = "clippy,rustfmt"
 
 [[tools.uv]]
 version = "0.11.19"

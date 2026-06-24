@@ -86,7 +86,7 @@ impl TryFrom<StateFieldWire> for StateField {
 /// a slice of `dim` elements carrying a `role`, with offsets implied by order
 /// within a [`StateLayout`]. A field with no `role` is a *skip* — it advances
 /// the offset and contributes to the layout's width but produces no feature.
-/// Deserialization goes through [`StateFieldWire`] so `dim >= 1` and the
+/// Deserialization goes through `StateFieldWire` so `dim >= 1` and the
 /// role-less-skip rule are enforced by the authoritative Rust codec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "StateFieldWire")]
