@@ -1,6 +1,6 @@
 [project]
 name = "rlmesh-workspace"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 description = "Development workspace for RLMesh"
 requires-python = ">=3.10"
 authors = [{ name = "ArenaX Labs", email = "research@competesai.com" }]

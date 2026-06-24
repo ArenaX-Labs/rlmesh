@@ -111,4 +111,4 @@ A sandboxed environment is built from a source, so it takes a Gymnasium id or `g
 
 ## Version Pinning
 
-The protocol handshake pins the workflow edition and fails closed. Until the bare `2026.06` edition seals at the final 0.1.0, prerelease builds use exact release cohorts such as `2026.06-0.1.0-rc.1`, and source builds use exact `dev.<git>` cohorts. Pin the same `rlmesh` version in your Dockerfile as the host that drives it. To run on the hosted platform, `docker push` the tag to a registry the platform can reach; it runs the identical image.
+The protocol handshake pins the workflow edition and fails closed. Until the bare `2026.06` edition seals at the final 0.1.0, prerelease builds use exact release cohorts such as `2026.06-0.1.0-rc.2`, and source builds use exact `dev.<git>` cohorts. Pin the same `rlmesh` version in your Dockerfile as the host that drives it. To run on the hosted platform, `docker push` the tag to a registry the platform can reach; it runs the identical image.

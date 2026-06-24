@@ -2,18 +2,7 @@
 
 Runtime driver for RLMesh model-environment evaluation sessions.
 
-Most users should depend on the higher-level `rlmesh` crate. Use this crate when you need to work directly with the runtime layer that coordinates evaluation sessions.
-
-## Installation
-
-```toml
-[dependencies]
-rlmesh-runtime = "0.1.0-rc.1"
-```
-
-## Status
-
-Internal implementation detail of RLMesh, with no stability promise and no plan to stabilize it. Build on the `rlmesh` Python package instead; see the [compatibility policy](https://docs.rlmesh.dev/compatibility/).
+This crate is an internal component of `rlmesh`. The Rust API exposed here is unstable and will have frequent breaking changes.
 
 ## Links
 

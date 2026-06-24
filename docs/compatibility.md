@@ -3,11 +3,11 @@
 RLMesh documents compatibility at the workflow level rather than treating every internal type as frozen. The project is released and pre-1.0: stability labels describe the support level today, and the surface still evolves with care until 1.0. See {doc}`versioning` for the version contract.
 
 ```{note}
-**This documents 0.1.0-rc.1, a release candidate.** The active workflow cohort is
-`2026.06-0.1.0-rc.1`; the stable cutover — sealing the bare `2026.06` edition and
+**This documents 0.1.0-rc.2, a release candidate.** The active workflow cohort is
+`2026.06-0.1.0-rc.2`; the stable cutover — sealing the bare `2026.06` edition and
 the `Production/Stable` trove status — lands at the final 0.1.0. The stability
 descriptions below describe that release. Install the candidate with
-`pip install rlmesh==0.1.0rc1`.
+`pip install rlmesh==0.1.0rc2`.
 ```
 
 ```{note}
@@ -74,13 +74,13 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake selects the highest edition supported by both peers. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition seals at 0.1.0; this release candidate advertises `2026.06-0.1.0-rc.1`.
+Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake selects the highest edition supported by both peers. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition seals at 0.1.0; this release candidate advertises `2026.06-0.1.0-rc.2`.
 
 ## Versioning and forward-compatibility roadmap
 
 RLMesh commits to forward-compatibility guarantees only once the code enforces them and a cross-version path is proven. The items below are planned, not promises; each is announced here as it ships.
 
-- **v0.1.0 (upcoming).** First stable release. It seals the `2026.06` workflow edition, freezing its spec checksum. The 0.1.0-rc.1 candidate ships first as the exact `2026.06-0.1.0-rc.1` cohort.
+- **v0.1.0 (upcoming).** First stable release. It seals the `2026.06` workflow edition, freezing its spec checksum. The 0.1.0-rc.2 candidate ships first as the exact `2026.06-0.1.0-rc.2` cohort.
 - **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This unlocks edition-driven behavior and a cross-version path once a second edition exists.
 - **Forward tolerance, around late July 2026.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
 - **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation against a real semantic change.

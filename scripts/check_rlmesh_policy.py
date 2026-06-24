@@ -45,6 +45,13 @@ EDITION_BASE_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}$")
 EDITION_PRERELEASE_SUFFIX_RE = re.compile(
     r"^\d+\.\d+\.\d+-(?:alpha|beta|rc)\.\d+$"
 )
+# A prerelease version literal in prose: `X.Y.Z-rc.N` (SemVer) or `X.Y.ZrcN`
+# (PEP 440). Bare stable `X.Y.Z` is intentionally NOT matched — forward/historical
+# references to stable versions are fine; only the moving prerelease cohort must
+# track the current release.
+PRERELEASE_LITERAL_RE = re.compile(
+    r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+|(?:a|b|rc)\d+)"
+)
 
 
 def _split_edition_name(name: str) -> tuple[str, str | None]:
@@ -169,6 +176,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
             repo_root, api_surface, artifact_ids, release, package_family
         )
     )
+    errors.extend(_validate_doc_versions(repo_root, workspace_version))
 
     return errors
 
@@ -746,6 +754,65 @@ def _official_current_edition(base_edition: str, workspace_version: str) -> str 
     if status == "stable":
         return base_edition
     return f"{base_edition}-{workspace_version}"
+
+
+def _pep440(version: str) -> str:
+    """PEP 440 spelling of a Rust SemVer version (mirrors bump_version.pep440)."""
+    for tag, short in (("-alpha.", "a"), ("-beta.", "b"), ("-rc.", "rc")):
+        if tag in version:
+            base, suffix = version.split(tag, 1)
+            return f"{base}{short}{suffix}"
+    return version
+
+
+def _prose_version_files(repo_root: Path) -> list[Path]:
+    """User-facing prose whose prerelease literals must track the release.
+
+    The top-level + crate READMEs, example READMEs, and docs — excluding the
+    changelog and the version-stamped edition specs (both legitimately name old
+    versions). Mirrors ``prose_version_files`` in ``bump_version.py``.
+    """
+    files = [repo_root / "README.md"]
+    files += sorted(repo_root.glob("crates/*/README.md"))
+    files += sorted((repo_root / "examples").rglob("README.md"))
+    files += [
+        md
+        for md in sorted((repo_root / "docs").rglob("*.md"))
+        if md.relative_to(repo_root).as_posix() != "docs/changelog.md"
+        and not md.relative_to(repo_root).as_posix().startswith("docs/editions/")
+    ]
+    return [path for path in files if path.exists()]
+
+
+def _validate_doc_versions(repo_root: Path, workspace_version: str | None) -> list[str]:
+    """Every prerelease version literal in prose must equal the current release.
+
+    ``bump_version.py`` rewrites these on a bump; this guard makes its "fails
+    loudly if any version-bearing spot was missed" promise real — a stale ``rc.N``
+    left in the docs is caught here, not shipped. Stable ``X.Y.Z`` literals are
+    allowed (forward/historical references).
+    """
+    if workspace_version is None:
+        return []
+    allowed = {workspace_version, _pep440(workspace_version)}
+    errors: list[str] = []
+    for path in _prose_version_files(repo_root):
+        stale = sorted(
+            {
+                match.group(0)
+                for match in PRERELEASE_LITERAL_RE.finditer(
+                    path.read_text(encoding="utf-8")
+                )
+                if match.group(0) not in allowed
+            }
+        )
+        for literal in stale:
+            errors.append(
+                f"{path.relative_to(repo_root)}: stale version literal {literal!r}; "
+                f"expected {workspace_version!r} — run `mise run bump`, or use "
+                "release-neutral phrasing"
+            )
+    return errors
 
 
 def _read_toml(path: Path) -> dict[str, Any]:

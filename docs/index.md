@@ -9,8 +9,8 @@ RLMesh connects models to environments that need not share a process, a dependen
 RLMesh is released and pre-1.0 (`0.x`): the Python package is the supported surface, and a minor release may change a stable API with a migration note. See {doc}`compatibility` and {doc}`versioning`; pin a minor range for active projects.
 
 ```{note}
-**0.1.0-rc.1 is a release candidate for 0.1.0.** It advertises the exact
-`2026.06-0.1.0-rc.1` workflow cohort; the bare `2026.06` edition seals at the
+**0.1.0-rc.2 is a release candidate for 0.1.0.** It advertises the exact
+`2026.06-0.1.0-rc.2` workflow cohort; the bare `2026.06` edition seals at the
 final 0.1.0. The stability statements in these docs describe that upcoming
 release.
 ```

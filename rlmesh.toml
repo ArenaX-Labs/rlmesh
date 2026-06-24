@@ -4,13 +4,13 @@ package_family = "0.1"
 
 [workflow]
 base_edition = "2026.06"
-current_edition = "2026.06-0.1.0-rc.1"
-supported_editions = ["2026.06-0.1.0-rc.1"]
+current_edition = "2026.06-0.1.0-rc.2"
+supported_editions = ["2026.06-0.1.0-rc.2"]
 
 # Provisional prerelease edition: the suffix is the full Rust SemVer release
 # cohort. Stable releases seal the bare `YYYY.MM` edition and record a spec
 # checksum there; provisional prerelease cohorts are not spec-checksum pinned.
-[workflow.editions."2026.06-0.1.0-rc.1"]
+[workflow.editions."2026.06-0.1.0-rc.2"]
 status = "provisional"
 spec = "docs/editions/2026.06.md"
 
@@ -34,7 +34,7 @@ id = "pypi:rlmesh"
 ecosystem = "pypi"
 name = "rlmesh"
 manifest = "python/rlmesh/pyproject.toml"
-version = "0.1.0rc1"
+version = "0.1.0rc2"
 role = "core"
 publish = true
 
@@ -43,7 +43,7 @@ id = "cargo:rlmesh"
 ecosystem = "cargo"
 name = "rlmesh"
 manifest = "crates/rlmesh/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -52,7 +52,7 @@ id = "cargo:rlmesh-adapters"
 ecosystem = "cargo"
 name = "rlmesh-adapters"
 manifest = "crates/rlmesh-adapters/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -61,7 +61,7 @@ id = "cargo:rlmesh-cli"
 ecosystem = "cargo"
 name = "rlmesh-cli"
 manifest = "crates/rlmesh-cli/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -70,7 +70,7 @@ id = "cargo:rlmesh-grpc"
 ecosystem = "cargo"
 name = "rlmesh-grpc"
 manifest = "crates/rlmesh-grpc/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -79,7 +79,7 @@ id = "cargo:rlmesh-proto"
 ecosystem = "cargo"
 name = "rlmesh-proto"
 manifest = "crates/rlmesh-proto/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -88,7 +88,7 @@ id = "cargo:rlmesh-runtime"
 ecosystem = "cargo"
 name = "rlmesh-runtime"
 manifest = "crates/rlmesh-runtime/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -97,7 +97,7 @@ id = "cargo:rlmesh-sandbox"
 ecosystem = "cargo"
 name = "rlmesh-sandbox"
 manifest = "crates/rlmesh-sandbox/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true
 
@@ -106,6 +106,6 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 role = "core"
 publish = true

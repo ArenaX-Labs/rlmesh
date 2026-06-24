@@ -12,7 +12,7 @@ RLMesh connects models to environments for evaluation. The Python SDK serves Gym
 
 ## Project Status
 
-The current release, **0.1.0-rc.1**, is a release candidate for 0.1.0: the `2026.06` workflow edition is still provisional and seals at the final 0.1.0.
+RLMesh is in the **0.1.0 release-candidate** phase: the `2026.06` workflow edition is still provisional and seals at the final 0.1.0. The PyPI and crates.io badges above show the latest published version.
 
 RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we aim to stabilize; the other crates are internal implementation detail with no stability promise. See the [compatibility](https://docs.rlmesh.dev/compatibility/) and [versioning](https://docs.rlmesh.dev/versioning/) policies.
 

@@ -63,7 +63,7 @@ hf://lerobot/cartpole-env@<full-commit-sha>:cartpole_suite/0
 | `allow_unpinned_hf` | Allows unpinned Hugging Face sources; keep this off for reproducibility. |
 | `**gym_make_kwargs` | Keyword arguments forwarded to Gymnasium or EnvHub environment creation. |
 
-Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `python/rlmesh/dist` into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as `rlmesh==0.1.0rc1`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
+Use `rlmesh_package="local"` from the RLMesh checkout to install a wheel from `python/rlmesh/dist` into the sandbox image. You can also pass an exact wheel path or a pip package specifier such as `rlmesh==0.1.0rc2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ```{warning}
 The container and your host must currently run the same rlmesh release: the protocol generation

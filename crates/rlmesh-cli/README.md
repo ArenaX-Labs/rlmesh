@@ -7,7 +7,7 @@ This crate publishes the `rlmesh` binary. The CLI is small: today it exposes `ve
 ## Installation
 
 ```bash
-cargo install rlmesh-cli --version 0.1.0-rc.1
+cargo install rlmesh-cli --version 0.1.0-rc.2
 ```
 
 ## Commands

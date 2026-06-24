@@ -180,6 +180,22 @@ def current_version() -> str:
     return m.group(1)
 
 
+def prose_version_files(root: Path) -> list[Path]:
+    """Prose whose literal version mentions track the current release: docs
+    (except the changelog and the version-stamped edition specs) plus example
+    READMEs. The top-level README is version-neutral by design; crate READMEs
+    carry precise Cargo install snippets bumped separately.
+    """
+    files = [
+        md
+        for md in sorted((root / "docs").rglob("*.md"))
+        if md.relative_to(root).as_posix() != "docs/changelog.md"
+        and not md.relative_to(root).as_posix().startswith("docs/editions/")
+    ]
+    files += sorted((root / "examples").rglob("README.md"))
+    return files
+
+
 def sub_file(path: Path, pairs: list[tuple[str, str]]) -> None:
     text = path.read_text()
     new = text
@@ -223,9 +239,14 @@ def bump(old: str, new: str) -> None:
     for readme in sorted((ROOT / "crates").glob("*/README.md")):
         sub_file(readme, [(rf'= "{o}"', f'= "{new}"'), (rf"--version {o}", f"--version {new}")])
 
-    # Docs / examples pip specifiers use the PEP 440 spelling.
-    for spec in ("docs/user-guide/sandbox.md", "examples/python/sandbox/README.md"):
-        sub_file(ROOT / spec, [(rf"rlmesh=={op}", f"rlmesh=={new_pep}")])
+    # Prose (docs + example READMEs): every literal version mention — pip specs,
+    # cohort examples, "this documents X" claims — tracks the release. Both the
+    # SemVer and PEP 440 spellings are rewritten; the bare-SemVer swap also fixes
+    # the `BASE-X.Y.Z` cohort strings. Excludes the changelog and the
+    # version-stamped edition specs. policy:check's doc-version guard fails loudly
+    # if any stale literal survives.
+    for prose in prose_version_files(ROOT):
+        sub_file(prose, [(o, new), (op, new_pep)])
 
     print("sync lockfiles + policy check")
     subprocess.run(["cargo", "update", "--workspace"], cwd=ROOT, check=True)

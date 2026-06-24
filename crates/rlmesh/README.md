@@ -8,7 +8,7 @@ This is the Rust-side surface we intend to stabilize. It is not stable yet and c
 
 ```toml
 [dependencies]
-rlmesh = "0.1.0-rc.1"
+rlmesh = "0.1.0-rc.2"
 ```
 
 ## What it provides

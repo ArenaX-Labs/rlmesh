@@ -41,7 +41,7 @@ A breaking change to a stable symbol gets a `### Breaking` entry with a before/a
 mise run bump X.Y.Z
 ```
 
-It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort such as `2026.06-0.1.0-rc.1`; a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See {doc}`editions/index`.
+It rewrites every manifest and install snippet, updates the workflow cohort, runs `cargo update` and `uv lock`, then `policy:check` — the backstop that fails loudly if any version-bearing spot was missed. Prereleases use an exact provisional cohort such as `2026.06-0.1.0-rc.2`; a stable release seals the bare edition in `rlmesh.toml` with `sealed_in` and `spec_sha256`. See {doc}`editions/index`.
 
 ## Tag scheme
 
