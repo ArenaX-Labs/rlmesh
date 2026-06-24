@@ -28,6 +28,7 @@ pub(super) fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'sta
     match kind {
         Some(join_request::Kind::ConfigureRoute(_)) => "configure_route",
         Some(join_request::Kind::Predict(_)) => "predict",
+        Some(join_request::Kind::GroupedPredict(_)) => "grouped_predict",
         Some(join_request::Kind::CloseRoute(_)) => "close_route",
         Some(join_request::Kind::Close(_)) => "close",
         None => "empty",

@@ -70,6 +70,32 @@ pub trait ModelHandler: Send {
     /// handshake capability advertises this pipelining to clients.
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
 
+    /// Produce actions for a batch of routed observations in one call.
+    ///
+    /// The server calls this for a `GroupedPredictRequest` — a control-plane-
+    /// grouped batch where each observation belongs to a *different* configured
+    /// route (and so a different env spec/adapter). The default fans out to
+    /// [`predict`](ModelHandler::predict) per group, sequentially, which is
+    /// behaviorally identical to handling each group as its own predict. A
+    /// handler overrides this to fuse the groups into ONE forward pass (e.g. a
+    /// single batched GPU inference across env types) — this is the only seam a
+    /// fusing model must implement.
+    ///
+    /// The returned `Vec` aligns 1:1 and in order with `observations`; each
+    /// element is that group's own `Result`, so one group's failure is reported
+    /// per-group and never sinks the others. An override MUST preserve that
+    /// length and order.
+    async fn predict_grouped(
+        &mut self,
+        observations: Vec<ModelObservation>,
+    ) -> Vec<Result<Vec<spaces::SpaceValue>>> {
+        let mut results = Vec::with_capacity(observations.len());
+        for observation in observations {
+            results.push(self.predict(observation).await);
+        }
+        results
+    }
+
     /// Per-route setup invoked at `ConfigureRoute`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or
     /// `None` for no per-route setup), obtained once when serving begins so the

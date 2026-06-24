@@ -14,8 +14,9 @@ use rlmesh_grpc::lifecycle::{
 use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
     CloseParticipantResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
-    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest,
-    ShutdownRequest, ShutdownResponse, join_request, join_response,
+    GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult, HandshakeRequest,
+    HandshakeResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse, ShutdownRequest,
+    ShutdownResponse, grouped_predict_result, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
@@ -28,9 +29,11 @@ use tonic::{Request, Response, Status, Streaming};
 
 use super::handler::{ModelHandler, ModelRouteSetup};
 use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
+use super::types::{ModelObservation, ModelRouteContext};
 use super::wire::{
     ModelAction, check_actions_conform, model_action_to_endpoint_response, model_endpoint_total_ns,
-    model_error, model_error_from_error, model_observation_from_endpoint_request,
+    model_error, model_error_from_error, model_error_value,
+    model_observation_from_endpoint_request,
 };
 use crate::bound::BoundListener;
 use crate::{BindAddress, Error, Result, ServeOptions, spaces};
@@ -416,6 +419,9 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
         Some(join_request::Kind::Predict(request)) => {
             handle_predict(request, handler, active_episodes, route_configs).await
         }
+        Some(join_request::Kind::GroupedPredict(request)) => {
+            handle_grouped_predict(request, handler, active_episodes, route_configs).await
+        }
         Some(join_request::Kind::CloseRoute(request)) => {
             let route_key = request.context.as_ref().and_then(route_config_key);
             match route_key {
@@ -606,67 +612,218 @@ fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Everything a single predict needs once its route is resolved and its
+/// lifecycle has run: the observation to hand the handler, plus the action
+/// space / lane count / route to encode the result against. Split out of
+/// [`handle_predict`] so a grouped predict can prepare every group, batch the
+/// observations into one [`ModelHandler::predict_grouped`] call, then encode
+/// each group's actions against its OWN route's space.
+struct PreparedPredict {
+    observation: ModelObservation,
+    action_space: spaces::SpaceSpec,
+    num_envs: usize,
+    route: ModelRouteContext,
+}
+
+/// Resolve a predict's route config and run its lifecycle — everything up to
+/// (but not including) the handler `predict` call. Must run with the handler and
+/// active-episodes locks already held: `update_lifecycle` drives the handler's
+/// `&mut self` hooks, and the per-route episode map is shared.
+async fn prepare_predict_locked<H: ModelHandler>(
+    request: PredictRequest,
+    handler: &mut H,
+    active_episodes: &mut HashMap<(String, i32), String>,
+    route_configs: &Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
+) -> Result<PreparedPredict> {
+    let mut observation = model_observation_from_endpoint_request(request)?;
+    let route = observation.route.clone();
+    let route_key = model_route_config_key(&route);
+    let config = route_configs
+        .lock()
+        .await
+        .get(&route_key)
+        .cloned()
+        .ok_or_else(|| Error::model("model route was not configured"))?;
+    observation.env_contract = config.env_contract;
+    // The route runs at the runtime-reconciled floor (authoritative over this
+    // model's own handshake). With a single edition this is the build's edition;
+    // trace it so the active session value is observable.
+    if let Some(floor) = config.floor.as_ref() {
+        tracing::trace!(
+            selected_workflow_edition = %floor.selected_workflow_edition,
+            "predict on route pinned to session floor"
+        );
+    }
+    // The route config no longer carries num_envs (the model gets only the
+    // stable EnvSpec); the per-predict lane count comes from the slots, already
+    // set by `model_observation_from_endpoint_request`.
+    update_lifecycle(handler, active_episodes, &observation).await?;
+    // Capture the action space + lane count before predict consumes the obs;
+    // the worker owns the typed->wire encode (D10).
+    let num_envs = observation.num_envs;
+    let action_space = observation
+        .env_contract
+        .as_ref()
+        .and_then(|contract| contract.action_space.clone())
+        .ok_or_else(|| Error::model("model route contract missing action space"))?;
+    Ok(PreparedPredict {
+        observation,
+        action_space,
+        num_envs,
+        route,
+    })
+}
+
+/// Turn one group's predicted actions into a wire [`PredictResponse`]: enforce
+/// the `== num_envs` lane count and structural conformance, then encode against
+/// this route's action space.
+fn finish_predict(
+    actions: Vec<spaces::SpaceValue>,
+    num_envs: usize,
+    action_space: &spaces::SpaceSpec,
+    route: ModelRouteContext,
+) -> Result<PredictResponse> {
+    if actions.len() != num_envs {
+        return Err(Error::model(format!(
+            "predict returned {} actions for {num_envs} lanes",
+            actions.len()
+        )));
+    }
+    check_actions_conform(action_space, &actions)?;
+    let wire = rlmesh_grpc::wire::encode_batched_partial_values(&actions, action_space)
+        .map_err(|err| Error::model(err.to_string()))?;
+    Ok(model_action_to_endpoint_response(ModelAction {
+        action: Some(wire),
+        route,
+    }))
+}
+
 async fn handle_predict<H: ModelHandler + 'static>(
     request: PredictRequest,
     handler: Arc<Mutex<H>>,
     active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
-    async {
-        let mut observation = model_observation_from_endpoint_request(request)?;
-        let route = observation.route.clone();
-        let route_key = model_route_config_key(&route);
-        let config = route_configs
-            .lock()
-            .await
-            .get(&route_key)
-            .cloned()
-            .ok_or_else(|| Error::model("model route was not configured"))?;
-        observation.env_contract = config.env_contract;
-        // The route runs at the runtime-reconciled floor (authoritative over
-        // this model's own handshake). With a single edition this is the build's
-        // edition; trace it so the active session value is observable.
-        if let Some(floor) = config.floor.as_ref() {
-            tracing::trace!(
-                selected_workflow_edition = %floor.selected_workflow_edition,
-                "predict on route pinned to session floor"
-            );
-        }
-        // The route config no longer carries num_envs (the model gets only the
-        // stable EnvSpec); the per-predict lane count comes from the slots,
-        // already set by `model_observation_from_endpoint_request`.
-
+    let result = async {
         let mut handler = handler.lock().await;
         let mut active_episodes = active_episodes.lock().await;
-        update_lifecycle(&mut *handler, &mut active_episodes, &observation).await?;
-        // Capture the action space + lane count before predict consumes the obs;
-        // the worker owns the typed->wire encode (D10).
-        let num_envs = observation.num_envs;
-        let action_space = observation
-            .env_contract
-            .as_ref()
-            .and_then(|contract| contract.action_space.clone())
-            .ok_or_else(|| Error::model("model route contract missing action space"))?;
+        let prepared =
+            prepare_predict_locked(request, &mut *handler, &mut active_episodes, &route_configs)
+                .await?;
+        let PreparedPredict {
+            observation,
+            action_space,
+            num_envs,
+            route,
+        } = prepared;
         let actions = handler.predict(observation).await?;
-        if actions.len() != num_envs {
-            return Err(Error::model(format!(
-                "predict returned {} actions for {num_envs} lanes",
-                actions.len()
-            )));
-        }
-        check_actions_conform(&action_space, &actions)?;
-        let wire = rlmesh_grpc::wire::encode_batched_partial_values(&actions, &action_space)
-            .map_err(|err| Error::model(err.to_string()))?;
-        Ok::<_, Error>(join_response::Kind::Predict(
-            model_action_to_endpoint_response(ModelAction {
-                action: Some(wire),
-                route,
-            }),
-        ))
+        finish_predict(actions, num_envs, &action_space, route)
     }
-    .await
-    .unwrap_or_else(|error| model_error_from_error(&error))
-    .into()
+    .await;
+    Some(match result {
+        Ok(response) => join_response::Kind::Predict(response),
+        Err(error) => model_error_from_error(&error),
+    })
+}
+
+/// Process a control-plane-grouped predict: one request carrying N groups, each
+/// already routed to its own configured route. Every group's lifecycle/decode
+/// runs under one handler-lock acquisition (atomic w.r.t. other predicts); the
+/// prepared observations are handed to [`ModelHandler::predict_grouped`] in one
+/// batch (the fusion seam — the default fans out sequentially), then each
+/// group's actions are encoded against its OWN route's action space. A group
+/// that fails to prepare or predict reports its own error in `results[i]` and
+/// never sinks the others.
+async fn handle_grouped_predict<H: ModelHandler + 'static>(
+    request: GroupedPredictRequest,
+    handler: Arc<Mutex<H>>,
+    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
+    route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
+) -> Option<join_response::Kind> {
+    // A finished group is either a prepare-time failure to report verbatim, or a
+    // prepared group awaiting its slice of the batched predict's actions.
+    enum Finisher {
+        Failed(Error),
+        Pending {
+            num_envs: usize,
+            action_space: spaces::SpaceSpec,
+            route: ModelRouteContext,
+        },
+    }
+
+    let mut handler = handler.lock().await;
+    let mut active_episodes = active_episodes.lock().await;
+
+    // Prepare every group under the lock (per-route lookup + lifecycle). A group
+    // whose route is unconfigured (or otherwise fails to prepare) records its own
+    // error and is excluded from the batched predict.
+    let mut batch: Vec<ModelObservation> = Vec::with_capacity(request.groups.len());
+    let mut finishers: Vec<Finisher> = Vec::with_capacity(request.groups.len());
+    for group in request.groups {
+        match prepare_predict_locked(group, &mut *handler, &mut active_episodes, &route_configs)
+            .await
+        {
+            Ok(prepared) => {
+                let PreparedPredict {
+                    observation,
+                    action_space,
+                    num_envs,
+                    route,
+                } = prepared;
+                batch.push(observation);
+                finishers.push(Finisher::Pending {
+                    num_envs,
+                    action_space,
+                    route,
+                });
+            }
+            Err(error) => finishers.push(Finisher::Failed(error)),
+        }
+    }
+
+    // One batched predict over the prepared observations. The default
+    // `predict_grouped` runs them sequentially; a fusing handler overrides it to
+    // run a single forward pass. Results align 1:1 and in order with `batch`.
+    let mut actions = handler.predict_grouped(batch).await.into_iter();
+
+    let results = finishers
+        .into_iter()
+        .map(|finisher| {
+            let outcome = match finisher {
+                Finisher::Failed(error) => Err(error),
+                Finisher::Pending {
+                    num_envs,
+                    action_space,
+                    route,
+                } => match actions.next() {
+                    Some(Ok(actions)) => finish_predict(actions, num_envs, &action_space, route),
+                    Some(Err(error)) => Err(error),
+                    // A correct `predict_grouped` returns one result per prepared
+                    // group; a short Vec is a handler-contract violation.
+                    None => Err(Error::model(
+                        "predict_grouped returned fewer action sets than prepared groups",
+                    )),
+                },
+            };
+            grouped_predict_result(outcome)
+        })
+        .collect();
+
+    Some(join_response::Kind::GroupedPredict(
+        GroupedPredictResponse { results },
+    ))
+}
+
+/// Wrap one group's outcome into a `GroupedPredictResult`, reusing the single-
+/// predict error mapping so a per-group error carries the same code/recoverable
+/// flag it would as a standalone predict.
+fn grouped_predict_result(outcome: Result<PredictResponse>) -> GroupedPredictResult {
+    GroupedPredictResult {
+        outcome: Some(match outcome {
+            Ok(response) => grouped_predict_result::Outcome::Response(response),
+            Err(error) => grouped_predict_result::Outcome::Error(model_error_value(&error)),
+        }),
+    }
 }
 
 /// Per-route tail of completion signals for a single Join stream.
@@ -789,6 +946,10 @@ fn join_request_route_key(request: &JoinRequest) -> Option<String> {
         join_request::Kind::Predict(request) => request.context.as_ref()?,
         join_request::Kind::CloseRoute(request) => request.context.as_ref()?,
         join_request::Kind::Close(_) => return None,
+        // A grouped predict spans multiple routes, so it is not pinned to any one
+        // route's chain; it runs under the handler Mutex (which serializes it
+        // against every other predict) rather than a per-route gate.
+        join_request::Kind::GroupedPredict(_) => return None,
     };
     route_config_key(context)
 }

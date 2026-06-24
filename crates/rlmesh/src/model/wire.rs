@@ -27,20 +27,29 @@ pub(super) fn model_error(message: impl Into<String>) -> join_response::Kind {
     })
 }
 
-/// Map a facade [`Error`] returned by a handler onto the wire model-error,
+/// Build the wire [`ModelError`] for a facade [`Error`] returned by a handler,
 /// preserving the handler-fault vs internal-fault distinction and the
-/// recoverable flag so the caller can react appropriately.
-pub(super) fn model_error_from_error(error: &Error) -> join_response::Kind {
+/// recoverable flag. Used directly by the grouped-predict path (which carries a
+/// `ModelError` per group inside `GroupedPredictResult`) and wrapped by
+/// [`model_error_from_error`] for the single-predict `JoinResponse.error` arm.
+pub(super) fn model_error_value(error: &Error) -> ModelError {
     let (code, is_recoverable) = match error {
         Error::Model(model) => (ModelErrorCode::Internal, model.is_recoverable),
         _ => (ModelErrorCode::Internal, false),
     };
-    join_response::Kind::Error(ModelError {
+    ModelError {
         code: code as i32,
         message: error.to_string(),
         is_recoverable,
         debug_info: String::new(),
-    })
+    }
+}
+
+/// Map a facade [`Error`] returned by a handler onto the wire model-error,
+/// preserving the handler-fault vs internal-fault distinction and the
+/// recoverable flag so the caller can react appropriately.
+pub(super) fn model_error_from_error(error: &Error) -> join_response::Kind {
+    join_response::Kind::Error(model_error_value(error))
 }
 
 /// Endpoint-local op duration in nanoseconds for the per-step

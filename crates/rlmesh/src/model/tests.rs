@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest, PredictRequest,
-    join_request, join_response,
+    CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
+    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest,
+    grouped_predict_result, join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -444,6 +445,224 @@ async fn served_model_predict_uses_slot_count_as_lane_count() {
         response.kind,
         Some(join_response::Kind::Predict(_))
     ));
+}
+
+/// Returns a per-lane action that conforms to the route's pinned action space,
+/// keyed by route_id, so a grouped predict across routes with *different* action
+/// spaces round-trips each group against its own space. Records
+/// `(route_id, episode_id)` in handler-entry order.
+#[derive(Clone, Default)]
+struct PerRouteActionHandler {
+    seen: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[async_trait]
+impl ModelHandler for PerRouteActionHandler {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        self.seen.lock().await.push((
+            observation.route.route_id.clone(),
+            observation.episode_id().to_string(),
+        ));
+        // "route-disc" pinned a Discrete action space; every other route here is
+        // the SmokeEnv Uint8 Box[1]. Returning the action that conforms to *this*
+        // route's space proves each group is finished against its own spec — the
+        // Discrete action would fail conformance if encoded against the Box route.
+        let action = if observation.route.route_id == "route-disc" {
+            spaces::SpaceValue::Discrete(0)
+        } else {
+            spaces::SpaceValue::Box(
+                spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+            )
+        };
+        Ok((0..observation.num_envs).map(|_| action.clone()).collect())
+    }
+}
+
+/// A native env contract whose action space is `Discrete(1000)`, built from a
+/// proto `EnvSpec` so the test does not hand-assemble native specs.
+fn discrete_action_contract() -> spaces::EnvContract {
+    rlmesh_grpc::wire::env_spec_from_proto(rlmesh_proto::core::v1::EnvSpec {
+        id: "Disc-v0".to_string(),
+        observation_space: None,
+        action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
+            shape: vec![],
+            dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+            spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
+                rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
+            )),
+        }),
+        metadata: None,
+    })
+    .expect("discrete env spec builds a contract")
+}
+
+/// One group of a grouped predict: a routed, single-slot `PredictRequest`.
+fn grouped_member(route_id: &str, request_id: &str, episode_id: &str) -> PredictRequest {
+    PredictRequest {
+        context: Some(rlmesh_proto::model::v1::PredictContext {
+            session_id: "session-1".to_string(),
+            route_id: route_id.to_string(),
+            request_id: request_id.to_string(),
+            slots: vec![rlmesh_proto::model::v1::PredictSlot {
+                episode_id: episode_id.to_string(),
+                env_index: 0,
+                step: 0,
+                reset: true,
+            }],
+        }),
+        observation: None,
+    }
+}
+
+fn expect_group_response(
+    result: &GroupedPredictResult,
+) -> rlmesh_proto::model::v1::PredictResponse {
+    match result.outcome.as_ref().expect("group has an outcome") {
+        grouped_predict_result::Outcome::Response(response) => response.clone(),
+        grouped_predict_result::Outcome::Error(error) => {
+            panic!(
+                "expected a per-group response, got error: {}",
+                error.message
+            )
+        }
+    }
+}
+
+#[tokio::test]
+async fn grouped_predict_processes_each_group_against_its_own_route() {
+    // Two groups on routes with DIFFERENT action spaces (Box vs Discrete). One
+    // grouped request must produce one ordered result per group, each mirroring
+    // its route and encoded against that route's own space.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handler = Arc::new(Mutex::new(PerRouteActionHandler {
+        seen: Arc::clone(&seen),
+    }));
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let configs = Arc::new(Mutex::new(HashMap::from([
+        (
+            "session-1:route-box".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
+            },
+        ),
+        (
+            "session-1:route-disc".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(discrete_action_contract())),
+                floor: None,
+            },
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
+                groups: vec![
+                    grouped_member("route-box", "p-box", "ep-box"),
+                    grouped_member("route-disc", "p-disc", "ep-disc"),
+                ],
+            })),
+            request_id: "grouped-1".to_string(),
+        },
+        Arc::clone(&handler),
+        None,
+        Arc::clone(&active),
+        Arc::clone(&configs),
+    )
+    .await;
+
+    let results = match response.kind {
+        Some(join_response::Kind::GroupedPredict(GroupedPredictResponse { results })) => results,
+        other => panic!("expected grouped predict response, got {other:?}"),
+    };
+    assert_eq!(results.len(), 2, "one result per group, in order");
+
+    let box_response = expect_group_response(&results[0]);
+    assert_eq!(box_response.context.as_ref().unwrap().route_id, "route-box");
+    assert!(
+        box_response.action.is_some(),
+        "the box group's action was encoded against its own action space"
+    );
+    let disc_response = expect_group_response(&results[1]);
+    assert_eq!(
+        disc_response.context.as_ref().unwrap().route_id,
+        "route-disc"
+    );
+    assert!(disc_response.action.is_some());
+
+    // Both groups reached the handler in group order, each decoded against its
+    // own route config.
+    assert_eq!(
+        *seen.lock().await,
+        vec![
+            ("route-box".to_string(), "ep-box".to_string()),
+            ("route-disc".to_string(), "ep-disc".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn grouped_predict_isolates_a_single_group_failure() {
+    // The second group references an UNCONFIGURED route. It must report its own
+    // error without sinking the first group's result (per-group results).
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handler = Arc::new(Mutex::new(PerRouteActionHandler {
+        seen: Arc::clone(&seen),
+    }));
+    let active = Arc::new(Mutex::new(HashMap::new()));
+    let configs = Arc::new(Mutex::new(HashMap::from([(
+        "session-1:route-box".to_string(),
+        ModelRouteConfig {
+            env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+            floor: None,
+        },
+    )])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
+                groups: vec![
+                    grouped_member("route-box", "p-box", "ep-box"),
+                    grouped_member("route-missing", "p-missing", "ep-missing"),
+                ],
+            })),
+            request_id: "grouped-2".to_string(),
+        },
+        Arc::clone(&handler),
+        None,
+        Arc::clone(&active),
+        Arc::clone(&configs),
+    )
+    .await;
+
+    let results = match response.kind {
+        Some(join_response::Kind::GroupedPredict(GroupedPredictResponse { results })) => results,
+        other => panic!("expected grouped predict response, got {other:?}"),
+    };
+    assert_eq!(results.len(), 2);
+    assert!(
+        matches!(
+            results[0].outcome.as_ref().unwrap(),
+            grouped_predict_result::Outcome::Response(_)
+        ),
+        "the configured group still succeeds"
+    );
+    match results[1].outcome.as_ref().unwrap() {
+        grouped_predict_result::Outcome::Error(error) => {
+            assert!(
+                error.message.contains("was not configured"),
+                "got: {}",
+                error.message
+            );
+        }
+        other => panic!("expected an error for the unconfigured group, got {other:?}"),
+    }
+    // Only the configured group reached the handler.
+    assert_eq!(
+        *seen.lock().await,
+        vec![("route-box".to_string(), "ep-box".to_string())]
+    );
 }
 
 #[tokio::test]

@@ -92,6 +92,34 @@ message PredictResponse {
   rlmesh.spaces.v1.SpaceValue action = 2;
 }
 
+// One request carrying N independent predict groups (control-plane-decided
+// grouping). Each group is a complete, already-routed `PredictRequest` the
+// server processes against its OWN route's spec — like a DB GROUP BY: the model
+// keeps every loaded EnvSpec/route and resolves each group's adapter/space by
+// its `route_id`, so no spec ever rides the predict. Purely additive: a peer
+// that never sends this still uses single `predict`, and an old server that does
+// not understand the arm leaves `kind` unset (the client treats that as an
+// unexpected message, never as a silent drop).
+message GroupedPredictRequest {
+  repeated PredictRequest groups = 1;
+}
+
+// Per-group outcome; `results[i]` corresponds to
+// `GroupedPredictRequest.groups[i]` in order. A single bad group reports its own
+// error here and does NOT sink the others (per-group results, not all-or-
+// nothing). A whole-request failure (e.g. malformed envelope) still surfaces as
+// `JoinResponse.error`.
+message GroupedPredictResult {
+  oneof outcome {
+    PredictResponse response = 1;
+    ModelError error = 2;
+  }
+}
+
+message GroupedPredictResponse {
+  repeated GroupedPredictResult results = 1;
+}
+
 message CloseRouteRequest {
   PredictContext context = 1;
   string reason = 2;
@@ -137,10 +165,16 @@ message JoinRequest {
     PredictRequest predict = 2;
     CloseRouteRequest close_route = 3;
     CloseParticipantRequest close = 4;
+    // Additive: a batch of independent predict groups across configured routes.
+    // Absence is exactly today's behavior (single `predict`). Tag 5 is the
+    // sibling `request_id` scalar, not an oneof arm, so 6 is the first free arm.
+    GroupedPredictRequest grouped_predict = 6;
   }
 
   // Per-message correlation id, harmonized to tag 5 across all four Join
   // messages (env + model, request + response). 1-byte tag on the hot path.
+  // A `grouped_predict` carries its OWN envelope id here (never a group's), so
+  // the one-response-per-request_id demux invariant holds.
   string request_id = 5;
 }
 
@@ -150,6 +184,10 @@ message JoinResponse {
     PredictResponse predict = 2;
     CloseRouteResponse close_route = 3;
     CloseParticipantResponse close = 4;
+    // Additive: per-group results answering a GroupedPredictRequest. Tags 5/6
+    // are the sibling request_id/endpoint_total_ns scalars; 7 is the first free
+    // oneof arm (error stays at 10).
+    GroupedPredictResponse grouped_predict = 7;
     ModelError error = 10;
   }
 

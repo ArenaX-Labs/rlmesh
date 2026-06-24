@@ -6,9 +6,9 @@ use rlmesh_proto::{
     },
     is_protocol_generation_supported,
     model::v1::{
-        CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, JoinRequest,
-        JoinResponse, PredictRequest, PredictResponse, ShutdownRequest, join_request,
-        join_response, model_service_client::ModelServiceClient,
+        CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
+        GroupedPredictResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
+        ShutdownRequest, join_request, join_response, model_service_client::ModelServiceClient,
     },
     peer_info, supported_workflow_editions,
 };
@@ -388,6 +388,54 @@ impl ModelClient {
         }
     }
 
+    /// Issue a control-plane-grouped predict: one request carrying several
+    /// already-routed predict groups, each processed by the server against its
+    /// own route's spec (and optionally fused into one forward pass). Takes
+    /// `&self`, so it can overlap other in-flight requests on the connection;
+    /// the response is demuxed by the grouped request's own envelope id.
+    ///
+    /// Per-group *handler* errors come back inside the `GroupedPredictResponse`
+    /// (one `GroupedPredictResult` per group), so a single bad group does not
+    /// fail this call. A malformed group (missing/empty route context) or an
+    /// empty batch fails the whole call up front, before anything is sent.
+    pub async fn grouped_predict(
+        &self,
+        request: GroupedPredictRequest,
+    ) -> Result<GroupedPredictResponse, GrpcError> {
+        self.ensure_ready()?;
+        if request.groups.is_empty() {
+            return Err(decode_error(
+                "grouped predict must include at least one group",
+            ));
+        }
+        for group in &request.groups {
+            validate_predict_route(
+                group
+                    .context
+                    .as_ref()
+                    .ok_or_else(|| decode_error("grouped predict group missing route context"))?,
+            )?;
+        }
+        // A grouped request spans multiple routes, so it gets its OWN envelope
+        // request_id (never a group's): the demux is one response per request_id.
+        let request_id = self.next_request_id();
+        let response = self
+            .send_on_stream(JoinRequest {
+                kind: Some(join_request::Kind::GroupedPredict(request)),
+                request_id,
+            })
+            .await?;
+        match response.kind {
+            Some(join_response::Kind::GroupedPredict(grouped)) => Ok(grouped),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "GroupedPredictResponse".to_string(),
+                actual: format!("{:?}", response.kind),
+            }
+            .into()),
+        }
+    }
+
     async fn setup_join_stream(&mut self) -> Result<(), GrpcError> {
         let (tx, rx) = mpsc::channel::<JoinRequest>(32);
         let request_stream = ReceiverStream::new(rx);
@@ -495,7 +543,7 @@ impl ModelClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_proto::model::v1::PredictResponse;
+    use rlmesh_proto::model::v1::{PredictContext, PredictResponse, PredictSlot};
     use tonic::transport::Endpoint;
 
     /// Build a `Ready` client wired to an in-memory request channel, plus a
@@ -599,6 +647,123 @@ mod tests {
         // Each waiter gets exactly its own response, regardless of order.
         assert_eq!(first.await.unwrap().unwrap().request_id, "req-1");
         assert_eq!(second.await.unwrap().unwrap().request_id, "req-2");
+    }
+
+    /// A routed, single-slot predict usable as a grouped-predict member.
+    fn valid_member(request_id: &str, episode: &str) -> PredictRequest {
+        PredictRequest {
+            context: Some(PredictContext {
+                session_id: "s".to_string(),
+                route_id: "r".to_string(),
+                request_id: request_id.to_string(),
+                slots: vec![PredictSlot {
+                    episode_id: episode.to_string(),
+                    env_index: 0,
+                    step: 0,
+                    reset: true,
+                }],
+            }),
+            observation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn grouped_predict_uses_a_fresh_envelope_id_and_resolves_by_it() {
+        let (client, mut request_rx, pending) = ready_client();
+
+        let send = tokio::spawn(async move {
+            client
+                .grouped_predict(GroupedPredictRequest {
+                    groups: vec![valid_member("group-0", "ep-0")],
+                })
+                .await
+        });
+
+        let sent = request_rx.recv().await.unwrap();
+        assert!(matches!(
+            sent.kind,
+            Some(join_request::Kind::GroupedPredict(_))
+        ));
+        // The grouped request carries its OWN envelope id, never a group's, so
+        // the one-response-per-request_id demux invariant holds.
+        assert_ne!(sent.request_id, "group-0");
+
+        deliver(
+            &pending,
+            &sent.request_id,
+            JoinResponse {
+                request_id: sent.request_id.clone(),
+                kind: Some(join_response::Kind::GroupedPredict(
+                    GroupedPredictResponse::default(),
+                )),
+                endpoint_total_ns: None,
+            },
+        );
+
+        let response = send.await.unwrap().unwrap();
+        assert!(response.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn grouped_and_single_predict_demux_out_of_order() {
+        let (client, mut request_rx, pending) = ready_client();
+        let client = Arc::new(client);
+
+        // A grouped predict and a single predict in flight at once on one stream.
+        let c1 = Arc::clone(&client);
+        let grouped = tokio::spawn(async move {
+            c1.grouped_predict(GroupedPredictRequest {
+                groups: vec![valid_member("group-0", "ep-g")],
+            })
+            .await
+        });
+        let c2 = Arc::clone(&client);
+        let single =
+            tokio::spawn(
+                async move { c2.predict_concurrent(valid_member("single", "ep-s")).await },
+            );
+
+        // Capture both outgoing envelope ids (the single predict's id is "single"
+        // from its context; the grouped predict's is a fresh counter id).
+        let sent_a = request_rx.recv().await.unwrap();
+        let sent_b = request_rx.recv().await.unwrap();
+        let (grouped_id, single_id) = match (&sent_a.kind, &sent_b.kind) {
+            (Some(join_request::Kind::GroupedPredict(_)), _) => {
+                (sent_a.request_id.clone(), sent_b.request_id.clone())
+            }
+            _ => (sent_b.request_id.clone(), sent_a.request_id.clone()),
+        };
+        assert_eq!(single_id, "single");
+
+        // Deliver out of order: the single predict first, then the grouped one.
+        deliver(&pending, &single_id, predict_response_for(&single_id));
+        deliver(
+            &pending,
+            &grouped_id,
+            JoinResponse {
+                request_id: grouped_id.clone(),
+                kind: Some(join_response::Kind::GroupedPredict(
+                    GroupedPredictResponse::default(),
+                )),
+                endpoint_total_ns: None,
+            },
+        );
+
+        // Each waiter resolves to its own typed response despite the overlap and
+        // the out-of-order delivery: grouped -> GroupedPredictResponse, single ->
+        // PredictResponse. Both completing proves they demuxed independently.
+        assert!(grouped.await.unwrap().is_ok());
+        assert!(single.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn grouped_predict_rejects_empty_groups() {
+        let (client, _request_rx, _pending) = ready_client();
+        let err = client
+            .grouped_predict(GroupedPredictRequest { groups: vec![] })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("at least one group"), "got: {err}");
     }
 
     #[tokio::test]
