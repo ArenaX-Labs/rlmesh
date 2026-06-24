@@ -8,15 +8,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from ..constants import MODEL_METADATA_KEY
+from ._codec import normalize_spec
 from .action import ActionLayout
 from .action_serialization import action_layout_from_dict, action_layout_to_dict
 from .model_inputs import ModelInput
 from .model_serialization import model_input_from_dict, model_input_to_dict
-from .validation import (
-    load_json_mapping,
-    require_mapping,
-    require_sequence,
-)
 
 
 @dataclass(frozen=True)
@@ -41,57 +37,77 @@ class ModelSpec:
         """Return a JSON-compatible dict form of this spec.
 
         Raises:
-            ValueError: If a custom input holds an in-process callable,
-                which cannot be serialized.
+            ValueError: If a custom input cannot be serialized (an in-process
+                callable, or an entrypoint custom at the publish boundary).
         """
-        return {
+        raw = {
             "inputs": [model_input_to_dict(item) for item in self.inputs],
             "action": action_layout_to_dict(self.action),
         }
+        return normalize_spec("model", raw, allow_custom=True)
 
     def to_json(self) -> str:
         """Return this spec serialized as a JSON string."""
-        return json.dumps(self.to_dict(), sort_keys=True)
+        # allow_nan=False: refuse to emit the non-RFC-8259 `Infinity`/`NaN`
+        # tokens the Rust serde codec rejects (a directly-constructed dataclass
+        # bypasses the from_dict finiteness guards).
+        return json.dumps(self.to_dict(), sort_keys=True, allow_nan=False)
 
     def to_metadata(self) -> dict[str, Any]:
         """Return a metadata mapping fragment carrying this spec.
 
         Merge the result into model contract metadata so remote consumers
-        can recover the spec via :meth:`from_metadata`. A remotely published
-        spec must be fully declarative: custom transforms must use
-        ``module:callable`` entrypoint strings, not in-process callables.
+        can recover the spec via :meth:`from_metadata`. A published spec must
+        be fully declarative: custom inputs (whether in-process callables or
+        ``module:callable`` entrypoint strings) cannot be published, because a
+        consumer would have to import code from the contract. Resolve such a
+        spec locally instead (the model spec need not travel).
 
         Raises:
-            ValueError: If a custom input holds an in-process callable,
-                which cannot be serialized.
+            ValueError: If any input is a custom transform (in-process callable
+                or entrypoint); neither can be safely published in v1.
         """
         return {MODEL_METADATA_KEY: self.to_dict()}
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ModelSpec:
-        """Build a spec from :meth:`to_dict` output."""
-        inputs = tuple(
-            model_input_from_dict(item) for item in require_sequence(data, "inputs")
-        )
+        """Build a spec from :meth:`to_dict` output.
+
+        The input is validated and canonicalized by the Rust codec first, so the
+        Python shape readers below operate on already-valid data.
+        """
+        canonical = normalize_spec("model", data, allow_custom=True)
+        inputs = tuple(model_input_from_dict(item) for item in canonical["inputs"])
         return cls(
             inputs=inputs,
-            action=action_layout_from_dict(require_mapping(data, "action")),
+            action=action_layout_from_dict(canonical["action"]),
         )
 
     @classmethod
     def from_json(cls, payload: str) -> ModelSpec:
         """Build a spec from :meth:`to_json` output."""
-        return cls.from_dict(load_json_mapping(payload))
+        return cls.from_dict(json.loads(payload))
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, Any]) -> ModelSpec | None:
-        """Extract a spec from model contract metadata, if one is present."""
-        payload = metadata.get(MODEL_METADATA_KEY)
-        if payload is None:
-            return None
-        if not isinstance(payload, Mapping):
-            raise TypeError(f"metadata key {MODEL_METADATA_KEY!r} must hold a mapping")
-        return cls.from_dict(cast(Mapping[str, Any], payload))
+        """Extract a spec from model contract metadata, newest format first.
+
+        Iterates the known metadata keys newest-format-first: a future v2 format
+        ships a new key (``rlmesh.adapters.v2.model_spec`` -> a v2 reader) prepended
+        to this list, so a newer build still reads an older peer's v1 spec. This
+        is the single dual-read dispatch the v1->v2 rule promises; it moves into
+        the Rust codec (the single source of truth) once the PyO3 normalize door
+        lands.
+        """
+        readers = ((MODEL_METADATA_KEY, cls.from_dict),)
+        for key, reader in readers:
+            payload = metadata.get(key)
+            if payload is None:
+                continue
+            if not isinstance(payload, Mapping):
+                raise TypeError(f"metadata key {key!r} must hold a mapping")
+            return reader(cast(Mapping[str, Any], payload))
+        return None
 
 
 __all__ = ["ModelSpec"]

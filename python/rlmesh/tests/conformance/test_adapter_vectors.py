@@ -21,6 +21,7 @@ import gymnasium as gym
 import numpy as np
 import pytest
 import rlmesh.adapters as adapt
+from rlmesh._rlmesh import adapters_spec_normalize
 
 CASES_DIR = (
     Path(__file__).resolve().parents[4]
@@ -124,10 +125,15 @@ def test_vector(path: Path) -> None:
     case = json.loads(path.read_text())
 
     if case["kind"] == "serialization":
-        if case["side"] == "env":
-            assert adapt.EnvTags.from_dict(case["doc"]).to_dict() == case["doc"]
-        else:
-            assert adapt.ModelSpec.from_dict(case["doc"]).to_dict() == case["doc"]
+        side = case["side"]
+        doc = case["doc"]
+        cls = adapt.EnvTags if side == "env" else adapt.ModelSpec
+        # Python dataclass round-trip (now itself routed through the Rust codec).
+        assert cls.from_dict(doc).to_dict() == doc
+        # Direct cross-engine parity: the Rust codec's canonical form of the
+        # frozen vector equals the vector itself, so the Python binding and the
+        # native core cannot disagree on the v1 format.
+        assert json.loads(adapters_spec_normalize(side, json.dumps(doc), True)) == doc
         return
 
     if case["kind"] == "resolve":

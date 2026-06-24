@@ -69,7 +69,12 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             ));
         }
         offsets.insert(component.role.clone(), (cursor, component));
-        cursor += component.dim;
+        cursor = cursor.checked_add(component.dim).ok_or_else(|| {
+            err(
+                ErrorCode::DimMismatch,
+                "model action component dims overflow u32".to_owned(),
+            )
+        })?;
     }
     let in_dim = cursor;
 

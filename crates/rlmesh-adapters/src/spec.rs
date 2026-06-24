@@ -1,10 +1,21 @@
 //! v1 spec types.
+//!
+//! `#[serde(deny_unknown_fields)]` is applied to the plain structs (EnvTags,
+//! ModelSpec, ActionLayout, ActionComponent, StateComponent, StateField) so a
+//! typo'd field is rejected, not silently dropped. It is deliberately NOT on
+//! the internally-tagged-enum variant payloads (ImageInput/StateInput/
+//! TextInput/CustomInput under ModelInput; ImageTag/StateTag/TextTag/StateLayout
+//! under ObsTag) -- serde treats the `type` tag as an unknown field there and
+//! would break deserialization. Strict unknown-field rejection for those lands
+//! with the Rust normalize door (a manual key check); until then the Python
+//! from_dict mirror also stays lenient on those payloads.
 
 mod action;
 mod env;
 mod env_tags;
 mod layouts;
 mod model;
+mod num;
 mod rotations;
 
 pub use action::{ActionComponent, ActionLayout};

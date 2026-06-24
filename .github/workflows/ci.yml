@@ -64,7 +64,7 @@ jobs:
       - name: Static checks
         run: mise run --skip-tools check
 
-      - name: Unit and integration tests
+      - name: Unit, integration, and conformance tests
         run: mise run --skip-tools test
 
       - name: Python API surface tests

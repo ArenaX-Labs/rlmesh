@@ -2,10 +2,14 @@
 //!
 //! Snapshot-style: expectations live in `conformance/v1/cases/*.json`.
 //! `UPDATE_VECTORS=1 cargo test -p rlmesh-adapters` rewrites the `expect`
-//! blocks (and normalizes spec documents) from current behavior — review
-//! the diff before committing; a changed vector is a semantic change to
-//! v1 and must be additive. New cases are authored by hand: write the
-//! inputs with an empty `expect`, then run update mode once.
+//! blocks (and normalizes resolve/apply input specs) from current
+//! behavior — review the diff before committing; a changed vector is a
+//! semantic change to v1 and must be additive. New resolve/apply cases are
+//! authored by hand: write the inputs with an empty `expect`, then run
+//! update mode once. `serialization` vectors are the FROZEN wire contract:
+//! their `doc` is NEVER rewritten (auto-normalizing would let a renamed or
+//! removed serde field self-heal green), so author the canonical `doc` by
+//! hand and let the round-trip assertion verify it.
 
 use std::fs;
 use std::path::PathBuf;
@@ -232,16 +236,9 @@ fn updated_case(name: &str, case: &Json) -> Json {
     let mut out = case.clone();
     match case["kind"].as_str().expect("case kind") {
         "serialization" => {
-            let doc = &case["doc"];
-            out["doc"] = if case["side"] == "env" {
-                let spec: EnvTags = serde_json::from_value(doc.clone())
-                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
-                serde_json::to_value(&spec).expect("serializes")
-            } else {
-                let spec: ModelSpec = serde_json::from_value(doc.clone())
-                    .unwrap_or_else(|e| panic!("{name}: parse failed: {e}"));
-                serde_json::to_value(&spec).expect("serializes")
-            };
+            unreachable!(
+                "{name}: serialization vectors are frozen and not rewritten in update mode"
+            )
         }
         "resolve" => {
             let (tags, obs_space, action_space, model_spec) = parse_inputs(case);
@@ -391,12 +388,16 @@ fn conformance_vectors() {
         let case: Json = serde_json::from_str(&fs::read_to_string(&path).expect("readable case"))
             .expect("case parses as JSON");
 
-        if update {
+        if update && case["kind"].as_str() != Some("serialization") {
             let rewritten = updated_case(&name, &case);
             let mut text = serde_json::to_string_pretty(&rewritten).expect("serializes");
             text.push('\n');
             fs::write(&path, text).expect("writable case");
         } else {
+            // Serialization vectors are the FROZEN v1 contract: never
+            // rewritten, even under UPDATE_VECTORS (auto-normalizing let a
+            // renamed serde field self-heal green). verify_case is their sole
+            // authority and runs in both modes.
             verify_case(&name, &case);
         }
         ran += 1;

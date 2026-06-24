@@ -39,6 +39,8 @@ pub enum JoinError {
         layout_sum: u32,
         width: u32,
     },
+    #[error("state layout for {key:?} declares dims that overflow u32")]
+    StateLayoutWidthOverflow { key: String },
     #[error("state layout for {key:?} declares role {role:?} more than once")]
     DuplicateLayoutRole { key: String, role: String },
     #[error(
@@ -59,6 +61,8 @@ pub enum JoinError {
         action_width: u32,
         component_sum: u32,
     },
+    #[error("action component dims overflow u32")]
+    ActionWidthOverflow,
     #[error(
         "action component {role:?} declares encoding {encoding} ({dims} dims) but its dim is {dim}"
     )]
@@ -186,7 +190,13 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
         });
     }
     let width = width_of(leaf);
-    let layout_sum: u32 = layout.fields.iter().map(|field| field.dim).sum();
+    let layout_sum = layout
+        .fields
+        .iter()
+        .try_fold(0u32, |acc, field| acc.checked_add(field.dim))
+        .ok_or_else(|| JoinError::StateLayoutWidthOverflow {
+            key: path.to_owned(),
+        })?;
     if layout_sum != width {
         return Err(JoinError::StateLayoutWidthMismatch {
             key: path.to_owned(),
@@ -324,11 +334,11 @@ fn resolve_action(action: &ActionLayout, action_space: &SpaceView) -> Result<Act
         });
     }
     let action_width = width_of(action_space);
-    let component_sum: u32 = action
+    let component_sum = action
         .components
         .iter()
-        .map(|component| component.dim)
-        .sum();
+        .try_fold(0u32, |acc, component| acc.checked_add(component.dim))
+        .ok_or(JoinError::ActionWidthOverflow)?;
     if component_sum != action_width {
         return Err(JoinError::ActionWidthMismatch {
             action_width,
@@ -555,6 +565,53 @@ mod tests {
         assert!(matches!(
             join(&tags, &obs, &action),
             Err(JoinError::KeyNotInSpace { key }) if key == "missing"
+        ));
+    }
+
+    #[test]
+    fn rejects_action_dim_sum_overflow() {
+        // Declared component dims that overflow u32 are a clean error, not a
+        // silent wrap (which would fabricate a false width-match in release).
+        let obs = dict_view(vec![]);
+        let action = box_view(vec![3], None, None);
+        let tags = EnvTags {
+            observation: BTreeMap::new(),
+            action: action_layout(vec![
+                component("action/a", u32::MAX, None),
+                component("action/b", 2, None),
+            ]),
+        };
+        assert!(matches!(
+            join(&tags, &obs, &action),
+            Err(JoinError::ActionWidthOverflow)
+        ));
+    }
+
+    #[test]
+    fn rejects_state_layout_dim_sum_overflow() {
+        let result = join_obs(
+            "state",
+            box_view(vec![3], None, None),
+            ObsTag::Layout(StateLayout {
+                fields: vec![
+                    StateField {
+                        role: Some("a".to_owned()),
+                        dim: u32::MAX,
+                        encoding: None,
+                        range: None,
+                    },
+                    StateField {
+                        role: Some("b".to_owned()),
+                        dim: 2,
+                        encoding: None,
+                        range: None,
+                    },
+                ],
+            }),
+        );
+        assert!(matches!(
+            result,
+            Err(JoinError::StateLayoutWidthOverflow { key }) if key == "state"
         ));
     }
 

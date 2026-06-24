@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .custom_encoding import CustomEncoding
-from .validation import check_non_negative
 from .vocabularies import RotationEncoding
 
 
@@ -48,7 +47,9 @@ class ActionComponent:
     threshold: float | None = None
 
     def __post_init__(self) -> None:
-        check_non_negative(self.dim, "ActionComponent.dim")
+        # dim >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
+        # The CustomEncoding width law is host-only: CustomEncoding never crosses
+        # the wire, so Rust cannot own it -- it stays here as construction sugar.
         if (
             isinstance(self.encoding, CustomEncoding)
             and self.dim != self.encoding.width

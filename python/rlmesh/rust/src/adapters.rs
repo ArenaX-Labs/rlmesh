@@ -31,10 +31,59 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    EnvTags, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve,
-    roles,
+    EnvTags, ModelInput, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
+    resolve, roles,
 };
 use rlmesh_spaces::{DType, Tensor};
+use serde::de::DeserializeOwned;
+
+/// Deserialize a spec JSON string with a field-path-annotated error.
+///
+/// `label` is the human spec name (`"env tags"` / `"model spec"`). The Rust
+/// serde codec is the single authoritative validator; this surfaces its errors
+/// to Python as clean, field-named messages like
+/// `invalid model spec at action.components[0].dim: must be a non-negative
+/// integer, got -1` instead of a bare line/column serde error.
+///
+/// Two documented limitations of the underlying `serde_path_to_error`:
+/// - the field path stops at an internally-tagged-enum boundary, so a bad field
+///   inside a `ModelInput`/`ObsTag` variant reports `inputs[0]`, not
+///   `inputs[0].components[0].dim` (plain-struct fields get the full path);
+/// - a whole-document type error (the root is not an object, e.g. `42`) has no
+///   field path and still names the Rust struct (`expected struct ModelSpec`).
+///   `json.dumps(dict)` never produces such input; only a raw native caller can.
+fn de_spec<T: DeserializeOwned>(label: &str, json: &str) -> PyResult<T> {
+    // Strip serde_json's "... at line N column M" tail: line/column is
+    // meaningless to a caller who passed a dict, not a file. rsplit (not split):
+    // the echoed content can itself contain " at line ", so drop only the
+    // trailing locator, never a fragment of the real message.
+    fn clean(raw: &str) -> &str {
+        raw.rsplit_once(" at line ").map_or(raw, |(head, _)| head)
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    let value = serde_path_to_error::deserialize::<_, T>(&mut deserializer).map_err(|error| {
+        let raw = error.inner().to_string();
+        let message = clean(&raw);
+        // A whole-document parse failure (EOF / syntax of the root) resolves to
+        // path "." -- no useful field path there. A value-level error (incl. a
+        // non-finite overflow, which serde classifies as Syntax) keeps its path.
+        let path = error.path().to_string();
+        if path == "." {
+            PyValueError::new_err(format!("invalid {label}: {message}"))
+        } else {
+            PyValueError::new_err(format!("invalid {label} at {path}: {message}"))
+        }
+    })?;
+    // serde_path_to_error::deserialize stops after one value; unlike
+    // serde_json::from_str it does NOT check for EOF. Without this, a valid
+    // document followed by trailing junk would normalize green and malformed
+    // wire input would look valid -- the regression this guards against.
+    deserializer.end().map_err(|error| {
+        PyValueError::new_err(format!("invalid {label}: {}", clean(&error.to_string())))
+    })?;
+    Ok(value)
+}
 
 /// Wire-vocabulary constants re-exported to Python. The `rlmesh-adapters`
 /// crate is the single source of truth: bindings re-export, never re-declare.
@@ -373,10 +422,8 @@ pub fn adapters_resolve(
     action_space: &Bound<'_, PyAny>,
     model_spec_json: &str,
 ) -> PyResult<PyAdapterPlan> {
-    let tags: EnvTags = serde_json::from_str(env_tags_json)
-        .map_err(|err| PyValueError::new_err(format!("invalid env tags: {err}")))?;
-    let model_spec: ModelSpec = serde_json::from_str(model_spec_json)
-        .map_err(|err| PyValueError::new_err(format!("invalid model spec: {err}")))?;
+    let tags: EnvTags = de_spec("env tags", env_tags_json)?;
+    let model_spec: ModelSpec = de_spec("model spec", model_spec_json)?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
     let adapter = resolve(&tags, &obs_view, &action_view, &model_spec, true)
@@ -405,10 +452,69 @@ pub fn adapters_join_check(
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
-    let tags: EnvTags = serde_json::from_str(env_tags_json)
-        .map_err(|err| PyValueError::new_err(format!("invalid env tags: {err}")))?;
+    let tags: EnvTags = de_spec("env tags", env_tags_json)?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
     join(&tags, &obs_view, &action_view).map_err(|err| PyValueError::new_err(err.to_string()))?;
     Ok(())
+}
+
+/// Validate and canonicalize a spec's JSON through the Rust serde codec.
+///
+/// `side` is `"env"` (EnvTags) or `"model"` (ModelSpec). The JSON is parsed by
+/// the authoritative serde codec -- enforcing the frozen vocabulary, field-name
+/// strictness, dim bounds, the stack ceiling, ... -- and re-serialized to its
+/// canonical form. This is the single normalize/validate door the Python codec
+/// routes through, so the two languages cannot disagree on the format. When
+/// `allow_custom` is false (the publish boundary) a custom input carrying an
+/// entrypoint is rejected; resolve passes `allow_custom=true`.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+pub fn adapters_spec_normalize(
+    side: &str,
+    spec_json: &str,
+    allow_custom: bool,
+) -> PyResult<String> {
+    match side {
+        "env" => {
+            let tags: EnvTags = de_spec("env tags", spec_json)?;
+            serde_json::to_string(&tags).map_err(|err| {
+                PyValueError::new_err(format!("could not serialize env tags: {err}"))
+            })
+        }
+        "model" => {
+            let spec: ModelSpec = de_spec("model spec", spec_json)?;
+            // Defense-in-depth at the publish boundary. Today the live gate is
+            // Python's model_input_to_dict, which raises on any custom before a
+            // spec ever reaches here, so every Python caller passes
+            // allow_custom=true. This branch is the latent enforcement for raw
+            // native callers and the future FE binding -- keep it as the codec's
+            // own publish guard, not a redundancy.
+            if !allow_custom {
+                for input in &spec.inputs {
+                    if let ModelInput::Custom(custom) = input {
+                        return Err(PyValueError::new_err(format!(
+                            "custom input {:?} carries an entrypoint ({:?}) and cannot be \
+                             published in v1 contract metadata; resolve the spec locally",
+                            custom.key, custom.transform
+                        )));
+                    }
+                }
+            }
+            serde_json::to_string(&spec).map_err(|err| {
+                PyValueError::new_err(format!("could not serialize model spec: {err}"))
+            })
+        }
+        other => Err(PyValueError::new_err(format!(
+            "unknown spec side {other:?}; expected \"env\" or \"model\""
+        ))),
+    }
 }

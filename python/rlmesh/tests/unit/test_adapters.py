@@ -280,14 +280,17 @@ def test_action_component_positional_binary_is_unchanged() -> None:
     assert c.scale is None and c.invert is False and c.threshold is None
 
 
-def test_action_layout_from_dict_rejects_loosely_typed_corrections() -> None:
-    # The Python deserializer must match the Rust serde contract: a truthy
-    # non-bool invert/binary or a numeric-string scale/threshold is rejected, so
-    # both bindings agree on hand-authored or third-party layout JSON.
-    from rlmesh.adapters.specs.action_serialization import action_layout_from_dict
-
-    def layout(**correction: Any) -> dict[str, Any]:
-        return {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1, **correction}]}
+def test_action_layout_loosely_typed_corrections_rejected() -> None:
+    # The authoritative Rust codec (reached via from_dict) rejects a truthy
+    # non-bool invert/binary or a numeric-string scale/threshold, so both
+    # bindings agree on hand-authored or third-party layout JSON.
+    def spec(**correction: Any) -> dict[str, Any]:
+        return {
+            "inputs": [],
+            "action": {
+                "components": [{"role": adapt.ACTION_GRIPPER, "dim": 1, **correction}]
+            },
+        }
 
     for bad in (
         {"invert": 1},
@@ -297,14 +300,14 @@ def test_action_layout_from_dict_rejects_loosely_typed_corrections() -> None:
         {"binary": 1},
     ):
         with pytest.raises(ValueError):
-            action_layout_from_dict(layout(**bad))
+            adapt.ModelSpec.from_dict(spec(**bad))
 
-    ok = action_layout_from_dict(
-        layout(invert=True, scale=2.0, threshold=0.5, binary=True)
+    ok = adapt.ModelSpec.from_dict(
+        spec(invert=True, scale=2.0, threshold=0.5, binary=True)
     )
-    assert ok.components[0].invert is True
-    assert ok.components[0].scale == 2.0
-    assert ok.components[0].threshold == 0.5
+    assert ok.action.components[0].invert is True
+    assert ok.action.components[0].scale == 2.0
+    assert ok.action.components[0].threshold == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +894,136 @@ def test_custom_entrypoint_requires_trust():
     assert adapter.transform_obs(make_obs())["count"] == len(make_obs())
 
 
+def test_spec_normalize_door_roundtrips_validates_and_gates_custom():
+    # P1.1: the single Rust normalize/validate door the Python codec will route
+    # through in P1.2. Here it is exercised in isolation.
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    # Round-trips a model spec and env tags through the Rust serde codec.
+    spec = adapt.ModelSpec(
+        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    assert (
+        adapt.ModelSpec.from_json(
+            adapters_spec_normalize("model", json.dumps(spec.to_dict()), True)
+        )
+        == spec
+    )
+    tags = LIBERO_ENV.tags
+    assert (
+        adapt.EnvTags.from_json(
+            adapters_spec_normalize("env", json.dumps(tags.to_dict()), True)
+        )
+        == tags
+    )
+
+    # Validation: an unknown field on a plain struct is rejected by the codec.
+    with pytest.raises(ValueError):
+        adapters_spec_normalize(
+            "model", '{"inputs": [], "action": {"components": [], "bogus": 1}}', True
+        )
+
+    # Custom gate: an entrypoint custom is rejected at publish (allow_custom=
+    # False) but passes through for resolve (allow_custom=True).
+    custom_wire = json.dumps(
+        {
+            "inputs": [{"type": "custom", "key": "x", "transform": "builtins:len"}],
+            "action": {"components": []},
+        }
+    )
+    with pytest.raises(ValueError, match="entrypoint"):
+        adapters_spec_normalize("model", custom_wire, False)
+    assert "builtins:len" in adapters_spec_normalize("model", custom_wire, True)
+
+    # Unknown side is rejected.
+    with pytest.raises(ValueError, match="side"):
+        adapters_spec_normalize("bogus", "{}", True)
+
+
+def test_spec_normalize_rejects_trailing_tokens():
+    # The native door must reject a valid document followed by trailing junk;
+    # serde_path_to_error does not check for EOF, so de_spec calls .end()
+    # explicitly. Without it, malformed wire input would normalize green.
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    valid = '{"inputs": [], "action": {"components": []}}'
+    assert adapters_spec_normalize("model", valid, True)  # sanity: valid passes
+    with pytest.raises(ValueError):
+        adapters_spec_normalize("model", valid + " junk", True)
+    with pytest.raises(ValueError):
+        adapters_spec_normalize(
+            "env", '{"observation": {}, "action": {"components": []}} 1', True
+        )
+
+
+def test_action_component_missing_dim_is_rejected() -> None:
+    # `dim` is required at the codec boundary (no serde default), so an absent
+    # dim is a missing-field error, not a silent 0 caught later as a width
+    # mismatch.
+    with pytest.raises(ValueError):
+        adapt.ModelSpec.from_dict(
+            {"inputs": [], "action": {"components": [{"role": adapt.ACTION_GRIPPER}]}}
+        )
+
+
+def test_empty_state_layout_rejected_by_codec() -> None:
+    # Rust accepts what Python can read back: a zero-field layout is rejected by
+    # the authoritative codec (so from_dict fails cleanly, not in Python's own
+    # StateLayout constructor on input the codec already called valid).
+    with pytest.raises(ValueError):
+        adapt.EnvTags.from_dict(
+            {
+                "observation": {".": {"type": "layout", "fields": []}},
+                "action": {"components": []},
+            }
+        )
+
+
+def test_normalize_door_rejects_structurally_unconsumable_specs() -> None:
+    # The normalize/publish door must reject what the read path (from_dict) or
+    # resolve reject, so it never blesses a doc another RLMesh engine cannot
+    # consume. Each malformation below was accepted by the codec before the
+    # cross-engine parity guards (StateLayout dup role, ModelSpec dup key,
+    # StateInput empty components, ActionLayout dup role).
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    bad = [
+        # (side, doc) -- each is structurally valid JSON the codec must reject.
+        (
+            "env",
+            '{"observation":{"s":{"type":"layout","fields":[{"role":"r","dim":1},'
+            '{"role":"r","dim":1}]}},"action":{"components":[]}}',
+        ),
+        (
+            "model",
+            '{"inputs":[{"type":"text","key":"s","role":"r"},'
+            '{"type":"text","key":"s","role":"r"}],"action":{"components":[]}}',
+        ),
+        (
+            "model",
+            '{"inputs":[{"type":"state","key":"s","components":[]}],'
+            '"action":{"components":[]}}',
+        ),
+        (
+            "model",
+            '{"inputs":[],"action":{"components":[{"role":"g","dim":1},'
+            '{"role":"g","dim":1}]}}',
+        ),
+    ]
+    for side, doc in bad:
+        with pytest.raises(ValueError):
+            adapters_spec_normalize(side, doc, True)
+        # And the Python read path (which normalizes first) rejects it too.
+        cls = adapt.EnvTags if side == "env" else adapt.ModelSpec
+        with pytest.raises(ValueError):
+            cls.from_dict(json.loads(doc))
+
+
 def test_wrap_predict_round_trip():
     adapter = resolve(LIBERO_ENV, SMOLVLA)
 
@@ -960,12 +1093,17 @@ def test_custom_callable_spec_is_not_serializable(method: str):
         getattr(spec, method)()
 
 
-def test_custom_entrypoint_is_serializable():
+@pytest.mark.parametrize("method", ["to_dict", "to_metadata", "to_json"])
+def test_custom_entrypoint_is_not_serializable(method: str):
+    # P0.8: publishing an importable entrypoint custom is refused (it would ship
+    # code in a contract a consumer might import). Resolve it locally instead
+    # (the resolve path is covered by test_custom_entrypoint_requires_trust).
     spec = adapt.ModelSpec(
         inputs=(adapt.EntrypointCustomInput("x", "builtins:len"),),
         action=SMOLVLA.action,
     )
-    assert adapt.ModelSpec.from_json(spec.to_json()) == spec
+    with pytest.raises(ValueError, match="entrypoint"):
+        getattr(spec, method)()
 
 
 # ---------------------------------------------------------------------------
@@ -1154,7 +1292,10 @@ def test_duplicate_env_action_role_is_an_error():
         obs_space=gym.spaces.Dict({"pos": box(3)}),
         action_space=box(10),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="duplicate env action role"):
+    # The duplicate role is now rejected by the authoritative Rust codec when
+    # the env tags are normalized (resolve serializes env_tags through to_dict),
+    # before plan_action runs -- still surfaced as AdapterResolutionError.
+    with pytest.raises(adapt.AdapterResolutionError, match="more than once"):
         resolve(env, STATE_ONLY_MODEL)
 
 
@@ -1221,21 +1362,48 @@ def test_tag_without_validation_skips_the_check() -> None:
     assert adapt.EnvTags.from_metadata(env.metadata) == bad
 
 
-def test_negative_u32_fields_are_rejected_at_construction() -> None:
-    with pytest.raises(ValueError, match="width must be non-negative"):
-        adapt.ImageInput("image", width=-1)
-    with pytest.raises(ValueError, match="lead_dims must be non-negative"):
-        adapt.ImageInput("image", lead_dims=-2)
-    with pytest.raises(ValueError, match="dim must be non-negative"):
-        adapt.StateComponent(adapt.EEF_POS, dim=-1)
-    with pytest.raises(ValueError, match="index must be non-negative"):
-        adapt.StateComponent(adapt.EEF_POS, index=-1)
-    with pytest.raises(ValueError, match="pad_to must be non-negative"):
-        adapt.StateInput(
-            "s", components=(adapt.StateComponent(adapt.EEF_POS),), pad_to=-1
+def test_negative_u32_fields_rejected_by_rust_codec() -> None:
+    # Negatives are rejected by the authoritative Rust codec (u32) at
+    # serialize/normalize with a field-path-annotated message. Action components
+    # (not behind a tag) get a deep path; model-input payload fields resolve to
+    # `inputs[0]` (the ModelInput tag boundary) plus the u32 constraint.
+    gripper = adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1))
+
+    def to_dict(
+        *inputs: adapt.ModelInput, action: adapt.ActionLayout = gripper
+    ) -> None:
+        adapt.ModelSpec(inputs=inputs, action=action).to_dict()
+
+    with pytest.raises(
+        ValueError, match=r"at action\.components\[0\]\.dim.*non-negative integer"
+    ):
+        to_dict(
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=-1)
+            )
         )
-    with pytest.raises(ValueError, match="dim must be non-negative"):
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=-1)
+    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
+        to_dict(adapt.ImageInput("image", width=-1))
+    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
+        to_dict(adapt.ImageInput("image", lead_dims=-2))
+    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
+        to_dict(
+            adapt.StateInput(
+                "s", components=(adapt.StateComponent(adapt.EEF_POS, dim=-1),)
+            )
+        )
+    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
+        to_dict(
+            adapt.StateInput(
+                "s", components=(adapt.StateComponent(adapt.EEF_POS, index=-1),)
+            )
+        )
+    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
+        to_dict(
+            adapt.StateInput(
+                "s", components=(adapt.StateComponent(adapt.EEF_POS),), pad_to=-1
+            )
+        )
 
 
 def test_bridge_encodes_numpy_bool_scalar_as_number() -> None:
@@ -1364,11 +1532,16 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
         adapt.ImageInput("img")
     )  # default omitted
     assert model_input_to_dict(adapt.ImageInput("img", stack=4))["stack"] == 4
-    with pytest.raises(ValueError, match="stack must be >= 1"):
-        adapt.ImageInput("img", stack=0)
+    # stack bounds (1..64) are enforced by the Rust codec at serialize/normalize.
+    with pytest.raises(ValueError, match="stack must be between 1 and 64"):
+        adapt.ModelSpec(
+            inputs=(adapt.ImageInput("img", stack=0),), action=SMOLVLA.action
+        ).to_dict()
     # An untrusted spec cannot demand an unbounded buffer.
-    with pytest.raises(ValueError, match="stack must be <="):
-        adapt.ImageInput("img", stack=10_000)
+    with pytest.raises(ValueError, match="stack must be between 1 and 64"):
+        adapt.ModelSpec(
+            inputs=(adapt.ImageInput("img", stack=10_000),), action=SMOLVLA.action
+        ).to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -1655,13 +1828,25 @@ def test_state_layout_rejects_duplicate_role_at_construction():
 
 
 def test_state_field_skip_cannot_carry_encoding():
-    with pytest.raises(ValueError, match="skip"):
-        adapt.StateField(dim=4, encoding="quat_xyzw")
+    # A role-less skip carrying an encoding is rejected by the Rust codec at
+    # serialize/normalize (StateField's TryFrom guard).
+    tags = adapt.EnvTags(
+        observation={
+            "state": adapt.StateLayout(adapt.StateField(dim=4, encoding="quat_xyzw"))
+        },
+        action=LIBERO_ACTION,
+    )
+    with pytest.raises(ValueError, match="role-less"):
+        tags.to_dict()
 
 
 def test_state_field_requires_positive_dim():
+    tags = adapt.EnvTags(
+        observation={"state": adapt.StateLayout(adapt.StateField(adapt.EEF_POS, 0))},
+        action=LIBERO_ACTION,
+    )
     with pytest.raises(ValueError, match="dim must be >= 1"):
-        adapt.StateField(adapt.EEF_POS, 0)
+        tags.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -1978,3 +2163,80 @@ def test_default_only_text_is_not_a_referenced_obs_key():
     referenced = adapter._plan.referenced_obs_keys()
     assert "" not in referenced
     assert "pos" in referenced
+
+
+# ---------------------------------------------------------------------------
+# Finiteness contract (P0.3): range/clip/scale/threshold bounds are finite on
+# the wire (an unbounded bound is omitted, not +/-inf). Python is the *produce*
+# side: it must reject non-finite at construction and refuse to emit Infinity,
+# so it never ships a spec the Rust serde codec rejects.
+# ---------------------------------------------------------------------------
+
+
+def test_nonfinite_range_rejected_at_from_dict():
+    # from_dict routes through the Rust codec, whose json.dumps(allow_nan=False)
+    # rejects the non-finite value at the boundary (the dedicated Python check is
+    # now redundant). The contract is "rejected", not the exact message.
+    with pytest.raises(ValueError):
+        adapt.ModelSpec.from_dict(
+            {
+                "inputs": [],
+                "action": {
+                    "components": [
+                        {
+                            "role": adapt.ACTION_GRIPPER,
+                            "dim": 1,
+                            "range": [float("inf"), 1.0],
+                        }
+                    ]
+                },
+            }
+        )
+
+
+def test_nonfinite_scale_rejected_at_from_dict():
+    with pytest.raises(ValueError):
+        adapt.ModelSpec.from_dict(
+            {
+                "inputs": [],
+                "action": {
+                    "components": [
+                        {"role": adapt.ACTION_GRIPPER, "dim": 1, "scale": float("inf")}
+                    ]
+                },
+            }
+        )
+
+
+def test_nonfinite_rejected_on_emit_to_json():
+    # A directly-constructed dataclass bypasses the from_dict guards; allow_nan
+    # =False on to_json is the backstop that refuses to emit the Infinity token.
+    spec = adapt.ModelSpec(
+        inputs=(),
+        action=adapt.ActionLayout(
+            adapt.ActionComponent(
+                adapt.ACTION_GRIPPER, dim=1, range=(float("inf"), 1.0)
+            ),
+        ),
+    )
+    with pytest.raises(ValueError):
+        spec.to_json()
+
+
+# ---------------------------------------------------------------------------
+# Metadata dual-read dispatch (P0.6): from_metadata iterates known keys
+# newest-format-first, so a v2 reader still reads v1. Today only v1 exists.
+# ---------------------------------------------------------------------------
+
+
+def test_from_metadata_reads_v1_and_returns_none_when_absent():
+    spec = adapt.ModelSpec(
+        inputs=(),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    assert adapt.ModelSpec.from_metadata(spec.to_metadata()) == spec
+    assert adapt.ModelSpec.from_metadata({}) is None
+
+    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    assert adapt.EnvTags.from_metadata(tags.to_metadata()) == tags
+    assert adapt.EnvTags.from_metadata({}) is None

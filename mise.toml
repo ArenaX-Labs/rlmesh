@@ -229,8 +229,8 @@ description = "Run Rust workspace tests"
 run = "cargo test --workspace --all-targets"
 
 [tasks."test:python"]
-description = "Run Python unit and integration tests"
-run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration -q"
+description = "Run Python unit, integration, and conformance tests"
+run = "uv run pytest python/rlmesh/tests/unit python/rlmesh/tests/integration python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:unit"]
 description = "Run Python unit tests"
@@ -239,6 +239,10 @@ run = "uv run pytest python/rlmesh/tests/unit -q"
 [tasks."test:python:integration"]
 description = "Run Python integration tests"
 run = "uv run pytest python/rlmesh/tests/integration -q"
+
+[tasks."test:python:conformance"]
+description = "Run Python adapter-spec conformance vectors (cross-engine parity gate)"
+run = "uv run pytest python/rlmesh/tests/conformance -q"
 
 [tasks."test:python:api-surface"]
 description = "Run Python API surface tests"

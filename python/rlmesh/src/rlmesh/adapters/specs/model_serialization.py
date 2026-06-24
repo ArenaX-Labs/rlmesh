@@ -1,10 +1,16 @@
-"""Dict round-trip for model input features."""
+"""Dict round-trip for model input features.
+
+The dataclass<->dict *shape* lives here; validation and canonicalization are done
+by the authoritative Rust codec (see :mod:`._codec`), so the from-dict reader
+operates on already-valid canonical data.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping
 from typing import Any, cast
 
+from ._codec import to_pair
 from .custom_encoding import CustomEncoding
 from .model_inputs import (
     EntrypointCustomInput,
@@ -13,14 +19,6 @@ from .model_inputs import (
     StateComponent,
     StateInput,
     TextInput,
-)
-from .validation import (
-    as_mapping,
-    opt_encoding,
-    opt_layout,
-    opt_range,
-    require_sequence,
-    require_str,
 )
 
 
@@ -83,7 +81,19 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             "default": item.default,
         }
     if isinstance(item, EntrypointCustomInput):
-        return {"type": "custom", "key": item.key, "transform": item.entrypoint}
+        # Publish boundary: an entrypoint custom carries an importable
+        # `module:callable`, so publishing it would ship executable code in a
+        # contract a remote consumer might import. Until an allowlist-based
+        # trust model exists, refuse to serialize it here. Local resolve still
+        # runs it (gated by trust_entrypoints) via the resolver's _model_wire,
+        # which handles customs itself and never routes them through this
+        # serializer -- so this gate is publish-only.
+        raise ValueError(
+            f"custom input {item.key!r} carries an entrypoint "
+            f"({item.entrypoint!r}) and cannot be published in v1 contract "
+            "metadata; resolve the spec locally (the model spec need not "
+            "travel), or wait for the allowlist-gated trust system"
+        )
     raise ValueError(
         f"custom input {item.key!r} holds an in-process callable and cannot be "
         "serialized; use an EntrypointCustomInput ('module:callable') instead"
@@ -91,78 +101,60 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
 
 
 def model_input_from_dict(item: object) -> ModelInput:
-    """Build a model input feature from :func:`model_input_to_dict` output."""
-    data = as_mapping(item, "model input")
-    kind = data.get("type")
+    """Build a model input feature from canonical (Rust-validated) dict form."""
+    data = cast(Mapping[str, Any], item)
+    kind = data["type"]
     if kind == "image":
-        height = data.get("height")
-        width = data.get("width")
         return ImageInput(
-            key=require_str(data, "key", "image input"),
-            role=require_str(data, "role", "image input"),
-            height=None if height is None else int(height),
-            width=None if width is None else int(width),
-            layout=opt_layout(data.get("layout"), "image input"),
-            dtype=str(data.get("dtype", "uint8")),
+            key=data["key"],
+            role=data["role"],
+            height=data.get("height"),
+            width=data.get("width"),
+            layout=data.get("layout", "hwc"),
+            dtype=data.get("dtype", "uint8"),
             normalize=bool(data.get("normalize", False)),
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
-            resample=str(data.get("resample", "bilinear_aa")),
+            resample=data.get("resample", "bilinear_aa"),
             stack=int(data.get("stack", 1)),
         )
     if kind == "state":
-        components: list[StateComponent] = []
-        for entry in require_sequence(data, "components"):
-            component = as_mapping(entry, "state component")
-            dim = component.get("dim")
-            index = component.get("index")
-            components.append(
-                StateComponent(
-                    role=require_str(component, "role", "state component"),
-                    encoding=opt_encoding(component.get("encoding"), "state component"),
-                    dim=None if dim is None else int(dim),
-                    index=None if index is None else int(index),
-                    optional=bool(component.get("optional", False)),
-                    range=opt_range(component.get("range"), "state component"),
-                )
+        components = tuple(
+            StateComponent(
+                role=component["role"],
+                encoding=component.get("encoding"),
+                dim=component.get("dim"),
+                index=component.get("index"),
+                optional=bool(component.get("optional", False)),
+                range=to_pair(component.get("range")),
             )
-        pad_to = data.get("pad_to")
+            for component in data["components"]
+        )
         reshape = data.get("reshape")
-        container = data.get("container", "array")
-        if container not in ("array", "list"):
-            raise ValueError(
-                f"state input container must be 'array' or 'list', got {container!r}"
-            )
         return StateInput(
-            key=require_str(data, "key", "state input"),
-            components=tuple(components),
-            pad_to=None if pad_to is None else int(pad_to),
-            dtype=str(data.get("dtype", "float32")),
-            reshape=None
-            if reshape is None
-            else tuple(int(n) for n in cast(Sequence[Any], reshape)),
-            container=container,
+            key=data["key"],
+            components=components,
+            pad_to=data.get("pad_to"),
+            dtype=data.get("dtype", "float32"),
+            reshape=None if reshape is None else tuple(int(n) for n in reshape),
+            container=data.get("container", "array"),
         )
     if kind == "text":
-        container = data.get("container", "str")
-        if container not in ("str", "list"):
-            raise ValueError(
-                f"text input container must be 'str' or 'list', got {container!r}"
-            )
-        default = data.get("default")
         return TextInput(
-            key=require_str(data, "key", "text input"),
-            role=require_str(data, "role", "text input"),
-            container=container,
-            default=None if default is None else str(default),
+            key=data["key"],
+            role=data["role"],
+            container=data.get("container", "str"),
+            default=data.get("default"),
         )
     if kind == "custom":
         # Only entrypoint-form customs survive serialization; an in-process
-        # callable cannot be on the wire.
-        return EntrypointCustomInput(
-            key=require_str(data, "key", "custom input"),
-            entrypoint=require_str(data, "transform", "custom input"),
-        )
+        # callable cannot be on the wire. Limitation: this reconstructs every
+        # wire custom as an EntrypointCustomInput, including the resolver's
+        # internal `transform: "host:<key>"` form (which is NOT an importable
+        # entrypoint). That form is produced for live resolve and is never meant
+        # to round-trip back through from_dict; feeding it here yields a custom
+        # with a bogus `host:` entrypoint rather than an error.
+        return EntrypointCustomInput(key=data["key"], entrypoint=data["transform"])
     raise ValueError(f"unknown model input type {kind!r}")
 
 

@@ -87,6 +87,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<adapters::PyAdapterPlan>()?;
     m.add_function(wrap_pyfunction!(adapters::adapters_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(adapters::adapters_join_check, m)?)?;
+    m.add_function(wrap_pyfunction!(adapters::adapters_spec_normalize, m)?)?;
 
     Ok(())
 }

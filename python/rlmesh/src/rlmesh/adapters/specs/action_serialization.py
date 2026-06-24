@@ -1,19 +1,18 @@
-"""Dict round-trip for action layouts."""
+"""Dict round-trip for action layouts.
+
+The dataclass<->dict *shape* lives here; validation and canonicalization are done
+by the authoritative Rust codec (see :mod:`._codec`), so the from-dict reader
+operates on already-valid canonical data.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
 
+from ._codec import to_pair
 from .action import ActionComponent, ActionLayout
 from .custom_encoding import CustomEncoding
-from .validation import (
-    as_mapping,
-    opt_encoding,
-    opt_range,
-    require_sequence,
-    require_str,
-)
 
 
 def action_layout_to_dict(layout: ActionLayout) -> dict[str, Any]:
@@ -53,53 +52,21 @@ def _component_to_dict(component: ActionComponent) -> dict[str, Any]:
 
 
 def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
-    """Build an action layout from :func:`action_layout_to_dict` output."""
-    components: list[ActionComponent] = []
-    for entry in require_sequence(data, "components"):
-        item = as_mapping(entry, "action component")
-        raw_dim = item.get("dim", 0)
-        components.append(
-            ActionComponent(
-                role=require_str(item, "role", "action component"),
-                # A null dim becomes 0 (rejected downstream) rather than a raw
-                # TypeError from int(None).
-                dim=int(raw_dim) if raw_dim is not None else 0,
-                encoding=opt_encoding(item.get("encoding"), "action component"),
-                range=opt_range(item.get("range"), "action component"),
-                scale=_opt_number(item.get("scale"), "scale"),
-                invert=_require_bool(item.get("invert"), "invert"),
-                threshold=_opt_number(item.get("threshold"), "threshold"),
-                binary=_require_bool(item.get("binary"), "binary"),
-            )
+    """Build an action layout from canonical (Rust-validated) dict form."""
+    components = [
+        ActionComponent(
+            role=item["role"],
+            dim=int(item["dim"]),
+            encoding=item.get("encoding"),
+            range=to_pair(item.get("range")),
+            scale=item.get("scale"),
+            invert=bool(item.get("invert", False)),
+            threshold=item.get("threshold"),
+            binary=bool(item.get("binary", False)),
         )
-    return ActionLayout(
-        *components,
-        clip=opt_range(data.get("clip"), "action layout"),
-    )
-
-
-def _opt_number(value: Any, field: str) -> float | None:
-    # Match the Rust serde f64 contract: a bool or a numeric string is rejected
-    # (Python's float() would silently accept both, diverging from the other
-    # binding on hand-authored or third-party layout JSON).
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(
-            f"action component field {field!r} must be a number, got {value!r}"
-        )
-    return float(value)
-
-
-def _require_bool(value: Any, field: str) -> bool:
-    # Match the Rust serde bool contract: a truthy non-bool (1, "yes") is rejected.
-    if value is None:
-        return False
-    if not isinstance(value, bool):
-        raise ValueError(
-            f"action component field {field!r} must be a bool, got {value!r}"
-        )
-    return value
+        for item in data["components"]
+    ]
+    return ActionLayout(*components, clip=to_pair(data.get("clip")))
 
 
 __all__ = ["action_layout_from_dict", "action_layout_to_dict"]

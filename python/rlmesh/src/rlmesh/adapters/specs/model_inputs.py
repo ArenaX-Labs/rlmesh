@@ -8,16 +8,9 @@ from typing import Any, Literal, TypeAlias
 
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
 from .custom_encoding import CustomEncoding
-from .validation import check_non_negative
 from .vocabularies import ImageLayout, RotationEncoding
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
-
-# Upper bound on frame-stacking depth. A spec can arrive from an untrusted
-# published contract; without a ceiling, a huge ``stack`` would make the
-# host adapter buffer that many frames and exhaust memory. Frame history in
-# practice is a handful of frames, so this is generous.
-_MAX_STACK = 64
 
 
 @dataclass(frozen=True)
@@ -63,20 +56,14 @@ class ImageInput:
     size: InitVar[int | None] = None
 
     def __post_init__(self, size: int | None) -> None:
+        # size= is construction sugar (sets both height and width). The
+        # non-negative bounds (height/width/lead_dims) and the stack 1..=64 bound
+        # are enforced by the Rust codec at serialize/normalize (u32 + de_stack).
         if size is not None:
             if self.height is not None or self.width is not None:
                 raise ValueError("ImageInput: pass size=, or height=/width=, not both")
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
-        check_non_negative(self.height, "ImageInput.height")
-        check_non_negative(self.width, "ImageInput.width")
-        check_non_negative(self.lead_dims, "ImageInput.lead_dims")
-        if self.stack < 1:
-            raise ValueError(f"ImageInput.stack must be >= 1, got {self.stack}")
-        if self.stack > _MAX_STACK:
-            raise ValueError(
-                f"ImageInput.stack must be <= {_MAX_STACK}, got {self.stack}"
-            )
 
 
 @dataclass(frozen=True)
@@ -104,10 +91,7 @@ class StateComponent:
     index: int | None = None
     optional: bool = False
     range: tuple[float, float] | None = None
-
-    def __post_init__(self) -> None:
-        check_non_negative(self.dim, "StateComponent.dim")
-        check_non_negative(self.index, "StateComponent.index")
+    # dim/index >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
 
 
 @dataclass(frozen=True)
@@ -165,7 +149,7 @@ class StateInput:
                 "components",
                 (StateComponent(role, encoding, dim, index),),
             )
-        check_non_negative(self.pad_to, "StateInput.pad_to")
+        # pad_to >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
 
 
 @dataclass(frozen=True)

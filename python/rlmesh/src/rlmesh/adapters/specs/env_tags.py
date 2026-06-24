@@ -21,18 +21,9 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
+from ._codec import normalize_spec, to_pair
 from .action import ActionLayout
 from .action_serialization import action_layout_from_dict, action_layout_to_dict
-from .validation import (
-    as_mapping,
-    load_json_mapping,
-    opt_encoding,
-    opt_layout,
-    opt_range,
-    require_mapping,
-    require_sequence,
-    require_str,
-)
 from .vocabularies import ImageLayout, RotationEncoding
 
 
@@ -107,15 +98,8 @@ class StateField:
     dim: int = 0
     encoding: RotationEncoding | None = None
     range: tuple[float, float] | None = None
-
-    def __post_init__(self) -> None:
-        if self.dim < 1:
-            raise ValueError(f"StateField.dim must be >= 1, got {self.dim}")
-        if self.role is None and (self.encoding is not None or self.range is not None):
-            raise ValueError(
-                "StateField with no role is a skip and cannot carry an "
-                "encoding or range"
-            )
+    # dim >= 1 and the role-less-skip rule (a skip carries no encoding/range) are
+    # enforced by the Rust codec (StateField's TryFrom guard) at serialize/normalize.
 
 
 @dataclass(frozen=True, init=False)
@@ -161,19 +145,13 @@ def _state_field_to_dict(field: StateField) -> dict[str, Any]:
     }
 
 
-def _state_field_from_dict(item: object) -> StateField:
-    data = as_mapping(item, "state field")
-    role = data.get("role")
-    if role is not None and not isinstance(role, str):
-        raise ValueError("state field role must be a string or null")
-    raw_dim = data.get("dim", 0)
-    # A missing or null dim flows through as 0 so StateField raises the clean
-    # "dim must be >= 1" error rather than a raw TypeError from int(None).
+def _state_field_from_dict(item: Mapping[str, Any]) -> StateField:
+    # Canonical (Rust-validated) data: `dim` is present and >= 1.
     return StateField(
-        role=role,
-        dim=int(raw_dim) if raw_dim is not None else 0,
-        encoding=opt_encoding(data.get("encoding"), "state field"),
-        range=opt_range(data.get("range"), "state field"),
+        role=item.get("role"),
+        dim=int(item["dim"]),
+        encoding=item.get("encoding"),
+        range=to_pair(item.get("range")),
     )
 
 
@@ -201,31 +179,25 @@ def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
     return {"type": "text", "role": tag.role}
 
 
-def obs_tag_from_dict(item: object) -> ObsTag:
-    """Build an observation tag from :func:`obs_tag_to_dict`."""
-    data = as_mapping(item, "observation tag")
-    kind = data.get("type")
+def obs_tag_from_dict(item: Mapping[str, Any]) -> ObsTag:
+    """Build an observation tag from canonical (Rust-validated) dict form."""
+    kind = item["type"]
     if kind == "image":
         return ImageTag(
-            role=require_str(data, "role", "image tag"),
-            layout=opt_layout(data.get("layout"), "image tag"),
-            upside_down=bool(data.get("upside_down", False)),
+            role=item["role"],
+            layout=item.get("layout", "hwc"),
+            upside_down=bool(item.get("upside_down", False)),
         )
     if kind == "state":
         return StateTag(
-            role=require_str(data, "role", "state tag"),
-            encoding=opt_encoding(data.get("encoding"), "state tag"),
-            range=opt_range(data.get("range"), "state tag"),
+            role=item["role"],
+            encoding=item.get("encoding"),
+            range=to_pair(item.get("range")),
         )
     if kind == "layout":
-        return StateLayout(
-            *(
-                _state_field_from_dict(field)
-                for field in require_sequence(data, "fields")
-            )
-        )
+        return StateLayout(*(_state_field_from_dict(field) for field in item["fields"]))
     if kind == "text":
-        return TextTag(role=require_str(data, "role", "text tag"))
+        return TextTag(role=item["role"])
     raise ValueError(f"unknown observation tag type {kind!r}")
 
 
@@ -257,17 +229,26 @@ class EnvTags:
         object.__setattr__(self, "action", action)
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-compatible dict form of these tags."""
-        return {
+        """Return a JSON-compatible dict form of these tags.
+
+        The dataclass<->dict shape is built here, then validated and
+        canonicalized by the authoritative Rust codec (the output is always the
+        Rust-canonical form), so Python cannot emit a spec Rust would reject.
+        """
+        raw = {
             "observation": {
                 key: obs_tag_to_dict(tag) for key, tag in self.observation.items()
             },
             "action": action_layout_to_dict(self.action),
         }
+        return normalize_spec("env", raw, allow_custom=True)
 
     def to_json(self) -> str:
         """Return these tags serialized as a JSON string."""
-        return json.dumps(self.to_dict(), sort_keys=True)
+        # allow_nan=False: refuse to emit the non-RFC-8259 `Infinity`/`NaN`
+        # tokens the Rust serde codec rejects (a directly-constructed dataclass
+        # bypasses the from_dict finiteness guards).
+        return json.dumps(self.to_dict(), sort_keys=True, allow_nan=False)
 
     def to_metadata(self) -> dict[str, Any]:
         """Return a metadata mapping fragment carrying these tags.
@@ -279,30 +260,46 @@ class EnvTags:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> EnvTags:
-        """Build tags from :meth:`to_dict` output."""
+        """Build tags from :meth:`to_dict` output.
+
+        The input is validated and canonicalized by the Rust codec first, so the
+        Python shape readers below operate on already-valid data.
+        """
+        canonical = normalize_spec("env", data, allow_custom=True)
         observation = {
             key: obs_tag_from_dict(value)
-            for key, value in require_mapping(data, "observation").items()
+            for key, value in canonical["observation"].items()
         }
         return cls(
             observation=observation,
-            action=action_layout_from_dict(require_mapping(data, "action")),
+            action=action_layout_from_dict(canonical["action"]),
         )
 
     @classmethod
     def from_json(cls, payload: str) -> EnvTags:
         """Build tags from :meth:`to_json` output."""
-        return cls.from_dict(load_json_mapping(payload))
+        return cls.from_dict(json.loads(payload))
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, Any]) -> EnvTags | None:
-        """Extract tags from env contract metadata, if present."""
-        payload = metadata.get(ENV_METADATA_KEY)
-        if payload is None:
-            return None
-        if not isinstance(payload, Mapping):
-            raise TypeError(f"metadata key {ENV_METADATA_KEY!r} must hold a mapping")
-        return cls.from_dict(cast(Mapping[str, Any], payload))
+        """Extract tags from env contract metadata, newest format first.
+
+        Iterates the known metadata keys newest-format-first: a future v2 format
+        ships a new key (``rlmesh.adapters.v2.env_tags`` -> a v2 reader) prepended
+        to this list, so a newer build still reads an older peer's v1 tags. This
+        is the single dual-read dispatch the v1->v2 rule promises; it moves into
+        the Rust codec (the single source of truth) once the PyO3 normalize door
+        lands.
+        """
+        readers = ((ENV_METADATA_KEY, cls.from_dict),)
+        for key, reader in readers:
+            payload = metadata.get(key)
+            if payload is None:
+                continue
+            if not isinstance(payload, Mapping):
+                raise TypeError(f"metadata key {key!r} must hold a mapping")
+            return reader(cast(Mapping[str, Any], payload))
+        return None
 
 
 __all__ = [

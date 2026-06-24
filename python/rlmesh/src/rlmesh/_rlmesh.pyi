@@ -49,6 +49,7 @@ __all__ = [
     "Value",
     "adapters_join_check",
     "adapters_resolve",
+    "adapters_spec_normalize",
     "box_space_spec",
     "dict_space_spec",
     "discrete_space_spec",
@@ -490,6 +491,8 @@ def _set_python_peer_info(*, language: str | None = None, language_version: str 
 def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> None: ...
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
+
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool) -> str: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
 

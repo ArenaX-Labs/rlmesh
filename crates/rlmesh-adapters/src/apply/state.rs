@@ -25,7 +25,13 @@ fn reshape(shape_spec: &[i64], len: usize) -> Result<Vec<usize>, ApplyError> {
         } else if dim < 0 {
             return Err(ApplyError::new(format!("invalid reshape dimension {dim}")));
         } else {
-            known *= dim as usize;
+            // checked: reshape elements come from the wire uncapped (unlike the
+            // MAX_DIM-bounded count fields), so a pathological spec can overflow
+            // usize here. With the workspace's overflow-checks=true that would
+            // panic the per-step apply path; a clean error beats an abort.
+            known = known.checked_mul(dim as usize).ok_or_else(|| {
+                ApplyError::new(format!("reshape dimensions {shape_spec:?} overflow"))
+            })?;
         }
     }
     let mut out: Vec<usize> = shape_spec
@@ -173,6 +179,14 @@ mod tests {
         assert!((values[0] + 1.0).abs() < 1e-6, "{values:?}");
         assert!(values[1].abs() < 1e-6, "{values:?}");
         assert!((values[2] - 1.0).abs() < 1e-6, "{values:?}");
+    }
+
+    #[test]
+    fn reshape_dim_product_overflow_is_a_clean_error() {
+        // A pathological reshape spec overflows the usize product; it must
+        // return an ApplyError, not panic (overflow-checks=true) on the hot path.
+        let err = reshape(&[i64::MAX, i64::MAX], 4).unwrap_err();
+        assert!(err.to_string().contains("overflow"), "got: {err}");
     }
 
     #[test]
