@@ -42,9 +42,6 @@ __all__ = [
     "ServeOptions",
     "Space",
     "SpaceSpec",
-    "TelemetryMetric",
-    "TelemetrySummary",
-    "TelemetryTiming",
     "Tensor",
     "Value",
     "adapters_join_check",
@@ -227,8 +224,8 @@ class PyEnvServer:
 @typing.final
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value, object], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
-    def run_local(self, env_address: str, token: str) -> TelemetrySummary | None: ...
-    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> TelemetrySummary | None: ...
+    def run_local(self, env_address: str, token: str) -> None: ...
+    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
 
 @typing.final
@@ -301,125 +298,6 @@ class SpaceSpec:
     def _to_dict(self) -> dict[str, object]: ...
     def to_space(self) -> Space: ...
     def to_gym_space(self) -> object: ...
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class TelemetryMetric:
-    r"""
-    One aggregated non-duration metric row (byte counts / generic numbers, e.g.
-    `"batch.size"`). `unit` is the canonical unit name (`"UNIT_COUNT"`,
-    `"UNIT_BYTES"`, ...).
-    """
-    @property
-    def operation(self) -> builtins.str: ...
-    @property
-    def component_id(self) -> builtins.str: ...
-    @property
-    def key_name(self) -> builtins.str: ...
-    @property
-    def unit(self) -> builtins.str: ...
-    @property
-    def sample_count(self) -> builtins.int: ...
-    @property
-    def avg(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p50(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p95(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p99(self) -> typing.Optional[builtins.float]: ...
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class TelemetrySummary:
-    r"""
-    Read-only view over a session's final telemetry summary.
-    
-    Returned by `Model.run_local` / `Model.run_local_for_episodes` (and the
-    native `PyModel` worker), or `None` when no telemetry window elapsed (a
-    zero-step or sub-window run). Always a session total
-    (`is_session_total == True`).
-    """
-    @property
-    def session_id(self) -> builtins.str: ...
-    @property
-    def route_id(self) -> builtins.str: ...
-    @property
-    def env_component_id(self) -> builtins.str: ...
-    @property
-    def model_component_id(self) -> builtins.str: ...
-    @property
-    def window_seconds(self) -> builtins.int:
-        r"""
-        Seconds the summarized session spanned.
-        """
-    @property
-    def sample_count(self) -> builtins.int:
-        r"""
-        Total number of steps summarized.
-        """
-    @property
-    def steps_per_second(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def request_bytes_per_second(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def response_bytes_per_second(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def is_session_total(self) -> builtins.bool:
-        r"""
-        Always `True`: this view only ever wraps a session total.
-        """
-    @property
-    def timings(self) -> builtins.list[TelemetryTiming]:
-        r"""
-        Per-operation and phase-split duration rows, including the
-        model_wait / env_step / round_trip split.
-        """
-    @property
-    def metrics(self) -> builtins.list[TelemetryMetric]:
-        r"""
-        Non-duration metric rows (byte counts, generic gauges such as batch size).
-        """
-    def timing(self, key_name: builtins.str) -> typing.Optional[TelemetryTiming]:
-        r"""
-        Convenience accessor for one timing row by its canonical `key_name`
-        (e.g. `"model.wait"`, `"env.step.phase"`, `"round.trip"`).
-        """
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class TelemetryTiming:
-    r"""
-    One aggregated duration row (e.g. the model_wait/env_step/round_trip split,
-    or a per-operation RPC/endpoint timing). Times are in milliseconds; the
-    percentiles are `None` when too few samples were observed to compute them.
-    """
-    @property
-    def operation(self) -> builtins.str:
-        r"""
-        Logical operation the row aggregates (e.g. `"model.predict"`, `"step"`).
-        """
-    @property
-    def component_id(self) -> builtins.str:
-        r"""
-        Component the timing is attributed to (env or model component id).
-        """
-    @property
-    def key_name(self) -> builtins.str:
-        r"""
-        Canonical metric handle (e.g. `"rpc.total"`, `"model.wait"`,
-        `"round.trip"`). Stable across builds even when `key` is unrecognized.
-        """
-    @property
-    def sample_count(self) -> builtins.int: ...
-    @property
-    def avg_ms(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p50_ms(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p95_ms(self) -> typing.Optional[builtins.float]: ...
-    @property
-    def p99_ms(self) -> typing.Optional[builtins.float]: ...
     def __repr__(self) -> builtins.str: ...
 
 @typing.final

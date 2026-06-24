@@ -104,7 +104,6 @@
 //! let report = ModelWorker::new(MyModel)
 //!     .run_local_async(RunLocalOptions::parse("tcp://127.0.0.1:50051")?.for_episodes(100))
 //!     .await?;
-//! // `report.telemetry_summary` carries the session's final telemetry summary.
 //! println!("ran {} steps", report.total_steps);
 //! Ok(())
 //! # }
@@ -131,7 +130,7 @@ pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     BoundModelServer, EnvClientRuntimeEnv, ModelEpisodeEnd, ModelHandler, ModelHandlerRuntimeModel,
     ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelRouteSlot,
-    ModelWorker, RemoteModel, RunLocalOptions, ServeModelOptions, telemetry_summary_to_proto,
+    ModelWorker, RemoteModel, RunLocalOptions, ServeModelOptions,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::RuntimeReport;

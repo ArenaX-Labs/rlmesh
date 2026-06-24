@@ -127,9 +127,7 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
     ///
     /// Drives the model/env loop on a private Tokio runtime until the env ends
     /// (or `options.max_episodes` episodes complete). Returns the session's
-    /// [`RuntimeReport`], whose `telemetry_summary` carries the final
-    /// session-total telemetry the runtime computed (absent when no telemetry
-    /// window elapsed).
+    /// [`RuntimeReport`].
     pub fn run_local(self, options: impl Into<RunLocalOptions>) -> Result<RuntimeReport> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|err| Error::Internal(format!("failed to create tokio runtime: {err}")))?;

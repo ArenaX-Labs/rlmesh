@@ -2,10 +2,8 @@ mod events;
 mod traits;
 
 pub use events::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent,
-    EpisodeTelemetryRollup, LogEvent, LogLevel, MetricKind, MetricSummary, ModelConnectedEvent,
-    ObservationEmittedEvent, RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
-    TimingSummary,
+    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
+    LogLevel, ModelConnectedEvent, ObservationEmittedEvent, RuntimeRouteContext, SessionEndedEvent,
+    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
 };
 pub use traits::{HookError, NoopRuntimeHooks, RuntimeHooks};

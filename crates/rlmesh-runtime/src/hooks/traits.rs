@@ -4,7 +4,7 @@ use prost::bytes::Bytes;
 use super::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
     ModelConnectedEvent, ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent,
+    SessionStartedEvent, StepCompletedEvent,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -22,7 +22,7 @@ impl RuntimeHooks for NoopRuntimeHooks {}
 
 #[async_trait]
 pub trait RuntimeHooks: Send + Sync {
-    // Lifecycle/progress/telemetry/log hooks are best-effort. The runtime logs
+    // Lifecycle/progress/log hooks are best-effort. The runtime logs
     // failures from these hooks and keeps the route moving.
     async fn env_connected(&self, _event: EnvConnectedEvent) -> Result<(), HookError> {
         Ok(())
@@ -71,14 +71,6 @@ pub trait RuntimeHooks: Send + Sync {
         event: ObservationEmittedEvent,
     ) -> Result<Option<Vec<Bytes>>, HookError> {
         Ok(event.observation)
-    }
-
-    async fn telemetry_window(&self, _event: TelemetryWindowEvent) -> Result<(), HookError> {
-        Ok(())
-    }
-
-    async fn telemetry_summary(&self, _event: TelemetrySummaryEvent) -> Result<(), HookError> {
-        Ok(())
     }
 
     async fn session_ended(&self, _event: SessionEndedEvent) -> Result<(), HookError> {

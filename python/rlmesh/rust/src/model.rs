@@ -20,7 +20,6 @@ use crate::spaces::{
     py_any_to_space_value_with_backend, space_value_to_py_neutral,
 };
 use crate::telemetry::{ProfileCollector, init_tracing};
-use crate::telemetry_view::PyTelemetrySummary;
 use crate::types::to_py_err;
 
 /// Process-wide multi-threaded runtime shared by Python model clients. The Join
@@ -350,12 +349,7 @@ impl PyModel {
         })
     }
 
-    fn run_local(
-        &self,
-        py: Python<'_>,
-        env_address: &str,
-        token: &str,
-    ) -> PyResult<Option<PyTelemetrySummary>> {
+    fn run_local(&self, py: Python<'_>, env_address: &str, token: &str) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.run_local.total");
@@ -376,19 +370,18 @@ impl PyModel {
             current_route: None,
         });
 
-        let report = py
-            .detach(|| {
-                self.runtime.block_on(async move {
-                    ModelWorker::new(handler)
-                        .run_local_async(RunLocalOptions::new(env_address))
-                        .await
-                })
+        py.detach(|| {
+            self.runtime.block_on(async move {
+                ModelWorker::new(handler)
+                    .run_local_async(RunLocalOptions::new(env_address))
+                    .await
             })
-            .map_err(to_py_err)?;
+        })
+        .map_err(to_py_err)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(telemetry_summary_view(&report))
+        Ok(())
     }
 
     fn run_local_for_episodes(
@@ -397,7 +390,7 @@ impl PyModel {
         env_address: &str,
         token: &str,
         max_episodes: u64,
-    ) -> PyResult<Option<PyTelemetrySummary>> {
+    ) -> PyResult<()> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
             env_address = env_address,
@@ -422,21 +415,18 @@ impl PyModel {
             current_route: None,
         });
 
-        let report = py
-            .detach(|| {
-                self.runtime.block_on(async move {
-                    ModelWorker::new(handler)
-                        .run_local_async(
-                            RunLocalOptions::new(env_address).for_episodes(max_episodes),
-                        )
-                        .await
-                })
+        py.detach(|| {
+            self.runtime.block_on(async move {
+                ModelWorker::new(handler)
+                    .run_local_async(RunLocalOptions::new(env_address).for_episodes(max_episodes))
+                    .await
             })
-            .map_err(to_py_err)?;
+        })
+        .map_err(to_py_err)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(telemetry_summary_view(&report))
+        Ok(())
     }
 
     #[pyo3(signature = (address, token, options=None))]
@@ -485,17 +475,6 @@ impl PyModel {
     }
 }
 
-/// Build the Python-facing session telemetry view from a finished runtime
-/// report. `None` when no telemetry window elapsed (a zero-step / sub-window
-/// run). This is the model worker's real caller of the canonical host->proto
-/// telemetry mapping (`rlmesh::telemetry_summary_to_proto`).
-fn telemetry_summary_view(report: &rlmesh::RuntimeReport) -> Option<PyTelemetrySummary> {
-    report
-        .telemetry_summary
-        .as_ref()
-        .map(|summary| PyTelemetrySummary::new(rlmesh::telemetry_summary_to_proto(summary)))
-}
-
 #[cfg(feature = "stub-gen")]
 submit! {
     gen_methods_from_python! {
@@ -504,8 +483,8 @@ import collections.abc
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value, object], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
-    def run_local(self, env_address: str, token: str) -> TelemetrySummary | None: ...
-    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> TelemetrySummary | None: ...
+    def run_local(self, env_address: str, token: str) -> None: ...
+    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

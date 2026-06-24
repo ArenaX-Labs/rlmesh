@@ -6,7 +6,6 @@ mod lifecycle;
 mod local;
 mod remote;
 mod server;
-mod telemetry;
 mod types;
 mod wire;
 mod worker;
@@ -15,7 +14,6 @@ pub use handler::{ModelHandler, ModelRouteSetup};
 pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use remote::RemoteModel;
 pub use server::BoundModelServer;
-pub use telemetry::telemetry_summary_to_proto;
 pub use types::{
     ModelEpisodeEnd, ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot,
 };

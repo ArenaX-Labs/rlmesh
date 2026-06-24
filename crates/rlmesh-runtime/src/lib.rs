@@ -10,18 +10,16 @@ pub mod spec;
 
 mod episodes;
 mod state;
-mod timing;
 
 pub use driver::{
     RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError, RuntimeModel,
     RuntimeModelPrediction,
 };
 pub use hooks::{
-    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent,
-    EpisodeTelemetryRollup, HookError, LogEvent, LogLevel, MetricKind, MetricSummary,
-    ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent, RuntimeHooks,
-    RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
-    StepCompletedEvent, TelemetrySummaryEvent, TelemetryWindowEvent, TimingSummary,
+    ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
+    LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
+    RuntimeHooks, RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
+    StepCompletedEvent,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 

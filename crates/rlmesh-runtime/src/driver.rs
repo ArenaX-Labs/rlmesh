@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use prost::Message;
 use prost::bytes::Bytes;
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::env::v1::{
@@ -14,13 +13,12 @@ use rlmesh_proto::spaces::v1::SpaceValue;
 use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
-    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, EpisodeTelemetryRollup,
-    LogEvent, LogLevel, ObservationEmittedEvent, RuntimeHooks, SessionEndedEvent,
-    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent,
+    ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
+    ObservationEmittedEvent, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
+    SessionStartedEvent, StepCompletedEvent,
 };
 use crate::spec::{RuntimeReport, RuntimeSessionSpec};
 use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
-use crate::timing::{RuntimeTiming, StepTimingSample};
 
 mod error;
 
@@ -224,7 +222,6 @@ where
         state: &mut RouteState,
         cancellation: &CancellationToken,
     ) -> Result<RuntimeReport, RuntimeError> {
-        let mut timings = RuntimeTiming::default();
         fan_out_event!(
             self,
             session_started,
@@ -261,12 +258,6 @@ where
         )
         .await?;
         let reset_latency = reset_started.elapsed();
-        timings.reset.record(reset_latency);
-        timings.window.record_endpoint_total(
-            "env.reset",
-            state.env_component_id(),
-            reset_ok.endpoint_total_ns,
-        );
         fan_out_event!(
             self,
             log,
@@ -311,7 +302,6 @@ where
             }
 
             let predict_snapshot = state.snapshot();
-            let model_wait_started = Instant::now();
             let predict_timeout = self.spec.limits.model_predict_timeout;
             let expected_context = pending_observation_msg.context.clone();
             let action_msg = await_runtime_operation(
@@ -339,13 +329,6 @@ where
                 });
             }
             let model_action = value_leaves(action_msg.response.action.as_ref())?;
-            let model_wait_latency = model_wait_started.elapsed();
-            timings.model_wait.record(model_wait_latency);
-            timings.window.record_endpoint_total(
-                "model.predict",
-                state.model_component_id(),
-                action_msg.endpoint_total_ns,
-            );
 
             let action_step = predict_snapshot.step + 1;
             let mut action_event = ActionReceivedEvent {
@@ -361,14 +344,8 @@ where
                 action: model_action,
             };
             action_event.action = self.invoke_transform_action(action_event.clone()).await?;
-            let request_bytes = action_event
-                .action
-                .as_ref()
-                .map(|leaves| leaves.iter().map(Bytes::len).sum::<usize>())
-                .unwrap_or_default();
             fan_out_event!(self, action_received, action_event.clone());
 
-            let env_step_started = Instant::now();
             let step_timeout = self.spec.limits.env_step_timeout;
             // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
             let step_timeout_ms = self.spec.limits.env_step_timeout_ms().max(0) as u64;
@@ -390,38 +367,7 @@ where
                 }),
             )
             .await?;
-            let env_step_latency = env_step_started.elapsed();
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
-            timings.env_step.record(env_step_latency);
-            timings.window.record_endpoint_total(
-                "env.step",
-                state.env_component_id(),
-                step_ok.endpoint_total_ns,
-            );
-            let response_bytes = step_observation
-                .as_ref()
-                .map(|leaves| leaves.iter().map(Bytes::len).sum::<usize>())
-                .unwrap_or_default()
-                + step_ok
-                    .response
-                    .infos
-                    .as_ref()
-                    .map(Message::encoded_len)
-                    .unwrap_or_default();
-            timings.window.record_step(StepTimingSample {
-                model_wait: model_wait_latency,
-                env_step: env_step_latency,
-                request_bytes,
-                response_bytes,
-                env_component_id: state.env_component_id(),
-                model_component_id: state.model_component_id(),
-            });
-            // batch_size (lanes per step) is already computable, so promote it
-            // now as a windowed metric row; queue_depth is deferred (the driver
-            // loop is strictly serial).
-            timings
-                .window
-                .record_batch_size(state.env_component_id(), self.spec.num_envs as u32);
 
             state.record_step();
             let step_snapshot = state.snapshot();
@@ -439,14 +385,6 @@ where
                 }
             );
 
-            if let Some(event) = timings.maybe_emit_window(
-                state.session_id(),
-                state.route_context(),
-                self.spec.limits.telemetry_window,
-            ) {
-                fan_out_event!(self, telemetry_window, event);
-            }
-
             if !step_ok.response.episode_ids.is_empty() {
                 let started_episodes = state.observe_episode_ids(step_ok.response.episode_ids);
                 self.invoke_started_episodes(state, started_episodes).await;
@@ -457,26 +395,8 @@ where
             // pre-transform bytes and, when the episode completes, an
             // observation the model never sees.
 
-            // Single-lane routes (num_envs == 1) with exactly one completion in
-            // this sweep get true per-episode attribution (one driver step == one
-            // lane's step): snapshot+reset the per-episode accumulator and hand the
-            // scalars to emit_completed_episodes, which fills episode_record_id +
-            // env_index from the one consumed record. For num_envs > 1 or a
-            // multi-completion sweep the per-step accumulator folds multiple
-            // episodes, so leave it None rather than attribute incorrectly (true per-lane
-            // attribution defers to the vector engine).
-            let episode_rollup =
-                if self.spec.num_envs == 1 && step_ok.response.completed_episodes.len() == 1 {
-                    Some(timings.episode_rollup())
-                } else {
-                    None
-                };
-            self.emit_completed_episodes(
-                state,
-                &step_ok.response.completed_episodes,
-                episode_rollup,
-            )
-            .await;
+            self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
+                .await;
 
             // Under NEXT_STEP, the final episode completes at its done step `t`
             // and this early-return fires before the `t+1` roll. So the
@@ -489,19 +409,6 @@ where
                 .max_episodes
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
             {
-                if let Some(event) = timings.flush_window(state.session_id(), state.route_context())
-                {
-                    fan_out_event!(self, telemetry_window, event);
-                }
-                // Capture the final session-total summary once: fan it out to the
-                // in-process hooks (cloned) AND carry it on the RuntimeReport so
-                // the owning facade can surface it to the user. `None` when no
-                // telemetry window elapsed (a zero-step / sub-window run).
-                let telemetry_summary =
-                    timings.telemetry_summary(state.session_id(), state.route_context());
-                if let Some(event) = telemetry_summary.clone() {
-                    fan_out_event!(self, telemetry_summary, event);
-                }
                 let close_request = state.close_route_request("completed requested episodes");
                 self.shutdown_terminal_route(state, "completed requested episodes", close_request)
                     .await;
@@ -516,13 +423,11 @@ where
                         total_episodes: state.total_episodes(),
                     }
                 );
-                timings.log_summary(state.total_steps(), state.total_episodes());
                 return Ok(RuntimeReport {
                     session_id: state.session_id().to_string(),
                     route_id: self.spec.route_id.clone(),
                     total_steps: state.total_steps(),
                     total_episodes: state.total_episodes(),
-                    telemetry_summary,
                 });
             }
 
@@ -569,7 +474,6 @@ where
                             false,
                         )
                     } else {
-                        let reset_started = Instant::now();
                         reset_generation += 1;
                         let step = state.snapshot().step;
                         let reset_timeout = self.spec.limits.env_reset_timeout;
@@ -604,12 +508,6 @@ where
                             }),
                         )
                         .await?;
-                        timings.reset.record(reset_started.elapsed());
-                        timings.window.record_endpoint_total(
-                            "env.reset",
-                            state.env_component_id(),
-                            reset_ok.endpoint_total_ns,
-                        );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
                         // rolls only the lanes whose id actually changed.
@@ -721,21 +619,7 @@ where
         }
     }
 
-    async fn emit_completed_episodes(
-        &self,
-        state: &mut RouteState,
-        episodes: &[EpisodeMetadata],
-        // Per-episode telemetry rollup for the single-completion / single-lane
-        // case; `None` otherwise. Identity (episode_record_id + env_index) is
-        // assembled here, once, from the consumed record so it matches the event.
-        mut episode_rollup: Option<EpisodeTelemetryRollup>,
-    ) {
-        // The rollup is only `Some` when this slice has exactly one element
-        // (gated in the run loop); assert the invariant under test.
-        debug_assert!(
-            episode_rollup.is_none() || episodes.len() == 1,
-            "episode rollup supplied for a multi-completion sweep"
-        );
+    async fn emit_completed_episodes(&self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
         for completed in episodes {
             let record = state.complete_episode(&completed.episode_id);
             let episode_record_id = record
@@ -744,14 +628,6 @@ where
                 .unwrap_or_default();
             // Proto env_index/duration_ms are uint32/uint64; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
-            // Fill identity into the rollup from the same record/env_index the
-            // event uses, then take() so a (defensive) second iteration cannot
-            // re-attach a stale rollup.
-            let final_episode_telemetry = episode_rollup.take().map(|mut rollup| {
-                rollup.episode_record_id = episode_record_id.clone();
-                rollup.env_index = env_index;
-                rollup
-            });
             fan_out_event!(
                 self,
                 episode_completed,
@@ -768,7 +644,6 @@ where
                     truncated: completed.truncated,
                     duration_ms: i64::try_from(completed.duration_ms).unwrap_or(i64::MAX),
                     final_info: completed.final_info.clone(),
-                    final_episode_telemetry,
                 }
             );
         }

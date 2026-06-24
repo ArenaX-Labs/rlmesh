@@ -5,8 +5,6 @@ use rlmesh_proto::core::v1::{AutoresetMode, EnvContract};
 use rlmesh_proto::spaces::v1::SpaceSpec;
 use serde::{Deserialize, Serialize};
 
-use crate::hooks::TelemetrySummaryEvent;
-
 /// Empty fallback returned by the internal `*_validated` accessors only on the
 /// unreachable path where the space is absent despite validation (see their
 /// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
@@ -170,12 +168,6 @@ pub struct RuntimeReport {
     pub route_id: String,
     pub total_steps: i64,
     pub total_episodes: i64,
-    /// Final session-total telemetry summary the driver computed at session
-    /// end, or `None` when no telemetry window elapsed (e.g. a zero-step or
-    /// sub-window run). Held as the runtime's own native
-    /// [`TelemetrySummaryEvent`] so this crate stays transport-agnostic; the
-    /// facade serializes it onto the wire `TelemetryWindow` shape.
-    pub telemetry_summary: Option<TelemetrySummaryEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,13 +222,6 @@ pub struct RuntimeLimits {
         deserialize_with = "duration_millis::deserialize"
     )]
     pub service_close_timeout: Duration,
-    #[serde(
-        default = "default_telemetry_window",
-        rename = "telemetryWindowMs",
-        serialize_with = "duration_millis::serialize",
-        deserialize_with = "duration_millis::deserialize"
-    )]
-    pub telemetry_window: Duration,
 }
 
 impl Default for RuntimeLimits {
@@ -249,7 +234,6 @@ impl Default for RuntimeLimits {
             model_predict_timeout: default_model_predict_timeout(),
             env_step_timeout: default_env_step_timeout(),
             service_close_timeout: default_service_close_timeout(),
-            telemetry_window: default_telemetry_window(),
         }
     }
 }
@@ -290,10 +274,6 @@ fn default_env_step_timeout() -> Duration {
 
 fn default_service_close_timeout() -> Duration {
     Duration::from_secs(5)
-}
-
-fn default_telemetry_window() -> Duration {
-    Duration::from_secs(1)
 }
 
 fn duration_ms_i64(duration: Duration) -> i64 {
@@ -445,9 +425,7 @@ mod tests {
         assert_eq!(value["modelPredictTimeoutMs"], json!(300_000));
         assert_eq!(value["envStepTimeoutMs"], json!(300_000));
         assert_eq!(value["serviceCloseTimeoutMs"], json!(5_000));
-        assert_eq!(value["telemetryWindowMs"], json!(1_000));
         assert!(value.get("envConnectTimeout").is_none());
-        assert!(value.get("telemetryWindow").is_none());
 
         let parsed: RuntimeLimits = serde_json::from_value(json!({
             "envConnectTimeoutMs": 1,
@@ -456,8 +434,7 @@ mod tests {
             "envResetTimeoutMs": 4,
             "modelPredictTimeoutMs": 5,
             "envStepTimeoutMs": 6,
-            "serviceCloseTimeoutMs": 7,
-            "telemetryWindowMs": 8
+            "serviceCloseTimeoutMs": 7
         }))
         .unwrap();
 
@@ -468,7 +445,6 @@ mod tests {
         assert_eq!(parsed.model_predict_timeout, Duration::from_millis(5));
         assert_eq!(parsed.env_step_timeout, Duration::from_millis(6));
         assert_eq!(parsed.service_close_timeout, Duration::from_millis(7));
-        assert_eq!(parsed.telemetry_window, Duration::from_millis(8));
     }
 
     #[test]

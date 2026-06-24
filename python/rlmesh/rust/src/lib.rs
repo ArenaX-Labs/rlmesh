@@ -7,7 +7,6 @@ mod sandbox;
 mod server;
 mod spaces;
 mod telemetry;
-mod telemetry_view;
 mod types;
 
 #[cfg(feature = "cli")]
@@ -71,9 +70,6 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<server::PyEnvServer>()?;
     m.add_class::<model::PyModel>()?;
     m.add_class::<model::PyModelClient>()?;
-    m.add_class::<telemetry_view::PyTelemetrySummary>()?;
-    m.add_class::<telemetry_view::PyTelemetryTiming>()?;
-    m.add_class::<telemetry_view::PyTelemetryMetric>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     #[cfg(feature = "cli")]
