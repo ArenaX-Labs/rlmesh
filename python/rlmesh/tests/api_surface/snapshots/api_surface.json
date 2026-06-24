@@ -101,11 +101,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
           },
           "serve": {
             "kind": "function",
@@ -604,11 +604,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
           },
           "serve": {
             "kind": "function",
@@ -984,11 +984,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
           },
           "serve": {
             "kind": "function",
@@ -1919,11 +1919,11 @@
           },
           "run_local": {
             "kind": "function",
-            "signature": "run_local(env_address: str, *, token: str = '') -> TelemetrySummary | None"
+            "signature": "run_local(env_address: str, *, token: str = '') -> None"
           },
           "run_local_for_episodes": {
             "kind": "function",
-            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> TelemetrySummary | None"
+            "signature": "run_local_for_episodes(env_address: str, *, token: str = '', max_episodes: int) -> None"
           },
           "serve": {
             "kind": "function",

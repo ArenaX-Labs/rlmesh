@@ -7,6 +7,7 @@
 mod driver;
 pub mod hooks;
 pub mod spec;
+pub mod telemetry;
 
 mod episodes;
 mod state;
@@ -19,7 +20,7 @@ pub use hooks::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, HookError,
     LogEvent, LogLevel, ModelConnectedEvent, NoopRuntimeHooks, ObservationEmittedEvent,
     RuntimeHooks, RuntimeRouteContext, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
-    StepCompletedEvent,
+    StepCompletedEvent, TelemetrySnapshotEvent,
 };
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 

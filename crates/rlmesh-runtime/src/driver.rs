@@ -1,9 +1,9 @@
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use prost::bytes::Bytes;
+use prost::{Message, bytes::Bytes};
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
@@ -14,11 +14,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
-    ObservationEmittedEvent, RuntimeHooks, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent,
+    ObservationEmittedEvent, RuntimeHooks, RuntimeRouteContext, SessionEndedEvent,
+    SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use crate::spec::{RuntimeReport, RuntimeSessionSpec};
 use crate::state::{RequestPhase, RouteSnapshot, RouteState, StartedEpisode};
+use crate::telemetry::{Aggregator, Horizon, Sample, Source, metrics};
 
 mod error;
 
@@ -86,6 +87,22 @@ pub trait RuntimeModel: Send {
 /// Default reason attributed to a cancellation when the caller does not supply
 /// one via [`RuntimeDriver::run_with_cancellation_reason`].
 const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
+
+// Telemetry sources for the three driver ops. `component` is a coarse class
+// label — the serial single-route driver has one model + one env, and `op`
+// already distinguishes them (see telemetry::Source).
+const SRC_PREDICT: Source = Source {
+    op: "model.predict",
+    component: "model",
+};
+const SRC_STEP: Source = Source {
+    op: "env.step",
+    component: "env",
+};
+const SRC_RESET: Source = Source {
+    op: "env.reset",
+    component: "env",
+};
 
 #[must_use = "a RuntimeDriver does nothing until one of its run methods is awaited"]
 pub struct RuntimeDriver<E, M> {
@@ -196,7 +213,38 @@ where
         self.action_space = Arc::new(self.spec.action_space_validated().clone());
         self.observation_space = Arc::new(self.spec.observation_space_validated().clone());
         let mut state = RouteState::new(&self.spec);
-        let result = self.run_loop(&mut state, &cancellation).await;
+        // Telemetry lives here, not in run_loop, so the final Session snapshot is
+        // delivered on EVERY exit (including aborts). The background ticker only
+        // ever pushes Window snapshots (the live tier); the cumulative Session
+        // total is pushed once below and returned on the report (the durable
+        // tier), so a late ticker tick cannot race or supersede it.
+        let telemetry = Arc::new(Mutex::new(Aggregator::default()));
+        // A zero window disables live streaming (it would otherwise be a 1ms hot
+        // loop); the final session push below still fires.
+        let ticker = (!self.spec.limits.telemetry_window.is_zero()).then(|| {
+            TelemetryTicker::spawn(
+                Arc::clone(&telemetry),
+                Arc::clone(&self.hooks),
+                self.spec.limits.telemetry_window,
+                state.session_id().to_string(),
+                state.route_context(),
+            )
+        });
+        let result = self.run_loop(&mut state, &cancellation, &telemetry).await;
+        // Stop the ticker (it only emits Window snapshots, so it cannot contend
+        // this Session push), then deliver the durable session total exactly once
+        // on every exit path.
+        drop(ticker);
+        let final_snapshot = lock_agg(&telemetry).snapshot(Horizon::Session);
+        fan_out_event!(
+            self,
+            on_telemetry,
+            TelemetrySnapshotEvent {
+                session_id: state.session_id().to_string(),
+                route: state.route_context(),
+                snapshot: final_snapshot,
+            }
+        );
         if let Err(error) = &result {
             self.shutdown_after_failure(&mut state, error).await;
         }
@@ -221,6 +269,7 @@ where
         &mut self,
         state: &mut RouteState,
         cancellation: &CancellationToken,
+        telemetry: &Arc<Mutex<Aggregator>>,
     ) -> Result<RuntimeReport, RuntimeError> {
         fan_out_event!(
             self,
@@ -232,12 +281,21 @@ where
             }
         );
 
-        let reset_started = Instant::now();
         let mut reset_generation = 0_u64;
         let reset_timeout = self.spec.limits.env_reset_timeout;
         // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
         let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms().max(0) as u64;
         let reset_seeds = self.reset_seeds(reset_generation);
+        let reset_request = ResetRequest {
+            seeds: reset_seeds,
+            options: None,
+            timeout_ms: reset_timeout_ms,
+            env_indices: Vec::new(),
+        };
+        let reset_request_bytes = reset_request.encoded_len() as u64;
+        // Time only the RPC (after building the request), matching the predict /
+        // step / in-loop-reset sites so rpc.total is consistent across ops.
+        let reset_started = Instant::now();
         let reset_ok = await_runtime_operation(
             cancellation,
             reset_timeout,
@@ -249,15 +307,18 @@ where
                 reset_timeout,
             ),
             self.cancelled_error(state, 0),
-            self.env.reset(ResetRequest {
-                seeds: reset_seeds,
-                options: None,
-                timeout_ms: reset_timeout_ms,
-                env_indices: Vec::new(),
-            }),
+            self.env.reset(reset_request),
         )
         .await?;
         let reset_latency = reset_started.elapsed();
+        record_op(
+            telemetry,
+            SRC_RESET,
+            reset_latency,
+            reset_ok.endpoint_total_ns,
+            reset_request_bytes,
+            reset_ok.response.encoded_len() as u64,
+        );
         fan_out_event!(
             self,
             log,
@@ -304,6 +365,8 @@ where
             let predict_snapshot = state.snapshot();
             let predict_timeout = self.spec.limits.model_predict_timeout;
             let expected_context = pending_observation_msg.context.clone();
+            let predict_request_bytes = pending_observation_msg.encoded_len() as u64;
+            let predict_started = Instant::now();
             let action_msg = await_runtime_operation(
                 cancellation,
                 predict_timeout,
@@ -318,6 +381,7 @@ where
                 self.model.predict(pending_observation_msg),
             )
             .await?;
+            let predict_rpc = predict_started.elapsed();
             if action_msg.response.context != expected_context {
                 let request_id = expected_context
                     .as_ref()
@@ -328,6 +392,14 @@ where
                     request_id,
                 });
             }
+            record_op(
+                telemetry,
+                SRC_PREDICT,
+                predict_rpc,
+                action_msg.endpoint_total_ns,
+                predict_request_bytes,
+                action_msg.response.encoded_len() as u64,
+            );
             let model_action = value_leaves(action_msg.response.action.as_ref())?;
 
             let action_step = predict_snapshot.step + 1;
@@ -349,6 +421,13 @@ where
             let step_timeout = self.spec.limits.env_step_timeout;
             // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
             let step_timeout_ms = self.spec.limits.env_step_timeout_ms().max(0) as u64;
+            let step_request = StepRequest {
+                action: action_event.action.map(leaves_value),
+                timeout_ms: step_timeout_ms,
+                env_indices: Vec::new(),
+            };
+            let step_request_bytes = step_request.encoded_len() as u64;
+            let step_started = Instant::now();
             let step_ok = await_runtime_operation(
                 cancellation,
                 step_timeout,
@@ -360,13 +439,18 @@ where
                     step_timeout,
                 ),
                 self.cancelled_error(state, action_step),
-                self.env.step(StepRequest {
-                    action: action_event.action.map(leaves_value),
-                    timeout_ms: step_timeout_ms,
-                    env_indices: Vec::new(),
-                }),
+                self.env.step(step_request),
             )
             .await?;
+            let step_rpc = step_started.elapsed();
+            record_op(
+                telemetry,
+                SRC_STEP,
+                step_rpc,
+                step_ok.endpoint_total_ns,
+                step_request_bytes,
+                step_ok.response.encoded_len() as u64,
+            );
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
 
             state.record_step();
@@ -412,6 +496,10 @@ where
                 let close_request = state.close_route_request("completed requested episodes");
                 self.shutdown_terminal_route(state, "completed requested episodes", close_request)
                     .await;
+                // The single final session push is delivered by the epilogue in
+                // run_with_cancellation_reason (on every exit path); here we only
+                // capture the durable pull snapshot for the returned report.
+                let telemetry_snapshot = lock_agg(telemetry).snapshot(Horizon::Session);
                 fan_out_event!(
                     self,
                     session_ended,
@@ -428,6 +516,7 @@ where
                     route_id: self.spec.route_id.clone(),
                     total_steps: state.total_steps(),
                     total_episodes: state.total_episodes(),
+                    telemetry: telemetry_snapshot,
                 });
             }
 
@@ -489,6 +578,14 @@ where
                                 done_lanes.clone(),
                             )
                         };
+                        let reset_request = ResetRequest {
+                            seeds: reset_seeds,
+                            options: None,
+                            timeout_ms: reset_timeout_ms,
+                            env_indices,
+                        };
+                        let reset_request_bytes = reset_request.encoded_len() as u64;
+                        let inloop_reset_started = Instant::now();
                         let reset_ok = await_runtime_operation(
                             cancellation,
                             reset_timeout,
@@ -500,14 +597,17 @@ where
                                 reset_timeout,
                             ),
                             self.cancelled_error(state, step),
-                            self.env.reset(ResetRequest {
-                                seeds: reset_seeds,
-                                options: None,
-                                timeout_ms: reset_timeout_ms,
-                                env_indices,
-                            }),
+                            self.env.reset(reset_request),
                         )
                         .await?;
+                        record_op(
+                            telemetry,
+                            SRC_RESET,
+                            inloop_reset_started.elapsed(),
+                            reset_ok.endpoint_total_ns,
+                            reset_request_bytes,
+                            reset_ok.response.encoded_len() as u64,
+                        );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
                         // rolls only the lanes whose id actually changed.
@@ -782,4 +882,104 @@ fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
 // `Result` so the existing `?` call sites are untouched.
 fn value_leaves(payload: Option<&SpaceValue>) -> Result<Option<Vec<Bytes>>, RuntimeError> {
     Ok(payload.map(|payload| payload.leaves.clone()))
+}
+
+/// Locks the telemetry aggregator, recovering from a poisoned mutex instead of
+/// panicking. Telemetry is best-effort and must never take down the route, so a
+/// panic under the guard degrades telemetry rather than killing the session.
+fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
+    telemetry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Record the four per-op telemetry samples — RPC latency, the optional
+/// endpoint-local duration the peer stamped, and request + response wire bytes —
+/// under a single lock. Every driver op (predict, step, reset) records this same
+/// shape, so they all route through here.
+fn record_op(
+    telemetry: &Mutex<Aggregator>,
+    src: Source,
+    rpc: Duration,
+    endpoint_total_ns: Option<u64>,
+    request_bytes: u64,
+    response_bytes: u64,
+) {
+    let mut agg = lock_agg(telemetry);
+    agg.record(Sample::dur(src, metrics::RPC_TOTAL, rpc));
+    if let Some(ns) = endpoint_total_ns {
+        agg.record(Sample::dur(
+            src,
+            metrics::ENDPOINT_TOTAL,
+            Duration::from_nanos(ns),
+        ));
+    }
+    agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
+    agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));
+}
+
+/// Background wall-clock telemetry emitter. On a fixed real-time cadence it
+/// snapshots the aggregator's Window horizon and pushes it to the hooks — so live
+/// Window deltas keep arriving even while the run loop is parked in a stalled
+/// predict/step/reset (which a step-gated path cannot see). It does NOT push
+/// Session snapshots: the cumulative session total is the durable tier, delivered
+/// once by the run epilogue and on `RuntimeReport.telemetry`. Empty windows (no
+/// samples since the last flush) are skipped. Aborts when the returned handle is
+/// dropped; because it only ever emits Window snapshots, a late tick can never
+/// race the epilogue's authoritative Session push.
+struct TelemetryTicker {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl TelemetryTicker {
+    fn spawn(
+        telemetry: Arc<Mutex<Aggregator>>,
+        hooks: Arc<dyn RuntimeHooks>,
+        window: Duration,
+        session_id: String,
+        route: RuntimeRouteContext,
+    ) -> Self {
+        // The caller skips spawning for a zero window (disabled live streaming).
+        // Defensive floor for any sub-ms value: interval panics on a zero period.
+        let period = window.max(Duration::from_millis(1));
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // the first tick is immediate; skip it
+            loop {
+                ticker.tick().await;
+                // Snapshot + clear the Window horizon under a scoped lock; the
+                // guard is NEVER held across the await below (keeps the std Mutex
+                // sound + the task future Send).
+                let window_snap = {
+                    let mut agg = lock_agg(&telemetry);
+                    let snap = agg.snapshot(Horizon::Window);
+                    agg.flush_window();
+                    snap
+                };
+                // Nothing recorded this window — skip the push rather than emit an
+                // empty snapshot to consumers.
+                if window_snap.rows.is_empty() {
+                    continue;
+                }
+                // Tag the snapshot with the route/session it belongs to (one
+                // shared hooks instance serves all concurrent routes).
+                let window_event = TelemetrySnapshotEvent {
+                    session_id: session_id.clone(),
+                    route: route.clone(),
+                    snapshot: window_snap,
+                };
+                if let Err(err) = hooks.on_telemetry(window_event).await {
+                    tracing::warn!("runtime hook on_telemetry (window) failed: {err}");
+                }
+            }
+        });
+        Self { handle }
+    }
+}
+
+impl Drop for TelemetryTicker {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }

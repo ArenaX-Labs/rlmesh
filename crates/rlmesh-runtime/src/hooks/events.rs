@@ -137,3 +137,17 @@ pub struct ObservationEmittedEvent {
     /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
     pub observation: Option<Vec<Bytes>>,
 }
+
+/// A live telemetry snapshot tagged with the route/session it belongs to.
+///
+/// The managed runner shares one `RuntimeHooks` across concurrent routes, so —
+/// like every other event — the snapshot carries identity inline. Identity
+/// lives on the event, not on the `Snapshot` itself, which stays a pure metrics
+/// payload (it is also the durable `RuntimeReport.telemetry`). Use
+/// `snapshot.horizon` to tell a window tick from the cumulative session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TelemetrySnapshotEvent {
+    pub session_id: String,
+    pub route: RuntimeRouteContext,
+    pub snapshot: crate::telemetry::Snapshot,
+}

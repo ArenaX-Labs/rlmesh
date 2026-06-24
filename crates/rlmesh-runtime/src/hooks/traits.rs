@@ -4,7 +4,7 @@ use prost::bytes::Bytes;
 use super::{
     ActionReceivedEvent, EnvConnectedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent,
     ModelConnectedEvent, ObservationEmittedEvent, SessionEndedEvent, SessionFailedEvent,
-    SessionStartedEvent, StepCompletedEvent,
+    SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -74,6 +74,19 @@ pub trait RuntimeHooks: Send + Sync {
     }
 
     async fn session_ended(&self, _event: SessionEndedEvent) -> Result<(), HookError> {
+        Ok(())
+    }
+
+    // Live telemetry push, best-effort. A background ticker streams a Window
+    // snapshot (the live tier, cleared each `RuntimeLimits::telemetry_window`)
+    // while the session runs; one final cumulative Session snapshot is delivered
+    // at session end (the durable tier — also returned on
+    // `RuntimeReport.telemetry`). The event carries route/session identity inline
+    // (one shared hooks instance serves all concurrent routes); branch on
+    // `event.snapshot.horizon` for window vs session. NOTE: dispatched from a
+    // separate task, so this may be called CONCURRENTLY with the other hooks —
+    // do not assume serialized delivery (the `Sync` bound already permits it).
+    async fn on_telemetry(&self, _event: TelemetrySnapshotEvent) -> Result<(), HookError> {
         Ok(())
     }
 

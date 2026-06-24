@@ -9,7 +9,7 @@ from .._framework_bridge import ValueBridge
 from ..types import Value
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyModel, ServeOptions, TelemetrySummary
+    from rlmesh._rlmesh import PyModel, ServeOptions
 
     from .._spec._core import ArtifactInput
     from ._eval import RunResult
@@ -182,24 +182,22 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         self._worker.serve(address, token, options)
 
-    def run_local(
-        self, env_address: str, *, token: str = ""
-    ) -> TelemetrySummary | None:
+    def run_local(self, env_address: str, *, token: str = "") -> None:
         """Native worker loop against a remote env, until the env ends.
 
-        Returns the session's :class:`TelemetrySummary` (throughput/byte rates and
-        the per-operation plus model_wait/env_step/round_trip timing rows), or
-        ``None`` when no telemetry window elapsed (e.g. a zero-step run).
+        Runs the session to completion for its side effects. Telemetry is
+        surfaced on the serving runtime via its ``on_telemetry`` hook, not
+        returned here.
         """
         return self._worker.run_local(env_address, token)
 
     def run_local_for_episodes(
         self, env_address: str, *, token: str = "", max_episodes: int
-    ) -> TelemetrySummary | None:
+    ) -> None:
         """Native worker loop against a remote env for a fixed episode count.
 
-        Returns the session's :class:`TelemetrySummary` (see :meth:`run_local`),
-        or ``None`` when no telemetry window elapsed.
+        Runs for the requested episode count for its side effects; see
+        :meth:`run_local` for where telemetry is surfaced.
         """
         return self._worker.run_local_for_episodes(env_address, token, max_episodes)
 

@@ -168,6 +168,9 @@ pub struct RuntimeReport {
     pub route_id: String,
     pub total_steps: i64,
     pub total_episodes: i64,
+    /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
+    /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
+    pub telemetry: crate::telemetry::Snapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +225,17 @@ pub struct RuntimeLimits {
         deserialize_with = "duration_millis::deserialize"
     )]
     pub service_close_timeout: Duration,
+    /// How often the background ticker pushes Window + Session telemetry
+    /// snapshots to `on_telemetry`, on a wall clock. `0` disables live streaming
+    /// (the final session snapshot is still delivered at session end); any
+    /// non-zero value below 1ms is floored to 1ms.
+    #[serde(
+        default = "default_telemetry_window",
+        rename = "telemetryWindowMs",
+        serialize_with = "duration_millis::serialize",
+        deserialize_with = "duration_millis::deserialize"
+    )]
+    pub telemetry_window: Duration,
 }
 
 impl Default for RuntimeLimits {
@@ -234,6 +248,7 @@ impl Default for RuntimeLimits {
             model_predict_timeout: default_model_predict_timeout(),
             env_step_timeout: default_env_step_timeout(),
             service_close_timeout: default_service_close_timeout(),
+            telemetry_window: default_telemetry_window(),
         }
     }
 }
@@ -274,6 +289,10 @@ fn default_env_step_timeout() -> Duration {
 
 fn default_service_close_timeout() -> Duration {
     Duration::from_secs(5)
+}
+
+fn default_telemetry_window() -> Duration {
+    Duration::from_secs(1)
 }
 
 fn duration_ms_i64(duration: Duration) -> i64 {
@@ -425,6 +444,7 @@ mod tests {
         assert_eq!(value["modelPredictTimeoutMs"], json!(300_000));
         assert_eq!(value["envStepTimeoutMs"], json!(300_000));
         assert_eq!(value["serviceCloseTimeoutMs"], json!(5_000));
+        assert_eq!(value["telemetryWindowMs"], json!(1_000));
         assert!(value.get("envConnectTimeout").is_none());
 
         let parsed: RuntimeLimits = serde_json::from_value(json!({
@@ -434,7 +454,8 @@ mod tests {
             "envResetTimeoutMs": 4,
             "modelPredictTimeoutMs": 5,
             "envStepTimeoutMs": 6,
-            "serviceCloseTimeoutMs": 7
+            "serviceCloseTimeoutMs": 7,
+            "telemetryWindowMs": 8
         }))
         .unwrap();
 
@@ -445,6 +466,7 @@ mod tests {
         assert_eq!(parsed.model_predict_timeout, Duration::from_millis(5));
         assert_eq!(parsed.env_step_timeout, Duration::from_millis(6));
         assert_eq!(parsed.service_close_timeout, Duration::from_millis(7));
+        assert_eq!(parsed.telemetry_window, Duration::from_millis(8));
     }
 
     #[test]

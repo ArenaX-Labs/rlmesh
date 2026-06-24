@@ -39,6 +39,25 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
 
     assert_eq!(report.total_steps, 1);
     assert_eq!(report.total_episodes, 1);
+    // Telemetry flows end-to-end: the session snapshot carries per-op rows.
+    let predict_rpc = report
+        .telemetry
+        .rows
+        .iter()
+        .find(|row| row.source.op == "model.predict" && row.metric.name == "rpc.total")
+        .expect("model.predict rpc.total recorded");
+    assert_eq!(predict_rpc.count, 1);
+    // The request/response byte sizes are recorded alongside latency.
+    for metric in ["request.bytes", "response.bytes"] {
+        assert!(
+            report
+                .telemetry
+                .rows
+                .iter()
+                .any(|row| row.source.op == "model.predict" && row.metric.name == metric),
+            "model.predict {metric} recorded",
+        );
+    }
     assert!(env.closed.load(Ordering::SeqCst));
     assert!(model.closed.load(Ordering::SeqCst));
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 1);
@@ -69,6 +88,53 @@ async fn model_predict_timeout_fails_session() {
         }
     ));
     assert_eq!(hooks.failed.load(Ordering::SeqCst), 1);
+    // The durable session telemetry is delivered even when the run errors out:
+    // the epilogue pushes the final Session snapshot on every exit path. With the
+    // 1s default window the ticker never fired in this ~5ms run, so EXACTLY one
+    // Session push arrives — from the failure epilogue, not the ticker — and it
+    // carries the reset rows recorded before the predict timed out.
+    assert_eq!(
+        hooks.telemetry_sessions.load(Ordering::SeqCst),
+        1,
+        "exactly one final session push on an aborted run (epilogue, not ticker)",
+    );
+    assert!(
+        hooks.telemetry_session_rows.load(Ordering::SeqCst) >= 1,
+        "final session snapshot must carry the pre-timeout reset telemetry",
+    );
+}
+
+#[tokio::test]
+async fn zero_telemetry_window_disables_streaming_but_still_delivers_final() {
+    let env = TestEnv {
+        terminal_after: 1,
+        ..Default::default()
+    };
+    let model = TestModel::default();
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = one_episode_spec();
+    spec.limits.telemetry_window = Duration::ZERO;
+
+    let report = RuntimeDriver::new(spec, env, model, hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    // A zero window disables the background ticker (no live Window stream)...
+    assert_eq!(hooks.telemetry_windows.load(Ordering::SeqCst), 0);
+    // ...but the final durable Session push still fires exactly once at session
+    // end, carrying real rows...
+    assert_eq!(hooks.telemetry_sessions.load(Ordering::SeqCst), 1);
+    assert!(hooks.telemetry_session_rows.load(Ordering::SeqCst) >= 1);
+    // ...and the pull report still carries the per-op session total (pinned to
+    // model.predict so the mandatory env.reset row alone cannot satisfy it).
+    assert!(
+        report
+            .telemetry
+            .rows
+            .iter()
+            .any(|row| row.source.op == "model.predict" && row.metric.name == "rpc.total"),
+    );
 }
 
 #[tokio::test]
@@ -92,6 +158,53 @@ async fn driver_continues_after_non_terminal_step() {
     assert_eq!(report.total_steps, 2);
     assert_eq!(report.total_episodes, 1);
     assert_eq!(model.predicts.load(Ordering::SeqCst), 2);
+}
+
+// Real-time (not start_paused, which needs tokio's test-util feature): the
+// 100ms stall vs 10ms cadence is a wide enough margin to be robust.
+#[tokio::test]
+async fn telemetry_ticks_on_wall_clock_during_a_stalled_step() {
+    let env = TestEnv {
+        terminal_after: 1,
+        ..Default::default()
+    };
+    let model = TestModel {
+        predict_delay: Some(Duration::from_millis(100)),
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+
+    let mut spec = one_episode_spec();
+    spec.limits.telemetry_window = Duration::from_millis(10);
+
+    let report = RuntimeDriver::new(spec, env, model, hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    // The lone predict stalls 100ms; with a 10ms wall-clock cadence the
+    // background ticker emits a (non-empty) Window snapshot *during* the stall —
+    // the old step-gated path could not, being parked inside the await. The
+    // ticker streams only Window deltas; the cumulative Session total is pushed
+    // once by the epilogue, never per tick.
+    assert!(
+        hooks.telemetry_windows.load(Ordering::SeqCst) >= 1,
+        "expected a wall-clock window snapshot during the stalled predict",
+    );
+    assert_eq!(
+        hooks.telemetry_sessions.load(Ordering::SeqCst),
+        1,
+        "exactly one final Session push (epilogue) — the ticker emits no sessions",
+    );
+    assert!(hooks.telemetry_session_rows.load(Ordering::SeqCst) >= 1);
+    // The final pull still carries the per-op session total.
+    assert!(
+        report
+            .telemetry
+            .rows
+            .iter()
+            .any(|row| row.source.op == "model.predict" && row.metric.name == "rpc.total"),
+    );
 }
 
 #[tokio::test]
@@ -469,6 +582,12 @@ struct RecordingHooks {
     observation_marker: Option<u8>,
     // Records (is_reset, observation_bytes) for every observation_emitted hook.
     emitted_observations: Mutex<Vec<(bool, Vec<u8>)>>,
+    // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
+    telemetry_windows: AtomicUsize,
+    telemetry_sessions: AtomicUsize,
+    // Largest row count seen in any Session snapshot — proves the final push
+    // carried real telemetry, not an empty event.
+    telemetry_session_rows: AtomicUsize,
 }
 
 #[async_trait]
@@ -529,6 +648,21 @@ impl RuntimeHooks for RecordingHooks {
         _event: rlmesh_runtime::SessionEndedEvent,
     ) -> Result<(), HookError> {
         self.ended.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn on_telemetry(
+        &self,
+        event: rlmesh_runtime::TelemetrySnapshotEvent,
+    ) -> Result<(), HookError> {
+        let rows = event.snapshot.rows.len();
+        if event.snapshot.horizon == rlmesh_runtime::telemetry::Horizon::Window {
+            self.telemetry_windows.fetch_add(1, Ordering::SeqCst);
+        } else if event.snapshot.horizon == rlmesh_runtime::telemetry::Horizon::Session {
+            self.telemetry_sessions.fetch_add(1, Ordering::SeqCst);
+            self.telemetry_session_rows
+                .fetch_max(rows, Ordering::SeqCst);
+        }
         Ok(())
     }
 
