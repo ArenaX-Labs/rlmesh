@@ -42,6 +42,14 @@ impl ResolvedAdapter {
         describe::describe_adapter(self)
     }
 
+    /// Per-env data-loss / fabrication notes (a zero-filled camera, an aspect
+    /// crop or letterbox): the "warn" subset of [`describe`](Self::describe),
+    /// for a caller to surface (e.g. log) without failing. Empty when nothing
+    /// noteworthy happened.
+    pub fn advisories(&self) -> Vec<String> {
+        describe::adapter_advisories(self)
+    }
+
     /// The observation keys this adapter actually reads.
     ///
     /// Lets a caller decode only the referenced observation leaves instead of
@@ -53,7 +61,10 @@ impl ResolvedAdapter {
         for plan in &self.obs_plans {
             match plan {
                 ObsPlan::Image(image) => {
-                    keys.insert(image.env_key.clone());
+                    // A zero-filled image has no env source (empty env_key).
+                    if image.zero_fill.is_none() {
+                        keys.insert(image.env_key.clone());
+                    }
                 }
                 ObsPlan::State(state) => {
                     for piece in &state.pieces {

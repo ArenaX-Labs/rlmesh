@@ -167,7 +167,11 @@ fn cases() -> Vec<(&'static str, String)> {
                 r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"threshold":"x"}]}}"#,
             ),
         ),
-        // frozen vocab / unknown kind / unknown field / missing / wrong-type
+        // frozen vocab / unknown kind / unknown field / missing / wrong-type.
+        // An unknown *rotation encoding* is deliberately absent here: a rotation
+        // field is now an accept-set that tolerates an unrecognized (future)
+        // encoding at parse and rejects it at *resolve* instead (graceful
+        // forward-compatible degradation). See the resolver's selection tests.
         (
             "unknown model input",
             model_err(r#"{"inputs":[{"type":"audio","key":"c"}],"action":{"components":[]}}"#),
@@ -175,12 +179,6 @@ fn cases() -> Vec<(&'static str, String)> {
         (
             "unknown obs tag",
             env_err(r#"{"observation":{"x":{"type":"audio"}},"action":{"components":[]}}"#),
-        ),
-        (
-            "unknown rotation",
-            model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","encoding":"rot10d"}]}],"action":{"components":[]}}"#,
-            ),
         ),
         (
             "unknown layout",

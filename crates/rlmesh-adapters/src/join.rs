@@ -118,7 +118,7 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                     actual: describe_space(leaf),
                 });
             }
-            let (height, width) = image_hw(&leaf.shape, image.layout);
+            let (height, width, channels) = image_hwc(&leaf.shape, image.layout);
             Ok(vec![EnvFeature::Image(EnvImage {
                 key: path.to_owned(),
                 role: image.role.clone(),
@@ -126,6 +126,7 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 upside_down: image.upside_down,
                 height,
                 width,
+                channels,
                 value_range: uniform_finite_range(leaf),
             })])
         }
@@ -138,13 +139,15 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 });
             }
             let width = width_of(leaf);
-            if let Some(encoding) = state.encoding
-                && width != encoding.dims()
+            // Validate the *native* (raw) encoding's width against the space:
+            // the first recognized entry is what the env actually produces.
+            if let Some(native) = state.encoding.as_ref().and_then(|set| set.first_known())
+                && width != native.dims()
             {
                 return Err(JoinError::EncodingWidthMismatch {
                     key: path.to_owned(),
-                    encoding: encoding.as_str(),
-                    dims: encoding.dims(),
+                    encoding: native.as_str(),
+                    dims: native.dims(),
                     width,
                 });
             }
@@ -154,7 +157,7 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 role: state.role.clone(),
                 slice_offset: None,
                 dim: Some(width),
-                encoding: state.encoding,
+                encoding: state.encoding.clone(),
                 range,
             })])
         }
@@ -209,13 +212,13 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
     let mut offset: u32 = 0;
     for field in &layout.fields {
         if let Some(role) = &field.role {
-            if let Some(encoding) = field.encoding
-                && field.dim != encoding.dims()
+            if let Some(native) = field.encoding.as_ref().and_then(|set| set.first_known())
+                && field.dim != native.dims()
             {
                 return Err(JoinError::EncodingWidthMismatch {
                     key: path.to_owned(),
-                    encoding: encoding.as_str(),
-                    dims: encoding.dims(),
+                    encoding: native.as_str(),
+                    dims: native.dims(),
                     width: field.dim,
                 });
             }
@@ -233,7 +236,7 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
                 role: role.clone(),
                 slice_offset: Some(offset),
                 dim: Some(field.dim),
-                encoding: field.encoding,
+                encoding: field.encoding.clone(),
                 range,
             }));
         }
@@ -386,8 +389,8 @@ fn width_of(view: &SpaceView) -> u32 {
     u32::try_from(view.numel()).unwrap_or(u32::MAX)
 }
 
-/// Pixel `(height, width)` of a 3-D image shape under its layout.
-fn image_hw(shape: &[i64], layout: ImageLayout) -> (u32, u32) {
+/// Pixel `(height, width, channels)` of a 3-D image shape under its layout.
+fn image_hwc(shape: &[i64], layout: ImageLayout) -> (u32, u32, u32) {
     let dim = |index: usize| {
         shape
             .get(index)
@@ -396,8 +399,8 @@ fn image_hw(shape: &[i64], layout: ImageLayout) -> (u32, u32) {
             .unwrap_or(0)
     };
     match layout {
-        ImageLayout::Hwc => (dim(0), dim(1)),
-        ImageLayout::Chw => (dim(1), dim(2)),
+        ImageLayout::Hwc => (dim(0), dim(1), dim(2)),
+        ImageLayout::Chw => (dim(1), dim(2), dim(0)),
     }
 }
 
@@ -419,7 +422,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::spec::RotationEncoding;
+    use crate::spec::{AcceptSet, RotationEncoding};
     use crate::spec::{ActionComponent, ImageTag, StateField, StateLayout, StateTag, TextTag};
 
     fn box_view(shape: Vec<i64>, low: Option<Vec<f64>>, high: Option<Vec<f64>>) -> SpaceView {
@@ -640,7 +643,7 @@ mod tests {
             box_view(vec![3], None, None),
             ObsTag::State(StateTag {
                 role: "proprio/eef_rot".to_owned(),
-                encoding: Some(RotationEncoding::QuatXyzw),
+                encoding: Some(AcceptSet::single(RotationEncoding::QuatXyzw)),
                 range: None,
             }),
         );
@@ -709,7 +712,7 @@ mod tests {
         StateField {
             role: role.map(str::to_owned),
             dim,
-            encoding,
+            encoding: encoding.map(AcceptSet::single),
             range: None,
         }
     }

@@ -384,6 +384,12 @@ impl PyAdapterPlan {
         self.adapter.describe()
     }
 
+    /// Per-env data-loss / fabrication notes (zero-filled camera, aspect crop):
+    /// the "warn" subset of `describe`, empty when nothing noteworthy happened.
+    fn advisories(&self) -> Vec<String> {
+        self.adapter.advisories()
+    }
+
     /// The top-level observation keys this adapter reads.
     ///
     /// A host wrapper should encode only these before calling

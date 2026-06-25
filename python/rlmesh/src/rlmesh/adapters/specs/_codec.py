@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from ..._rlmesh import adapters_spec_normalize
 
@@ -30,6 +30,24 @@ def normalize_spec(
     return json.loads(
         adapters_spec_normalize(side, json.dumps(raw, allow_nan=False), allow_custom)
     )
+
+
+def one_or_many(value: Any) -> Any:
+    """Normalize a rotation-encoding field to its canonical authored form.
+
+    A single value (a ``str`` rotation name, a ``CustomEncoding``, or ``None``)
+    passes through unchanged; a sequence of rotation names — an *accept-set*, in
+    model-preference order — becomes a ``tuple`` so a frozen spec stays hashable
+    and round-trips by value. The Rust codec serializes a one-element accept-set
+    as a bare string, so the single and sequence forms are wire-compatible.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        # Accept-set entries are rotation-name strings (a CustomEncoding is a
+        # single object, handled by the pass-through below).
+        return tuple(cast("list[str] | tuple[str, ...]", value))
+    return value  # a CustomEncoding (or other single object) passes through
 
 
 def to_pair(value: Any) -> tuple[float, float] | None:

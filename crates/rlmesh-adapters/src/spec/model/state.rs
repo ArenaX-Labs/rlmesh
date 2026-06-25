@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::spec::AcceptSet;
 use crate::spec::rotations::RotationEncoding;
 
 fn default_float32() -> String {
@@ -13,8 +14,13 @@ fn default_float32() -> String {
 #[serde(deny_unknown_fields)]
 pub struct StateComponent {
     pub role: String,
+    /// Rotation encoding(s) the model accepts for this piece, in preference
+    /// order (most-preferred first). The resolver picks the env's native
+    /// encoding when it appears here (no conversion), else converts the env's
+    /// native into the first entry. A bare string on the wire for the common
+    /// single-encoding case.
     #[serde(default)]
-    pub encoding: Option<RotationEncoding>,
+    pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
     pub dim: Option<u32>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]

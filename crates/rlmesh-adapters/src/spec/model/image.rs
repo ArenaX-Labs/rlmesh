@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::spec::layouts::ImageLayout;
+use crate::spec::{AcceptSet, FitMode};
 
 fn default_uint8() -> String {
     "uint8".to_owned()
@@ -52,10 +53,31 @@ pub struct ImageInput {
     pub width: Option<u32>,
     #[serde(default)]
     pub layout: ImageLayout,
+    /// Channel count the model expects (e.g. `3` for RGB, `1` for grayscale).
+    /// When set, a resolve error if the env image has a different channel count
+    /// — the adapter does not (yet) convert between channel counts, so this
+    /// turns a silent wrong-channel feed into a loud failure. Additive over the
+    /// pinned wire format (omitted when unset).
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_count",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub channels: Option<u32>,
     #[serde(default = "default_uint8")]
     pub dtype: String,
     #[serde(default)]
     pub normalize: bool,
+    /// Target value range when `normalize` is set: pixels map from `[0, 255]`
+    /// into this range. Defaults to `[0, 1]` (the conventional 8-bit
+    /// normalization); set e.g. `[-1, 1]` for a model trained on signed inputs.
+    /// Additive over the pinned wire format (omitted when unset).
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_range",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub normalize_range: Option<(f64, f64)>,
     #[serde(default, deserialize_with = "crate::spec::num::de_count")]
     pub lead_dims: u32,
     #[serde(default)]
@@ -65,6 +87,29 @@ pub struct ImageInput {
     /// resolution error on older cores instead of a parse failure.
     #[serde(default = "default_bilinear_aa")]
     pub resample: String,
+    /// Permit the resize to *upscale* (interpolate detail the env image does not
+    /// have). Off by default: a model target larger than the env's native
+    /// resolution is a resolve error unless this is set. Additive over the pinned
+    /// wire format (omitted when false).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_upscale: bool,
+    /// How to reconcile a target whose aspect ratio differs from the env image.
+    /// A single mode (`"stretch"`, `"crop"`, or `"pad"`) or a preference list
+    /// (`["crop", "pad"]`): the resolver picks, per env, the first that does not
+    /// need a disallowed upscale — so one spec can crop a large camera and
+    /// letterbox a small one. Required only when the aspects differ; absent it,
+    /// an aspect-changing resize is a resolve error (no silent distortion). An
+    /// unrecognized mode degrades (it is skipped), never a parse failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<AcceptSet<FitMode>>,
+    /// Zero-fill a black frame when the env does not provide this camera, instead
+    /// of failing resolution. Needs `height`, `width`, and `channels` so the
+    /// blank can be sized without an env image. Additive over the pinned wire
+    /// format (omitted when false). Mirrors a [`StateComponent`]'s `optional`.
+    ///
+    /// [`StateComponent`]: crate::spec::StateComponent
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
     /// Number of consecutive observations the model stacks on a new leading
     /// axis (frame history); `1` = no stacking. Stacking is applied natively in
     /// the core, episode-keyed (the env still sends one frame per step; the

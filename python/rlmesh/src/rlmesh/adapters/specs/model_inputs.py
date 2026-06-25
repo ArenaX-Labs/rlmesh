@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
 
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
+from ._codec import one_or_many
 from .custom_encoding import CustomEncoding
 from .vocabularies import ImageLayout, RotationEncoding
 
@@ -23,8 +24,14 @@ class ImageInput:
         height: Target image height, or None to keep the env height.
         width: Target image width, or None to keep the env width.
         layout: Axis layout the model expects.
+        channels: Channel count the model expects (e.g. 3 for RGB, 1 for
+            grayscale). When set, a resolve error if the env image differs;
+            the adapter does not convert between channel counts.
         dtype: NumPy dtype name the model expects.
-        normalize: Scale 8-bit pixel values into ``[0, 1]`` before casting.
+        normalize: Map 8-bit pixel values into ``normalize_range`` before
+            casting.
+        normalize_range: Target range for ``normalize`` (default ``[0, 1]``);
+            set e.g. ``(-1.0, 1.0)`` for a model trained on signed inputs.
         lead_dims: Number of leading singleton axes to add (batch/time).
         upside_down: Whether the model was trained on images rotated 180
             degrees relative to the canonical upright orientation.
@@ -32,6 +39,19 @@ class ImageInput:
             ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible)
             or ``"bilinear"`` (4-tap half-pixel-center bilinear,
             OpenCV/torch-compatible).
+        allow_upscale: Permit a target larger than the env's native resolution
+            (interpolating detail that is not there). Off by default: an
+            upscaling target is a resolve error unless this is set.
+        fit: How to reconcile a target whose aspect ratio differs from the env
+            image: ``"stretch"`` (distort), ``"crop"`` (cover + center-crop), or
+            ``"pad"`` (letterbox) -- or a sequence of them in preference order.
+            The resolver picks, per env, the first that does not need a
+            disallowed upscale, so one spec can crop a large camera and
+            letterbox a small one. Required only on an aspect mismatch; absent
+            it, an aspect-changing resize is a resolve error.
+        optional: Zero-fill a black frame when the env does not provide this
+            camera, instead of failing resolution. Needs ``height``, ``width``,
+            and ``channels`` so the blank can be sized.
         stack: Number of consecutive observations to stack on a new leading
             axis (frame history). ``1`` (default) means no stacking. Stacking
             is applied host-side by the adapter, which buffers processed
@@ -47,11 +67,16 @@ class ImageInput:
     height: int | None = None
     width: int | None = None
     layout: ImageLayout = "hwc"
+    channels: int | None = None
     dtype: str = "uint8"
     normalize: bool = False
+    normalize_range: tuple[float, float] | None = None
     lead_dims: int = 0
     upside_down: bool = False
     resample: str = "bilinear_aa"
+    allow_upscale: bool = False
+    fit: str | Sequence[str] | None = None
+    optional: bool = False
     stack: int = 1
     size: InitVar[int | None] = None
 
@@ -64,6 +89,9 @@ class ImageInput:
                 raise ValueError("ImageInput: pass size=, or height=/width=, not both")
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
+        # A single fit stays a string; a preference list normalizes to a tuple
+        # (hashable, round-trips by value) -- mirrors the rotation accept-set.
+        object.__setattr__(self, "fit", one_or_many(self.fit))
 
 
 @dataclass(frozen=True)
@@ -72,7 +100,11 @@ class StateComponent:
 
     Attributes:
         role: Semantic role matched against env state features.
-        encoding: Rotation encoding the model expects for this piece.
+        encoding: Rotation encoding the model expects for this piece. A single
+            encoding, or a sequence of them in preference order (most-preferred
+            first) — the resolver picks the env's native encoding when it
+            appears here (no conversion), else converts into the first entry.
+            A ``CustomEncoding`` is a single host-side packing (not a set).
         dim: Optional number of leading elements to keep from the source.
         index: Optional single element to select after any conversion.
         optional: Zero-fill this piece when the env does not declare the
@@ -86,12 +118,17 @@ class StateComponent:
     """
 
     role: str
-    encoding: RotationEncoding | CustomEncoding | None = None
+    encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None = (
+        None
+    )
     dim: int | None = None
     index: int | None = None
     optional: bool = False
     range: tuple[float, float] | None = None
     # dim/index >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
 @dataclass(frozen=True)
@@ -119,14 +156,16 @@ class StateInput:
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
     role: InitVar[str | None] = None
-    encoding: InitVar[RotationEncoding | CustomEncoding | None] = None
+    encoding: InitVar[
+        RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None
+    ] = None
     dim: InitVar[int | None] = None
     index: InitVar[int | None] = None
 
     def __post_init__(
         self,
         role: str | None,
-        encoding: RotationEncoding | CustomEncoding | None,
+        encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None,
         dim: int | None,
         index: int | None,
     ) -> None:

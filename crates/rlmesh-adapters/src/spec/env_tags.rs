@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::AcceptSet;
 use super::action::ActionLayout;
 use super::layouts::ImageLayout;
 use super::rotations::RotationEncoding;
@@ -35,7 +36,7 @@ pub struct ImageTag {
 pub struct StateTag {
     pub role: String,
     #[serde(default)]
-    pub encoding: Option<RotationEncoding>,
+    pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
 }
@@ -56,7 +57,7 @@ struct StateFieldWire {
     #[serde(deserialize_with = "crate::spec::num::de_count")]
     dim: u32,
     #[serde(default)]
-    encoding: Option<RotationEncoding>,
+    encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     range: Option<(f64, f64)>,
 }
@@ -95,7 +96,7 @@ pub struct StateField {
     pub role: Option<String>,
     pub dim: u32,
     #[serde(default)]
-    pub encoding: Option<RotationEncoding>,
+    pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default)]
     pub range: Option<(f64, f64)>,
 }

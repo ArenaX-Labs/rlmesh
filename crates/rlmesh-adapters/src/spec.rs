@@ -10,6 +10,7 @@
 //! with the Rust normalize door (a manual key check); until then the Python
 //! from_dict mirror also stays lenient on those payloads.
 
+mod accept_set;
 mod action;
 mod env;
 mod env_tags;
@@ -18,10 +19,11 @@ mod model;
 mod num;
 mod rotations;
 
+pub use accept_set::AcceptSet;
 pub use action::{ActionComponent, ActionLayout};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText};
 pub use env_tags::{EnvTags, ImageTag, ObsTag, StateField, StateLayout, StateTag, TextTag};
-pub use layouts::ImageLayout;
+pub use layouts::{FitMode, ImageLayout};
 pub use model::{
     CustomInput, ImageInput, ModelInput, ModelSpec, StateComponent, StateContainer, StateInput,
     TextContainer, TextInput,

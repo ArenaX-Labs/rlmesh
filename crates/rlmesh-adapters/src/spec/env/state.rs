@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::spec::AcceptSet;
 use crate::spec::rotations::RotationEncoding;
 
 /// A numeric proprioception entry in an environment observation.
@@ -19,8 +20,12 @@ pub struct EnvState {
     pub slice_offset: Option<u32>,
     #[serde(default)]
     pub dim: Option<u32>,
+    /// Rotation encoding(s) this feature is declared in. As an env (producer)
+    /// declaration the *first recognized* entry is the native (raw) encoding;
+    /// any further entries are alternative representations it is willing to
+    /// emit. A bare string on the wire for the common single-encoding case.
     #[serde(default)]
-    pub encoding: Option<RotationEncoding>,
+    pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default)]
     pub range: Option<(f64, f64)>,
 }

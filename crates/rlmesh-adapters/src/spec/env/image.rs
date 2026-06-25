@@ -21,6 +21,11 @@ pub struct EnvImage {
     /// Pixel width of the image, derived from the observation space.
     #[serde(default)]
     pub width: u32,
+    /// Channel count of the image (the layout's channel axis), derived from the
+    /// observation space. Used to reject a model expecting a different channel
+    /// count (e.g. RGB vs grayscale) before it silently mis-feeds the model.
+    #[serde(default)]
+    pub channels: u32,
     /// Source pixel value range `(low, high)` projected from the space's
     /// uniform finite bounds, used to map a float image into 8-bit pixels.
     /// `None` when the space is unbounded or non-uniform.

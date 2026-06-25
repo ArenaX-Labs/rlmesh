@@ -120,6 +120,11 @@ class AdapterPlan:
         r"""
         Human-readable summary of the resolved transformations.
         """
+    def advisories(self) -> builtins.list[builtins.str]:
+        r"""
+        Per-env data-loss / fabrication notes (zero-filled camera, aspect crop):
+        the "warn" subset of `describe`, empty when nothing noteworthy happened.
+        """
     def referenced_obs_keys(self) -> builtins.list[builtins.str]:
         r"""
         The top-level observation keys this adapter reads.

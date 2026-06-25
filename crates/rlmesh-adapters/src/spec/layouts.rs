@@ -27,6 +27,58 @@ impl ImageLayout {
     }
 }
 
+impl crate::spec::accept_set::WireVocab for ImageLayout {
+    fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layout| layout.as_str() == name)
+    }
+
+    fn as_wire(self) -> &'static str {
+        self.as_str()
+    }
+}
+
+/// How a resize reconciles a target whose aspect ratio differs from the source.
+///
+/// A model may declare a *preference list* of fit modes (an
+/// [`AcceptSet`](crate::spec::AcceptSet)); the resolver picks, per env, the
+/// first one that does not need a disallowed upscale — so the same spec can
+/// crop a large camera and letterbox a small one. When the aspects already
+/// match, every mode is the same uniform scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FitMode {
+    /// Resize each axis independently to the target (distorts aspect).
+    #[default]
+    Stretch,
+    /// Uniformly scale to cover the target, then center-crop (drops edges).
+    Crop,
+    /// Uniformly scale to fit within the target, then center-pad with zeros.
+    Pad,
+}
+
+impl FitMode {
+    /// Every fit mode, in the natural preference order (least surprising first).
+    pub const ALL: [Self; 3] = [Self::Stretch, Self::Crop, Self::Pad];
+
+    /// Wire/display name (matches the JSON form).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stretch => "stretch",
+            Self::Crop => "crop",
+            Self::Pad => "pad",
+        }
+    }
+}
+
+impl crate::spec::accept_set::WireVocab for FitMode {
+    fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == name)
+    }
+
+    fn as_wire(self) -> &'static str {
+        self.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ImageLayout;

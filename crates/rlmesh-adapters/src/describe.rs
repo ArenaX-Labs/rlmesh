@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use crate::fmt::{quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
-use crate::spec::ImageLayout;
+use crate::spec::{FitMode, ImageLayout};
 
 /// Summarize how one model input is derived from the observation.
 fn describe_obs_plan(plan: &ObsPlan) -> String {
@@ -16,6 +16,45 @@ fn describe_obs_plan(plan: &ObsPlan) -> String {
             format!("{} <- custom transform", quoted(&custom.model_key))
         }
     }
+}
+
+/// Notable, potentially-surprising outcomes of resolving against *this* env:
+/// per-env data loss or fabrication a caller may want to surface (a zero-filled
+/// camera, an aspect crop/letterbox). Lossless or explicitly-requested steps
+/// (layout, dtype, normalize, stretch) are omitted -- this is the "warn" subset
+/// of [`describe_adapter`], not the full transform list.
+pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<String> {
+    let mut notes: Vec<String> = Vec::new();
+    for plan in &adapter.obs_plans {
+        match plan {
+            ObsPlan::Image(image) if image.zero_fill.is_some() => notes.push(format!(
+                "image {}: the env provides no source camera; using a blank (zero) frame",
+                quoted(&image.model_key)
+            )),
+            ObsPlan::Image(image) if image.size.is_some() => match image.fit {
+                FitMode::Crop => notes.push(format!(
+                    "image {}: aspect crop drops edge pixels",
+                    quoted(&image.model_key)
+                )),
+                FitMode::Pad => notes.push(format!(
+                    "image {}: aspect pad adds letterbox borders",
+                    quoted(&image.model_key)
+                )),
+                FitMode::Stretch => {}
+            },
+            ObsPlan::State(state) => {
+                let zeros = state.pieces.iter().filter(|piece| piece.zero_fill).count();
+                if zeros > 0 {
+                    notes.push(format!(
+                        "state {}: {zeros} component(s) zero-filled for an absent env role",
+                        quoted(&state.model_key)
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    notes
 }
 
 pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
@@ -74,6 +113,12 @@ fn describe_segment(segment: &ActionSegment) -> String {
 }
 
 fn describe_image(plan: &ImagePlan) -> String {
+    if let Some((height, width, channels)) = plan.zero_fill {
+        return format!(
+            "{} <- zeros({height}x{width}x{channels})",
+            quoted(&plan.model_key)
+        );
+    }
     let mut steps: Vec<String> = Vec::new();
     if plan.src_layout != ImageLayout::Hwc {
         steps.push(format!("{}->hwc", plan.src_layout.as_str()));
@@ -84,8 +129,12 @@ fn describe_image(plan: &ImagePlan) -> String {
     if let Some((height, width)) = plan.size {
         steps.push(format!("resize {height}x{width} ({})", plan.resample));
     }
-    if plan.normalize {
-        steps.push("normalize /255".to_owned());
+    if let Some((low, high)) = plan.normalize {
+        if (low, high) == (0.0, 1.0) {
+            steps.push("normalize /255".to_owned());
+        } else {
+            steps.push(format!("normalize [{low}, {high}]"));
+        }
     }
     steps.push(plan.dtype.clone());
     if plan.dst_layout != ImageLayout::Hwc {

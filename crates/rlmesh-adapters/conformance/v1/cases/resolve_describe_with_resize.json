@@ -75,6 +75,7 @@
     "inputs": [
       {
         "dtype": "uint8",
+        "fit": "stretch",
         "height": 3,
         "key": "image",
         "layout": "hwc",

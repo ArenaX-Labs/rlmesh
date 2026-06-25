@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, cast
 
-from ._codec import to_pair
+from ._codec import one_or_many, to_pair
 from .custom_encoding import CustomEncoding
 from .model_inputs import (
     EntrypointCustomInput,
@@ -42,6 +42,17 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
         # pinned wire format (the native core ignores it).
         if item.stack != 1:
             image["stack"] = item.stack
+        # Opt-in, emitted only when set (byte-parity with the pinned wire format).
+        if item.allow_upscale:
+            image["allow_upscale"] = True
+        if item.fit is not None:
+            image["fit"] = item.fit
+        if item.channels is not None:
+            image["channels"] = item.channels
+        if item.normalize_range is not None:
+            image["normalize_range"] = list(item.normalize_range)
+        if item.optional:
+            image["optional"] = True
         return image
     if isinstance(item, StateInput):
         for component in item.components:
@@ -111,18 +122,23 @@ def model_input_from_dict(item: object) -> ModelInput:
             height=data.get("height"),
             width=data.get("width"),
             layout=data.get("layout", "hwc"),
+            channels=data.get("channels"),
             dtype=data.get("dtype", "uint8"),
             normalize=bool(data.get("normalize", False)),
+            normalize_range=to_pair(data.get("normalize_range")),
+            optional=bool(data.get("optional", False)),
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
             resample=data.get("resample", "bilinear_aa"),
+            allow_upscale=bool(data.get("allow_upscale", False)),
+            fit=one_or_many(data.get("fit")),
             stack=int(data.get("stack", 1)),
         )
     if kind == "state":
         components = tuple(
             StateComponent(
                 role=component["role"],
-                encoding=component.get("encoding"),
+                encoding=one_or_many(component.get("encoding")),
                 dim=component.get("dim"),
                 index=component.get("index"),
                 optional=bool(component.get("optional", False)),

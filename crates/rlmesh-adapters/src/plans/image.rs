@@ -1,6 +1,6 @@
 //! Resolved instructions for one model image input.
 
-use crate::spec::ImageLayout;
+use crate::spec::{FitMode, ImageLayout};
 
 /// Resolved instructions for one model image input.
 #[derive(Debug, Clone, PartialEq)]
@@ -11,9 +11,14 @@ pub struct ImagePlan {
     pub dst_layout: ImageLayout,
     pub flip: bool,
     pub size: Option<(u32, u32)>,
+    /// How a target with a different aspect ratio than the source is reconciled.
+    pub fit: FitMode,
     pub resample: String,
     pub dtype: String,
-    pub normalize: bool,
+    /// Target value range to normalize 8-bit pixels into before the dtype cast,
+    /// or `None` to skip normalization. `Some((0.0, 1.0))` is the conventional
+    /// `/255`; the model may declare another range (e.g. `(-1.0, 1.0)`).
+    pub normalize: Option<(f64, f64)>,
     pub lead_dims: u32,
     /// Source pixel value range `(low, high)` from the env image's space, used
     /// to map a float image into 8-bit. `None` when the space is unbounded
@@ -24,4 +29,10 @@ pub struct ImagePlan {
     /// stacked natively in the core (see [`crate::stateful`]); only the keys with
     /// `stack > 1` carry a per-episode window.
     pub stack: u32,
+    /// When `Some((height, width, channels))` this input has no env source: the
+    /// adapter synthesizes a black HWC frame of that shape (an optional camera
+    /// the env did not provide), then applies the normalize/dtype/layout/lead
+    /// steps like a real frame. `None` for a normal image. `env_key` is empty
+    /// when this is set.
+    pub zero_fill: Option<(u32, u32, u32)>,
 }

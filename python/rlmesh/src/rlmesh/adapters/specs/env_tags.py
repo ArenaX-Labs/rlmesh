@@ -16,12 +16,12 @@ its own: the mapping key *is* the path.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
-from ._codec import normalize_spec, to_pair
+from ._codec import normalize_spec, one_or_many, to_pair
 from .action import ActionLayout
 from .action_serialization import action_layout_from_dict, action_layout_to_dict
 from .vocabularies import ImageLayout, RotationEncoding
@@ -49,7 +49,9 @@ class StateTag:
 
     Attributes:
         role: Semantic role used for matching, e.g. ``proprio/eef_pos``.
-        encoding: Rotation encoding when the role is a rotation.
+        encoding: Rotation encoding when the role is a rotation. A single
+            encoding, or a sequence of them (the env's native first, then
+            alternatives it can emit) for cross-version negotiation.
         range: Optional ``(low, high)`` value range, supplying the bounds where
             the space leaves this leaf unbounded. If the space declares finite
             bounds that disagree with it, resolution errors rather than
@@ -57,8 +59,11 @@ class StateTag:
     """
 
     role: str = JOINT_POS
-    encoding: RotationEncoding | None = None
+    encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,8 @@ class StateField:
         role: Semantic role matched against model state components, or None
             to skip this slice.
         dim: Number of elements this field occupies.
-        encoding: Rotation encoding when the field is a rotation.
+        encoding: Rotation encoding when the field is a rotation. A single
+            encoding, or a sequence of them (native first) for negotiation.
         range: Optional ``(low, high)`` value range for this field's slice,
             supplying the bounds where the space leaves it unbounded. If the
             space declares finite bounds for the slice that disagree with it,
@@ -96,10 +102,13 @@ class StateField:
 
     role: str | None = None
     dim: int = 0
-    encoding: RotationEncoding | None = None
+    encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
     # dim >= 1 and the role-less-skip rule (a skip carries no encoding/range) are
     # enforced by the Rust codec (StateField's TryFrom guard) at serialize/normalize.
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
 @dataclass(frozen=True, init=False)
@@ -150,7 +159,7 @@ def _state_field_from_dict(item: Mapping[str, Any]) -> StateField:
     return StateField(
         role=item.get("role"),
         dim=int(item["dim"]),
-        encoding=item.get("encoding"),
+        encoding=one_or_many(item.get("encoding")),
         range=to_pair(item.get("range")),
     )
 
@@ -191,7 +200,7 @@ def obs_tag_from_dict(item: Mapping[str, Any]) -> ObsTag:
     if kind == "state":
         return StateTag(
             role=item["role"],
-            encoding=item.get("encoding"),
+            encoding=one_or_many(item.get("encoding")),
             range=to_pair(item.get("range")),
         )
     if kind == "layout":

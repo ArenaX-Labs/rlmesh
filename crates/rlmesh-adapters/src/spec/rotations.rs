@@ -70,6 +70,18 @@ impl RotationEncoding {
     }
 }
 
+impl crate::spec::accept_set::WireVocab for RotationEncoding {
+    fn from_wire(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|encoding| encoding.as_str() == name)
+    }
+
+    fn as_wire(self) -> &'static str {
+        self.as_str()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RotationEncoding;

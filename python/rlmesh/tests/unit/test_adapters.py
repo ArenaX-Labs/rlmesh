@@ -840,7 +840,11 @@ def test_bytes_are_rejected_for_non_image_adapter_inputs():
 def test_bilinear_resize_preserves_constant_images():
     env = image_env(10, 12)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", height=4, width=5, resample="bilinear"),),
+        inputs=(
+            adapt.ImageInput(
+                "image", height=4, width=5, resample="bilinear", fit="stretch"
+            ),
+        ),
         action=SMOLVLA.action,
     )
     payload = resolve(env, spec).transform_obs(
@@ -2284,3 +2288,192 @@ def test_from_metadata_reads_v1_and_returns_none_when_absent():
     tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
     assert adapt.EnvTags.from_metadata(tags.to_metadata()) == tags
     assert adapt.EnvTags.from_metadata({}) is None
+
+
+# ---------------------------------------------------------------------------
+# Rotation-encoding accept-sets: a side declares a preference list; the resolver
+# prefers the env's native encoding when the model accepts it (no conversion),
+# else converts into the first preference. A single encoding stays a bare string
+# on the wire (byte-parity with pre-accept-set specs).
+# ---------------------------------------------------------------------------
+
+
+def _rot_model(encoding) -> adapt.ModelSpec:
+    return adapt.ModelSpec(
+        inputs=(
+            adapt.StateInput(
+                "state",
+                components=(adapt.StateComponent(adapt.EEF_ROT, encoding=encoding),),
+                container="list",
+            ),
+        ),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+
+
+def test_accept_set_authoring_round_trips():
+    multi = _rot_model(("rot6d", "quat_xyzw"))
+    doc = multi.to_dict()
+    # A sequence serializes as a JSON list...
+    assert doc["inputs"][0]["components"][0]["encoding"] == ["rot6d", "quat_xyzw"]
+    back = adapt.ModelSpec.from_dict(doc)
+    # ...and normalizes to a tuple so the frozen spec stays hashable and equal.
+    back_input = back.inputs[0]
+    assert isinstance(back_input, adapt.StateInput)
+    assert back_input.components[0].encoding == ("rot6d", "quat_xyzw")
+    assert back == multi
+
+    # Byte-parity: a single encoding stays a bare string, not a one-element list.
+    single = _rot_model("quat_xyzw")
+    assert single.to_dict()["inputs"][0]["components"][0]["encoding"] == "quat_xyzw"
+
+
+def test_accept_set_prefers_native_then_converts():
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={
+                "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")
+            },
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"eef_quat": box(4)}),
+        action_space=box(1),
+    )
+    quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+    obs = {"eef_quat": quat}
+
+    # The model accepts the env's native quat among its preferences -> no
+    # conversion: the raw 4-element quaternion passes through untouched.
+    native_ok = resolve(env, _rot_model(("rot6d", "quat_xyzw"))).transform_obs(obs)
+    assert len(native_ok["state"]) == 4
+    assert native_ok["state"] == pytest.approx(quat.tolist())
+
+    # The model wants only rot6d -> the env's quat is converted (6 dims).
+    converted = resolve(env, _rot_model("rot6d")).transform_obs(obs)
+    assert len(converted["state"]) == 6
+
+
+def test_image_fit_list_authoring_round_trips():
+    spec = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("image", height=64, width=64, fit=("crop", "pad")),),
+        action=adapt.ActionLayout(),
+    )
+    doc = spec.to_dict()
+    assert doc["inputs"][0]["fit"] == ["crop", "pad"]  # a sequence -> JSON list
+    back = adapt.ModelSpec.from_dict(doc)
+    back_input = back.inputs[0]
+    assert isinstance(back_input, adapt.ImageInput)
+    assert back_input.fit == ("crop", "pad")  # normalizes to a tuple
+    assert back == spec
+
+    # Byte-parity: a single fit stays a bare string, not a one-element list.
+    single = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("image", fit="crop"),),
+        action=adapt.ActionLayout(),
+    )
+    assert single.to_dict()["inputs"][0]["fit"] == "crop"
+
+
+def test_image_fit_list_selects_per_env():
+    # fit=[crop, pad] against an aspect-mismatched env: crop downscales a large
+    # camera fine, so it resolves to the model's target shape.
+    model = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("image", height=4, width=4, fit=("crop", "pad")),),
+        action=SMOLVLA.action,
+    )
+    payload = resolve(image_env(8, 16), model).transform_obs(
+        {"rgb": np.zeros((8, 16, 3), dtype=np.uint8), "instruction": "go"}
+    )
+    assert payload["image"].shape == (4, 4, 3)
+
+
+def test_image_channel_mismatch_is_rejected():
+    # A grayscale (1-channel) env image with a model declaring 3 channels is a
+    # loud resolve error, not a silent wrong-channel feed.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
+            ),
+        ),
+        obs_space=gym.spaces.Dict(
+            {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
+        ),
+        action_space=box(1),
+    )
+    model = adapt.ModelSpec(
+        inputs=(adapt.ImageInput("image", channels=3),),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="channel"):
+        resolve(env, model)
+
+
+def test_image_normalize_range_maps_into_declared_bounds():
+    env = image_env(2, 2)
+    model = adapt.ModelSpec(
+        inputs=(
+            adapt.ImageInput(
+                "image", dtype="float32", normalize=True, normalize_range=(-1.0, 1.0)
+            ),
+        ),
+        action=SMOLVLA.action,
+    )
+    adapter = resolve(env, model)
+    black = adapter.transform_obs(
+        {"rgb": np.zeros((2, 2, 3), dtype=np.uint8), "instruction": "go"}
+    )
+    white = adapter.transform_obs(
+        {"rgb": np.full((2, 2, 3), 255, dtype=np.uint8), "instruction": "go"}
+    )
+    # 0 -> -1, 255 -> 1 (instead of the default [0, 1]).
+    np.testing.assert_allclose(black["image"], -1.0, atol=1e-6)
+    np.testing.assert_allclose(white["image"], 1.0, atol=1e-6)
+
+
+def test_image_optional_camera_zero_fills_when_absent():
+    # A two-camera env (so the single-image fallback does not fire); the model
+    # wants a third, absent camera but marks it optional -> a black frame.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={
+                "cam0": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+                "cam1": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            },
+            action=adapt.ActionLayout(
+                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
+            ),
+        ),
+        obs_space=gym.spaces.Dict(
+            {"cam0": image_space(8, 8), "cam1": image_space(8, 8)}
+        ),
+        action_space=box(1),
+    )
+    model = adapt.ModelSpec(
+        inputs=(
+            adapt.ImageInput("primary", role=adapt.IMAGE_PRIMARY),
+            adapt.ImageInput(
+                "overhead",
+                role="image/overhead",
+                height=8,
+                width=8,
+                channels=3,
+                optional=True,
+            ),
+        ),
+        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = resolve(env, model)
+    payload = adapter.transform_obs(
+        {
+            "cam0": np.full((8, 8, 3), 7, dtype=np.uint8),
+            "cam1": np.full((8, 8, 3), 9, dtype=np.uint8),
+        }
+    )
+    assert payload["overhead"].shape == (8, 8, 3)
+    np.testing.assert_array_equal(payload["overhead"], 0)
+    # The zero-filled camera surfaces as a non-fatal advisory.
+    assert any("blank" in note and "overhead" in note for note in adapter.advisories())

@@ -108,6 +108,7 @@
     },
     "inputs": [
       {
+        "allow_upscale": true,
         "dtype": "uint8",
         "height": 6,
         "key": "image",
