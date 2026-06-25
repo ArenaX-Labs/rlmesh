@@ -77,6 +77,7 @@ class ImageInput:
     allow_upscale: bool = False
     fit: str | Sequence[str] | None = None
     optional: bool = False
+    absent_fill: int | None = None
     stack: int = 1
     size: InitVar[int | None] = None
 

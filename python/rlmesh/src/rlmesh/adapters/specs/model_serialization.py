@@ -53,6 +53,8 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             image["normalize_range"] = list(item.normalize_range)
         if item.optional:
             image["optional"] = True
+        if item.absent_fill is not None:
+            image["absent_fill"] = item.absent_fill
         return image
     if isinstance(item, StateInput):
         for component in item.components:
@@ -127,6 +129,7 @@ def model_input_from_dict(item: object) -> ModelInput:
             normalize=bool(data.get("normalize", False)),
             normalize_range=to_pair(data.get("normalize_range")),
             optional=bool(data.get("optional", False)),
+            absent_fill=data.get("absent_fill"),
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
             resample=data.get("resample", "bilinear_aa"),

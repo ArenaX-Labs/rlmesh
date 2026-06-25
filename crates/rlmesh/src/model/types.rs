@@ -118,6 +118,26 @@ impl ModelObservation {
         self.route.primary_env_index()
     }
 
+    /// Validate the request carries everything a decode needs (observation, env
+    /// contract, observation space) WITHOUT paying the batch decode. Lets a
+    /// malformed request fail fast even on a pure chunk-replay step that skips the
+    /// actual decode below, instead of silently replaying buffered actions.
+    pub fn ensure_decodable(&self) -> Result<()> {
+        if self.observation.is_none() {
+            return Err(Error::model(
+                "observation absent; a predict request must carry an observation",
+            ));
+        }
+        let contract = self
+            .env_contract
+            .as_ref()
+            .ok_or_else(|| Error::model("observation missing env contract; cannot decode"))?;
+        if contract.observation_space.is_none() {
+            return Err(Error::model("env contract missing observation space"));
+        }
+        Ok(())
+    }
+
     /// Decode the observation into one typed [`SpaceValue`](spaces::SpaceValue) per lane (length
     /// `== num_envs`), using the route's pinned observation space.
     ///
@@ -196,6 +216,21 @@ mod tests {
     fn decoded_lanes_roundtrips_each_lane() {
         let lanes = vec![box_u8(5), box_u8(9), box_u8(0)];
         assert_eq!(observation(&lanes).decoded_lanes().unwrap(), lanes);
+    }
+
+    #[test]
+    fn ensure_decodable_catches_malformed_requests_without_decoding() {
+        // Happy path: present observation + contract + space validates.
+        assert!(observation(&[box_u8(3)]).ensure_decodable().is_ok());
+        // Absent observation errors up front.
+        let mut no_obs = observation(&[box_u8(3)]);
+        no_obs.observation = None;
+        assert!(no_obs.ensure_decodable().is_err());
+        // Missing env contract errors up front -- the gap that used to be deferred
+        // on a step where every lane is mid-chunk-replay and skips the decode.
+        let mut no_contract = observation(&[box_u8(3)]);
+        no_contract.env_contract = None;
+        assert!(no_contract.ensure_decodable().is_err());
     }
 
     #[test]

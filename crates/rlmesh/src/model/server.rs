@@ -297,10 +297,17 @@ where
                 // route's tail so a later `ConfigureRoute` reopening the same key
                 // chains after it, and its fired tail is later reaped, keeping the
                 // map bounded for long-lived streams.
-                let (gate, done_tx): (RequestGate, tokio::sync::oneshot::Sender<()>) =
+                let (gate, dones): (RequestGate, Vec<tokio::sync::oneshot::Sender<()>>) =
                     if close_after {
                         // Close drains every route: wait for all outstanding requests.
                         route_tails.close_all_gate()
+                    } else if let Some(keys) = grouped_predict_route_keys(&request) {
+                        // A grouped predict spans multiple routes, so it can't ride a
+                        // single route's chain: gate it on every route it references
+                        // (and register a tail on each so a later same-route request
+                        // orders after it). Without this it would run ungated and
+                        // could race a route's `ConfigureRoute`/`CloseRoute`.
+                        route_tails.next_multi_keyed_gate(&keys)
                     } else {
                         // Chain this request after the previous one on its route (if
                         // any). Requests with no route key (malformed) are ungated.
@@ -344,10 +351,13 @@ where
                     )
                     .await;
 
-                    // Release successors on this route *before* sending the
-                    // response, so per-route ordering does not depend on the
-                    // unbounded response channel draining.
-                    let _ = done_tx.send(());
+                    // Release successors on this request's route(s) *before* sending
+                    // the response, so per-route ordering does not depend on the
+                    // unbounded response channel draining. A grouped predict fires
+                    // one signal per referenced route.
+                    for done in dones {
+                        let _ = done.send(());
+                    }
 
                     if tx.send(Ok(response)).await.is_err() {
                         tracing::warn!(
@@ -865,22 +875,45 @@ impl RouteTails {
     fn next_keyed_gate(
         &mut self,
         route_key: Option<&str>,
-    ) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+    ) -> (RequestGate, Vec<tokio::sync::oneshot::Sender<()>>) {
         let prev = route_key.and_then(|key| self.tails.remove(key));
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         if let Some(key) = route_key {
             self.tails.insert(key.to_string(), done_rx);
         }
         self.reap_completed();
-        (RequestGate::Prev(prev), done_tx)
+        (RequestGate::Prev(prev), vec![done_tx])
+    }
+
+    /// Compute the gate a grouped predict must await: it references several routes
+    /// at once, so wait on the latest outstanding request of EACH referenced route
+    /// and register a fresh tail on each so a later same-route request (e.g. a
+    /// `CloseRoute`) chains after it. `keys` must be deduplicated. Mirrors
+    /// `next_keyed_gate` but fans the single completion out to every route.
+    fn next_multi_keyed_gate(
+        &mut self,
+        keys: &[String],
+    ) -> (RequestGate, Vec<tokio::sync::oneshot::Sender<()>>) {
+        let mut prev = Vec::with_capacity(keys.len());
+        let mut dones = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(rx) = self.tails.remove(key) {
+                prev.push(rx);
+            }
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            self.tails.insert(key.clone(), done_rx);
+            dones.push(done_tx);
+        }
+        self.reap_completed();
+        (RequestGate::All(prev), dones)
     }
 
     /// Compute the whole-session `Close` barrier: drain every outstanding route
-    /// tail to wait on, then hand back a discarded sender for type uniformity.
-    fn close_all_gate(&mut self) -> (RequestGate, tokio::sync::oneshot::Sender<()>) {
+    /// tail to wait on. `Close` ends the session, so it registers no tail of its
+    /// own (there are no successors to release).
+    fn close_all_gate(&mut self) -> (RequestGate, Vec<tokio::sync::oneshot::Sender<()>>) {
         let prev = self.tails.drain().map(|(_, rx)| rx).collect::<Vec<_>>();
-        let (done_tx, _done_rx) = tokio::sync::oneshot::channel();
-        (RequestGate::All(prev), done_tx)
+        (RequestGate::All(prev), Vec::new())
     }
 
     /// Drop tails whose receiver has already completed, meaning the sender fired
@@ -946,12 +979,31 @@ fn join_request_route_key(request: &JoinRequest) -> Option<String> {
         join_request::Kind::Predict(request) => request.context.as_ref()?,
         join_request::Kind::CloseRoute(request) => request.context.as_ref()?,
         join_request::Kind::Close(_) => return None,
-        // A grouped predict spans multiple routes, so it is not pinned to any one
-        // route's chain; it runs under the handler Mutex (which serializes it
-        // against every other predict) rather than a per-route gate.
+        // A grouped predict spans multiple routes, so it has no single route key;
+        // the dispatch loop gates it on all of its referenced routes via
+        // `grouped_predict_route_keys` + `next_multi_keyed_gate` instead.
         join_request::Kind::GroupedPredict(_) => return None,
     };
     route_config_key(context)
+}
+
+/// The deduplicated route keys a grouped predict references, in first-seen order,
+/// or `None` for any other request kind. A group with a missing/malformed context
+/// contributes no key (it reports its own in-band error during handling), so an
+/// empty `Vec` means there is nothing to gate on.
+fn grouped_predict_route_keys(request: &JoinRequest) -> Option<Vec<String>> {
+    let join_request::Kind::GroupedPredict(grouped) = request.kind.as_ref()? else {
+        return None;
+    };
+    let mut keys = Vec::new();
+    for group in &grouped.groups {
+        if let Some(key) = group.context.as_ref().and_then(route_config_key)
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    Some(keys)
 }
 
 fn route_config_key(context: &rlmesh_proto::model::v1::PredictContext) -> Option<String> {
@@ -1115,8 +1167,10 @@ mod tests {
     /// Drive a tail through its lifecycle: take the gate, fire the sender, and
     /// confirm the gate it handed out (the *predecessor* of this request) is
     /// already satisfied where expected.
-    fn fire(done_tx: tokio::sync::oneshot::Sender<()>) {
-        let _ = done_tx.send(());
+    fn fire(dones: Vec<tokio::sync::oneshot::Sender<()>>) {
+        for done in dones {
+            let _ = done.send(());
+        }
     }
 
     #[tokio::test]
@@ -1234,6 +1288,68 @@ mod tests {
             RequestGate::Prev(_) => panic!("Close must produce an All gate over every route"),
         }
         assert_eq!(tails.len(), 0, "Close must clear every route tail");
+    }
+
+    #[tokio::test]
+    async fn route_tails_grouped_predict_gates_each_route_and_chains_successors() {
+        // A grouped predict referencing routes a and b must (1) wait on the
+        // in-flight request of each, and (2) install a tail on each so a later
+        // same-route request chains after it instead of racing it (the bug: a
+        // grouped predict used to run ungated, racing a route's configure/close).
+        let mut tails = RouteTails::new();
+        let (_g, _a_prev) = tails.next_keyed_gate(Some("s:a"));
+        let (_g, _b_prev) = tails.next_keyed_gate(Some("s:b"));
+
+        let (gate, grouped_done) =
+            tails.next_multi_keyed_gate(&["s:a".to_owned(), "s:b".to_owned()]);
+        match gate {
+            RequestGate::All(prev) => assert_eq!(prev.len(), 2, "must gate on both routes"),
+            RequestGate::Prev(_) => panic!("a grouped predict must produce an All gate"),
+        }
+
+        // A CloseRoute on route a arriving after the grouped predict must chain
+        // behind it (the grouped predict replaced a's tail), not overtake it.
+        let (close_gate, _close_done) = tails.next_keyed_gate(Some("s:a"));
+        let mut close_prev = match close_gate {
+            RequestGate::Prev(Some(rx)) => rx,
+            _ => panic!("CloseRoute after a grouped predict must gate on it, not run ungated"),
+        };
+        assert!(matches!(
+            close_prev.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        // Completing the grouped predict fires its tail on every referenced route,
+        // releasing the CloseRoute.
+        fire(grouped_done);
+        assert!(close_prev.try_recv().is_ok());
+    }
+
+    #[test]
+    fn grouped_predict_route_keys_dedups_referenced_routes() {
+        let group = |route: &str| PredictRequest {
+            context: Some(rlmesh_proto::model::v1::PredictContext {
+                session_id: "s".to_owned(),
+                route_id: route.to_owned(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let grouped = JoinRequest {
+            kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
+                groups: vec![group("a"), group("b"), group("a")],
+            })),
+            ..Default::default()
+        };
+        assert_eq!(
+            grouped_predict_route_keys(&grouped),
+            Some(vec!["s:a".to_owned(), "s:b".to_owned()])
+        );
+        // A non-grouped request carries a single route key, so this returns None.
+        let predict = JoinRequest {
+            kind: Some(join_request::Kind::Predict(group("a"))),
+            ..Default::default()
+        };
+        assert_eq!(grouped_predict_route_keys(&predict), None);
     }
 
     #[tokio::test]

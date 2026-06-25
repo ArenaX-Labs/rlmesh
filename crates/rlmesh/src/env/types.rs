@@ -49,7 +49,7 @@ pub struct ResetRequest {
     /// Sub-environment indices to reset. Empty means reset the whole vector —
     /// the only mode most envs support. A non-empty list requests a partial
     /// (per-lane) reset of just those sub-envs and is only honored by an env
-    /// that overrides [`Env::reset_subset`](crate::Env::reset_subset); any other
+    /// that overrides [`VectorEnv::reset_subset`](crate::VectorEnv::reset_subset); any other
     /// env rejects it rather than silently resetting every lane. When present,
     /// `seeds` (if any) is positionally aligned to this list.
     pub env_indices: Vec<i32>,

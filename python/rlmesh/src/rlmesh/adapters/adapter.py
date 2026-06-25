@@ -84,10 +84,10 @@ class AdapterBase(ABC, Generic[ActionT]):
     Override :meth:`reset` to clear any such state at episode boundaries.
     """
 
-    # Set by :meth:`wrap_predict` when the adapter declares ``execute_horizon>1``;
-    # ``None`` otherwise. Cleared on :meth:`reset` so a chunked explicit adapter
-    # drops any un-replayed tail at an episode boundary (same lifecycle as the
-    # frame-history buffers).
+    # Always set by :meth:`wrap_predict`: a ``ChunkReplay(1)`` passthrough when
+    # ``execute_horizon == 1``, a real replay buffer when ``> 1``. Cleared on
+    # :meth:`reset` so a chunked explicit adapter drops any un-replayed tail at an
+    # episode boundary (same lifecycle as the frame-history buffers).
     _chunk_replay: ChunkReplay | None = None
 
     @abstractmethod

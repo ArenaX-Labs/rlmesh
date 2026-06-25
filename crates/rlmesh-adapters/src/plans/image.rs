@@ -26,7 +26,7 @@ pub struct ImagePlan {
     pub src_range: Option<(f64, f64)>,
     /// Frame-stack depth: the model stacks this many consecutive frames on a new
     /// leading axis (frame history); `1` = no stacking. Buffered per-episode and
-    /// stacked natively in the core (see [`crate::stateful`]); only the keys with
+    /// stacked natively in the core (see [`crate::v1::FrameBuffers`]); only the keys with
     /// `stack > 1` carry a per-episode window.
     pub stack: u32,
     /// When `Some((height, width, channels))` this input has no env source: the
@@ -35,4 +35,7 @@ pub struct ImagePlan {
     /// steps like a real frame. `None` for a normal image. `env_key` is empty
     /// when this is set.
     pub zero_fill: Option<(u32, u32, u32)>,
+    /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
+    /// default). Only meaningful when `zero_fill` is `Some`.
+    pub absent_fill: u8,
 }

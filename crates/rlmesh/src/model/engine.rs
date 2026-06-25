@@ -103,16 +103,14 @@ fn predict_route(
     let episode_ids = observation.episode_ids();
     let num_envs = observation.num_envs;
 
-    // The wire contract requires every predict request to carry an observation,
-    // even on a pure chunk-replay step that will skip decoding it. Validate
-    // presence up front (cheap — no decode) so a malformed request still errors
-    // here rather than silently replaying buffered actions; the image-sized decode
-    // itself stays lazy below (skipped entirely when every lane is mid-replay).
-    if observation.observation.is_none() {
-        return Err(Error::model(
-            "observation absent; a predict request must carry an observation",
-        ));
-    }
+    // The wire contract requires every predict request to carry a decodable
+    // observation (present + env contract + observation space), even on a pure
+    // chunk-replay step that will skip the actual decode. Validate that structure
+    // up front (cheap — no decode) so a malformed request errors here rather than
+    // silently replaying buffered actions; the image-sized byte decode itself
+    // stays lazy below (skipped entirely when every lane is mid-replay). A corrupt
+    // payload on a step that never consumes the obs surfaces at the next re-plan.
+    observation.ensure_decodable()?;
 
     let mut guard = entry.lock().expect("route entry poisoned");
     let RouteEntry {

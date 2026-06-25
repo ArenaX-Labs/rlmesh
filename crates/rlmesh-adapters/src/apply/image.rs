@@ -38,8 +38,9 @@ pub(super) fn apply_image(
 }
 
 /// Synthesize the model input for an optional image the env did not provide: a
-/// black frame, run through the same normalize/dtype/layout/lead steps as a real
-/// frame so it is indistinguishable from an actual all-black observation.
+/// frame filled with the spec's `absent_fill` level (black by default), run
+/// through the same normalize/dtype/layout/lead steps as a real frame so it is
+/// indistinguishable from an actual flat observation at that level.
 fn apply_zero_fill_image(
     plan: &ImagePlan,
     height: u32,
@@ -47,11 +48,11 @@ fn apply_zero_fill_image(
     channels: u32,
 ) -> Result<Value, ApplyError> {
     let (height, width, channels) = (height as usize, width as usize, channels as usize);
-    let black = value::tensor_from_u8(
+    let fill = value::tensor_from_u8(
         value::shape_i64(&[height, width, channels]),
-        vec![0u8; height * width * channels],
+        vec![plan.absent_fill; height * width * channels],
     );
-    let image = finalize_dtype(&black, &plan.dtype, plan.normalize)?;
+    let image = finalize_dtype(&fill, &plan.dtype, plan.normalize)?;
     let image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
     Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
 }
@@ -543,6 +544,7 @@ mod tests {
             src_range: None,
             stack: 1,
             zero_fill: Some((2, 2, 3)),
+            absent_fill: 0,
         };
         let Value::Tensor(tensor) =
             apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")
@@ -556,6 +558,39 @@ mod tests {
                 .as_ref()
                 .iter()
                 .all(|&b| b == 0)
+        );
+    }
+
+    #[test]
+    fn zero_fill_uses_the_absent_fill_level() {
+        let plan = ImagePlan {
+            model_key: "image".to_owned(),
+            env_key: String::new(),
+            src_layout: ImageLayout::Hwc,
+            dst_layout: ImageLayout::Hwc,
+            flip: false,
+            size: None,
+            fit: FitMode::Stretch,
+            resample: "bilinear_aa".to_owned(),
+            dtype: "uint8".to_owned(),
+            normalize: None,
+            lead_dims: 0,
+            src_range: None,
+            stack: 1,
+            zero_fill: Some((2, 2, 3)),
+            absent_fill: 128,
+        };
+        let Value::Tensor(tensor) =
+            apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")
+        else {
+            panic!("expected a tensor")
+        };
+        assert!(
+            tensor
+                .to_contiguous_bytes()
+                .as_ref()
+                .iter()
+                .all(|&b| b == 128)
         );
     }
 }

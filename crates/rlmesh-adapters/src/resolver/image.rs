@@ -13,7 +13,11 @@ pub(super) fn plan_image(
     images_by_role: &BTreeMap<String, &EnvImage>,
 ) -> Result<ImagePlan> {
     let mut env_image = images_by_role.get(&model_input.role).copied();
-    if env_image.is_none() && images_by_role.len() == 1 {
+    // The lone-camera fallback papers over role-name mismatches when the env
+    // offers exactly one camera. An `optional` input, though, has explicitly
+    // opted into zero-filling when its role is absent -- that contract wins, so
+    // don't let the fallback bind it to an unrelated camera.
+    if env_image.is_none() && !model_input.optional && images_by_role.len() == 1 {
         env_image = images_by_role.values().next().copied();
     }
     let Some(env_image) = env_image else {
@@ -82,15 +86,12 @@ pub(super) fn plan_image(
         fit,
         resample: model_input.resample.clone(),
         dtype: model_input.dtype.clone(),
-        // Normalize to the declared range, defaulting to the conventional
-        // [0, 1]; `None` when the model does not normalize.
-        normalize: model_input
-            .normalize
-            .then(|| model_input.normalize_range.unwrap_or((0.0, 1.0))),
+        normalize: resolve_normalize(model_input),
         lead_dims: model_input.lead_dims,
         src_range: env_image.value_range,
         stack: model_input.stack,
         zero_fill: None,
+        absent_fill: model_input.absent_fill.unwrap_or(0),
     })
 }
 
@@ -122,14 +123,24 @@ fn zero_fill_image_plan(model_input: &ImageInput) -> Result<ImagePlan> {
         fit: FitMode::Stretch,
         resample: model_input.resample.clone(),
         dtype: model_input.dtype.clone(),
-        normalize: model_input
-            .normalize
-            .then(|| model_input.normalize_range.unwrap_or((0.0, 1.0))),
+        normalize: resolve_normalize(model_input),
         lead_dims: model_input.lead_dims,
         src_range: None,
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
+        absent_fill: model_input.absent_fill.unwrap_or(0),
     })
+}
+
+/// The normalize range to apply to this image, or `None` for no normalization.
+///
+/// A declared `normalize_range` implies normalization even when the `normalize`
+/// flag is unset, so a range is never silently dropped (setting a range but
+/// forgetting the flag used to feed the model raw, unnormalized pixels). When
+/// normalizing without an explicit range, default to the conventional `[0, 1]`.
+fn resolve_normalize(model_input: &ImageInput) -> Option<(f64, f64)> {
+    (model_input.normalize || model_input.normalize_range.is_some())
+        .then(|| model_input.normalize_range.unwrap_or((0.0, 1.0)))
 }
 
 /// Choose the fit mode for this env from the model's permitted modes.
@@ -212,8 +223,24 @@ fn resolve_fit(
         return Err(err(ErrorCode::Unsupported, message));
     }
 
-    // Aspect matches (or is unknown): every mode is the same uniform scale, so an
-    // unrecognized-only fit harmlessly degrades to a plain scale.
+    // Aspect matches (or is unknown): every mode is the same uniform scale. A
+    // declared fit that names only modes this build doesn't recognize is still
+    // rejected here (consistent with the aspect-differs branch) -- it signals a
+    // version/typo mismatch the author should fix, not silently ignore. A missing
+    // fit (`None`) still defaults to a plain scale.
+    if let Some(set) = &model_input.fit
+        && permitted.is_empty()
+    {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {}: the declared fit {:?} names no mode this build \
+             recognizes; expected 'stretch', 'crop', or 'pad'",
+                quoted(&model_input.key),
+                set.wire_names()
+            ),
+        ));
+    }
     let mode = permitted.first().copied().unwrap_or(FitMode::Stretch);
     if !model_input.allow_upscale && upscales(mode) {
         return Err(err(
@@ -266,6 +293,7 @@ mod image_resolve_tests {
             allow_upscale,
             fit: None,
             optional: false,
+            absent_fill: None,
             stack: 1,
         }
     }
@@ -361,6 +389,41 @@ mod image_resolve_tests {
     }
 
     #[test]
+    fn matching_aspect_with_only_unrecognized_fit_is_a_resolve_error() {
+        // Same unrecognized-fit spec as above but with a matching (1:1) aspect:
+        // this used to silently degrade to stretch; now it is rejected too.
+        let env = env_image(8, 8);
+        let mut model = model_image(4, 4, false);
+        model.fit = Some(serde_json::from_str(r#""squish""#).expect("parse"));
+        let error = plan_image(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("recognize"),
+            "got: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn normalize_range_implies_normalization() {
+        // A range set without the normalize flag must still normalize (not feed
+        // the model raw pixels).
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.normalize = false;
+        model.normalize_range = Some((-1.0, 1.0));
+        let plan = plan_image(&model, &images(&env)).expect("ok");
+        assert_eq!(plan.normalize, Some((-1.0, 1.0)));
+    }
+
+    #[test]
+    fn no_normalize_and_no_range_skips_normalization() {
+        let env = env_image(8, 8);
+        let plan = plan_image(&model_image(8, 8, false), &images(&env)).expect("ok");
+        assert_eq!(plan.normalize, None);
+    }
+
+    #[test]
     fn channel_mismatch_is_a_resolve_error() {
         let mut env = env_image(8, 8);
         env.channels = 1; // grayscale env
@@ -394,6 +457,20 @@ mod image_resolve_tests {
         model.channels = Some(3);
         let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
         let plan = plan_image(&model, &empty).expect("ok");
+        assert_eq!(plan.zero_fill, Some((8, 8, 3)));
+        assert!(plan.env_key.is_empty());
+    }
+
+    #[test]
+    fn optional_image_with_absent_role_zero_fills_even_with_one_camera() {
+        // Regression: the lone-camera fallback must not bind an optional input
+        // whose role is absent to an unrelated single camera -- it must zero-fill.
+        let env = env_image(8, 8); // role "image/primary"
+        let mut model = model_image(8, 8, false);
+        model.role = "image/overhead".to_owned(); // absent from the single-camera env
+        model.optional = true;
+        model.channels = Some(3);
+        let plan = plan_image(&model, &images(&env)).expect("ok");
         assert_eq!(plan.zero_fill, Some((8, 8, 3)));
         assert!(plan.env_key.is_empty());
     }

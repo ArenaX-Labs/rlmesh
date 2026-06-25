@@ -131,7 +131,7 @@ impl<V: Default> EpisodeMap<V> {
 /// Per-route, episode-keyed frame-history buffers.
 ///
 /// The handler holds one of these per `route_key`. Lifecycle and episode-id
-/// keying are owned by [`EpisodeMap`]; `seed` at episode START, `evict` at END,
+/// keying are owned by `EpisodeMap`; `seed` at episode START, `evict` at END,
 /// `clear` on close.
 #[derive(Default)]
 pub struct FrameBuffers {
@@ -187,7 +187,7 @@ impl FrameBuffers {
 /// `execute_horizon > 1`, its `predict` returns a *chunk* of actions and the
 /// engine replays them one per step before predicting again. Each episode's
 /// pending (not-yet-emitted) raw model actions live here. Lifecycle and keying
-/// are owned by [`EpisodeMap`] exactly like [`FrameBuffers`]; [`refill`](Self::refill)
+/// are owned by `EpisodeMap` exactly like [`FrameBuffers`]; [`refill`](Self::refill)
 /// when a fresh chunk is predicted, [`evict`](Self::evict) at episode END,
 /// [`clear`](Self::clear) on close. A drained queue (or an absent episode) simply
 /// re-plans, so — unlike frame windows — a missed END only leaks a queue the close
@@ -818,6 +818,7 @@ mod tests {
                 src_range: Some((0.0, 255.0)),
                 stack: 2,
                 zero_fill: None,
+                absent_fill: 0,
             })],
             action_plan: ActionPlan {
                 segments: vec![],

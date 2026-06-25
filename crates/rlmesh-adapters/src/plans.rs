@@ -91,7 +91,7 @@ impl ResolvedAdapter {
     ///
     /// Only entries with depth `> 1` (actual stacking) appear — a `stack == 1`
     /// image needs no per-episode buffer and is omitted. The episode-keyed
-    /// frame-stack engine ([`crate::stateful`]) buffers exactly these keys.
+    /// frame-stack engine ([`crate::v1::FrameBuffers`]) buffers exactly these keys.
     /// This is the single source of truth for stacking depth (replacing the old
     /// Python `stacks` dict).
     pub fn stacks(&self) -> BTreeMap<String, u32> {
