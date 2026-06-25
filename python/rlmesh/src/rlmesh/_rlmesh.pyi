@@ -116,6 +116,14 @@ class AdapterPlan:
     r"""
     A resolved adapter plan handle backed by the `rlmesh-adapters` core.
     """
+    @property
+    def execute_horizon(self) -> builtins.int:
+        r"""
+        Action-chunk replay horizon: how many model actions `predict` returns per
+        chunk and the run(env) loop replays before predicting again (`1` = predict
+        every step). The served engine reads this from the plan natively; the
+        in-process run(env) loop reads it through here.
+        """
     def describe(self) -> builtins.str:
         r"""
         Human-readable summary of the resolved transformations.
@@ -229,7 +237,7 @@ class PyEnvServer:
 
 @typing.final
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value, object], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
     def run_local(self, env_address: str, token: str) -> None: ...
     def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...

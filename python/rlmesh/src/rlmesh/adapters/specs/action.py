@@ -73,18 +73,27 @@ class ActionLayout:
     Attributes:
         components: Action components in vector order.
         clip: Optional ``(low, high)`` clip applied to the final vector.
+        execute_horizon: How many actions ``predict`` returns as a chunk and the
+            engine replays before predicting again; ``1`` (the default) predicts
+            every step. When ``> 1`` the model output's leading axis is the chunk
+            axis -- the engine replays up to ``execute_horizon`` of them per chunk,
+            re-planning from a fresh observation when the queue drains. A model-side
+            knob; the env declaration leaves it ``1``.
     """
 
     components: tuple[ActionComponent, ...]
     clip: tuple[float, float] | None = None
+    execute_horizon: int = 1
 
     def __init__(
         self,
         *components: ActionComponent,
         clip: tuple[float, float] | None = None,
+        execute_horizon: int = 1,
     ) -> None:
         object.__setattr__(self, "components", tuple(components))
         object.__setattr__(self, "clip", clip)
+        object.__setattr__(self, "execute_horizon", execute_horizon)
 
     @property
     def dim(self) -> int:

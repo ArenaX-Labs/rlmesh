@@ -14,6 +14,7 @@ from ..types import Value
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:
+    from .._models._chunk import ChunkReplay
     from .._rlmesh import AdapterPlan
 
 ActionT = TypeVar("ActionT")
@@ -83,6 +84,12 @@ class AdapterBase(ABC, Generic[ActionT]):
     Override :meth:`reset` to clear any such state at episode boundaries.
     """
 
+    # Set by :meth:`wrap_predict` when the adapter declares ``execute_horizon>1``;
+    # ``None`` otherwise. Cleared on :meth:`reset` so a chunked explicit adapter
+    # drops any un-replayed tail at an episode boundary (same lifecycle as the
+    # frame-history buffers).
+    _chunk_replay: ChunkReplay | None = None
+
     @abstractmethod
     def transform_obs(self, raw_obs: RawObs) -> dict[str, Any]:
         """Convert a raw env observation into the model input payload.
@@ -99,11 +106,15 @@ class AdapterBase(ABC, Generic[ActionT]):
         """Clear episode-scoped state, optionally for a single lane.
 
         ``env_index`` identifies the vector lane whose episode rolled, or
-        ``None`` for a whole-vector reset. The default does nothing (resolved
-        adapters are stateless). Stateful custom adapters override this and
+        ``None`` for a whole-vector reset. By default this only drops any
+        action-chunk replay tail :meth:`wrap_predict` is holding (no-op unless
+        ``execute_horizon>1``). Stateful custom adapters override this and
         wire it to the model worker's per-lane reset so a single lane's
-        autoreset never wipes the other still-running lanes' state.
+        autoreset never wipes the other still-running lanes' state -- they
+        should call ``super().reset(env_index)`` to keep the chunk-replay drop.
         """
+        if self._chunk_replay is not None and (env_index is None or env_index == 0):
+            self._chunk_replay.reset()
 
     @property
     def is_stateful(self) -> bool:
@@ -130,10 +141,25 @@ class AdapterBase(ABC, Generic[ActionT]):
         The returned callable takes a raw env observation -- a mapping, or a
         bare array/leaf for a flat (non-Dict) env -- and returns an env-ready
         action, suitable for :class:`rlmesh.numpy.Model`.
+
+        When the adapter declares ``execute_horizon>1`` (action-chunk replay),
+        ``predict_fn`` returns a chunk of actions; the wrapper replays it one per
+        step, calling ``predict_fn`` again only when the chunk drains -- the same
+        cadence as ``Model.run``/``serve``. The replay queue is dropped on
+        :meth:`reset`, so wire ``reset`` to the episode boundary (e.g.
+        ``Model(..., on_reset=adapter.reset)``) for a chunked adapter that runs
+        multiple episodes, exactly as for frame stacking.
         """
+        from .._models._chunk import ChunkReplay
+
+        self._chunk_replay = ChunkReplay(int(getattr(self, "execute_horizon", 1)))
+        replay = self._chunk_replay
 
         def predict(raw_obs: Any) -> ActionT:
-            return self.transform_action(predict_fn(self.transform_obs(raw_obs)))
+            raw_action = replay.next_action(
+                lambda: predict_fn(self.transform_obs(raw_obs))
+            )
+            return self.transform_action(raw_action)
 
         return predict
 
@@ -287,11 +313,22 @@ class Adapter(AdapterBase[NumpyArray]):
         """
         if env_index is None or env_index == 0:
             self._buffers.clear()
+            if self._chunk_replay is not None:
+                self._chunk_replay.reset()
 
     @property
     def is_stateful(self) -> bool:
         """A resolved adapter is stateful only when it stacks frame history."""
         return bool(self._stacks)
+
+    @property
+    def execute_horizon(self) -> int:
+        """How many model actions to replay per predicted chunk (``1`` = none).
+
+        The run(env) loop reads this to drive action-chunk replay; the served
+        engine reads the same value natively from the plan.
+        """
+        return int(self._plan.execute_horizon)
 
     def _apply_action_enc(self, raw_action: object) -> object:
         if not self._action_enc_shims:
@@ -393,7 +430,7 @@ class Adapter(AdapterBase[NumpyArray]):
         """Repack enc-shimmed action segments back to base (neutral in/out)."""
         numpy_bridge = _numpy_value_bridge()
         raw = self._apply_action_enc(from_value(action, numpy_bridge))
-        return cast("Value", to_value(raw, numpy_bridge))
+        return to_value(raw, numpy_bridge)
 
     def describe(self) -> str:
         """Return a human-readable summary of the resolved transformations."""

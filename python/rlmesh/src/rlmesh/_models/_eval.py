@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from .._value_conversion import from_value
 from ._adapter_mode import NO_ADAPTER
+from ._chunk import ChunkReplay
 
 if TYPE_CHECKING:
     from .._framework_bridge import ValueBridge
@@ -177,27 +178,30 @@ def _run_episode(
     steps = 0
     terminated = truncated = False
     model_bridge = bridge if bridge is not None else env_bridge
+    # Action-chunk replay (shared with the served engine's ChunkBuffers and the
+    # explicit adapter.wrap_predict path, via ChunkReplay): a model with
+    # execute_horizon>1 returns a chunk; replay it one action per step, predicting
+    # again only when the queue drains. The queue is episode-local (fresh per call),
+    # so it needs no explicit reset. getattr-default keeps duck-typed / custom
+    # adapters (which may not declare a horizon) at no-chunking; a custom adapter
+    # opts in by exposing the attribute.
+    horizon = getattr(adapter, "execute_horizon", 1) if adapter is not None else 1
+    replay = ChunkReplay(horizon)
     while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
-        if adapter is not None:
-            payload = from_value(
-                adapter.transform_obs_value(
-                    obs, input_bridge=env_bridge, custom_bridge=env_bridge
-                ),
-                model_bridge,
+        # `obs` is bound as a default arg so the per-step thunk captures the
+        # current observation, not the loop's final one (B023).
+        raw_action = replay.next_action(
+            lambda obs=obs: _predict_step(
+                predict, obs, adapter, instruction, text_keys, env_bridge, model_bridge
             )
-        else:
-            payload = obs
-        if instruction is not None and isinstance(payload, dict):
-            # Inject into a shallow copy; don't mutate the obs the env returned.
-            payload = cast("dict[str, Any]", payload).copy()
-            for key in text_keys:
-                payload[key] = instruction
-        action = predict(payload)
+        )
         if adapter is not None:
             action = from_value(
-                adapter.transform_action_value(action, action_bridge=model_bridge),
+                adapter.transform_action_value(raw_action, action_bridge=model_bridge),
                 env_bridge,
             )
+        else:
+            action = raw_action
         obs, reward, terminated, truncated, _info = client.step(action)
         total += float(reward)
         steps += 1
@@ -213,6 +217,38 @@ def _run_episode(
         terminated=bool(terminated),
         truncated=bool(truncated),
     )
+
+
+def _predict_step(
+    predict: Callable[[Any], Any],
+    obs: Any,
+    adapter: Any,
+    instruction: str | None,
+    text_keys: tuple[str, ...],
+    env_bridge: ValueBridge | None,
+    model_bridge: ValueBridge | None,
+) -> Any:
+    """Assemble one observation into the model payload and call ``predict``.
+
+    The re-plan half of the chunk-replay loop (skipped while a chunk is replaying):
+    the declarative obs transform (or the raw obs for a spec-less model),
+    instruction injection into a shallow copy, then the model forward.
+    """
+    if adapter is not None:
+        payload = from_value(
+            adapter.transform_obs_value(
+                obs, input_bridge=env_bridge, custom_bridge=env_bridge
+            ),
+            model_bridge,
+        )
+    else:
+        payload = obs
+    if instruction is not None and isinstance(payload, dict):
+        # Inject into a shallow copy; don't mutate the obs the env returned.
+        payload = cast("dict[str, Any]", payload).copy()
+        for key in text_keys:
+            payload[key] = instruction
+    return predict(payload)
 
 
 def resolve_route_adapter(

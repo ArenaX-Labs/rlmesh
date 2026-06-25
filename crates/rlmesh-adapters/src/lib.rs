@@ -53,7 +53,7 @@ pub mod v1 {
         StateTag, TextContainer, TextInput, TextTag,
     };
     pub use crate::stateful::{
-        EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
-        space_value_to_obs_map, space_value_to_value, value_max_abs_diff,
+        ChunkBuffers, EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
+        space_value_to_obs_map, space_value_to_value, split_chunk, value_max_abs_diff,
     };
 }

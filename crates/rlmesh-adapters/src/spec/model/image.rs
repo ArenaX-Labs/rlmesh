@@ -18,28 +18,14 @@ fn default_bilinear_aa() -> String {
 /// would make the host adapter buffer that many frames and exhaust memory.
 const MAX_STACK: u32 = 64;
 
-fn default_stack() -> u32 {
-    1
-}
-
-fn stack_is_default(stack: &u32) -> bool {
-    *stack == 1
-}
-
-/// Deserialize `stack`, enforcing the `1..=MAX_STACK` bound at the wire
-/// boundary. Routes through [`de_count`](crate::spec::num::de_count) so a
-/// negative/non-integer reads in domain language too (no leaked `u32`).
+/// Deserialize `stack`, enforcing the `1..=MAX_STACK` bound at the wire boundary
+/// (shares the bound/default/skip helpers with `execute_horizon`; see
+/// [`de_bounded_count`](crate::spec::num::de_bounded_count)).
 fn de_stack<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let stack = crate::spec::num::de_count(deserializer)?;
-    if !(1..=MAX_STACK).contains(&stack) {
-        return Err(serde::de::Error::custom(format!(
-            "stack must be between 1 and {MAX_STACK}, got {stack}"
-        )));
-    }
-    Ok(stack)
+    crate::spec::num::de_bounded_count(deserializer, "stack", MAX_STACK)
 }
 
 /// An image input expected by a model.
@@ -117,9 +103,9 @@ pub struct ImageInput {
     /// from the wire when `1` to stay byte-identical with the Python serializer;
     /// bounded to `MAX_STACK`.
     #[serde(
-        default = "default_stack",
+        default = "crate::spec::num::default_one",
         deserialize_with = "de_stack",
-        skip_serializing_if = "stack_is_default"
+        skip_serializing_if = "crate::spec::num::is_one"
     )]
     pub stack: u32,
 }

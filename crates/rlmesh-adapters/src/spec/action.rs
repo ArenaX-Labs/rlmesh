@@ -4,6 +4,22 @@ use serde::{Deserialize, Serialize};
 
 use super::rotations::RotationEncoding;
 
+/// Upper bound on action-chunk replay horizon. Like `MAX_STACK` for frame
+/// history, this bounds an untrusted contract: the per-episode replay queue
+/// holds at most `execute_horizon` model actions, so a ceiling keeps a hostile
+/// spec from declaring a multi-million-action queue.
+const MAX_HORIZON: u32 = 1024;
+
+/// Deserialize `execute_horizon`, enforcing the `1..=MAX_HORIZON` bound at the
+/// wire boundary (shares the bound/default/skip helpers with `stack`; see
+/// [`de_bounded_count`](crate::spec::num::de_bounded_count)).
+fn de_horizon<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    crate::spec::num::de_bounded_count(deserializer, "execute_horizon", MAX_HORIZON)
+}
+
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +70,20 @@ pub struct ActionLayout {
     pub components: Vec<ActionComponent>,
     #[serde(default)]
     pub clip: Option<(f64, f64)>,
+    /// Number of actions the model's `predict` returns as a chunk and the engine
+    /// replays before invoking `predict` again; `1` (the default) = predict every
+    /// step (no chunking). When `> 1` the model output's leading axis is the
+    /// chunk axis: the engine replays up to `execute_horizon` of them per chunk,
+    /// re-planning from a fresh observation when the queue drains. A model-side
+    /// knob (the policy chunks its own output); the env declaration leaves it `1`.
+    /// Omitted from the wire when `1` to stay byte-identical with the Python
+    /// serializer; bounded to `MAX_HORIZON`. During replay `predict` is not
+    /// invoked, so a frame-stacked input only observes decision-point frames.
+    #[serde(
+        default = "crate::spec::num::default_one",
+        skip_serializing_if = "crate::spec::num::is_one"
+    )]
+    pub execute_horizon: u32,
 }
 
 /// Wire form of [`ActionLayout`]; see its docs for the duplicate-role rule.
@@ -63,6 +93,11 @@ struct ActionLayoutWire {
     components: Vec<ActionComponent>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     clip: Option<(f64, f64)>,
+    #[serde(
+        default = "crate::spec::num::default_one",
+        deserialize_with = "de_horizon"
+    )]
+    execute_horizon: u32,
 }
 
 impl TryFrom<ActionLayoutWire> for ActionLayout {
@@ -81,6 +116,7 @@ impl TryFrom<ActionLayoutWire> for ActionLayout {
         Ok(ActionLayout {
             components: wire.components,
             clip: wire.clip,
+            execute_horizon: wire.execute_horizon,
         })
     }
 }
@@ -145,6 +181,46 @@ mod deny_unknown_fields_contract {
         let err = serde_json::from_str::<ActionLayout>(r#"{"components": [], "clipp": null}"#)
             .unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod chunk_horizon_contract {
+    use super::ActionLayout;
+
+    #[test]
+    fn defaults_to_one_and_is_omitted_from_wire() {
+        let layout: ActionLayout = serde_json::from_str(r#"{"components": []}"#).unwrap();
+        assert_eq!(layout.execute_horizon, 1);
+        // Byte parity with the Python serializer: omitted when 1.
+        let json = serde_json::to_string(&layout).unwrap();
+        assert!(!json.contains("execute_horizon"), "got: {json}");
+    }
+
+    #[test]
+    fn roundtrips_when_set() {
+        let layout: ActionLayout =
+            serde_json::from_str(r#"{"components": [], "execute_horizon": 8}"#).unwrap();
+        assert_eq!(layout.execute_horizon, 8);
+        assert!(
+            serde_json::to_string(&layout)
+                .unwrap()
+                .contains("\"execute_horizon\":8")
+        );
+    }
+
+    #[test]
+    fn bound_enforced() {
+        assert!(
+            serde_json::from_str::<ActionLayout>(r#"{"components": [], "execute_horizon": 0}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<ActionLayout>(
+                r#"{"components": [], "execute_horizon": 100000}"#
+            )
+            .is_err()
+        );
     }
 }
 

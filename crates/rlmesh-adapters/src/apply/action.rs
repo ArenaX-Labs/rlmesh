@@ -106,6 +106,7 @@ mod tests {
             }],
             clip: None,
             in_dim: 1,
+            execute_horizon: 1,
         }
     }
 

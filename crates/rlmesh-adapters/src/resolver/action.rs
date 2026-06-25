@@ -59,6 +59,20 @@ fn check_action_dims(model: &ActionComponent, env: &ActionComponent) -> Result<(
 }
 
 pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<ActionPlan> {
+    // `execute_horizon` is a model-side cadence knob (the policy chunks its own
+    // output); an env action declaration must never carry it. Nothing structural
+    // stops a stray env tag from setting it, so reject loudly rather than letting
+    // an env value silently drive the serving cadence through resolve_action.
+    if env.execute_horizon != 1 {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "execute_horizon is a model-side knob; the env action declaration must leave it 1, \
+                 got {}",
+                env.execute_horizon
+            ),
+        ));
+    }
     let mut offsets: BTreeMap<String, (u32, &ActionComponent)> = BTreeMap::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
@@ -163,6 +177,9 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
         segments,
         clip: env.clip,
         in_dim,
+        // Chunk replay is the model's own cadence: the policy decides how many
+        // actions each forward pass emits, the env knows nothing about it.
+        execute_horizon: model.execute_horizon,
     })
 }
 
@@ -189,6 +206,7 @@ mod tests {
         ActionLayout {
             components,
             clip: None,
+            execute_horizon: 1,
         }
     }
 
@@ -222,5 +240,29 @@ mod tests {
         let error = plan_action(&model, &env).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("belong on the env component"));
+    }
+
+    #[test]
+    fn forwards_the_model_chunk_horizon_to_the_plan() {
+        let mut model = layout(vec![component("action/gripper")]);
+        model.execute_horizon = 4;
+        let env = layout(vec![component("action/gripper")]);
+        assert_eq!(plan_action(&model, &env).unwrap().execute_horizon, 4);
+    }
+
+    #[test]
+    fn rejects_a_chunk_horizon_declared_on_the_env_action() {
+        // execute_horizon is the model's own replay cadence; an env declaration
+        // that carries it is rejected rather than silently driving serving.
+        let model = layout(vec![component("action/gripper")]);
+        let mut env = layout(vec![component("action/gripper")]);
+        env.execute_horizon = 2;
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("model-side knob"),
+            "{}",
+            error.message
+        );
     }
 }

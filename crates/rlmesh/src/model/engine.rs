@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{
-    FrameBuffers, ObsPlan, apply_actions, assemble_obs, space_value_to_obs_map,
+    ChunkBuffers, FrameBuffers, ObsPlan, Value, apply_actions, assemble_obs,
+    space_value_to_obs_map, split_chunk,
 };
 
 use super::handler::{ModelHandler, ModelRouteSetup};
@@ -21,10 +22,12 @@ use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation, ModelRoute
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
 use crate::{Error, Result};
 
-/// One configured route's resolved config plus its live frame buffers.
+/// One configured route's resolved config plus its live per-episode state: the
+/// frame-stack windows and the action-chunk replay queues.
 struct RouteEntry {
     config: RouteConfig,
     buffers: FrameBuffers,
+    chunks: ChunkBuffers,
 }
 
 /// `route_key -> route state`. The outer lock is held only to look up/insert a
@@ -97,31 +100,76 @@ fn predict_route(
     predict: &Arc<dyn PredictFn>,
     observation: ModelObservation,
 ) -> Result<Vec<SpaceValue>> {
-    let lanes = observation.decoded_lanes()?;
     let episode_ids = observation.episode_ids();
+    let num_envs = observation.num_envs;
+
+    // The wire contract requires every predict request to carry an observation,
+    // even on a pure chunk-replay step that will skip decoding it. Validate
+    // presence up front (cheap — no decode) so a malformed request still errors
+    // here rather than silently replaying buffered actions; the image-sized decode
+    // itself stays lazy below (skipped entirely when every lane is mid-replay).
+    if observation.observation.is_none() {
+        return Err(Error::model(
+            "observation absent; a predict request must carry an observation",
+        ));
+    }
 
     let mut guard = entry.lock().expect("route entry poisoned");
-    let RouteEntry { config, buffers } = &mut *guard;
+    let RouteEntry {
+        config,
+        buffers,
+        chunks,
+    } = &mut *guard;
     let referenced = obs_keys(config);
+    let horizon = config.adapter.action_plan.execute_horizon;
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
 
-    let mut actions = Vec::with_capacity(lanes.len());
-    for (index, lane) in lanes.into_iter().enumerate() {
+    // Lanes are decoded lazily: a step where every lane is mid-chunk-replay needs
+    // no observation at all, so the (image-sized) batch decode is skipped entirely.
+    // The wire decode is batched, so the first lane that must re-plan materializes
+    // all lanes; a fully-replaying step pays nothing. (Decode now sits under the
+    // route lock, which already spans predict — the dominant per-lane cost.)
+    let mut decoded: Option<Vec<SpaceValue>> = None;
+
+    let mut actions = Vec::with_capacity(num_envs);
+    for index in 0..num_envs {
         let episode_id = episode_ids
             .get(index)
             .map(String::as_str)
             .unwrap_or_default();
-        let raw = space_value_to_obs_map(&lane, &config.observation_space, &referenced)?;
-        let input = assemble_obs(
-            &config.adapter,
-            &raw,
-            episode_id,
-            buffers,
-            customs,
-            encodings,
-        )?;
-        let raw_action = predict.predict(input)?;
+        // Action-chunk replay: when this lane's episode still has queued actions
+        // from an earlier predicted chunk, emit the next one and skip predict (and
+        // therefore the obs decode + assembly) entirely. Only re-plan — decode the
+        // obs, assemble, call predict, refill the queue — when the chunk drains.
+        // With horizon == 1 the queue is never used, so this is the unchanged path.
+        let raw_action = match (horizon > 1)
+            .then(|| chunks.next_action(episode_id))
+            .flatten()
+        {
+            Some(queued) => queued,
+            None => {
+                if decoded.is_none() {
+                    decoded = Some(observation.decoded_lanes()?);
+                }
+                let lane = &decoded.as_ref().expect("decoded above")[index];
+                let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)?;
+                let input = assemble_obs(
+                    &config.adapter,
+                    &raw,
+                    episode_id,
+                    buffers,
+                    customs,
+                    encodings,
+                )?;
+                let predicted = predict.predict(input)?;
+                if horizon > 1 {
+                    refill_and_take_first(chunks, episode_id, predicted, horizon)?
+                } else {
+                    predicted
+                }
+            }
+        };
         let env_action = apply_actions(
             &config.adapter,
             &raw_action,
@@ -131,6 +179,23 @@ fn predict_route(
         actions.push(env_action);
     }
     Ok(actions)
+}
+
+/// Split a freshly predicted chunk into per-step actions, queue all but the first
+/// (capped at `horizon` — a receding-horizon model may emit a longer chunk than
+/// it re-plans), and return the first action to emit now.
+fn refill_and_take_first(
+    chunks: &mut ChunkBuffers,
+    episode_id: &str,
+    predicted: Value,
+    horizon: u32,
+) -> Result<Value> {
+    let mut steps = split_chunk(predicted)?.into_iter().take(horizon as usize);
+    let first = steps.next().ok_or_else(|| {
+        Error::model("a chunked model (execute_horizon>1) returned an empty action chunk")
+    })?;
+    chunks.refill(episode_id, steps);
+    Ok(first)
 }
 
 /// Seeds for the two distinct probe observations (A must differ from B, or an
@@ -259,11 +324,9 @@ impl ModelHandler for AdaptedModelHandler {
         if let Some(route_key) = self.current_route.as_deref()
             && let Some(entry) = self.entry(route_key)
         {
-            entry
-                .lock()
-                .expect("route entry poisoned")
-                .buffers
-                .evict(&event.episode_id);
+            let mut guard = entry.lock().expect("route entry poisoned");
+            guard.buffers.evict(&event.episode_id);
+            guard.chunks.evict(&event.episode_id);
         }
         let predict = Arc::clone(&self.predict);
         tokio::task::spawn_blocking(move || predict.on_episode_end())
@@ -272,9 +335,11 @@ impl ModelHandler for AdaptedModelHandler {
     }
 
     async fn on_close(&mut self) -> Result<()> {
-        // Drop every route's buffers as the authoritative shutdown sweep.
+        // Drop every route's per-episode state as the authoritative shutdown sweep.
         for entry in self.routes.lock().expect("routes map poisoned").values() {
-            entry.lock().expect("route entry poisoned").buffers.clear();
+            let mut guard = entry.lock().expect("route entry poisoned");
+            guard.buffers.clear();
+            guard.chunks.clear();
         }
         let predict = Arc::clone(&self.predict);
         tokio::task::spawn_blocking(move || predict.on_close())
@@ -317,6 +382,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         let entry = Arc::new(Mutex::new(RouteEntry {
             config,
             buffers: FrameBuffers::new(),
+            chunks: ChunkBuffers::new(),
         }));
         self.routes
             .lock()

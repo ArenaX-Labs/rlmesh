@@ -24,12 +24,17 @@ def action_layout_to_dict(layout: ActionLayout) -> dict[str, Any]:
                 "whose host-side transforms cannot be serialized; resolve it "
                 "locally, or add the encoding to the native vocabulary"
             )
-    return {
+    out: dict[str, Any] = {
         "components": [
             _component_to_dict(component) for component in layout.components
         ],
         "clip": list(layout.clip) if layout.clip else None,
     }
+    # Emit only when chunking (>1), so a non-chunked layout -- every env layout
+    # and most model layouts -- serializes byte-identically to before.
+    if layout.execute_horizon != 1:
+        out["execute_horizon"] = layout.execute_horizon
+    return out
 
 
 def _component_to_dict(component: ActionComponent) -> dict[str, Any]:
@@ -66,7 +71,11 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
         )
         for item in data["components"]
     ]
-    return ActionLayout(*components, clip=to_pair(data.get("clip")))
+    return ActionLayout(
+        *components,
+        clip=to_pair(data.get("clip")),
+        execute_horizon=int(data.get("execute_horizon", 1)),
+    )
 
 
 __all__ = ["action_layout_from_dict", "action_layout_to_dict"]

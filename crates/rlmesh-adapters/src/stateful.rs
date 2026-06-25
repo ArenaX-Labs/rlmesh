@@ -65,44 +65,98 @@ impl EncodingTransform for NoEncodings {
     }
 }
 
+/// An `episode_id -> V` map with the edge-driven per-episode lifecycle the
+/// stateful engine shares across its buffers: insert at episode START
+/// ([`seed`](Self::seed)), drop at END ([`evict`](Self::evict)), drop all on
+/// close ([`clear`](Self::clear)) — never on absence. [`FrameBuffers`] and
+/// [`ChunkBuffers`] are thin wrappers that add only their value-specific access,
+/// so the lifecycle (and the keying rationale below) lives in exactly one place.
+///
+/// The key is the `episode_id` (a UUIDv4), **not** the lane index:
+/// - autoreset reuses a lane's index across episodes, but `episode_id` is fresh
+///   per episode, so old and new entries never collide;
+/// - grouped predict can migrate an episode's slot index between groups, but
+///   `episode_id` is stable, so the entry follows the episode, not the index.
+#[derive(Default)]
+struct EpisodeMap<V> {
+    inner: HashMap<String, V>,
+}
+
+impl<V: Default> EpisodeMap<V> {
+    fn new() -> Self {
+        Self {
+            inner: HashMap::new(),
+        }
+    }
+
+    /// Insert an episode's (default) entry at episode START. Returns `false` if
+    /// it was already present — a missed END the caller may assert on.
+    fn seed(&mut self, episode_id: &str) -> bool {
+        if self.inner.contains_key(episode_id) {
+            return false;
+        }
+        self.inner.insert(episode_id.to_owned(), V::default());
+        true
+    }
+
+    /// The entry for an episode, created lazily (default) if absent.
+    fn entry(&mut self, episode_id: &str) -> &mut V {
+        self.inner.entry(episode_id.to_owned()).or_default()
+    }
+
+    /// The entry for an episode, only if it is already present.
+    fn get(&mut self, episode_id: &str) -> Option<&mut V> {
+        self.inner.get_mut(episode_id)
+    }
+
+    /// Drop an episode's entry at episode END or a close sweep.
+    fn evict(&mut self, episode_id: &str) {
+        self.inner.remove(episode_id);
+    }
+
+    /// Drop every episode's entry (session shutdown / route close).
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
 /// Per-route, episode-keyed frame-history buffers.
 ///
-/// The handler holds one of these per `route_key`. The inner key is the
-/// `episode_id` (a UUIDv4), **not** the lane index:
-/// - autoreset reuses a lane's index across episodes, but `episode_id` is fresh
-///   per episode, so old and new windows never collide;
-/// - grouped predict can migrate an episode's slot index between groups, but
-///   `episode_id` is stable, so the window follows the episode, not the index.
-///
-/// Eviction is edge-driven ([`seed`](Self::seed) at episode START,
-/// [`evict`](Self::evict) at END, [`clear`](Self::clear) on close) — never on
-/// absence.
+/// The handler holds one of these per `route_key`. Lifecycle and episode-id
+/// keying are owned by [`EpisodeMap`]; `seed` at episode START, `evict` at END,
+/// `clear` on close.
 #[derive(Default)]
 pub struct FrameBuffers {
     /// `episode_id -> model_key -> rolling window` (each window `maxlen = depth`).
-    inner: HashMap<String, BTreeMap<String, VecDeque<Tensor>>>,
+    inner: EpisodeMap<BTreeMap<String, VecDeque<Tensor>>>,
 }
 
 impl FrameBuffers {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: EpisodeMap::new(),
+        }
     }
 
     /// Seed an episode's (empty) buffer set at episode START. Returns `false` if
     /// the episode was already present — a missed END the handler asserts on
     /// rather than silently re-padding.
     pub fn seed(&mut self, episode_id: &str) -> bool {
-        if self.inner.contains_key(episode_id) {
-            return false;
-        }
-        self.inner.insert(episode_id.to_owned(), BTreeMap::new());
-        true
+        self.inner.seed(episode_id)
     }
 
     /// Evict an episode's buffers at episode END or a close sweep.
     pub fn evict(&mut self, episode_id: &str) {
-        self.inner.remove(episode_id);
+        self.inner.evict(episode_id);
     }
 
     /// Drop every episode's buffers (session shutdown / route close).
@@ -123,7 +177,92 @@ impl FrameBuffers {
 
     /// The per-key window map for an episode, created lazily if absent.
     fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, VecDeque<Tensor>> {
-        self.inner.entry(episode_id.to_owned()).or_default()
+        self.inner.entry(episode_id)
+    }
+}
+
+/// Per-route, episode-keyed action-chunk replay queues.
+///
+/// The action-side twin of [`FrameBuffers`]: when a model declares
+/// `execute_horizon > 1`, its `predict` returns a *chunk* of actions and the
+/// engine replays them one per step before predicting again. Each episode's
+/// pending (not-yet-emitted) raw model actions live here. Lifecycle and keying
+/// are owned by [`EpisodeMap`] exactly like [`FrameBuffers`]; [`refill`](Self::refill)
+/// when a fresh chunk is predicted, [`evict`](Self::evict) at episode END,
+/// [`clear`](Self::clear) on close. A drained queue (or an absent episode) simply
+/// re-plans, so — unlike frame windows — a missed END only leaks a queue the close
+/// sweep reclaims; there is no `seed`/assert.
+#[derive(Default)]
+pub struct ChunkBuffers {
+    inner: EpisodeMap<VecDeque<Value>>,
+}
+
+impl ChunkBuffers {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: EpisodeMap::new(),
+        }
+    }
+
+    /// Pop the next queued action for an episode, if its queue is non-empty.
+    /// `None` means "re-plan" (no chunk buffered, or the chunk drained).
+    pub fn next_action(&mut self, episode_id: &str) -> Option<Value> {
+        self.inner.get(episode_id).and_then(VecDeque::pop_front)
+    }
+
+    /// Replace an episode's queue with a freshly predicted chunk. A new plan
+    /// supersedes any stale tail (receding horizon discards un-executed actions).
+    pub fn refill(&mut self, episode_id: &str, actions: impl IntoIterator<Item = Value>) {
+        let queue = self.inner.entry(episode_id);
+        queue.clear();
+        queue.extend(actions);
+    }
+
+    /// Evict an episode's queue at episode END or a close sweep.
+    pub fn evict(&mut self, episode_id: &str) {
+        self.inner.evict(episode_id);
+    }
+
+    /// Drop every episode's queue (session shutdown / route close).
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    /// Number of live episodes currently buffered.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+/// Split a chunked model action into its per-step actions (the leading axis is
+/// the chunk axis). A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis
+/// 0 into per-step tensors; a scalar (0-d) tensor has no chunk axis and is a
+/// degenerate single-step "chunk" (matching the run(env) path, which treats a 0-d
+/// output as one step); a `Value::List` is already a list of per-step actions; any
+/// other leaf is a single-step chunk. Called only when `execute_horizon > 1`, so
+/// the leading axis is taken as the chunk. A mis-shaped multi-dim output (e.g. a
+/// flat `[dim]` action where `dim > 1`) splits into per-step scalars that fail the
+/// action-space reshape downstream; a flat `[1]` against a dim-1 action space,
+/// however, splits cleanly and is accepted — shape inference cannot catch that
+/// degenerate case, so a model that forgets the chunk axis is the caller's bug.
+pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
+    match raw_action {
+        Value::Tensor(tensor) if tensor.shape().is_empty() => Ok(vec![Value::Tensor(tensor)]),
+        Value::Tensor(tensor) => Ok(tensor
+            .unstack()
+            .map_err(|err| ApplyError::new(format!("action chunk split failed: {err}")))?
+            .into_iter()
+            .map(Value::Tensor)
+            .collect()),
+        Value::List(actions) => Ok(actions),
+        other => Ok(vec![other]),
     }
 }
 
@@ -482,6 +621,98 @@ mod tests {
     }
 
     #[test]
+    fn split_chunk_unstacks_a_tensor_leading_axis() {
+        // A [3, 2] uint8 chunk splits into 3 per-step [2] actions, dtype + values
+        // preserved (the zero-copy unstack view materializes correctly).
+        let chunk = Tensor::from_vec(vec![0, 1, 2, 3, 4, 5], vec![3, 2], DType::Uint8).unwrap();
+        let steps = split_chunk(Value::Tensor(chunk)).expect("split");
+        assert_eq!(steps.len(), 3);
+        let bytes: Vec<Vec<u8>> = steps
+            .iter()
+            .map(|step| match step {
+                Value::Tensor(t) => {
+                    assert_eq!(t.shape(), &[2]);
+                    assert_eq!(t.dtype(), DType::Uint8);
+                    t.to_contiguous_bytes().into_owned()
+                }
+                other => panic!("expected tensor, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(bytes, vec![vec![0u8, 1], vec![2, 3], vec![4, 5]]);
+
+        // A List is already per-step; a bare leaf is a degenerate single-step chunk.
+        let listed =
+            split_chunk(Value::List(vec![Value::Number(1.0), Value::Number(2.0)])).expect("list");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(split_chunk(Value::Number(7.0)).expect("leaf").len(), 1);
+
+        // A scalar (0-d) tensor has no chunk axis: one step, not an unstack error
+        // (matches the run(env) path, which treats a 0-d output as a single step).
+        let scalar = Tensor::from_vec(vec![9], vec![], DType::Uint8).unwrap();
+        assert_eq!(split_chunk(Value::Tensor(scalar)).expect("scalar").len(), 1);
+    }
+
+    #[test]
+    fn chunk_buffers_drain_in_order_and_refill_supersedes() {
+        let mut chunks = ChunkBuffers::new();
+        assert!(chunks.is_empty());
+        // No queue yet -> re-plan.
+        assert!(chunks.next_action("ep-a").is_none());
+
+        chunks.refill("ep-a", [Value::Number(1.0), Value::Number(2.0)]);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(1.0)));
+        // A fresh chunk discards any un-executed tail (receding horizon re-plan).
+        chunks.refill("ep-a", [Value::Number(9.0)]);
+        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(9.0)));
+        assert!(chunks.next_action("ep-a").is_none());
+
+        chunks.refill("ep-b", [Value::Number(3.0)]);
+        chunks.evict("ep-a");
+        assert!(chunks.next_action("ep-a").is_none());
+        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(3.0)));
+        chunks.clear();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn chunk_buffers_replay_per_episode_independently() {
+        // The keying guarantee a vectorized route relies on: two concurrent
+        // episodes (the per-lane case) each drain their own chunk in FIFO order
+        // with zero cross-contamination, even when interleaved.
+        let mut chunks = ChunkBuffers::new();
+        chunks.refill("ep-a", [Value::Number(10.0), Value::Number(11.0)]);
+        chunks.refill("ep-b", [Value::Number(20.0), Value::Number(21.0)]);
+        assert_eq!(chunks.len(), 2);
+
+        // Interleave the two episodes' pops: each sees only its own actions.
+        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(10.0)));
+        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(20.0)));
+        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(11.0)));
+        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(21.0)));
+        // Both drained -> both re-plan, independently.
+        assert!(chunks.next_action("ep-a").is_none());
+        assert!(chunks.next_action("ep-b").is_none());
+    }
+
+    #[test]
+    fn chunk_buffers_evict_drops_a_partially_drained_queue() {
+        // The mid-chunk episode-END case the served engine relies on: an episode
+        // that terminates with actions still queued has its whole queue reclaimed
+        // by evict, so a later (re-keyed) episode never replays a stale tail.
+        let mut chunks = ChunkBuffers::new();
+        chunks.refill(
+            "ep-a",
+            [Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
+        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(1.0)));
+        // Two actions still pending when the episode ends.
+        chunks.evict("ep-a");
+        assert!(chunks.is_empty());
+        assert!(chunks.next_action("ep-a").is_none());
+    }
+
+    #[test]
     fn bridge_flat_box_keys_under_dot() {
         let tensor = Tensor::from_vec(vec![1, 2, 3, 4], vec![4], DType::Uint8).expect("tensor");
         let value = SpaceValue::Box(tensor.clone());
@@ -592,6 +823,7 @@ mod tests {
                 segments: vec![],
                 clip: None,
                 in_dim: 0,
+                execute_horizon: 1,
             },
         };
         // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.

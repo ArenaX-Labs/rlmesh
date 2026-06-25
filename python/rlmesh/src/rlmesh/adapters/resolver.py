@@ -176,7 +176,9 @@ def _shadow_action(action: ActionLayout, act_shims: list[ActEncShim]) -> ActionL
         else:
             shadow_components.append(component)
         offset += component.dim
-    return ActionLayout(*shadow_components, clip=action.clip)
+    return ActionLayout(
+        *shadow_components, clip=action.clip, execute_horizon=action.execute_horizon
+    )
 
 
 def _custom_encodings(model_spec: ModelSpec) -> Iterator[CustomEncoding]:

@@ -370,3 +370,44 @@ def test_address_run_only_detaches_when_close_env_is_false() -> None:
     assert result.num_episodes == 1
     assert calls == ["close"]
     assert "shutdown" not in calls
+
+
+def test_split_chunk_stays_in_framework_and_does_not_force_numpy() -> None:
+    # Regression: a chunked torch/jax DEVICE tensor must split along its leading
+    # axis WITHOUT a numpy conversion (np.asarray on a cuda tensor raises). The
+    # split uses iteration so each per-step leaf stays a framework tensor, bridged
+    # exactly like the non-chunked path and the serve path.
+    from rlmesh._models._chunk import split_chunk
+
+    class FakeDeviceTensor:
+        def __init__(self, rows: list[Any]) -> None:
+            self._rows = rows
+
+        def __iter__(self) -> Any:
+            return iter(self._rows)
+
+        def __array__(self, *args: Any, **kwargs: Any) -> Any:
+            raise TypeError("can't convert a device tensor to numpy")
+
+    rows = [object(), object()]
+    assert split_chunk(FakeDeviceTensor(rows)) == rows
+
+
+def test_split_chunk_degenerate_scalar_and_mapping_are_single_step() -> None:
+    from rlmesh._models._chunk import split_chunk
+
+    # A bare scalar (not iterable) and a structured (dict) action are each one
+    # step, matching the native split_chunk's single-step leaf handling.
+    assert split_chunk(5.0) == [5.0]
+    assert split_chunk({"a": 1}) == [{"a": 1}]
+
+
+def test_split_chunk_treats_text_as_a_single_step_like_the_native_side() -> None:
+    from rlmesh._models._chunk import split_chunk
+
+    # A str/bytes action is iterable, but the native split_chunk treats a text
+    # leaf as ONE step (not per-character); the Python side must match so serve
+    # and run(env) never disagree for a text-action model.
+    assert split_chunk("go") == ["go"]
+    assert split_chunk(b"go") == [b"go"]
+    assert split_chunk(bytearray(b"go")) == [bytearray(b"go")]

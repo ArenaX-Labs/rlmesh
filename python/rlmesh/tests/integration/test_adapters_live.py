@@ -86,6 +86,8 @@ class TinyArmEnv:
         self.action_space = gym.spaces.Box(-1.0, 1.0, (7,), np.float32)
         self._t = 0
         self.last_action: NumpyArray | None = None
+        # Every action the env received, in order (chunk-replay value assertions).
+        self.actions: list[NumpyArray] = []
 
     def _obs(self) -> dict[str, Any]:
         import numpy as np
@@ -114,6 +116,7 @@ class TinyArmEnv:
         import numpy as np
 
         self.last_action = cast("NumpyArray", np.asarray(action, dtype=np.float32))
+        self.actions.append(self.last_action)
         self._t += 1
         return self._obs(), 1.0, self._t >= 3, False, {}
 
@@ -332,3 +335,219 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
     assert not np.array_equal(images[1][0], images[1][1])
     # ...and the retained (older) slot equals step 0's frame (episode continuity).
     np.testing.assert_array_equal(images[1][0], images[0][1])
+
+
+def _chunk_spec(execute_horizon: int) -> adapt.ModelSpec:
+    """A minimal image->7-dim-action spec with action-chunk replay."""
+    return adapt.ModelSpec(
+        inputs=(
+            adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=8, width=8),
+        ),
+        action=adapt.ActionLayout(
+            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            execute_horizon=execute_horizon,
+        ),
+    )
+
+
+def _distinct_chunk(calls: dict[str, int], dim: int) -> Any:
+    """A 2-row action chunk whose rows are distinct within and across predict
+    calls, all inside the [-1, 1] clip so each row maps to a distinct env action.
+
+    Call 1 -> rows [0.1.., 0.2..]; call 2 -> [0.3.., 0.4..]. The leading axis is
+    the chunk axis. Used so the tests assert the per-step replay VALUE (FIFO
+    order), not merely the predict call cadence.
+    """
+    import numpy as np
+
+    calls["predict"] += 1
+    c = calls["predict"]
+    return np.stack(
+        [
+            np.full(dim, 0.1 * (2 * c - 1), dtype=np.float32),
+            np.full(dim, 0.1 * (2 * c), dtype=np.float32),
+        ]
+    )
+
+
+def _assert_replayed_in_order(actions: list[Any]) -> None:
+    """Assert a 3-step episode replayed a horizon-2 chunk in FIFO order.
+
+    Step 0 emits chunk row 0, step 1 replays row 1, step 2 is a fresh predict's
+    row 0 -- so all three env actions differ. A bug that re-emits row 0, drops the
+    queue, reverses the slice, or skips the re-plan collapses two of these to equal.
+    """
+    import numpy as np
+
+    assert len(actions) == 3, actions
+    assert not np.array_equal(actions[0], actions[1]), "step 1 did not replay row 1"
+    assert not np.array_equal(actions[1], actions[2]), "step 2 did not re-plan"
+    assert not np.array_equal(actions[0], actions[2]), actions
+
+
+def test_run_env_chunk_replay_predicts_once_per_horizon() -> None:
+    """run(env): a chunked model predicts a chunk and the loop replays it in order.
+
+    TinyArmEnv runs a 3-step episode; with execute_horizon=2 the loop predicts at
+    step 0 and step 2 only -- step 1 replays the queued (second) action. Assert both
+    the predict cadence (2 calls, not 3) and the FIFO replay value order.
+    """
+    pytest.importorskip("numpy")
+
+    spec = _chunk_spec(2)
+    env_obj = TinyArmEnv()
+    calls = {"predict": 0}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        return _distinct_chunk(calls, spec.action.dim)
+
+    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server.start()
+    try:
+        client = RemoteEnv(server.address)
+        Model(predict, spec=spec).run(client, max_episodes=1)
+        client.close()
+    finally:
+        server.shutdown()
+
+    assert calls["predict"] == 2, calls
+    _assert_replayed_in_order(env_obj.actions)
+
+
+def test_served_chunk_replay_predicts_once_per_horizon() -> None:
+    """Serve path: the native engine queues the chunk per episode and replays it.
+
+    Across three separate predict RPCs (one per env step), the model server's
+    ChunkBuffers replays the queued (second) action on the middle step, so the user
+    predict callback fires twice and the env receives the chunk rows in FIFO order
+    -- the relocation of chunk replay into the Rust engine.
+    """
+    pytest.importorskip("numpy")
+
+    spec = _chunk_spec(2)
+    env_obj = TinyArmEnv()
+    calls = {"predict": 0}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        return _distinct_chunk(calls, spec.action.dim)
+
+    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    env_server.start()
+    model_address = f"127.0.0.1:{_free_port()}"
+
+    def serve_model() -> None:
+        Model(predict, spec=spec).serve(
+            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
+        )
+
+    threading.Thread(target=serve_model, daemon=True).start()
+    try:
+        env = RemoteEnv(env_server.address)
+        deadline = time.monotonic() + 5.0
+        model: Any = None
+        while time.monotonic() < deadline:
+            try:
+                model = RemoteModel(model_address).against(env)
+                break
+            except Exception:  # retry until the server is up
+                time.sleep(0.05)
+        assert model is not None, "served model never came up"
+
+        obs, _info = env.reset(seed=0)
+        model.reset()
+        done = False
+        steps = 0
+        while not done and steps < 3:
+            action = model.predict(obs)
+            obs, _reward, terminated, truncated, _info = env.step(action)
+            done = terminated or truncated
+            steps += 1
+        model.close()
+        env.close()
+    finally:
+        env_server.shutdown()
+
+    assert calls["predict"] == 2, calls
+    _assert_replayed_in_order(env_obj.actions)
+
+
+def test_run_env_chunk_replay_drains_a_3_row_chunk_in_fifo_order() -> None:
+    """A horizon-3 chunk replays in exact FIFO order across a 3-step episode.
+
+    TinyArmEnv runs 3 steps; with execute_horizon=3 the loop predicts ONCE and
+    replays rows 1 then 2 -- so a reversed/LIFO drain (which a 2-row chunk cannot
+    distinguish, since its queue only ever holds one item) is caught here: the
+    delta_pos[0] component of the three env actions must strictly increase,
+    matching chunk rows 0.1 < 0.2 < 0.3 emitted in order.
+    """
+    pytest.importorskip("numpy")
+    import numpy as np
+
+    spec = _chunk_spec(3)
+    env_obj = TinyArmEnv()
+    dim = spec.action.dim
+    chunk = np.stack([np.full(dim, v, dtype=np.float32) for v in (0.1, 0.2, 0.3)])
+    calls = {"predict": 0}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        calls["predict"] += 1
+        return chunk
+
+    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server.start()
+    try:
+        client = RemoteEnv(server.address)
+        Model(predict, spec=spec).run(client, max_episodes=1)
+        client.close()
+    finally:
+        server.shutdown()
+
+    assert calls["predict"] == 1, calls
+    assert len(env_obj.actions) == 3, env_obj.actions
+    # delta_pos[0] is a passthrough component, so it tracks each row's value:
+    # FIFO -> 0.1, 0.2, 0.3 (increasing); a LIFO/reversed drain breaks the order.
+    firsts = [float(a[0]) for a in env_obj.actions]
+    assert firsts[0] < firsts[1] < firsts[2], env_obj.actions
+
+
+def test_run_env_chunk_replay_caps_a_chunk_longer_than_the_horizon() -> None:
+    """A chunk longer than execute_horizon is capped; the extra rows are dropped.
+
+    horizon=2 with a 3-row chunk: step 0 emits row 0, step 1 replays row 1, step 2
+    RE-PLANS (row 2 is discarded, not replayed). So predict fires twice and the
+    step-2 action comes from the second predict, not the dropped row 2.
+    """
+    pytest.importorskip("numpy")
+    import numpy as np
+
+    spec = _chunk_spec(2)
+    env_obj = TinyArmEnv()
+    dim = spec.action.dim
+    # Two 3-row chunks (> horizon 2); rows distinct within and across predicts.
+    chunks = [
+        np.stack([np.full(dim, 0.3 * c + 0.01 * r, dtype=np.float32) for r in range(3)])
+        for c in (1, 2)
+    ]
+    calls = {"predict": 0}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        chunk = chunks[calls["predict"]]
+        calls["predict"] += 1
+        return chunk
+
+    server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
+    server.start()
+    try:
+        client = RemoteEnv(server.address)
+        Model(predict, spec=spec).run(client, max_episodes=1)
+        client.close()
+    finally:
+        server.shutdown()
+
+    # Capped to horizon=2: predict at step 0 and step 2 (call-1 row 2 never runs).
+    assert calls["predict"] == 2, calls
+    a1 = float(env_obj.actions[1][0])  # call-1 row 1 (~0.31)
+    a2 = float(env_obj.actions[2][0])  # call-2 row 0 (~0.60), NOT call-1 row 2
+    assert a2 > a1 + 0.1, env_obj.actions

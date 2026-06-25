@@ -372,6 +372,9 @@ fn resolve_action(action: &ActionLayout, action_space: &SpaceView) -> Result<Act
     Ok(ActionLayout {
         components,
         clip: action.clip,
+        // The env declaration drives this join; preserve its replay horizon
+        // (always 1 env-side, but carried through rather than reset by hand).
+        execute_horizon: action.execute_horizon,
     })
 }
 
@@ -465,6 +468,7 @@ mod tests {
         ActionLayout {
             components,
             clip: None,
+            execute_horizon: 1,
         }
     }
 

@@ -390,6 +390,15 @@ impl PyAdapterPlan {
         self.adapter.advisories()
     }
 
+    /// Action-chunk replay horizon: how many model actions `predict` returns per
+    /// chunk and the run(env) loop replays before predicting again (`1` = predict
+    /// every step). The served engine reads this from the plan natively; the
+    /// in-process run(env) loop reads it through here.
+    #[getter]
+    fn execute_horizon(&self) -> u32 {
+        self.adapter.action_plan.execute_horizon
+    }
+
     /// The top-level observation keys this adapter reads.
     ///
     /// A host wrapper should encode only these before calling
