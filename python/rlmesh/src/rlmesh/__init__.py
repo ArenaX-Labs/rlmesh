@@ -18,6 +18,7 @@ from . import _rlmesh as _rlmesh
 from . import adapters as adapters
 from . import spaces as spaces
 from . import types as types
+from ._authoring import EnvRecipe, ModelRecipe
 from ._models import NO_ADAPTER, EpisodeResult, RunResult
 from ._native import (
     Model,
@@ -47,9 +48,11 @@ _register_python_peer_info()
 
 __all__ = [
     "NO_ADAPTER",
+    "EnvRecipe",
     "EnvServer",
     "EpisodeResult",
     "Model",
+    "ModelRecipe",
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",

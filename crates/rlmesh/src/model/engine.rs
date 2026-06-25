@@ -132,10 +132,22 @@ fn predict_route(
 
     let mut actions = Vec::with_capacity(num_envs);
     for index in 0..num_envs {
+        // Every lane must carry a non-empty episode_id: the engine keys all
+        // per-episode state (frame windows, chunk queues) by it. The grpc wire
+        // layer already enforces `num_envs == slots.len()` with non-empty ids,
+        // but the engine must not silently fall back to a shared "" buffer (which
+        // would cross-contaminate lanes) if any other producer violates that.
         let episode_id = episode_ids
             .get(index)
             .map(String::as_str)
-            .unwrap_or_default();
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                Error::model(format!(
+                    "predict request lane {index} has no episode_id (num_envs={num_envs}, \
+                     episode_ids={}); every lane must carry a non-empty episode_id",
+                    episode_ids.len()
+                ))
+            })?;
         // Action-chunk replay: when this lane's episode still has queued actions
         // from an earlier predicted chunk, emit the next one and skip predict (and
         // therefore the obs decode + assembly) entirely. Only re-plan — decode the
@@ -168,12 +180,8 @@ fn predict_route(
                 }
             }
         };
-        let env_action = apply_actions(
-            &config.adapter,
-            &raw_action,
-            &config.action_space,
-            encodings,
-        )?;
+        let env_action =
+            apply_actions(&config.adapter, raw_action, &config.action_space, encodings)?;
         actions.push(env_action);
     }
     Ok(actions)

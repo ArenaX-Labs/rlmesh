@@ -6,9 +6,11 @@ def test_root_namespace_is_small() -> None:
 
     assert rlmesh.__all__ == [
         "NO_ADAPTER",
+        "EnvRecipe",
         "EnvServer",
         "EpisodeResult",
         "Model",
+        "ModelRecipe",
         "RemoteEnv",
         "RemoteModel",
         "RemoteVectorEnv",
@@ -25,12 +27,11 @@ def test_root_namespace_is_small() -> None:
         "types",
     ]
 
-    # Recipe authoring is excluded from the released wheel, and the internal
-    # modules are _-prefixed (server/serving/client/sandbox/models): none of
-    # these are part of the public top-level surface.
+    # ModelRecipe/EnvRecipe are the thin runtime authoring bases (re-added in the
+    # authoring layer). The removed build DSL stays gone, and the internal modules
+    # are _-prefixed (server/serving/client/sandbox/models): none of those are part
+    # of the public top-level surface.
     for name in (
-        "EnvRecipe",
-        "ModelRecipe",
         "Recipe",
         "register",
         "serving",

@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 __all__ = [
     "EpisodeResult",
     "RunResult",
-    "adapted_predict",
     "coerce_model",
     "evaluate",
     "resolve_route_adapter",
@@ -271,32 +270,6 @@ def resolve_route_adapter(
     return _resolve_adapter(spec, contract, trust_entrypoints)
 
 
-def adapted_predict(
-    predict: Callable[[Any], Any],
-    adapter: Adapter | None,
-    observation: Any,
-    bridge: ValueBridge | None,
-) -> Any:
-    """Run ``predict`` with the route's adapter (if any) applied around it.
-
-    Mirrors the per-step transform in :func:`_run_episode` (obs in, action out)
-    for the serve path, where the adapter is resolved per route at configure time
-    rather than once per run.
-    """
-    if adapter is None:
-        return predict(observation)
-    payload = from_value(
-        adapter.transform_obs_value(
-            observation, input_bridge=bridge, custom_bridge=bridge
-        ),
-        bridge,
-    )
-    action = predict(payload)
-    return from_value(
-        adapter.transform_action_value(action, action_bridge=bridge), bridge
-    )
-
-
 def _resolve_adapter(
     spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
 ) -> Adapter | None:
@@ -349,12 +322,26 @@ def coerce_model(
 ) -> CoercedModel:
     """Resolve a model source into a :class:`CoercedModel`.
 
-    The model source is a predict callable.
+    The source is either a bare predict callable or a :class:`ModelRecipe`
+    (class or instance) exposing ``predict`` plus optional ``spec``/``reset``/``close``.
     """
+    from .._bootstrap.loaders import construct_authored_model, looks_like_policy
+
+    # A ModelRecipe *class* is also callable, so check the policy shape first.
+    if looks_like_policy(source):
+        inst = construct_authored_model(source)
+        return CoercedModel(
+            inst.predict,
+            spec if spec is not None else getattr(inst, "spec", None),
+            inst.reset,
+            inst.close,
+            inst,
+        )
     if callable(source):
         return CoercedModel(source, spec, None, None, None)
     raise TypeError(
-        f"Model source must be a predict callable; got {type(source).__name__}"
+        "Model source must be a predict callable or a ModelRecipe; "
+        f"got {type(source).__name__}"
     )
 
 

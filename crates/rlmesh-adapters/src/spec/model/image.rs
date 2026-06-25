@@ -206,6 +206,30 @@ mod tests {
     }
 
     #[test]
+    fn normalize_range_rejects_reversed_and_accepts_valid() {
+        // A reversed range silently inverts pixel polarity at serve time; the
+        // shared range deserializer rejects min > max at the wire boundary.
+        assert!(
+            serde_json::from_str::<ModelInput>(
+                r#"{"type": "image", "key": "cam", "role": "image/primary", "normalize_range": [1.0, 0.0]}"#
+            )
+            .is_err()
+        );
+        // A normal (and a degenerate equal) range still parse.
+        let signed = image(r#", "normalize_range": [-1.0, 1.0]"#);
+        let ModelInput::Image(img) = &signed else {
+            panic!("expected image")
+        };
+        assert_eq!(img.normalize_range, Some((-1.0, 1.0)));
+        assert!(
+            serde_json::from_str::<ModelInput>(
+                r#"{"type": "image", "key": "cam", "role": "image/primary", "normalize_range": [0.5, 0.5]}"#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn tagged_payload_does_not_reject_unknown_field_yet() {
         // Documents the serde limitation: deny_unknown_fields cannot apply to an
         // internally-tagged variant payload, so a typo'd field here is silently

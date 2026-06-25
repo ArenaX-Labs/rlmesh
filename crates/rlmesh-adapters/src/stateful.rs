@@ -323,13 +323,19 @@ pub fn assemble_obs(
             let Some(value) = payload.get_mut(model_key) else {
                 continue;
             };
-            let Value::Tensor(frame) = value else {
+            if !matches!(value, Value::Tensor(_)) {
                 return Err(ApplyError::new(format!(
                     "frame-stacked input '{model_key}' must be a tensor"
                 )));
+            }
+            // Move the frame out of the payload slot (overwritten with the
+            // stacked result below) so it lands in the window without a per-step
+            // tensor copy.
+            let Value::Tensor(frame) = std::mem::replace(value, Value::Number(0.0)) else {
+                unreachable!("frame confirmed a tensor above")
             };
             let window = windows.entry(model_key.clone()).or_default();
-            let stacked = stack_frame(window, frame.clone(), *depth)?;
+            let stacked = stack_frame(window, frame, *depth)?;
             *value = Value::Tensor(stacked);
         }
     }
@@ -345,11 +351,11 @@ pub fn assemble_obs(
 /// re-shaping callers.
 pub fn apply_actions(
     adapter: &ResolvedAdapter,
-    raw_action: &Value,
+    raw_action: Value,
     action_space: &SpaceSpec,
     encodings: &dyn EncodingTransform,
 ) -> Result<SpaceValue, ApplyError> {
-    let mut action = raw_action.clone();
+    let mut action = raw_action;
     encodings.repack_action(&mut action)?;
     let env_action = adapter.transform_action(&action)?;
     tensor_to_space_value(env_action, action_space)

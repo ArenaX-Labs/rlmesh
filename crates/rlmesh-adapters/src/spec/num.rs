@@ -225,6 +225,16 @@ impl<'de> Visitor<'de> for RangeVisitor {
                 "range must be a pair of numbers [min, max], got {len}"
             )));
         }
+        // A reversed range silently inverts whatever it scales (e.g. a
+        // normalize range `[1, 0]` flips pixel polarity); reject it at the wire
+        // boundary. `min == max` (a degenerate constant range) and unbounded
+        // `±inf` bounds are left to the consumer.
+        if pair.0 > pair.1 {
+            return Err(de::Error::custom(format!(
+                "range [min, max] must have min <= max, got [{}, {}]",
+                pair.0, pair.1
+            )));
+        }
         Ok(pair)
     }
 }

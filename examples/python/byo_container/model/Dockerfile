@@ -27,4 +27,6 @@ COPY entrypoint.py .
 
 EXPOSE 50051
 ENV RLMESH_ADDRESS=0.0.0.0:50051
+# Or skip entrypoint.py and serve the recipe directly:
+#   ENTRYPOINT ["python", "-m", "rlmesh.serve", "entrypoint:MyPolicy"]
 ENTRYPOINT ["python", "entrypoint.py"]

@@ -6,28 +6,39 @@ RLMesh runs the image. The container serves the policy on
 symmetric loop -- ``rlmesh.RemoteModel(address).against(env)`` un-managed, or
 ``rlmesh.SandboxModel("image://<tag>").against(env)`` managed -- and RLMesh
 Managed runs the same image. ``docker push`` the tag to a registry it can reach.
+
+The lazy path: skip this file entirely and set the Dockerfile ENTRYPOINT to
+``python -m rlmesh.serve my_pkg:MyPolicy`` -- it serves the MyPolicy recipe below
+with no hand-written serve loop.
 """
 
 from __future__ import annotations
 
 import os
 
+from rlmesh import ModelRecipe
 from rlmesh.numpy import Model
 
 
-def load_policy():
-    # Replace with your real policy load (weights via a baked path or mount, the
-    # framework's from_pretrained, etc.). Keep heavy imports inside here.
-    def predict(observation: object) -> int:
-        return 0  # always push the cart left
+class MyPolicy(ModelRecipe):
+    """Subclass ModelRecipe: set ``spec`` (optional), implement load + predict."""
 
-    return predict
+    # spec = ModelSpec(...)  # declare inputs/outputs to get automatic adapters.
+
+    def load(self) -> None:
+        # Load weights INTO self (a baked path or mount, from_pretrained, ...).
+        # Keep heavy imports inside here, not at module top.
+        self.bias = 0
+
+    def predict(self, observation: object) -> int:
+        return self.bias  # always push the cart left
 
 
 def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
     print(f"RLMesh BYO model serving {address}", flush=True)
-    Model(load_policy()).serve(address)
+    # Equivalent one-liner: `python -m rlmesh.serve <this_module>:MyPolicy`.
+    Model(MyPolicy).serve(address)
 
 
 if __name__ == "__main__":

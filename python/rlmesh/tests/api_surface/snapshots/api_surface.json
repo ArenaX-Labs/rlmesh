@@ -2,9 +2,11 @@
   "rlmesh": {
     "exports": [
       "NO_ADAPTER",
+      "EnvRecipe",
       "EnvServer",
       "EpisodeResult",
       "Model",
+      "ModelRecipe",
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
@@ -21,6 +23,28 @@
       "types"
     ],
     "objects": {
+      "EnvRecipe": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "make": {
+            "kind": "function",
+            "signature": "make(**kwargs: Any) -> Any"
+          },
+          "prepare": {
+            "kind": "function",
+            "signature": "prepare() -> None"
+          },
+          "tags": {
+            "kind": "attribute",
+            "signature": "tags: EnvTags | None"
+          }
+        },
+        "stability": "Stable"
+      },
       "EnvServer": {
         "kind": "class",
         "members": {
@@ -112,6 +136,32 @@
           }
         },
         "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "stability": "Stable"
+      },
+      "ModelRecipe": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load() -> None"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: Any) -> Any"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset() -> None"
+          },
+          "spec": {
+            "kind": "attribute",
+            "signature": "spec: ModelSpec | None"
+          }
+        },
         "stability": "Stable"
       },
       "NO_ADAPTER": {

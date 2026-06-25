@@ -32,8 +32,16 @@ pub(super) fn apply_image(
     if let Some((height, width)) = plan.size {
         image = fit_resize(&image, height, width, &plan.resample, plan.fit)?;
     }
-    image = finalize_dtype(&image, &plan.dtype, plan.normalize)?;
-    image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
+    finalize_image(image, plan)
+}
+
+/// The shared tail both image paths (real and zero-fill) end with: map the HWC
+/// uint8 frame into the model's dtype/range, transpose to the model's layout, and
+/// prepend any leading axes. Kept in one place so a normalize/layout/lead policy
+/// change cannot silently diverge between the two paths.
+fn finalize_image(image: Tensor, plan: &ImagePlan) -> Result<Value, ApplyError> {
+    let image = finalize_dtype(&image, &plan.dtype, plan.normalize)?;
+    let image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
     Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
 }
 
@@ -52,9 +60,7 @@ fn apply_zero_fill_image(
         value::shape_i64(&[height, width, channels]),
         vec![plan.absent_fill; height * width * channels],
     );
-    let image = finalize_dtype(&fill, &plan.dtype, plan.normalize)?;
-    let image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
-    Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
+    finalize_image(fill, plan)
 }
 
 /// Return an HWC uint8 tensor from a raw observation value.
@@ -67,14 +73,22 @@ pub fn decode_image(value: &Value, src_range: Option<(f64, f64)>) -> Result<Tens
     let tensor = match value {
         Value::Tensor(tensor) => tensor.clone(),
         Value::Bytes(raw) => {
+            // Preserve the encoded image's native channel count (grayscale -> 1,
+            // luma+alpha -> 2, RGB -> 3, RGBA -> 4) rather than forcing RGB: a
+            // forced 3-channel decode silently feeds a grayscale (channels=1) or
+            // RGBA (channels=4) model a wrong-shaped tensor that the resolver's
+            // declared-channel check cannot catch. Now the byte path matches the
+            // array path -- both carry the env's actual channels.
             let decoded = image::load_from_memory(raw)
-                .map_err(|err| ApplyError::new(format!("could not decode image bytes: {err}")))?
-                .to_rgb8();
-            let (width, height) = decoded.dimensions();
-            value::tensor_from_u8(
-                vec![i64::from(height), i64::from(width), 3],
-                decoded.into_raw(),
-            )
+                .map_err(|err| ApplyError::new(format!("could not decode image bytes: {err}")))?;
+            let (width, height) = (decoded.width(), decoded.height());
+            let (pixels, channels) = match decoded.color().channel_count() {
+                1 => (decoded.to_luma8().into_raw(), 1i64),
+                2 => (decoded.to_luma_alpha8().into_raw(), 2i64),
+                4 => (decoded.to_rgba8().into_raw(), 4i64),
+                _ => (decoded.to_rgb8().into_raw(), 3i64),
+            };
+            value::tensor_from_u8(vec![i64::from(height), i64::from(width), channels], pixels)
         }
         _ => {
             return Err(ApplyError::new(
@@ -444,6 +458,36 @@ mod tests {
 
         assert_eq!(decoded.shape(), &[1, 1, 3]);
         assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30]);
+    }
+
+    #[test]
+    fn encoded_grayscale_bytes_decode_to_single_channel() {
+        // A grayscale-encoded image must decode to a 1-channel tensor, not be
+        // silently expanded to 3 channels (which would feed a channels=1 model a
+        // wrong-shaped input the resolver's declared-channel check cannot catch).
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&[42], 1, 1, image::ColorType::L8.into())
+            .expect("encode gray png");
+
+        let decoded = decode_image(&Value::Bytes(encoded), None).expect("decode");
+
+        assert_eq!(decoded.shape(), &[1, 1, 1]);
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [42u8]);
+    }
+
+    #[test]
+    fn encoded_rgba_bytes_preserve_the_alpha_channel() {
+        // RGBA must decode to 4 channels, not drop alpha to 3.
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded)
+            .write_image(&[10, 20, 30, 128], 1, 1, image::ColorType::Rgba8.into())
+            .expect("encode rgba png");
+
+        let decoded = decode_image(&Value::Bytes(encoded), None).expect("decode");
+
+        assert_eq!(decoded.shape(), &[1, 1, 4]);
+        assert_eq!(decoded.to_contiguous_bytes().as_ref(), [10u8, 20, 30, 128]);
     }
 
     #[test]

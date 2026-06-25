@@ -267,3 +267,30 @@ def load_predict(entrypoint: str) -> Callable[[NumpyValue], NumpyValue]:
     """Load a model prediction callable from ``module:callable`` syntax."""
     value = resolve_entrypoint(entrypoint, label="model entrypoint")
     return cast(Callable[[Any], Any], value)
+
+
+def looks_like_policy(value: object) -> bool:
+    """Return whether a value exposes a predict callable (a ModelRecipe-shaped policy).
+
+    Matches both a ``ModelRecipe`` class (its ``predict`` is an unbound function) and
+    an instance (a bound method); a bare predict callable has no ``predict`` attribute.
+    """
+    return callable(getattr(value, "predict", None))
+
+
+def construct_authored_model(source: Any) -> Any:
+    """Instantiate a ModelRecipe class (or accept an instance), run ``load()``, return it."""
+    inst = source() if isinstance(source, type) else source
+    load = getattr(inst, "load", None)
+    if callable(load):
+        load()
+    return inst
+
+
+def construct_authored_env(source: Any, **kwargs: object) -> Any:
+    """Instantiate an EnvRecipe class (or accept an instance), ``prepare()``, return ``make()``."""
+    inst = source() if isinstance(source, type) else source
+    prepare = getattr(inst, "prepare", None)
+    if callable(prepare):
+        prepare()
+    return inst.make(**kwargs)
