@@ -22,6 +22,7 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [dependencies]
 async-trait = { workspace = true }
 rlmesh-spaces = { workspace = true }
+rlmesh-adapters = { workspace = true }
 rlmesh-grpc = { workspace = true }
 rlmesh-proto = { workspace = true }
 rlmesh-runtime = { workspace = true }

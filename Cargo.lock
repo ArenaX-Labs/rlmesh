@@ -1507,6 +1507,7 @@ name = "rlmesh"
 version = "0.1.0-rc.2"
 dependencies = [
  "async-trait",
+ "rlmesh-adapters",
  "rlmesh-grpc",
  "rlmesh-proto",
  "rlmesh-runtime",

@@ -15,7 +15,7 @@
 //! ([`SkipCustoms`]) and the Python wrapper runs the user's callable on the
 //! raw Python observation afterwards.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -23,8 +23,8 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    EnvTags, ModelInput, ModelSpec, ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
-    resolve, roles,
+    ApplyError, CustomTransform, EncodingTransform, EnvTags, ModelInput, ModelSpec, ObsPlan,
+    ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -163,7 +163,7 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-fn decode_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+pub(crate) fn decode_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Some(tensor) = crate::spaces::extract_tensor(value)? {
         return Ok(Value::Tensor(tensor.inner.clone()));
     }
@@ -237,7 +237,7 @@ fn decode_referenced_obs(
     Ok(out)
 }
 
-fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
+pub(crate) fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
     match value {
         Value::Tensor(tensor) => crate::spaces::wrap_native_tensor(py, tensor.clone()),
         Value::Text(text) => Ok(text.into_pyobject(py)?.into_any()),
@@ -257,6 +257,114 @@ fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAn
             }
             Ok(dict.into_any())
         }
+    }
+}
+
+/// Build a neutral Python dict from an adapter value map (`encode_value` each).
+fn value_map_to_py<'py>(
+    py: Python<'py>,
+    values: &BTreeMap<String, Value>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (key, value) in values {
+        dict.set_item(key, encode_value(py, value)?)?;
+    }
+    Ok(dict)
+}
+
+/// The custom-input hole, backed by host (Python) neutral callables.
+///
+/// Each entry is a `model_key -> callable(full_obs_neutral_dict) -> neutral_value`
+/// the Python layer built (it does the framework-bridge + the user transform
+/// internally). The engine calls [`CustomTransform::apply`] per declared custom
+/// hole during `assemble_obs`; this materializes the full per-lane obs into
+/// Python, runs the callable, and decodes the result back to a [`Value`].
+pub(crate) struct PyCustomTransform {
+    customs: HashMap<String, Py<PyAny>>,
+}
+
+impl PyCustomTransform {
+    pub(crate) fn new(customs: HashMap<String, Py<PyAny>>) -> Self {
+        Self { customs }
+    }
+}
+
+impl CustomTransform for PyCustomTransform {
+    fn apply(
+        &self,
+        model_key: &str,
+        _entrypoint: &str,
+        raw_obs: &BTreeMap<String, Value>,
+    ) -> Result<Option<Value>, ApplyError> {
+        let Some(callable) = self.customs.get(model_key) else {
+            return Err(ApplyError::new(format!(
+                "no custom transform registered for '{model_key}'"
+            )));
+        };
+        Python::attach(|py| -> PyResult<Value> {
+            let obs = value_map_to_py(py, raw_obs)?;
+            let result = callable.call1(py, (obs,))?;
+            decode_value(result.bind(py))
+        })
+        .map(Some)
+        .map_err(|err| ApplyError::new(err.to_string()))
+    }
+}
+
+/// The custom-encoding hole, backed by host (Python) neutral callables.
+///
+/// `obs` repacks enc-shimmed observation payload keys (before frame-stacking);
+/// `action` repacks enc-shimmed action segments (before the native conversion).
+/// Each is a neutral `callable(neutral) -> neutral` the Python layer built (it
+/// does the numpy round-trip + width/dtype validation internally); `None` means
+/// the route declares no encoding on that side.
+pub(crate) struct PyEncodings {
+    obs: Option<Py<PyAny>>,
+    action: Option<Py<PyAny>>,
+}
+
+impl PyEncodings {
+    pub(crate) fn new(obs: Option<Py<PyAny>>, action: Option<Py<PyAny>>) -> Self {
+        Self { obs, action }
+    }
+}
+
+impl EncodingTransform for PyEncodings {
+    fn repack_obs(&self, payload: &mut BTreeMap<String, Value>) -> Result<(), ApplyError> {
+        let Some(callable) = &self.obs else {
+            return Ok(());
+        };
+        Python::attach(|py| -> PyResult<()> {
+            let input = value_map_to_py(py, payload)?;
+            let result = callable.call1(py, (input,))?;
+            let dict = result.bind(py).cast::<PyDict>()?;
+            payload.clear();
+            for (key, value) in dict.iter() {
+                payload.insert(key.extract()?, decode_value(&value)?);
+            }
+            Ok(())
+        })
+        .map_err(|err| ApplyError::new(err.to_string()))
+    }
+
+    fn repack_action(&self, action: &mut Value) -> Result<(), ApplyError> {
+        let Some(callable) = &self.action else {
+            return Ok(());
+        };
+        Python::attach(|py| -> PyResult<()> {
+            let input = encode_value(py, action)?;
+            let result = callable.call1(py, (input,))?;
+            *action = decode_value(result.bind(py))?;
+            Ok(())
+        })
+        .map_err(|err| ApplyError::new(err.to_string()))
+    }
+}
+
+impl PyAdapterPlan {
+    /// The native resolved adapter (for the served engine to drive directly).
+    pub(crate) fn adapter(&self) -> &ResolvedAdapter {
+        &self.adapter
     }
 }
 

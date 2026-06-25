@@ -1643,9 +1643,10 @@ def test_vector_env_rejected_by_single_env_eval_loop() -> None:
         model.run(fake_env, max_episodes=1)
 
 
-def test_stateful_adapter_rejected_on_vector_route() -> None:
-    # A served stateful adapter's frame-history buffers are not lane-indexed, so
-    # resolve_route_adapter rejects num_envs>1 rather than corrupt other lanes.
+def test_stateful_adapter_allowed_on_vector_route() -> None:
+    # Frame-stacking state is now episode-keyed in the native serving engine, so
+    # a served stateful adapter resolves against a vectorized route -- the old
+    # single-lane rejection is lifted.
     from rlmesh._models._eval import resolve_route_adapter
 
     env = image_env(4, 4)
@@ -1666,14 +1667,17 @@ def test_stateful_adapter_rejected_on_vector_route() -> None:
             num_envs=num_envs,
         )
 
-    with pytest.raises(adapt.AdapterResolutionError, match="num_envs=2"):
-        resolve_route_adapter(stateful_spec, contract(2), trust_entrypoints=False)
-    # The same stateful adapter is fine against a single lane.
+    # A stateful (frame-stacking) adapter now resolves against a vector route.
+    vector_stateful = resolve_route_adapter(
+        stateful_spec, contract(2), trust_entrypoints=False
+    )
+    assert vector_stateful is not None and vector_stateful.is_stateful
+    # And still against a single lane.
     single_lane = resolve_route_adapter(
         stateful_spec, contract(1), trust_entrypoints=False
     )
     assert single_lane is not None and single_lane.is_stateful
-    # A stateless adapter on a vector route is harmless and must not be rejected.
+    # A stateless adapter on a vector route is harmless.
     stateless = resolve_route_adapter(
         stateless_spec, contract(2), trust_entrypoints=False
     )

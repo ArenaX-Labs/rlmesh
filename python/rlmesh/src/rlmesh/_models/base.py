@@ -92,8 +92,7 @@ class ModelBase(Generic[ObsT, ActT]):
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
 
-        from ..adapters import ModelSpec
-        from ._eval import adapted_predict, resolve_route_adapter
+        from ._eval import resolve_route_adapter
 
         spec = self._spec
         bridge = self._bridge
@@ -101,26 +100,24 @@ class ModelBase(Generic[ObsT, ActT]):
         trust = self._trust_entrypoints
 
         def configure(env_contract: object) -> object:
-            return resolve_route_adapter(
+            # The served route resolves to a native plan plus neutral host holes
+            # the Rust engine drives (it owns the per-episode frame buffers and
+            # adapter application); a spec-less / NO_ADAPTER model returns None.
+            adapter = resolve_route_adapter(
                 spec, cast("Any", env_contract), trust_entrypoints=trust
             )
+            return adapter.serve_route(bridge) if adapter is not None else None
 
-        def wrapped_predict(observation: Value, adapter: object) -> Value:
-            # A spec'd model whose route was never configured (e.g. run_local,
-            # which does not configure routes) cannot apply its adapter; fail
-            # loudly rather than silently skipping the spec's transforms.
-            if adapter is None and isinstance(spec, ModelSpec):
-                raise RuntimeError(
-                    "this model has a spec, but its route was not configured with "
-                    "an env contract. Drive it with Model(model).run(env), or serve() "
-                    "it and dial in through a configured model route."
-                )
-            decoded = cast(ObsT, bridge.decode(observation))
-            action = adapted_predict(raw_predict, cast("Any", adapter), decoded, bridge)
-            return bridge.encode(action)
+        def predict_neutral(observation: Value) -> Value:
+            # The engine has already applied the adapter (declarative transform,
+            # frame-stacking, customs, enc-shims) in Rust, so the obs handed here
+            # is the final model input; bridge it into the framework, run the user
+            # predict, and bridge the action back. A spec-less route hands the raw
+            # observation through the identical path (no adapter).
+            return bridge.encode(raw_predict(cast(ObsT, bridge.decode(observation))))
 
         self._worker: PyModel = PyModel(
-            predict_fn=wrapped_predict,
+            predict_fn=predict_neutral,
             configure_fn=configure,
             on_reset=on_reset,
             on_episode_end=self._on_episode_end,

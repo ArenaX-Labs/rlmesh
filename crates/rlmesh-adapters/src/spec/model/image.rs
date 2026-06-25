@@ -66,10 +66,11 @@ pub struct ImageInput {
     #[serde(default = "default_bilinear_aa")]
     pub resample: String,
     /// Number of consecutive observations the model stacks on a new leading
-    /// axis (frame history); `1` = no stacking. Stacking is applied host-side
-    /// by the binding (the env still sends one frame per step); the native core
-    /// carries it as declarative metadata. Omitted from the wire when `1` to
-    /// stay byte-identical with the Python serializer; bounded to `MAX_STACK`.
+    /// axis (frame history); `1` = no stacking. Stacking is applied natively in
+    /// the core, episode-keyed (the env still sends one frame per step; the
+    /// per-episode rolling window lives in `rlmesh_adapters::stateful`). Omitted
+    /// from the wire when `1` to stay byte-identical with the Python serializer;
+    /// bounded to `MAX_STACK`.
     #[serde(
         default = "default_stack",
         deserialize_with = "de_stack",

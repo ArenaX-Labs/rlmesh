@@ -19,4 +19,9 @@ pub struct ImagePlan {
     /// to map a float image into 8-bit. `None` when the space is unbounded
     /// (the image is then assumed normalized `[0, 1]`).
     pub src_range: Option<(f64, f64)>,
+    /// Frame-stack depth: the model stacks this many consecutive frames on a new
+    /// leading axis (frame history); `1` = no stacking. Buffered per-episode and
+    /// stacked natively in the core (see [`crate::stateful`]); only the keys with
+    /// `stack > 1` carry a per-episode window.
+    pub stack: u32,
 }

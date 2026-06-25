@@ -29,6 +29,22 @@ def _numpy_value_bridge() -> ValueBridge:
     return _numpy_bridge
 
 
+def _serve_custom(
+    transform: ObsTransform, bridge: ValueBridge
+) -> Callable[[Value], Value]:
+    """Wrap a custom-input transform as a neutral Value-tree callable.
+
+    The served engine passes the full per-lane observation as a neutral tree;
+    this bridges it into the framework, runs the user transform, and bridges the
+    result back -- so the host-language transform stays exactly as written.
+    """
+
+    def call(observation: Value) -> Value:
+        return bridge.encode(transform(cast("Any", bridge.decode(observation))))
+
+    return call
+
+
 @dataclass(frozen=True)
 class ObsEncShim:
     """Repack one observation payload key from its base encoding to custom."""
@@ -336,6 +352,48 @@ class Adapter(AdapterBase[NumpyArray]):
                 bridge,
             ),
         )
+
+    def serve_route(self, bridge: ValueBridge) -> dict[str, object]:
+        """The served-route payload the native engine drives.
+
+        The engine applies the native plan, frame-stacking, customs, and
+        encoding shims in Rust; this hands it the native plan plus the host
+        (Python) holes as neutral Value-tree callables (framework/numpy bridging
+        stays here). Used only on the serve path; :meth:`transform_obs_value`
+        remains the in-process run(env) single-lane path.
+        """
+        customs = {
+            key: _serve_custom(transform, bridge)
+            for key, transform in self._customs.items()
+        }
+        return {
+            "plan": self._plan,
+            "customs": customs,
+            "obs_encodings": self._serve_obs_encodings if self._obs_enc_shims else None,
+            "action_encodings": (
+                self._serve_action_encodings if self._action_enc_shims else None
+            ),
+        }
+
+    def _serve_obs_encodings(self, payload: dict[str, Value]) -> dict[str, Value]:
+        """Repack enc-shimmed obs payload keys (neutral in, neutral out)."""
+        numpy_bridge = _numpy_value_bridge()
+        result = dict(payload)
+        for shim in self._obs_enc_shims:
+            if shim.model_key in result:
+                result[shim.model_key] = to_value(
+                    self._apply_obs_enc(
+                        shim, from_value(result[shim.model_key], numpy_bridge)
+                    ),
+                    numpy_bridge,
+                )
+        return result
+
+    def _serve_action_encodings(self, action: Value) -> Value:
+        """Repack enc-shimmed action segments back to base (neutral in/out)."""
+        numpy_bridge = _numpy_value_bridge()
+        raw = self._apply_action_enc(from_value(action, numpy_bridge))
+        return cast("Value", to_value(raw, numpy_bridge))
 
     def describe(self) -> str:
         """Return a human-readable summary of the resolved transformations."""

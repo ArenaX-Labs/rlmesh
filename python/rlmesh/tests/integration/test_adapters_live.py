@@ -251,3 +251,84 @@ def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
     # transform_action ran and round-tripped: the env got its 7-dim action.
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
+
+
+def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
+    """A served frame-stacking (stateful) spec'd model end-to-end.
+
+    The native serving engine episode-keys the frame buffers and stacks
+    server-side, so the policy sees a stacked image with first-frame padding at
+    step 0 and a sliding window after -- the vectorized-stateful relocation the
+    old single-lane rejection forbade.
+    """
+    pytest.importorskip("numpy")
+
+    tags = _tags()
+    spec = adapt.ModelSpec(
+        inputs=(
+            adapt.ImageInput(
+                "image", role=adapt.IMAGE_PRIMARY, height=8, width=8, stack=2
+            ),
+        ),
+        action=adapt.ActionLayout(
+            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    )
+    env_obj = TinyArmEnv()
+    images: list[Any] = []
+
+    def predict(payload: dict[str, Any]) -> Any:
+        import numpy as np
+
+        images.append(np.asarray(payload["image"]))
+        return np.zeros(spec.action.dim, dtype=np.float32)
+
+    env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
+    env_server.start()
+    model_address = f"127.0.0.1:{_free_port()}"
+
+    def serve_model() -> None:
+        Model(predict, spec=spec).serve(
+            model_address, options=rlmesh.ServeOptions(allow_remote_shutdown=True)
+        )
+
+    threading.Thread(target=serve_model, daemon=True).start()
+    try:
+        env = RemoteEnv(env_server.address)
+        deadline = time.monotonic() + 5.0
+        model: Any = None
+        while time.monotonic() < deadline:
+            try:
+                model = RemoteModel(model_address).against(env)
+                break
+            except Exception:  # retry until the server is up
+                time.sleep(0.05)
+        assert model is not None, "served model never came up"
+
+        obs, _info = env.reset(seed=0)
+        model.reset()
+        done = False
+        steps = 0
+        while not done and steps < 3:
+            action = model.predict(obs)
+            obs, _reward, terminated, truncated, _info = env.step(action)
+            done = terminated or truncated
+            steps += 1
+        model.close()
+        env.close()
+    finally:
+        env_server.shutdown()
+
+    import numpy as np
+
+    assert len(images) >= 2, "policy was not called for at least two steps"
+    # Each obs carries a leading stack axis of depth 2.
+    assert images[0].shape[0] == 2, images[0].shape
+    # Step 0: window is first-frame padded, so both stacked frames are equal.
+    np.testing.assert_array_equal(images[0][0], images[0][1])
+    # Step 1: the window slid -- newest frame differs from the retained one...
+    assert not np.array_equal(images[1][0], images[1][1])
+    # ...and the retained (older) slot equals step 0's frame (episode continuity).
+    np.testing.assert_array_equal(images[1][0], images[0][1])

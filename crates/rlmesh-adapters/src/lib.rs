@@ -28,6 +28,7 @@ mod resolver;
 pub mod roles;
 mod space_view;
 mod spec;
+mod stateful;
 
 /// Version 1 of the adapter spec format and resolution semantics.
 pub mod v1 {
@@ -50,5 +51,9 @@ pub mod v1 {
         EnvTags, EnvText, ImageInput, ImageLayout, ImageTag, ModelInput, ModelSpec, ObsTag,
         RotationEncoding, StateComponent, StateContainer, StateField, StateInput, StateLayout,
         StateTag, TextContainer, TextInput, TextTag,
+    };
+    pub use crate::stateful::{
+        EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
+        space_value_to_obs_map, space_value_to_value, value_max_abs_diff,
     };
 }

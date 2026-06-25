@@ -208,6 +208,14 @@ impl From<rlmesh_grpc::error::ProtocolError> for Error {
     }
 }
 
+impl From<rlmesh_adapters::v1::ApplyError> for Error {
+    /// An adapter-apply failure is the model declining a malformed
+    /// observation/action, not a transport fault — surface it as a model error.
+    fn from(value: rlmesh_adapters::v1::ApplyError) -> Self {
+        Self::model(value.message)
+    }
+}
+
 impl From<rlmesh_grpc::error::Error> for Error {
     fn from(value: rlmesh_grpc::error::Error) -> Self {
         match value {

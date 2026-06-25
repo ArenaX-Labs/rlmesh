@@ -59,5 +59,6 @@ pub(super) fn plan_image(
         normalize: model_input.normalize,
         lead_dims: model_input.lead_dims,
         src_range: env_image.value_range,
+        stack: model_input.stack,
     })
 }

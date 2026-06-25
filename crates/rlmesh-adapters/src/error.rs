@@ -61,7 +61,10 @@ pub struct ApplyError {
 }
 
 impl ApplyError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
+    /// Construct an apply failure. Public so other-language bindings can build
+    /// one when implementing [`CustomTransform`](crate::apply::CustomTransform) /
+    /// [`EncodingTransform`](crate::stateful::EncodingTransform) host holes.
+    pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }

@@ -225,23 +225,14 @@ def resolve_route_adapter(
     resolves the adapter there rather than at connect. Returns ``None`` for a
     spec-less / ``NO_ADAPTER`` model (no transform). Raises on a spec/env mismatch
     so route configuration fails loudly instead of predicting wrongly.
-    """
-    from ..adapters import AdapterResolutionError
 
-    adapter = _resolve_adapter(spec, contract, trust_entrypoints)
-    num_envs = getattr(contract, "num_envs", 1) or 1
-    # A stateful adapter's frame-history buffers are not lane-indexed, so on a
-    # vectorized route one lane's autoreset would clear or stale the others.
-    # Reject at configure rather than corrupt; the resolved adapter is then
-    # always a single lane.
-    if adapter is not None and adapter.is_stateful and num_envs > 1:
-        raise AdapterResolutionError(
-            f"a stateful adapter (frame-stacking etc.) cannot be served against a "
-            f"vectorized route (num_envs={num_envs}): its frame-history buffers are "
-            "not lane-indexed, so one lane's autoreset would corrupt the others. "
-            "Serve it against num_envs=1, or use a stateless adapter."
-        )
-    return adapter
+    Frame-stacking state is now episode-keyed in the native serving engine, so a
+    stateful (frame-stacking) adapter serves correctly against a vectorized route
+    -- the old single-lane rejection is lifted. (Model-*internal* state, which the
+    engine cannot key by episode, is gated to single-lane by a registration-time
+    probe instead.)
+    """
+    return _resolve_adapter(spec, contract, trust_entrypoints)
 
 
 def adapted_predict(
