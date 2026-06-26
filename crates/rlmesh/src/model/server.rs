@@ -20,7 +20,7 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, evaluate_handshake, peer_info,
+    capabilities, capability_map, evaluate_handshake, generation_mismatch_message, peer_info,
     supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
@@ -143,10 +143,10 @@ struct ServedModelServer<H> {
 #[derive(Debug, Clone)]
 pub(super) struct ModelRouteConfig {
     pub(super) env_contract: Option<Arc<spaces::EnvContract>>,
-    /// The route edition the runtime pinned via `ConfigureRoute` (the 2-way
-    /// highest-mutual of env + model). Authoritative over the model's own
-    /// (pairwise) handshake result. Stored/logged here; full enforcement is
-    /// minimal while the build holds a single generation and edition.
+    /// The route edition the runtime pinned via `ConfigureRoute` (the floor — the
+    /// highest edition env, model, and runtime all support). Authoritative over the
+    /// model's own (pairwise) handshake result. Stored/logged here; full enforcement
+    /// is minimal while the build holds a single generation and edition.
     pub(super) floor: Option<RouteFloor>,
 }
 
@@ -197,36 +197,16 @@ where
             .into_inner()
             .base
             .ok_or_else(|| Status::invalid_argument("handshake request missing base"))?;
-        let compat = evaluate_handshake(
-            &request.protocol_generation,
-            &request.supported_workflow_editions,
-        );
-        // Moving prerelease/dev editions are pinned by their cohort suffix; an
-        // exact name match in negotiation is the compatibility check.
-        let compatible = compat.is_compatible();
+        // The handshake decides ONE thing: protocol generation. The edition is the
+        // runtime's call (the floor); a generation-ok peer is compatible regardless
+        // of editions and fails later at the floor if there is no mutual one.
+        let compatible = evaluate_handshake(&request.protocol_generation);
         Ok(Response::new(HandshakeResponse {
             base: Some(rlmesh_proto::core::v1::HandshakeResponse {
                 compatible,
                 peer_info: Some(peer_info("rlmesh-model")),
-                error_message: if compatible {
-                    None
-                } else if !compat.protocol_compatible {
-                    Some(format!(
-                        "protocol generation {} not compatible with server {}",
-                        request.protocol_generation, PROTOCOL_GENERATION
-                    ))
-                } else if request.supported_workflow_editions.is_empty() {
-                    Some(format!(
-                        "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
-                        supported_workflow_editions().join(", ")
-                    ))
-                } else {
-                    Some(format!(
-                        "no mutually supported workflow edition; client offered [{}], server supports [{}]",
-                        request.supported_workflow_editions.join(", "),
-                        supported_workflow_editions().join(", ")
-                    ))
-                },
+                error_message: (!compatible)
+                    .then(|| generation_mismatch_message(&request.protocol_generation)),
                 capabilities: capability_map(&[
                     // The served model pipelines Join-stream requests (see `join`).
                     // Advisory: lets clients detect that overlapping predicts will
@@ -526,12 +506,20 @@ async fn handle_configure_route(
         Some(env_spec) => env_spec,
         None => return Some(model_error("configure_route missing env_spec")),
     };
-    // The runtime pins the route edition (the 2-way highest-mutual of env +
-    // model), authoritative over this model's own (pairwise, possibly higher)
-    // handshake result. Today there is a single edition, so we store/log it rather
-    // than re-deriving behavior from it; full enforcement lands at a second edition.
+    // The runtime pins the route edition (the floor — highest mutual across env,
+    // model, and runtime), authoritative over this model's own (pairwise, possibly
+    // higher) handshake result.
     let floor = if request.selected_workflow_edition.is_empty() {
-        // Older runtime that predates edition propagation: nothing to pin.
+        // Empty pin: a legacy/older runtime that predates edition propagation.
+        // Harmless while a single edition exists (the floor could only be CURRENT).
+        // Once the support window grows, an unpinned route could silently run newest
+        // semantics, so reject it then — production must select the floor.
+        if rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS.len() > 1 {
+            return Some(model_error(
+                "configure_route arrived without a workflow edition pin; the runtime must \
+                 select the session floor once more than one edition is supported",
+            ));
+        }
         None
     } else {
         let floor = RouteFloor {
@@ -590,21 +578,22 @@ async fn handle_configure_route(
     ))
 }
 
-/// Honor the runtime-pinned route edition: the runtime selects it (2-way
-/// highest-mutual of env + model) and it is authoritative, so an edition this
-/// model build cannot speak is a hard configuration error, not a silently-
-/// downgraded run. Generation is not checked here — it was already gated by
-/// equality at the handshake.
+/// Honor the runtime-pinned route edition: the runtime selects it (the floor —
+/// highest mutual across env, model, and runtime) and it is authoritative, so an
+/// edition this model build cannot drive is a hard configuration error, not a
+/// silently-downgraded run. Generation is not checked here — it was already gated
+/// by equality at the handshake.
 ///
-/// Minimal by design while a single edition exists: it checks equality against
-/// this build's edition.
+/// Checks **membership** in the support window, not equality with `CURRENT`: the
+/// floor is deliberately allowed to land on a supported older edition (a graceful
+/// downgrade), so equality would reject a route this build can actually drive.
 fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
-    if floor.selected_workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
+    if !rlmesh_proto::is_supported_edition(&floor.selected_workflow_edition) {
         return Err(format!(
             "runtime pinned this route to workflow edition {:?}, which this model build does \
              not implement (implements {:?})",
             floor.selected_workflow_edition,
-            rlmesh_proto::CURRENT_WORKFLOW_EDITION,
+            rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS,
         ));
     }
     Ok(())
@@ -1117,7 +1106,7 @@ mod tests {
     fn handshake_request(offered_editions: &[&str]) -> HandshakeRequest {
         HandshakeRequest {
             base: Some(rlmesh_proto::core::v1::HandshakeRequest {
-                protocol_generation: PROTOCOL_GENERATION.to_string(),
+                protocol_generation: rlmesh_proto::PROTOCOL_GENERATION.to_string(),
                 peer_info: Some(peer_info("rlmesh-model-test-client")),
                 capabilities: Default::default(),
                 supported_workflow_editions: offered_editions
@@ -1380,7 +1369,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_rejects_offer_without_mutual_edition() {
+    async fn handshake_accepts_any_generation_compatible_offer() {
+        // The handshake decides ONE thing: protocol generation. The edition is the
+        // runtime's call (the floor), so a generation-ok client is compatible even
+        // with no mutual edition — it fails later at the floor, not here.
         let server = test_server();
 
         for offer in [&[][..], &["2026"][..], &["2026.11", "next"][..]] {
@@ -1391,12 +1383,11 @@ mod tests {
                     .into_inner();
 
             let base = response.base.expect("handshake response includes base");
-            assert!(!base.compatible, "offer {offer:?} must be rejected");
-            let error_message = base.error_message.as_deref().unwrap_or_default();
-            assert!(error_message.contains("workflow edition"));
-            if offer.is_empty() {
-                assert!(error_message.contains("predate edition negotiation"));
-            }
+            assert!(
+                base.compatible,
+                "generation-ok offer {offer:?} is compatible"
+            );
+            assert!(base.error_message.is_none());
         }
     }
 }

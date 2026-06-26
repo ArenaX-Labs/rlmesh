@@ -63,12 +63,27 @@ message CloseEnvsRequest {
   string reason = 1;
 }
 
+// Pin the env to the runtime-selected route edition. A standard, required part of
+// the env Join protocol: the runtime sends it as the FIRST Join message (before
+// the first reset), mirroring the model's ConfigureRoute, and every conforming env
+// handles it. While a single edition exists the floor is always CURRENT, so the
+// pin is a no-op today; honoring a downgrade needs the env's multi-edition support
+// window.
+message ConfigureEnvRequest {
+  string selected_workflow_edition = 1;
+}
+
+message ConfigureEnvResponse {}
+
 message JoinRequest {
   oneof kind {
     ResetRequest reset = 1;
     StepRequest step = 2;
     RenderRequest render = 3;
     CloseEnvsRequest close = 4;
+    // Edition pin, sent first as the standard bind step (before reset). Tag 5 is
+    // the sibling request_id scalar, so 6 is the first free arm.
+    ConfigureEnvRequest configure = 6;
   }
 
   // Per-message correlation id, harmonized to tag 5 across all four Join
@@ -155,6 +170,9 @@ message JoinResponse {
     StepResponse step = 2;
     RenderResponse render = 3;
     CloseEnvsResponse close = 4;
+    // Acks the ConfigureEnvRequest bind step. Tags 5/6 are the sibling
+    // request_id/endpoint_total_ns scalars; 7 is the first free oneof arm.
+    ConfigureEnvResponse configure = 7;
     EnvError error = 10;
   }
 

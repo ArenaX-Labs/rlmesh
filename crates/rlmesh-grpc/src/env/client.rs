@@ -10,18 +10,14 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower::service_fn;
 
 use rlmesh_proto::core::v1::{
-    EnvContract, HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
-    ShutdownResponse as CoreShutdownResponse,
+    EnvContract, ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse,
 };
 use rlmesh_proto::env::v1::{
     CloseEnvsResponse, HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse,
     RenderRequest, RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, StepRequest,
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
-use rlmesh_proto::{
-    PROTOCOL_GENERATION, capability_map, negotiate_workflow_edition, peer_info,
-    supported_workflow_editions,
-};
+use rlmesh_proto::{negotiate_workflow_edition, supported_workflow_editions};
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
@@ -46,7 +42,7 @@ impl EnvHandshake {
     /// is gated by equality at the handshake (carried by `base.compatible`), so it
     /// is not part of the offer. Capabilities are read pairwise from
     /// [`capabilities`](Self::capabilities), not negotiated. Feeds
-    /// [`rlmesh_proto::mutual`] as the env's offer.
+    /// [`rlmesh_proto::negotiate_session_floor`] as the env's offer.
     pub fn session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
             editions: self.supported_workflow_editions.clone(),
@@ -212,12 +208,21 @@ impl EnvClient {
         let num_envs = usize::try_from(env_contract.num_envs)
             .unwrap_or(usize::MAX)
             .max(1);
-        // The handshake declares supported editions; the runtime (this client)
-        // selects the mutual edition with the env. Empty if there is no mutual,
-        // but `compatible` already gated that, so a compatible peer always has one.
+        // The handshake declares supported editions and gates only generation; the
+        // runtime (this client) is the edition decider, picking the mutual with the
+        // env (`env ∩ self` — the co-located floor for the in-process/run_local
+        // path). No mutual edition fails here with an all-tiers diagnostic, rather
+        // than yielding an empty string that trips the runtime spec validate later.
         let workflow_edition = negotiate_workflow_edition(&base.supported_workflow_editions)
-            .map(str::to_string)
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                ProtocolError::HandshakeFailed(format!(
+                    "no mutual workflow edition with the env: env offered [{}], this runtime \
+                     supports [{}]",
+                    base.supported_workflow_editions.join(", "),
+                    supported_workflow_editions().join(", ")
+                ))
+            })?
+            .to_string();
         let handshake = EnvHandshake {
             env_contract,
             num_envs,
@@ -232,12 +237,7 @@ impl EnvClient {
 
     async fn send_handshake(&mut self) -> Result<HandshakeResponse, GrpcError> {
         let req = HandshakeRequest {
-            base: Some(CoreHandshakeRequest {
-                protocol_generation: PROTOCOL_GENERATION.to_string(),
-                peer_info: Some(peer_info("rlmesh-env")),
-                capabilities: capability_map(&[]),
-                supported_workflow_editions: supported_workflow_editions(),
-            }),
+            base: Some(rlmesh_proto::core_handshake_request("rlmesh-env", &[])),
         };
 
         Ok(self

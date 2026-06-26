@@ -25,6 +25,7 @@ pub(super) fn proto_error_to_env_error(error: ProtoEnvError) -> EnvError {
 
 pub(super) fn join_request_kind_name(req: &JoinRequest) -> &'static str {
     match req.kind.as_ref() {
+        Some(join_request::Kind::Configure(_)) => "configure",
         Some(join_request::Kind::Reset(_)) => "reset",
         Some(join_request::Kind::Step(_)) => "step",
         Some(join_request::Kind::Render(_)) => "render",

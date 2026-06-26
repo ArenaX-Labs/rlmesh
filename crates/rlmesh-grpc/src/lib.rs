@@ -1,6 +1,7 @@
 pub mod connect;
 pub mod env;
 pub mod error;
+pub mod floor;
 pub mod health;
 pub mod helpers;
 pub mod lifecycle;
@@ -28,5 +29,6 @@ pub(crate) fn configure_endpoint(
 
 pub use connect::{ConnectOptions, retry_connect};
 pub use env::{EnvClient, EnvHandshake};
+pub use floor::route_floor;
 pub use lifecycle::{DEFAULT_PREDICT_CONCURRENCY, ServeOptions};
 pub use model::ModelClient;

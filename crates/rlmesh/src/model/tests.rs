@@ -1079,8 +1079,8 @@ async fn remote_model_fails_fast_when_no_mutual_edition() {
         Err(err) => err.to_string(),
     };
     assert!(
-        message.contains("no mutual session floor") && message.contains("2099.01"),
-        "expected a 2-way edition diagnostic naming both offers, got: {message}"
+        message.contains("no mutual workflow edition") && message.contains("2099.01"),
+        "expected an all-tiers edition diagnostic naming the offers, got: {message}"
     );
 
     server.abort();

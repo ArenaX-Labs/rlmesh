@@ -54,14 +54,15 @@ impl RuntimeSessionSpec {
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
         }
-        // The runtime drives exactly the workflow edition it was built for; a
-        // session negotiated under any other edition is refused rather than run
-        // under 2026.06 semantics it never agreed to.
-        if self.workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
+        // The runtime drives one of the editions it was built for; a session
+        // negotiated under an edition outside the support window is refused rather
+        // than run under semantics it never agreed to. Membership, not equality
+        // with CURRENT: a supported older edition (a graceful downgrade) is valid.
+        if !rlmesh_proto::is_supported_edition(&self.workflow_edition) {
             return Err(format!(
                 "runtime cannot drive workflow edition {:?}; this build implements {:?}",
                 self.workflow_edition,
-                rlmesh_proto::CURRENT_WORKFLOW_EDITION
+                rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS
             ));
         }
         // An autoreset mode this build does not understand (e.g. a newer peer's

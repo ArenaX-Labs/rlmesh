@@ -46,16 +46,18 @@ message ConfigureRouteRequest {
   // knobs (num_envs/render_mode/autoreset) and never forwards them here.
   rlmesh.core.v1.EnvSpec env_spec = 2;
 
-  // The route's selected workflow edition, decided at bind time. The runtime is
-  // one of the gRPC clients and is assumed newest, so it drops out of the floor:
-  // the edition is the 2-way highest-mutual of env + model. This is AUTHORITATIVE
-  // over the model's own (pairwise) handshake result. The model pins to it.
+  // The route's selected workflow edition, decided at bind time by the runtime.
+  // The runtime re-frames env<->model traffic (prost drops fields it doesn't
+  // know), so the session runs at the FLOOR all three speak — the highest edition
+  // mutual across env, model, AND the runtime — never the env<->model pairwise
+  // max. This is AUTHORITATIVE over the model's own (pairwise) handshake result;
+  // the model pins to it.
 
   // tag 3 was selected_protocol_generation, cut with the support-window
   // machinery: generation is plain equality gated at each pairwise handshake, so
-  // by the time a route is configured both peers already share it.
+  // by the time a route is configured all tiers already share it.
 
-  // Highest mutual workflow edition across env and model.
+  // Highest mutual workflow edition across env, model, and runtime (the floor).
   string selected_workflow_edition = 4;
 
   // tag 5 was active_capabilities (a 3-way intersection), removed: capabilities

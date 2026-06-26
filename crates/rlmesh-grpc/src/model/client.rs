@@ -1,15 +1,11 @@
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map,
-    core::v1::{
-        HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
-        ShutdownResponse as CoreShutdownResponse,
-    },
+    capabilities,
+    core::v1::{ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse},
     model::v1::{
         CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
         GroupedPredictResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
         ShutdownRequest, join_request, join_response, model_service_client::ModelServiceClient,
     },
-    peer_info, supported_workflow_editions,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -126,9 +122,9 @@ impl ModelClient {
 
     /// The model's bind-time offer learned at handshake: the workflow editions it
     /// supports. The runtime (client to both the env and the model) feeds this
-    /// into [`rlmesh_proto::mutual`] to pick the route edition. Empty before
-    /// [`handshake`](Self::handshake) completes. Capabilities are read pairwise
-    /// (see [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
+    /// into [`rlmesh_proto::negotiate_session_floor`] to pick the route edition.
+    /// Empty before [`handshake`](Self::handshake) completes. Capabilities are read
+    /// pairwise (see [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
     pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
             editions: self.server_supported_editions.clone(),
@@ -141,12 +137,7 @@ impl ModelClient {
         }
 
         let request = self.authorized_request(rlmesh_proto::model::v1::HandshakeRequest {
-            base: Some(CoreHandshakeRequest {
-                protocol_generation: PROTOCOL_GENERATION.to_string(),
-                peer_info: Some(peer_info("rlmesh-model")),
-                capabilities: capability_map(&[]),
-                supported_workflow_editions: supported_workflow_editions(),
-            }),
+            base: Some(rlmesh_proto::core_handshake_request("rlmesh-model", &[])),
         })?;
 
         let response = self

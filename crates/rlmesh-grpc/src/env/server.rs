@@ -20,12 +20,14 @@ use crate::wire::value_leaves;
 use rlmesh_spaces::AutoresetMode;
 
 use rlmesh_proto::env::v1::{
-    CloseEnvsResponse, EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode,
-    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, ShutdownRequest,
-    ShutdownResponse, env_service_server::EnvService, join_request, join_response,
+    CloseEnvsResponse, ConfigureEnvResponse, EnvError as ProtoEnvError,
+    EnvErrorCode as ProtoEnvErrorCode, HandshakeRequest, HandshakeResponse, JoinRequest,
+    JoinResponse, ShutdownRequest, ShutdownResponse, env_service_server::EnvService, join_request,
+    join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capability_map, evaluate_handshake, peer_info, supported_workflow_editions,
+    capability_map, evaluate_handshake, generation_mismatch_message, peer_info,
+    supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -227,10 +229,11 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
             req.supported_workflow_editions.join(", ")
         );
 
-        let compat = evaluate_handshake(&req.protocol_generation, &req.supported_workflow_editions);
-        // Moving prerelease/dev editions are pinned by their cohort suffix; an
-        // exact name match in negotiation is the compatibility check.
-        let compatible = compat.is_compatible();
+        // The handshake decides ONE thing: protocol generation. The edition is the
+        // runtime's call (the floor); a generation-ok client is compatible and the
+        // env contract is returned, even if no edition is mutual — the runtime then
+        // fails at the floor with an all-tiers diagnostic.
+        let compatible = evaluate_handshake(&req.protocol_generation);
 
         let env_contract = if compatible {
             let env = self.env.lock().await;
@@ -244,25 +247,8 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let base = rlmesh_proto::core::v1::HandshakeResponse {
             compatible,
             peer_info: Some(peer_info("rlmesh-env")),
-            error_message: if compatible {
-                None
-            } else if !compat.protocol_compatible {
-                Some(format!(
-                    "protocol generation {} not compatible with server {}",
-                    req.protocol_generation, PROTOCOL_GENERATION
-                ))
-            } else if req.supported_workflow_editions.is_empty() {
-                Some(format!(
-                    "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
-                    supported_workflow_editions().join(", ")
-                ))
-            } else {
-                Some(format!(
-                    "no mutually supported workflow edition; client offered [{}], server supports [{}]",
-                    req.supported_workflow_editions.join(", "),
-                    supported_workflow_editions().join(", ")
-                ))
-            },
+            error_message: (!compatible)
+                .then(|| generation_mismatch_message(&req.protocol_generation)),
             capabilities: capability_map(&[]),
             supported_workflow_editions: supported_workflow_editions(),
         };
@@ -668,6 +654,29 @@ async fn handle_env_request<E: Environment>(
                 final_episodes,
             }))
         }
+        Some(join_request::Kind::Configure(configure_req)) => {
+            // Pin the env to the runtime-selected route edition (the standard bind
+            // step, sent first). Reject one this build cannot drive (membership in
+            // the support window), mirroring the model's enforce_route_floor; honor
+            // it as a no-op while a single edition exists (the floor is always
+            // CURRENT). An empty pin is a legacy/unset runtime — accepted as a no-op.
+            let edition = configure_req.selected_workflow_edition;
+            if !edition.is_empty() && !rlmesh_proto::is_supported_edition(&edition) {
+                Some(join_response::Kind::Error(ProtoEnvError {
+                    code: ProtoEnvErrorCode::InvalidAction as i32,
+                    message: format!(
+                        "runtime pinned this env to workflow edition {edition:?}, which this env \
+                         build does not implement (implements {:?})",
+                        rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS
+                    ),
+                    is_recoverable: false,
+                    debug_info: String::new(),
+                    interrupted_episodes: vec![],
+                }))
+            } else {
+                Some(join_response::Kind::Configure(ConfigureEnvResponse {}))
+            }
+        }
         None => Some(join_response::Kind::Error(ProtoEnvError {
             code: ProtoEnvErrorCode::Internal as i32,
             message: "empty request".to_string(),
@@ -821,6 +830,7 @@ fn validate_step_lanes(
 
 fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'static str {
     match kind {
+        Some(join_request::Kind::Configure(_)) => "configure",
         Some(join_request::Kind::Reset(_)) => "reset",
         Some(join_request::Kind::Step(_)) => "step",
         Some(join_request::Kind::Render(_)) => "render",
@@ -831,6 +841,7 @@ fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'static str {
 
 fn join_response_kind_name(kind: Option<&join_response::Kind>) -> &'static str {
     match kind {
+        Some(join_response::Kind::Configure(_)) => "configure_ok",
         Some(join_response::Kind::Reset(_)) => "reset_ok",
         Some(join_response::Kind::Step(_)) => "step_ok",
         Some(join_response::Kind::Render(_)) => "render_ok",
@@ -1399,7 +1410,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handshake_rejects_offer_without_mutual_edition() {
+    async fn handshake_accepts_any_generation_compatible_offer() {
+        // The handshake gates only generation; the edition is the runtime's call
+        // (the floor). A generation-ok client is compatible and the env contract is
+        // returned, even with no mutual edition — it fails later at the floor.
         let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
 
         for offer in [&[][..], &["2026"][..], &["2026.11", "2027.01"][..]] {
@@ -1411,19 +1425,54 @@ mod tests {
             .unwrap()
             .into_inner();
 
-            assert!(response.env_contract.is_none());
             let base = response.base.unwrap();
-            assert!(!base.compatible, "offer {offer:?} must be rejected");
-            let error_message = base.error_message.as_deref().unwrap_or_default();
-            assert!(error_message.contains("workflow edition"));
-            if offer.is_empty() {
-                assert!(error_message.contains("predate edition negotiation"));
-            }
+            assert!(
+                base.compatible,
+                "generation-ok offer {offer:?} is compatible"
+            );
+            assert!(base.error_message.is_none());
+            assert!(response.env_contract.is_some());
             assert_eq!(
                 base.supported_workflow_editions,
                 supported_workflow_editions()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn configure_env_pins_edition_and_rejects_unsupported() {
+        use std::sync::Arc;
+
+        use rlmesh_proto::env::v1::{
+            ConfigureEnvRequest, JoinRequest, join_request, join_response,
+        };
+        use tokio::sync::Mutex;
+
+        let env = Arc::new(Mutex::new(terminating_env(
+            rlmesh_spaces::AutoresetMode::Disabled,
+        )));
+        let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
+        let configure = |edition: &str| JoinRequest {
+            kind: Some(join_request::Kind::Configure(ConfigureEnvRequest {
+                selected_workflow_edition: edition.to_string(),
+            })),
+            request_id: "configure".to_string(),
+        };
+
+        // The current edition (the only one in the window) is accepted; an empty
+        // pin (legacy/unset runtime) is accepted as a no-op.
+        for pin in [rlmesh_proto::CURRENT_WORKFLOW_EDITION, ""] {
+            let ok = super::handle_env_request(configure(pin), env.clone(), tracker.clone()).await;
+            assert!(
+                matches!(ok.kind, Some(join_response::Kind::Configure(_))),
+                "pin {pin:?} should be accepted"
+            );
+        }
+
+        // An edition this build cannot drive is rejected.
+        let bad =
+            super::handle_env_request(configure("2099.01"), env.clone(), tracker.clone()).await;
+        assert!(matches!(bad.kind, Some(join_response::Kind::Error(_))));
     }
 
     /// A 2-lane vector env whose first step terminates lane 0 and whose later

@@ -1,4 +1,5 @@
 //! Generated RLMesh protobuf bindings and protocol-level constants.
+#![deny(rustdoc::broken_intra_doc_links)]
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -110,13 +111,14 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
 }
 
 /// One participant's offer at bind time: the workflow editions it can operate
-/// under. Built for the env and the model; [`mutual`] picks the route edition.
-/// The runtime is one of the gRPC clients and is assumed newest, so it is not an
-/// offer — it drops out of the negotiation. Protocol generation is NOT part of
-/// the offer either — it is gated by plain equality at each pairwise handshake,
-/// so a session that reaches edition negotiation already shares one generation.
-/// Capabilities are advisory and pairwise (each peer reads the other's
-/// advertised map directly), so they are not negotiated here.
+/// under. Built for the env, the model, AND this runtime; [`negotiate_session_floor`]
+/// reconciles all three (the runtime is a participant because it re-frames
+/// env<->model traffic, so the session runs at the floor all three speak). When
+/// the model and runtime are the same build (in-process / `run_local`), the floor
+/// degenerates to `env ∩ self`. Protocol generation is NOT part of the offer — it
+/// is gated by plain equality at each pairwise handshake, so a session that reaches
+/// edition negotiation already shares one generation. Capabilities are advisory and
+/// pairwise (each peer reads the other's advertised map directly), not negotiated here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOffer {
     /// Workflow editions this participant can operate under.
@@ -204,35 +206,56 @@ fn highest_mutual<'a, K: Ord>(sets: &[&'a [String]], key: impl Fn(&'a str) -> K)
         .map(|value| value.to_string())
 }
 
-/// The outcome of evaluating a client handshake offer against this build.
+/// Whether a client's handshake offer is compatible with this server: the only
+/// handshake-level decision is protocol generation (a hard, full-restart break).
 ///
-/// Produced by [`evaluate_handshake`]. Env and model servers use this same
-/// result, so compatibility cannot drift between services.
-#[derive(Debug, Clone, Copy)]
-pub struct HandshakeCompatibility {
-    /// Whether the client's protocol generation can speak to this server.
-    pub protocol_compatible: bool,
-    /// The negotiated workflow edition, or `None` if there is no mutual edition.
-    pub selected_edition: Option<&'static str>,
+/// The workflow **edition** is NOT decided here — only the runtime sees every
+/// participant, so it is the sole edition authority (via [`negotiate_session_floor`],
+/// which degenerates to `env ∩ self` when the model and runtime are the same build).
+/// A generation-compatible peer that shares no edition handshakes fine and then
+/// fails at the runtime's floor, with a clearer all-tiers diagnostic. Env and model
+/// servers use this same function, so the verdict cannot drift between services.
+pub fn evaluate_handshake(client_protocol_generation: &str) -> bool {
+    is_protocol_generation_supported(client_protocol_generation)
 }
 
-impl HandshakeCompatibility {
-    /// Whether the session may proceed: protocol compatible and a mutual edition.
-    pub fn is_compatible(&self) -> bool {
-        self.protocol_compatible && self.selected_edition.is_some()
+/// The core handshake request this build sends as a gRPC client: its protocol
+/// generation, declared editions, advertised capabilities, and PeerInfo. Shared by
+/// the env and model clients (each wraps it in its service-specific request) so the
+/// request shape cannot drift between services.
+pub fn core_handshake_request(
+    component: &str,
+    capabilities: &[&str],
+) -> core::v1::HandshakeRequest {
+    core::v1::HandshakeRequest {
+        protocol_generation: PROTOCOL_GENERATION.to_string(),
+        peer_info: Some(peer_info(component)),
+        capabilities: capability_map(capabilities),
+        supported_workflow_editions: supported_workflow_editions(),
     }
 }
 
-/// Evaluate a client's handshake offer against this build's supported protocol
-/// generation and workflow editions.
-pub fn evaluate_handshake(
-    client_protocol_generation: &str,
-    offered_workflow_editions: &[String],
-) -> HandshakeCompatibility {
-    HandshakeCompatibility {
-        protocol_compatible: is_protocol_generation_supported(client_protocol_generation),
-        selected_edition: negotiate_workflow_edition(offered_workflow_editions),
-    }
+/// The human-facing rejection message when a client's protocol generation does not
+/// match this server. Generation is the ONLY handshake-level rejection; an edition
+/// mismatch is decided — and diagnosed — by the runtime's floor, not here. Shared by
+/// the env and model servers so the rejection prose cannot drift.
+pub fn generation_mismatch_message(client_protocol_generation: &str) -> String {
+    format!(
+        "protocol generation {client_protocol_generation} not compatible with server \
+         {PROTOCOL_GENERATION}"
+    )
+}
+
+/// Whether this build can drive the given workflow edition (it is in
+/// [`SUPPORTED_WORKFLOW_EDITIONS`]). This is the authority for enforcing a
+/// runtime-pinned route edition — `selected` is always a member of the negotiating
+/// sets, so enforcement must check membership, NOT equality with the single
+/// [`CURRENT_WORKFLOW_EDITION`], or it would reject a legitimate older-edition route
+/// once the support window grows. Whitespace is trimmed.
+pub fn is_supported_edition(edition: &str) -> bool {
+    SUPPORTED_WORKFLOW_EDITIONS
+        .iter()
+        .any(|supported| *supported == edition.trim())
 }
 
 /// Return supported workflow editions as owned strings for protobuf messages.
@@ -537,26 +560,26 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_handshake_decides_session_compatibility() {
-        let current = evaluate_handshake(PROTOCOL_GENERATION, &offer(&[CURRENT_WORKFLOW_EDITION]));
-        assert!(current.protocol_compatible);
-        assert_eq!(current.selected_edition, Some(CURRENT_WORKFLOW_EDITION));
-        assert!(current.is_compatible());
+    fn evaluate_handshake_gates_generation_only() {
+        // The handshake decides ONE thing: protocol generation. Editions are the
+        // runtime's call (the floor), so a generation-ok peer is compatible
+        // regardless of editions — even with no mutual edition (it fails later at
+        // the floor, with a clearer all-tiers message).
+        assert!(evaluate_handshake(PROTOCOL_GENERATION));
 
-        // Protocol matches but the client predates edition negotiation.
-        let no_editions = evaluate_handshake(PROTOCOL_GENERATION, &[]);
-        assert!(no_editions.protocol_compatible);
-        assert_eq!(no_editions.selected_edition, None);
-        assert!(!no_editions.is_compatible());
+        // A protocol mismatch is never compatible.
+        assert!(!evaluate_handshake("rlmesh-wire-v2"));
+    }
 
-        // Protocol matches but there is no mutual edition.
-        assert!(!evaluate_handshake(PROTOCOL_GENERATION, &offer(&["2099.01"])).is_compatible());
-
-        // A protocol mismatch is never compatible, even with a valid edition.
-        let bad_protocol =
-            evaluate_handshake("rlmesh-wire-v2", &offer(&[CURRENT_WORKFLOW_EDITION]));
-        assert!(!bad_protocol.protocol_compatible);
-        assert!(!bad_protocol.is_compatible());
+    #[test]
+    fn is_supported_edition_matches_the_window() {
+        use super::is_supported_edition;
+        assert!(is_supported_edition(CURRENT_WORKFLOW_EDITION));
+        assert!(is_supported_edition(&format!(
+            "  {CURRENT_WORKFLOW_EDITION}  "
+        ))); // trimmed
+        assert!(!is_supported_edition("2099.01"));
+        assert!(!is_supported_edition(""));
     }
 
     #[test]
