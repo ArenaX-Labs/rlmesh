@@ -31,8 +31,6 @@ pub enum JoinError {
         expected: usize,
         actual: usize,
     },
-    #[error("observation tuple at {path:?} index [{index}] is out of range")]
-    TupleIndexOutOfRange { path: String, index: usize },
     #[error(
         "state {key:?} declares encoding {encoding} ({dims} dims) but the space width is {width}"
     )]
@@ -127,10 +125,11 @@ fn join_node(
                 });
             }
             for (key, child) in map {
+                let child_path = source.push_key(key.clone());
                 let child_view = view.child(key).ok_or_else(|| JoinError::KeyNotInSpace {
-                    key: source.push_key(key.clone()).to_string(),
+                    key: child_path.to_string(),
                 })?;
-                join_node(child, child_view, &source.push_key(key.clone()), out)?;
+                join_node(child, child_view, &child_path, out)?;
             }
         }
         ObsNode::Tuple(items) => {
@@ -148,14 +147,10 @@ fn join_node(
                     actual: items.len(),
                 });
             }
+            // Arity is checked above, so `index < children.len()` holds for
+            // every item: index the children directly.
             for (index, item) in items.iter().enumerate() {
-                let child_view =
-                    view.child_at(index)
-                        .ok_or_else(|| JoinError::TupleIndexOutOfRange {
-                            path: source.to_string(),
-                            index,
-                        })?;
-                join_node(item, child_view, &source.push_index(index), out)?;
+                join_node(item, &view.children[index], &source.push_index(index), out)?;
             }
         }
     }
