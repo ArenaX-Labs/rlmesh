@@ -19,7 +19,15 @@ from . import adapters as adapters
 from . import spaces as spaces
 from . import types as types
 from ._authoring import EnvFactory
-from ._models import NO_ADAPTER, EpisodeResult, RunResult, Session, run, session
+from ._models import (
+    NO_ADAPTER,
+    RANDOM_SAMPLE,
+    EpisodeResult,
+    RunResult,
+    Session,
+    run,
+    session,
+)
 from ._native import (
     Model,
     RemoteEnv,
@@ -48,6 +56,7 @@ _register_python_peer_info()
 
 __all__ = [
     "NO_ADAPTER",
+    "RANDOM_SAMPLE",
     "EnvFactory",
     "EnvServer",
     "EpisodeResult",

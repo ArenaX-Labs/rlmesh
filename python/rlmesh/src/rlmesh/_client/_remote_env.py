@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar, cast
 
-from .._framework_bridge import ValueBridge
-from ..spaces import Space, SpaceBridge, space_from_spec
+from .._value_conversion import ValueBridge
+from ..spaces import Space, space_from_spec
 from ..specs import EnvContract, SpaceSpec
 from ..types import Metadata
 from ._endpoint import Transport, normalize_connect_address
@@ -36,7 +36,6 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
     """
 
     _bridge: ClassVar[ValueBridge]
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = None
     _address: str
 
     def __init__(
@@ -239,17 +238,11 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
 
     def _load_observation_space(self) -> Space[ValueT]:
         spec = self._space_spec("observation")
-        bridge = self._space_bridge
-        if bridge is None:
-            return cast(Space[ValueT], space_from_spec(spec))
-        return cast(Space[ValueT], space_from_spec(spec, bridge=bridge))
+        return cast(Space[ValueT], space_from_spec(spec, bridge=self._bridge))
 
     def _load_action_space(self) -> Space[ActionT]:
         spec = self._space_spec("action")
-        bridge = self._space_bridge
-        if bridge is None:
-            return cast(Space[ActionT], space_from_spec(spec))
-        return cast(Space[ActionT], space_from_spec(spec, bridge=bridge))
+        return cast(Space[ActionT], space_from_spec(spec, bridge=self._bridge))
 
 
 __all__ = ["ActionT", "RemoteEnvBase", "ValueT"]

@@ -41,6 +41,9 @@ pub struct ActionComponent {
     // byte-identical to before (matching the Python serializer). scale/threshold
     // route through de_opt_number so a wrong-typed value reads in domain language
     // (`expected a number`) instead of leaking the Rust wire type `f64`.
+    // `invert` is sugar: it negates, so it is exactly `scale = -scale` (a lone
+    // `invert` == `scale = -1`). Kept as an explicit gripper-sign knob; do not
+    // add further sign knobs.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

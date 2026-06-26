@@ -9,6 +9,7 @@ actions in its format. This exercises tag -> serve -> resolve_from_contract
 
 from __future__ import annotations
 
+import importlib
 import socket
 import threading
 import time
@@ -162,6 +163,129 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
     assert cast(int, seen["resets"]) >= 1
+
+
+class TinyArmFactory(rlmesh.EnvFactory):
+    """EnvFactory whose tags are the env's contract -- make() stamps them on."""
+
+    tags = _tags()
+
+    def make(self, **kwargs: Any) -> Any:
+        _ = kwargs
+        return TinyArmEnv()
+
+
+def _arm_predict(spec: adapt.ModelSpec, captured: dict[str, Any]) -> Any:
+    def predict(payload: dict[str, Any]) -> Any:
+        import numpy as np
+
+        captured["keys"] = sorted(payload)
+        return np.zeros(spec.action.dim, dtype=np.float32)
+
+    return predict
+
+
+def test_envfactory_make_stamps_its_tags_on_the_env() -> None:
+    pytest.importorskip("numpy")
+    env = TinyArmFactory().make()
+    # The tag rides the environment: a locally-made env carries the factory's
+    # contract in its metadata, with no server in the loop.
+    assert adapt.EnvTags.from_metadata(getattr(env, "metadata", {}) or {}) == _tags()
+
+
+def test_adapted_model_runs_against_local_tagged_env() -> None:
+    pytest.importorskip("numpy")
+    spec = _model_spec()
+    env_obj = TinyArmEnv()
+    captured: dict[str, Any] = {}
+
+    # A locally tagged env -- no EnvServer, no transport -- resolves the adapter.
+    tagged = adapt.tag(env_obj, _tags())
+    result = Model(_arm_predict(spec, captured), spec=spec).run(tagged, max_episodes=1)
+
+    assert result.num_episodes == 1
+    assert captured["keys"] == ["image", "instruction", "state"]
+    assert env_obj.last_action is not None
+    assert tuple(env_obj.last_action.shape) == (7,)
+
+
+# (framework module, leaf tensor type, zeros constructor) for the cross-framework
+# local-driving test. A torch/jax model driven against a local numpy gym env must
+# encode the env's numpy obs with the *env's* (numpy) bridge, not the model's.
+_FRAMEWORK_LEAF = {
+    "numpy": ("numpy", "ndarray"),
+    "torch": ("torch", "Tensor"),
+    "jax": ("jax", "Array"),
+}
+
+
+def _fw_zeros(framework: str, dim: int) -> Any:
+    if framework == "torch":
+        import torch
+
+        return torch.zeros(dim)
+    if framework == "jax":
+        import jax.numpy as jnp
+
+        return jnp.zeros(dim)
+    import numpy as np
+
+    return np.zeros(dim, dtype=np.float32)
+
+
+@pytest.mark.parametrize("framework", list(_FRAMEWORK_LEAF))
+def test_spec_model_drives_local_numpy_env_for_any_framework(framework: str) -> None:
+    """A spec'd model of any framework drives a *local* numpy gym env.
+
+    The env hands the loop raw numpy obs, so the env-side bridge must be numpy
+    (the env's native type) -- not the model's framework bridge, which rejects
+    numpy at the native plan (the cross-framework local-driving bug). ``predict``
+    still receives the model's own framework tensors, and the env still receives
+    a numpy action of the declared shape.
+    """
+    pytest.importorskip("numpy")
+    mod_name, type_name = _FRAMEWORK_LEAF[framework]
+    leaf_type = getattr(pytest.importorskip(mod_name), type_name)
+    model_cls = importlib.import_module(f"rlmesh.{framework}").Model
+
+    spec = _model_spec()
+    env_obj = TinyArmEnv()
+    captured: dict[str, Any] = {}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        captured["image_type"] = type(payload["image"])
+        return _fw_zeros(framework, spec.action.dim)
+
+    tagged = adapt.tag(env_obj, _tags())
+    result = model_cls(predict, spec=spec).run(tagged, max_episodes=1)
+
+    assert result.num_episodes == 1
+    # predict saw the model's own framework tensors (obs decoded into them)...
+    assert issubclass(captured["image_type"], leaf_type), captured["image_type"]
+    # ...and the local numpy env got a numpy action of the declared 7-dim shape.
+    assert env_obj.last_action is not None
+    assert tuple(env_obj.last_action.shape) == (7,)
+
+
+def test_adapted_model_runs_against_env_factory() -> None:
+    pytest.importorskip("numpy")
+    spec = _model_spec()
+    captured: dict[str, Any] = {}
+
+    # Pass the EnvFactory straight in: session/run builds + tags + drives it locally.
+    result = Model(_arm_predict(spec, captured), spec=spec).run(
+        TinyArmFactory(), max_episodes=1
+    )
+
+    assert result.num_episodes == 1
+    assert captured["keys"] == ["image", "instruction", "state"]
+
+
+def test_adapted_model_against_untagged_local_env_errors_clearly() -> None:
+    pytest.importorskip("numpy")
+    model = Model(lambda payload: None, spec=_model_spec())
+    with pytest.raises(adapt.AdapterResolutionError, match="no adapter tags"):
+        model.run(TinyArmEnv(), max_episodes=1)
 
 
 def test_resolve_from_contract_describes_the_pairing() -> None:

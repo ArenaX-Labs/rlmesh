@@ -64,7 +64,7 @@ def test_session_is_a_context_manager() -> None:
 
 
 def test_as_model_rejects_a_non_model_source() -> None:
-    from rlmesh._models.base import _as_model
+    from rlmesh._models.base import as_model
 
     with pytest.raises(TypeError, match="predict callable or a policy object"):
-        _as_model(object())
+        as_model(object())

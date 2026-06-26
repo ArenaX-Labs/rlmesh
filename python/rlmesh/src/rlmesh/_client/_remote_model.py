@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
-from .._framework_bridge import ValueBridge
+from .._value_conversion import ValueBridge
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
@@ -96,8 +96,8 @@ def remote_session(
     shuts down on close (e.g. a ``SandboxModel`` container); a cheap container-less
     handle passes none.
     """
-    from .._framework_bridge import identity_bridge
     from .._models._eval import Session
+    from .._value_conversion import identity_bridge
 
     bridge = getattr(env, "_bridge", identity_bridge)
     return Session(

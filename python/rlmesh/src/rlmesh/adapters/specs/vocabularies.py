@@ -15,5 +15,15 @@ ImageLayout: TypeAlias = Literal["hwc", "chw"]
 RotationEncoding: TypeAlias = Literal[
     "quat_xyzw", "quat_wxyz", "axis_angle", "rot6d", "rot6d_rowmajor", "euler_xyz"
 ]
+# Typing view of the frozen FitMode vocab (FitMode::ALL in v1/spec/layouts.rs).
+# Validated by the Rust codec at normalize; this only gives authors static
+# checking. No native FIT_MODES export yet (unlike IMAGE_LAYOUTS/ROTATION_DIMS).
+FitMode: TypeAlias = Literal["stretch", "crop", "pad"]
 
-__all__ = ["IMAGE_LAYOUTS", "ROTATION_DIMS", "ImageLayout", "RotationEncoding"]
+__all__ = [
+    "IMAGE_LAYOUTS",
+    "ROTATION_DIMS",
+    "FitMode",
+    "ImageLayout",
+    "RotationEncoding",
+]

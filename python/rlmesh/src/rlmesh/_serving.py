@@ -16,9 +16,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-from ._bootstrap.env import import_packages as _import_packages
-from ._bootstrap.env import load_env_entrypoint as _load_env_entrypoint
-from ._bootstrap.env import load_environment as _load_environment
+from ._bootstrap.loaders import import_packages as _import_packages
+from ._bootstrap.loaders import load_env_entrypoint as _load_env_entrypoint
+from ._bootstrap.loaders import load_environment as _load_environment
 
 if TYPE_CHECKING:
     from ._server import EnvLike, VectorServerEnvLike

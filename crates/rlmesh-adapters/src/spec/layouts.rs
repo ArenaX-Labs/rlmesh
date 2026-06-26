@@ -44,10 +44,13 @@ impl crate::spec::accept_set::WireVocab for ImageLayout {
 /// first one that does not need a disallowed upscale — so the same spec can
 /// crop a large camera and letterbox a small one. When the aspects already
 /// match, every mode is the same uniform scale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// No `Default`: there is no default-construction path (unlike [`ImageLayout`],
+/// whose `Default` backs `#[serde(default)]` on layout fields). The resolver
+/// picks the `Stretch` fallback explicitly, so a derived default would be dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FitMode {
     /// Resize each axis independently to the target (distorts aspect).
-    #[default]
     Stretch,
     /// Uniformly scale to cover the target, then center-crop (drops edges).
     Crop,

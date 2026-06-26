@@ -10,12 +10,6 @@ RLMesh spaces are Python wrappers around native `SpaceSpec` values. They provide
    :show-inheritance:
 ```
 
-```{eval-rst}
-.. autoclass:: rlmesh.spaces.SpaceBridge
-   :members:
-   :show-inheritance:
-```
-
 ## Conversion Helpers
 
 ```{eval-rst}

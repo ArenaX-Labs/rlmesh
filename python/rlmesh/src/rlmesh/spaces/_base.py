@@ -1,38 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import ClassVar, Generic, TypeVar, cast
 
 from .._rlmesh import Space as _SpaceHandle
+from .._value_conversion import ValueBridge
 from ..specs import SpaceSpec
+from ..types import Value
 from ._internals import spec_to_dict
 
 OutputT = TypeVar("OutputT")
 NewOutputT = TypeVar("NewOutputT")
-
-
-class SpaceBridge(Generic[OutputT]):
-    """Convert space samples and inputs for a Python backend."""
-
-    __slots__: ClassVar[tuple[str, ...]] = ("_input", "_sample")
-
-    def __init__(
-        self,
-        sample: Callable[[object, SpaceSpec], OutputT],
-        input: Callable[[object, SpaceSpec], object] | None = None,
-    ) -> None:
-        self._sample = sample
-        self._input = input
-
-    def sample(self, value: object, spec: SpaceSpec) -> OutputT:
-        """Convert a native space sample into the backend value type."""
-        return self._sample(value, spec)
-
-    def input(self, value: object, spec: SpaceSpec) -> object:
-        """Convert a backend value into the native input accepted by contains()."""
-        if self._input is None:
-            return value
-        return self._input(value, spec)
 
 
 class Space(Generic[OutputT]):
@@ -43,9 +20,7 @@ class Space(Generic[OutputT]):
     def __init__(self, spec: SpaceSpec) -> None:
         self._spec: SpaceSpec = spec
         self._native: _SpaceHandle | None = None
-        self._bridge: SpaceBridge[OutputT] = cast(
-            SpaceBridge[OutputT], _native_space_bridge()
-        )
+        self._bridge: ValueBridge = _native_value_bridge()
 
     @property
     def spec(self) -> SpaceSpec:
@@ -73,11 +48,13 @@ class Space(Generic[OutputT]):
 
     def sample(self) -> OutputT:
         """Sample a value from this space."""
-        return self._bridge.sample(self._native_space().sample(), self._spec)
+        return cast(
+            OutputT, self._bridge.decode(cast("Value", self._native_space().sample()))
+        )
 
     def contains(self, value: object) -> bool:
         """Return whether a value is contained in this space."""
-        return self._native_space().contains(self._bridge.input(value, self._spec))
+        return self._native_space().contains(self._bridge.encode(value))
 
     def to_gymnasium_space(self) -> object:
         """Convert this wrapper into a Gymnasium space."""
@@ -92,7 +69,7 @@ class Space(Generic[OutputT]):
             self._native = native
         return native
 
-    def _with_bridge(self, bridge: SpaceBridge[NewOutputT]) -> Space[NewOutputT]:
+    def _with_bridge(self, bridge: ValueBridge) -> Space[NewOutputT]:
         space = cast(Space[NewOutputT], self)
         space._bridge = bridge
         return space
@@ -115,7 +92,7 @@ class Space(Generic[OutputT]):
         )
 
 
-def _native_space_bridge() -> SpaceBridge[Any]:
-    from ._internals import NATIVE_SPACE_BRIDGE
+def _native_value_bridge() -> ValueBridge:
+    from ._internals import NATIVE_VALUE_BRIDGE
 
-    return NATIVE_SPACE_BRIDGE
+    return NATIVE_VALUE_BRIDGE

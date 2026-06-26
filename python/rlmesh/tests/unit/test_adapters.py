@@ -1214,6 +1214,24 @@ def test_custom_entrypoint_is_not_serializable(method: str):
         getattr(spec, method)()
 
 
+def test_host_placeholder_custom_cannot_be_reconstructed_from_wire():
+    # The resolver builds an internal `transform: "host:<key>"` wire placeholder
+    # for an in-process custom (resolver._model_wire); it is NOT an importable
+    # entrypoint, so feeding it back through the from-dict reader must error
+    # rather than mint a bogus `host:` entrypoint a later resolve would import.
+    from rlmesh.adapters.specs.model_serialization import model_input_from_dict
+
+    with pytest.raises(ValueError, match="host-placeholder"):
+        model_input_from_dict({"type": "custom", "key": "x", "transform": "host:x"})
+
+    # A genuine entrypoint custom still reconstructs unchanged.
+    rebuilt = model_input_from_dict(
+        {"type": "custom", "key": "x", "transform": "builtins:len"}
+    )
+    assert isinstance(rebuilt, adapt.EntrypointCustomInput)
+    assert rebuilt.entrypoint == "builtins:len"
+
+
 # ---------------------------------------------------------------------------
 # Resolution errors
 # ---------------------------------------------------------------------------
@@ -1954,12 +1972,10 @@ def test_state_field_skip_cannot_carry_encoding():
 
 
 def test_state_field_requires_positive_dim():
-    tags = adapt.EnvTags(
-        observation={"state": adapt.StateLayout(adapt.StateField(adapt.EEF_POS, 0))},
-        action=LIBERO_ACTION,
-    )
+    # dim=0 is rejected at construction (the 0 default only satisfies dataclass
+    # field ordering), matching the Rust StateField codec's dim >= 1 guard.
     with pytest.raises(ValueError, match="dim must be >= 1"):
-        tags.to_dict()
+        adapt.StateField(adapt.EEF_POS, 0)
 
 
 # ---------------------------------------------------------------------------

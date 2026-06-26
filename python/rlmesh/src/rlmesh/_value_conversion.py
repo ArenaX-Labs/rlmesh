@@ -103,16 +103,6 @@ def from_value(value: Value | None, bridge: ValueBridge | None = None) -> object
     return _bridge_or_identity(bridge).decode(value)
 
 
-def rekey_value(
-    value: object,
-    *,
-    source_bridge: ValueBridge | None,
-    target_bridge: ValueBridge | None,
-) -> object:
-    """Convert a payload between backend representations via canonical Value."""
-    return from_value(to_value(value, source_bridge), target_bridge)
-
-
 def encode_framework_array_batch(
     value: object,
     *,
@@ -195,13 +185,9 @@ class FrameworkBridge:
 __all__ = [
     "UNHANDLED",
     "FrameworkBridge",
-    "IdentityBridge",
     "ValueBridge",
-    "decode_tree",
     "encode_framework_array_batch",
-    "encode_tree",
     "from_value",
     "identity_bridge",
-    "rekey_value",
     "to_value",
 ]

@@ -20,7 +20,9 @@ pub(super) fn apply_text(
     {
         value = Some(match found {
             Value::Text(text) => text.clone(),
-            Value::Number(number) => format!("{number}"),
+            // A text input is only ever paired with an env Text feature, so a
+            // non-string here means the env violated its declared space. Surface
+            // it rather than silently stringifying a stray number.
             other => {
                 return Err(ApplyError::new(format!(
                     "text input '{}' resolved to '{}', but {other:?} is not a string",

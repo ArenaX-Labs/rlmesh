@@ -102,7 +102,6 @@ mod tests {
                 invert,
                 threshold,
                 binarize,
-                out_dim: 1,
             }],
             clip: None,
             in_dim: 1,

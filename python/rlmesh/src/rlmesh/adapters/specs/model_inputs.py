@@ -9,7 +9,7 @@ from typing import Any, Literal, TypeAlias
 from ..constants import IMAGE_PRIMARY, INSTRUCTION
 from ._codec import one_or_many
 from .custom_encoding import CustomEncoding
-from .vocabularies import ImageLayout, RotationEncoding
+from .vocabularies import FitMode, ImageLayout, RotationEncoding
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
@@ -28,10 +28,14 @@ class ImageInput:
             grayscale). When set, a resolve error if the env image differs;
             the adapter does not convert between channel counts.
         dtype: NumPy dtype name the model expects.
-        normalize: Map 8-bit pixel values into ``normalize_range`` before
-            casting.
-        normalize_range: Target range for ``normalize`` (default ``[0, 1]``);
-            set e.g. ``(-1.0, 1.0)`` for a model trained on signed inputs.
+        normalize: Map 8-bit pixel values into ``normalize_range`` (default
+            ``[0, 1]``) before casting. Setting ``normalize_range`` alone also
+            turns normalization on, so this flag is only needed to request the
+            default range without spelling it out (not an off-switch).
+        normalize_range: Target range, mapped from ``[0, 255]``; implies
+            normalization even when ``normalize`` is False. Defaults to
+            ``[0, 1]``; set e.g. ``(-1.0, 1.0)`` for a model trained on signed
+            inputs.
         lead_dims: Number of leading singleton axes to add (batch/time).
         upside_down: Whether the model was trained on images rotated 180
             degrees relative to the canonical upright orientation.
@@ -54,10 +58,10 @@ class ImageInput:
             and ``channels`` so the blank can be sized.
         stack: Number of consecutive observations to stack on a new leading
             axis (frame history). ``1`` (default) means no stacking. Stacking
-            is applied host-side by the adapter, which buffers processed
-            frames (padding with the first frame at the start of an episode)
-            and clears them on ``reset`` -- the env still sends one frame per
-            step.
+            is applied by the adapter from an episode-keyed rolling buffer
+            (padding with the first frame at the start of an episode, cleared on
+            ``reset``) -- host-side on the local path, natively in the core on
+            the served path. Either way the env still sends one frame per step.
         size: Convenience for square targets -- sets both ``height`` and
             ``width``. Pass ``size`` or ``height``/``width``, not both.
     """
@@ -75,7 +79,7 @@ class ImageInput:
     upside_down: bool = False
     resample: str = "bilinear_aa"
     allow_upscale: bool = False
-    fit: str | Sequence[str] | None = None
+    fit: FitMode | Sequence[FitMode] | None = None
     optional: bool = False
     absent_fill: int | None = None
     stack: int = 1
@@ -113,9 +117,10 @@ class StateComponent:
             ``index`` (one), ``dim``, or ``encoding``; one of them must be
             set so the width is known without an env feature.
         range: Optional ``(low, high)`` the model expects this piece in;
-            when the env declares its own range, the value is affinely
-            mapped from the env range to this one (symmetric to action
-            ranges).
+            when the env declares its own (derived or tagged) range, the value
+            is affinely mapped from the env range to this one (symmetric to
+            action ranges). With no env source range there is nothing to map
+            from, so it is a no-op -- it does not clamp or rescale on its own.
     """
 
     role: str
@@ -129,6 +134,14 @@ class StateComponent:
     # dim/index >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
 
     def __post_init__(self) -> None:
+        # index selects one element, dim truncates to the leading N; the resolver
+        # applies index and ignores dim when both are set, so reject the ambiguous
+        # pairing here (matching the Rust StateInput codec guard).
+        if self.dim is not None and self.index is not None:
+            raise ValueError(
+                f"StateComponent {self.role!r}: set dim or index, not both "
+                "(index selects one element, dim truncates to the leading N)"
+            )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
@@ -237,7 +250,9 @@ class EntrypointCustomInput:
 
     Attributes:
         key: Key of the entry in the model input payload.
-        entrypoint: A ``module:callable`` string.
+        entrypoint: A ``module:callable`` string. Travels on the wire under the
+            key ``transform`` (the frozen field shared with the Rust
+            ``CustomInput`` and the ``host:<key>`` inline placeholder).
     """
 
     key: str

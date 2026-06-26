@@ -2,6 +2,7 @@
   "rlmesh": {
     "exports": [
       "NO_ADAPTER",
+      "RANDOM_SAMPLE",
       "EnvFactory",
       "EnvServer",
       "EpisodeResult",
@@ -125,7 +126,7 @@
           },
           "load": {
             "kind": "function",
-            "signature": "load() -> None"
+            "signature": "load(**kwargs: Any) -> None"
           },
           "predict": {
             "kind": "function",
@@ -166,6 +167,11 @@
       "NO_ADAPTER": {
         "kind": "type alias",
         "signature": "NO_ADAPTER = _NoAdapter()",
+        "stability": "Stable"
+      },
+      "RANDOM_SAMPLE": {
+        "kind": "type alias",
+        "signature": "RANDOM_SAMPLE = _RandomSample()",
         "stability": "Stable"
       },
       "RemoteEnv": {
@@ -684,6 +690,7 @@
       "RemoteVectorEnv",
       "SandboxEnv",
       "SandboxInfo",
+      "SandboxModel",
       "SandboxVectorEnv",
       "asarray",
       "ensure_available",
@@ -705,7 +712,7 @@
           },
           "load": {
             "kind": "function",
-            "signature": "load() -> None"
+            "signature": "load(**kwargs: Any) -> None"
           },
           "predict": {
             "kind": "function",
@@ -990,6 +997,33 @@
         "signature": "SandboxInfo(requested_source: str, resolved_source: str, address: str, container_id: str)",
         "stability": "Experimental"
       },
+      "SandboxModel": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "container_id": {
+            "kind": "property",
+            "signature": "property container_id: str"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve() -> SandboxModel"
+          },
+          "session": {
+            "kind": "function",
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown() -> None"
+          }
+        },
+        "signature": "SandboxModel(source: object, *, gpus: str | int | None = None)",
+        "stability": "Experimental"
+      },
       "SandboxVectorEnv": {
         "kind": "class",
         "members": {
@@ -1121,7 +1155,7 @@
           },
           "load": {
             "kind": "function",
-            "signature": "load() -> None"
+            "signature": "load(**kwargs: Any) -> None"
           },
           "predict": {
             "kind": "function",
@@ -1551,7 +1585,6 @@
       "MultiBinary",
       "MultiDiscrete",
       "Space",
-      "SpaceBridge",
       "SpaceSpec",
       "Text",
       "Tuple",
@@ -1842,21 +1875,6 @@
         "signature": "Space(spec: SpaceSpec)",
         "stability": "Stable"
       },
-      "SpaceBridge": {
-        "kind": "class",
-        "members": {
-          "input": {
-            "kind": "function",
-            "signature": "input(value: object, spec: SpaceSpec) -> object"
-          },
-          "sample": {
-            "kind": "function",
-            "signature": "sample(value: object, spec: SpaceSpec) -> OutputT"
-          }
-        },
-        "signature": "SpaceBridge(sample: Callable[[object, SpaceSpec], OutputT], input: Callable[[object, SpaceSpec], object] | None = None)",
-        "stability": "Stable"
-      },
       "SpaceSpec": {
         "kind": "class",
         "members": {
@@ -1984,7 +2002,7 @@
       },
       "space_from_spec": {
         "kind": "function",
-        "signature": "space_from_spec(spec: SpaceSpec, *, bridge: SpaceBridge[OutputT] | None = None) -> Space[OutputT] | Space[Value]",
+        "signature": "space_from_spec(spec: SpaceSpec, *, bridge: ValueBridge | None = None) -> Space[OutputT] | Space[Value]",
         "stability": "Stable"
       },
       "to_gymnasium_space": {
@@ -2075,6 +2093,7 @@
       "RemoteVectorEnv",
       "SandboxEnv",
       "SandboxInfo",
+      "SandboxModel",
       "SandboxVectorEnv",
       "TorchValue",
       "as_tensor",
@@ -2092,7 +2111,7 @@
           },
           "load": {
             "kind": "function",
-            "signature": "load() -> None"
+            "signature": "load(**kwargs: Any) -> None"
           },
           "predict": {
             "kind": "function",
@@ -2375,6 +2394,33 @@
           }
         },
         "signature": "SandboxInfo(requested_source: str, resolved_source: str, address: str, container_id: str)",
+        "stability": "Experimental"
+      },
+      "SandboxModel": {
+        "kind": "class",
+        "members": {
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
+          "container_id": {
+            "kind": "property",
+            "signature": "property container_id: str"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve() -> SandboxModel"
+          },
+          "session": {
+            "kind": "function",
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown() -> None"
+          }
+        },
+        "signature": "SandboxModel(source: object, *, gpus: str | int | None = None)",
         "stability": "Experimental"
       },
       "SandboxVectorEnv": {

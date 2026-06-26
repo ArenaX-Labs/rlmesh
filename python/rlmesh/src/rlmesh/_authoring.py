@@ -8,6 +8,7 @@ DSL here -- packaging stays in your Dockerfile. Models are authored by subclassi
 
 from __future__ import annotations
 
+import functools
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, final
 
@@ -28,12 +29,46 @@ class EnvFactory(ABC):
 
     tags: ClassVar[EnvTags | None] = None
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        # Stamp the factory's ``tags`` onto every env ``make()`` returns, so the tag
+        # "rides the environment": a locally-made env (no server) still carries the
+        # contract a spec'd model resolves against. The subclass's own ``make`` body
+        # is untouched; serving an already-stamped env merges the same tags
+        # idempotently. ``tags = None`` is a no-op (a generic, un-adapted env).
+        super().__init_subclass__(**kwargs)
+        user_make = cls.__dict__.get("make")
+        if user_make is None or getattr(user_make, "_rlmesh_tag_stamped", False):
+            return
+
+        @functools.wraps(user_make)
+        def make(self: EnvFactory, *args: Any, **make_kwargs: Any) -> EnvLike[Any, Any]:
+            env = user_make(self, *args, **make_kwargs)
+            tags = type(self).tags
+            if tags is not None:
+                from .adapters import tag
+
+                # validate=False: the obs/action layout is validated against the
+                # tags at adapter-resolution time (serve or session), so a make()
+                # of a vectorized batch (whose spaces differ) is not rejected here.
+                env = tag(env, tags, validate=False)
+            return env
+
+        make._rlmesh_tag_stamped = True  # type: ignore[attr-defined]
+        cls.make = make  # type: ignore[method-assign]
+
     def prepare(self) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Optional: one-time setup before ``make()``."""
 
     @abstractmethod
     def make(self, **kwargs: Any) -> EnvLike[Any, Any]:
-        """Construct and return the environment to serve."""
+        """Construct and return the environment.
+
+        Your override returns a plain env; the returned env is automatically
+        stamped with this factory's ``tags`` (in ``env.metadata``), so the tag
+        rides the environment -- a spec'd model can resolve its adapter from the
+        env alone, whether it is served or driven locally via
+        :func:`rlmesh.session`.
+        """
         raise NotImplementedError
 
     def close(self) -> None:  # noqa: B027  optional no-op hook, not abstract

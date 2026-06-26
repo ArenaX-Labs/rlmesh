@@ -18,7 +18,6 @@ pub struct ActionSegment {
     pub invert: bool,
     pub threshold: Option<f64>,
     pub binarize: bool,
-    pub out_dim: u32,
 }
 
 /// Resolved instructions for the whole action vector.

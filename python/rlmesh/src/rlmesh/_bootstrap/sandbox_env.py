@@ -6,11 +6,8 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, cast
 
-from .env import (
-    BootstrapUsageError,
-    load_env_from_spec,
-    resolve_bootstrap_spec,
-)
+from .loaders import load_env_from_spec
+from .spec_resolution import BootstrapUsageError, resolve_bootstrap_spec
 
 if TYPE_CHECKING:
     from rlmesh._server import EnvLike, VectorServerEnvLike

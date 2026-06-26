@@ -27,7 +27,7 @@ from .model_inputs import (
     StateInput,
     TextInput,
 )
-from .vocabularies import ROTATION_DIMS, ImageLayout, RotationEncoding
+from .vocabularies import ROTATION_DIMS, FitMode, ImageLayout, RotationEncoding
 
 __all__ = [
     "ROTATION_DIMS",
@@ -36,6 +36,7 @@ __all__ = [
     "CustomEncoding",
     "EntrypointCustomInput",
     "EnvTags",
+    "FitMode",
     "ImageInput",
     "ImageLayout",
     "ImageTag",

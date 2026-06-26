@@ -312,7 +312,31 @@ pub(crate) fn de_opt_dims<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<i64>>, D::Error> {
     let raw = Option::<Vec<Dim>>::deserialize(deserializer)?;
-    Ok(raw.map(|dims| dims.into_iter().map(|Dim(value)| value).collect()))
+    let Some(dims) = raw else { return Ok(None) };
+    let dims: Vec<i64> = dims.into_iter().map(|Dim(value)| value).collect();
+    // A reshape element is a concrete size (>= 0) or a single `-1` (infer).
+    // Reject the structurally-invalid cases (any other negative, or more than
+    // one infer) here at the publish/normalize door, so a bad spec fails at
+    // construction instead of per-step in apply. The length-dependent checks
+    // (product == element count, infer divisibility) need the runtime value, so
+    // they stay in apply.
+    let mut infer = 0;
+    for &value in &dims {
+        if value < -1 {
+            return Err(de::Error::custom(format!(
+                "a reshape dimension is -1 (infer) or a non-negative size, got {value}"
+            )));
+        }
+        if value == -1 {
+            infer += 1;
+            if infer > 1 {
+                return Err(de::Error::custom(
+                    "reshape allows at most one -1 (infer) dimension",
+                ));
+            }
+        }
+    }
+    Ok(Some(dims))
 }
 
 #[cfg(test)]

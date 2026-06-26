@@ -28,6 +28,9 @@ pub struct StateComponent {
     /// Target value range. When set and the env feature declares a (derived
     /// or tagged) source range, values are affinely mapped from the env
     /// range into this one — the state-side analogue of action range mapping.
+    /// When the env feature has no source range (an unbounded/non-uniform space
+    /// with no `range` tag) there is nothing to map from, so this is a no-op —
+    /// it does not clamp or rescale on its own.
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
     #[serde(default)]
@@ -87,6 +90,18 @@ impl TryFrom<StateInputWire> for StateInput {
         if wire.components.is_empty() {
             return Err("a state input needs at least one component".to_owned());
         }
+        for component in &wire.components {
+            // `index` selects one element and `dim` truncates to the leading N;
+            // apply applies `index` and silently ignores `dim` when both are set,
+            // so reject the ambiguous pairing at the codec instead of picking one.
+            if component.dim.is_some() && component.index.is_some() {
+                return Err(format!(
+                    "state component {:?} sets both dim and index; index selects one element \
+                     and dim truncates to the leading N -- set one, not both",
+                    component.role
+                ));
+            }
+        }
         Ok(StateInput {
             key: wire.key,
             components: wire.components,
@@ -116,5 +131,36 @@ mod tests {
         let ok: StateInput = serde_json::from_str(r#"{"key": "s", "components": [{"role": "r"}]}"#)
             .expect("non-empty parses");
         assert_eq!(ok.components.len(), 1);
+    }
+
+    #[test]
+    fn rejects_component_with_both_dim_and_index() {
+        let err = serde_json::from_str::<StateInput>(
+            r#"{"key": "s", "components": [{"role": "r", "dim": 3, "index": 0}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("both dim and index"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_reshape_dims() {
+        // reshape elements are a concrete size or a single -1 (infer); the codec
+        // rejects what apply would error on per-step, keeping the publish door
+        // from blessing a spec the read path crashes on.
+        let err = serde_json::from_str::<StateInput>(
+            r#"{"key": "s", "components": [{"role": "r"}], "reshape": [-5]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("infer"), "got: {err}");
+        let err = serde_json::from_str::<StateInput>(
+            r#"{"key": "s", "components": [{"role": "r"}], "reshape": [-1, -1]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("at most one -1"), "got: {err}");
+        let ok: StateInput = serde_json::from_str(
+            r#"{"key": "s", "components": [{"role": "r"}], "reshape": [-1, 4]}"#,
+        )
+        .expect("one infer parses");
+        assert_eq!(ok.reshape, Some(vec![-1, 4]));
     }
 }

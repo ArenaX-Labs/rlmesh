@@ -6,14 +6,13 @@ import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
-from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
 from ._sandbox._model import SandboxModel
-from .spaces import Space, SpaceBridge
+from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
+from .spaces import Space
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -117,15 +116,11 @@ _numpy_bridge: ValueBridge = FrameworkBridge(
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
 )
-_numpy_space_bridge: SpaceBridge[NumpyValue] = cast(
-    SpaceBridge[NumpyValue],
-    space_bridge_from_value_bridge(_numpy_bridge),
-)
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[NumpyValue]:
     """Create a NumPy-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, bridge=_numpy_space_bridge)
+    return _space_from_spec(spec, bridge=_numpy_bridge)
 
 
 @final
@@ -153,7 +148,6 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -201,7 +195,6 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 class Model(ModelBase[NumpyValue, NumpyValue]):
@@ -248,7 +241,6 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -280,7 +272,6 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 __all__ = [

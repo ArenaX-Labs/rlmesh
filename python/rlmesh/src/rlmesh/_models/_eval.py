@@ -1,6 +1,6 @@
 """The model-side eval loop and source coercion, shared by every framework ``Model``.
 
-A model consumes the env contract rather than publishing its own: ``evaluate``
+A model consumes the env contract rather than publishing its own: a :class:`Session`
 dials an env, pulls its contract, resolves the adapter from the env's tags and the
 model's spec, and runs a per-episode loop that returns a typed :class:`RunResult`.
 ``coerce_model`` turns any model source into a :class:`CoercedModel`.
@@ -12,24 +12,23 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar, cast
 
-from .._framework_bridge import identity_bridge
-from .._value_conversion import from_value
+from .._value_conversion import from_value, identity_bridge
 from ._adapter_mode import NO_ADAPTER
 from ._chunk import ChunkReplay
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
-    from .._framework_bridge import ValueBridge
+    from .._value_conversion import ValueBridge
     from ..adapters import Adapter
     from ..specs import EnvContract
 
 __all__ = [
+    "RANDOM_SAMPLE",
     "EpisodeResult",
     "RunResult",
     "Session",
     "coerce_model",
-    "evaluate",
     "resolve_route_adapter",
 ]
 
@@ -38,6 +37,17 @@ _MAX_STEPS_PER_EPISODE = 100_000
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
+
+
+class _RandomSample:
+    """Sentinel policy: act by sampling the env's action space (a random baseline)."""
+
+    def __repr__(self) -> str:
+        return "RANDOM_SAMPLE"
+
+
+RANDOM_SAMPLE = _RandomSample()
+"""Pass as the model to :func:`rlmesh.session`/:func:`rlmesh.run` to sample actions."""
 
 
 class CoercedModel(NamedTuple):
@@ -94,44 +104,6 @@ class RunResult:
         )
 
 
-def evaluate(
-    predict: Callable[[Any], Any],
-    spec: object | None,
-    env_or_address: object,
-    *,
-    seeds: Sequence[int] | None = None,
-    max_episodes: int | None = None,
-    instruction: str | None = None,
-    close_env: bool = False,
-    token: str = "",
-    on_reset: Callable[[], None] | None = None,
-    on_episode_end: Callable[[], None] | None = None,
-    on_close: Callable[[], None] | None = None,
-    trust_entrypoints: bool = False,
-    remote_env_cls: type | None = None,
-    bridge: ValueBridge | None = None,
-) -> RunResult:
-    """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``).
-
-    Thin wrapper over :class:`Session`: builds a session for this predict/env/spec and
-    pumps it to completion. The drive loop itself lives in :meth:`Session.run`.
-    """
-    return Session(
-        predict=predict,
-        spec=spec,
-        env=env_or_address,
-        on_reset=on_reset,
-        on_episode_end=on_episode_end,
-        on_close=on_close,
-        trust_entrypoints=trust_entrypoints,
-        bridge=bridge,
-        remote_env_cls=remote_env_cls,
-        instruction=instruction,
-        close_env=close_env,
-        token=token,
-    ).run(seeds=seeds, max_episodes=max_episodes)
-
-
 def _predict_step(
     predict: Callable[[Any], Any],
     obs: Any,
@@ -174,7 +146,7 @@ class Session(Generic[ObsT, ActT]):
     whole episodes and returns a typed :class:`RunResult`.
 
     The env connection is opened lazily on first ``reset`` (manual driving); ``run`` drives
-    through the shared :func:`evaluate` loop. Use it as a context manager to close a
+    whole episodes through the same primitives. Use it as a context manager to close a
     manually-opened connection.
     """
 
@@ -238,9 +210,7 @@ class Session(Generic[ObsT, ActT]):
         if self._model_client is None:
             self._adapter = _resolve_adapter(self._spec, contract, self._trust)
             self._env_bridge = (
-                _adapter_env_bridge(client, self._bridge)
-                if self._adapter is not None
-                else None
+                _adapter_env_bridge(client) if self._adapter is not None else None
             )
             self._text_keys = _text_input_keys(self._spec)
             self._horizon = (
@@ -248,6 +218,9 @@ class Session(Generic[ObsT, ActT]):
                 if self._adapter is not None
                 else 1
             )
+            # Seed the replay with the resolved horizon so a hand-driven predict()
+            # before the first reset() already replays the right chunk length.
+            self._replay = ChunkReplay(self._horizon)
         self._connected = True
 
     @property
@@ -275,6 +248,8 @@ class Session(Generic[ObsT, ActT]):
     def predict(self, observation: ObsT) -> ActT:
         """Map one env observation to an env-ready action (the model's adapter applied)."""
         self._ensure_connected()
+        if self._predict is RANDOM_SAMPLE:
+            return cast("ActT", self._client.action_space.sample())
         if self._model_client is not None:
             # Served model: the server applies the adapter (and any chunk replay);
             # we only bridge the obs out and the env-ready action back.
@@ -332,7 +307,7 @@ class Session(Generic[ObsT, ActT]):
         """Drive whole episodes to completion and return a typed :class:`RunResult`.
 
         The single drive loop: pumps this session's own ``reset`` / ``predict`` /
-        ``step`` primitives, so :func:`evaluate` and ``Model.run`` route through here.
+        ``step`` primitives, so ``Model.run`` routes through here.
         ``seeds`` gives a per-episode seed and sets the episode count unless
         ``max_episodes`` is given.
         """
@@ -395,14 +370,18 @@ class Session(Generic[ObsT, ActT]):
                 if owner is not None:
                     owner.shutdown()
         if self._connected:
-            if self._close_env:
-                # Explicit opt-in to stop the env: the dialed client if we opened it,
-                # else the caller-supplied env/address.
-                _shutdown(self._client if self._owns_client else self._env)
-            if self._owns_client and self._client is not None:
-                _close(self._client)
-            self._connected = False
-            self._client = None
+            try:
+                if self._close_env:
+                    # Explicit opt-in to stop the env: the dialed client if we opened
+                    # it, else the caller-supplied env/address.
+                    _shutdown(self._client if self._owns_client else self._env)
+            finally:
+                # Always release the dialed connection and clear state, even if the
+                # shutdown raised (the error still propagates after cleanup).
+                if self._owns_client and self._client is not None:
+                    _close(self._client)
+                self._connected = False
+                self._client = None
 
     def __enter__(self) -> Session[ObsT, ActT]:
         return self
@@ -516,8 +495,8 @@ def coerce_model(
         return CoercedModel(
             inst.predict,
             spec if spec is not None else getattr(inst, "spec", None),
-            inst.reset,
-            inst.close,
+            getattr(inst, "reset", None),
+            getattr(inst, "close", None),
             inst,
         )
     if callable(source):
@@ -545,15 +524,93 @@ def _connect(
         client = _remote_env(target, remote_env_cls)
         return client, client.env_contract, True
     if hasattr(target, "reset") and hasattr(target, "step"):
-        return target, getattr(target, "env_contract", None), False
+        # A live env: a remote/served handle exposes a native env_contract; a local
+        # env exposes its spaces + metadata directly, so synthesize the contract from
+        # the env (tags ride in env.metadata via tag() / EnvFactory.make).
+        native = _native_contract(target)
+        contract = native if native is not None else _local_contract(target)
+        return target, contract, False
+    if hasattr(target, "make"):
+        # An EnvFactory: prepare()+make() its env (which carries the factory's tags)
+        # and drive it locally -- no serving needed to resolve a spec'd adapter.
+        env = _factory_env(target)
+        return env, _local_contract(env), False
     address = getattr(target, "address", None)
     if isinstance(address, str):
         client = _remote_env(address, remote_env_cls)
         return client, client.env_contract, True
     raise TypeError(
-        "Model.run() expects an env object, a remote-env object, or an address "
-        f"string; got {type(target).__name__}"
+        "session()/run() expect an env object, an EnvFactory, a remote-env object, "
+        f"or an address string; got {type(target).__name__}"
     )
+
+
+@dataclass(frozen=True)
+class _LocalEnvContract:
+    """Client-side stand-in for an env contract when driving a *local* env.
+
+    A served env publishes a native ``EnvContract`` (spaces + metadata) over the
+    handshake; a local env object exposes the same pieces directly. Bundling them
+    here lets the adapter-resolution path be identical for local and remote envs --
+    the env's tags ride in ``env.metadata`` (attached by :func:`rlmesh.adapters.tag`
+    or :meth:`rlmesh.EnvFactory.make`).
+    """
+
+    metadata: Mapping[str, Any] | None
+    observation_space: object
+    action_space: object
+    num_envs: int
+
+
+def _native_contract(env: object) -> object | None:
+    """Return a real ``env_contract`` (a remote/served handle) or ``None`` for a local env.
+
+    Reads the attribute off the type or instance ``__dict__`` rather than via
+    ``getattr``, so a gymnasium env does not trigger its deprecated
+    wrapper-attribute forwarding warning just because we probed for a contract.
+    """
+    if getattr(type(env), "env_contract", None) is not None or (
+        "env_contract" in getattr(env, "__dict__", {})
+    ):
+        try:
+            return cast("Any", env).env_contract
+        except AttributeError:
+            return None
+    return None
+
+
+def _local_contract(env: object) -> Any:
+    return _LocalEnvContract(
+        metadata=getattr(env, "metadata", None),
+        observation_space=getattr(env, "observation_space", None),
+        action_space=getattr(env, "action_space", None),
+        num_envs=_num_envs(env),
+    )
+
+
+def _num_envs(env: object) -> int:
+    # A single env has no ``num_envs``; only a vector env does. Probe the type /
+    # instance __dict__ (not a plain getattr) so a gymnasium env does not emit its
+    # deprecated wrapper-attribute forwarding warning, same as _native_contract.
+    if getattr(type(env), "num_envs", None) is not None or (
+        "num_envs" in getattr(env, "__dict__", {})
+    ):
+        try:
+            return int(cast("Any", env).num_envs or 1)
+        except (AttributeError, TypeError, ValueError):
+            return 1
+    return 1
+
+
+def _factory_env(factory: object) -> Any:
+    """Build a local env from an EnvFactory: ``prepare()`` + ``make()``.
+
+    ``EnvFactory.make`` stamps the factory's ``tags`` onto the env it returns, so a
+    spec'd model can resolve its adapter from the local env alone -- no serving.
+    """
+    from .._bootstrap.loaders import construct_authored_env
+
+    return construct_authored_env(factory)
 
 
 def _remote_env(address: str, remote_env_cls: type | None) -> Any:
@@ -564,21 +621,35 @@ def _remote_env(address: str, remote_env_cls: type | None) -> Any:
     return remote_env_cls(address)
 
 
-def _adapter_env_bridge(
-    client: Any, fallback: ValueBridge | None
-) -> ValueBridge | None:
+def _adapter_env_bridge(client: Any) -> ValueBridge:
+    """The bridge for the framework the env hands its observations *in*.
+
+    The env-side encoder/decoder must match the env's own value type, never the
+    model's. A remote/served handle decodes the wire payload into its framework
+    before returning it (a torch ``RemoteEnv`` hands the loop torch tensors), so
+    its ``_bridge`` is the right re-encoder for the native plan -- and is why the
+    served cross-framework path works. A raw local env returns observations in its
+    native array type, which for a gym/gymnasium env is numpy, so default to the
+    numpy bridge: the model's framework bridge would reject numpy (the
+    cross-framework local-driving bug). A custom local env that emits another
+    framework's tensors can expose ``_bridge`` on its class to override.
+    """
     bridge = getattr(client, "_bridge", None)
     if bridge is not None:
         return cast("ValueBridge", bridge)
-    return fallback
+    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
+
+    return _numpy_bridge
 
 
 def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
     result: Any = client.reset(seed=seed) if seed is not None else client.reset()
     if isinstance(result, tuple):
         pair = cast("tuple[Any, ...]", result)
-        if len(pair) == 2:
-            return pair[0], pair[1]
+        # Only a (obs, info) pair where the second element is a Mapping is a
+        # gymnasium reset return; any other tuple is itself the observation.
+        if len(pair) == 2 and isinstance(pair[1], Mapping):
+            return pair[0], cast("Mapping[str, Any]", pair[1])
         return pair, {}
     return result, {}
 

@@ -66,16 +66,12 @@ def _resolve_model(model_source: object) -> ModelBase[Any, Any]:
     A ``Model`` subclass *class* is instantiated once (its ``load()`` runs); an
     existing ``Model`` instance is used as-is (it already built its worker); anything
     else (a bare predict callable or a duck-typed policy object) is wrapped in a
-    framework ``Model``.
+    framework ``Model``. Delegates to the shared :func:`rlmesh._models.base.as_model`
+    normalizer so the serve path and the run path agree on what a model source is.
     """
-    from rlmesh._models.base import ModelBase
-    from rlmesh.numpy import Model
+    from rlmesh._models.base import as_model
 
-    if isinstance(model_source, ModelBase):
-        return cast("ModelBase[Any, Any]", model_source)
-    if isinstance(model_source, type) and issubclass(model_source, ModelBase):
-        return cast("ModelBase[Any, Any]", model_source())
-    return Model(cast(object, model_source))
+    return as_model(model_source)
 
 
 def serve_env(env_source: object, address: str, **make_kwargs: object) -> None:

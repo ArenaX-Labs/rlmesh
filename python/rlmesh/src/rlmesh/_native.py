@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import ClassVar, final
 
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
-from ._framework_bridge import ValueBridge, identity_bridge
 from ._models.base import ModelBase
 from ._sandbox import SandboxEnvBase, SandboxVectorEnvBase
 from ._sandbox._model import SandboxModel
+from ._value_conversion import ValueBridge, identity_bridge
 from .types import Value
 
 

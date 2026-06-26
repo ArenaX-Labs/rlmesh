@@ -6,13 +6,13 @@ import importlib
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
-from ._framework_bridge import UNHANDLED, FrameworkBridge, ValueBridge
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
-from .spaces import Space, SpaceBridge
+from ._sandbox._model import SandboxModel
+from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
+from .spaces import Space
 from .spaces import space_from_spec as _space_from_spec
-from .spaces._internals import space_bridge_from_value_bridge
 from .specs import SpaceSpec
 from .types import PrimitiveValue
 
@@ -123,15 +123,11 @@ _jax_bridge: ValueBridge = FrameworkBridge(
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
 )
-_jax_space_bridge: SpaceBridge[JaxValue] = cast(
-    SpaceBridge[JaxValue],
-    space_bridge_from_value_bridge(_jax_bridge),
-)
 
 
 def space_from_spec(spec: SpaceSpec) -> Space[JaxValue]:
     """Create a JAX-adapted space wrapper for a native space spec."""
-    return _space_from_spec(spec, bridge=_jax_space_bridge)
+    return _space_from_spec(spec, bridge=_jax_bridge)
 
 
 @final
@@ -150,15 +146,15 @@ class RemoteEnv(RemoteEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 @final
 class RemoteModel(RemoteModelBase[JaxValue, JaxValue]):
     """Experimental JAX-backed handle to a model (policy) server.
 
-    Bind it to an env with ``against(env)`` to get a session whose ``predict``
-    accepts and returns JAX values, symmetric with :class:`RemoteEnv`.
+    Bind it to an env with ``rlmesh.session(model, env)`` to get a
+    :class:`rlmesh.Session` whose ``predict`` accepts and returns JAX values,
+    symmetric with :class:`RemoteEnv`.
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
@@ -177,7 +173,6 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 class Model(ModelBase[JaxValue, JaxValue]):
@@ -212,7 +207,6 @@ class SandboxEnv(SandboxEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 @final
@@ -235,7 +229,6 @@ class SandboxVectorEnv(SandboxVectorEnvBase[JaxValue, JaxValue]):
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
-    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 __all__ = [
@@ -246,6 +239,7 @@ __all__ = [
     "RemoteVectorEnv",
     "SandboxEnv",
     "SandboxInfo",
+    "SandboxModel",
     "SandboxVectorEnv",
     "asarray",
     "ensure_available",

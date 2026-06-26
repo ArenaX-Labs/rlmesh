@@ -12,6 +12,19 @@ pub(super) fn plan_image(
     model_input: &ImageInput,
     images_by_role: &BTreeMap<String, &EnvImage>,
 ) -> Result<ImagePlan> {
+    // `absent_fill` only colors the zero-filled frame an `optional` camera
+    // produces when the env lacks it; without `optional` it can never take
+    // effect, so a set-but-inert fill is a spec error, not a silent no-op.
+    if model_input.absent_fill.is_some() && !model_input.optional {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {}: absent_fill only applies to an optional camera; \
+                 set optional or drop absent_fill",
+                quoted(&model_input.key)
+            ),
+        ));
+    }
     let mut env_image = images_by_role.get(&model_input.role).copied();
     // The lone-camera fallback papers over role-name mismatches when the env
     // offers exactly one camera. An `optional` input, though, has explicitly
@@ -45,6 +58,18 @@ pub(super) fn plan_image(
              'bilinear_aa'",
                 quoted(&model_input.key),
                 quoted(&model_input.resample)
+            ),
+        ));
+    }
+    // Validate dtype at resolve (like resample above) so a typo'd name fails
+    // resolution once, not per-step in apply (finalize_dtype) at serve time.
+    if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {}: unknown dtype {}",
+                quoted(&model_input.key),
+                quoted(&model_input.dtype)
             ),
         ));
     }
@@ -489,5 +514,36 @@ mod image_resolve_tests {
         let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
         let error = plan_image(&model_image(8, 8, false), &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn absent_fill_without_optional_is_a_resolve_error() {
+        // A fill level set without `optional` can never take effect; reject it
+        // rather than silently ignoring the configured value.
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.absent_fill = Some(128);
+        let error = plan_image(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("absent_fill only applies"),
+            "got: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn unknown_dtype_is_a_resolve_error() {
+        // dtype is checked at resolve (like resample), not deferred to apply.
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.dtype = "flat32".to_owned(); // typo of float32
+        let error = plan_image(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("unknown dtype"),
+            "got: {}",
+            error.message
+        );
     }
 }

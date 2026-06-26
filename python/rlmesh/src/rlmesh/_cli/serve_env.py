@@ -10,7 +10,7 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from rlmesh._bootstrap.env import (
+from rlmesh._bootstrap.loaders import (
     import_packages,
     is_env_lookup_error,
 )
@@ -254,74 +254,24 @@ def _served_num_envs(env: object, *, fallback: int) -> int:
 
 
 def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
-    """Convert an argparse namespace into typed serve arguments."""
+    """Convert an argparse namespace into typed serve arguments.
+
+    Every field's type is pinned by the parser (``type=int``,
+    ``action="store_true"``/``"append"``, ``choices=...``, ``type=_json_object``),
+    so the namespace attributes are read directly without re-validation.
+    """
     return ServeArgs(
-        env=_namespace_str_or_none(args, "env"),
-        entrypoint=_namespace_str_or_none(args, "entrypoint"),
-        transport=_namespace_str(args, "transport"),
-        address=_namespace_str_or_none(args, "address"),
-        num_envs=_namespace_int(args, "num_envs"),
-        vectorization_mode=_namespace_str_or_none(args, "vectorization_mode"),
-        package=_namespace_str_list(args, "package"),
-        verbose=_namespace_bool(args, "verbose"),
-        kwargs=_namespace_dict_or_none(args, "kwargs_json"),
-        ready_fd=_namespace_int_or_none(args, "ready_fd"),
+        env=args.env,
+        entrypoint=args.entrypoint,
+        transport=args.transport,
+        address=args.address,
+        num_envs=args.num_envs,
+        vectorization_mode=args.vectorization_mode,
+        package=args.package,
+        verbose=args.verbose,
+        kwargs=args.kwargs_json,
+        ready_fd=args.ready_fd,
     )
-
-
-def _namespace_str(args: argparse.Namespace, name: str) -> str:
-    value: object = vars(args).get(name)
-    if not isinstance(value, str):
-        raise TypeError(f"expected argparse field {name!r} to be a str")
-    return value
-
-
-def _namespace_str_or_none(args: argparse.Namespace, name: str) -> str | None:
-    value: object = vars(args).get(name)
-    if value is None or isinstance(value, str):
-        return value
-    raise TypeError(f"expected argparse field {name!r} to be a str | None")
-
-
-def _namespace_int(args: argparse.Namespace, name: str) -> int:
-    value: object = vars(args).get(name)
-    if not isinstance(value, int):
-        raise TypeError(f"expected argparse field {name!r} to be an int")
-    return value
-
-
-def _namespace_int_or_none(args: argparse.Namespace, name: str) -> int | None:
-    value: object = vars(args).get(name)
-    if value is None or isinstance(value, int):
-        return value
-    raise TypeError(f"expected argparse field {name!r} to be an int | None")
-
-
-def _namespace_bool(args: argparse.Namespace, name: str) -> bool:
-    value: object = vars(args).get(name)
-    if not isinstance(value, bool):
-        raise TypeError(f"expected argparse field {name!r} to be a bool")
-    return value
-
-
-def _namespace_str_list(args: argparse.Namespace, name: str) -> list[str]:
-    value: object = vars(args).get(name)
-    if value is None:
-        return []
-    if isinstance(value, list):
-        items = cast(list[object], value)
-        if all(isinstance(item, str) for item in items):
-            return cast(list[str], items)
-    raise TypeError(f"expected argparse field {name!r} to be a list[str]")
-
-
-def _namespace_dict_or_none(
-    args: argparse.Namespace, name: str
-) -> dict[str, Any] | None:
-    value: object = vars(args).get(name)
-    if value is None or isinstance(value, dict):
-        return cast(dict[str, Any] | None, value)
-    raise TypeError(f"expected argparse field {name!r} to be a JSON object")
 
 
 def _json_object(value: str) -> dict[str, Any]:

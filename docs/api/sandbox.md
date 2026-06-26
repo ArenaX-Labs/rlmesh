@@ -13,7 +13,7 @@ Sandbox APIs are experimental. A sandbox session owns a Docker-backed environmen
 ## Base Sessions
 
 ```{eval-rst}
-.. autoclass:: rlmesh._sandbox.SandboxSessionBase
+.. autoclass:: rlmesh._sandbox.session.SandboxLifecycle
    :members:
    :show-inheritance:
 ```

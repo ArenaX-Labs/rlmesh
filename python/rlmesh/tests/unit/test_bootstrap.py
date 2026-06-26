@@ -11,7 +11,7 @@ import pytest
 def test_load_environment_imports_registration_packages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh._bootstrap.env import load_environment
+    from rlmesh._bootstrap.loaders import load_environment
 
     imported: list[str] = []
     registration_module = ModuleType("fake_registration")
@@ -51,7 +51,7 @@ def test_load_environment_imports_registration_packages(
 def test_load_environment_falls_back_to_gym_for_missing_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh._bootstrap.env import load_environment
+    from rlmesh._bootstrap.loaders import load_environment
 
     name_not_found = type("NameNotFound", (Exception,), {})
 
@@ -80,7 +80,7 @@ def test_load_environment_falls_back_to_gym_for_missing_env(
 
 
 def test_make_gym_environment_prefers_make_vec() -> None:
-    from rlmesh._bootstrap.env import make_gym_environment
+    from rlmesh._bootstrap.gym_support import make_gym_environment
 
     gymnasium = ModuleType("gymnasium")
 
@@ -108,7 +108,7 @@ def test_make_gym_environment_prefers_make_vec() -> None:
 
 
 def test_make_gym_environment_uses_vector_class_fallback() -> None:
-    from rlmesh._bootstrap.env import make_gym_environment
+    from rlmesh._bootstrap.gym_support import make_gym_environment
 
     class AsyncVectorEnv:
         def __init__(self, factories: list[Callable[[], object]]) -> None:
@@ -140,7 +140,7 @@ def test_make_gym_environment_uses_vector_class_fallback() -> None:
 
 
 def test_load_env_from_spec_dispatches_gym(monkeypatch: pytest.MonkeyPatch) -> None:
-    from rlmesh._bootstrap.env import load_env_from_spec
+    from rlmesh._bootstrap.loaders import load_env_from_spec
 
     gymnasium = ModuleType("gymnasium")
 
@@ -164,7 +164,7 @@ def test_load_env_from_spec_dispatches_gym(monkeypatch: pytest.MonkeyPatch) -> N
 def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from rlmesh._bootstrap.env import load_env_entrypoint
+    from rlmesh._bootstrap.loaders import load_env_entrypoint
 
     imported: list[str] = []
     registration_module = ModuleType("fake_env_registration")
@@ -230,7 +230,10 @@ def test_load_env_entrypoint_rejects(
     exc: str,
     match: str,
 ) -> None:
-    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
+    from rlmesh._bootstrap.loaders import (
+        EntrypointConstructionError,
+        load_env_entrypoint,
+    )
 
     module = ModuleType("fake_env_module")
     if attr is not None:
@@ -243,7 +246,7 @@ def test_load_env_entrypoint_rejects(
 
 
 def test_normalize_hf_env_returns_direct_env() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
+    from rlmesh._bootstrap.loaders import normalize_hf_env
 
     selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
@@ -251,7 +254,7 @@ def test_normalize_hf_env_returns_direct_env() -> None:
 
 
 def test_normalize_hf_env_selects_suite() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
+    from rlmesh._bootstrap.loaders import normalize_hf_env
 
     selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
@@ -266,7 +269,7 @@ def test_normalize_hf_env_selects_suite() -> None:
 
 
 def test_normalize_hf_env_auto_selects_only_nested_task() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
+    from rlmesh._bootstrap.loaders import normalize_hf_env
 
     selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
@@ -277,7 +280,7 @@ def test_normalize_hf_env_auto_selects_only_nested_task() -> None:
 
 
 def test_normalize_hf_env_selects_nested_task_by_string_key() -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
+    from rlmesh._bootstrap.loaders import normalize_hf_env
 
     selected = SimpleNamespace(reset=lambda: None, step=lambda action: None)
 
@@ -301,14 +304,14 @@ def test_normalize_hf_env_selects_nested_task_by_string_key() -> None:
 def test_normalize_hf_env_lists_ambiguous_choices(
     bundle: object, suite: str | None, match: str
 ) -> None:
-    from rlmesh._bootstrap.env import normalize_hf_env
+    from rlmesh._bootstrap.loaders import normalize_hf_env
 
     with pytest.raises(ValueError, match=match):
         normalize_hf_env(bundle, suite=suite, task=None)
 
 
 def test_load_hf_env_passes_task_from_bootstrap_spec(tmp_path) -> None:
-    from rlmesh._bootstrap.env import load_hf_env
+    from rlmesh._bootstrap.loaders import load_hf_env
 
     source = tmp_path / "source"
     source.mkdir()
@@ -366,7 +369,7 @@ def test_recipe_construction_error_is_catchable_as_import_error() -> None:
     # load_env_entrypoint is public (rlmesh._serving.load_env_entrypoint) and used to
     # raise a raw ImportError/AttributeError/TypeError/ValueError. The wrapper must
     # stay catchable by an old-style `except ImportError` so callers do not break.
-    from rlmesh._bootstrap.env import EntrypointConstructionError
+    from rlmesh._bootstrap.loaders import EntrypointConstructionError
 
     assert issubclass(EntrypointConstructionError, ImportError)
     assert issubclass(EntrypointConstructionError, RuntimeError)
@@ -375,7 +378,10 @@ def test_recipe_construction_error_is_catchable_as_import_error() -> None:
 def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
     # A bad entrypoint that previously surfaced a raw ImportError must still be
     # catchable as ImportError even though it is now a EntrypointConstructionError.
-    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
+    from rlmesh._bootstrap.loaders import (
+        EntrypointConstructionError,
+        load_env_entrypoint,
+    )
 
     with pytest.raises(ImportError) as excinfo:
         load_env_entrypoint("fake_env_module")
@@ -387,7 +393,10 @@ def test_load_env_entrypoint_does_not_wrap_factory_errors(
 ) -> None:
     # EntrypointConstructionError wraps ONLY the import/resolve boundary; an error
     # raised inside a successfully-resolved factory must propagate raw.
-    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
+    from rlmesh._bootstrap.loaders import (
+        EntrypointConstructionError,
+        load_env_entrypoint,
+    )
 
     module = ModuleType("fake_env_module")
 
@@ -406,7 +415,7 @@ def test_resolve_bootstrap_spec_reads_inline_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The run path delivers a gym/hf spec inline via RLMESH_BOOTSTRAP_JSON.
-    from rlmesh._bootstrap.env import resolve_bootstrap_spec
+    from rlmesh._bootstrap.spec_resolution import resolve_bootstrap_spec
 
     monkeypatch.setenv(
         "RLMESH_BOOTSTRAP_JSON", '{"spec":{"kind":"gym","env_id":"E-v0"}}'

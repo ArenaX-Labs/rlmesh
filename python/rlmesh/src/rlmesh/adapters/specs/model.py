@@ -90,24 +90,20 @@ class ModelSpec:
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, Any]) -> ModelSpec | None:
-        """Extract a spec from model contract metadata, newest format first.
+        """Extract a spec from model contract metadata, or None when absent.
 
-        Iterates the known metadata keys newest-format-first: a future v2 format
-        ships a new key (``rlmesh.adapters.v2.model_spec`` -> a v2 reader) prepended
-        to this list, so a newer build still reads an older peer's v1 spec. This
-        is the single dual-read dispatch the v1->v2 rule promises; it moves into
-        the Rust codec (the single source of truth) once the PyO3 normalize door
-        lands.
+        Reads the single v1 metadata key (``rlmesh.adapters.v1.model_spec``).
+        When a future v2 format lands it ships a new key and reader, restoring a
+        newest-format-first dual read so a newer build still reads an older
+        peer's v1 spec; that dispatch moves into the Rust codec (the single
+        source of truth) once the PyO3 normalize door lands.
         """
-        readers = ((MODEL_METADATA_KEY, cls.from_dict),)
-        for key, reader in readers:
-            payload = metadata.get(key)
-            if payload is None:
-                continue
-            if not isinstance(payload, Mapping):
-                raise TypeError(f"metadata key {key!r} must hold a mapping")
-            return reader(cast(Mapping[str, Any], payload))
-        return None
+        payload = metadata.get(MODEL_METADATA_KEY)
+        if payload is None:
+            return None
+        if not isinstance(payload, Mapping):
+            raise TypeError(f"metadata key {MODEL_METADATA_KEY!r} must hold a mapping")
+        return cls.from_dict(cast(Mapping[str, Any], payload))
 
 
 __all__ = ["ModelSpec"]

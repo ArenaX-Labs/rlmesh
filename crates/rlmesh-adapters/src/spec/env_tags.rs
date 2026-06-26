@@ -20,6 +20,7 @@ use super::rotations::RotationEncoding;
 /// the space, so only the layout (genuinely underdetermined by shape) and the
 /// upside-down flag are carried.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageTag {
     pub role: String,
     #[serde(default)]
@@ -33,6 +34,7 @@ pub struct ImageTag {
 /// then checked against the space) and `range` overrides infinite space
 /// bounds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateTag {
     pub role: String,
     #[serde(default)]
@@ -43,6 +45,7 @@ pub struct StateTag {
 
 /// A text entry's semantics (typically the task instruction).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TextTag {
     pub role: String,
 }
@@ -173,6 +176,31 @@ pub enum ObsTag {
 pub struct EnvTags {
     pub observation: BTreeMap<String, ObsTag>,
     pub action: ActionLayout,
+}
+
+#[cfg(test)]
+mod tag_deny_unknown_tests {
+    use super::ObsTag;
+
+    #[test]
+    fn obs_tag_rejects_typod_field_but_accepts_valid() {
+        // serde 1.0.228 honors deny_unknown_fields on an internally-tagged
+        // variant (the `type` tag is stripped before the variant deserializes),
+        // so a typo'd authoring field on the trust boundary is rejected at parse
+        // instead of silently defaulting.
+        for typo in [
+            r#"{"type": "image", "role": "x", "layuot": "chw"}"#,
+            r#"{"type": "state", "role": "x", "rnge": [0.0, 1.0]}"#,
+            r#"{"type": "text", "role": "x", "rol": "y"}"#,
+        ] {
+            let err = serde_json::from_str::<ObsTag>(typo).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "got: {err}");
+        }
+        // Valid tags (including the `type` tag) still parse.
+        let tag: ObsTag =
+            serde_json::from_str(r#"{"type": "image", "role": "x", "layout": "chw"}"#).unwrap();
+        assert!(matches!(tag, ObsTag::Image(_)));
+    }
 }
 
 #[cfg(test)]

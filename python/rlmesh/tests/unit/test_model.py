@@ -24,10 +24,37 @@ def test_connect_uses_an_env_like_object_directly() -> None:
 def test_connect_rejects_unsupported() -> None:
     from rlmesh._models._eval import _connect
 
-    with pytest.raises(
-        TypeError, match="env object, a remote-env object, or an address"
-    ):
+    with pytest.raises(TypeError, match="remote-env object, or an address string"):
         _connect(object(), "", None)
+
+
+def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> None:
+    # A local env (no env_contract) yields a contract synthesized from its spaces
+    # and metadata; num_envs must NOT be probed via __getattr__, so a gymnasium
+    # wrapper does not emit its deprecated attribute-forwarding warning.
+    from rlmesh._models._eval import _local_contract
+
+    forwarded: list[str] = []
+
+    class ForwardingEnv:
+        observation_space = "obs"
+        action_space = "act"
+
+        def __init__(self) -> None:
+            self.metadata = {"k": "v"}
+
+        def __getattr__(self, name: str) -> object:  # gymnasium warns in here
+            forwarded.append(name)
+            raise AttributeError(name)
+
+        def reset(self) -> None: ...
+        def step(self, action: object) -> None: ...
+
+    contract = _local_contract(ForwardingEnv())
+    assert contract.num_envs == 1
+    assert contract.observation_space == "obs"
+    assert contract.metadata == {"k": "v"}
+    assert forwarded == []  # nothing reached the forwarding __getattr__
 
 
 def test_shutdown_passes_a_reason_when_accepted() -> None:
@@ -113,6 +140,33 @@ def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
         _resolve_adapter(None, cast(Any, contract), False)
 
 
+def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() -> None:
+    # A RANDOM_SAMPLE baseline adapts nothing, so it must drive a tagged env without
+    # raising AdapterResolutionError and return the env's action_space.sample().
+    from types import SimpleNamespace
+
+    import rlmesh
+    import rlmesh.adapters as adapt
+
+    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    sentinel = object()
+
+    class Env:
+        observation_space = "obs"
+        action_space = SimpleNamespace(sample=lambda: sentinel)
+        metadata = tags.to_metadata()
+
+        def reset(self, *, seed: object = None) -> tuple[object, dict[str, object]]:
+            return "o", {}
+
+        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
+            return "o", 1.0, True, False, {}
+
+    sess = rlmesh.session(rlmesh.RANDOM_SAMPLE, Env())
+    obs, _ = sess.reset()
+    assert sess.predict(obs) is sentinel
+
+
 def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
     from types import SimpleNamespace
 
@@ -121,29 +175,6 @@ def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
 
     with pytest.raises(adapt.AdapterResolutionError, match="ModelSpec or NO_ADAPTER"):
         _resolve_adapter(object(), cast(Any, SimpleNamespace(metadata={})), False)
-
-
-def test_rekey_value_converts_between_framework_backends() -> None:
-    torch = pytest.importorskip("torch")
-    import numpy as np
-    from rlmesh._value_conversion import rekey_value
-    from rlmesh.numpy import _numpy_bridge
-    from rlmesh.torch import _torch_bridge
-
-    payload = {"image": np.zeros((2, 2), dtype="float32")}
-    framework = cast(
-        "dict[str, object]",
-        rekey_value(payload, source_bridge=_numpy_bridge, target_bridge=_torch_bridge),
-    )
-    assert isinstance(framework["image"], torch.Tensor)
-
-    np_action = rekey_value(
-        torch.tensor([1.0, 2.0]),
-        source_bridge=_torch_bridge,
-        target_bridge=_numpy_bridge,
-    )
-    assert isinstance(np_action, np.ndarray)
-    assert np_action.tolist() == [1.0, 2.0]
 
 
 def test_adapted_run_uses_env_bridge_for_adapter_boundary(
@@ -237,13 +268,12 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
 
     monkeypatch.setattr(eval_mod, "_resolve_adapter", lambda *_args: adapter)
 
-    result = eval_mod.evaluate(
-        predict,
-        object(),
-        Client(),
-        max_episodes=1,
+    result = eval_mod.Session(
+        predict=predict,
+        spec=object(),
+        env=Client(),
         bridge=model_bridge,
-    )
+    ).run(max_episodes=1)
 
     assert result.num_episodes == 1
     assert seen["reset"] is True
@@ -251,16 +281,24 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
     assert seen["step_action"] == "env-action"
 
 
-def test_adapted_run_uses_active_bridge_for_bridge_less_native_env(
+def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A bridge-less env encodes obs with the *numpy* bridge, not the model's.
+
+    The env-side bridge tracks the env's native value type, never the model's
+    framework. A raw local env (a gym env hands numpy) exposes no ``_bridge``, so
+    the env side must default to numpy -- otherwise a torch/jax model rejects the
+    numpy obs at the native plan. Regression for the cross-framework local-driving
+    crash: a distinct model bridge must NOT leak onto the env side.
+    """
     from types import SimpleNamespace
 
-    import rlmesh
     import rlmesh._models._eval as eval_mod
-    from rlmesh._framework_bridge import identity_bridge
+    from rlmesh._value_conversion import identity_bridge
+    from rlmesh.adapters.adapter import _numpy_value_bridge
 
-    action = rlmesh.Tensor(bytes(range(4)), [4], "uint8")
+    numpy_bridge = _numpy_value_bridge()
     seen: dict[str, object] = {}
 
     class Adapter:
@@ -276,9 +314,8 @@ def test_adapted_run_uses_active_bridge_for_bridge_less_native_env(
             input_bridge: object | None = None,
             custom_bridge: object | None = None,
         ) -> object:
-            assert input_bridge is identity_bridge
-            assert custom_bridge is identity_bridge
-            assert raw_obs == {"raw": "obs"}
+            seen["input_bridge"] = input_bridge
+            seen["custom_bridge"] = custom_bridge
             return {"model": raw_obs}
 
         def transform_action_value(
@@ -287,11 +324,11 @@ def test_adapted_run_uses_active_bridge_for_bridge_less_native_env(
             *,
             action_bridge: object | None = None,
         ) -> object:
-            assert action_bridge is identity_bridge
-            assert raw_action is action
+            seen["action_bridge"] = action_bridge
             return raw_action
 
     class Client:
+        # A native handle (has env_contract) but, like a raw local env, no _bridge.
         env_contract = SimpleNamespace(num_envs=1, metadata={})
 
         def reset(self) -> tuple[object, dict[str, object]]:
@@ -301,26 +338,25 @@ def test_adapted_run_uses_active_bridge_for_bridge_less_native_env(
             seen["step_action"] = step_action
             return {"raw": "obs"}, 1.0, True, False, {}
 
-    def predict(payload: object) -> object:
-        assert payload == {"model": {"raw": "obs"}}
-        return action
-
     monkeypatch.setattr(eval_mod, "_resolve_adapter", lambda *_args: Adapter())
 
-    result = eval_mod.evaluate(
-        predict,
-        object(),
-        Client(),
-        max_episodes=1,
-        bridge=identity_bridge,
-    )
+    result = eval_mod.Session(
+        predict=lambda payload: "model-action",
+        spec=object(),
+        env=Client(),
+        bridge=identity_bridge,  # the model bridge -- must not become the env bridge
+    ).run(max_episodes=1)
 
     assert result.num_episodes == 1
-    assert seen["step_action"] is action
+    # Env side is numpy (the env's native default), regardless of the model bridge.
+    assert seen["input_bridge"] is numpy_bridge
+    assert seen["custom_bridge"] is numpy_bridge
+    # The action's model-side encode still uses the model bridge (unchanged).
+    assert seen["action_bridge"] is identity_bridge
 
 
 def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
-    from rlmesh._models._eval import evaluate
+    from rlmesh._models._eval import Session
 
     calls: list[str] = []
 
@@ -343,14 +379,13 @@ def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
         def close(self) -> None:
             calls.append("close")
 
-    result = evaluate(
-        lambda obs: 0,
-        None,
-        "tcp://env:9000",
-        max_episodes=1,
+    result = Session(
+        predict=lambda obs: 0,
+        spec=None,
+        env="tcp://env:9000",
         close_env=close_env,
         remote_env_cls=FakeRemoteEnv,
-    )
+    ).run(max_episodes=1)
     return result, calls
 
 

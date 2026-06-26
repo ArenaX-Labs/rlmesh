@@ -73,6 +73,17 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             ),
         ));
     }
+    // `clip` is an env-side actuator clamp on the assembled action vector (read
+    // as `env.clip` below); a clip declared on the *model* action layout is
+    // silently dropped. Reject it, mirroring the per-component scale/invert/
+    // threshold guard that likewise rejects an env-side knob on the model.
+    if model.clip.is_some() {
+        return Err(err(
+            ErrorCode::Unsupported,
+            "clip is an env-side actuator clamp; the model action declaration must leave it unset"
+                .to_owned(),
+        ));
+    }
     let mut offsets: BTreeMap<String, (u32, &ActionComponent)> = BTreeMap::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
@@ -170,7 +181,6 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
             invert: env_component.invert,
             threshold: env_component.threshold,
             binarize,
-            out_dim: env_component.dim,
         });
     }
     Ok(ActionPlan {
@@ -240,6 +250,23 @@ mod tests {
         let error = plan_action(&model, &env).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("belong on the env component"));
+    }
+
+    #[test]
+    fn rejects_clip_declared_on_the_model_action() {
+        // clip is an env-side clamp applied to the assembled vector; a clip on
+        // the model layout is read from the env side only, so reject it loudly
+        // rather than silently dropping it.
+        let mut model = layout(vec![component("action/gripper")]);
+        model.clip = Some((-1.0, 1.0));
+        let env = layout(vec![component("action/gripper")]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("env-side actuator clamp"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

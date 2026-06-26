@@ -104,10 +104,16 @@ class StateField:
     dim: int = 0
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
-    # dim >= 1 and the role-less-skip rule (a skip carries no encoding/range) are
-    # enforced by the Rust codec (StateField's TryFrom guard) at serialize/normalize.
+    # The `dim = 0` default only satisfies dataclass field ordering (the optional
+    # `role` precedes it); 0 is never a valid width, so it is rejected at
+    # construction below (matching the Rust StateField codec's `dim >= 1` guard).
+    # The role-less-skip rule (a skip carries no encoding/range) stays Rust-side.
 
     def __post_init__(self) -> None:
+        if self.dim < 1:
+            raise ValueError(
+                f"StateField {self.role!r}: dim must be >= 1, got {self.dim}"
+            )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
@@ -291,24 +297,20 @@ class EnvTags:
 
     @classmethod
     def from_metadata(cls, metadata: Mapping[str, Any]) -> EnvTags | None:
-        """Extract tags from env contract metadata, newest format first.
+        """Extract tags from env contract metadata, or None when absent.
 
-        Iterates the known metadata keys newest-format-first: a future v2 format
-        ships a new key (``rlmesh.adapters.v2.env_tags`` -> a v2 reader) prepended
-        to this list, so a newer build still reads an older peer's v1 tags. This
-        is the single dual-read dispatch the v1->v2 rule promises; it moves into
-        the Rust codec (the single source of truth) once the PyO3 normalize door
-        lands.
+        Reads the single v1 metadata key (``rlmesh.adapters.v1.env_tags``). When
+        a future v2 format lands it ships a new key and reader, restoring a
+        newest-format-first dual read so a newer build still reads an older
+        peer's v1 tags; that dispatch moves into the Rust codec (the single
+        source of truth) once the PyO3 normalize door lands.
         """
-        readers = ((ENV_METADATA_KEY, cls.from_dict),)
-        for key, reader in readers:
-            payload = metadata.get(key)
-            if payload is None:
-                continue
-            if not isinstance(payload, Mapping):
-                raise TypeError(f"metadata key {key!r} must hold a mapping")
-            return reader(cast(Mapping[str, Any], payload))
-        return None
+        payload = metadata.get(ENV_METADATA_KEY)
+        if payload is None:
+            return None
+        if not isinstance(payload, Mapping):
+            raise TypeError(f"metadata key {ENV_METADATA_KEY!r} must hold a mapping")
+        return cls.from_dict(cast(Mapping[str, Any], payload))
 
 
 __all__ = [
@@ -320,6 +322,4 @@ __all__ = [
     "StateLayout",
     "StateTag",
     "TextTag",
-    "obs_tag_from_dict",
-    "obs_tag_to_dict",
 ]

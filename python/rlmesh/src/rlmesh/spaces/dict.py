@@ -7,9 +7,10 @@ from types import MappingProxyType
 from typing import Any, cast, final
 
 from .._rlmesh import dict_space_spec
+from .._value_conversion import ValueBridge
 from ..specs import SpaceSpec
 from ..types import Value
-from ._base import NewOutputT, Space, SpaceBridge
+from ._base import NewOutputT, Space
 from ._internals import EMPTY_SPACE_MAPPING, spec_details
 
 
@@ -74,7 +75,7 @@ class Dict(Space[Value]):
     def __contains__(self, key: object) -> bool:
         return key in self.spaces
 
-    def _with_bridge(self, bridge: SpaceBridge[NewOutputT]) -> Space[NewOutputT]:
+    def _with_bridge(self, bridge: ValueBridge) -> Space[NewOutputT]:
         super()._with_bridge(bridge)
         self.spaces = MappingProxyType(
             {

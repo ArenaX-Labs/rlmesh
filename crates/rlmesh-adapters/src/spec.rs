@@ -1,14 +1,16 @@
 //! v1 spec types.
 //!
-//! `#[serde(deny_unknown_fields)]` is applied to the plain structs (EnvTags,
-//! ModelSpec, ActionLayout, ActionComponent, StateComponent, StateField) so a
-//! typo'd field is rejected, not silently dropped. It is deliberately NOT on
-//! the internally-tagged-enum variant payloads (ImageInput/StateInput/
-//! TextInput/CustomInput under ModelInput; ImageTag/StateTag/TextTag/StateLayout
-//! under ObsTag) -- serde treats the `type` tag as an unknown field there and
-//! would break deserialization. Strict unknown-field rejection for those lands
-//! with the Rust normalize door (a manual key check); until then the Python
-//! from_dict mirror also stays lenient on those payloads.
+//! `#[serde(deny_unknown_fields)]` is applied so a typo'd field is rejected, not
+//! silently dropped: on the plain structs (EnvTags, ModelSpec, ActionLayout,
+//! ActionComponent, StateComponent, StateField), on the wire structs that back
+//! the try_from types (StateLayout), and -- since serde 1.0.228 honors it on an
+//! internally-tagged variant (the `type` tag is stripped before the variant
+//! deserializes) -- on the env-side ObsTag leaf tags (ImageTag/StateTag/TextTag).
+//!
+//! Still lenient: the ModelInput variant payloads (ImageInput/StateInput/
+//! TextInput/CustomInput). Migrating them is now possible (the serde limitation
+//! is gone) but not yet done; the Python from_dict mirror stays lenient on those
+//! payloads to match.
 
 mod accept_set;
 mod action;

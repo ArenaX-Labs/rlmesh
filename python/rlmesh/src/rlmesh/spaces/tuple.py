@@ -6,9 +6,10 @@ from collections.abc import Iterable
 from typing import Any, cast, final
 
 from .._rlmesh import tuple_space_spec
+from .._value_conversion import ValueBridge
 from ..specs import SpaceSpec
 from ..types import Value
-from ._base import NewOutputT, Space, SpaceBridge
+from ._base import NewOutputT, Space
 from ._internals import spec_details
 
 
@@ -36,7 +37,7 @@ class Tuple(Space[Value]):
         raw_spaces = cast(list[SpaceSpec], details.get("spaces", []))
         self.spaces = tuple(_space_from_spec(child) for child in raw_spaces)
 
-    def _with_bridge(self, bridge: SpaceBridge[NewOutputT]) -> Space[NewOutputT]:
+    def _with_bridge(self, bridge: ValueBridge) -> Space[NewOutputT]:
         super()._with_bridge(bridge)
         self.spaces = tuple(
             cast(Space[Value], child._with_bridge(bridge)) for child in self.spaces

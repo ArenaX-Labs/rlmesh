@@ -52,12 +52,16 @@ pub struct ImageInput {
     pub channels: Option<u32>,
     #[serde(default = "default_uint8")]
     pub dtype: String,
+    /// Map 8-bit pixels into `normalize_range` (default `[0, 1]`) before casting.
+    /// Setting `normalize_range` alone also turns normalization on, so this flag
+    /// is only needed to request the default `[0, 1]` range without spelling it
+    /// out (it is *not* an off-switch for a declared range).
     #[serde(default)]
     pub normalize: bool,
-    /// Target value range when `normalize` is set: pixels map from `[0, 255]`
-    /// into this range. Defaults to `[0, 1]` (the conventional 8-bit
-    /// normalization); set e.g. `[-1, 1]` for a model trained on signed inputs.
-    /// Additive over the pinned wire format (omitted when unset).
+    /// Target value range, mapped from `[0, 255]`. Setting it implies
+    /// normalization even when `normalize` is false. Defaults to `[0, 1]` (the
+    /// conventional 8-bit normalization); set e.g. `[-1, 1]` for a model trained
+    /// on signed inputs. Additive over the pinned wire format (omitted when unset).
     #[serde(
         default,
         deserialize_with = "crate::spec::num::de_opt_range",
@@ -231,10 +235,13 @@ mod tests {
 
     #[test]
     fn tagged_payload_does_not_reject_unknown_field_yet() {
-        // Documents the serde limitation: deny_unknown_fields cannot apply to an
-        // internally-tagged variant payload, so a typo'd field here is silently
-        // dropped until the Rust normalize door adds a manual key check. If this
-        // ever starts rejecting, the limitation was lifted -- update the policy.
+        // A typo'd field on a ModelInput variant is still silently dropped: the
+        // variant structs do not (yet) carry deny_unknown_fields, unlike the
+        // model-side plain structs (ActionComponent, StateComponent) that do.
+        // The serde limitation that once blocked deny on an internally-tagged
+        // variant is gone in 1.0.228 -- the env-side ObsTag tags now use it
+        // (see env_tags::tag_deny_unknown_tests) -- so migrating these variants
+        // is now possible too; this documents the remaining gap until then.
         let input = image(r#", "layuot": "chw""#);
         let ModelInput::Image(img) = &input else {
             panic!("expected image")

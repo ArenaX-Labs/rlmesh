@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from os import PathLike
+from os import PathLike, fspath
 from typing import TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
-from ._package import normalize_rlmesh_package
 
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
 
@@ -209,7 +208,7 @@ def _resolve_rlmesh_package(
                 "use rlmesh_package=..."
             )
         rlmesh_package = cast(str | PathLike[str], package_spec)
-    return normalize_rlmesh_package(rlmesh_package)
+    return fspath(rlmesh_package) if rlmesh_package is not None else None
 
 
 def reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:

@@ -38,8 +38,9 @@ def model_input_to_dict(item: ModelInput) -> dict[str, Any]:
             "upside_down": item.upside_down,
             "resample": item.resample,
         }
-        # Host-side field, emitted only when set so it is additive over the
-        # pinned wire format (the native core ignores it).
+        # Additive over the pinned v1 wire (the env still sends one frame/step),
+        # emitted only when set. It IS consumed by the native adapter engine
+        # (episode-keyed FrameBuffers), not host-only -- see ImageInput.stack.
         if item.stack != 1:
             image["stack"] = item.stack
         # Opt-in, emitted only when set (byte-parity with the pinned wire format).
@@ -167,13 +168,23 @@ def model_input_from_dict(item: object) -> ModelInput:
         )
     if kind == "custom":
         # Only entrypoint-form customs survive serialization; an in-process
-        # callable cannot be on the wire. Limitation: this reconstructs every
-        # wire custom as an EntrypointCustomInput, including the resolver's
-        # internal `transform: "host:<key>"` form (which is NOT an importable
-        # entrypoint). That form is produced for live resolve and is never meant
-        # to round-trip back through from_dict; feeding it here yields a custom
-        # with a bogus `host:` entrypoint rather than an error.
-        return EntrypointCustomInput(key=data["key"], entrypoint=data["transform"])
+        # callable cannot be on the wire. The resolver's internal
+        # `transform: "host:<key>"` placeholder (see resolver._model_wire)
+        # references a host-side callable that stayed local during resolve; it
+        # is NOT an importable entrypoint and is never meant to round-trip back
+        # through from_dict. Reject it rather than minting a custom with a bogus
+        # `host:` entrypoint that a later trust_entrypoints resolve would try to
+        # `import host`.
+        transform = data["transform"]
+        if isinstance(transform, str) and transform.startswith("host:"):
+            raise ValueError(
+                f"custom input {data['key']!r} carries a host-placeholder "
+                f"transform ({transform!r}); it references a host-side callable "
+                "that stayed local during resolve and cannot be reconstructed "
+                "from the wire form -- resolve the spec locally instead of "
+                "routing its internal wire form back through from_dict"
+            )
+        return EntrypointCustomInput(key=data["key"], entrypoint=transform)
     raise ValueError(f"unknown model input type {kind!r}")
 
 

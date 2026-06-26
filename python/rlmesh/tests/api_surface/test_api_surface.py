@@ -6,6 +6,7 @@ def test_root_namespace_is_small() -> None:
 
     assert rlmesh.__all__ == [
         "NO_ADAPTER",
+        "RANDOM_SAMPLE",
         "EnvFactory",
         "EnvServer",
         "EpisodeResult",
@@ -66,7 +67,6 @@ def test_spaces_namespace_contains_space_family() -> None:
         "MultiBinary",
         "MultiDiscrete",
         "Space",
-        "SpaceBridge",
         "SpaceSpec",
         "Text",
         "Tuple",
@@ -120,6 +120,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
         "RemoteVectorEnv",
         "SandboxEnv",
         "SandboxInfo",
+        "SandboxModel",
         "SandboxVectorEnv",
         "TorchValue",
         "as_tensor",

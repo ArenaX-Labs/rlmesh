@@ -30,11 +30,11 @@ RLMesh works with standard Gymnasium environments from `gym.make(...)` and with 
 - `step(action) -> (obs, reward, terminated, truncated, info)`
 - `close()`
 
-Vectorized environments can expose `num_envs`, `single_observation_space`, and `single_action_space`. Serve those with `rlmesh.VectorEnvServer` so the vector endpoint is explicit:
+Vectorized environments can expose `num_envs`, `single_observation_space`, and `single_action_space`. `rlmesh.EnvServer` detects that shape and serves a vector endpoint automatically:
 
 ```python
 envs = gym.vector.SyncVectorEnv([lambda: gym.make("CartPole-v1") for _ in range(4)])
-server = rlmesh.VectorEnvServer(envs, "127.0.0.1:5555")
+server = rlmesh.EnvServer(envs, "127.0.0.1:5555")
 server.serve()
 ```
 
@@ -42,7 +42,7 @@ Common Gymnasium wrappers can stay in place. RLMesh reads the spaces and calls t
 
 ## Environment Contract
 
-When `EnvServer` or `VectorEnvServer` wraps the environment, it creates an {py:class}`~rlmesh.specs.EnvContract`. Clients receive that contract during connection.
+When `EnvServer` wraps the environment, it creates an {py:class}`~rlmesh.specs.EnvContract`. Clients receive that contract during connection.
 
 ```python
 server = rlmesh.EnvServer(env, "127.0.0.1:5555")

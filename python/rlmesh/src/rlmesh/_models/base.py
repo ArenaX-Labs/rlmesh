@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
-from .._framework_bridge import ValueBridge
+from .._value_conversion import ValueBridge
 from ..types import Value
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ class ModelBase(Generic[ObsT, ActT]):
         self._trust_entrypoints = trust_entrypoints
         self._install_worker(self._on_reset)
 
-    def load(self) -> None:
+    def load(self, **kwargs: Any) -> None:
         """Load weights into ``self`` (``from_pretrained`` etc.); heavy imports here.
 
         Optional subclass hook; a no-op by default. Called once during ``__init__``
@@ -191,27 +191,16 @@ class ModelBase(Generic[ObsT, ActT]):
         per-episode loop. ``seeds`` gives a per-episode seed and sets the episode
         count unless ``max_episodes`` is given; ``instruction`` is written into the
         model's text inputs each episode. ``env_or_address`` is an env object
-        exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an object with an
-        ``address``, or a bare address string the loop dials.
+        exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
+        :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
+        object with an ``address``, or a bare address string the loop dials.
         """
-        from ._eval import evaluate
-
-        return evaluate(
-            self._raw_predict,
-            self.spec,
+        return self.session(
             env_or_address,
-            seeds=seeds,
-            max_episodes=max_episodes,
             instruction=instruction,
             close_env=close_env,
             token=token,
-            on_reset=self._on_reset,
-            on_episode_end=self._on_episode_end,
-            on_close=self._on_close,
-            trust_entrypoints=self._trust_entrypoints,
-            remote_env_cls=type(self)._remote_env_cls,
-            bridge=type(self)._bridge,
-        )
+        ).run(seeds=seeds, max_episodes=max_episodes)
 
     def session(
         self,
@@ -226,7 +215,8 @@ class ModelBase(Generic[ObsT, ActT]):
 
         The manual counterpart of :meth:`run`: drive ``reset`` / ``predict`` / ``step``
         yourself, or call :meth:`Session.run` to pump whole episodes. ``env_or_address``
-        is an env object, a remote-env handle, or an address string (see :meth:`run`).
+        is an env object, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an
+        address string (see :meth:`run`).
         """
         from ._eval import Session
 
@@ -283,7 +273,7 @@ class ModelBase(Generic[ObsT, ActT]):
         return f"{type(self).__name__}()"
 
 
-def _as_model(model: object) -> ModelBase[Any, Any]:
+def as_model(model: object) -> ModelBase[Any, Any]:
     """Normalize a model source to a built :class:`ModelBase` instance.
 
     A ``Model`` instance is used as-is; a ``Model`` subclass *class* is instantiated
@@ -313,8 +303,28 @@ def session(
 
     ``model`` is a local :class:`Model` (instance, subclass class, or a bare predict
     callable) or a served handle (:class:`RemoteModel` / :class:`SandboxModel`); ``env``
-    is a local env, a remote-env handle, or an address string.
+    is a local env, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an address
+    string. A spec'd model resolves its adapter from the env's tags -- a local env must
+    carry them (via :func:`rlmesh.adapters.tag` or an :class:`~rlmesh.EnvFactory`).
+
+    Pass :data:`rlmesh.RANDOM_SAMPLE` as ``model`` for a random baseline: each step
+    samples the env's action space, no spec or adapter involved.
     """
+    from ._adapter_mode import NO_ADAPTER
+    from ._eval import RANDOM_SAMPLE, Session
+
+    if model is RANDOM_SAMPLE:
+        # A random baseline samples the env's action space and ignores observations,
+        # so it adapts nothing -- skip adapter resolution even on a tagged env.
+        return Session(
+            env=env,
+            predict=RANDOM_SAMPLE,
+            spec=NO_ADAPTER,
+            instruction=instruction,
+            close_env=close_env,
+            token=token,
+            trust_entrypoints=bool(trust_entrypoints),
+        )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
     # its own ``.session``; anything else (a callable / subclass class) is normalized.
     binder = getattr(model, "session", None)
@@ -329,7 +339,7 @@ def session(
                 trust_entrypoints=trust_entrypoints,
             ),
         )
-    return _as_model(model).session(
+    return as_model(model).session(
         env,
         instruction=instruction,
         close_env=close_env,

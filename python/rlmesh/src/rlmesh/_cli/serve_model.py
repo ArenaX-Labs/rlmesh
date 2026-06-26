@@ -48,11 +48,14 @@ def create_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = create_parser()
     ns = parser.parse_args(argv)
+    # The parser pins every field's type (--model/--address/--token are plain
+    # required/defaulted str args, --verbose is store_true), so namespace
+    # attributes are read directly without re-validation.
     args = ServeModelArgs(
-        model=_namespace_str(ns, "model"),
-        address=_namespace_str(ns, "address"),
-        token=_namespace_str(ns, "token"),
-        verbose=_namespace_bool(ns, "verbose"),
+        model=ns.model,
+        address=ns.address,
+        token=ns.token,
+        verbose=ns.verbose,
     )
     return serve_from_args(args)
 
@@ -79,20 +82,6 @@ def serve_from_args(args: ServeModelArgs) -> int:
 
             traceback.print_exc()
         return 1
-
-
-def _namespace_str(args: argparse.Namespace, name: str) -> str:
-    value: object = vars(args).get(name)
-    if not isinstance(value, str):
-        raise TypeError(f"expected argparse field {name!r} to be a str")
-    return value
-
-
-def _namespace_bool(args: argparse.Namespace, name: str) -> bool:
-    value: object = vars(args).get(name)
-    if not isinstance(value, bool):
-        raise TypeError(f"expected argparse field {name!r} to be a bool")
-    return value
 
 
 if __name__ == "__main__":  # pragma: no cover
