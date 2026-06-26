@@ -11,7 +11,7 @@ from ..types import Value
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
 
-    from ._eval import RunResult
+    from ._eval import RunResult, Session
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -20,7 +20,14 @@ PredictFn = Callable[[ObsT], ActT]
 
 
 class ModelBase(Generic[ObsT, ActT]):
-    """A model: a predict callable driven against an env.
+    """A model: a policy you serve or drive against an env.
+
+    Construct one two ways:
+
+    * **Wrap** a predict callable -- ``Model(lambda obs: ...)``.
+    * **Subclass** ``Model`` and override ``predict`` (and optionally ``load`` for
+      weight loading, ``reset``/``close`` lifecycle hooks, and the ``spec`` class
+      attribute), then instantiate it -- ``class P(Model): ...`` then ``P()``.
 
     ``run(env, seeds=...)`` drives the model against an env and returns a typed
     :class:`RunResult` -- it resolves the adapter from the env's published tags and
@@ -29,11 +36,13 @@ class ModelBase(Generic[ObsT, ActT]):
     to dial.
 
     Args:
-        source: A predict callable.
+        source: A predict callable. Omit it when subclassing (``predict`` is the
+            source then).
         spec: Optional :class:`rlmesh.adapters.ModelSpec`; makes this an *adapted*
             model. Pass :data:`rlmesh.NO_ADAPTER` to explicitly skip adapter
-            resolution.
-        on_reset / on_episode_end / on_close: Optional lifecycle callbacks.
+            resolution. Overrides the ``spec`` class attribute when both are set.
+        on_reset / on_episode_end / on_close: Optional lifecycle callbacks (they
+            override a subclass's ``reset``/``close`` methods).
         trust_entrypoints: Allow ``module:callable`` custom-input entrypoints in a
             spec to be imported during adapter resolution.
 
@@ -47,10 +56,13 @@ class ModelBase(Generic[ObsT, ActT]):
     _bridge: ClassVar[ValueBridge]
     #: Framework remote-env client used when ``run`` is given a bare address.
     _remote_env_cls: ClassVar[type | None] = None
+    #: The model's content: a ``ModelSpec``, ``NO_ADAPTER``, or ``None``. Set it as a
+    #: class attribute when subclassing; the ``spec=`` kwarg overrides it per instance.
+    spec: object | None = None
 
     def __init__(
         self,
-        source: Callable[..., object] | object,
+        source: Callable[..., object] | object | None = None,
         *,
         spec: object | None = None,
         on_reset: LifecycleCallback | None = None,
@@ -59,25 +71,64 @@ class ModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: bool = False,
     ) -> None:
         self._bridge.ensure_available()
-        from ._eval import coerce_model
 
-        coerced = coerce_model(
-            source,
-            spec=spec,
-        )
-        self._raw_predict = cast("PredictFn[ObsT, ActT]", coerced.predict)
-        self._spec = coerced.spec
-        self._policy = coerced.policy
-        self._on_reset = on_reset if on_reset is not None else coerced.on_reset
-        self._on_close = on_close if on_close is not None else coerced.on_close
+        if source is None and type(self).predict is not ModelBase.predict:  # pyright: ignore[reportUnknownMemberType]
+            # Subclass-authoring mode: a Model subclass that overrides predict (and
+            # optionally load/reset/close/spec). Load weights once, before the worker
+            # is built, then drive self.predict.
+            self.load()
+            raw_predict: Callable[..., object] = self.predict
+            resolved_spec = spec if spec is not None else type(self).spec
+            coerced_on_reset: LifecycleCallback | None = self.reset
+            coerced_on_close: LifecycleCallback | None = self.close
+            policy: object = self
+        elif source is None:
+            raise TypeError(
+                "Model() needs a predict callable, e.g. Model(lambda obs: ...), "
+                "or subclass Model and override predict()."
+            )
+        else:
+            from ._eval import coerce_model
+
+            coerced = coerce_model(source, spec=spec)
+            raw_predict = coerced.predict
+            resolved_spec = coerced.spec
+            coerced_on_reset = coerced.on_reset
+            coerced_on_close = coerced.on_close
+            policy = coerced.policy
+
+        self._raw_predict = cast("PredictFn[ObsT, ActT]", raw_predict)
+        self.spec = resolved_spec
+        self._policy = policy
+        self._on_reset = on_reset if on_reset is not None else coerced_on_reset
+        self._on_close = on_close if on_close is not None else coerced_on_close
         self._on_episode_end = on_episode_end
         self._trust_entrypoints = trust_entrypoints
         self._install_worker(self._on_reset)
 
-    @property
-    def spec(self) -> object | None:
-        """The model's content: a ``ModelSpec``, ``NO_ADAPTER``, or ``None``."""
-        return self._spec
+    def load(self) -> None:
+        """Load weights into ``self`` (``from_pretrained`` etc.); heavy imports here.
+
+        Optional subclass hook; a no-op by default. Called once during ``__init__``
+        (subclass mode only) before the native worker is built.
+        """
+
+    def predict(self, observation: ObsT) -> ActT:
+        """Map one observation to an action (or an action chunk per ``spec``).
+
+        Override when subclassing ``Model``; the default raises. A model built by
+        wrapping a predict callable uses that callable instead of this method.
+        """
+        raise NotImplementedError(
+            "Model subclasses must override predict(), or construct a Model by "
+            "wrapping a predict callable, e.g. Model(lambda obs: ...)."
+        )
+
+    def reset(self) -> None:
+        """Optional: called at each episode boundary (no-op by default)."""
+
+    def close(self) -> None:
+        """Optional: release resources at the end of a run (no-op by default)."""
 
     def _install_worker(self, on_reset: LifecycleCallback | None) -> None:
         """Build the native model worker (the serve path).
@@ -94,7 +145,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
         from ._eval import resolve_route_adapter
 
-        spec = self._spec
+        spec = self.spec
         bridge = self._bridge
         raw_predict = self._raw_predict
         trust = self._trust_entrypoints
@@ -147,7 +198,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
         return evaluate(
             self._raw_predict,
-            self._spec,
+            self.spec,
             env_or_address,
             seeds=seeds,
             max_episodes=max_episodes,
@@ -160,6 +211,42 @@ class ModelBase(Generic[ObsT, ActT]):
             trust_entrypoints=self._trust_entrypoints,
             remote_env_cls=type(self)._remote_env_cls,
             bridge=type(self)._bridge,
+        )
+
+    def session(
+        self,
+        env_or_address: object,
+        *,
+        instruction: str | None = None,
+        close_env: bool = False,
+        token: str = "",
+        trust_entrypoints: bool | None = None,
+    ) -> Session[ObsT, ActT]:
+        """Bind this model to an env and return a :class:`Session` to drive by hand.
+
+        The manual counterpart of :meth:`run`: drive ``reset`` / ``predict`` / ``step``
+        yourself, or call :meth:`Session.run` to pump whole episodes. ``env_or_address``
+        is an env object, a remote-env handle, or an address string (see :meth:`run`).
+        """
+        from ._eval import Session
+
+        return Session(
+            predict=self._raw_predict,
+            spec=self.spec,
+            env=env_or_address,
+            on_reset=self._on_reset,
+            on_episode_end=self._on_episode_end,
+            on_close=self._on_close,
+            trust_entrypoints=(
+                self._trust_entrypoints
+                if trust_entrypoints is None
+                else trust_entrypoints
+            ),
+            bridge=self._bridge,
+            remote_env_cls=type(self)._remote_env_cls,
+            instruction=instruction,
+            close_env=close_env,
+            token=token,
         )
 
     def serve(
@@ -196,4 +283,86 @@ class ModelBase(Generic[ObsT, ActT]):
         return f"{type(self).__name__}()"
 
 
-__all__ = ["LifecycleCallback", "ModelBase", "PredictFn"]
+def _as_model(model: object) -> ModelBase[Any, Any]:
+    """Normalize a model source to a built :class:`ModelBase` instance.
+
+    A ``Model`` instance is used as-is; a ``Model`` subclass *class* is instantiated
+    once; a bare predict callable (or duck-typed policy object) is wrapped in the NumPy
+    framework ``Model``. (Served ``RemoteModel`` / ``SandboxModel`` handles bind via
+    their own ``.session`` and never reach here.)
+    """
+    if isinstance(model, ModelBase):
+        return cast("ModelBase[Any, Any]", model)
+    if isinstance(model, type) and issubclass(model, ModelBase):
+        return cast("ModelBase[Any, Any]", model())
+    from ..numpy import Model
+
+    return Model(cast(object, model))
+
+
+def session(
+    model: object,
+    env: object,
+    *,
+    instruction: str | None = None,
+    close_env: bool = False,
+    token: str = "",
+    trust_entrypoints: bool | None = None,
+) -> Session[Any, Any]:
+    """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
+
+    ``model`` is a local :class:`Model` (instance, subclass class, or a bare predict
+    callable) or a served handle (:class:`RemoteModel` / :class:`SandboxModel`); ``env``
+    is a local env, a remote-env handle, or an address string.
+    """
+    # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
+    # its own ``.session``; anything else (a callable / subclass class) is normalized.
+    binder = getattr(model, "session", None)
+    if callable(binder) and not isinstance(model, type):
+        return cast(
+            "Session[Any, Any]",
+            binder(
+                env,
+                instruction=instruction,
+                close_env=close_env,
+                token=token,
+                trust_entrypoints=trust_entrypoints,
+            ),
+        )
+    return _as_model(model).session(
+        env,
+        instruction=instruction,
+        close_env=close_env,
+        token=token,
+        trust_entrypoints=trust_entrypoints,
+    )
+
+
+def run(
+    model: object,
+    env: object,
+    *,
+    seeds: Sequence[int] | None = None,
+    max_episodes: int | None = None,
+    instruction: str | None = None,
+    close_env: bool = False,
+    token: str = "",
+    trust_entrypoints: bool | None = None,
+) -> RunResult:
+    """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
+
+    The auto-pump convenience over :func:`rlmesh.session` -- equivalent to
+    ``rlmesh.session(model, env).run(seeds=...)``. Works for a local :class:`Model` or a
+    served :class:`RemoteModel` / :class:`SandboxModel`.
+    """
+    return session(
+        model,
+        env,
+        instruction=instruction,
+        close_env=close_env,
+        token=token,
+        trust_entrypoints=trust_entrypoints,
+    ).run(seeds=seeds, max_episodes=max_episodes)
+
+
+__all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "run", "session"]

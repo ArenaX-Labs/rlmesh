@@ -19,7 +19,7 @@ use rlmesh_proto::env::v1::{
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, is_protocol_generation_supported, peer_info,
+    PROTOCOL_GENERATION, capability_map, negotiate_workflow_edition, peer_info,
     supported_workflow_editions,
 };
 
@@ -34,7 +34,6 @@ use super::wire::{join_request_kind_name, proto_error_to_env_error};
 pub struct EnvHandshake {
     pub env_contract: EnvContract,
     pub num_envs: usize,
-    pub server_protocol_generation: String,
     pub workflow_edition: String,
     pub supported_workflow_editions: Vec<String>,
     /// Optional features the server advertised (advisory; query with
@@ -43,15 +42,14 @@ pub struct EnvHandshake {
 }
 
 impl EnvHandshake {
-    /// The env's negotiation offer for three-way (relay) session-floor
-    /// reconciliation: its workflow editions and advertised capabilities.
-    /// Generation is gated separately by equality at the handshake (see
-    /// `server_protocol_generation`), so it is not part of the floor offer. Feeds
-    /// [`rlmesh_proto::negotiate_session_floor`] as the env's offer.
+    /// The env's bind-time offer: the workflow editions it supports. Generation
+    /// is gated by equality at the handshake (carried by `base.compatible`), so it
+    /// is not part of the offer. Capabilities are read pairwise from
+    /// [`capabilities`](Self::capabilities), not negotiated. Feeds
+    /// [`rlmesh_proto::mutual`] as the env's offer.
     pub fn session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
             editions: self.supported_workflow_editions.clone(),
-            capabilities: self.capabilities.clone(),
         }
     }
 }
@@ -196,18 +194,13 @@ impl EnvClient {
             ))
         })?;
 
+        // `compatible` is the server's verdict on protocol generation (plain
+        // equality — a wrong generation is a hard, full-restart break) and edition
+        // mutuality. The client trusts it; there is no echoed server generation.
         if !base.compatible {
-            return Err(ProtocolError::HandshakeFailed(base.error_message).into());
-        }
-        // Protocol generation is plain equality: the server must speak the exact
-        // generation this client was built against, or the session is a hard
-        // mismatch (a deliberate major break).
-        if !is_protocol_generation_supported(&base.server_protocol_generation) {
-            return Err(ProtocolError::HandshakeFailed(format!(
-                "server protocol generation {} does not match this client ({PROTOCOL_GENERATION})",
-                base.server_protocol_generation
-            ))
-            .into());
+            return Err(
+                ProtocolError::HandshakeFailed(base.error_message.unwrap_or_default()).into(),
+            );
         }
 
         let env_contract = env_contract.ok_or_else(|| {
@@ -216,14 +209,19 @@ impl EnvClient {
             ))
         })?;
         validate_env_contract(&env_contract)?;
-        let num_envs = usize::try_from(env_contract.num_envs.unwrap_or(0))
+        let num_envs = usize::try_from(env_contract.num_envs)
             .unwrap_or(usize::MAX)
             .max(1);
+        // The handshake declares supported editions; the runtime (this client)
+        // selects the mutual edition with the env. Empty if there is no mutual,
+        // but `compatible` already gated that, so a compatible peer always has one.
+        let workflow_edition = negotiate_workflow_edition(&base.supported_workflow_editions)
+            .map(str::to_string)
+            .unwrap_or_default();
         let handshake = EnvHandshake {
             env_contract,
             num_envs,
-            server_protocol_generation: base.server_protocol_generation,
-            workflow_edition: base.selected_workflow_edition,
+            workflow_edition,
             supported_workflow_editions: base.supported_workflow_editions,
             capabilities: base.capabilities,
         };
@@ -237,10 +235,7 @@ impl EnvClient {
             base: Some(CoreHandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 peer_info: Some(peer_info("rlmesh-env")),
-                capabilities: capability_map(&[
-                    capabilities::ENV_SERVICE_V1,
-                    capabilities::SPACES_CORE_V1,
-                ]),
+                capabilities: capability_map(&[]),
                 supported_workflow_editions: supported_workflow_editions(),
             }),
         };
@@ -589,9 +584,7 @@ mod tests {
         StepResponse,
     };
     use rlmesh_proto::spaces::v1::SpaceSpec;
-    use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, supported_workflow_editions,
-    };
+    use rlmesh_proto::supported_workflow_editions;
     use tokio::sync::oneshot;
     use tokio_stream::wrappers::ReceiverStream;
     use tonic::transport::Endpoint;
@@ -926,8 +919,6 @@ mod tests {
             Ok(Response::new(HandshakeResponse {
                 base: Some(CoreHandshakeResponse {
                     compatible: true,
-                    server_protocol_generation: PROTOCOL_GENERATION.to_string(),
-                    selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
                     supported_workflow_editions: supported_workflow_editions(),
                     ..Default::default()
                 }),
@@ -937,7 +928,7 @@ mod tests {
                         action_space: Some(SpaceSpec::default()),
                         ..Default::default()
                     }),
-                    num_envs: Some(1),
+                    num_envs: 1,
                     ..Default::default()
                 }),
             }))

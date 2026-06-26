@@ -222,29 +222,26 @@ def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
     try:
         env = RemoteEnv(env_server.address)
         deadline = time.monotonic() + 5.0
-        model: Any = None
+        sess: Any = None
         last_error: BaseException | None = None
         while time.monotonic() < deadline:
             try:
-                model = RemoteModel(model_address).against(env)
+                sess = rlmesh.session(RemoteModel(model_address), env)
                 break
             except Exception as exc:
                 last_error = exc
                 time.sleep(0.05)
-        if model is None:
+        if sess is None:
             raise AssertionError("served model never came up") from last_error
 
-        obs, _info = env.reset(seed=0)
-        model.reset()
-        done = False
+        obs, _info = sess.reset(seed=0)
         steps = 0
-        while not done and steps < 5:
-            action = model.predict(obs)
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            done = terminated or truncated
+        while not sess.done and steps < 5:
+            action = sess.predict(obs)
+            obs, _reward, _terminated, _truncated, _info = sess.step(action)
             steps += 1
 
-        model.close()
+        sess.close()
         env.close()
     finally:
         env_server.shutdown()
@@ -301,25 +298,22 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
     try:
         env = RemoteEnv(env_server.address)
         deadline = time.monotonic() + 5.0
-        model: Any = None
+        sess: Any = None
         while time.monotonic() < deadline:
             try:
-                model = RemoteModel(model_address).against(env)
+                sess = rlmesh.session(RemoteModel(model_address), env)
                 break
             except Exception:  # retry until the server is up
                 time.sleep(0.05)
-        assert model is not None, "served model never came up"
+        assert sess is not None, "served model never came up"
 
-        obs, _info = env.reset(seed=0)
-        model.reset()
-        done = False
+        obs, _info = sess.reset(seed=0)
         steps = 0
-        while not done and steps < 3:
-            action = model.predict(obs)
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            done = terminated or truncated
+        while not sess.done and steps < 3:
+            action = sess.predict(obs)
+            obs, _reward, _terminated, _truncated, _info = sess.step(action)
             steps += 1
-        model.close()
+        sess.close()
         env.close()
     finally:
         env_server.shutdown()
@@ -446,25 +440,22 @@ def test_served_chunk_replay_predicts_once_per_horizon() -> None:
     try:
         env = RemoteEnv(env_server.address)
         deadline = time.monotonic() + 5.0
-        model: Any = None
+        sess: Any = None
         while time.monotonic() < deadline:
             try:
-                model = RemoteModel(model_address).against(env)
+                sess = rlmesh.session(RemoteModel(model_address), env)
                 break
             except Exception:  # retry until the server is up
                 time.sleep(0.05)
-        assert model is not None, "served model never came up"
+        assert sess is not None, "served model never came up"
 
-        obs, _info = env.reset(seed=0)
-        model.reset()
-        done = False
+        obs, _info = sess.reset(seed=0)
         steps = 0
-        while not done and steps < 3:
-            action = model.predict(obs)
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            done = terminated or truncated
+        while not sess.done and steps < 3:
+            action = sess.predict(obs)
+            obs, _reward, _terminated, _truncated, _info = sess.step(action)
             steps += 1
-        model.close()
+        sess.close()
         env.close()
     finally:
         env_server.shutdown()

@@ -158,18 +158,19 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
 
 @final
 class RemoteModel(RemoteModelBase[NumpyValue, NumpyValue]):
-    """NumPy-backed handle to a model (policy) server.
+    """NumPy-backed handle to a served model (policy).
 
-    Bind it to an env with ``against(env)`` to get a session whose ``predict``
-    accepts and returns NumPy values, symmetric with :class:`RemoteEnv`.
+    Bind it to an env with ``rlmesh.session(model, env)`` to get a :class:`rlmesh.Session`
+    whose ``predict`` accepts and returns NumPy values, driven symmetrically with the env.
 
     Examples:
+        >>> import rlmesh
         >>> from rlmesh.numpy import RemoteEnv, RemoteModel
         >>> env = RemoteEnv("127.0.0.1:5555")
-        >>> model = RemoteModel("127.0.0.1:5556").against(env)
-        >>> obs, _ = env.reset(seed=0)
-        >>> model.reset()
-        >>> action = model.predict(obs)
+        >>> sess = rlmesh.session(RemoteModel("127.0.0.1:5556"), env)
+        >>> obs, _ = sess.reset(seed=0)
+        >>> action = sess.predict(obs)
+        >>> obs, reward, terminated, truncated, _ = sess.step(action)
     """
 
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
@@ -203,13 +204,12 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
-@final
 class Model(ModelBase[NumpyValue, NumpyValue]):
     """NumPy-backed model: ``predict`` works in NumPy values.
 
-    The NumPy-typed :class:`~rlmesh._models.base.ModelBase` -- ``Model(source, spec=...)``
-    where ``source`` is a predict callable; ``run(env, seeds=[...])`` returns a typed
-    ``RunResult``. See :class:`~rlmesh._models.base.ModelBase`.
+    The NumPy-typed :class:`~rlmesh._models.base.ModelBase`: wrap a predict callable
+    (``Model(fn, spec=...)``) or subclass and override ``predict``; ``run(env,
+    seeds=[...])`` returns a typed ``RunResult``. See :class:`~rlmesh._models.base.ModelBase`.
 
     Examples:
         >>> from rlmesh.numpy import Model
@@ -247,7 +247,8 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
         >>> env.close()
     """
 
-    _remote_env_cls = RemoteEnv
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 @final
@@ -278,7 +279,8 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
         >>> envs.close()
     """
 
-    _remote_env_cls = RemoteVectorEnv
+    _bridge: ClassVar[ValueBridge] = _numpy_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _numpy_space_bridge
 
 
 __all__ = [

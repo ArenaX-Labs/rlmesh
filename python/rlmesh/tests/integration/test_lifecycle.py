@@ -291,15 +291,8 @@ def assert_connect_rejected_with_value_error(address: str, pattern: str) -> None
 def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
     import rlmesh
 
-    server_cls = (
-        rlmesh.VectorEnvServer
-        if hasattr(env, "num_envs")
-        or hasattr(env, "single_observation_space")
-        or hasattr(env, "single_action_space")
-        else rlmesh.EnvServer
-    )
     try:
-        return server_cls(
+        return rlmesh.EnvServer(
             cast("ServedEnv", env),
             host="127.0.0.1",
             port=0,
@@ -311,11 +304,11 @@ def env_server(env: object, options: ServeOptions | None = None) -> EnvServer:
         raise
 
 
-def test_env_server_rejects_vector_env_shape() -> None:
-    import rlmesh
-
-    with pytest.raises(TypeError, match="Use VectorEnvServer"):
-        rlmesh.EnvServer(TinyVectorEnv(), host="127.0.0.1", port=0)
+def test_env_server_auto_detects_vector_env_shape() -> None:
+    # EnvServer auto-detects the vectorized shape (num_envs >= 2) and serves it via
+    # the native vector server -- no rejection, no separate VectorEnvServer class.
+    server = env_server(TinyVectorEnv())
+    server.shutdown()
 
 
 def test_remote_close_detaches_without_stopping_endpoint() -> None:
@@ -687,16 +680,6 @@ def test_env_server_wait_rejects_invalid_timeout(timeout: float) -> None:
     assert env.close_calls == 1
 
 
-def test_vector_env_server_rejects_one_env_vector_endpoint() -> None:
-    import rlmesh
-
-    _ = pytest.importorskip("numpy")
-
-    env = TinyOneVectorEnv()
-    with pytest.raises(ValueError, match="num_envs >= 2"):
-        rlmesh.VectorEnvServer(env, host="127.0.0.1", port=0)
-
-
 def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
     import rlmesh
 
@@ -723,10 +706,12 @@ def test_remote_vector_close_detaches_without_stopping_endpoint() -> None:
 
 
 def test_env_server_rejects_one_env_vector_shape() -> None:
+    # A num_envs==1 vector-shaped env auto-detects to the native vector server,
+    # which requires num_envs >= 2.
     import rlmesh
 
     env = TinyOneVectorEnv()
-    with pytest.raises(TypeError, match="Use VectorEnvServer"):
+    with pytest.raises(ValueError, match="num_envs >= 2"):
         rlmesh.EnvServer(env, host="127.0.0.1", port=0)
 
 

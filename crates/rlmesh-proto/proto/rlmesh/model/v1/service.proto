@@ -3,6 +3,7 @@ syntax = "proto3";
 package rlmesh.model.v1;
 
 import "rlmesh/core/v1/handshake.proto";
+import "rlmesh/core/v1/model_contract.proto";
 import "rlmesh/model/v1/interaction.proto";
 
 message HandshakeRequest {
@@ -11,6 +12,7 @@ message HandshakeRequest {
 
 message HandshakeResponse {
   rlmesh.core.v1.HandshakeResponse base = 1;
+  rlmesh.core.v1.ModelContract model_contract = 2;
 }
 
 message ShutdownRequest {

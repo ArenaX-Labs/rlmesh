@@ -27,7 +27,6 @@ class RemoteVectorEnv(RemoteVectorEnvBase[Value, Value]):
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
-@final
 class Model(ModelBase[Value, Value]):
     _bridge: ClassVar[ValueBridge] = identity_bridge
     # Without this, run(address) falls back to the numpy RemoteEnv (forcing the
@@ -37,12 +36,12 @@ class Model(ModelBase[Value, Value]):
 
 @final
 class SandboxEnv(SandboxEnvBase[Value, Value]):
-    _remote_env_cls = RemoteEnv
+    _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 @final
 class SandboxVectorEnv(SandboxVectorEnvBase[Value, Value]):
-    _remote_env_cls = RemoteVectorEnv
+    _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
 __all__ = [

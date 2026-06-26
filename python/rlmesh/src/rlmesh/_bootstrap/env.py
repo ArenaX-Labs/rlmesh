@@ -11,7 +11,7 @@ from .gym_support import (
     make_gym_environment,
 )
 from .loaders import (
-    RecipeConstructionError,
+    EntrypointConstructionError,
     import_packages,
     is_env_lookup_error,
     load_env_entrypoint,
@@ -32,7 +32,7 @@ from .spec_resolution import (
 
 __all__ = [
     "BootstrapUsageError",
-    "RecipeConstructionError",
+    "EntrypointConstructionError",
     "expect_mapping",
     "import_gym_modules",
     "import_packages",

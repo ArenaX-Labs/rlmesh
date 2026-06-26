@@ -77,7 +77,7 @@ def _connect_model_with_retry(address: str, env: object) -> Any:
     last_error: BaseException | None = None
     while time.monotonic() < deadline:
         try:
-            return rlmesh.RemoteModel(address).against(env)
+            return rlmesh.session(rlmesh.RemoteModel(address), env)
         except Exception as exc:  # retry until the server is up
             last_error = exc
             time.sleep(0.05)
@@ -94,30 +94,27 @@ def test_remote_model_drives_a_served_env_in_the_symmetric_loop() -> None:
 
     try:
         env = rlmesh.RemoteEnv(env_server.address)
-        model = _connect_model_with_retry(model_address, env)
+        sess = _connect_model_with_retry(model_address, env)
 
-        obs, _info = env.reset(seed=0)
-        model.reset()
-        done = False
+        obs, _info = sess.reset(seed=0)
         steps = 0
-        while not done and steps < 5:
-            action = model.predict(obs)
-            obs, _reward, terminated, truncated, _info = env.step(action)
-            done = terminated or truncated
+        while not sess.done and steps < 5:
+            action = sess.predict(obs)
+            obs, _reward, _terminated, _truncated, _info = sess.step(action)
             steps += 1
 
         # The policy was consulted, returned its action (1), and the env stepped.
         assert seen, "served policy predict was never called"
         assert steps == 1
-        model.close()
+        sess.close()
         env.close()
     finally:
         env_server.shutdown()
 
 
-def test_against_requires_an_env_contract() -> None:
+def test_session_requires_an_env_contract() -> None:
     import rlmesh
 
     model = rlmesh.RemoteModel(f"127.0.0.1:{_free_port()}")
     with pytest.raises(TypeError, match="env_contract"):
-        model.against(object())
+        rlmesh.session(model, object())

@@ -11,7 +11,6 @@ from .env import (
     load_env_from_spec,
     resolve_bootstrap_spec,
 )
-from .spec_resolution import expect_num_envs
 
 if TYPE_CHECKING:
     from rlmesh._server import EnvLike, VectorServerEnvLike
@@ -53,40 +52,26 @@ def main(
         spec["vectorization_mode"] = vectorization_mode
 
     try:
-        from rlmesh import EnvServer, VectorEnvServer
+        from rlmesh import EnvServer
 
         raw_env = load_env_from_spec(spec)
-        num_envs_value = expect_num_envs(
-            spec.get("num_envs"), "bootstrap spec.num_envs"
-        )
+        env = cast("EnvLike[Any, Any] | VectorServerEnvLike", raw_env)
         # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
         # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
-        # deprecated aliases read after the new names.
+        # deprecated aliases read after the new names. EnvServer auto-detects the
+        # vectorized shape, so one construction path serves scalar and vector envs.
         address = os.environ.get("RLMESH_ADDRESS") or os.environ.get(
             "RLMESH_ENV_ADDRESS"
         )
-        if num_envs_value > 1:
-            env = cast("VectorServerEnvLike", raw_env)
-            if address:
-                server = VectorEnvServer(env, address)
-            else:
-                port = int(
-                    os.environ.get("RLMESH_PORT")
-                    or os.environ.get("RLMESH_ENV_PORT")
-                    or "50051"
-                )
-                server = VectorEnvServer(env, host="0.0.0.0", port=port)
+        if address:
+            server = EnvServer(env, address)
         else:
-            env = cast("EnvLike[Any, Any]", raw_env)
-            if address:
-                server = EnvServer(env, address)
-            else:
-                port = int(
-                    os.environ.get("RLMESH_PORT")
-                    or os.environ.get("RLMESH_ENV_PORT")
-                    or "50051"
-                )
-                server = EnvServer(env, host="0.0.0.0", port=port)
+            port = int(
+                os.environ.get("RLMESH_PORT")
+                or os.environ.get("RLMESH_ENV_PORT")
+                or "50051"
+            )
+            server = EnvServer(env, host="0.0.0.0", port=port)
         print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()
         return 0

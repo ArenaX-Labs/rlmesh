@@ -28,20 +28,17 @@ The example uses `SandboxEnv` because it requests one environment. Use `SandboxV
 
 ## Model Drives Env
 
-`SandboxModel("image://<tag>").against(env)` is the managed sibling of `RemoteModel(address).against(env)`: it starts the policy in its own container and returns a session you drive with the same `reset`/`predict` loop as the env, so the policy executes in its own container, not in your process. In v0.1 the model container is a prebuilt image you build yourself -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
+`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` is the managed sibling of `rlmesh.session(rlmesh.RemoteModel(address), env)`: it starts the policy in its own container and returns a `Session` you drive with `reset`/`predict`/`step`, so the policy executes in its own container, not in your process. In v0.1 the model container is a prebuilt image you build yourself -- see [`byo_container/model`](../byo_container/model) for the Dockerfile and entrypoint:
 
 ```python
 import rlmesh
 
 env = rlmesh.RemoteEnv("127.0.0.1:50051")
-model = rlmesh.SandboxModel("image://my-model:latest").against(env)
-obs, _ = env.reset()
-model.reset()
-done = False
-while not done:
-    action = model.predict(obs)
-    obs, reward, terminated, truncated, _ = env.step(action)
-    done = terminated or truncated
+sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)
+obs, _ = sess.reset()
+while not sess.done:
+    action = sess.predict(obs)
+    obs, reward, terminated, truncated, _ = sess.step(action)
 ```
 
 ## Local Development Notes

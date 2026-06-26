@@ -2,13 +2,13 @@
 
 You write a Dockerfile (see the sibling ``Dockerfile``) and this entrypoint, and
 RLMesh runs the image. The container serves the policy on
-``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client drives it with the
-symmetric loop -- ``rlmesh.RemoteModel(address).against(env)`` un-managed, or
-``rlmesh.SandboxModel("image://<tag>").against(env)`` managed -- and RLMesh
+``RLMESH_ADDRESS`` (default ``0.0.0.0:50051``); a client drives it with
+``rlmesh.session(rlmesh.RemoteModel(address), env)`` un-managed, or
+``rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)`` managed -- and RLMesh
 Managed runs the same image. ``docker push`` the tag to a registry it can reach.
 
 The lazy path: skip this file entirely and set the Dockerfile ENTRYPOINT to
-``python -m rlmesh.serve my_pkg:MyPolicy`` -- it serves the MyPolicy recipe below
+``python -m rlmesh.serve my_pkg:MyPolicy`` -- it serves the MyPolicy model below
 with no hand-written serve loop.
 """
 
@@ -16,12 +16,11 @@ from __future__ import annotations
 
 import os
 
-from rlmesh import ModelRecipe
 from rlmesh.numpy import Model
 
 
-class MyPolicy(ModelRecipe):
-    """Subclass ModelRecipe: set ``spec`` (optional), implement load + predict."""
+class MyPolicy(Model):
+    """Subclass ``rlmesh.numpy.Model``: set ``spec`` (optional), implement load + predict."""
 
     # spec = ModelSpec(...)  # declare inputs/outputs to get automatic adapters.
 
@@ -38,7 +37,7 @@ def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
     print(f"RLMesh BYO model serving {address}", flush=True)
     # Equivalent one-liner: `python -m rlmesh.serve <this_module>:MyPolicy`.
-    Model(MyPolicy).serve(address)
+    MyPolicy().serve(address)
 
 
 if __name__ == "__main__":

@@ -1005,10 +1005,7 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
 
     let address = format!("tcp://127.0.0.1:{port}");
     // An env that offers exactly this build's edition.
-    let env_offer = rlmesh_proto::SessionOffer::new(
-        &[rlmesh_proto::CURRENT_WORKFLOW_EDITION],
-        &[rlmesh_proto::capabilities::SPACES_CORE_V1],
-    );
+    let env_offer = rlmesh_proto::SessionOffer::new(&[rlmesh_proto::CURRENT_WORKFLOW_EDITION]);
     let mut model = crate::RemoteModel::connect_with_env_offer(
         &address,
         "",
@@ -1018,13 +1015,12 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     .await
     .expect("model server did not start");
 
-    let floor = model.session_floor();
     assert_eq!(
-        floor.selected_workflow_edition,
+        model.selected_workflow_edition(),
         rlmesh_proto::CURRENT_WORKFLOW_EDITION
     );
 
-    // The route configures (the pinned floor is accepted by the served model).
+    // The route configures (the pinned edition is accepted by the served model).
     model.reset();
     let action = model
         .predict(spaces::SpaceValue::Box(
@@ -1044,11 +1040,10 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
 }
 
 #[tokio::test]
-async fn remote_model_fails_fast_when_no_three_way_floor() {
-    // If the env offers no edition this runtime/model can speak, the session
-    // fails before any route is configured, with a diagnostic naming all three
-    // offers. (The model handshake still happens; the floor reconciliation is
-    // what fails.)
+async fn remote_model_fails_fast_when_no_mutual_edition() {
+    // If the env offers no edition the model can speak, the session fails before
+    // any route is configured, with a diagnostic naming both offers. (The model
+    // handshake still happens; the 2-way edition pick is what fails.)
     let predicts = Arc::new(AtomicUsize::new(0));
     let closes = Arc::new(AtomicUsize::new(0));
     let bound = ModelWorker::new(SmokeModel {
@@ -1071,7 +1066,7 @@ async fn remote_model_fails_fast_when_no_three_way_floor() {
 
     let address = format!("tcp://127.0.0.1:{port}");
     // The env offers only a future edition no peer here implements.
-    let env_offer = rlmesh_proto::SessionOffer::new(&["2099.01"], &[]);
+    let env_offer = rlmesh_proto::SessionOffer::new(&["2099.01"]);
     let message = match crate::RemoteModel::connect_with_env_offer(
         &address,
         "",
@@ -1085,7 +1080,7 @@ async fn remote_model_fails_fast_when_no_three_way_floor() {
     };
     assert!(
         message.contains("no mutual session floor") && message.contains("2099.01"),
-        "expected a three-way floor diagnostic naming the offers, got: {message}"
+        "expected a 2-way edition diagnostic naming both offers, got: {message}"
     );
 
     server.abort();

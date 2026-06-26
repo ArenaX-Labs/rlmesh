@@ -98,7 +98,7 @@ def test_gpus_rejects_empty() -> None:
         rlmesh.SandboxModel("image://m:latest", gpus="  ")
 
 
-def test_against_serves_then_binds_a_session_to_the_env(
+def test_session_serves_then_binds_to_the_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
@@ -113,6 +113,9 @@ def test_against_serves_then_binds_a_session_to_the_env(
         def address(self) -> str:
             return "127.0.0.1:9"
 
+        def close(self) -> None:
+            pass
+
     import rlmesh._rlmesh as native
 
     monkeypatch.setattr(native, "PyModelClient", FakePyModelClient)
@@ -123,16 +126,14 @@ def test_against_serves_then_binds_a_session_to_the_env(
         env_contract = object()
         _bridge = sentinel_bridge
 
-    from rlmesh._client._remote_model import ModelSession
-
     model = rlmesh.SandboxModel("image://m:latest")
-    session = model.against(FakeEnv())
+    sess = rlmesh.session(model, FakeEnv())
 
-    assert isinstance(session, ModelSession)
+    assert isinstance(sess, rlmesh.Session)
     # The session is configured from the env's contract and matches its backend.
     assert captured["contract"] is FakeEnv.env_contract
     assert captured["address"] == model.address
-    assert session._bridge is sentinel_bridge
+    assert sess._bridge is sentinel_bridge
     assert model.address == "127.0.0.1:49153"
 
 
@@ -166,7 +167,7 @@ def _docker_dispatch(stop_calls: list[str], *, running: bool):
     return fake_run
 
 
-def test_against_fails_fast_with_logs_when_container_exits(
+def test_session_fails_fast_with_logs_when_container_exits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -194,14 +195,14 @@ def test_against_fails_fast_with_logs_when_container_exits(
     model = rlmesh.SandboxModel("image://m:latest")
     with pytest.raises(RuntimeError, match="exited before becoming ready"):
         # connect_timeout is long, but it must fail fast (no 30s wait) on exit.
-        model.against(FakeEnv(), connect_timeout_seconds=30.0)
+        model.session(FakeEnv(), connect_timeout_seconds=30.0)
 
     # #4/#7: the exit is detected and surfaced with the container's recent logs.
     # #3: the started container is stopped before the error propagates.
     assert stopped == ["container-abc"]
 
 
-def test_against_stops_container_on_missing_env_contract(
+def test_session_stops_container_on_missing_env_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
@@ -217,7 +218,7 @@ def test_against_stops_container_on_missing_env_contract(
 
     model = rlmesh.SandboxModel("image://m:latest")
     with pytest.raises(TypeError, match="requires an env client exposing"):
-        model.against(object())
+        rlmesh.session(model, object())
 
     # #3: the container started by serve() is stopped before re-raising.
     assert stopped == ["container-abc"]
@@ -245,7 +246,7 @@ def _patch_ok_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(native, "PyModelClient", OkClient)
 
 
-def test_against_keeps_owner_alive_so_it_is_not_gc_before_predict(
+def test_session_keeps_owner_alive_so_it_is_not_gc_before_predict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import gc
@@ -262,7 +263,7 @@ def test_against_keeps_owner_alive_so_it_is_not_gc_before_predict(
     )
 
     # #1: the documented one-liner -- no local ref to the SandboxModel.
-    session = rlmesh.SandboxModel("image://m:latest").against(_FakeEnv())
+    session = rlmesh.session(rlmesh.SandboxModel("image://m:latest"), _FakeEnv())
     owner_ref = weakref.ref(session._owner)
     gc.collect()
 
@@ -275,7 +276,7 @@ def test_against_keeps_owner_alive_so_it_is_not_gc_before_predict(
     assert "container-abc" in stopped
 
 
-def test_failed_against_on_reused_handle_does_not_shut_it_down(
+def test_failed_session_on_reused_handle_does_not_shut_it_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
@@ -289,12 +290,12 @@ def test_failed_against_on_reused_handle_does_not_shut_it_down(
     )
 
     model = rlmesh.SandboxModel("image://m:latest")
-    model.against(_FakeEnv())  # first bind starts the container
+    rlmesh.session(model, _FakeEnv())  # first bind starts the container
 
-    # #7: a second against that fails must NOT stop a container this call did
+    # #7: a second bind that fails must NOT stop a container this call did
     # not start -- the caller is still managing the handle.
     with pytest.raises(TypeError, match="requires an env client exposing"):
-        model.against(object())
+        rlmesh.session(model, object())
     assert "container-abc" not in stopped
 
 
@@ -323,7 +324,7 @@ def test_contract_config_error_fails_fast_without_retrying(
     # #8: the deterministic config error propagates as-is, not retried for the
     # whole timeout and masked as "did not become ready".
     with pytest.raises(RuntimeError, match="missing observation_space"):
-        model.against(_FakeEnv(), connect_timeout_seconds=30.0)
+        model.session(_FakeEnv(), connect_timeout_seconds=30.0)
     assert _ConfigErrorClient.calls == 1
 
 

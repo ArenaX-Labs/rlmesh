@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
 def serve_from_args(args: ServeArgs) -> int:
     """Handle `env serve` command arguments."""
     try:
-        from rlmesh import EnvServer, VectorEnvServer
+        from rlmesh import EnvServer
 
         if args.transport == "unix" and os.name == "nt":
             raise ValueError(
@@ -167,35 +167,19 @@ def serve_from_args(args: ServeArgs) -> int:
             )
 
         served_num_envs = _served_num_envs(env, fallback=args.num_envs)
+        # EnvServer auto-detects the vectorized shape from the env, so there is one
+        # construction path for both scalar and vector envs.
         if args.transport == "unix":
             path = args.address
             if path is None:
                 source_name = args.env if args.env is not None else args.entrypoint
                 assert source_name is not None
                 path = _default_unix_socket_path(source_name)
-            if served_num_envs > 1:
-                server = VectorEnvServer(
-                    cast("VectorServerEnvLike", env), path=path, transport="unix"
-                )
-            else:
-                server = EnvServer(
-                    cast("EnvLike[Any, Any]", env), path=path, transport="unix"
-                )
+            server = EnvServer(env, path=path, transport="unix")
+        elif args.address is None:
+            server = EnvServer(env)
         else:
-            if served_num_envs > 1:
-                vector_env = cast("VectorServerEnvLike", env)
-                server = (
-                    VectorEnvServer(vector_env)
-                    if args.address is None
-                    else VectorEnvServer(vector_env, args.address)
-                )
-            else:
-                scalar_env = cast("EnvLike[Any, Any]", env)
-                server = (
-                    EnvServer(scalar_env)
-                    if args.address is None
-                    else EnvServer(scalar_env, args.address)
-                )
+            server = EnvServer(env, args.address)
 
         if args.entrypoint is not None:
             print(f"✓ Environment entrypoint: {args.entrypoint}")

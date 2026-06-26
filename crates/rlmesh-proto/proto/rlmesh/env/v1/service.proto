@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package rlmesh.env.v1;
 
-import "rlmesh/core/v1/contract.proto";
+import "rlmesh/core/v1/env_contract.proto";
 import "rlmesh/core/v1/handshake.proto";
 import "rlmesh/env/v1/interaction.proto";
 

@@ -74,9 +74,6 @@ def test_serve_env_dispatches_entrypoint_loader(
 
     monkeypatch.setattr(serve_env, "load_env_entrypoint", load_env_entrypoint)
     monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
-    monkeypatch.setattr(
-        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
-    )
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -102,7 +99,7 @@ def test_serve_env_dispatches_entrypoint_loader(
     assert captured["served"] is True
 
 
-def test_serve_env_uses_vector_server_for_vector_entrypoint(
+def test_serve_env_passes_vector_entrypoint_to_env_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import rlmesh
@@ -127,9 +124,6 @@ def test_serve_env_uses_vector_server_for_vector_entrypoint(
 
     monkeypatch.setattr(serve_env, "load_env_entrypoint", load_env_entrypoint)
     monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
-    monkeypatch.setattr(
-        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
-    )
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -146,7 +140,7 @@ def test_serve_env_uses_vector_server_for_vector_entrypoint(
 
     assert code == 0
     assert captured["entrypoint"] == "rlmesh_system_fixtures.registry:make_vector_env"
-    assert captured["server_class"] == "VectorEnvServer"
+    assert captured["server_class"] == "EnvServer"
     assert captured["server_env"] is fake_env
 
 
@@ -173,9 +167,6 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
     monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured, "EnvServer"))
-    monkeypatch.setattr(
-        rlmesh, "VectorEnvServer", _server_factory(captured, "VectorEnvServer")
-    )
 
     code = serve_env.serve_from_args(
         serve_env.ServeArgs(
@@ -197,7 +188,7 @@ def test_serve_env_dispatches_gym_loader(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["num_envs"] == 2
     assert captured["vectorization_mode"] == "sync"
     assert captured["kwargs"] == {"render_mode": "rgb_array"}
-    assert captured["server_class"] == "VectorEnvServer"
+    assert captured["server_class"] == "EnvServer"
     assert captured["server_env"] is fake_env
     assert captured["server_args"] == ()
     assert captured["served"] is True
@@ -290,7 +281,6 @@ def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
     monkeypatch.setattr(rlmesh, "EnvServer", FakeServer)
-    monkeypatch.setattr(rlmesh, "VectorEnvServer", FakeServer)
 
     read_fd, write_fd = os.pipe()
     try:

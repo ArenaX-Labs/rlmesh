@@ -2,11 +2,10 @@
   "rlmesh": {
     "exports": [
       "NO_ADAPTER",
-      "EnvRecipe",
+      "EnvFactory",
       "EnvServer",
       "EpisodeResult",
       "Model",
-      "ModelRecipe",
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
@@ -15,15 +14,17 @@
       "SandboxModel",
       "SandboxVectorEnv",
       "ServeOptions",
+      "Session",
       "Tensor",
-      "VectorEnvServer",
       "__version__",
       "adapters",
+      "run",
+      "session",
       "spaces",
       "types"
     ],
     "objects": {
-      "EnvRecipe": {
+      "EnvFactory": {
         "kind": "class",
         "members": {
           "close": {
@@ -32,11 +33,15 @@
           },
           "make": {
             "kind": "function",
-            "signature": "make(**kwargs: Any) -> Any"
+            "signature": "make(**kwargs: Any) -> EnvLike[Any, Any]"
           },
           "prepare": {
             "kind": "function",
             "signature": "prepare() -> None"
+          },
+          "serve": {
+            "kind": "function",
+            "signature": "serve(address: str, **kwargs: Any) -> None"
           },
           "tags": {
             "kind": "attribute",
@@ -77,7 +82,7 @@
             "signature": "wait(timeout: float | None = None) -> bool"
           }
         },
-        "signature": "EnvServer(env: EnvLike[Any, Any], address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
+        "signature": "EnvServer(env: EnvLike[Any, Any] | VectorServerEnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
         "stability": "Stable"
       },
       "EpisodeResult": {
@@ -114,6 +119,22 @@
       "Model": {
         "kind": "class",
         "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load() -> None"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: ObsT) -> ActT"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset() -> None"
+          },
           "run": {
             "kind": "function",
             "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
@@ -130,38 +151,16 @@
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
           },
-          "spec": {
-            "kind": "property",
-            "signature": "property spec: object | None"
-          }
-        },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
-        "stability": "Stable"
-      },
-      "ModelRecipe": {
-        "kind": "class",
-        "members": {
-          "close": {
+          "session": {
             "kind": "function",
-            "signature": "close() -> None"
-          },
-          "load": {
-            "kind": "function",
-            "signature": "load() -> None"
-          },
-          "predict": {
-            "kind": "function",
-            "signature": "predict(observation: Any) -> Any"
-          },
-          "reset": {
-            "kind": "function",
-            "signature": "reset() -> None"
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
           },
           "spec": {
             "kind": "attribute",
-            "signature": "spec: ModelSpec | None"
+            "signature": "spec: object | None"
           }
         },
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NO_ADAPTER": {
@@ -239,9 +238,9 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
+          "session": {
             "kind": "function",
-            "signature": "against(env: object) -> ModelSession[ObsT, ActT]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -360,6 +359,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -394,7 +397,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -419,10 +426,6 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
-            "kind": "function",
-            "signature": "against(env: object, *, connect_timeout_seconds: float = 30.0)"
-          },
           "container_id": {
             "kind": "property",
             "signature": "property container_id: str"
@@ -430,6 +433,10 @@
           "serve": {
             "kind": "function",
             "signature": "serve()"
+          },
+          "session": {
+            "kind": "function",
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0)"
           },
           "shutdown": {
             "kind": "function",
@@ -449,6 +456,10 @@
           "action_space_spec": {
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -488,7 +499,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -539,6 +554,37 @@
           }
         },
         "signature": "ServeOptions(*, allow_remote_shutdown: bool = ..., idle_timeout_seconds: Optional[float] = None, drain_timeout_seconds: Optional[float] = None, close_timeout_seconds: Optional[float] = None, token: Optional[str] = None) -> ServeOptions",
+        "stability": "Stable"
+      },
+      "Session": {
+        "kind": "class",
+        "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close()"
+          },
+          "done": {
+            "kind": "property",
+            "signature": "property done: bool"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: ObsT)"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset(*, seed: int | None = None)"
+          },
+          "run": {
+            "kind": "function",
+            "signature": "run(*, seeds: Sequence[int] | None = None, max_episodes: int | None = None)"
+          },
+          "step": {
+            "kind": "function",
+            "signature": "step(action: ActT)"
+          }
+        },
+        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, spec: object | None = None, on_reset: Callable[[], None] | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', model_client: PyModelClient | None = None, owner: Any = None)",
         "stability": "Stable"
       },
       "Tensor": {
@@ -600,41 +646,6 @@
         "signature": "Tensor(buffer: object, shape: Sequence[int], dtype: str) -> Tensor",
         "stability": "Stable"
       },
-      "VectorEnvServer": {
-        "kind": "class",
-        "members": {
-          "address": {
-            "kind": "property",
-            "signature": "property address: str"
-          },
-          "env_contract": {
-            "kind": "property",
-            "signature": "property env_contract: EnvContract"
-          },
-          "serve": {
-            "kind": "function",
-            "signature": "serve() -> None"
-          },
-          "shutdown": {
-            "kind": "function",
-            "signature": "shutdown() -> None"
-          },
-          "spec": {
-            "kind": "property",
-            "signature": "property spec: EnvContract"
-          },
-          "start": {
-            "kind": "function",
-            "signature": "start() -> None"
-          },
-          "wait": {
-            "kind": "function",
-            "signature": "wait(timeout: float | None = None) -> bool"
-          }
-        },
-        "signature": "VectorEnvServer(env: VectorServerEnvLike, address: str | None = None, *, host: str | None = None, port: int | None = None, path: str | None = None, transport: Transport | None = None, options: ServeOptions | None = None, tags: EnvTags | None = None)",
-        "stability": "Stable"
-      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = package_version('rlmesh')",
@@ -642,6 +653,16 @@
       },
       "adapters": {
         "kind": "module",
+        "stability": "Stable"
+      },
+      "run": {
+        "kind": "function",
+        "signature": "run(model: object, env: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None)",
+        "stability": "Stable"
+      },
+      "session": {
+        "kind": "function",
+        "signature": "session(model: object, env: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None)",
         "stability": "Stable"
       },
       "spaces": {
@@ -678,6 +699,22 @@
       "Model": {
         "kind": "class",
         "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load() -> None"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: ObsT) -> ActT"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset() -> None"
+          },
           "run": {
             "kind": "function",
             "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
@@ -694,12 +731,16 @@
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
           },
+          "session": {
+            "kind": "function",
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+          },
           "spec": {
-            "kind": "property",
-            "signature": "property spec: object | None"
+            "kind": "attribute",
+            "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -772,9 +813,9 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
+          "session": {
             "kind": "function",
-            "signature": "against(env: object) -> ModelSession[ObsT, ActT]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -866,6 +907,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -900,7 +945,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -952,6 +1001,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -990,7 +1043,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -1058,6 +1115,22 @@
       "Model": {
         "kind": "class",
         "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load() -> None"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: ObsT) -> ActT"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset() -> None"
+          },
           "run": {
             "kind": "function",
             "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
@@ -1074,12 +1147,16 @@
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
           },
+          "session": {
+            "kind": "function",
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+          },
           "spec": {
-            "kind": "property",
-            "signature": "property spec: object | None"
+            "kind": "attribute",
+            "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -1157,9 +1234,9 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
+          "session": {
             "kind": "function",
-            "signature": "against(env: object) -> ModelSession[ObsT, ActT]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -1251,6 +1328,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -1285,7 +1366,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -1333,10 +1418,6 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
-            "kind": "function",
-            "signature": "against(env: object, *, connect_timeout_seconds: float = 30.0) -> ModelSession[object, object]"
-          },
           "container_id": {
             "kind": "property",
             "signature": "property container_id: str"
@@ -1344,6 +1425,10 @@
           "serve": {
             "kind": "function",
             "signature": "serve() -> SandboxModel"
+          },
+          "session": {
+            "kind": "function",
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
           },
           "shutdown": {
             "kind": "function",
@@ -1363,6 +1448,10 @@
           "action_space_spec": {
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
+          },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
           },
           "close": {
             "kind": "function",
@@ -1402,7 +1491,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",
@@ -1993,6 +2086,22 @@
       "Model": {
         "kind": "class",
         "members": {
+          "close": {
+            "kind": "function",
+            "signature": "close() -> None"
+          },
+          "load": {
+            "kind": "function",
+            "signature": "load() -> None"
+          },
+          "predict": {
+            "kind": "function",
+            "signature": "predict(observation: ObsT) -> ActT"
+          },
+          "reset": {
+            "kind": "function",
+            "signature": "reset() -> None"
+          },
           "run": {
             "kind": "function",
             "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
@@ -2009,12 +2118,16 @@
             "kind": "function",
             "signature": "serve(address: str, *, token: str = '', options: ServeOptions | None = None) -> None"
           },
+          "session": {
+            "kind": "function",
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+          },
           "spec": {
-            "kind": "property",
-            "signature": "property spec: object | None"
+            "kind": "attribute",
+            "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -2087,9 +2200,9 @@
             "kind": "property",
             "signature": "property address: str"
           },
-          "against": {
+          "session": {
             "kind": "function",
-            "signature": "against(env: object) -> ModelSession[ObsT, ActT]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -2181,6 +2294,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -2215,7 +2332,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "source": {
             "kind": "property",
@@ -2267,6 +2388,10 @@
             "kind": "property",
             "signature": "property action_space_spec: SpaceSpec"
           },
+          "address": {
+            "kind": "property",
+            "signature": "property address: str"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -2305,7 +2430,11 @@
           },
           "sandbox": {
             "kind": "attribute",
-            "signature": "sandbox: SandboxInfo"
+            "signature": "sandbox"
+          },
+          "shutdown": {
+            "kind": "function",
+            "signature": "shutdown(reason: str = 'owner shutdown') -> bool"
           },
           "single_action_space": {
             "kind": "property",

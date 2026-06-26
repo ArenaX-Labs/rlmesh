@@ -180,12 +180,12 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
     _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
-@final
 class Model(ModelBase[JaxValue, JaxValue]):
     """Experimental JAX-backed model: ``predict`` works in JAX values.
 
-    The JAX-typed :class:`~rlmesh.model.ModelBase`; see it for the source/spec
-    construction and ``run(env, seeds=[...]) -> RunResult`` eval.
+    The JAX-typed :class:`~rlmesh.model.ModelBase`; see it for the
+    wrap-a-callable / subclass-and-override-``predict`` construction and
+    ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 
     _bridge: ClassVar[ValueBridge] = _jax_bridge
@@ -211,7 +211,8 @@ class SandboxEnv(SandboxEnvBase[JaxValue, JaxValue]):
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls = RemoteEnv
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 @final
@@ -233,7 +234,8 @@ class SandboxVectorEnv(SandboxVectorEnvBase[JaxValue, JaxValue]):
         **env_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls = RemoteVectorEnv
+    _bridge: ClassVar[ValueBridge] = _jax_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _jax_space_bridge
 
 
 __all__ = [

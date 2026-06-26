@@ -91,8 +91,8 @@ def load_env_from_spec(spec: Mapping[str, object]) -> object:
     raise ValueError(f"unsupported bootstrap kind: {kind}")
 
 
-class RecipeConstructionError(RuntimeError, ImportError):
-    """Raised when a recipe's factory entrypoint cannot be loaded.
+class EntrypointConstructionError(RuntimeError, ImportError):
+    """Raised when a ``module:callable`` entrypoint factory cannot be loaded.
 
     Wraps the import/attribute/not-callable boundary of resolving a
     ``module:callable`` factory; errors raised *inside* a loaded factory are not
@@ -111,7 +111,7 @@ def load_env_entrypoint(
         import_packages(package_names)
         factory = resolve_entrypoint(entrypoint, label="env entrypoint")
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
-        raise RecipeConstructionError(
+        raise EntrypointConstructionError(
             f"could not load env entrypoint {entrypoint!r}: {exc}."
         ) from exc
     env = factory(**dict(kwargs or {}))
@@ -270,16 +270,16 @@ def load_predict(entrypoint: str) -> Callable[[NumpyValue], NumpyValue]:
 
 
 def looks_like_policy(value: object) -> bool:
-    """Return whether a value exposes a predict callable (a ModelRecipe-shaped policy).
+    """Return whether a value exposes a predict callable (a duck-typed policy object).
 
-    Matches both a ``ModelRecipe`` class (its ``predict`` is an unbound function) and
-    an instance (a bound method); a bare predict callable has no ``predict`` attribute.
+    Matches both a policy *class* (its ``predict`` is an unbound function) and an
+    instance (a bound method); a bare predict callable has no ``predict`` attribute.
     """
     return callable(getattr(value, "predict", None))
 
 
 def construct_authored_model(source: Any) -> Any:
-    """Instantiate a ModelRecipe class (or accept an instance), run ``load()``, return it."""
+    """Instantiate a duck-typed policy class (or accept an instance), run ``load()``, return it."""
     inst = source() if isinstance(source, type) else source
     load = getattr(inst, "load", None)
     if callable(load):
@@ -288,7 +288,7 @@ def construct_authored_model(source: Any) -> Any:
 
 
 def construct_authored_env(source: Any, **kwargs: object) -> Any:
-    """Instantiate an EnvRecipe class (or accept an instance), ``prepare()``, return ``make()``."""
+    """Instantiate an EnvFactory class (or accept an instance), ``prepare()``, return ``make()``."""
     inst = source() if isinstance(source, type) else source
     prepare = getattr(inst, "prepare", None)
     if callable(prepare):

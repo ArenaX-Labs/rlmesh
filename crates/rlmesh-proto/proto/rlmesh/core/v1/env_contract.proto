@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package rlmesh.core.v1;
+
+import "rlmesh/spaces/v1/meta.proto";
+import "rlmesh/spaces/v1/spaces.proto";
+
+message EnvSpec {
+  string id = 1;
+  rlmesh.spaces.v1.SpaceSpec action_space = 2;
+  rlmesh.spaces.v1.SpaceSpec observation_space = 3;
+  rlmesh.spaces.v1.MetaMap metadata = 4;
+}
+
+message EnvContract {
+  EnvSpec spec = 1;
+  optional string tags = 2;
+  uint32 num_envs = 3;
+  string render_mode = 4;
+  AutoresetMode autoreset_mode = 5;
+}
+
+enum AutoresetMode {
+  AUTORESET_MODE_UNSPECIFIED = 0;
+  AUTORESET_MODE_NEXT_STEP = 1;
+  AUTORESET_MODE_SAME_STEP = 2;
+  AUTORESET_MODE_DISABLED = 3;
+}

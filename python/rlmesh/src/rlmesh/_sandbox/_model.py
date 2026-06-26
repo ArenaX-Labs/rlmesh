@@ -4,7 +4,8 @@ The model-side sibling of ``SandboxEnv``. The source is a prebuilt
 ``image://<tag>`` container you built yourself (BYO); construction is inert -- it
 records the tag but starts nothing. ``serve()`` (or use as a context manager)
 starts a long-lived container serving the policy as a model endpoint;
-``against(env)`` serves it and binds it to an env for the symmetric drive loop.
+``rlmesh.session(model, env)`` (or ``model.session(env)``) serves it and binds it to an
+env for the drive loop.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
-    from .._client._remote_model import ModelSession
+    from .._models._eval import Session
     from ..specs import EnvContract
 
 __all__ = ["SandboxModel"]
@@ -218,36 +219,45 @@ class SandboxModel:
             return self
         return self._serve_image()
 
-    def against(
-        self, env: object, *, connect_timeout_seconds: float = 30.0
-    ) -> ModelSession[object, object]:
-        """Serve this model and bind it to ``env``, returning a model session.
+    def session(
+        self,
+        env: object,
+        *,
+        instruction: str | None = None,
+        close_env: bool = False,
+        token: str | None = None,
+        trust_entrypoints: bool | None = None,
+        connect_timeout_seconds: float = 30.0,
+    ) -> Session[object, object]:
+        """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
 
-        The managed sibling of :meth:`rlmesh.RemoteModel.against`: starts the
-        model container (idempotent), then opens a route configured from the
-        env's contract so the *same* drive loop works for both pairs::
+        The managed sibling of :meth:`rlmesh.RemoteModel.session`: starts the model
+        container (idempotent), then opens a route configured from the env's contract so
+        the *same* drive loop works for both pairs::
 
             with rlmesh.SandboxEnv("gym://CartPole-v1") as env:
-                model = rlmesh.SandboxModel("image://my-model:latest").against(env)
-                obs, _ = env.reset()
-                model.reset()
-                while not done:
-                    action = model.predict(obs)
-                    obs, reward, terminated, truncated, _ = env.step(action)
+                sess = rlmesh.session(
+                    rlmesh.SandboxModel("image://my-model:latest"), env
+                )
+                obs, _ = sess.reset()
+                while not sess.done:
+                    obs, reward, terminated, truncated, _ = sess.step(sess.predict(obs))
 
-        The session's values match ``env``'s backend. Retries the connection while
-        the container starts, up to ``connect_timeout_seconds``.
+        Closing the session stops the container it started. ``instruction`` / ``token`` /
+        ``trust_entrypoints`` apply to local models and are ignored here. Retries the
+        connection while the container starts, up to ``connect_timeout_seconds``.
         """
+        _ = instruction, token, trust_entrypoints
         try:
             from rlmesh._rlmesh import PyModelClient
         except ImportError as e:  # pragma: no cover - import guard
             raise ImportError("Failed to import _rlmesh native module.") from e
 
-        from .._client._remote_model import env_contract_of, session_for_client
+        from .._client._remote_model import env_contract_of, remote_session
 
-        # Only tear down on failure if THIS call started the container; a handle
-        # the caller is managing (context manager / reuse) must survive a failed
-        # against (serve() is idempotent and returns early when already serving).
+        # Only tear down on failure if THIS call started the container; a handle the
+        # caller is managing (context manager / reuse) must survive a failed bind
+        # (serve() is idempotent and returns early when already serving).
         started_here = self._address is None
         self.serve()
         try:
@@ -255,10 +265,12 @@ class SandboxModel:
             client = self._dial_with_retry(
                 PyModelClient, contract, connect_timeout_seconds
             )
-            # Only hand ownership (and so container teardown on session close) to
-            # a session that actually started the container. A caller-managed
-            # handle (serve()/context manager) must survive its sessions closing.
-            return session_for_client(client, env, owner=self if started_here else None)
+            # Hand ownership (and so container teardown on session close) only to a
+            # session that actually started the container. A caller-managed handle
+            # (serve()/context manager) must survive its sessions closing.
+            return remote_session(
+                client, env, owner=self if started_here else None, close_env=close_env
+            )
         except BaseException:
             if started_here:
                 self.shutdown()
@@ -347,7 +359,7 @@ class SandboxModel:
 
         # Mark closed only once the stop succeeds, so a transient failure can be
         # retried by a later shutdown()/__exit__/__del__ instead of leaking the
-        # container (mirrors SandboxSessionBase).
+        # container (mirrors the sandbox env session teardown).
         sandbox_stop_env(container_id=self._container_id)
         self._closed = True
         self._address = None

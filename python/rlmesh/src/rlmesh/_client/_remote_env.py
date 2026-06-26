@@ -57,20 +57,6 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
             connect_timeout_seconds=None,
         )
 
-    @classmethod
-    def _connect_for_sandbox(
-        cls,
-        address: str,
-        *,
-        connect_timeout_seconds: float,
-    ) -> object:
-        instance = cls.__new__(cls)
-        instance._initialize(
-            address,
-            connect_timeout_seconds=connect_timeout_seconds,
-        )
-        return instance
-
     def _initialize(
         self,
         address: str | None = None,

@@ -5,7 +5,7 @@
 #
 #   import rlmesh
 #   env = rlmesh.RemoteEnv("127.0.0.1:50051")
-#   model = rlmesh.SandboxModel("image://my-model:latest").against(env)
+#   sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)
 #   obs, _ = env.reset()
 #   model.reset()
 #   done = False

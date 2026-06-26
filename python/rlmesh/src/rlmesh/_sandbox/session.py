@@ -1,37 +1,18 @@
-"""Docker-backed sandbox session base and container lifecycle."""
+"""Docker-backed sandbox container lifecycle, shared by the env sessions."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from os import PathLike
-from typing import (
-    ClassVar,
-    Generic,
-    Protocol,
-    TypeAlias,
-    TypedDict,
-    TypeVar,
-    cast,
-)
+from typing import TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
-from ..spaces import Space
-from ..specs import EnvContract, SpaceSpec
-from ..types import Metadata
 from ._package import normalize_rlmesh_package
 
-ResetInfo: TypeAlias = dict[str, object]
-StepInfo: TypeAlias = dict[str, object]
-
-RemoteT = TypeVar("RemoteT")
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
-
-
-def missing_remote_env_cls(_address: str, **_kwargs: object) -> object:
-    raise NotImplementedError("sandbox remote env class must be configured")
 
 
 @dataclass(frozen=True)
@@ -51,216 +32,23 @@ class _SandboxStartInfo(TypedDict):
     container_id: str
 
 
-class _RemoteHandleBase(Protocol):
-    """Surface shared by single- and vector-environment remote handles."""
+class SandboxLifecycle:
+    """Container-lifecycle mixin for Docker-backed env sessions.
 
-    @property
-    def env_contract(self) -> EnvContract:
-        """Environment contract reported by the remote endpoint."""
-        ...
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for ``env_contract``."""
-        ...
-
-    @property
-    def render_mode(self) -> str | None:
-        """Configured render mode reported by the endpoint."""
-        ...
-
-    @property
-    def metadata(self) -> Metadata:
-        """Endpoint metadata."""
-        ...
-
-    @property
-    def observation_space_spec(self) -> SpaceSpec:
-        """Native observation space spec reported by the endpoint."""
-        ...
-
-    @property
-    def action_space_spec(self) -> SpaceSpec:
-        """Native action space spec reported by the endpoint."""
-        ...
-
-    def render(self, *, env_index: int = 0) -> object | None:
-        """Render a frame from the remote environment."""
-        ...
-
-    def close(self) -> None:
-        """Detach from the remote endpoint."""
-        ...
-
-
-class RemoteEnvHandle(_RemoteHandleBase, Protocol):
-    """Remote client shape required by single-environment sandbox sessions."""
-
-    @property
-    def observation_space(self) -> Space[object]:
-        """Observation space reported by the endpoint."""
-        ...
-
-    @property
-    def action_space(self) -> Space[object]:
-        """Action space reported by the endpoint."""
-        ...
-
-    def reset(
-        self,
-        *,
-        seed: int | None = None,
-        options: dict[str, object] | None = None,
-    ) -> tuple[object, ResetInfo]:
-        """Reset the remote environment."""
-        ...
-
-    def step(self, action: object) -> tuple[object, float, bool, bool, StepInfo]:
-        """Step the remote environment with one action."""
-        ...
-
-
-class RemoteVectorEnvHandle(_RemoteHandleBase, Protocol):
-    """Remote client shape required by vector sandbox sessions."""
-
-    @property
-    def observation_space(self) -> Space[object]:
-        """Alias for ``single_observation_space``."""
-        ...
-
-    @property
-    def action_space(self) -> Space[object]:
-        """Alias for ``single_action_space``."""
-        ...
-
-    @property
-    def single_observation_space(self) -> Space[object]:
-        """Observation space for one environment in the vector."""
-        ...
-
-    @property
-    def single_action_space(self) -> Space[object]:
-        """Action space for one environment in the vector."""
-        ...
-
-    @property
-    def num_envs(self) -> int:
-        """Number of environments in the vector endpoint."""
-        ...
-
-    def reset(
-        self,
-        *,
-        seed: int | list[int] | None = None,
-        options: dict[str, object] | None = None,
-    ) -> tuple[object, ResetInfo]:
-        """Reset all remote environments."""
-        ...
-
-    def step(self, actions: object) -> tuple[object, object, object, object, StepInfo]:
-        """Step all remote environments with a batch of actions."""
-        ...
-
-
-class SandboxSessionBase(Generic[RemoteT]):
-    """Experimental base for Docker-backed sandbox sessions.
-
-    A sandbox session owns the isolated environment container and the remote
-    client connected to it. Closing the session closes the client and stops the
-    container.
-
-    Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment
-            source such as an EnvHub/Hugging Face reference.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
-            in the sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        num_envs: Number of environment instances to create.
-        vectorization_mode: Optional vectorization mode requested in the sandbox.
-        **gym_make_kwargs: Keyword arguments forwarded to environment creation.
+    Combined with a ``Remote*EnvBase`` (which provides the reset/step/contract surface
+    and the client this session attaches to its container): a sandbox env *is* a remote
+    env that also owns an isolated container. Closing it detaches the client and stops
+    the container. The concrete subclass supplies :meth:`_detach` (its remote base's
+    ``close``) and starts the container in ``__init__`` before attaching ``self``.
     """
 
-    _remote_env_cls: ClassVar[Callable[..., object]] = missing_remote_env_cls
     _source: str
     _closed: bool
     sandbox: SandboxInfo
-    _remote_env: RemoteT
 
-    def __init__(
-        self,
-        source: str,
-        *,
-        base_image: str | None = None,
-        rlmesh_package: str | PathLike[str] | None = None,
-        packages: Sequence[str] | None = None,
-        imports: Sequence[str] | None = None,
-        trust_remote_code: bool = False,
-        allow_unpinned_hf: bool = False,
-        num_envs: int = 1,
-        vectorization_mode: str | None = None,
-        build_memory: str | None = None,
-        task: str | None = None,
-        config: Mapping[str, object] | str | PathLike[str] | None = None,
-        capabilities: Sequence[str] | None = None,
-        override: str | PathLike[str] | None = None,
-        cwd: str | PathLike[str] | None = None,
-        repo_root: str | PathLike[str] | None = None,
-        **gym_make_kwargs: object,
-    ) -> None:
-        resolved_rlmesh_package = _resolve_rlmesh_package(
-            rlmesh_package,
-            gym_make_kwargs,
-        )
-        _reject_removed_option("task", task)
-        _reject_removed_option("config", config)
-        _reject_removed_option("capabilities", capabilities)
-        _reject_removed_option("override", override)
-        _reject_removed_option("cwd", cwd)
-        _reject_removed_option("repo_root", repo_root)
-
-        self._source = source
-        self._closed = False
-        self.sandbox = _start_sandbox(
-            source,
-            base_image=base_image,
-            rlmesh_package=resolved_rlmesh_package,
-            packages=packages,
-            imports=imports,
-            trust_remote_code=trust_remote_code,
-            allow_unpinned_hf=allow_unpinned_hf,
-            num_envs=num_envs,
-            vectorization_mode=vectorization_mode,
-            build_memory=build_memory,
-            gym_make_kwargs=gym_make_kwargs,
-        )
-        try:
-            self._remote_env = self._create_remote_env(self.sandbox.address)
-        except BaseException:
-            try:
-                self._shutdown()
-            except BaseException:
-                pass
-            raise
-
-    def _create_remote_env(self, address: str) -> RemoteT:
-        remote_env_cls = type(self)._remote_env_cls
-        sandbox_factory = getattr(remote_env_cls, "_connect_for_sandbox", None)
-        if callable(sandbox_factory):
-            return cast(
-                RemoteT,
-                sandbox_factory(
-                    address,
-                    connect_timeout_seconds=SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
-                ),
-            )
-        return cast(
-            RemoteT,
-            remote_env_cls(address),
-        )
+    def _detach(self) -> None:
+        """Detach the remote client; supplied by the ``Remote*EnvBase`` mixed in."""
+        raise NotImplementedError
 
     @property
     def source(self) -> str:
@@ -268,24 +56,32 @@ class SandboxSessionBase(Generic[RemoteT]):
         return self._source
 
     def close(self) -> None:
-        """Close the remote client and stop the owned sandbox container."""
-        self._shutdown()
+        """Detach the remote client and stop the owned sandbox container."""
+        self._stop()
 
-    def __enter__(self) -> SandboxSessionBase[RemoteT]:
-        return self
+    def _stop(self) -> None:
+        if self._closed:
+            return
+        sandbox = getattr(self, "sandbox", None)
+        remote_error: BaseException | None = None
+        try:
+            self._detach()
+        except BaseException as exc:  # best effort: still stop the container
+            remote_error = exc
+        # Only mark the session closed once the container is actually stopped. If
+        # stopping fails (e.g. a transient Docker daemon error) leave ``_closed``
+        # False so close()/__exit__/__del__ can retry instead of leaking the container.
+        if sandbox is not None:
+            _sandbox_stop_env(container_id=sandbox.container_id)
+        self._closed = True
+        if remote_error is not None:
+            raise remote_error
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: object | None,
-    ) -> None:
-        _ = exc_type, exc_val, exc_tb
-        self._shutdown()
-
-    def __getattr__(self, name: str) -> object:
-        remote_env = cast(object, object.__getattribute__(self, "_remote_env"))
-        return cast(object, getattr(remote_env, name))
+    def __del__(self) -> None:
+        try:
+            self._stop()
+        except Exception:
+            pass
 
     def __repr__(self) -> str:
         return (
@@ -295,33 +91,51 @@ class SandboxSessionBase(Generic[RemoteT]):
             f"container_id={self.sandbox.container_id!r})"
         )
 
-    def __del__(self) -> None:
-        try:
-            self._shutdown()
-        except Exception:
-            pass
 
-    def _shutdown(self) -> None:
-        if self._closed:
-            return
+def start_sandbox_container(
+    source: str,
+    *,
+    base_image: str | None,
+    rlmesh_package: str | PathLike[str] | None,
+    packages: Sequence[str] | None,
+    imports: Sequence[str] | None,
+    trust_remote_code: bool,
+    allow_unpinned_hf: bool,
+    num_envs: int,
+    vectorization_mode: str | None,
+    build_memory: str | None,
+    task: str | None,
+    config: Mapping[str, object] | str | PathLike[str] | None,
+    capabilities: Sequence[str] | None,
+    override: str | PathLike[str] | None,
+    cwd: str | PathLike[str] | None,
+    repo_root: str | PathLike[str] | None,
+    gym_make_kwargs: dict[str, object],
+) -> SandboxInfo:
+    """Resolve the package spec, reject removed options, and start the container.
 
-        remote_error: BaseException | None = None
-        try:
-            remote_env = self.__dict__.get("_remote_env")
-            if remote_env is not None:
-                cast(RemoteEnvHandle | RemoteVectorEnvHandle, remote_env).close()
-        except BaseException as exc:  # pragma: no cover - best effort cleanup path
-            remote_error = exc
-
-        # Only mark the session closed once the container is actually stopped.
-        # If stopping fails (e.g. a transient Docker daemon error) leave
-        # ``_closed`` False so close()/__exit__/__del__ can retry the teardown
-        # instead of permanently leaking the container.
-        _sandbox_stop_env(container_id=self.sandbox.container_id)
-        self._closed = True
-
-        if remote_error is not None:
-            raise remote_error
+    The shared ``__init__`` prelude for the sandbox env sessions.
+    """
+    resolved_rlmesh_package = _resolve_rlmesh_package(rlmesh_package, gym_make_kwargs)
+    _reject_removed_option("task", task)
+    _reject_removed_option("config", config)
+    _reject_removed_option("capabilities", capabilities)
+    _reject_removed_option("override", override)
+    _reject_removed_option("cwd", cwd)
+    _reject_removed_option("repo_root", repo_root)
+    return _start_sandbox(
+        source,
+        base_image=base_image,
+        rlmesh_package=resolved_rlmesh_package,
+        packages=packages,
+        imports=imports,
+        trust_remote_code=trust_remote_code,
+        allow_unpinned_hf=allow_unpinned_hf,
+        num_envs=num_envs,
+        vectorization_mode=vectorization_mode,
+        build_memory=build_memory,
+        gym_make_kwargs=gym_make_kwargs,
+    )
 
 
 def _start_sandbox(
@@ -407,8 +221,10 @@ def reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:
 
 
 __all__ = [
-    "RemoteEnvHandle",
-    "RemoteVectorEnvHandle",
+    "SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS",
     "SandboxInfo",
-    "SandboxSessionBase",
+    "SandboxLifecycle",
+    "reject_single_env_vector_option",
+    "start_sandbox_container",
+    "string_sequence",
 ]

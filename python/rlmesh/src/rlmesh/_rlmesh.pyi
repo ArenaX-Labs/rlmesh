@@ -247,7 +247,7 @@ class PyModelClient:
     r"""
     Client handle to a model (policy) server: the model-side mirror of
     `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
-    Python layer creates one per `RemoteModel.against(env)`.
+    Python layer creates one per `rlmesh.session(model, env)`.
     """
     def __init__(self, address: str, env_contract: EnvContract, token: str = '') -> None: ...
     def address(self) -> str: ...

@@ -7,7 +7,7 @@ RLMesh runs the image. The container serves the env on
 image.
 
 The lazy path: set the Dockerfile ENTRYPOINT to
-``python -m rlmesh.serve --env my_pkg:MyEnv`` -- it runs the MyEnv recipe below
+``python -m rlmesh.serve --env my_pkg:MyEnv`` -- it runs the MyEnv factory below
 (``prepare`` then ``make``, tagging with ``tags``) with no hand-written loop.
 """
 
@@ -16,11 +16,11 @@ from __future__ import annotations
 import os
 
 import gymnasium as gym
-from rlmesh import EnvRecipe, EnvServer
+from rlmesh import EnvFactory, EnvServer
 
 
-class MyEnv(EnvRecipe):
-    """Subclass EnvRecipe: set ``tags`` (optional), implement make (+ prepare)."""
+class MyEnv(EnvFactory):
+    """Subclass EnvFactory: set ``tags`` (optional), implement make (+ prepare)."""
 
     # tags = EnvTags(observation=..., action=...)  # describe obs/action for adapters.
 

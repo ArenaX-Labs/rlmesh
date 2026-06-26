@@ -18,36 +18,15 @@ message HandshakeRequest {
   string protocol_generation = 1;
   PeerInfo peer_info = 2;
   map<string, string> capabilities = 3;
-
-  // Every workflow edition the client can operate under. The server selects
-  // the highest mutual edition; an empty intersection fails the handshake.
-  // Stable releases use bare sealed names (`YYYY.MM`). Prerelease and local
-  // builds use exact cohort suffixes (`YYYY.MM-<semver-prerelease>` or
-  // `YYYY.MM-dev.<git-token>`) so moving builds fail closed unless both sides
-  // explicitly offer the same cohort or a sealed fallback.
   repeated string supported_workflow_editions = 4;
 }
 
-// Canonical handshake response shared by every service. Carries only
-// generation/edition/capability negotiation; service-specific payloads (e.g.
-// the env's EnvContract) ride a thin service-local wrapper around this message.
 message HandshakeResponse {
   bool compatible = 1;
   PeerInfo peer_info = 2;
-  // Compatible only when this exactly equals the peer's own generation. No
-  // support window: a bump is a deliberate public major break (v2 won't talk to
-  // v1), so this is plain equality, not range negotiation.
-  string server_protocol_generation = 3;
-  // tag 4 was min_supported_protocol_generation, cut with the support window: a
-  // single-generation equality contract has no floor to advertise.
-  string error_message = 5;
-  map<string, string> capabilities = 6;
-
-  // Workflow editions the server supports, for diagnostics on failure.
-  repeated string supported_workflow_editions = 7;
-
-  // Edition governing this session; empty when compatible is false.
-  string selected_workflow_edition = 8;
+  map<string, string> capabilities = 3;
+  repeated string supported_workflow_editions = 4;
+  optional string error_message = 6;
 }
 
 message ShutdownRequest {

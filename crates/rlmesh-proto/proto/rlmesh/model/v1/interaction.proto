@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package rlmesh.model.v1;
 
-import "rlmesh/core/v1/contract.proto";
+import "rlmesh/core/v1/env_contract.proto";
 import "rlmesh/spaces/v1/value.proto";
 
 // Runtime-owned model execution context.
@@ -46,24 +46,21 @@ message ConfigureRouteRequest {
   // knobs (num_envs/render_mode/autoreset) and never forwards them here.
   rlmesh.core.v1.EnvSpec env_spec = 2;
 
-  // Reconciled three-way session floor (see versioning-governance §7). The
-  // runtime is the binding authority: it decode-rebuilds env<->model envelopes,
-  // so a session runs at the FLOOR of env + model + runtime. These fields are
-  // AUTHORITATIVE over the model's own (pairwise, possibly higher) handshake
-  // result, which was only an upper bound. The model pins itself to the floor.
+  // The route's selected workflow edition, decided at bind time. The runtime is
+  // one of the gRPC clients and is assumed newest, so it drops out of the floor:
+  // the edition is the 2-way highest-mutual of env + model. This is AUTHORITATIVE
+  // over the model's own (pairwise) handshake result. The model pins to it.
 
   // tag 3 was selected_protocol_generation, cut with the support-window
   // machinery: generation is plain equality gated at each pairwise handshake, so
-  // by the time a route is configured all three already share it — the floor
-  // adds nothing. Only the edition floor (a true 3-way min) needs carrying.
+  // by the time a route is configured both peers already share it.
 
-  // Highest mutual workflow edition across env, model and runtime.
+  // Highest mutual workflow edition across env and model.
   string selected_workflow_edition = 4;
 
-  // Capability intersection across all three participants. A capability whose
-  // feature requires the runtime to carry a field is active only when present
-  // here, never merely on the env<->model pair.
-  map<string, string> active_capabilities = 5;
+  // tag 5 was active_capabilities (a 3-way intersection), removed: capabilities
+  // are advisory and pairwise (each peer reads the other's advertised map), not a
+  // session-wide floor.
 
   // NOTE: tag 6 was an EnvSpec consistency fingerprint, cut from the freeze. The
   // model derives its whole route spec from the single forwarded env_spec, so

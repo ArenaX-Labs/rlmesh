@@ -48,10 +48,12 @@ pub fn env_spec_from_proto(
 pub fn env_contract_to_proto(spec: &native::EnvContract) -> core_proto::EnvContract {
     core_proto::EnvContract {
         spec: Some(env_spec_to_proto(spec)),
-        // Native `num_envs` is a plain u32; carry it as the optional proto field.
-        num_envs: Some(spec.num_envs),
+        num_envs: spec.num_envs,
         render_mode: spec.render_mode.clone(),
         autoreset_mode: i32::from(spec.autoreset_mode),
+        // Native `EnvContract` has no tags channel yet; leave the optional proto
+        // field unset until a native source exists.
+        tags: None,
     }
 }
 
@@ -65,9 +67,7 @@ pub fn env_contract_from_proto(
     // defaults, so a new `EnvSpec` field need not be re-listed here.
     Ok(native::EnvContract {
         render_mode: contract.render_mode,
-        // Absent `optional num_envs` decodes to 0, identical to the previous
-        // plain-`uint32` behavior.
-        num_envs: contract.num_envs.unwrap_or(0),
+        num_envs: contract.num_envs,
         // proto UNSPECIFIED/DISABLED decode to Disabled; an unknown mode is
         // rejected loudly rather than silently folded.
         autoreset_mode: native::AutoresetMode::try_from(contract.autoreset_mode)

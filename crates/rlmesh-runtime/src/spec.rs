@@ -344,7 +344,7 @@ mod tests {
                     action_space: Some(SpaceSpec::default()),
                     ..Default::default()
                 }),
-                num_envs: Some(1),
+                num_envs: 1,
                 ..Default::default()
             },
             num_envs: 1,
@@ -394,7 +394,7 @@ mod tests {
         // done lane itself, so the driver never needs per-lane reset.
         let mut spec = valid_spec();
         spec.num_envs = 4;
-        spec.env_contract.num_envs = Some(4);
+        spec.env_contract.num_envs = 4;
         spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
 
         assert!(spec.validate().is_ok());
@@ -408,7 +408,7 @@ mod tests {
         for mode in [AutoresetMode::Disabled, AutoresetMode::Unspecified] {
             let mut spec = valid_spec();
             spec.num_envs = 4;
-            spec.env_contract.num_envs = Some(4);
+            spec.env_contract.num_envs = 4;
             spec.env_contract.autoreset_mode = mode as i32;
 
             let error = spec.validate().unwrap_err();

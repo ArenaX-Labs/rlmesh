@@ -689,7 +689,7 @@ fn one_episode_spec() -> RuntimeSessionSpec {
                 action_space: Some(SpaceSpec::default()),
                 ..Default::default()
             }),
-            num_envs: Some(1),
+            num_envs: 1,
             ..Default::default()
         },
         num_envs: 1,
@@ -834,7 +834,7 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
                 action_space: Some(SpaceSpec::default()),
                 ..Default::default()
             }),
-            num_envs: Some(num_envs as u32),
+            num_envs: num_envs as u32,
             autoreset_mode: rlmesh_proto::core::v1::AutoresetMode::NextStep as i32,
             ..Default::default()
         },

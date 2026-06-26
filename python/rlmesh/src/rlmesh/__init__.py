@@ -18,8 +18,8 @@ from . import _rlmesh as _rlmesh
 from . import adapters as adapters
 from . import spaces as spaces
 from . import types as types
-from ._authoring import EnvRecipe, ModelRecipe
-from ._models import NO_ADAPTER, EpisodeResult, RunResult
+from ._authoring import EnvFactory
+from ._models import NO_ADAPTER, EpisodeResult, RunResult, Session, run, session
 from ._native import (
     Model,
     RemoteEnv,
@@ -31,7 +31,7 @@ from ._native import (
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import ServeOptions, Tensor
-from ._server import EnvServer, VectorEnvServer
+from ._server import EnvServer
 
 try:
     __version__ = package_version("rlmesh")
@@ -48,11 +48,10 @@ _register_python_peer_info()
 
 __all__ = [
     "NO_ADAPTER",
-    "EnvRecipe",
+    "EnvFactory",
     "EnvServer",
     "EpisodeResult",
     "Model",
-    "ModelRecipe",
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
@@ -61,10 +60,12 @@ __all__ = [
     "SandboxModel",
     "SandboxVectorEnv",
     "ServeOptions",
+    "Session",
     "Tensor",
-    "VectorEnvServer",
     "__version__",
     "adapters",
+    "run",
+    "session",
     "spaces",
     "types",
 ]

@@ -52,15 +52,6 @@ pub const SUPPORTED_WORKFLOW_EDITIONS: &[&str] = &[CURRENT_WORKFLOW_EDITION];
 /// absent field, the emitter checks a capability before sending it; if absence
 /// changes semantics, use an edition.
 pub mod capabilities {
-    /// Core environment handshake and Join stream.
-    pub const ENV_SERVICE_V1: &str = "rlmesh.env.service.v1";
-
-    /// Core model handshake and Join stream.
-    pub const MODEL_SERVICE_V1: &str = "rlmesh.model.service.v1";
-
-    /// Core RLMesh space specifications and values.
-    pub const SPACES_CORE_V1: &str = "rlmesh.spaces.core.v1";
-
     /// A served model endpoint processes Join-stream requests concurrently
     /// (pipelined predict): responses arrive in completion order rather than
     /// strict arrival order, while per-route lifecycle ordering is preserved.
@@ -118,116 +109,97 @@ pub fn negotiate_workflow_edition(offered: &[String]) -> Option<&'static str> {
         .max_by_key(|edition| edition_sort_key(edition))
 }
 
-/// One participant's offer in a three-way (relay) session negotiation: the
-/// workflow editions it can operate under and the capabilities it advertises.
-/// Built for the env, the model, and the runtime; [`negotiate_session_floor`]
-/// reconciles all three. Protocol generation is NOT part of the offer — it is
-/// gated by plain equality at each pairwise handshake, so a session that reaches
-/// floor negotiation already shares one generation across all three.
+/// One participant's offer at bind time: the workflow editions it can operate
+/// under. Built for the env and the model; [`mutual`] picks the route edition.
+/// The runtime is one of the gRPC clients and is assumed newest, so it is not an
+/// offer — it drops out of the negotiation. Protocol generation is NOT part of
+/// the offer either — it is gated by plain equality at each pairwise handshake,
+/// so a session that reaches edition negotiation already shares one generation.
+/// Capabilities are advisory and pairwise (each peer reads the other's
+/// advertised map directly), so they are not negotiated here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOffer {
     /// Workflow editions this participant can operate under.
     pub editions: Vec<String>,
-    /// Capabilities this participant advertises (keys of the handshake map whose
-    /// value is `"true"`; an absent key means the feature is unavailable).
-    pub capabilities: HashMap<String, String>,
 }
 
 impl SessionOffer {
-    /// Build an offer from string slices, taking only the advertised (value
-    /// `"true"`) capabilities. Whitespace around editions is trimmed.
-    pub fn new(editions: &[&str], capabilities: &[&str]) -> Self {
+    /// Build an offer from edition string slices. Whitespace is trimmed.
+    pub fn new(editions: &[&str]) -> Self {
         Self {
             editions: editions.iter().map(|e| e.trim().to_string()).collect(),
-            capabilities: capability_map(capabilities),
-        }
-    }
-
-    /// This build's own (runtime) offer: the supported edition window plus the
-    /// named capabilities it can carry through the relay.
-    pub fn runtime(capabilities: &[&str]) -> Self {
-        Self {
-            editions: supported_workflow_editions(),
-            capabilities: capability_map(capabilities),
         }
     }
 }
 
-/// The reconciled three-way session floor produced by [`negotiate_session_floor`].
-///
-/// A session is bound to these values: the runtime decode-rebuilds env<->model
-/// envelopes (prost drops unknown fields), so it can only faithfully carry the
-/// shape that env AND model AND runtime all understand. The floor is therefore
-/// the highest mutual edition and the capability intersection across all three.
-/// Protocol generation is not a floor axis — it is gated by equality at each
-/// pairwise handshake, so all three already agree on it here. See
-/// versioning-governance §7.
+/// The reconciled route edition produced by [`negotiate_session_floor`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFloor {
-    /// Highest workflow edition all three participants support.
+    /// The edition the session runs at: the highest edition env, model, AND this
+    /// runtime all support, ranked by [`edition_sort_key`].
     pub selected_workflow_edition: String,
-    /// Capabilities present in all three offers (the intersection).
-    pub active_capabilities: HashMap<String, String>,
+    /// The edition env + model alone would have used (always >= `selected`). When
+    /// it differs from `selected`, the runtime is the limiting tier — see
+    /// [`runtime_limited`](Self::runtime_limited).
+    pub desired_workflow_edition: String,
 }
 
-/// Reconcile a three-way (relay) session to its floor over the env, model and
-/// runtime offers.
+impl SessionFloor {
+    /// Whether the runtime capped the session below what env + model would have
+    /// used on their own. The run is still safe at `selected_workflow_edition`
+    /// (all three speak it); this only flags that upgrading the runtime would
+    /// unlock the newer edition the endpoints already support.
+    pub fn runtime_limited(&self) -> bool {
+        self.selected_workflow_edition != self.desired_workflow_edition
+    }
+}
+
+/// Reconcile the route's workflow edition across env, model, and this runtime.
 ///
-/// Returns the highest mutual workflow edition (max over the 3-way intersection,
-/// ranked by [`edition_sort_key`]) and the capability intersection across all
-/// three. The runtime is the binding authority because it re-frames traffic, so
-/// the floor — not any pairwise upper bound — is what a session may use.
-/// Protocol generation is not reconciled here: it is gated by equality at each
-/// pairwise handshake, so all three already share it by the time this runs.
+/// The runtime decode-rebuilds env<->model envelopes (prost drops fields it does
+/// not know), so a session runs at the FLOOR all three support — never the
+/// env<->model pairwise max — or an edition-gated field would be silently stripped
+/// crossing an older runtime. The result also carries the env+model `desired`
+/// edition so the caller can warn when the runtime is the one holding the session
+/// back. Protocol generation is not reconciled here — it is gated by equality at
+/// each pairwise handshake, so all three already share it.
 ///
-/// Returns `None` when no edition is common to all three; the caller must then
-/// fail the session before any Join stream opens. Whitespace around offered
-/// editions is trimmed; empty strings never match.
+/// Returns `None` when the three share no edition; the caller must then fail the
+/// session before any Join stream opens. Whitespace is trimmed; empty strings
+/// never match.
 pub fn negotiate_session_floor(
     env: &SessionOffer,
     model: &SessionOffer,
     runtime: &SessionOffer,
 ) -> Option<SessionFloor> {
     let selected_workflow_edition = highest_mutual(
-        &env.editions,
-        &model.editions,
-        &runtime.editions,
+        &[&env.editions, &model.editions, &runtime.editions],
         edition_sort_key,
     )?;
-
-    // Capability intersection: a capability is active only when all three
-    // advertise it (value "true"). The runtime must carry any field the feature
-    // needs, so env<->model agreement alone is insufficient.
-    let active_capabilities = env
-        .capabilities
-        .iter()
-        .filter(|(name, value)| {
-            value.as_str() == "true"
-                && has_capability(&model.capabilities, name)
-                && has_capability(&runtime.capabilities, name)
-        })
-        .map(|(name, _)| (name.clone(), "true".to_string()))
-        .collect();
-
+    // env+model alone always share at least `selected` (it is in their
+    // intersection), so this is Some; fall back defensively just in case.
+    let desired_workflow_edition =
+        highest_mutual(&[&env.editions, &model.editions], edition_sort_key)
+            .unwrap_or_else(|| selected_workflow_edition.clone());
     Some(SessionFloor {
         selected_workflow_edition,
-        active_capabilities,
+        desired_workflow_edition,
     })
 }
 
-/// Highest edition present in all three sets (after trimming), ranked by `key`,
-/// or `None` if the three-way intersection is empty. Empty strings never match.
-fn highest_mutual<'a, K: Ord>(
-    a: &'a [String],
-    b: &[String],
-    c: &[String],
-    key: impl Fn(&'a str) -> K,
-) -> Option<String> {
-    a.iter()
+/// Highest edition present in EVERY set (after trimming), ranked by `key`, or
+/// `None` if the intersection is empty. Empty strings never match. With a single
+/// set it is just that set's max; callers pass two (env+model) or three (+runtime).
+fn highest_mutual<'a, K: Ord>(sets: &[&'a [String]], key: impl Fn(&'a str) -> K) -> Option<String> {
+    let (first, rest) = sets.split_first()?;
+    first
+        .iter()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
-        .filter(|value| b.iter().any(|other| other.trim() == *value))
-        .filter(|value| c.iter().any(|other| other.trim() == *value))
+        .filter(|value| {
+            rest.iter()
+                .all(|set| set.iter().any(|other| other.trim() == *value))
+        })
         .max_by_key(|value| key(value))
         .map(|value| value.to_string())
 }
@@ -500,12 +472,12 @@ mod tests {
     #[test]
     fn has_capability_reads_advertised_features() {
         use super::{capabilities, capability_map, has_capability};
-        let map = capability_map(&[capabilities::ENV_SERVICE_V1]);
-        assert!(has_capability(&map, capabilities::ENV_SERVICE_V1));
-        assert!(!has_capability(
+        let map = capability_map(&[capabilities::MODEL_CONCURRENT_PREDICT_V1]);
+        assert!(has_capability(
             &map,
             capabilities::MODEL_CONCURRENT_PREDICT_V1
         ));
+        assert!(!has_capability(&map, "rlmesh.not.advertised.v1"));
     }
 
     #[test]
@@ -588,108 +560,49 @@ mod tests {
     }
 
     #[test]
-    fn session_floor_picks_highest_mutual_edition() {
+    fn session_floor_picks_highest_all_three_support() {
         use super::{SessionOffer, negotiate_session_floor};
-        // All three share e1 and e2 → e2 wins. Generation is not a floor axis; it
-        // is gated by equality at the handshake before this runs.
-        let env = SessionOffer::new(&["2026.01", "2026.06"], &[]);
-        let model = SessionOffer::new(&["2026.06", "2026.01"], &[]);
-        let runtime = SessionOffer::new(&["2026.06"], &[]);
-
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        // Highest edition all three share wins (ranked by edition_sort_key);
+        // whitespace is trimmed so a padded edition still matches. When all three
+        // reach the same top edition, the runtime is not limiting.
+        let env = SessionOffer::new(&["2026.01", " 2026.06 "]);
+        let model = SessionOffer::new(&["2026.06", "2026.01"]);
+        let runtime = SessionOffer::new(&["2026.06"]);
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a floor");
         assert_eq!(floor.selected_workflow_edition, "2026.06");
-        assert!(floor.active_capabilities.is_empty());
+        assert_eq!(floor.desired_workflow_edition, "2026.06");
+        assert!(!floor.runtime_limited());
     }
 
     #[test]
-    fn session_floor_intersects_capabilities_across_all_three() {
-        use super::{SessionOffer, has_capability, negotiate_session_floor};
-        // shared: present in all three. env_model_only: env+model but not runtime.
-        // runtime_only: runtime alone. None but "shared" survive the intersection.
-        let env = SessionOffer::new(&["e1"], &["shared", "env_model_only", "env_only"]);
-        let model = SessionOffer::new(&["e1"], &["shared", "env_model_only"]);
-        let runtime = SessionOffer::new(&["e1"], &["shared", "runtime_only"]);
-
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
-        assert_eq!(floor.active_capabilities.len(), 1);
-        assert!(has_capability(&floor.active_capabilities, "shared"));
-        assert!(!has_capability(
-            &floor.active_capabilities,
-            "env_model_only"
-        ));
-        assert!(!has_capability(&floor.active_capabilities, "runtime_only"));
-        assert!(!has_capability(&floor.active_capabilities, "env_only"));
-    }
-
-    #[test]
-    fn session_floor_is_none_when_no_three_way_mutual_edition() {
+    fn session_floor_flags_runtime_as_limiting_tier() {
         use super::{SessionOffer, negotiate_session_floor};
-        // The pivotal case: env<->runtime share 2026.01 and model<->runtime share
-        // 2026.06, but the THREE share no edition → None.
-        let env = SessionOffer::new(&["2026.01"], &[]);
-        let model = SessionOffer::new(&["2026.06"], &[]);
-        let runtime = SessionOffer::new(&["2026.01", "2026.06"], &[]);
+        // env+model both reach 2026.08, but the runtime only speaks 2026.06, so the
+        // floor drops to 2026.06 (safe — all three speak it) and the runtime is
+        // flagged as the tier holding the session back.
+        let env = SessionOffer::new(&["2026.06", "2026.08"]);
+        let model = SessionOffer::new(&["2026.06", "2026.08"]);
+        let runtime = SessionOffer::new(&["2026.06"]);
+        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a floor");
+        assert_eq!(floor.selected_workflow_edition, "2026.06");
+        assert_eq!(floor.desired_workflow_edition, "2026.08");
+        assert!(floor.runtime_limited());
+    }
+
+    #[test]
+    fn session_floor_is_none_when_no_common_edition() {
+        use super::{SessionOffer, negotiate_session_floor};
+        // env+model agree on 2026.08 but the runtime can't speak it, and they can't
+        // speak the runtime's 2026.06 → no edition all three share → None.
+        let env = SessionOffer::new(&["2026.08"]);
+        let model = SessionOffer::new(&["2026.08"]);
+        let runtime = SessionOffer::new(&["2026.06"]);
         assert!(negotiate_session_floor(&env, &model, &runtime).is_none());
-    }
 
-    #[test]
-    fn session_floor_trims_and_ignores_empty_offers() {
-        use super::{SessionOffer, negotiate_session_floor};
-        // Whitespace is trimmed so a padded edition still matches; empty strings
-        // never match (so a participant offering only "" has no mutual value).
-        let env = SessionOffer::new(&[" 2026.06 "], &[]);
-        let model = SessionOffer::new(&["2026.06"], &[]);
-        let runtime = SessionOffer::new(&["2026.06", ""], &[]);
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("trimmed match");
-        assert_eq!(floor.selected_workflow_edition, "2026.06");
-
-        let empty_edition = SessionOffer::new(&[""], &[]);
-        assert!(negotiate_session_floor(&empty_edition, &model, &runtime).is_none());
-    }
-
-    #[test]
-    fn session_floor_for_single_edition_build() {
-        use super::{
-            CURRENT_WORKFLOW_EDITION, SessionOffer, capabilities, has_capability,
-            negotiate_session_floor,
-        };
-        // The behavior this build actually ships: one edition. The floor is
-        // trivially that edition, and the capability intersection is exactly the
-        // capabilities all three carry.
-        let env = SessionOffer::new(
-            &[CURRENT_WORKFLOW_EDITION],
-            &[capabilities::SPACES_CORE_V1, capabilities::ENV_SERVICE_V1],
-        );
-        let model = SessionOffer::new(
-            &[CURRENT_WORKFLOW_EDITION],
-            &[capabilities::SPACES_CORE_V1, capabilities::MODEL_SERVICE_V1],
-        );
-        let runtime = SessionOffer::runtime(&[capabilities::SPACES_CORE_V1]);
-
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("single-edition floor");
-        assert_eq!(floor.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
-        // Only the capability all three carry survives.
-        assert!(has_capability(
-            &floor.active_capabilities,
-            capabilities::SPACES_CORE_V1
-        ));
-        assert_eq!(floor.active_capabilities.len(), 1);
-    }
-
-    #[test]
-    fn session_floor_capability_requires_value_true_in_all_three() {
-        use super::{SessionOffer, has_capability, negotiate_session_floor};
-        // A capability advertised with value != "true" by any participant is not
-        // active (has_capability gates on "true"); mirror that in the floor.
-        let mut env = SessionOffer::new(&["e1"], &["cap"]);
-        let model = SessionOffer::new(&["e1"], &["cap"]);
-        let runtime = SessionOffer::new(&["e1"], &["cap"]);
-        // Downgrade env's advertisement to a non-"true" value.
-        env.capabilities
-            .insert("cap".to_string(), "maybe".to_string());
-
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("floor");
-        assert!(!has_capability(&floor.active_capabilities, "cap"));
+        // Empty strings never match, so an offer of only "" has no mutual value.
+        let empty = SessionOffer::new(&[""]);
+        let ok = SessionOffer::new(&["2026.06"]);
+        assert!(negotiate_session_floor(&empty, &ok, &ok).is_none());
     }
 
     #[test]
@@ -724,13 +637,11 @@ mod tests {
     #[test]
     fn session_floor_prefers_exact_edition_cohort_over_sealed_fallback() {
         use super::{SessionOffer, negotiate_session_floor};
-        // The floor uses edition_sort_key: when all three offer both the exact
-        // moving cohort and its sealed fallback, the exact cohort is selected.
+        // The floor uses edition_sort_key: when all three offer the exact moving
+        // cohort and its sealed fallback, the exact cohort is selected.
         let editions = &["2026.06", "2026.06-0.1.0-rc.1"];
-        let env = SessionOffer::new(editions, &[]);
-        let model = SessionOffer::new(editions, &[]);
-        let runtime = SessionOffer::new(editions, &[]);
-        let floor = negotiate_session_floor(&env, &model, &runtime).expect("a mutual floor");
+        let offer = SessionOffer::new(editions);
+        let floor = negotiate_session_floor(&offer, &offer, &offer).expect("a floor");
         assert_eq!(floor.selected_workflow_edition, "2026.06-0.1.0-rc.1");
     }
 }

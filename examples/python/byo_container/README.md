@@ -20,21 +20,18 @@ docker build -t my-model:latest model
 import rlmesh
 
 env = rlmesh.RemoteEnv("127.0.0.1:50051")
-model = rlmesh.SandboxModel("image://my-model:latest").against(env)  # starts the container
-obs, _ = env.reset()
-model.reset()
-done = False
-while not done:
-    action = model.predict(obs)
-    obs, reward, terminated, truncated, _ = env.step(action)
-    done = terminated or truncated
+sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)  # starts the container
+obs, _ = sess.reset()
+while not sess.done:
+    action = sess.predict(obs)
+    obs, reward, terminated, truncated, _ = sess.step(action)
 ```
 
-`SandboxModel("image://<tag>").against(env)` runs your prebuilt tag directly — no recipe, no build — and opens a route configured from the env's contract. The identical loop drives the un-managed pair by swapping the two construction lines:
+`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` runs your prebuilt tag directly — no recipe, no build — and opens a route configured from the env's contract. The identical loop drives the un-managed pair by swapping the model construction:
 
 ```python
 env = rlmesh.RemoteEnv(env_address)
-model = rlmesh.RemoteModel(model_address).against(env)
+sess = rlmesh.session(rlmesh.RemoteModel(model_address), env)
 ```
 
 ## The bare protocol contract

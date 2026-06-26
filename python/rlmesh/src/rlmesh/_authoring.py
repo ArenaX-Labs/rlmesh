@@ -1,59 +1,47 @@
-"""Authoring bases: thin runtime classes (load/predict/spec), NOT build recipes.
+"""Authoring base for environments: a thin runtime class (tags/make), NOT a build DSL.
 
-Subclass to describe a policy or environment's *runtime*. There is no build DSL
-here -- packaging stays in your Dockerfile. ``Model(MyPolicy)`` and
-``python -m rlmesh.serve my_pkg:MyPolicy`` both accept a :class:`ModelRecipe`
-subclass directly; envs serve via :class:`EnvServer` (or the same ``serve`` module).
+Subclass :class:`EnvFactory` to describe an environment's *runtime*. There is no build
+DSL here -- packaging stays in your Dockerfile. Models are authored by subclassing
+``rlmesh.Model`` and overriding ``predict`` (no separate recipe noun); envs serve via
+:class:`EnvServer`, ``EnvFactory.serve``, or ``python -m rlmesh.serve --env my_pkg:MyEnv``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, ClassVar, final
+
+from rlmesh.types import EnvLike
 
 if TYPE_CHECKING:
-    from .adapters import EnvTags, ModelSpec
+    from .adapters import EnvTags
 
 
-class ModelRecipe:
-    """Authoring base for a policy: set ``spec``, implement ``load`` and ``predict``.
+class EnvFactory(ABC):
+    """Authoring base that *builds* environment(s): set ``tags`` and implement ``make``.
 
-    ``Model(MyPolicy).run(env)`` instantiates the class, calls ``load()`` once, then
-    serves ``predict`` through the adapter resolved from ``spec`` and the env's tags.
-    ``reset`` and ``close`` are optional episode-boundary and teardown hooks. This is
-    runtime-only; it is not a build recipe.
-    """
-
-    spec: ClassVar[ModelSpec | None] = None
-
-    def load(self) -> None:
-        """Load weights into ``self`` (``from_pretrained`` etc.); heavy imports here."""
-
-    def predict(self, observation: Any) -> Any:
-        """Map one observation to an action (or an action chunk per ``spec``)."""
-        raise NotImplementedError
-
-    def reset(self) -> None:
-        """Optional: called at each episode boundary."""
-
-    def close(self) -> None:
-        """Optional: release resources at the end of a run."""
-
-
-class EnvRecipe:
-    """Authoring base for an environment: set ``tags``, implement ``make``.
-
-    Served via ``EnvServer(make(), address, tags=tags)``. ``prepare`` is an optional
-    one-time setup hook run before ``make``. Runtime-only; not a build recipe.
+    Subclass per obs/action contract -- the ``tags`` (a :class:`~rlmesh.adapters.EnvTags`)
+    are that contract. ``make(**kwargs)`` is the factory and may return a single env or a
+    vectorized batch; task selection and ``num_envs`` are its parameters, not separate
+    subclasses. ``tags = None`` (the default) means a generic, un-adapted env.
     """
 
     tags: ClassVar[EnvTags | None] = None
 
-    def prepare(self) -> None:
+    def prepare(self) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Optional: one-time setup before ``make()``."""
 
-    def make(self, **kwargs: Any) -> Any:
+    @abstractmethod
+    def make(self, **kwargs: Any) -> EnvLike[Any, Any]:
         """Construct and return the environment to serve."""
         raise NotImplementedError
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Optional: release resources."""
+
+    @final
+    def serve(self, address: str, **kwargs: Any) -> None:
+        """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**kwargs)``, publish ``tags``."""
+        from .serve import serve_env
+
+        serve_env(self, address, **kwargs)

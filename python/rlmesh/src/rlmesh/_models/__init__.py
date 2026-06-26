@@ -10,10 +10,14 @@ connects a predict callable to an env.
 from __future__ import annotations
 
 from ._adapter_mode import NO_ADAPTER
-from ._eval import EpisodeResult, RunResult
+from ._eval import EpisodeResult, RunResult, Session
+from .base import run, session
 
 __all__ = [
     "NO_ADAPTER",
     "EpisodeResult",
     "RunResult",
+    "Session",
+    "run",
+    "session",
 ]

@@ -25,8 +25,7 @@ use rlmesh_proto::env::v1::{
     ShutdownResponse, env_service_server::EnvService, join_request, join_response,
 };
 use rlmesh_proto::{
-    PROTOCOL_GENERATION, capabilities, capability_map, evaluate_handshake, peer_info,
-    supported_workflow_editions,
+    PROTOCOL_GENERATION, capability_map, evaluate_handshake, peer_info, supported_workflow_editions,
 };
 
 use super::env_error_to_proto;
@@ -236,7 +235,7 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let env_contract = if compatible {
             let env = self.env.lock().await;
             let mut contract = env_contract_to_proto(env.env_contract());
-            contract.num_envs = Some(env.num_envs() as u32);
+            contract.num_envs = env.num_envs() as u32;
             Some(contract)
         } else {
             None
@@ -245,35 +244,26 @@ impl<E: Environment + 'static> EnvService for GrpcEnvServer<E> {
         let base = rlmesh_proto::core::v1::HandshakeResponse {
             compatible,
             peer_info: Some(peer_info("rlmesh-env")),
-            server_protocol_generation: PROTOCOL_GENERATION.to_string(),
             error_message: if compatible {
-                String::new()
+                None
             } else if !compat.protocol_compatible {
-                format!(
+                Some(format!(
                     "protocol generation {} not compatible with server {}",
                     req.protocol_generation, PROTOCOL_GENERATION
-                )
+                ))
             } else if req.supported_workflow_editions.is_empty() {
-                format!(
+                Some(format!(
                     "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
                     supported_workflow_editions().join(", ")
-                )
+                ))
             } else {
-                format!(
+                Some(format!(
                     "no mutually supported workflow edition; client offered [{}], server supports [{}]",
                     req.supported_workflow_editions.join(", "),
                     supported_workflow_editions().join(", ")
-                )
+                ))
             },
-            capabilities: capability_map(&[
-                capabilities::ENV_SERVICE_V1,
-                capabilities::SPACES_CORE_V1,
-            ]),
-            selected_workflow_edition: if compatible {
-                compat.selected_edition.unwrap_or_default().to_string()
-            } else {
-                String::new()
-            },
+            capabilities: capability_map(&[]),
             supported_workflow_editions: supported_workflow_editions(),
         };
 
@@ -937,8 +927,7 @@ mod tests {
         ResetResponse, StepRequest, StepResponse,
     };
     use rlmesh_proto::{
-        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, capabilities, peer_info,
-        supported_workflow_editions,
+        CURRENT_WORKFLOW_EDITION, PROTOCOL_GENERATION, peer_info, supported_workflow_editions,
     };
     use rlmesh_spaces::{EnvContract as SpaceEnvContract, SpaceSpec};
     use tonic::Request;
@@ -1303,16 +1292,15 @@ mod tests {
         assert!(response.env_contract.is_some());
         let base = response.base.unwrap();
         assert!(base.compatible);
-        assert_eq!(base.server_protocol_generation, PROTOCOL_GENERATION);
-        assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
         assert_eq!(
             base.supported_workflow_editions,
             supported_workflow_editions()
         );
         // PeerInfo is populated both directions; the response names the env.
         assert_eq!(base.peer_info.as_ref().unwrap().component, "rlmesh-env");
-        assert!(base.capabilities.contains_key(capabilities::ENV_SERVICE_V1));
-        assert!(base.capabilities.contains_key(capabilities::SPACES_CORE_V1));
+        // The env advertises no capabilities; the map is the pairwise channel,
+        // but there is no behavior-bearing env capability to declare.
+        assert!(base.capabilities.is_empty());
     }
 
     #[tokio::test]
@@ -1380,8 +1368,12 @@ mod tests {
         assert!(response.env_contract.is_none());
         let base = response.base.unwrap();
         assert!(!base.compatible);
-        assert!(base.error_message.contains("protocol generation"));
-        assert!(base.selected_workflow_edition.is_empty());
+        assert!(
+            base.error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("protocol generation")
+        );
     }
 
     #[tokio::test]
@@ -1399,10 +1391,11 @@ mod tests {
         .unwrap()
         .into_inner();
 
+        // The handshake declares editions; mutual selection happens at bind. A
+        // compatible response means a mutual edition exists.
         assert!(response.env_contract.is_some());
         let base = response.base.unwrap();
         assert!(base.compatible);
-        assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
     }
 
     #[tokio::test]
@@ -1421,15 +1414,15 @@ mod tests {
             assert!(response.env_contract.is_none());
             let base = response.base.unwrap();
             assert!(!base.compatible, "offer {offer:?} must be rejected");
-            assert!(base.error_message.contains("workflow edition"));
+            let error_message = base.error_message.as_deref().unwrap_or_default();
+            assert!(error_message.contains("workflow edition"));
             if offer.is_empty() {
-                assert!(base.error_message.contains("predate edition negotiation"));
+                assert!(error_message.contains("predate edition negotiation"));
             }
             assert_eq!(
                 base.supported_workflow_editions,
                 supported_workflow_editions()
             );
-            assert!(base.selected_workflow_edition.is_empty());
         }
     }
 

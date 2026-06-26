@@ -4,7 +4,6 @@ use rlmesh_proto::{
         HandshakeRequest as CoreHandshakeRequest, ShutdownRequest as CoreShutdownRequest,
         ShutdownResponse as CoreShutdownResponse,
     },
-    is_protocol_generation_supported,
     model::v1::{
         CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
         GroupedPredictResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
@@ -125,16 +124,14 @@ impl ModelClient {
         )
     }
 
-    /// The model's negotiation offer learned at handshake: its supported
-    /// protocol generations, workflow editions, and advertised capabilities.
-    ///
-    /// The runtime (client to both the env and the model) feeds this into
-    /// [`rlmesh_proto::negotiate_session_floor`] to reconcile the three-way
-    /// session floor. Empty before [`handshake`](Self::handshake) completes.
+    /// The model's bind-time offer learned at handshake: the workflow editions it
+    /// supports. The runtime (client to both the env and the model) feeds this
+    /// into [`rlmesh_proto::mutual`] to pick the route edition. Empty before
+    /// [`handshake`](Self::handshake) completes. Capabilities are read pairwise
+    /// (see [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
     pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {
         rlmesh_proto::SessionOffer {
             editions: self.server_supported_editions.clone(),
-            capabilities: self.server_capabilities.clone(),
         }
     }
 
@@ -147,10 +144,7 @@ impl ModelClient {
             base: Some(CoreHandshakeRequest {
                 protocol_generation: PROTOCOL_GENERATION.to_string(),
                 peer_info: Some(peer_info("rlmesh-model")),
-                capabilities: capability_map(&[
-                    capabilities::MODEL_SERVICE_V1,
-                    capabilities::SPACES_CORE_V1,
-                ]),
+                capabilities: capability_map(&[]),
                 supported_workflow_editions: supported_workflow_editions(),
             }),
         })?;
@@ -168,18 +162,14 @@ impl ModelClient {
                 ))
             })?;
 
+        // `compatible` is the server's verdict on protocol generation (plain
+        // equality — a wrong generation is a hard, full-restart break) and edition
+        // mutuality. The client trusts it; there is no echoed server generation to
+        // re-verify.
         if !response.compatible {
-            return Err(ProtocolError::HandshakeFailed(response.error_message).into());
-        }
-        // Protocol generation is plain equality: the server must speak the exact
-        // generation this client was built against, or the session is a hard
-        // mismatch (a deliberate major break).
-        if !is_protocol_generation_supported(&response.server_protocol_generation) {
-            return Err(ProtocolError::HandshakeFailed(format!(
-                "server protocol generation {} does not match this client ({PROTOCOL_GENERATION})",
-                response.server_protocol_generation
-            ))
-            .into());
+            return Err(
+                ProtocolError::HandshakeFailed(response.error_message.unwrap_or_default()).into(),
+            );
         }
         self.server_supported_editions = response.supported_workflow_editions;
         self.server_capabilities = response.capabilities;

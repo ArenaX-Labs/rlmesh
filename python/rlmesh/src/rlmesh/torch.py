@@ -257,12 +257,12 @@ class RemoteVectorEnv(RemoteVectorEnvBase[TorchValue, TorchValue]):
     _space_bridge: ClassVar[SpaceBridge[Any] | None] = _torch_space_bridge
 
 
-@final
 class Model(ModelBase[TorchValue, TorchValue]):
     """Experimental Torch-backed model: ``predict`` works in Torch values.
 
-    The Torch-typed :class:`~rlmesh._models.base.ModelBase`; see it for the source/spec
-    construction and ``run(env, seeds=[...]) -> RunResult`` eval.
+    The Torch-typed :class:`~rlmesh._models.base.ModelBase`; see it for the
+    wrap-a-callable / subclass-and-override-``predict`` construction and
+    ``run(env, seeds=[...]) -> RunResult`` eval.
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
@@ -286,7 +286,8 @@ class SandboxEnv(SandboxEnvBase[TorchValue, TorchValue]):
         **gym_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls = RemoteEnv
+    _bridge: ClassVar[ValueBridge] = _torch_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _torch_space_bridge
 
 
 @final
@@ -308,7 +309,8 @@ class SandboxVectorEnv(SandboxVectorEnvBase[TorchValue, TorchValue]):
         **env_make_kwargs: Keyword arguments forwarded to environment creation.
     """
 
-    _remote_env_cls = RemoteVectorEnv
+    _bridge: ClassVar[ValueBridge] = _torch_bridge
+    _space_bridge: ClassVar[SpaceBridge[Any] | None] = _torch_space_bridge
 
 
 __all__ = [

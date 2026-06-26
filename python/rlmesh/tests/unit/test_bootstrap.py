@@ -202,17 +202,17 @@ def test_load_env_entrypoint_imports_packages_and_forwards_kwargs(
 @pytest.mark.parametrize(
     ("attr", "entrypoint", "exc", "match"),
     [
-        (None, "fake_env_module", "RecipeConstructionError", "module:callable"),
+        (None, "fake_env_module", "EntrypointConstructionError", "module:callable"),
         (
             None,
             "fake_env_module:missing",
-            "RecipeConstructionError",
+            "EntrypointConstructionError",
             "could not resolve",
         ),
         (
             object(),
             "fake_env_module:value",
-            "RecipeConstructionError",
+            "EntrypointConstructionError",
             "did not resolve to a callable",
         ),
         (
@@ -230,14 +230,14 @@ def test_load_env_entrypoint_rejects(
     exc: str,
     match: str,
 ) -> None:
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
     if attr is not None:
         setattr(module, entrypoint.split(":", 1)[1], attr)
     monkeypatch.setitem(sys.modules, "fake_env_module", module)
 
-    expected = TypeError if exc == "TypeError" else RecipeConstructionError
+    expected = TypeError if exc == "TypeError" else EntrypointConstructionError
     with pytest.raises(expected, match=match):
         load_env_entrypoint(entrypoint)
 
@@ -366,28 +366,28 @@ def test_recipe_construction_error_is_catchable_as_import_error() -> None:
     # load_env_entrypoint is public (rlmesh._serving.load_env_entrypoint) and used to
     # raise a raw ImportError/AttributeError/TypeError/ValueError. The wrapper must
     # stay catchable by an old-style `except ImportError` so callers do not break.
-    from rlmesh._bootstrap.env import RecipeConstructionError
+    from rlmesh._bootstrap.env import EntrypointConstructionError
 
-    assert issubclass(RecipeConstructionError, ImportError)
-    assert issubclass(RecipeConstructionError, RuntimeError)
+    assert issubclass(EntrypointConstructionError, ImportError)
+    assert issubclass(EntrypointConstructionError, RuntimeError)
 
 
 def test_load_env_entrypoint_malformed_caught_as_import_error() -> None:
     # A bad entrypoint that previously surfaced a raw ImportError must still be
-    # catchable as ImportError even though it is now a RecipeConstructionError.
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+    # catchable as ImportError even though it is now a EntrypointConstructionError.
+    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
 
     with pytest.raises(ImportError) as excinfo:
         load_env_entrypoint("fake_env_module")
-    assert isinstance(excinfo.value, RecipeConstructionError)
+    assert isinstance(excinfo.value, EntrypointConstructionError)
 
 
 def test_load_env_entrypoint_does_not_wrap_factory_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # RecipeConstructionError wraps ONLY the import/resolve boundary; an error
+    # EntrypointConstructionError wraps ONLY the import/resolve boundary; an error
     # raised inside a successfully-resolved factory must propagate raw.
-    from rlmesh._bootstrap.env import RecipeConstructionError, load_env_entrypoint
+    from rlmesh._bootstrap.env import EntrypointConstructionError, load_env_entrypoint
 
     module = ModuleType("fake_env_module")
 
@@ -399,7 +399,7 @@ def test_load_env_entrypoint_does_not_wrap_factory_errors(
 
     with pytest.raises(RuntimeError, match="boom-from-make") as excinfo:
         load_env_entrypoint("fake_env_module:boom")
-    assert not isinstance(excinfo.value, RecipeConstructionError)
+    assert not isinstance(excinfo.value, EntrypointConstructionError)
 
 
 def test_resolve_bootstrap_spec_reads_inline_payload(

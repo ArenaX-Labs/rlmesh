@@ -420,7 +420,7 @@ impl Drop for PyModel {
 
 /// Client handle to a model (policy) server: the model-side mirror of
 /// `PyEnvClient`. Bound to one env contract (one route) for its lifetime; the
-/// Python layer creates one per `RemoteModel.against(env)`.
+/// Python layer creates one per `rlmesh.session(model, env)`.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyModelClient {

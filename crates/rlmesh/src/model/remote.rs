@@ -6,7 +6,7 @@ use rlmesh_grpc::wire::{
 use rlmesh_proto::model::v1::{
     CloseRouteRequest, ConfigureRouteRequest, PredictContext, PredictRequest, PredictSlot,
 };
-use rlmesh_proto::{SessionFloor, SessionOffer, capabilities, negotiate_session_floor};
+use rlmesh_proto::{SessionOffer, negotiate_session_floor, supported_workflow_editions};
 use uuid::Uuid;
 
 use crate::{ConnectAddress, Error, Result, spaces};
@@ -53,19 +53,11 @@ pub struct RemoteModel {
     /// `step == 0`) keeps it correct even though this client cannot observe an
     /// episode's end from the server.
     pending_reset: bool,
-    /// The reconciled three-way (relay) session floor — the highest generation
-    /// and edition, and the capability intersection, that the env, the model,
-    /// and this runtime all support. Sent to the model in `ConfigureRoute` as
-    /// AUTHORITATIVE over its own (pairwise) handshake result. See
-    /// versioning-governance §7.
-    floor: SessionFloor,
+    /// The route edition this session runs at: the highest edition both the env
+    /// and the model support (2-way highest-mutual). Sent to the model in
+    /// `ConfigureRoute` as AUTHORITATIVE over its own (pairwise) handshake result.
+    selected_workflow_edition: String,
 }
-
-/// The capabilities this runtime can faithfully carry through the relay. The
-/// runtime decode-rebuilds env<->model envelopes, so only a capability whose
-/// field this build understands may be active at the floor. Today that is the
-/// core spaces codec.
-const RUNTIME_RELAY_CAPABILITIES: &[&str] = &[capabilities::SPACES_CORE_V1];
 
 /// Per-instance session id. The served model caches route configs, the
 /// resolved adapter, and active episodes keyed by `session_id:route_id`, so a
@@ -76,15 +68,18 @@ fn new_session_id() -> String {
     format!("remote-model-{}", Uuid::new_v4())
 }
 
-/// Build the fail-fast diagnostic when the three-way session floor is empty,
-/// naming each participant's offered generations and editions so an operator can
-/// see which tier has no mutual value.
-fn session_floor_error(env: &SessionOffer, model: &SessionOffer, runtime: &SessionOffer) -> Error {
+/// Build the fail-fast diagnostic when env, model, and runtime share no workflow
+/// edition, naming each tier's offered editions so an operator sees the mismatch.
+fn no_mutual_edition_error(
+    env: &SessionOffer,
+    model: &SessionOffer,
+    runtime: &SessionOffer,
+) -> Error {
     Error::Internal(format!(
-        "no mutual session floor across the relay: \
+        "no mutual session floor across env, model, and runtime: \
          env={{editions: {:?}}}, model={{editions: {:?}}}, runtime={{editions: {:?}}}; \
-         the runtime decode-rebuilds env<->model traffic, so a session can only \
-         run at an edition all three support",
+         the runtime re-frames env<->model traffic, so a session can only run at an \
+         edition all three support",
         env.editions, model.editions, runtime.editions,
     ))
 }
@@ -132,23 +127,26 @@ impl RemoteModel {
         env_contract: spaces::EnvContract,
     ) -> Result<Self> {
         // No explicit env offer: take the runtime's own supported window as the
-        // env offer. With a single-generation/single-edition build the floor is
-        // unaffected; the fail-fast machinery still runs.
-        let env_offer = SessionOffer::runtime(RUNTIME_RELAY_CAPABILITIES);
+        // env offer. With a single-edition build the mutual is unaffected; the
+        // fail-fast machinery still runs.
+        let env_offer = SessionOffer {
+            editions: supported_workflow_editions(),
+        };
         Self::connect_with_env_offer(address, token, env_contract, env_offer).await
     }
 
-    /// Connect to a model server and reconcile the **three-way (relay) session
-    /// floor** against the env's advertised offer.
+    /// Connect to a model server and reconcile the **route workflow edition**
+    /// across the env, the model, and this runtime.
     ///
-    /// The runtime is the binding authority: it decode-rebuilds env<->model
-    /// envelopes, so a session can only run at the FLOOR of env + model +
-    /// runtime (versioning-governance §7). This handshakes the **model first**
-    /// to learn its window, then reconciles the floor over (env ∩ model ∩
-    /// runtime) via [`negotiate_session_floor`]. With no mutual generation or
-    /// edition across all three it **fails before any route is configured**,
-    /// naming each participant's offer. The resulting floor is sent to the model
-    /// in `ConfigureRoute` as authoritative over the model's own handshake.
+    /// The runtime re-frames env<->model traffic, so a session runs at the
+    /// 3-way [`negotiate_session_floor`] — the highest edition all three support —
+    /// never the env<->model max, or an edition-gated field would be silently
+    /// stripped crossing this runtime. This handshakes the **model first** to learn
+    /// its window, then reconciles the floor. If this runtime is what holds the
+    /// edition back it **warns** (still runs, safely, at the floor); with no mutual
+    /// edition at all it **fails before any route is configured**, naming each
+    /// tier's offer. The selected edition is sent to the model in `ConfigureRoute`
+    /// as authoritative over its own handshake.
     ///
     /// `env_offer` is the env's advertised window; take it from
     /// [`RemoteEnv::session_offer`](crate::RemoteEnv::session_offer).
@@ -173,20 +171,41 @@ impl RemoteModel {
         );
         let env_contract = single_lane_contract(env_contract)?;
 
-        // Model first: the runtime learns the model's window before it can
-        // reconcile the floor. (The env was already handshaked by the caller;
-        // its offer narrows the floor here.)
+        // Model first: the runtime learns the model's window before it can pick
+        // the edition. (The env was already handshaked by the caller; its offer
+        // narrows the floor here.)
         let mut inner = rlmesh_grpc::ModelClient::connect(&address.to_string(), token)
             .await
             .map_err(Error::from)?;
         inner.handshake().await.map_err(Error::from)?;
         let model_offer = inner.model_session_offer();
 
-        // Reconcile the three-way floor; a missing mutual generation/edition
-        // fails the session before any Join/ConfigureRoute is sent.
-        let runtime_offer = SessionOffer::runtime(RUNTIME_RELAY_CAPABILITIES);
+        // Reconcile the 3-way floor (env + model + this runtime). The runtime
+        // re-frames env<->model traffic and prost drops fields it doesn't know, so
+        // the session runs at the floor all three speak — never higher — or an
+        // edition-gated field would be silently stripped crossing this runtime. No
+        // mutual edition at all fails before any Join/ConfigureRoute is sent.
+        let runtime_offer = SessionOffer {
+            editions: supported_workflow_editions(),
+        };
         let floor = negotiate_session_floor(&env_offer, &model_offer, &runtime_offer)
-            .ok_or_else(|| session_floor_error(&env_offer, &model_offer, &runtime_offer))?;
+            .ok_or_else(|| no_mutual_edition_error(&env_offer, &model_offer, &runtime_offer))?;
+
+        // The floor is always safe, but if env+model could have run a newer edition
+        // and this runtime is what held them back, say so — the operator's fix is to
+        // upgrade the runtime, not the endpoints. (Cannot fire while one edition
+        // exists; this is the visibility for when editions go plural.)
+        if floor.runtime_limited() {
+            tracing::warn!(
+                selected_workflow_edition = %floor.selected_workflow_edition,
+                desired_workflow_edition = %floor.desired_workflow_edition,
+                "runtime is the limiting tier: env and model support workflow edition {} but this \
+                 runtime caps the session to {} — upgrade the runtime to run at the newer edition",
+                floor.desired_workflow_edition,
+                floor.selected_workflow_edition,
+            );
+        }
+        let selected_workflow_edition = floor.selected_workflow_edition;
 
         Ok(Self {
             inner,
@@ -201,13 +220,13 @@ impl RemoteModel {
             episode_id: None,
             step: 0,
             pending_reset: false,
-            floor,
+            selected_workflow_edition,
         })
     }
 
-    /// The reconciled three-way session floor this session runs at.
-    pub fn session_floor(&self) -> &SessionFloor {
-        &self.floor
+    /// The workflow edition this session runs at (2-way mutual of env + model).
+    pub fn selected_workflow_edition(&self) -> &str {
+        &self.selected_workflow_edition
     }
 
     /// The address this client is connected to.
@@ -333,10 +352,9 @@ impl RemoteModel {
                     slots: Vec::new(),
                 }),
                 env_spec: Some(env_spec_to_proto(&self.env_contract)),
-                // Pin the model to the reconciled three-way floor: authoritative
+                // Pin the model to the runtime-selected route edition: authoritative
                 // over the model's own (pairwise) handshake result.
-                selected_workflow_edition: self.floor.selected_workflow_edition.clone(),
-                active_capabilities: self.floor.active_capabilities.clone(),
+                selected_workflow_edition: self.selected_workflow_edition.clone(),
             })
             .await
             .map_err(Error::from)

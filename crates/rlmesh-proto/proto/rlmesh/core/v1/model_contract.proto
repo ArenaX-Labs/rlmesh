@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package rlmesh.core.v1;
+
+message ModelContract {
+  optional string spec = 1;
+}

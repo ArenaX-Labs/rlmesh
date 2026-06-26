@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar, cast
 
+from .._framework_bridge import identity_bridge
 from .._value_conversion import from_value
 from ._adapter_mode import NO_ADAPTER
 from ._chunk import ChunkReplay
 
 if TYPE_CHECKING:
+    from rlmesh._rlmesh import PyModelClient
+
     from .._framework_bridge import ValueBridge
     from ..adapters import Adapter
     from ..specs import EnvContract
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
 __all__ = [
     "EpisodeResult",
     "RunResult",
+    "Session",
     "coerce_model",
     "evaluate",
     "resolve_route_adapter",
@@ -31,6 +35,9 @@ __all__ = [
 
 # bound the loop so a non-terminating env cannot hang it forever.
 _MAX_STEPS_PER_EPISODE = 100_000
+
+ObsT = TypeVar("ObsT")
+ActT = TypeVar("ActT")
 
 
 class CoercedModel(NamedTuple):
@@ -104,118 +111,25 @@ def evaluate(
     remote_env_cls: type | None = None,
     bridge: ValueBridge | None = None,
 ) -> RunResult:
-    """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``)."""
-    client, contract, owns_client = _connect(env_or_address, token, remote_env_cls)
-    _reject_vector_env(contract)
-    adapter = _resolve_adapter(spec, contract, trust_entrypoints)
-    env_bridge = _adapter_env_bridge(client, bridge) if adapter is not None else None
-    text_keys = _text_input_keys(spec)
-    if max_episodes is not None:
-        n_episodes = max_episodes
-    elif seeds is not None:
-        n_episodes = len(seeds)
-    else:
-        n_episodes = 1
-    episodes: list[EpisodeResult] = []
-    on_close_error: BaseException | None = None
-    try:
-        for i in range(n_episodes):
-            seed = seeds[i] if seeds is not None and i < len(seeds) else None
-            episodes.append(
-                _run_episode(
-                    client,
-                    predict,
-                    adapter,
-                    on_reset,
-                    i,
-                    seed,
-                    instruction,
-                    text_keys,
-                    bridge,
-                    env_bridge,
-                )
-            )
-            if on_episode_end is not None:
-                on_episode_end()
-    finally:
-        if on_close is not None:
-            try:
-                on_close()
-            except BaseException as exc:
-                on_close_error = exc
-        if close_env:
-            # close_env is the caller's explicit opt-in to stop the env. When we
-            # dialed the address ourselves the owner-level target is the client we
-            # opened; otherwise it is the caller-supplied env/address. Without
-            # close_env we never shut down a possibly-shared remote env.
-            _shutdown(client if owns_client else env_or_address)
-        if owns_client:
-            _close(client)
-    if on_close_error is not None:
-        raise on_close_error
-    return RunResult(episodes=tuple(episodes))
+    """Drive ``predict`` against an env and return a :class:`RunResult` (see ``Model.run``).
 
-
-def _run_episode(
-    client: Any,
-    predict: Callable[[Any], Any],
-    adapter: Any,
-    on_reset: Callable[[], None] | None,
-    index: int,
-    seed: int | None,
-    instruction: str | None,
-    text_keys: tuple[str, ...],
-    bridge: ValueBridge | None = None,
-    env_bridge: ValueBridge | None = None,
-) -> EpisodeResult:
-    obs, _info = _reset(client, seed)
-    if adapter is not None:
-        adapter.reset()
-    if on_reset is not None:
-        on_reset()
-    total = 0.0
-    steps = 0
-    terminated = truncated = False
-    model_bridge = bridge if bridge is not None else env_bridge
-    # Action-chunk replay (shared with the served engine's ChunkBuffers and the
-    # explicit adapter.wrap_predict path, via ChunkReplay): a model with
-    # execute_horizon>1 returns a chunk; replay it one action per step, predicting
-    # again only when the queue drains. The queue is episode-local (fresh per call),
-    # so it needs no explicit reset. getattr-default keeps duck-typed / custom
-    # adapters (which may not declare a horizon) at no-chunking; a custom adapter
-    # opts in by exposing the attribute.
-    horizon = getattr(adapter, "execute_horizon", 1) if adapter is not None else 1
-    replay = ChunkReplay(horizon)
-    while not (terminated or truncated) and steps < _MAX_STEPS_PER_EPISODE:
-        # `obs` is bound as a default arg so the per-step thunk captures the
-        # current observation, not the loop's final one (B023).
-        raw_action = replay.next_action(
-            lambda obs=obs: _predict_step(
-                predict, obs, adapter, instruction, text_keys, env_bridge, model_bridge
-            )
-        )
-        if adapter is not None:
-            action = from_value(
-                adapter.transform_action_value(raw_action, action_bridge=model_bridge),
-                env_bridge,
-            )
-        else:
-            action = raw_action
-        obs, reward, terminated, truncated, _info = client.step(action)
-        total += float(reward)
-        steps += 1
-    # Hitting the step cap is a truncation, not a silent non-outcome: without this
-    # the episode would count as neither success nor truncation in success_rate.
-    if not terminated and not truncated:
-        truncated = True
-    return EpisodeResult(
-        index=index,
-        seed=seed,
-        steps=steps,
-        reward=total,
-        terminated=bool(terminated),
-        truncated=bool(truncated),
-    )
+    Thin wrapper over :class:`Session`: builds a session for this predict/env/spec and
+    pumps it to completion. The drive loop itself lives in :meth:`Session.run`.
+    """
+    return Session(
+        predict=predict,
+        spec=spec,
+        env=env_or_address,
+        on_reset=on_reset,
+        on_episode_end=on_episode_end,
+        on_close=on_close,
+        trust_entrypoints=trust_entrypoints,
+        bridge=bridge,
+        remote_env_cls=remote_env_cls,
+        instruction=instruction,
+        close_env=close_env,
+        token=token,
+    ).run(seeds=seeds, max_episodes=max_episodes)
 
 
 def _predict_step(
@@ -248,6 +162,254 @@ def _predict_step(
         for key in text_keys:
             payload[key] = instruction
     return predict(payload)
+
+
+class Session(Generic[ObsT, ActT]):
+    """A model bound to one env: drive it by hand, or pump whole episodes.
+
+    The neutral pair-driver returned by :func:`rlmesh.session`. ``reset`` / ``predict`` /
+    ``step`` drive one step at a time -- ``predict`` applies the model's adapter (resolved
+    from the env's published contract) around the model's own predict, replaying an action
+    chunk one action per step when the spec declares an execute horizon > 1. ``run`` pumps
+    whole episodes and returns a typed :class:`RunResult`.
+
+    The env connection is opened lazily on first ``reset`` (manual driving); ``run`` drives
+    through the shared :func:`evaluate` loop. Use it as a context manager to close a
+    manually-opened connection.
+    """
+
+    def __init__(
+        self,
+        *,
+        env: object,
+        predict: Callable[[Any], Any] | None = None,
+        spec: object | None = None,
+        on_reset: Callable[[], None] | None = None,
+        on_episode_end: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
+        trust_entrypoints: bool = False,
+        bridge: ValueBridge | None = None,
+        remote_env_cls: type | None = None,
+        instruction: str | None = None,
+        close_env: bool = False,
+        token: str = "",
+        model_client: PyModelClient | None = None,
+        owner: Any = None,
+    ) -> None:
+        # Two modes: a local model (``predict`` + client-side ``spec`` adapter) or a
+        # served model (``model_client`` -- the server applies its adapter). ``owner``
+        # is a managed source (e.g. a SandboxModel container) to shut down on close.
+        self._predict = predict
+        self._spec = spec
+        self._env = env
+        self._on_reset = on_reset
+        self._on_episode_end = on_episode_end
+        self._on_close = on_close
+        self._trust = trust_entrypoints
+        self._bridge = bridge
+        self._remote_env_cls = remote_env_cls
+        self._instruction = instruction
+        self._close_env = close_env
+        self._token = token
+        self._model_client = model_client
+        self._owner = owner
+        self._connected = False
+        self._client: Any = None
+        self._owns_client = False
+        self._adapter: Any = None
+        self._env_bridge: ValueBridge | None = None
+        self._text_keys: tuple[str, ...] = ()
+        self._horizon = 1
+        self._replay = ChunkReplay(1)
+        self._terminated = False
+        self._truncated = False
+        self._steps = 0
+        self._reward = 0.0
+
+    def _ensure_connected(self) -> None:
+        if self._connected:
+            return
+        client, contract, owns = _connect(self._env, self._token, self._remote_env_cls)
+        _reject_vector_env(contract)
+        self._client = client
+        self._owns_client = owns
+        # A served model resolves its adapter server-side (from the contract sent at
+        # bind); only a local model resolves it here, client-side.
+        if self._model_client is None:
+            self._adapter = _resolve_adapter(self._spec, contract, self._trust)
+            self._env_bridge = (
+                _adapter_env_bridge(client, self._bridge)
+                if self._adapter is not None
+                else None
+            )
+            self._text_keys = _text_input_keys(self._spec)
+            self._horizon = (
+                getattr(self._adapter, "execute_horizon", 1)
+                if self._adapter is not None
+                else 1
+            )
+        self._connected = True
+
+    @property
+    def done(self) -> bool:
+        """Whether the current episode has terminated or truncated."""
+        return self._terminated or self._truncated
+
+    def reset(self, *, seed: int | None = None) -> tuple[ObsT, Mapping[str, Any]]:
+        """Begin a new episode: reset the env and the model's adapter/lifecycle state."""
+        self._ensure_connected()
+        obs, info = _reset(self._client, seed)
+        if self._model_client is not None:
+            self._model_client.reset()  # mark a reset boundary on the served route
+        else:
+            if self._adapter is not None:
+                self._adapter.reset()
+            if self._on_reset is not None:
+                self._on_reset()
+            self._replay = ChunkReplay(self._horizon)
+        self._terminated = self._truncated = False
+        self._steps = 0
+        self._reward = 0.0
+        return cast("ObsT", obs), info
+
+    def predict(self, observation: ObsT) -> ActT:
+        """Map one env observation to an env-ready action (the model's adapter applied)."""
+        self._ensure_connected()
+        if self._model_client is not None:
+            # Served model: the server applies the adapter (and any chunk replay);
+            # we only bridge the obs out and the env-ready action back.
+            bridge = self._bridge if self._bridge is not None else identity_bridge
+            action = self._model_client.predict(bridge.encode(observation))
+            return cast("ActT", bridge.decode(action))
+        model_bridge = self._bridge if self._bridge is not None else self._env_bridge
+        # Local mode always has a predict (only the served-model branch above lacks one).
+        local_predict = cast("Callable[[Any], Any]", self._predict)
+        raw_action = self._replay.next_action(
+            lambda: _predict_step(
+                local_predict,
+                observation,
+                self._adapter,
+                self._instruction,
+                self._text_keys,
+                self._env_bridge,
+                model_bridge,
+            )
+        )
+        if self._adapter is not None:
+            return cast(
+                "ActT",
+                from_value(
+                    self._adapter.transform_action_value(
+                        raw_action, action_bridge=model_bridge
+                    ),
+                    self._env_bridge,
+                ),
+            )
+        return cast("ActT", raw_action)
+
+    def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
+        """Apply one action to the env; record reward and termination."""
+        self._ensure_connected()
+        obs, reward, terminated, truncated, info = self._client.step(action)
+        self._reward += float(reward)
+        self._steps += 1
+        self._terminated = bool(terminated)
+        self._truncated = bool(truncated)
+        return (
+            cast("ObsT", obs),
+            float(reward),
+            bool(terminated),
+            bool(truncated),
+            cast("Mapping[str, Any]", info),
+        )
+
+    def run(
+        self,
+        *,
+        seeds: Sequence[int] | None = None,
+        max_episodes: int | None = None,
+    ) -> RunResult:
+        """Drive whole episodes to completion and return a typed :class:`RunResult`.
+
+        The single drive loop: pumps this session's own ``reset`` / ``predict`` /
+        ``step`` primitives, so :func:`evaluate` and ``Model.run`` route through here.
+        ``seeds`` gives a per-episode seed and sets the episode count unless
+        ``max_episodes`` is given.
+        """
+        self._ensure_connected()
+        if max_episodes is not None:
+            n_episodes = max_episodes
+        elif seeds is not None:
+            n_episodes = len(seeds)
+        else:
+            n_episodes = 1
+        episodes: list[EpisodeResult] = []
+        on_close_error: BaseException | None = None
+        try:
+            for i in range(n_episodes):
+                seed = seeds[i] if seeds is not None and i < len(seeds) else None
+                obs, _info = self.reset(seed=seed)
+                while not self.done and self._steps < _MAX_STEPS_PER_EPISODE:
+                    obs, _r, _t, _tr, _info = self.step(self.predict(obs))
+                # Hitting the step cap is a truncation, not a silent non-outcome.
+                if not self._terminated and not self._truncated:
+                    self._truncated = True
+                episodes.append(
+                    EpisodeResult(
+                        index=i,
+                        seed=seed,
+                        steps=self._steps,
+                        reward=self._reward,
+                        terminated=self._terminated,
+                        truncated=self._truncated,
+                    )
+                )
+                if self._on_episode_end is not None:
+                    self._on_episode_end()
+        finally:
+            if self._on_close is not None:
+                try:
+                    self._on_close()
+                except BaseException as exc:
+                    on_close_error = exc
+            self.close()
+        if on_close_error is not None:
+            raise on_close_error
+        return RunResult(episodes=tuple(episodes))
+
+    def close(self) -> None:
+        """Close this session: the served route (and any owned source), then the env.
+
+        For a served model, closes the model client and shuts down a managed source it
+        started (e.g. a ``SandboxModel`` container). For the env, shuts it down only on
+        the ``close_env`` opt-in and closes a connection this session dialed.
+        """
+        model_client = self._model_client
+        if model_client is not None:
+            self._model_client = None
+            try:
+                model_client.close()
+            finally:
+                owner = self._owner
+                self._owner = None
+                if owner is not None:
+                    owner.shutdown()
+        if self._connected:
+            if self._close_env:
+                # Explicit opt-in to stop the env: the dialed client if we opened it,
+                # else the caller-supplied env/address.
+                _shutdown(self._client if self._owns_client else self._env)
+            if self._owns_client and self._client is not None:
+                _close(self._client)
+            self._connected = False
+            self._client = None
+
+    def __enter__(self) -> Session[ObsT, ActT]:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        _ = exc
+        self.close()
 
 
 def resolve_route_adapter(
@@ -315,6 +477,19 @@ def _reject_vector_env(contract: EnvContract | None) -> None:
         )
 
 
+def _is_model_source(source: object) -> bool:
+    """Whether ``source`` is a ``Model`` (instance or subclass) -- rejected by coerce_model.
+
+    Kept as a helper so the ``isinstance`` narrowing stays on this local ``object``
+    parameter rather than leaking onto coerce_model's ``Any`` source.
+    """
+    from .base import ModelBase
+
+    return isinstance(source, ModelBase) or (
+        isinstance(source, type) and issubclass(source, ModelBase)
+    )
+
+
 def coerce_model(
     source: Any,
     *,
@@ -322,12 +497,20 @@ def coerce_model(
 ) -> CoercedModel:
     """Resolve a model source into a :class:`CoercedModel`.
 
-    The source is either a bare predict callable or a :class:`ModelRecipe`
+    The source is either a bare predict callable or a duck-typed policy object
     (class or instance) exposing ``predict`` plus optional ``spec``/``reset``/``close``.
+    A :class:`~rlmesh._models.base.ModelBase` is rejected: a ``Model`` builds its own
+    worker, so instantiate the subclass directly rather than wrapping it again.
     """
+    if _is_model_source(source):
+        raise TypeError(
+            "coerce_model received a Model. Instantiate your Model subclass directly "
+            "(it builds its own worker), or pass a predict callable."
+        )
+
     from .._bootstrap.loaders import construct_authored_model, looks_like_policy
 
-    # A ModelRecipe *class* is also callable, so check the policy shape first.
+    # A policy *class* is also callable, so check the policy shape first.
     if looks_like_policy(source):
         inst = construct_authored_model(source)
         return CoercedModel(
@@ -340,7 +523,7 @@ def coerce_model(
     if callable(source):
         return CoercedModel(source, spec, None, None, None)
     raise TypeError(
-        "Model source must be a predict callable or a ModelRecipe; "
+        "Model source must be a predict callable or a policy object with predict(); "
         f"got {type(source).__name__}"
     )
 
@@ -407,11 +590,11 @@ def _close(client: Any) -> None:
 
 
 def _shutdown(target: object) -> None:
-    # A SandboxSession's `shutdown` forwards to the remote handle; only close() stops
-    # the container.
-    from .._sandbox.session import SandboxSessionBase
+    # A sandbox session's close() stops its container; its inherited shutdown() is the
+    # remote owner-shutdown, so close() is the right teardown for an owned sandbox.
+    from .._sandbox.session import SandboxLifecycle
 
-    if isinstance(target, SandboxSessionBase):
+    if isinstance(target, SandboxLifecycle):
         target.close()
         return
     # decide reason-passing by binding the signature, not by try/except

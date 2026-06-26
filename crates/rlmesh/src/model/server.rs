@@ -143,19 +143,19 @@ struct ServedModelServer<H> {
 #[derive(Debug, Clone)]
 pub(super) struct ModelRouteConfig {
     pub(super) env_contract: Option<Arc<spaces::EnvContract>>,
-    /// The reconciled three-way (relay) session floor the runtime pinned this
-    /// route to via `ConfigureRoute`. Authoritative over the model's own
+    /// The route edition the runtime pinned via `ConfigureRoute` (the 2-way
+    /// highest-mutual of env + model). Authoritative over the model's own
     /// (pairwise) handshake result. Stored/logged here; full enforcement is
     /// minimal while the build holds a single generation and edition.
     pub(super) floor: Option<RouteFloor>,
 }
 
-/// Floor the runtime pinned a route to (from `ConfigureRouteRequest`). Generation
-/// is not part of the floor — it is gated by equality at the handshake.
+/// Edition the runtime pinned a route to (from `ConfigureRouteRequest`).
+/// Generation is gated by equality at the handshake; capabilities are advisory
+/// and pairwise, so neither is part of the route floor.
 #[derive(Debug, Clone)]
 pub(super) struct RouteFloor {
     pub(super) selected_workflow_edition: String,
-    pub(super) active_capabilities: HashMap<String, String>,
 }
 
 fn model_service<H>(
@@ -208,41 +208,36 @@ where
             base: Some(rlmesh_proto::core::v1::HandshakeResponse {
                 compatible,
                 peer_info: Some(peer_info("rlmesh-model")),
-                server_protocol_generation: PROTOCOL_GENERATION.to_string(),
                 error_message: if compatible {
-                    String::new()
+                    None
                 } else if !compat.protocol_compatible {
-                    format!(
+                    Some(format!(
                         "protocol generation {} not compatible with server {}",
                         request.protocol_generation, PROTOCOL_GENERATION
-                    )
+                    ))
                 } else if request.supported_workflow_editions.is_empty() {
-                    format!(
+                    Some(format!(
                         "client offered no workflow editions (clients from 0.1.0-beta.2 or older predate edition negotiation and are not supported); server supports [{}]",
                         supported_workflow_editions().join(", ")
-                    )
+                    ))
                 } else {
-                    format!(
+                    Some(format!(
                         "no mutually supported workflow edition; client offered [{}], server supports [{}]",
                         request.supported_workflow_editions.join(", "),
                         supported_workflow_editions().join(", ")
-                    )
+                    ))
                 },
                 capabilities: capability_map(&[
-                    capabilities::MODEL_SERVICE_V1,
-                    capabilities::SPACES_CORE_V1,
                     // The served model pipelines Join-stream requests (see `join`).
                     // Advisory: lets clients detect that overlapping predicts will
                     // actually pipeline rather than serialize behind the handler.
                     capabilities::MODEL_CONCURRENT_PREDICT_V1,
                 ]),
-                selected_workflow_edition: if compatible {
-                    compat.selected_edition.unwrap_or_default().to_string()
-                } else {
-                    String::new()
-                },
                 supported_workflow_editions: supported_workflow_editions(),
             }),
+            // No model contract advertised yet; the field exists for a future
+            // model-side spec but has no native source today.
+            model_contract: None,
         }))
     }
 
@@ -531,23 +526,21 @@ async fn handle_configure_route(
         Some(env_spec) => env_spec,
         None => return Some(model_error("configure_route missing env_spec")),
     };
-    // The runtime is the binding authority for the three-way (relay) floor: it
-    // decode-rebuilds env<->model envelopes, so these values override the model's
-    // own (pairwise, possibly higher) handshake result. Today there is a single
-    // edition, so we store/log the floor rather than re-deriving behavior from it;
-    // full enforcement lands when a second edition exists.
+    // The runtime pins the route edition (the 2-way highest-mutual of env +
+    // model), authoritative over this model's own (pairwise, possibly higher)
+    // handshake result. Today there is a single edition, so we store/log it rather
+    // than re-deriving behavior from it; full enforcement lands at a second edition.
     let floor = if request.selected_workflow_edition.is_empty() {
-        // Older runtime that predates floor propagation: nothing to pin.
+        // Older runtime that predates edition propagation: nothing to pin.
         None
     } else {
         let floor = RouteFloor {
             selected_workflow_edition: request.selected_workflow_edition,
-            active_capabilities: request.active_capabilities,
         };
-        // Minimal enforcement: the floor is authoritative over this model's own
-        // handshake. Reject a route the runtime pinned to an edition this build
-        // cannot drive, instead of silently running it under the wrong semantics.
-        // (With a single edition this never fires; the path exists so the floor
+        // Minimal enforcement: the pinned edition is authoritative over this
+        // model's own handshake. Reject a route the runtime pinned to an edition
+        // this build cannot drive, instead of silently running the wrong semantics.
+        // (With a single edition this never fires; the path exists so the edition
         // is honored, not merely logged, once a second edition lands.)
         if let Err(error) = enforce_route_floor(&floor) {
             return Some(model_error(error));
@@ -555,8 +548,7 @@ async fn handle_configure_route(
         tracing::debug!(
             route = %route_id,
             selected_workflow_edition = %floor.selected_workflow_edition,
-            active_capabilities = ?floor.active_capabilities,
-            "model route pinned to runtime-reconciled session floor"
+            "model route pinned to runtime-selected edition"
         );
         Some(floor)
     };
@@ -598,14 +590,14 @@ async fn handle_configure_route(
     ))
 }
 
-/// Honor the runtime-reconciled three-way floor on the route: the runtime is the
-/// binding authority, so a floor naming an edition this model build cannot speak
-/// is a hard configuration error, not a silently-downgraded run. Generation is
-/// not checked here — it was already gated by equality at the handshake.
+/// Honor the runtime-pinned route edition: the runtime selects it (2-way
+/// highest-mutual of env + model) and it is authoritative, so an edition this
+/// model build cannot speak is a hard configuration error, not a silently-
+/// downgraded run. Generation is not checked here — it was already gated by
+/// equality at the handshake.
 ///
 /// Minimal by design while a single edition exists: it checks equality against
-/// this build's edition. The capability intersection is advisory (absence-neutral)
-/// and is carried for diagnostics; it never fails configuration here.
+/// this build's edition.
 fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
     if floor.selected_workflow_edition != rlmesh_proto::CURRENT_WORKFLOW_EDITION {
         return Err(format!(
@@ -615,10 +607,6 @@ fn enforce_route_floor(floor: &RouteFloor) -> std::result::Result<(), String> {
             rlmesh_proto::CURRENT_WORKFLOW_EDITION,
         ));
     }
-    // The active capability set is advisory; absence is semantically neutral, so
-    // an unrecognized active capability never fails the route. Touch it so the
-    // floor is read in full (and to anchor future per-capability gating).
-    let _active_capabilities = &floor.active_capabilities;
     Ok(())
 }
 
@@ -1156,7 +1144,6 @@ mod tests {
 
             let base = response.base.expect("handshake response includes base");
             assert!(base.compatible, "offer {offer:?} must be accepted");
-            assert_eq!(base.selected_workflow_edition, CURRENT_WORKFLOW_EDITION);
             assert_eq!(
                 base.supported_workflow_editions,
                 supported_workflow_editions()
@@ -1405,11 +1392,11 @@ mod tests {
 
             let base = response.base.expect("handshake response includes base");
             assert!(!base.compatible, "offer {offer:?} must be rejected");
-            assert!(base.error_message.contains("workflow edition"));
+            let error_message = base.error_message.as_deref().unwrap_or_default();
+            assert!(error_message.contains("workflow edition"));
             if offer.is_empty() {
-                assert!(base.error_message.contains("predate edition negotiation"));
+                assert!(error_message.contains("predate edition negotiation"));
             }
-            assert!(base.selected_workflow_edition.is_empty());
         }
     }
 }

@@ -22,6 +22,19 @@ if TYPE_CHECKING:
 VectorServerEnvLike = VectorEnvLike[Any, Any, Any]
 
 
+def _is_vector_env(env: object) -> bool:
+    """Whether ``env`` has the vectorized (VectorEnvLike) shape.
+
+    A vectorized env exposes ``num_envs`` and per-lane ``single_*`` spaces; a single
+    env has none of these. The native vector server then enforces ``num_envs >= 2``.
+    """
+    return (
+        hasattr(env, "num_envs")
+        or hasattr(env, "single_observation_space")
+        or hasattr(env, "single_action_space")
+    )
+
+
 class EnvServer:
     """Serves an RLMesh-compatible environment.
 
@@ -67,7 +80,7 @@ class EnvServer:
 
     def __init__(
         self,
-        env: EnvLike[Any, Any],
+        env: EnvLike[Any, Any] | VectorServerEnvLike,
         address: str | None = None,
         *,
         host: str | None = None,
@@ -77,6 +90,9 @@ class EnvServer:
         options: ServeOptions | None = None,
         tags: EnvTags | None = None,
     ) -> None:
+        # The env is self-describing: a vectorized env (the VectorEnvLike shape) is
+        # served by the native vector server, a single env by the scalar server.
+        is_vector = _is_vector_env(env)
         if tags is not None:
             # Imported lazily so the common (un-tagged) serve path does not
             # pull in the adapters/numpy stack.
@@ -90,10 +106,10 @@ class EnvServer:
             path=path,
             transport=transport,
         )
-        self._server: PyEnvServer | PyVectorEnvServer = PyEnvServer(
-            env=env,
-            address=normalized_address,
-            options=options,
+        self._server: PyEnvServer | PyVectorEnvServer = (
+            PyVectorEnvServer(env=env, address=normalized_address, options=options)
+            if is_vector
+            else PyEnvServer(env=env, address=normalized_address, options=options)
         )
 
     @property
@@ -150,37 +166,4 @@ class EnvServer:
         self.shutdown()
 
 
-class VectorEnvServer(EnvServer):
-    """Serves an explicitly vectorized RLMesh-compatible environment."""
-
-    def __init__(
-        self,
-        env: VectorServerEnvLike,
-        address: str | None = None,
-        *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
-        options: ServeOptions | None = None,
-        tags: EnvTags | None = None,
-    ) -> None:
-        if tags is not None:
-            from .adapters import tag
-
-            env = tag(env, tags)
-        normalized_address = normalize_bind_address(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-        )
-        self._server = PyVectorEnvServer(
-            env=env,
-            address=normalized_address,
-            options=options,
-        )
-
-
-__all__ = ["EnvLike", "EnvServer", "VectorEnvServer", "VectorServerEnvLike"]
+__all__ = ["EnvLike", "EnvServer", "VectorServerEnvLike"]
