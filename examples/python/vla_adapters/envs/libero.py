@@ -28,10 +28,10 @@ TAGS = adapt.EnvTags(
         "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
         "instruction": adapt.TextTag(),
     },
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )

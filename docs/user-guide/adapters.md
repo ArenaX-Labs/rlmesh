@@ -21,34 +21,34 @@ tags = adapt.EnvTags(
         "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
         "goal": adapt.TextTag(),
     },
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )
 ```
 
-The observation map is keyed by observation path; dotted keys (`"agent.eef_pos"`) traverse nested `Dict` spaces. Roles are an open vocabulary of strings matched verbatim between tags and specs. RLMesh ships well-known conventions (`IMAGE_PRIMARY`, `EEF_POS`, `EEF_ROT`, ...), but any agreed string works.
+The observation is a tree whose container _is_ the runtime container: a `dict` maps a `Dict` space, a `tuple` maps a `Tuple` space, and a bare leaf tags a single space leaf. Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"eef_pos": StateTag(...)}}`), not dotted keys. Roles are an open vocabulary of strings matched verbatim between tags and specs. RLMesh ships well-known conventions (`IMAGE_PRIMARY`, `EEF_POS`, `EEF_ROT`, ...), but any agreed string works.
 
 ### Flat (non-Dict) observations
 
-Some environments expose a single flat numeric vector with fixed index ranges instead of one key per quantity (Metaworld is the common case). A {class}`~rlmesh.adapters.StateLayout` tags that vector. It is the observation-side mirror of `ActionLayout`: a sequence of {class}`~rlmesh.adapters.StateField` slices in order, each naming its role and offsets implied by order. A field with no role is a skip that advances the offset over indices the model does not read.
+Some environments expose a single flat numeric vector with fixed index ranges instead of one key per quantity (Metaworld is the common case). A {class}`~rlmesh.adapters.Split` tags that vector. It is the observation-side mirror of `Action`: a sequence of {class}`~rlmesh.adapters.Field` slices in order, each naming its role and offsets implied by order. A field with no role is a skip that advances the offset over indices the model does not read.
 
 ```python
-"proprio": adapt.StateLayout(
-    adapt.StateField(adapt.EEF_POS, 3),
-    adapt.StateField(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
-    adapt.StateField(adapt.GRIPPER_POS, 1),
-    adapt.StateField(dim=10),  # object/goal indices the policy reads from pixels
+"proprio": adapt.Split(
+    adapt.Field(adapt.EEF_POS, 3),
+    adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
+    adapt.Field(adapt.GRIPPER_POS, 1),
+    adapt.Field(dim=10),  # object/goal indices the policy reads from pixels
 ),
 ```
 
-When the whole observation is one leaf, pass the `StateLayout` directly as `observation`:
+When the whole observation is one leaf, pass the `Split` directly as `observation`:
 
 ```python
-adapt.EnvTags(observation=adapt.StateLayout(...), action=adapt.ActionLayout(...))
+adapt.EnvTags(observation=adapt.Split(...), action=adapt.Action(...))
 ```
 
 A model matches purely by role, so the same spec resolves against a flat env and a `Dict` env with no change.
@@ -59,26 +59,25 @@ A model fully specifies the payload it ingests and the action it emits, in its o
 
 ```python
 spec = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=224, width=224),
-        adapt.StateInput(
-            "proprio",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=224, width=224),
+        "proprio": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="rot6d"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("task"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "task": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 ```
+
+The `input` is a tree whose container _is_ the payload the prediction function receives: a `dict` (each key a payload slot), a `tuple`, or a bare single leaf. A leaf carries no key -- its position in the tree is the payload position.
 
 ## Resolve and apply
 
@@ -91,12 +90,12 @@ payload = adapter.transform_obs(obs)  # env observation -> model input
 action = adapter.transform_action(output)  # model output    -> env action
 ```
 
-`describe()` prints what the resolver derived. Here the image is resized, the rotation goes `quat_xyzw -> rot6d`, the instruction key is remapped (`goal -> task`), and the 10-dim action is converted `rot6d -> axis_angle`, sliced, and clipped into the env's 7-dim action. Resolution fails with an {exc}`~rlmesh.adapters.AdapterResolutionError` if a model input or action component has no usable counterpart.
+`describe()` prints what the resolver derived. Here the image is resized, the rotation goes `quat_xyzw -> rot6d`, the instruction key is remapped (`goal -> task`), and the 10-dim action is converted `rot6d -> axis_angle`, sliced, and clipped into the env's 7-dim action. Resolution fails with an {exc}`~rlmesh.adapters.AdapterResolutionError` if a model input or action actuator has no usable counterpart.
 
 ```{warning}
 Specs are pure data. Nothing in a tag or spec is ever evaluated as code. The one exception is
-{class}`~rlmesh.adapters.EntrypointCustomInput`, which imports a named `module:callable` only
-when you pass `resolve(..., trust_entrypoints=True)`.
+a {class}`~rlmesh.adapters.Custom` input built with `entrypoint=`, which imports a named
+`module:callable` only when you pass `resolve(..., trust_entrypoints=True)`.
 ```
 
 ## Run a model with no glue
@@ -125,7 +124,7 @@ model.run(env, max_episodes=10)
 A model that conditions on a short history of frames declares `stack=N` on an image input. The adapter buffers the last `N` processed frames host-side and emits them on a new leading axis (`(N, H, W, C)`), padding the start of an episode with the first frame and clearing the buffer on `reset`.
 
 ```python
-ImageInput("image", role=IMAGE_PRIMARY, size=224, stack=4)
+"image": Image(role=IMAGE_PRIMARY, size=224, stack=4)
 ```
 
 The environment still sends one frame per step; nothing extra crosses the wire.
@@ -139,11 +138,11 @@ the native resolution ignores it; stacking happens in the adapter, not the core.
 
 When a pairing needs logic a declarative spec cannot express, three mechanisms compose, most local first.
 
-| Mechanism                                                                                     | Use                                                                                                                                                         |
-| --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| {class}`~rlmesh.adapters.InlineCustomInput` / {class}`~rlmesh.adapters.EntrypointCustomInput` | Compute one payload key from the raw observation; the rest stays spec-driven.                                                                               |
-| {class}`~rlmesh.adapters.AdapterBase` subclass                                                | Add stateful behavior a spec cannot describe (for example temporal ensembling), usually by wrapping a resolved adapter.                                     |
-| Pair override                                                                                 | Replace the adapter for one (model, environment) pairing entirely. No special machinery: keep a registry keyed by the pair and consult it before resolving. |
+| Mechanism                                                              | Use                                                                                                                                                         |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| {class}`~rlmesh.adapters.Custom` input (`transform=` or `entrypoint=`) | Compute one payload slot from the raw observation; the rest stays spec-driven.                                                                              |
+| {class}`~rlmesh.adapters.AdapterBase` subclass                         | Add stateful behavior a spec cannot describe (for example temporal ensembling), usually by wrapping a resolved adapter.                                     |
+| Pair override                                                          | Replace the adapter for one (model, environment) pairing entirely. No special machinery: keep a registry keyed by the pair and consult it before resolving. |
 
 ```python
 OVERRIDES: dict[tuple[str, str], Callable[[], adapt.AdapterBase]] = {
@@ -166,8 +165,8 @@ Rotation encodings are a closed vocabulary, because a spec must resolve on a rem
 
 The system targets the manipulation/VLA case: RGB cameras, proprioception, and an instruction. A few things are out of scope for now and fall back to an escape hatch.
 
-| Area                                   | Status                                                                                                                                                                 |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modalities beyond image / state / text | Depth, lidar, and point clouds are not first-class; carry them through an {class}`~rlmesh.adapters.InlineCustomInput` or custom {class}`~rlmesh.adapters.AdapterBase`. |
-| Tokenization                           | Stays in the model. `TextInput` delivers the instruction as a string; tokenize it inside your prediction function. There is intentionally no `TokenizerInput`.         |
-| Rotation encodings                     | Fixed set: `quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`, `rot6d_rowmajor`, `euler_xyz`. Conventions and how to add one are in {doc}`../api/adapters`.               |
+| Area                                   | Status                                                                                                                                                           |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Modalities beyond image / state / text | Depth, lidar, and point clouds are not first-class; carry them through a {class}`~rlmesh.adapters.Custom` input or custom {class}`~rlmesh.adapters.AdapterBase`. |
+| Tokenization                           | Stays in the model. `Text` delivers the instruction as a string; tokenize it inside your prediction function. There is intentionally no `TokenizerInput`.        |
+| Rotation encodings                     | Fixed set: `quat_xyzw`, `quat_wxyz`, `axis_angle`, `rot6d`, `rot6d_rowmajor`, `euler_xyz`. Conventions and how to add one are in {doc}`../api/adapters`.         |

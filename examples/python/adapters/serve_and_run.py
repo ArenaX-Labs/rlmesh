@@ -84,10 +84,10 @@ ENV_TAGS = adapt.EnvTags(
         "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
         "goal": adapt.TextTag(),
     },
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )
@@ -96,25 +96,22 @@ ENV_TAGS = adapt.EnvTags(
 # --- 2. The model, written without any knowledge of an environment. ---------
 
 MODEL_SPEC = adapt.ModelSpec(
-    inputs=(
+    input={
         # This checkpoint wants a 224x224 image, a list state with rot6d rotation,
-        # and the instruction under its own key.
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=224, width=224),
-        adapt.StateInput(
-            "proprio",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+        # and the instruction under its own key. Each key is a payload slot.
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=224, width=224),
+        "proprio": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="rot6d"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("task"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "task": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -124,7 +121,7 @@ def predict(payload: dict[str, Any]) -> Any:
     assert payload["image"].shape == (224, 224, 3)
     assert len(payload["proprio"]) == 10  # pos(3) + rot6d(6) + grip(1)
     # A real policy runs the network here; we return a zero 10-dim action.
-    return np.zeros(MODEL_SPEC.action.dim, dtype=np.float32)
+    return np.zeros(MODEL_SPEC.output.dim, dtype=np.float32)
 
 
 def main() -> None:

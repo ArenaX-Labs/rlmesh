@@ -23,8 +23,8 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    ApplyError, CustomTransform, EncodingTransform, EnvTags, ModelInput, ModelSpec, ObsPlan,
-    ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve, roles,
+    ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
+    ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -209,32 +209,40 @@ pub(crate) fn decode_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
 ///
 /// Decoding the whole observation would let an unused — possibly
 /// unencodable — env key abort a step the model does not even depend on.
-/// The top-level observation entry a (possibly dotted) plan key lives under.
-/// The reserved `"."` denotes the flat/root observation and is its own
-/// top-level key, not a dotted path to split.
-fn top_level_key(key: &str) -> &str {
-    if key == "." {
-        return ".";
-    }
-    key.split('.').next().unwrap_or(key)
-}
-
+///
+/// `referenced` carries raw-obs *envelope keys* (already top-level: the first
+/// path segment of each Dict-rooted source, or the reserved root key for a
+/// root/Tuple-rooted source — see `rlmesh_adapters::v1` `referenced_obs_keys`),
+/// so no dotted splitting is needed here.
 fn decode_referenced_obs(
     value: &Bound<'_, PyAny>,
     referenced: &BTreeSet<String>,
 ) -> PyResult<BTreeMap<String, Value>> {
-    // Referenced keys may be dotted (nested Dict paths); decode the whole
-    // top-level entry that contains each.
-    let top_level: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
     let dict = value.cast::<PyDict>()?;
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
     for (key, value) in dict.iter() {
         let key: String = key.extract()?;
-        if top_level.contains(key.as_str()) {
+        if referenced.contains(key.as_str()) {
             out.insert(key, decode_value(&value)?);
         }
     }
     Ok(out)
+}
+
+/// Reject any `Custom` leaf in a model input tree, the publish-boundary guard
+/// for raw native / future-FE callers (the Python `model_input_to_dict` is the
+/// live gate). Walks the recursive tree to every leaf.
+fn reject_custom_leaves(node: &InputNode) -> PyResult<()> {
+    match node {
+        InputNode::Leaf(ModelLeaf::Custom(custom)) => Err(PyValueError::new_err(format!(
+            "custom input carries an entrypoint ({:?}) and cannot be published in v1 contract \
+             metadata; resolve the spec locally",
+            custom.transform
+        ))),
+        InputNode::Leaf(_) => Ok(()),
+        InputNode::Dict(map) => map.values().try_for_each(reject_custom_leaves),
+        InputNode::Tuple(items) => items.iter().try_for_each(reject_custom_leaves),
+    }
 }
 
 pub(crate) fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Bound<'py, PyAny>> {
@@ -330,18 +338,16 @@ impl PyEncodings {
 }
 
 impl EncodingTransform for PyEncodings {
-    fn repack_obs(&self, payload: &mut BTreeMap<String, Value>) -> Result<(), ApplyError> {
+    fn repack_obs(&self, payload: &mut Value) -> Result<(), ApplyError> {
         let Some(callable) = &self.obs else {
             return Ok(());
         };
         Python::attach(|py| -> PyResult<()> {
-            let input = value_map_to_py(py, payload)?;
+            // The payload is now a Value tree; hand the encoded tree to the
+            // Python shim and decode its result back in place.
+            let input = encode_value(py, payload)?;
             let result = callable.call1(py, (input,))?;
-            let dict = result.bind(py).cast::<PyDict>()?;
-            payload.clear();
-            for (key, value) in dict.iter() {
-                payload.insert(key.extract()?, decode_value(&value)?);
-            }
+            *payload = decode_value(result.bind(py))?;
             Ok(())
         })
         .map_err(|err| ApplyError::new(err.to_string()))
@@ -405,21 +411,25 @@ impl PyAdapterPlan {
     /// [`transform_obs`](Self::transform_obs), so an unused — possibly
     /// unencodable — observation key never aborts a step.
     fn referenced_obs_keys(&self) -> Vec<String> {
-        let mut keys: BTreeSet<String> = BTreeSet::new();
-        for key in self.adapter.referenced_obs_keys() {
-            keys.insert(top_level_key(&key).to_owned());
-        }
-        keys.into_iter().collect()
+        // The adapter already reports raw-obs envelope keys (top-level by
+        // construction); surface them directly.
+        self.adapter
+            .referenced_obs_keys()
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect()
     }
 
-    /// `(model_key, transform)` pairs for custom-input holes, plan order.
+    /// `(placement, transform)` pairs for custom-input holes, plan order. The
+    /// placement is the canonical tree-position string (replacing the old key).
     fn custom_inputs(&self) -> Vec<(String, String)> {
         self.adapter
             .obs_plans
             .iter()
             .filter_map(|plan| match plan {
                 ObsPlan::Custom(custom) => {
-                    Some((custom.model_key.clone(), custom.transform.clone()))
+                    Some((custom.placement.to_string(), custom.transform.clone()))
                 }
                 _ => None,
             })
@@ -428,23 +438,20 @@ impl PyAdapterPlan {
 
     /// Apply the observation plans to a canonical value-tree observation map.
     ///
-    /// Returns `{model_key: encoded_value}`; custom inputs are omitted
-    /// (the caller fills them from the raw host observation).
+    /// Returns the assembled payload as a neutral Python object (a nested
+    /// dict/list/leaf — the model spec's `InputNode` shape); custom inputs are
+    /// omitted (the caller fills them from the raw host observation).
     fn transform_obs<'py>(
         &self,
         py: Python<'py>,
         raw_obs: &Bound<'py, PyAny>,
-    ) -> PyResult<BTreeMap<String, Py<PyAny>>> {
+    ) -> PyResult<Py<PyAny>> {
         let raw_obs = decode_referenced_obs(raw_obs, &self.adapter.referenced_obs_keys())?;
         let payload = self
             .adapter
             .transform_obs(&raw_obs, &SkipCustoms)
             .map_err(|err| PyValueError::new_err(err.message))?;
-        let mut out: BTreeMap<String, Py<PyAny>> = BTreeMap::new();
-        for (key, value) in &payload {
-            out.insert(key.clone(), encode_value(py, value)?.unbind());
-        }
-        Ok(out)
+        Ok(encode_value(py, &payload)?.unbind())
     }
 
     /// Apply the action plan to a canonical value-tree model action.
@@ -562,15 +569,7 @@ pub fn adapters_spec_normalize(
             // native callers and the future FE binding -- keep it as the codec's
             // own publish guard, not a redundancy.
             if !allow_custom {
-                for input in &spec.inputs {
-                    if let ModelInput::Custom(custom) = input {
-                        return Err(PyValueError::new_err(format!(
-                            "custom input {:?} carries an entrypoint ({:?}) and cannot be \
-                             published in v1 contract metadata; resolve the spec locally",
-                            custom.key, custom.transform
-                        )));
-                    }
-                }
+                reject_custom_leaves(&spec.input)?;
             }
             serde_json::to_string(&spec).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize model spec: {err}"))

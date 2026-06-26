@@ -121,7 +121,7 @@ def test_no_adapter_sentinel_skips_adapter_resolution_for_tagged_env() -> None:
     import rlmesh.adapters as adapt
     from rlmesh._models._eval import _resolve_adapter
 
-    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    tags = adapt.EnvTags(observation={}, action=adapt.Action())
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
     assert _resolve_adapter(rlmesh.NO_ADAPTER, cast(Any, contract), False) is None
@@ -133,7 +133,7 @@ def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
     import rlmesh.adapters as adapt
     from rlmesh._models._eval import _resolve_adapter
 
-    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    tags = adapt.EnvTags(observation={}, action=adapt.Action())
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
     with pytest.raises(adapt.AdapterResolutionError, match="spec=NO_ADAPTER"):
@@ -148,7 +148,7 @@ def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() ->
     import rlmesh
     import rlmesh.adapters as adapt
 
-    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    tags = adapt.EnvTags(observation={}, action=adapt.Action())
     sentinel = object()
 
     class Env:

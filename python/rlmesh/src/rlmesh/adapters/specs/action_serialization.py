@@ -11,33 +11,31 @@ from collections.abc import Mapping
 from typing import Any
 
 from ._codec import to_pair
-from .action import ActionComponent, ActionLayout
+from .action import Action, Actuator
 from .custom_encoding import CustomEncoding
 
 
-def action_layout_to_dict(layout: ActionLayout) -> dict[str, Any]:
+def action_to_dict(action: Action) -> dict[str, Any]:
     """Return the JSON-compatible dict form of an action layout."""
-    for component in layout.components:
+    for component in action.components:
         if isinstance(component.encoding, CustomEncoding):
             raise ValueError(
-                f"action component {component.role!r} uses a CustomEncoding, "
+                f"actuator {component.role!r} uses a CustomEncoding, "
                 "whose host-side transforms cannot be serialized; resolve it "
                 "locally, or add the encoding to the native vocabulary"
             )
     out: dict[str, Any] = {
-        "components": [
-            _component_to_dict(component) for component in layout.components
-        ],
-        "clip": list(layout.clip) if layout.clip else None,
+        "components": [_actuator_to_dict(component) for component in action.components],
+        "clip": list(action.clip) if action.clip else None,
     }
     # Emit only when chunking (>1), so a non-chunked layout -- every env layout
     # and most model layouts -- serializes byte-identically to before.
-    if layout.execute_horizon != 1:
-        out["execute_horizon"] = layout.execute_horizon
+    if action.execute_horizon != 1:
+        out["execute_horizon"] = action.execute_horizon
     return out
 
 
-def _component_to_dict(component: ActionComponent) -> dict[str, Any]:
+def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
     out: dict[str, Any] = {
         "role": component.role,
         "dim": component.dim,
@@ -56,10 +54,10 @@ def _component_to_dict(component: ActionComponent) -> dict[str, Any]:
     return out
 
 
-def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
+def action_from_dict(data: Mapping[str, Any]) -> Action:
     """Build an action layout from canonical (Rust-validated) dict form."""
     components = [
-        ActionComponent(
+        Actuator(
             role=item["role"],
             dim=int(item["dim"]),
             encoding=item.get("encoding"),
@@ -71,11 +69,11 @@ def action_layout_from_dict(data: Mapping[str, Any]) -> ActionLayout:
         )
         for item in data["components"]
     ]
-    return ActionLayout(
+    return Action(
         *components,
         clip=to_pair(data.get("clip")),
         execute_horizon=int(data.get("execute_horizon", 1)),
     )
 
 
-__all__ = ["action_layout_from_dict", "action_layout_to_dict"]
+__all__ = ["action_from_dict", "action_to_dict"]

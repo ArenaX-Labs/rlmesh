@@ -35,10 +35,10 @@ def _tags() -> adapt.EnvTags:
             "gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
             "instruction": adapt.TextTag(),
         },
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
             clip=(-1.0, 1.0),
         ),
     )
@@ -46,23 +46,20 @@ def _tags() -> adapt.EnvTags:
 
 def _model_spec() -> adapt.ModelSpec:
     return adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=8, width=8),
-            adapt.StateInput(
-                "state",
-                components=(
-                    adapt.StateComponent(adapt.EEF_POS),
-                    adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                    adapt.StateComponent(adapt.GRIPPER_POS),
-                ),
+        input={
+            "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8),
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
+                adapt.GRIPPER_POS,
                 container="list",
             ),
-            adapt.TextInput("instruction"),
-        ),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            "instruction": adapt.Text(),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         ),
     )
 
@@ -138,7 +135,7 @@ def test_adapted_model_runs_against_tagged_server() -> None:
         import numpy as np
 
         seen["payload_keys"] = sorted(payload)
-        return np.zeros(spec.action.dim, dtype=np.float32)
+        return np.zeros(spec.output.dim, dtype=np.float32)
 
     def on_reset() -> None:
         seen["resets"] = cast(int, seen["resets"]) + 1
@@ -180,7 +177,7 @@ def _arm_predict(spec: adapt.ModelSpec, captured: dict[str, Any]) -> Any:
         import numpy as np
 
         captured["keys"] = sorted(payload)
-        return np.zeros(spec.action.dim, dtype=np.float32)
+        return np.zeros(spec.output.dim, dtype=np.float32)
 
     return predict
 
@@ -254,7 +251,7 @@ def test_spec_model_drives_local_numpy_env_for_any_framework(framework: str) -> 
 
     def predict(payload: dict[str, Any]) -> Any:
         captured["image_type"] = type(payload["image"])
-        return _fw_zeros(framework, spec.action.dim)
+        return _fw_zeros(framework, spec.output.dim)
 
     tagged = adapt.tag(env_obj, _tags())
     result = model_cls(predict, spec=spec).run(tagged, max_episodes=1)
@@ -330,7 +327,7 @@ def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
         import numpy as np
 
         seen["payload_keys"] = sorted(payload)
-        return np.zeros(spec.action.dim, dtype=np.float32)
+        return np.zeros(spec.output.dim, dtype=np.float32)
 
     env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
     env_server.start()
@@ -389,15 +386,13 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
 
     tags = _tags()
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput(
-                "image", role=adapt.IMAGE_PRIMARY, height=8, width=8, stack=2
-            ),
-        ),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        input={
+            "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8, stack=2),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         ),
     )
     env_obj = TinyArmEnv()
@@ -407,7 +402,7 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
         import numpy as np
 
         images.append(np.asarray(payload["image"]))
-        return np.zeros(spec.action.dim, dtype=np.float32)
+        return np.zeros(spec.output.dim, dtype=np.float32)
 
     env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
     env_server.start()
@@ -458,13 +453,13 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
 def _chunk_spec(execute_horizon: int) -> adapt.ModelSpec:
     """A minimal image->7-dim-action spec with action-chunk replay."""
     return adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=8, width=8),
-        ),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        input={
+            "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
             execute_horizon=execute_horizon,
         ),
     )
@@ -519,7 +514,7 @@ def test_run_env_chunk_replay_predicts_once_per_horizon() -> None:
     calls = {"predict": 0}
 
     def predict(payload: dict[str, Any]) -> Any:
-        return _distinct_chunk(calls, spec.action.dim)
+        return _distinct_chunk(calls, spec.output.dim)
 
     server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
     server.start()
@@ -549,7 +544,7 @@ def test_served_chunk_replay_predicts_once_per_horizon() -> None:
     calls = {"predict": 0}
 
     def predict(payload: dict[str, Any]) -> Any:
-        return _distinct_chunk(calls, spec.action.dim)
+        return _distinct_chunk(calls, spec.output.dim)
 
     env_server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=_tags())
     env_server.start()
@@ -602,7 +597,7 @@ def test_run_env_chunk_replay_drains_a_3_row_chunk_in_fifo_order() -> None:
 
     spec = _chunk_spec(3)
     env_obj = TinyArmEnv()
-    dim = spec.action.dim
+    dim = spec.output.dim
     chunk = np.stack([np.full(dim, v, dtype=np.float32) for v in (0.1, 0.2, 0.3)])
     calls = {"predict": 0}
 
@@ -639,7 +634,7 @@ def test_run_env_chunk_replay_caps_a_chunk_longer_than_the_horizon() -> None:
 
     spec = _chunk_spec(2)
     env_obj = TinyArmEnv()
-    dim = spec.action.dim
+    dim = spec.output.dim
     # Two 3-row chunks (> horizon 2); rows distinct within and across predicts.
     chunks = [
         np.stack([np.full(dim, 0.3 * c + 0.01 * r, dtype=np.float32) for r in range(3)])

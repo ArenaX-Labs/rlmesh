@@ -5,13 +5,16 @@ use std::collections::BTreeMap;
 use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_keys};
+use crate::path::NodePath;
 use crate::plans::ImagePlan;
-use crate::spec::{EnvImage, FitMode, ImageInput, ImageLayout};
+use crate::spec::{EnvImage, FitMode, Image, ImageLayout};
 
 pub(super) fn plan_image(
-    model_input: &ImageInput,
+    model_input: &Image,
+    placement: NodePath,
     images_by_role: &BTreeMap<String, &EnvImage>,
 ) -> Result<ImagePlan> {
+    let at = quoted(&placement.to_string());
     // `absent_fill` only colors the zero-filled frame an `optional` camera
     // produces when the env lacks it; without `optional` it can never take
     // effect, so a set-but-inert fill is a spec error, not a silent no-op.
@@ -19,9 +22,8 @@ pub(super) fn plan_image(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: absent_fill only applies to an optional camera; \
-                 set optional or drop absent_fill",
-                quoted(&model_input.key)
+                "model input {at}: absent_fill only applies to an optional camera; \
+                 set optional or drop absent_fill"
             ),
         ));
     }
@@ -38,13 +40,12 @@ pub(super) fn plan_image(
         // frame), not a hard error -- the image-side analogue of an optional
         // state component.
         if model_input.optional {
-            return zero_fill_image_plan(model_input);
+            return zero_fill_image_plan(model_input, placement);
         }
         return Err(err(
             ErrorCode::MissingRole,
             format!(
-                "model input {} wants an image with role {} but the env offers {}",
-                quoted(&model_input.key),
+                "model input {at} wants an image with role {} but the env offers {}",
                 quoted(&model_input.role),
                 quoted_keys(images_by_role)
             ),
@@ -54,9 +55,8 @@ pub(super) fn plan_image(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: unsupported resample {}; expected 'bilinear' or \
+                "model input {at}: unsupported resample {}; expected 'bilinear' or \
              'bilinear_aa'",
-                quoted(&model_input.key),
                 quoted(&model_input.resample)
             ),
         ));
@@ -67,8 +67,7 @@ pub(super) fn plan_image(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: unknown dtype {}",
-                quoted(&model_input.key),
+                "model input {at}: unknown dtype {}",
                 quoted(&model_input.dtype)
             ),
         ));
@@ -84,9 +83,8 @@ pub(super) fn plan_image(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: expects {expected} channel(s) but the env image has {}; the \
+                "model input {at}: expects {expected} channel(s) but the env image has {}; the \
              adapter does not convert between channel counts (e.g. RGB vs grayscale)",
-                quoted(&model_input.key),
                 env_image.channels
             ),
         ));
@@ -100,10 +98,10 @@ pub(super) fn plan_image(
         (None, Some(width)) => Some((env_image.height, width)),
         (None, None) => None,
     };
-    let fit = resolve_fit(model_input, env_image, size)?;
+    let fit = resolve_fit(model_input, &at, env_image, size)?;
     Ok(ImagePlan {
-        model_key: model_input.key.clone(),
-        env_key: env_image.key.clone(),
+        placement,
+        source: env_image.source.clone(),
         src_layout: env_image.layout,
         dst_layout: model_input.layout,
         flip: env_image.upside_down != model_input.upside_down,
@@ -125,7 +123,7 @@ pub(super) fn plan_image(
 /// The blank is sized from the model's declared `height`/`width`/`channels`
 /// (there is no env image to derive them from), then run through the normal
 /// normalize/dtype/layout/lead steps so it matches a real black frame.
-fn zero_fill_image_plan(model_input: &ImageInput) -> Result<ImagePlan> {
+fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<ImagePlan> {
     let (Some(height), Some(width), Some(channels)) =
         (model_input.height, model_input.width, model_input.channels)
     else {
@@ -134,13 +132,13 @@ fn zero_fill_image_plan(model_input: &ImageInput) -> Result<ImagePlan> {
             format!(
                 "model input {}: an optional image the env does not provide needs height, width, \
              and channels to size the zero-filled frame",
-                quoted(&model_input.key)
+                quoted(&placement.to_string())
             ),
         ));
     };
     Ok(ImagePlan {
-        model_key: model_input.key.clone(),
-        env_key: String::new(),
+        placement,
+        source: NodePath::root(),
         src_layout: ImageLayout::Hwc,
         dst_layout: model_input.layout,
         flip: false,
@@ -163,7 +161,7 @@ fn zero_fill_image_plan(model_input: &ImageInput) -> Result<ImagePlan> {
 /// flag is unset, so a range is never silently dropped (setting a range but
 /// forgetting the flag used to feed the model raw, unnormalized pixels). When
 /// normalizing without an explicit range, default to the conventional `[0, 1]`.
-fn resolve_normalize(model_input: &ImageInput) -> Option<(f64, f64)> {
+fn resolve_normalize(model_input: &Image) -> Option<(f64, f64)> {
     (model_input.normalize || model_input.normalize_range.is_some())
         .then(|| model_input.normalize_range.unwrap_or((0.0, 1.0)))
 }
@@ -176,7 +174,8 @@ fn resolve_normalize(model_input: &ImageInput) -> Option<(f64, f64)> {
 /// aspect guard (an aspect-changing resize with no fit declared) and the upscale
 /// guard (a resize that scales up without `allow_upscale`) live here.
 fn resolve_fit(
-    model_input: &ImageInput,
+    model_input: &Image,
+    at: &str,
     env_image: &EnvImage,
     size: Option<(u32, u32)>,
 ) -> Result<FitMode> {
@@ -227,22 +226,19 @@ fn resolve_fit(
         // declared fit would upscale" so the author knows what to change.
         let message = match &model_input.fit {
             None => format!(
-                "model input {}: target {target_height}x{target_width} changes the env's \
-             {env_height}x{env_width} aspect ratio; set fit to 'stretch', 'crop', or 'pad'",
-                quoted(&model_input.key)
+                "model input {at}: target {target_height}x{target_width} changes the env's \
+             {env_height}x{env_width} aspect ratio; set fit to 'stretch', 'crop', or 'pad'"
             ),
             Some(set) if permitted.is_empty() => format!(
-                "model input {}: target {target_height}x{target_width} changes the env's \
+                "model input {at}: target {target_height}x{target_width} changes the env's \
              {env_height}x{env_width} aspect ratio and the declared fit {:?} names no mode this \
              build recognizes; expected 'stretch', 'crop', or 'pad'",
-                quoted(&model_input.key),
                 set.wire_names()
             ),
             Some(_) => format!(
-                "model input {}: every declared fit would upscale the env's \
+                "model input {at}: every declared fit would upscale the env's \
              {env_height}x{env_width} image to {target_height}x{target_width}; set allow_upscale \
-             or declare a fit that downscales (e.g. 'pad')",
-                quoted(&model_input.key)
+             or declare a fit that downscales (e.g. 'pad')"
             ),
         };
         return Err(err(ErrorCode::Unsupported, message));
@@ -259,9 +255,8 @@ fn resolve_fit(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: the declared fit {:?} names no mode this build \
+                "model input {at}: the declared fit {:?} names no mode this build \
              recognizes; expected 'stretch', 'crop', or 'pad'",
-                quoted(&model_input.key),
                 set.wire_names()
             ),
         ));
@@ -271,9 +266,8 @@ fn resolve_fit(
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {}: target {target_height}x{target_width} upscales the env's \
-             {env_height}x{env_width} image; set allow_upscale to interpolate detail that is not there",
-                quoted(&model_input.key)
+                "model input {at}: target {target_height}x{target_width} upscales the env's \
+             {env_height}x{env_width} image; set allow_upscale to interpolate detail that is not there"
             ),
         ));
     }
@@ -286,11 +280,20 @@ mod image_resolve_tests {
 
     use super::plan_image;
     use crate::error::ErrorCode;
-    use crate::spec::{AcceptSet, EnvImage, FitMode, ImageInput, ImageLayout};
+    use crate::path::NodePath;
+    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout};
+
+    /// Resolve at the root placement (the common single-leaf-payload case).
+    fn plan(
+        model: &Image,
+        images: &BTreeMap<String, &EnvImage>,
+    ) -> Result<crate::plans::ImagePlan, crate::error::AdapterResolutionError> {
+        plan_image(model, NodePath::root(), images)
+    }
 
     fn env_image(height: u32, width: u32) -> EnvImage {
         EnvImage {
-            key: "cam".to_owned(),
+            source: NodePath::root().push_key("cam"),
             role: "image/primary".to_owned(),
             layout: ImageLayout::Hwc,
             upside_down: false,
@@ -301,9 +304,8 @@ mod image_resolve_tests {
         }
     }
 
-    fn model_image(height: u32, width: u32, allow_upscale: bool) -> ImageInput {
-        ImageInput {
-            key: "image".to_owned(),
+    fn model_image(height: u32, width: u32, allow_upscale: bool) -> Image {
+        Image {
             role: "image/primary".to_owned(),
             height: Some(height),
             width: Some(width),
@@ -330,7 +332,7 @@ mod image_resolve_tests {
     #[test]
     fn upscale_without_opt_in_is_a_resolve_error() {
         let env = env_image(128, 128);
-        let error = plan_image(&model_image(256, 256, false), &images(&env)).expect_err("err");
+        let error = plan(&model_image(256, 256, false), &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("upscale"), "got: {}", error.message);
     }
@@ -338,20 +340,20 @@ mod image_resolve_tests {
     #[test]
     fn upscale_with_opt_in_resolves() {
         let env = env_image(128, 128);
-        assert!(plan_image(&model_image(256, 256, true), &images(&env)).is_ok());
+        assert!(plan(&model_image(256, 256, true), &images(&env)).is_ok());
     }
 
     #[test]
     fn downscale_needs_no_opt_in() {
         let env = env_image(256, 256);
-        assert!(plan_image(&model_image(128, 128, false), &images(&env)).is_ok());
+        assert!(plan(&model_image(128, 128, false), &images(&env)).is_ok());
     }
 
     #[test]
     fn aspect_mismatch_without_fit_is_a_resolve_error() {
         let env = env_image(8, 8);
         // 3x4 changes the 1:1 aspect; with no fit declared this is rejected.
-        let error = plan_image(&model_image(3, 4, false), &images(&env)).expect_err("err");
+        let error = plan(&model_image(3, 4, false), &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("aspect ratio"),
@@ -365,7 +367,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         let mut model = model_image(3, 4, false);
         model.fit = Some(AcceptSet::single(FitMode::Crop));
-        let plan = plan_image(&model, &images(&env)).expect("ok");
+        let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.fit, FitMode::Crop);
     }
 
@@ -373,7 +375,7 @@ mod image_resolve_tests {
     fn matching_aspect_needs_no_fit() {
         let env = env_image(8, 8);
         // 4x4 preserves the 1:1 aspect -> no fit required, defaults to stretch.
-        let plan = plan_image(&model_image(4, 4, false), &images(&env)).expect("ok");
+        let plan = plan(&model_image(4, 4, false), &images(&env)).expect("ok");
         assert_eq!(plan.fit, FitMode::Stretch);
     }
 
@@ -386,16 +388,10 @@ mod image_resolve_tests {
         model.fit = Some(serde_json::from_str(r#"["crop", "pad"]"#).expect("parse"));
         // Large enough to crop-cover by downscaling -> crop (first preference).
         let big = env_image(200, 150);
-        assert_eq!(
-            plan_image(&model, &images(&big)).expect("ok").fit,
-            FitMode::Crop
-        );
+        assert_eq!(plan(&model, &images(&big)).expect("ok").fit, FitMode::Crop);
         // Too short to crop-cover without upscaling -> falls back to pad.
         let small = env_image(50, 150);
-        assert_eq!(
-            plan_image(&model, &images(&small)).expect("ok").fit,
-            FitMode::Pad
-        );
+        assert_eq!(plan(&model, &images(&small)).expect("ok").fit, FitMode::Pad);
     }
 
     #[test]
@@ -404,7 +400,7 @@ mod image_resolve_tests {
         let mut model = model_image(3, 4, false);
         // A future/typo'd mode parses (tolerated) but resolves to no usable fit.
         model.fit = Some(serde_json::from_str(r#""squish""#).expect("parse"));
-        let error = plan_image(&model, &images(&env)).expect_err("err");
+        let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("recognize"),
@@ -420,7 +416,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         let mut model = model_image(4, 4, false);
         model.fit = Some(serde_json::from_str(r#""squish""#).expect("parse"));
-        let error = plan_image(&model, &images(&env)).expect_err("err");
+        let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("recognize"),
@@ -437,14 +433,14 @@ mod image_resolve_tests {
         let mut model = model_image(8, 8, false);
         model.normalize = false;
         model.normalize_range = Some((-1.0, 1.0));
-        let plan = plan_image(&model, &images(&env)).expect("ok");
+        let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.normalize, Some((-1.0, 1.0)));
     }
 
     #[test]
     fn no_normalize_and_no_range_skips_normalization() {
         let env = env_image(8, 8);
-        let plan = plan_image(&model_image(8, 8, false), &images(&env)).expect("ok");
+        let plan = plan(&model_image(8, 8, false), &images(&env)).expect("ok");
         assert_eq!(plan.normalize, None);
     }
 
@@ -454,7 +450,7 @@ mod image_resolve_tests {
         env.channels = 1; // grayscale env
         let mut model = model_image(8, 8, false);
         model.channels = Some(3); // model wants RGB
-        let error = plan_image(&model, &images(&env)).expect_err("err");
+        let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("channel"), "got: {}", error.message);
     }
@@ -464,7 +460,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8); // 3 channels
         let mut model = model_image(8, 8, false);
         model.channels = Some(3);
-        assert!(plan_image(&model, &images(&env)).is_ok());
+        assert!(plan(&model, &images(&env)).is_ok());
     }
 
     #[test]
@@ -472,7 +468,7 @@ mod image_resolve_tests {
         let mut env = env_image(8, 8);
         env.channels = 1;
         // model declares no channel count -> the check is skipped (back-compat).
-        assert!(plan_image(&model_image(8, 8, false), &images(&env)).is_ok());
+        assert!(plan(&model_image(8, 8, false), &images(&env)).is_ok());
     }
 
     #[test]
@@ -481,9 +477,9 @@ mod image_resolve_tests {
         model.optional = true;
         model.channels = Some(3);
         let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
-        let plan = plan_image(&model, &empty).expect("ok");
+        let plan = plan(&model, &empty).expect("ok");
         assert_eq!(plan.zero_fill, Some((8, 8, 3)));
-        assert!(plan.env_key.is_empty());
+        assert!(plan.source.is_root());
     }
 
     #[test]
@@ -495,9 +491,9 @@ mod image_resolve_tests {
         model.role = "image/overhead".to_owned(); // absent from the single-camera env
         model.optional = true;
         model.channels = Some(3);
-        let plan = plan_image(&model, &images(&env)).expect("ok");
+        let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.zero_fill, Some((8, 8, 3)));
-        assert!(plan.env_key.is_empty());
+        assert!(plan.source.is_root());
     }
 
     #[test]
@@ -505,14 +501,14 @@ mod image_resolve_tests {
         let mut model = model_image(8, 8, false);
         model.optional = true; // height+width set, channels None -> cannot size
         let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
-        let error = plan_image(&model, &empty).expect_err("err");
+        let error = plan(&model, &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingWidth);
     }
 
     #[test]
     fn non_optional_absent_image_is_missing_role() {
         let empty: BTreeMap<String, &EnvImage> = BTreeMap::new();
-        let error = plan_image(&model_image(8, 8, false), &empty).expect_err("err");
+        let error = plan(&model_image(8, 8, false), &empty).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingRole);
     }
 
@@ -523,7 +519,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.absent_fill = Some(128);
-        let error = plan_image(&model, &images(&env)).expect_err("err");
+        let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("absent_fill only applies"),
@@ -538,7 +534,7 @@ mod image_resolve_tests {
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
         model.dtype = "flat32".to_owned(); // typo of float32
-        let error = plan_image(&model, &images(&env)).expect_err("err");
+        let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
             error.message.contains("unknown dtype"),

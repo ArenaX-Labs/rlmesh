@@ -6,11 +6,17 @@ serializes the tags and spec across the boundary, hands the
 gymnasium observation/action spaces to the native projector, and keeps the
 host-language concerns where they belong: entrypoint trust gating, custom
 callables, and the error type.
+
+Custom-input host holes and custom-encoding shims are keyed by the leaf's
+*placement path* in the input tree -- the canonical ``NodePath`` string the
+native core uses (``pixels``, ``robot.eef_pos``, ``[0]``, or ``<root>`` for a
+bare-leaf input). This replaces the old flat ``key`` label.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,19 +25,21 @@ from .._rlmesh import ROTATION_DIMS, adapters_resolve
 from .adapter import ActEncShim, Adapter, ObsEncShim
 from .constants import ENV_METADATA_KEY
 from .specs import (
-    ActionComponent,
-    ActionLayout,
+    Action,
+    Actuator,
+    Concat,
+    Custom,
     CustomEncoding,
-    EntrypointCustomInput,
     EnvTags,
-    ImageInput,
-    InlineCustomInput,
+    Image,
+    InputNode,
     ModelSpec,
     ObsTransform,
     RotationTransform,
-    StateInput,
+    State,
+    Text,
 )
-from .specs.action_serialization import action_layout_to_dict
+from .specs.action_serialization import action_to_dict
 from .specs.model_serialization import model_input_to_dict
 
 if TYPE_CHECKING:
@@ -56,6 +64,66 @@ _PROBES: dict[str, list[float]] = {
 }
 
 
+def _placement(segments: tuple[str | int, ...]) -> str:
+    """Render a tree position as the canonical native ``NodePath`` string.
+
+    Mirrors ``rlmesh_adapters::path::NodePath`` ``Display``: dot-joined keys,
+    ``[i]`` for tuple indices, and ``<root>`` for the empty path (a bare leaf).
+    """
+    if not segments:
+        return "<root>"
+    out = ""
+    for position, segment in enumerate(segments):
+        if isinstance(segment, int):
+            out += f"[{segment}]"
+        else:
+            out += ("." if position > 0 else "") + segment
+    return out
+
+
+def _is_leaf(node: object) -> bool:
+    return isinstance(node, (Image, State, Concat, Text, Custom))
+
+
+def _iter_leaves(
+    node: InputNode, segments: tuple[str | int, ...]
+) -> Iterator[tuple[tuple[str | int, ...], object]]:
+    """Yield ``(segments, leaf)`` for each leaf in the input tree, DFS order.
+
+    The segment walk mirrors the native ``collect_leaves`` (Dict pushes the key,
+    Tuple pushes the index), so the rendered placement matches the core's.
+    """
+    if _is_leaf(node):
+        yield segments, node
+    elif isinstance(node, Mapping):
+        for key, child in node.items():
+            yield from _iter_leaves(child, (*segments, key))
+    elif isinstance(node, tuple):
+        for index, child in enumerate(node):
+            yield from _iter_leaves(child, (*segments, index))
+    else:  # pragma: no cover - guarded by serialization
+        raise TypeError(f"unexpected input tree node {type(node).__name__}")
+
+
+def _map_leaves(
+    node: InputNode, transform: Any, segments: tuple[str | int, ...] = ()
+) -> InputNode:
+    """Rebuild the input tree, replacing each leaf with ``transform(seg, leaf)``."""
+    if _is_leaf(node):
+        return cast(InputNode, transform(segments, node))
+    if isinstance(node, Mapping):
+        return {
+            key: _map_leaves(child, transform, (*segments, key))
+            for key, child in node.items()
+        }
+    if isinstance(node, tuple):
+        return tuple(
+            _map_leaves(child, transform, (*segments, index))
+            for index, child in enumerate(node)
+        )
+    raise TypeError(f"unexpected input tree node {type(node).__name__}")
+
+
 def _check_native_encoding(encoding: object, where: str) -> None:
     """Reject a non-native encoding string.
 
@@ -69,99 +137,93 @@ def _check_native_encoding(encoding: object, where: str) -> None:
         )
 
 
-def _shadow_state_input(
-    state_input: StateInput, obs_shims: list[ObsEncShim]
-) -> StateInput:
-    """Replace a custom-encoded state input with its base-encoding shadow.
+def _shadow_state(placement: str, state: State, obs_shims: list[ObsEncShim]) -> State:
+    """Replace a custom-encoded single-part state with its base-encoding shadow.
 
-    Records an observation shim. A custom encoding must be the sole component
-    of a single-piece input, with no width-altering or assembly options.
+    Records an observation shim keyed by placement path. A custom encoding must
+    be the sole content of a single-part :class:`State`, with no width-altering
+    or assembly options.
     """
-    for component in state_input.components:
-        _check_native_encoding(component.encoding, f"state input {state_input.key!r}")
-    custom = [
-        c for c in state_input.components if isinstance(c.encoding, CustomEncoding)
-    ]
-    if not custom:
-        return state_input
-    key = state_input.key
-    if len(state_input.components) != 1:
+    _check_native_encoding(state.encoding, f"state input {placement!r}")
+    if not isinstance(state.encoding, CustomEncoding):
+        return state
+    encoding = state.encoding
+    if state.dim is not None or state.index is not None:
         raise AdapterResolutionError(
-            f"state input {key!r} uses a CustomEncoding, which must be the sole "
-            "component of a single-piece StateInput (observation offsets are "
-            "env-dependent); give the rotation its own input key"
-        )
-    component = state_input.components[0]
-    encoding = cast(CustomEncoding, component.encoding)
-    if component.dim is not None or component.index is not None:
-        raise AdapterResolutionError(
-            f"state input {key!r}: a CustomEncoding component cannot also set "
+            f"state input {placement!r}: a CustomEncoding part cannot also set "
             "dim or index (they would change its width)"
         )
-    if component.optional:
+    if state.optional:
         raise AdapterResolutionError(
-            f"state input {key!r}: a CustomEncoding component cannot be optional"
+            f"state input {placement!r}: a CustomEncoding part cannot be optional"
         )
-    if state_input.pad_to is not None or state_input.reshape is not None:
+    if state.pad_to is not None or state.reshape is not None:
         raise AdapterResolutionError(
-            f"state input {key!r}: pad_to/reshape run before the host-side "
+            f"state input {placement!r}: pad_to/reshape run before the host-side "
             "encoding shim and would break it; drop them"
         )
-    if state_input.container != "array":
+    if state.container != "array":
         raise AdapterResolutionError(
-            f"state input {key!r}: a CustomEncoding requires container='array'"
+            f"state input {placement!r}: a CustomEncoding requires container='array'"
         )
     if encoding.is_entrypoint:
         raise AdapterResolutionError(
-            f"state input {key!r}: entrypoint CustomEncoding is not yet "
+            f"state input {placement!r}: entrypoint CustomEncoding is not yet "
             "supported; use in-process callables for now"
         )
     if encoding.from_base is None:
         raise AdapterResolutionError(
-            f"state input {key!r}: an observation CustomEncoding needs from_base"
+            f"state input {placement!r}: an observation CustomEncoding needs from_base"
         )
     obs_shims.append(
         ObsEncShim(
-            model_key=key,
+            placement=placement,
             base=encoding.base,
             width=encoding.width,
             name=encoding.name,
-            dtype=state_input.dtype,
+            dtype=state.dtype,
             from_base=cast("RotationTransform", encoding.from_base),
         )
     )
-    shadow_component = replace(component, encoding=encoding.base)
-    return replace(state_input, components=(shadow_component,))
+    return replace(state, encoding=encoding.base)
 
 
-def _shadow_action(action: ActionLayout, act_shims: list[ActEncShim]) -> ActionLayout:
-    """Replace custom-encoded action components with base-encoding shadows.
+def _reject_concat_custom_encoding(placement: str, concat: Concat) -> None:
+    """A CustomEncoding inside a multi-part Concat is unsupported (env offsets)."""
+    for part in concat.parts:
+        encoding = part.encoding if isinstance(part, State) else None
+        _check_native_encoding(encoding, f"state input {placement!r}")
+        if isinstance(encoding, CustomEncoding):
+            raise AdapterResolutionError(
+                f"state input {placement!r} uses a CustomEncoding, which must be "
+                "the sole part of a single-part State (observation offsets are "
+                "env-dependent); give the rotation its own input slot"
+            )
+
+
+def _shadow_action(action: Action, act_shims: list[ActEncShim]) -> Action:
+    """Replace custom-encoded action actuators with base-encoding shadows.
 
     Records action shims with model-declared offsets.
     """
-    shadow_components: list[ActionComponent] = []
+    shadow_components: list[Actuator] = []
     offset = 0
     for component in action.components:
-        _check_native_encoding(
-            component.encoding, f"action component {component.role!r}"
-        )
+        _check_native_encoding(component.encoding, f"actuator {component.role!r}")
         if isinstance(component.encoding, CustomEncoding):
             encoding = component.encoding
             if component.binary:
                 raise AdapterResolutionError(
-                    f"action component {component.role!r}: a CustomEncoding "
-                    "cannot be binary"
+                    f"actuator {component.role!r}: a CustomEncoding cannot be binary"
                 )
             if encoding.is_entrypoint:
                 raise AdapterResolutionError(
-                    f"action component {component.role!r}: entrypoint "
-                    "CustomEncoding is not yet supported; use in-process "
-                    "callables for now"
+                    f"actuator {component.role!r}: entrypoint CustomEncoding is "
+                    "not yet supported; use in-process callables for now"
                 )
             if encoding.to_base is None:
                 raise AdapterResolutionError(
-                    f"action component {component.role!r}: an action "
-                    "CustomEncoding needs to_base"
+                    f"actuator {component.role!r}: an action CustomEncoding needs to_base"
                 )
             act_shims.append(
                 ActEncShim(
@@ -176,18 +238,22 @@ def _shadow_action(action: ActionLayout, act_shims: list[ActEncShim]) -> ActionL
         else:
             shadow_components.append(component)
         offset += component.dim
-    return ActionLayout(
+    return Action(
         *shadow_components, clip=action.clip, execute_horizon=action.execute_horizon
     )
 
 
 def _custom_encodings(model_spec: ModelSpec) -> Iterator[CustomEncoding]:
-    for model_input in model_spec.inputs:
-        if isinstance(model_input, StateInput):
-            for component in model_input.components:
-                if isinstance(component.encoding, CustomEncoding):
-                    yield component.encoding
-    for component in model_spec.action.components:
+    for _segments, leaf in _iter_leaves(model_spec.input, ()):
+        if isinstance(leaf, State) and isinstance(leaf.encoding, CustomEncoding):
+            yield leaf.encoding
+        elif isinstance(leaf, Concat):
+            for part in leaf.parts:
+                if isinstance(part, State) and isinstance(
+                    part.encoding, CustomEncoding
+                ):
+                    yield part.encoding
+    for component in model_spec.output.components:
         if isinstance(component.encoding, CustomEncoding):
             yield component.encoding
 
@@ -238,18 +304,23 @@ def _substitute_encodings(
     """Return a base-substituted shadow spec plus host-side encoding shims.
 
     The shadow spec lets the native core see only known encodings; the shims
-    repack the custom fields at the boundary.
+    repack the custom fields at the boundary, keyed by placement path.
     """
     obs_shims: list[ObsEncShim] = []
     act_shims: list[ActEncShim] = []
-    shadow_inputs = tuple(
-        _shadow_state_input(model_input, obs_shims)
-        if isinstance(model_input, StateInput)
-        else model_input
-        for model_input in model_spec.inputs
-    )
-    shadow_action = _shadow_action(model_spec.action, act_shims)
-    shadow = ModelSpec(inputs=shadow_inputs, action=shadow_action)
+
+    def shadow_leaf(segments: tuple[str | int, ...], leaf: object) -> object:
+        placement = _placement(segments)
+        if isinstance(leaf, State):
+            return _shadow_state(placement, leaf, obs_shims)
+        if isinstance(leaf, Concat):
+            _reject_concat_custom_encoding(placement, leaf)
+            return leaf
+        return leaf
+
+    shadow_input = _map_leaves(model_spec.input, shadow_leaf)
+    shadow_action = _shadow_action(model_spec.output, act_shims)
+    shadow = ModelSpec(input=shadow_input, output=shadow_action)
     return shadow, tuple(obs_shims), tuple(act_shims)
 
 
@@ -260,38 +331,65 @@ def _model_wire(
 
     Custom inputs never cross to the native core as code: an entrypoint
     string is gated on ``trust_entrypoints`` and imported here; an
-    in-process callable stays here and is referenced by a ``host:<key>``
+    in-process callable stays here and is referenced by a ``host:<placement>``
     placeholder. Either way the native plan keeps the input as a hole that
-    :class:`Adapter` fills from the raw observation.
+    :class:`Adapter` fills from the raw observation, keyed by placement path.
     """
     customs: dict[str, ObsTransform] = {}
-    wire_inputs: list[dict[str, Any]] = []
-    for model_input in model_spec.inputs:
-        if isinstance(model_input, InlineCustomInput):
-            customs[model_input.key] = model_input.transform
-            wire_transform = f"host:{model_input.key}"
-        elif isinstance(model_input, EntrypointCustomInput):
-            if not trust_entrypoints:
-                raise AdapterResolutionError(
-                    f"custom input {model_input.key!r} references entrypoint "
-                    f"{model_input.entrypoint!r}; pass "
-                    "resolve(..., trust_entrypoints=True) to allow importing it"
+
+    def wire_leaf(segments: tuple[str | int, ...], leaf: object) -> Any:
+        placement = _placement(segments)
+        if isinstance(leaf, Custom):
+            if leaf.transform is not None:
+                customs[placement] = leaf.transform
+                wire_transform = f"host:{placement}"
+            else:
+                entrypoint = cast(str, leaf.entrypoint)
+                if not trust_entrypoints:
+                    raise AdapterResolutionError(
+                        f"custom input at {placement!r} references entrypoint "
+                        f"{entrypoint!r}; pass "
+                        "resolve(..., trust_entrypoints=True) to allow importing it"
+                    )
+                customs[placement] = cast(
+                    ObsTransform,
+                    resolve_entrypoint(entrypoint, label="custom input transform"),
                 )
-            customs[model_input.key] = cast(
-                ObsTransform,
-                resolve_entrypoint(
-                    model_input.entrypoint, label="custom input transform"
-                ),
-            )
-            wire_transform = model_input.entrypoint
-        else:
-            wire_inputs.append(model_input_to_dict(model_input))
-            continue
-        wire_inputs.append(
-            {"type": "custom", "key": model_input.key, "transform": wire_transform}
-        )
-    wire = {"inputs": wire_inputs, "action": action_layout_to_dict(model_spec.action)}
+                wire_transform = entrypoint
+            return {"type": "custom", "transform": wire_transform}
+        return model_input_to_dict(cast(InputNode, leaf))
+
+    wire_input = _wire_tree(model_spec.input, wire_leaf)
+    wire = {"input": wire_input, "output": action_to_dict(model_spec.output)}
     return wire, customs
+
+
+def _wire_tree(
+    node: InputNode, leaf_fn: Any, segments: tuple[str | int, ...] = ()
+) -> Any:
+    """Walk the input tree to its structural wire form, customs via ``leaf_fn``."""
+    if _is_leaf(node):
+        return leaf_fn(segments, node)
+    if isinstance(node, Mapping):
+        return {
+            key: _wire_tree(child, leaf_fn, (*segments, key))
+            for key, child in node.items()
+        }
+    if isinstance(node, tuple):
+        return [
+            _wire_tree(child, leaf_fn, (*segments, index))
+            for index, child in enumerate(node)
+        ]
+    raise TypeError(f"unexpected input tree node {type(node).__name__}")
+
+
+def _image_stacks(model_spec: ModelSpec) -> dict[str, int]:
+    """Frame-stack depths the model wants, keyed by placement path (>1 only)."""
+    stacks: dict[str, int] = {}
+    for segments, leaf in _iter_leaves(model_spec.input, ()):
+        if isinstance(leaf, Image) and leaf.stack > 1:
+            stacks[_placement(segments)] = leaf.stack
+    return stacks
 
 
 def resolve(
@@ -340,11 +438,7 @@ def resolve(
         )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
-    stacks = {
-        model_input.key: model_input.stack
-        for model_input in shadow.inputs
-        if isinstance(model_input, ImageInput) and model_input.stack > 1
-    }
+    stacks = _image_stacks(shadow)
     return Adapter(plan, customs, stacks, obs_shims, act_shims)
 
 

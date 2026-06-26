@@ -10,9 +10,9 @@ conversion are unchanged -- and applies the repacking host-side at the field
 boundary (base->custom on the way in, custom->base on the way out).
 
 The same ``ROT6D_COLSWAP`` constant is referenced from both the proprio input
-and the action component: define the encoding once, use it on both sides. The
-rotation gets its own single-piece state input because the offset of a custom
-field interior to a multi-piece state is env-dependent.
+and the action actuator: define the encoding once, use it on both sides. The
+rotation gets its own single-part ``State`` input because the offset of a
+custom field interior to a multi-part ``Concat`` is env-dependent.
 """
 
 from __future__ import annotations
@@ -39,23 +39,20 @@ ROT6D_COLSWAP = adapt.CustomEncoding(
 )
 
 SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, size=224),
-        adapt.StateInput("eef_rot", role=adapt.EEF_ROT, encoding=ROT6D_COLSWAP),
-        adapt.StateInput(
-            "proprio",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, size=224),
+        "eef_rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_COLSWAP),
+        "proprio": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_COLSWAP),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_COLSWAP),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -70,6 +67,6 @@ def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:
-        return np.zeros(SPEC.action.dim, dtype=np.float32)
+        return np.zeros(SPEC.output.dim, dtype=np.float32)
 
     return predict

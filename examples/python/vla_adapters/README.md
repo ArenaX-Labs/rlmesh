@@ -19,7 +19,7 @@ vla_adapters/
 └── envs/
     ├── __init__.py       # ENVS registry (one line per environment)
     ├── libero.py         # two cameras, xyzw quat, one obs key per quantity
-    ├── metaworld.py      # cameras + a flat Box proprio leaf split by a StateLayout
+    ├── metaworld.py      # cameras + a flat Box proprio leaf split by a Split
     └── simpler_bridge.py # one camera, wxyz quat, nested obs keys
 ```
 
@@ -69,24 +69,24 @@ Better still, serve the env with `rlmesh.EnvServer(env, tags=TAGS)` so remote cl
 
 ### Flat (non-Dict) observations
 
-Some envs return a single flat `Box` vector instead of a dict, with fixed index ranges carrying distinct meaning (e.g. Metaworld). Tag it with a `StateLayout` passed directly as `observation` (mirroring `action` being one `ActionLayout`), splitting the vector into role fields in order:
+Some envs return a single flat `Box` vector instead of a dict, with fixed index ranges carrying distinct meaning (e.g. Metaworld). Tag it with a `Split` passed directly as `observation` (mirroring `action` being one `Action`), splitting the vector into role fields in order:
 
 ```python
 TAGS = adapt.EnvTags(
-    observation=adapt.StateLayout(
-        adapt.StateField(adapt.EEF_POS, 3),
-        adapt.StateField(adapt.GRIPPER_POS, 1),
-        adapt.StateField(dim=2),               # role-less = skip these dims
-        adapt.StateField(adapt.JOINT_POS, 4),
+    observation=adapt.Split(
+        adapt.Field(adapt.EEF_POS, 3),
+        adapt.Field(adapt.GRIPPER_POS, 1),
+        adapt.Field(dim=2),               # role-less = skip these dims
+        adapt.Field(adapt.JOINT_POS, 4),
     ),
-    action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_DELTA_POS, 4)),
+    action=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, 4)),
 )
 ```
 
 Field widths must sum to the leaf width; offsets are implied by order. Every model still matches purely by role, so the same model spec resolves against this env and a dict env with no change. The fixed indices live on the env side, where they belong.
 
-`envs/metaworld.py` is the runnable version. It is mixed rather than fully flat: a `StateLayout` tags a flat `proprio` leaf inside a `Dict` that also carries the cameras the VLA specs need, so the same `smolvla`/`act`/`xvla` specs pair with it. Run `uv run eval.py --env metaworld` and read `describe()` — each field prints the slice it reads, e.g. `proprio[3:7] (quat_xyzw->rot6d_rowmajor)` for X-VLA.
+`envs/metaworld.py` is the runnable version. It is mixed rather than fully flat: a `Split` tags a flat `proprio` leaf inside a `Dict` that also carries the cameras the VLA specs need, so the same `smolvla`/`act`/`xvla` specs pair with it. Run `uv run eval.py --env metaworld` and read `describe()` — each field prints the slice it reads, e.g. `proprio[3:7] (quat_xyzw->rot6d_rowmajor)` for X-VLA.
 
 ## When the built-in vocabulary is not enough
 
-If a checkpoint needs feature engineering the declarative spec cannot express, add an `InlineCustomInput` (an in-process callable) or an `EntrypointCustomInput` (a `module:callable` string, which `resolve` only imports when called with `trust_entrypoints=True`) to its spec. Specs are data — nothing in them is ever eval'd.
+If a checkpoint needs feature engineering the declarative spec cannot express, add a `Custom` input to its spec — `Custom(transform=fn)` for an in-process callable, or `Custom(entrypoint="module:callable")` for a string `resolve` only imports when called with `trust_entrypoints=True`. Specs are data — nothing in them is ever eval'd.

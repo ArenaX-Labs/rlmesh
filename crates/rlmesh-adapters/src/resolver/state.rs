@@ -5,11 +5,12 @@ use std::collections::BTreeMap;
 use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_accept_set, quoted_encoding, quoted_keys};
+use crate::path::NodePath;
 use crate::plans::{StatePiece, StatePlan};
-use crate::spec::{AcceptSet, EnvState, RotationEncoding, StateComponent, StateInput};
+use crate::spec::{AcceptSet, ConcatPart, EnvState, RotationEncoding, State};
 
 /// Width of an optional component's zero fill when the env lacks it.
-fn zero_fill_width(component: &StateComponent, model_key: &str) -> Result<u32> {
+fn zero_fill_width(component: &ConcatPart, at: &str) -> Result<u32> {
     if component.index.is_some() {
         return Ok(1);
     }
@@ -26,9 +27,8 @@ fn zero_fill_width(component: &StateComponent, model_key: &str) -> Result<u32> {
     Err(err(
         ErrorCode::MissingWidth,
         format!(
-            "model input {}: optional state role {} needs dim, index, or encoding \
+            "model input {at}: optional state role {} needs dim, index, or encoding \
          to size its zero fill",
-            quoted(model_key),
             quoted(&component.role)
         ),
     ))
@@ -98,20 +98,22 @@ fn select_state_encoding(
 }
 
 pub(super) fn plan_state(
-    model_input: &StateInput,
+    model_input: &State,
+    placement: NodePath,
     states_by_role: &BTreeMap<String, &EnvState>,
 ) -> Result<StatePlan> {
+    let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
         let Some(env_state) = states_by_role.get(&component.role).copied() else {
             if component.optional {
                 pieces.push(StatePiece {
-                    env_key: String::new(),
+                    source: NodePath::root(),
                     src_offset: None,
                     src_dim: None,
                     src_encoding: None,
                     dst_encoding: None,
-                    dim: Some(zero_fill_width(component, &model_input.key)?),
+                    dim: Some(zero_fill_width(component, &at)?),
                     index: None,
                     src_range: None,
                     dst_range: None,
@@ -122,8 +124,7 @@ pub(super) fn plan_state(
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
-                    "model input {} needs state role {} but the env offers {}",
-                    quoted(&model_input.key),
+                    "model input {at} needs state role {} but the env offers {}",
                     quoted(&component.role),
                     quoted_keys(states_by_role)
                 ),
@@ -147,7 +148,7 @@ pub(super) fn plan_state(
                     "state role {}: env feature {} declares {env_dim} dims but \
                  encoding {} has {}",
                     quoted(&component.role),
-                    quoted(&env_state.key),
+                    quoted(&env_state.source.to_string()),
                     quoted_encoding(Some(src)),
                     src.dims()
                 ),
@@ -175,7 +176,7 @@ pub(super) fn plan_state(
                             "state role {}: index {index} is out of range for the \
                          width-{width} source feature {}",
                             quoted(&component.role),
-                            quoted(&env_state.key)
+                            quoted(&env_state.source.to_string())
                         ),
                     ));
                 }
@@ -188,13 +189,13 @@ pub(super) fn plan_state(
                         "state role {}: requested {dim} dims but the source feature \
                      {} has width {width}",
                         quoted(&component.role),
-                        quoted(&env_state.key)
+                        quoted(&env_state.source.to_string())
                     ),
                 ));
             }
         }
         pieces.push(StatePiece {
-            env_key: env_state.key.clone(),
+            source: env_state.source.clone(),
             src_offset: env_state.slice_offset,
             // src_dim is the slice width, meaningful only for a layout field
             // (where slice_offset is set); a whole-leaf state leaves it None so
@@ -211,7 +212,7 @@ pub(super) fn plan_state(
         });
     }
     Ok(StatePlan {
-        model_key: model_input.key.clone(),
+        placement,
         pieces,
         pad_to: model_input.pad_to,
         dtype: model_input.dtype.clone(),

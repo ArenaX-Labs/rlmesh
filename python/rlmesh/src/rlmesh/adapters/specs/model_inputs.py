@@ -1,4 +1,9 @@
-"""Input feature dataclasses declared by models."""
+"""Input leaf dataclasses declared by models.
+
+The model leaves are bare (no ``key``): placement in the input tree *is* the
+payload position. Only image/state/text/custom exist; a :class:`Concat` is the
+multi-part state leaf (a single tensor concatenated from several role parts).
+"""
 
 from __future__ import annotations
 
@@ -15,11 +20,12 @@ ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
 
 @dataclass(frozen=True)
-class ImageInput:
+class Image:
     """An image input expected by a model.
 
+    There is no ``key`` -- placement in the input tree *is* the payload position.
+
     Attributes:
-        key: Key of the entry in the model input payload.
         role: Semantic role matched against env image features.
         height: Target image height, or None to keep the env height.
         width: Target image width, or None to keep the env width.
@@ -66,7 +72,6 @@ class ImageInput:
             ``width``. Pass ``size`` or ``height``/``width``, not both.
     """
 
-    key: str
     role: str = IMAGE_PRIMARY
     height: int | None = None
     width: int | None = None
@@ -91,7 +96,7 @@ class ImageInput:
         # are enforced by the Rust codec at serialize/normalize (u32 + de_stack).
         if size is not None:
             if self.height is not None or self.width is not None:
-                raise ValueError("ImageInput: pass size=, or height=/width=, not both")
+                raise ValueError("Image: pass size=, or height=/width=, not both")
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
         # A single fit stays a string; a preference list normalizes to a tuple
@@ -100,27 +105,39 @@ class ImageInput:
 
 
 @dataclass(frozen=True)
-class StateComponent:
-    """One piece of a model state vector, sourced from an env state feature.
+class State:
+    """A single-part numeric state input expected by a model.
+
+    The 1-part case: one role packed into the value, sourced from an env state
+    feature. Use :class:`Concat` to pack several roles into one tensor. A
+    ``State`` is also a valid :class:`Concat` part (its part fields -- ``role``,
+    ``encoding``, ``dim``, ``index``, ``optional``, ``range`` -- are taken; its
+    container fields must stay default when used as a part).
+
+    There is no ``key`` -- placement in the input tree *is* the payload position.
 
     Attributes:
         role: Semantic role matched against env state features.
-        encoding: Rotation encoding the model expects for this piece. A single
+        encoding: Rotation encoding the model expects for this part. A single
             encoding, or a sequence of them in preference order (most-preferred
             first) — the resolver picks the env's native encoding when it
             appears here (no conversion), else converts into the first entry.
             A ``CustomEncoding`` is a single host-side packing (not a set).
         dim: Optional number of leading elements to keep from the source.
         index: Optional single element to select after any conversion.
-        optional: Zero-fill this piece when the env does not declare the
-            role, instead of failing resolution. The fill width comes from
-            ``index`` (one), ``dim``, or ``encoding``; one of them must be
-            set so the width is known without an env feature.
-        range: Optional ``(low, high)`` the model expects this piece in;
-            when the env declares its own (derived or tagged) range, the value
-            is affinely mapped from the env range to this one (symmetric to
-            action ranges). With no env source range there is nothing to map
-            from, so it is a no-op -- it does not clamp or rescale on its own.
+        optional: Zero-fill this part when the env does not declare the role,
+            instead of failing resolution. The fill width comes from ``index``
+            (one), ``dim``, or ``encoding``; one of them must be set so the
+            width is known without an env feature.
+        range: Optional ``(low, high)`` the model expects this part in; when the
+            env declares its own (derived or tagged) range, the value is affinely
+            mapped from the env range to this one (symmetric to action ranges).
+            With no env source range there is nothing to map from, so it is a
+            no-op -- it does not clamp or rescale on its own.
+        pad_to: Zero-pad the resulting vector to this length.
+        dtype: NumPy dtype name of the resulting value.
+        reshape: Optional target shape for the resulting value.
+        container: Emit a NumPy array or a plain Python list.
     """
 
     role: str
@@ -131,145 +148,139 @@ class StateComponent:
     index: int | None = None
     optional: bool = False
     range: tuple[float, float] | None = None
-    # dim/index >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
+    pad_to: int | None = None
+    dtype: str = "float32"
+    reshape: tuple[int, ...] | None = None
+    container: Literal["array", "list"] = "array"
+    # dim/index/pad_to >= 0 is enforced by the Rust codec (u32) at serialize.
 
     def __post_init__(self) -> None:
         # index selects one element, dim truncates to the leading N; the resolver
         # applies index and ignores dim when both are set, so reject the ambiguous
-        # pairing here (matching the Rust StateInput codec guard).
+        # pairing here (matching the Rust codec guard).
         if self.dim is not None and self.index is not None:
             raise ValueError(
-                f"StateComponent {self.role!r}: set dim or index, not both "
+                f"State {self.role!r}: set dim or index, not both "
                 "(index selects one element, dim truncates to the leading N)"
             )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
-@dataclass(frozen=True)
-class StateInput:
-    """A numeric state input expected by a model.
+# A part of a :class:`Concat`: a bare role string, or a :class:`State` whose part
+# fields are taken.
+ConcatPart: TypeAlias = "str | State"
+
+
+@dataclass(frozen=True, init=False)
+class Concat:
+    """A multi-part numeric state input: several roles packed into one tensor.
+
+    The multi-part state leaf. Parts are concatenated in order; each part is a
+    bare role string (sugar for a role-only :class:`State`) or a :class:`State`
+    carrying part fields. A single-role state is :class:`State` directly; this is
+    the >1-part case. Both serialize to the same ``{"type": "state", ...}`` wire
+    form.
+
+    There is no ``key`` -- placement in the input tree *is* the payload position.
 
     Attributes:
-        key: Key of the entry in the model input payload.
-        components: Pieces concatenated (in order) to form the value.
+        parts: Roles (or :class:`State` parts) concatenated in order.
         pad_to: Zero-pad the concatenated vector to this length.
         dtype: NumPy dtype name of the resulting value.
         reshape: Optional target shape for the resulting value.
         container: Emit a NumPy array or a plain Python list.
-
-    For a single-piece state, pass ``role`` (and optionally ``encoding`` /
-    ``dim`` / ``index``) instead of ``components`` -- e.g.
-    ``StateInput("state", role=EEF_POS)`` is shorthand for
-    ``StateInput("state", components=(StateComponent(EEF_POS),))``.
     """
 
-    key: str
-    components: tuple[StateComponent, ...] = ()
+    parts: tuple[ConcatPart, ...]
     pad_to: int | None = None
     dtype: str = "float32"
     reshape: tuple[int, ...] | None = None
     container: Literal["array", "list"] = "array"
-    role: InitVar[str | None] = None
-    encoding: InitVar[
-        RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None
-    ] = None
-    dim: InitVar[int | None] = None
-    index: InitVar[int | None] = None
 
-    def __post_init__(
+    def __init__(
         self,
-        role: str | None,
-        encoding: RotationEncoding | Sequence[RotationEncoding] | CustomEncoding | None,
-        dim: int | None,
-        index: int | None,
+        *parts: ConcatPart,
+        pad_to: int | None = None,
+        dtype: str = "float32",
+        reshape: tuple[int, ...] | None = None,
+        container: Literal["array", "list"] = "array",
     ) -> None:
-        single = (
-            role is not None
-            or encoding is not None
-            or dim is not None
-            or index is not None
-        )
-        if self.components and single:
-            raise ValueError(
-                "StateInput: pass components=, or a single role=/encoding=/"
-                "dim=/index=, not both"
-            )
-        if not self.components:
-            if role is None:
-                raise ValueError("StateInput needs components=(...) or a single role=")
-            object.__setattr__(
-                self,
-                "components",
-                (StateComponent(role, encoding, dim, index),),
-            )
-        # pad_to >= 0 is enforced by the Rust codec (u32) at serialize/normalize.
+        if not parts:
+            raise ValueError("Concat needs at least one part")
+        object.__setattr__(self, "parts", tuple(parts))
+        object.__setattr__(self, "pad_to", pad_to)
+        object.__setattr__(self, "dtype", dtype)
+        object.__setattr__(self, "reshape", reshape)
+        object.__setattr__(self, "container", container)
 
 
 @dataclass(frozen=True)
-class TextInput:
+class Text:
     """A text input expected by a model.
 
+    There is no ``key`` -- placement in the input tree *is* the payload position.
+
     Attributes:
-        key: Key of the entry in the model input payload.
         role: Semantic role matched against env text features.
         container: Emit a plain string or a single-element list.
         default: Value used when the observation omits the feature; when
-            None the key is omitted from the payload instead.
+            None the input is omitted from the payload instead.
     """
 
-    key: str
     role: str = INSTRUCTION
     container: Literal["str", "list"] = "str"
     default: str | None = None
 
 
 @dataclass(frozen=True)
-class InlineCustomInput:
-    """A custom input computed in-process by a user callable.
+class Custom:
+    """A custom input computed by host-language code.
 
-    Local only: the callable cannot be serialized, so a model spec carrying
-    an :class:`InlineCustomInput` cannot be published in contract metadata.
-    Use :class:`EntrypointCustomInput` for a spec that must travel.
+    Exactly one of ``transform`` (an in-process callable) or ``entrypoint``
+    (a ``module:callable`` string) is set:
 
-    Attributes:
-        key: Key of the entry in the model input payload.
-        transform: Callable taking the raw observation mapping.
-    """
+    - ``transform``: local only -- the callable cannot be serialized, so a model
+      spec carrying it cannot be published in contract metadata.
+    - ``entrypoint``: serializable and publishable as wire form, but imported
+      only when ``resolve(..., trust_entrypoints=True)``; otherwise resolution
+      refuses to import it. Travels on the wire under the key ``transform``.
 
-    key: str
-    transform: ObsTransform
-
-
-@dataclass(frozen=True)
-class EntrypointCustomInput:
-    """A custom input computed by a ``module:callable`` entrypoint.
-
-    Serializable and publishable. The entrypoint is imported only when
-    ``resolve(..., trust_entrypoints=True)``; otherwise resolution refuses
-    to import it.
+    There is no ``key`` -- placement in the input tree *is* the payload position.
 
     Attributes:
-        key: Key of the entry in the model input payload.
-        entrypoint: A ``module:callable`` string. Travels on the wire under the
-            key ``transform`` (the frozen field shared with the Rust
-            ``CustomInput`` and the ``host:<key>`` inline placeholder).
+        transform: An in-process callable taking the raw observation mapping.
+        entrypoint: A ``module:callable`` string.
     """
 
-    key: str
-    entrypoint: str
+    transform: ObsTransform | None = None
+    entrypoint: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.transform is None) == (self.entrypoint is None):
+            raise ValueError(
+                "Custom: set exactly one of transform= (an in-process callable) "
+                "or entrypoint= (a 'module:callable' string)"
+            )
 
 
-ModelInput: TypeAlias = (
-    ImageInput | StateInput | TextInput | InlineCustomInput | EntrypointCustomInput
-)
+# A model input leaf.
+ModelLeaf: TypeAlias = Image | State | Concat | Text | Custom
+# A recursive model input tree: a leaf, a Dict, or a Tuple. The container type
+# *is* the payload container the model's predict receives.
+InputNode: TypeAlias = "ModelLeaf | Mapping[str, InputNode] | tuple[InputNode, ...]"
+
+# Backwards-readable alias retained.
+ModelInput: TypeAlias = ModelLeaf
 
 __all__ = [
-    "EntrypointCustomInput",
-    "ImageInput",
-    "InlineCustomInput",
+    "Concat",
+    "ConcatPart",
+    "Custom",
+    "Image",
+    "InputNode",
     "ModelInput",
+    "ModelLeaf",
     "ObsTransform",
-    "StateComponent",
-    "StateInput",
-    "TextInput",
+    "State",
+    "Text",
 ]

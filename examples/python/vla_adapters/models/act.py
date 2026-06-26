@@ -26,28 +26,24 @@ import rlmesh.adapters as adapt
 CHUNK = 8
 
 SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput(
-            "observation.images.image",
+    input={
+        "observation.images.image": adapt.Image(
             role=adapt.IMAGE_PRIMARY,
             height=224,
             width=224,
         ),
-        adapt.StateInput(
-            "observation.state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS, dim=3),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                adapt.StateComponent(adapt.GRIPPER_POS, dim=1),
-            ),
+        "observation.state": adapt.Concat(
+            adapt.State(adapt.EEF_POS, dim=3),
+            adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
+            adapt.State(adapt.GRIPPER_POS, dim=1),
         ),
-        adapt.TextInput("instruction"),
-    ),
+        "instruction": adapt.Text(),
+    },
     # The layout of ONE action; the chunk dimension is adapter business.
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -121,6 +117,6 @@ def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:
-        return np.zeros((CHUNK, SPEC.action.dim), dtype=np.float32)
+        return np.zeros((CHUNK, SPEC.output.dim), dtype=np.float32)
 
     return predict

@@ -45,7 +45,17 @@
   },
   "kind": "resolve",
   "model_spec": {
-    "action": {
+    "input": {
+      "components": [
+        {
+          "encoding": "rot6d",
+          "role": "proprio/eef_rot"
+        }
+      ],
+      "dtype": "float32",
+      "type": "state"
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -70,27 +80,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "dim": null,
-            "encoding": "rot6d",
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_rot"
-          }
-        ],
-        "container": "array",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": null,
-        "reshape": null,
-        "type": "state"
-      }
-    ]
+    }
   },
   "observation_space": {
     "children": [

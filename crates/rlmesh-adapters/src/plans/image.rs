@@ -1,12 +1,16 @@
 //! Resolved instructions for one model image input.
 
+use crate::path::NodePath;
 use crate::spec::{FitMode, ImageLayout};
 
 /// Resolved instructions for one model image input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImagePlan {
-    pub model_key: String,
-    pub env_key: String,
+    /// Where this image lands in the assembled payload tree.
+    pub placement: NodePath,
+    /// Where this image is read from in the raw observation tree (empty when
+    /// `zero_fill` is set — a synthesized frame has no env source).
+    pub source: NodePath,
     pub src_layout: ImageLayout,
     pub dst_layout: ImageLayout,
     pub flip: bool,
@@ -32,8 +36,8 @@ pub struct ImagePlan {
     /// When `Some((height, width, channels))` this input has no env source: the
     /// adapter synthesizes a black HWC frame of that shape (an optional camera
     /// the env did not provide), then applies the normalize/dtype/layout/lead
-    /// steps like a real frame. `None` for a normal image. `env_key` is empty
-    /// when this is set.
+    /// steps like a real frame. `None` for a normal image. `source` is the
+    /// empty (root) path when this is set.
     pub zero_fill: Option<(u32, u32, u32)>,
     /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
     /// default). Only meaningful when `zero_fill` is `Some`.

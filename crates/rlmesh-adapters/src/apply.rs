@@ -10,7 +10,7 @@
 mod action;
 mod geometry;
 mod image;
-mod lookup;
+pub(crate) mod lookup;
 mod obs;
 mod state;
 mod text;
@@ -71,12 +71,12 @@ impl CustomTransform for SkipCustoms {
 }
 
 impl ResolvedAdapter {
-    /// Convert a raw env observation into the model input payload.
+    /// Convert a raw env observation into the model input payload `Value` tree.
     pub fn transform_obs(
         &self,
         raw_obs: &BTreeMap<String, Value>,
         customs: &dyn CustomTransform,
-    ) -> Result<BTreeMap<String, Value>, ApplyError> {
+    ) -> Result<Value, ApplyError> {
         obs::transform_obs(&self.obs_plans, raw_obs, customs)
     }
 

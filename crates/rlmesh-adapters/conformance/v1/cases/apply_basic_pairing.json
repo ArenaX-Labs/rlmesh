@@ -74,27 +74,30 @@
     },
     "atol": 1e-6,
     "payload": {
-      "image": {
-        "data": [
-          0.0, 0.11764705926179886, 0.23529411852359772, 0.3529411852359772, 0.03921568766236305,
-          0.1568627506494522, 0.27450981736183167, 0.3921568691730499, 0.0784313753247261,
-          0.19607843458652496, 0.3137255012989044, 0.4313725531101227
-        ],
-        "dtype": "float32",
-        "kind": "array",
-        "shape": [3, 2, 2]
+      "data": {
+        "image": {
+          "data": [
+            0.0, 0.11764705926179886, 0.23529411852359772, 0.3529411852359772, 0.03921568766236305,
+            0.1568627506494522, 0.27450981736183167, 0.3921568691730499, 0.0784313753247261,
+            0.19607843458652496, 0.3137255012989044, 0.4313725531101227
+          ],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [3, 2, 2]
+        },
+        "instruction": {
+          "data": "stack the cups",
+          "kind": "text"
+        },
+        "state": {
+          "data": [
+            0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 1.2091995477676392,
+            1.2091995477676392, 1.2091995477676392, 0.03999999910593033
+          ],
+          "kind": "list"
+        }
       },
-      "instruction": {
-        "data": "stack the cups",
-        "kind": "text"
-      },
-      "state": {
-        "data": [
-          0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 1.2091995477676392,
-          1.2091995477676392, 1.2091995477676392, 0.03999999910593033
-        ],
-        "kind": "list"
-      }
+      "kind": "map"
     }
   },
   "kind": "apply",
@@ -108,7 +111,46 @@
     "shape": [7]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "image": {
+        "dtype": "float32",
+        "height": null,
+        "layout": "chw",
+        "lead_dims": 0,
+        "normalize": true,
+        "resample": "bilinear_aa",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "instruction": {
+        "container": "str",
+        "default": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "encoding": "axis_angle",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          }
+        ],
+        "container": "list",
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -133,63 +175,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "dtype": "float32",
-        "height": null,
-        "key": "image",
-        "layout": "chw",
-        "lead_dims": 0,
-        "normalize": true,
-        "resample": "bilinear_aa",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false,
-        "width": null
-      },
-      {
-        "components": [
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_pos"
-          },
-          {
-            "dim": null,
-            "encoding": "axis_angle",
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_rot"
-          },
-          {
-            "dim": 1,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/gripper"
-          }
-        ],
-        "container": "list",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": null,
-        "reshape": null,
-        "type": "state"
-      },
-      {
-        "container": "str",
-        "default": null,
-        "key": "instruction",
-        "role": "text/instruction",
-        "type": "text"
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

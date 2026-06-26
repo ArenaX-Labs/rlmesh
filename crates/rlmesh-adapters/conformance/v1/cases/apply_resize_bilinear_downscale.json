@@ -52,15 +52,13 @@
     },
     "atol": 1.0,
     "payload": {
-      "image": {
-        "data": [
-          94, 102, 108, 136, 144, 150, 53, 60, 67, 95, 102, 109, 54, 61, 68, 96, 103, 110, 138, 145,
-          152, 180, 187, 194, 139, 146, 153, 181, 188, 195, 98, 104, 112, 140, 146, 154
-        ],
-        "dtype": "uint8",
-        "kind": "array",
-        "shape": [3, 4, 3]
-      }
+      "data": [
+        94, 102, 108, 136, 144, 150, 53, 60, 67, 95, 102, 109, 54, 61, 68, 96, 103, 110, 138, 145,
+        152, 180, 187, 194, 139, 146, 153, 181, 188, 195, 98, 104, 112, 140, 146, 154
+      ],
+      "dtype": "uint8",
+      "kind": "array",
+      "shape": [3, 4, 3]
     }
   },
   "kind": "apply",
@@ -74,7 +72,19 @@
     "shape": [7]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "dtype": "uint8",
+      "height": 3,
+      "layout": "hwc",
+      "lead_dims": 0,
+      "normalize": false,
+      "resample": "bilinear",
+      "role": "image/primary",
+      "type": "image",
+      "upside_down": false,
+      "width": 4
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -99,22 +109,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "dtype": "uint8",
-        "height": 3,
-        "key": "image",
-        "layout": "hwc",
-        "lead_dims": 0,
-        "normalize": false,
-        "resample": "bilinear",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false,
-        "width": 4
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

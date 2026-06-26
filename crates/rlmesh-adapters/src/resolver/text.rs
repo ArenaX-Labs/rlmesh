@@ -5,11 +5,13 @@ use std::collections::BTreeMap;
 use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_keys};
+use crate::path::NodePath;
 use crate::plans::TextPlan;
-use crate::spec::{EnvText, TextInput};
+use crate::spec::{EnvText, Text};
 
 pub(super) fn plan_text(
-    model_input: &TextInput,
+    model_input: &Text,
+    placement: NodePath,
     texts_by_role: &BTreeMap<String, &EnvText>,
 ) -> Result<TextPlan> {
     let env_text = texts_by_role.get(&model_input.role).copied();
@@ -19,15 +21,16 @@ pub(super) fn plan_text(
             format!(
                 "model input {} needs text role {} but the env offers {} and no \
              default is set",
-                quoted(&model_input.key),
+                quoted(&placement.to_string()),
                 quoted(&model_input.role),
                 quoted_keys(texts_by_role)
             ),
         ));
     }
     Ok(TextPlan {
-        model_key: model_input.key.clone(),
-        env_key: env_text.map(|text| text.key.clone()).unwrap_or_default(),
+        placement,
+        // A default-only text input (no matching env role) has no source.
+        source: env_text.map(|text| text.source.clone()),
         container: model_input.container,
         default: model_input.default.clone(),
     })

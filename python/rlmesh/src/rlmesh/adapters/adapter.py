@@ -23,6 +23,15 @@ ActionT = TypeVar("ActionT")
 # Dict space, or a single bare leaf (array) for a flat (non-Dict) space.
 RawObs = Mapping[str, Any] | NumpyArray
 
+# The reserved raw-obs envelope key the native core uses for a flat (non-Dict)
+# observation: the single top-level entry holding the whole observation Value.
+# Mirrors ``rlmesh_adapters::plans::OBS_ROOT_KEY``.
+_OBS_ROOT_KEY = "<obs>"
+
+# The native ``NodePath`` render for a bare-leaf input (empty placement path).
+# Mirrors ``rlmesh_adapters::path::NodePath`` ``Display`` of the root.
+_ROOT_PLACEMENT = "<root>"
+
 
 def _numpy_value_bridge() -> ValueBridge:
     from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
@@ -48,9 +57,14 @@ def _serve_custom(
 
 @dataclass(frozen=True)
 class ObsEncShim:
-    """Repack one observation payload key from its base encoding to custom."""
+    """Repack one observation payload leaf from its base encoding to custom.
 
-    model_key: str
+    Keyed by the leaf's ``placement`` path in the input tree (the canonical
+    native ``NodePath`` string, e.g. ``state``, ``robot.eef_pos``, ``[0]``, or
+    ``<root>`` for a bare-leaf input).
+    """
+
+    placement: str
     base: str
     width: int
     name: str
@@ -72,6 +86,84 @@ class ActEncShim:
     to_base: RotationTransform
 
 
+def _parse_placement(placement: str) -> tuple[str | int, ...]:
+    """Parse a canonical native ``NodePath`` string into segments.
+
+    Inverse of the resolver's ``_placement``: ``<root>`` is the empty path,
+    ``[i]`` segments are tuple indices, dot-joined tokens are dict keys
+    (``robot.eef_pos`` -> ``("robot", "eef_pos")``, ``cams[0]`` ->
+    ``("cams", 0)``).
+    """
+    if placement == _ROOT_PLACEMENT:
+        return ()
+    segments: list[str | int] = []
+    token = ""
+    index = ""
+    in_index = False
+    for char in placement:
+        if char == "[":
+            if token:
+                segments.append(token)
+                token = ""
+            in_index = True
+            index = ""
+        elif char == "]":
+            segments.append(int(index))
+            in_index = False
+        elif char == "." and not in_index:
+            if token:
+                segments.append(token)
+                token = ""
+        elif in_index:
+            index += char
+        else:
+            token += char
+    if token:
+        segments.append(token)
+    return tuple(segments)
+
+
+def _tree_get(tree: Any, segments: tuple[str | int, ...]) -> Any:
+    """Read the value at ``segments`` within a Value tree (dict/list/leaf)."""
+    node = tree
+    for segment in segments:
+        node = node[segment]
+    return node
+
+
+def _tree_contains(tree: Any, segments: tuple[str | int, ...]) -> bool:
+    node = tree
+    for segment in segments:
+        if isinstance(segment, int):
+            if not isinstance(node, (list, tuple)) or segment >= len(node):
+                return False
+        elif not isinstance(node, Mapping) or segment not in node:
+            return False
+        node = node[segment]
+    return True
+
+
+def _tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
+    """Return ``tree`` with the value at ``segments`` replaced by ``value``.
+
+    The empty path (a bare-leaf payload) replaces the whole tree. List nodes are
+    rebuilt as lists so an in-place index assignment is well defined.
+    """
+    if not segments:
+        return value
+    head, rest = segments[0], segments[1:]
+    if isinstance(head, int):
+        items = list(tree)
+        items[head] = _tree_set(items[head], rest, value)
+        return items
+    node = dict(tree)
+    # A custom leaf's placement is omitted from the native payload tree, so the
+    # key may not exist yet -- descend into an empty subtree rather than indexing
+    # a missing key.
+    node[head] = _tree_set(node.get(head, {}), rest, value)
+    return node
+
+
 class AdapterBase(ABC, Generic[ActionT]):
     """Base class for env-to-model adapters.
 
@@ -91,11 +183,13 @@ class AdapterBase(ABC, Generic[ActionT]):
     _chunk_replay: ChunkReplay | None = None
 
     @abstractmethod
-    def transform_obs(self, raw_obs: RawObs) -> dict[str, Any]:
+    def transform_obs(self, raw_obs: RawObs) -> Any:
         """Convert a raw env observation into the model input payload.
 
         ``raw_obs`` is a mapping for a Dict space, or a bare array/leaf for a
-        flat (non-Dict) space.
+        flat (non-Dict) space. The return is the model input payload *tree* (a
+        dict, a list, or a bare leaf -- whatever the model spec's input tree
+        declares).
         """
 
     @abstractmethod
@@ -199,65 +293,77 @@ class Adapter(AdapterBase[NumpyArray]):
         *,
         input_bridge: ValueBridge | None = None,
         custom_bridge: ValueBridge | None = None,
-    ) -> dict[str, Value]:
+    ) -> Value:
         """Convert a raw env observation into a canonical Value-tree payload.
 
-        Only the observation keys the plan actually reads are encoded and
-        sent across the native boundary, so an unused -- possibly
-        unencodable -- observation key never aborts a step. Custom inputs
-        still see the full raw observation. Inputs that request frame history
-        are stacked here from a rolling buffer, cleared by :meth:`reset`.
+        The result is the model input payload *tree* (a nested dict/list, or a
+        bare leaf for a single-leaf model input) -- the same shape the model's
+        ``predict`` receives. Only the observation keys the plan actually reads
+        are encoded and sent across the native boundary, so an unused -- possibly
+        unencodable -- observation key never aborts a step. Custom inputs still
+        see the full raw observation. Inputs that request frame history are
+        stacked here from a rolling buffer, cleared by :meth:`reset`.
         """
         # A flat (non-Dict) observation is a single leaf: present it under the
-        # reserved "." key the plan references for a StateLayout-tagged env.
+        # reserved root envelope key the plan references for a Split-tagged env.
         obs: Mapping[str, Any] = (
-            raw_obs if isinstance(raw_obs, Mapping) else {".": raw_obs}
+            raw_obs if isinstance(raw_obs, Mapping) else {_OBS_ROOT_KEY: raw_obs}
         )
         selected = {
             key: obs[key] for key in self._plan.referenced_obs_keys() if key in obs
         }
+        # The native plan returns the assembled payload *tree* (nested dict/list,
+        # or a bare leaf), with custom holes omitted.
         payload = cast(
-            "dict[str, Value]",
-            self._plan.transform_obs(to_value(selected, input_bridge)),
+            "Value", self._plan.transform_obs(to_value(selected, input_bridge))
         )
-        # Repack custom-encoded keys from their resolved base encoding into the
+        # Repack custom-encoded leaves from their resolved base encoding into the
         # model's convention, before stacking (so a stacked input stacks the
-        # model's representation).
+        # model's representation). Shims and stacks are keyed by placement path.
         numpy_bridge = _numpy_value_bridge()
         for shim in self._obs_enc_shims:
-            if shim.model_key in payload:
-                payload[shim.model_key] = to_value(
+            segments = _parse_placement(shim.placement)
+            if _tree_contains(payload, segments):
+                repacked = to_value(
                     self._apply_obs_enc(
-                        shim, from_value(payload[shim.model_key], numpy_bridge)
+                        shim, from_value(_tree_get(payload, segments), numpy_bridge)
                     ),
                     numpy_bridge,
                 )
-        for key, depth in self._stacks.items():
-            if key in payload:
-                payload[key] = to_value(
+                payload = _tree_set(payload, segments, repacked)
+        for placement, depth in self._stacks.items():
+            segments = _parse_placement(placement)
+            if _tree_contains(payload, segments):
+                stacked = to_value(
                     self._stack_frames(
-                        key, from_value(payload[key], numpy_bridge), depth
+                        placement,
+                        from_value(_tree_get(payload, segments), numpy_bridge),
+                        depth,
                     ),
                     numpy_bridge,
                 )
-        for key, transform in self._customs.items():
+                payload = _tree_set(payload, segments, stacked)
+        for placement, transform in self._customs.items():
             # Custom inputs see the full observation (not just the plan's
             # referenced keys), normalized to a mapping -- identical to raw_obs
-            # for a Dict env, and {".": leaf} for a flat one.
-            payload[key] = to_value(transform(obs), custom_bridge)
+            # for a Dict env, and {<obs>: leaf} for a flat one. The result lands
+            # at the custom leaf's placement path in the payload tree.
+            value = to_value(transform(obs), custom_bridge)
+            payload = _tree_set(payload, _parse_placement(placement), value)
         return payload
 
-    def transform_obs(self, raw_obs: RawObs) -> dict[str, Any]:
-        """Convert a raw env observation into the model input payload."""
+    def transform_obs(self, raw_obs: RawObs) -> Any:
+        """Convert a raw env observation into the model input payload.
+
+        Returns the payload tree (a dict for a Dict-shaped model input, a bare
+        array/scalar for a single-leaf input, a list for a Tuple-shaped input).
+        """
         bridge = _numpy_value_bridge()
-        return cast(
-            "dict[str, Any]",
-            from_value(
-                self.transform_obs_value(
-                    raw_obs, input_bridge=bridge, custom_bridge=bridge
-                ),
-                bridge,
+        return from_value(
+            self.transform_obs_value(
+                raw_obs, input_bridge=bridge, custom_bridge=bridge
             ),
+            bridge,
         )
 
     def _stack_frames(self, key: str, frame: Any, depth: int) -> NumpyArray:
@@ -283,7 +389,7 @@ class Adapter(AdapterBase[NumpyArray]):
         base = cast("NumpyArray", np.asarray(value))
         if int(base.size) != shim.width:
             raise ValueError(
-                f"custom encoding {shim.name!r} for {shim.model_key!r} expected "
+                f"custom encoding {shim.name!r} for {shim.placement!r} expected "
                 f"a width-{shim.width} {shim.base} value, got size {int(base.size)}"
             )
         out = cast("NumpyArray", np.asarray(shim.from_base(base)))
@@ -292,7 +398,7 @@ class Adapter(AdapterBase[NumpyArray]):
         # reorder elements.
         if out.ndim != 1 or int(out.size) != shim.width:
             raise ValueError(
-                f"custom encoding {shim.name!r} for {shim.model_key!r} must "
+                f"custom encoding {shim.name!r} for {shim.placement!r} must "
                 f"return a flat width-{shim.width} vector, from_base returned "
                 f"shape {out.shape}"
             )
@@ -412,18 +518,24 @@ class Adapter(AdapterBase[NumpyArray]):
             ),
         }
 
-    def _serve_obs_encodings(self, payload: dict[str, Value]) -> dict[str, Value]:
-        """Repack enc-shimmed obs payload keys (neutral in, neutral out)."""
+    def _serve_obs_encodings(self, payload: Value) -> Value:
+        """Repack enc-shimmed obs payload leaves (neutral tree in, tree out).
+
+        The served engine hands the whole assembled payload tree; scatter each
+        shim into its placement path within that tree.
+        """
         numpy_bridge = _numpy_value_bridge()
-        result = dict(payload)
+        result: Value = payload
         for shim in self._obs_enc_shims:
-            if shim.model_key in result:
-                result[shim.model_key] = to_value(
+            segments = _parse_placement(shim.placement)
+            if _tree_contains(result, segments):
+                repacked = to_value(
                     self._apply_obs_enc(
-                        shim, from_value(result[shim.model_key], numpy_bridge)
+                        shim, from_value(_tree_get(result, segments), numpy_bridge)
                     ),
                     numpy_bridge,
                 )
+                result = _tree_set(result, segments, repacked)
         return result
 
     def _serve_action_encodings(self, action: Value) -> Value:
@@ -439,7 +551,7 @@ class Adapter(AdapterBase[NumpyArray]):
             return native
         lines = [native, "host-side encodings:"]
         for shim in self._obs_enc_shims:
-            lines.append(f"  obs    {shim.model_key!r}: {shim.base} -> {shim.name}")
+            lines.append(f"  obs    {shim.placement!r}: {shim.base} -> {shim.name}")
         for shim in self._action_enc_shims:
             stop = shim.offset + shim.width
             lines.append(f"  action [{shim.offset}:{stop}]: {shim.name} -> {shim.base}")

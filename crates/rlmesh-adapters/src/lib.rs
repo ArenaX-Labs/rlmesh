@@ -10,12 +10,15 @@
 //! the conformance vectors under this crate's `conformance/` directory;
 //! every implementation and binding must pass them.
 //!
-//! Within v1 the JSON format evolves additively only (new optional fields with
-//! defaults). The wire version is the `rlmesh.adapters.v1.*` metadata key, not
-//! the source layout. A breaking spec-format change bumps that key to v2 while
-//! still dual-reading v1, independent of how the Rust modules are organized. The
-//! [`v1`] facade is only a stable import path; the implementation sits flat at
-//! the crate root.
+//! The `rlmesh.adapters.v1.*` metadata key names the wire version, not the
+//! source layout. As a pre-1.0 breaking wave, the v1 spec format has been
+//! **redefined in place**: the two specs are now recursive trees (`ObsNode`,
+//! `InputNode`) whose container type = the runtime container type, addressed by
+//! structured paths (`NodePath`) rather than dotted strings, with the assembled
+//! obs payload a `Value` tree. This redefinition sets the v1 *tree* contract;
+//! within it the format then evolves additively only (new optional fields with
+//! defaults), and a later breaking change bumps the key to v2. The [`v1`] facade
+//! is only a stable import path; the implementation sits flat at the crate root.
 
 mod apply;
 mod describe;
@@ -23,6 +26,7 @@ mod error;
 mod fmt;
 mod join;
 mod keys;
+mod path;
 mod plans;
 mod resolver;
 pub mod roles;
@@ -40,6 +44,7 @@ pub mod v1 {
     pub use crate::error::{AdapterResolutionError, ErrorCode};
     pub use crate::join::{JoinError, join};
     pub use crate::keys::{ENV_METADATA_KEY, MODEL_METADATA_KEY};
+    pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
         ActionPlan, ActionSegment, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter, StatePiece,
         StatePlan, TextPlan,
@@ -47,10 +52,10 @@ pub mod v1 {
     pub use crate::resolver::resolve;
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
-        ActionComponent, ActionLayout, CustomInput, EnvFeature, EnvFeatures, EnvImage, EnvState,
-        EnvTags, EnvText, ImageInput, ImageLayout, ImageTag, ModelInput, ModelSpec, ObsTag,
-        RotationEncoding, StateComponent, StateContainer, StateField, StateInput, StateLayout,
-        StateTag, TextContainer, TextInput, TextTag,
+        Action, Actuator, ConcatPart, Custom, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags,
+        EnvText, Field, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, ObsLeaf,
+        ObsNode, RotationEncoding, SplitLayout, State, StateContainer, StateTag, Text,
+        TextContainer, TextTag,
     };
     pub use crate::stateful::{
         ChunkBuffers, EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,

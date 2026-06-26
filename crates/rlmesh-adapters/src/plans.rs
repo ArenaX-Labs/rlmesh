@@ -9,8 +9,23 @@ mod text;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::describe;
+use super::path::{NodePath, PathSeg};
 
 pub use action::{ActionPlan, ActionSegment};
+
+/// The reserved raw-obs envelope key for a root/empty or Tuple-rooted source —
+/// the single top-level entry that holds the whole observation `Value`.
+pub(crate) const OBS_ROOT_KEY: &str = "<obs>";
+
+/// The top-level raw-obs envelope entry a `source` path lives under: the first
+/// segment's key for a Dict-rooted source, else the reserved root key (an empty
+/// or Tuple-rooted source whose whole `Value` is the single envelope entry).
+pub(crate) fn envelope_key(source: &NodePath) -> String {
+    match source.first() {
+        Some(PathSeg::Key(key)) => key.clone(),
+        _ => OBS_ROOT_KEY.to_owned(),
+    }
+}
 pub use custom::CustomPlan;
 pub use image::ImagePlan;
 pub use state::{StatePiece, StatePlan};
@@ -61,24 +76,24 @@ impl ResolvedAdapter {
         for plan in &self.obs_plans {
             match plan {
                 ObsPlan::Image(image) => {
-                    // A zero-filled image has no env source (empty env_key).
+                    // A zero-filled image has no env source.
                     if image.zero_fill.is_none() {
-                        keys.insert(image.env_key.clone());
+                        keys.insert(envelope_key(&image.source));
                     }
                 }
                 ObsPlan::State(state) => {
                     for piece in &state.pieces {
                         if !piece.zero_fill {
-                            keys.insert(piece.env_key.clone());
+                            keys.insert(envelope_key(&piece.source));
                         }
                     }
                 }
                 ObsPlan::Text(text) => {
-                    // A default-only text input has no env key (it never looks
-                    // one up); reporting "" would make a caller try to encode a
+                    // A default-only text input has `source = None` (it never
+                    // looks one up); reporting nothing avoids encoding a
                     // non-existent top-level key.
-                    if !text.env_key.is_empty() {
-                        keys.insert(text.env_key.clone());
+                    if let Some(source) = &text.source {
+                        keys.insert(envelope_key(source));
                     }
                 }
                 ObsPlan::Custom(_) => {}
@@ -87,20 +102,22 @@ impl ResolvedAdapter {
         keys
     }
 
-    /// Frame-stack depths the model wants, keyed by model input key.
+    /// Frame-stack depths the model wants, keyed by canonical placement string.
     ///
     /// Only entries with depth `> 1` (actual stacking) appear — a `stack == 1`
     /// image needs no per-episode buffer and is omitted. The episode-keyed
-    /// frame-stack engine ([`crate::v1::FrameBuffers`]) buffers exactly these keys.
-    /// This is the single source of truth for stacking depth (replacing the old
-    /// Python `stacks` dict).
+    /// frame-stack engine ([`crate::v1::FrameBuffers`]) buffers exactly these
+    /// placements. This is the single source of truth for stacking depth
+    /// (replacing the old Python `stacks` dict). The key is the placement's
+    /// [`Display`](std::fmt::Display) form so a nested/positioned stacked input
+    /// has a stable canonical name.
     pub fn stacks(&self) -> BTreeMap<String, u32> {
         let mut stacks = BTreeMap::new();
         for plan in &self.obs_plans {
             if let ObsPlan::Image(image) = plan
                 && image.stack > 1
             {
-                stacks.insert(image.model_key.clone(), image.stack);
+                stacks.insert(image.placement.to_string(), image.stack);
             }
         }
         stacks

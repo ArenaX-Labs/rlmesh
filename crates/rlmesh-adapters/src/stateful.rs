@@ -25,7 +25,7 @@ use rlmesh_spaces::{SpaceKind, SpaceSpec, SpaceValue, Tensor};
 use crate::apply::value::{cast, to_f64_vec};
 use crate::apply::{CustomTransform, Value};
 use crate::error::ApplyError;
-use crate::plans::ResolvedAdapter;
+use crate::plans::{ObsPlan, ResolvedAdapter};
 
 /// Upper bound on frame-stack depth (mirrors the spec's `MAX_STACK`). A raw
 /// native caller must not buffer an unbounded window and exhaust memory; the
@@ -40,10 +40,12 @@ const MAX_STACK: usize = 64;
 /// *inputs*: an encoding transform repacks an existing payload key (obs) or
 /// action segment in place. The implementor owns which keys/segments it touches.
 pub trait EncodingTransform {
-    /// Repack any custom-encoded observation payload keys, in place, **before**
-    /// frame-stacking (so a stacked input stacks the model's representation).
-    /// A no-op for routes with no observation encoding shims.
-    fn repack_obs(&self, payload: &mut BTreeMap<String, Value>) -> Result<(), ApplyError>;
+    /// Repack any custom-encoded observation payload entries, in place,
+    /// **before** frame-stacking (so a stacked input stacks the model's
+    /// representation). A no-op for routes with no observation encoding shims.
+    /// The payload is a [`Value`] tree (`Map`/`List`/leaf); the implementor
+    /// walks to whichever entries it owns.
+    fn repack_obs(&self, payload: &mut Value) -> Result<(), ApplyError>;
 
     /// Repack the model action's custom-encoded segments back to their base
     /// encoding, in place, **before** the native action conversion. A no-op for
@@ -56,7 +58,7 @@ pub trait EncodingTransform {
 pub struct NoEncodings;
 
 impl EncodingTransform for NoEncodings {
-    fn repack_obs(&self, _payload: &mut BTreeMap<String, Value>) -> Result<(), ApplyError> {
+    fn repack_obs(&self, _payload: &mut Value) -> Result<(), ApplyError> {
         Ok(())
     }
 
@@ -135,7 +137,7 @@ impl<V: Default> EpisodeMap<V> {
 /// `clear` on close.
 #[derive(Default)]
 pub struct FrameBuffers {
-    /// `episode_id -> model_key -> rolling window` (each window `maxlen = depth`).
+    /// `episode_id -> placement-string -> rolling window` (window `maxlen = depth`).
     inner: EpisodeMap<BTreeMap<String, VecDeque<Tensor>>>,
 }
 
@@ -313,30 +315,38 @@ pub fn assemble_obs(
     buffers: &mut FrameBuffers,
     customs: &dyn CustomTransform,
     encodings: &dyn EncodingTransform,
-) -> Result<BTreeMap<String, Value>, ApplyError> {
+) -> Result<Value, ApplyError> {
     let mut payload = adapter.transform_obs(raw_obs, customs)?;
     encodings.repack_obs(&mut payload)?;
-    let stacks = adapter.stacks();
-    if !stacks.is_empty() {
+    // Frame-stacking runs as a post-scatter pass: walk the assembled tree to each
+    // stacked placement and stack in place, keyed (in the per-episode window) by
+    // the placement's canonical string.
+    let stacked: Vec<(&crate::path::NodePath, u32)> = adapter
+        .obs_plans
+        .iter()
+        .filter_map(|plan| match plan {
+            ObsPlan::Image(image) if image.stack > 1 => Some((&image.placement, image.stack)),
+            _ => None,
+        })
+        .collect();
+    if !stacked.is_empty() {
         let windows = buffers.episode(episode_id);
-        for (model_key, depth) in &stacks {
-            let Some(value) = payload.get_mut(model_key) else {
-                continue;
-            };
-            if !matches!(value, Value::Tensor(_)) {
+        for (placement, depth) in stacked {
+            let slot = crate::apply::lookup::resolve_source_mut(&mut payload, placement)?;
+            if !matches!(slot, Value::Tensor(_)) {
                 return Err(ApplyError::new(format!(
-                    "frame-stacked input '{model_key}' must be a tensor"
+                    "frame-stacked input '{placement}' must be a tensor"
                 )));
             }
             // Move the frame out of the payload slot (overwritten with the
             // stacked result below) so it lands in the window without a per-step
             // tensor copy.
-            let Value::Tensor(frame) = std::mem::replace(value, Value::Number(0.0)) else {
+            let Value::Tensor(frame) = std::mem::replace(slot, Value::Number(0.0)) else {
                 unreachable!("frame confirmed a tensor above")
             };
-            let window = windows.entry(model_key.clone()).or_default();
-            let stacked = stack_frame(window, frame, *depth)?;
-            *value = Value::Tensor(stacked);
+            let window = windows.entry(placement.to_string()).or_default();
+            let stacked_tensor = stack_frame(window, frame, depth)?;
+            *slot = Value::Tensor(stacked_tensor);
         }
     }
     Ok(payload)
@@ -455,15 +465,6 @@ pub fn value_max_abs_diff(left: &Value, right: &Value) -> Option<f64> {
     }
 }
 
-/// The top-level observation entry a (possibly dotted) plan key lives under.
-/// The reserved `"."` denotes the flat/root observation, its own top-level key.
-fn top_level_key(key: &str) -> &str {
-    if key == "." {
-        return ".";
-    }
-    key.split('.').next().unwrap_or(key)
-}
-
 /// Convert a decoded env-observation [`SpaceValue`] leaf into the adapter
 /// [`Value`] payload model. Reproduces the binding's
 /// `decode_value(space_value_to_py_neutral(..))` composition natively (no numpy,
@@ -518,20 +519,22 @@ pub fn space_value_to_value(value: &SpaceValue, space: &SpaceSpec) -> Result<Val
 }
 
 /// Bridge a decoded env-observation [`SpaceValue`] into the adapter's raw-obs
-/// map, keeping only the top-level entries `referenced` selects (their
-/// `top_level_key`). Mirrors the binding's `decode_referenced_obs`: a `Dict`
-/// env yields the selected top-level entries; any flat (non-`Dict`) env yields
-/// the single leaf under the reserved `"."` key.
+/// envelope, keeping only the top-level entries `referenced` selects. Mirrors
+/// the binding's `decode_referenced_obs`: a `Dict` env yields the selected
+/// top-level entries (keyed by their Dict key); any flat (non-`Dict`) env yields
+/// the single whole-obs leaf under the reserved `OBS_ROOT_KEY`.
 ///
-/// The caller selects the keys: a declarative-only route passes
-/// [`ResolvedAdapter::referenced_obs_keys`]; a route with custom holes passes
-/// all top-level keys so the custom callback sees the full observation
-/// (materialized lazily, only when there are holes).
+/// `referenced` carries *envelope keys* (see `envelope_key`): a
+/// Dict-rooted source's first path segment, or `OBS_ROOT_KEY` for a root/
+/// Tuple-rooted source. The caller selects the keys: a declarative-only route
+/// passes [`ResolvedAdapter::referenced_obs_keys`]; a route with custom holes
+/// passes all top-level keys so the custom callback sees the full observation.
 pub fn space_value_to_obs_map(
     value: &SpaceValue,
     space: &SpaceSpec,
     referenced: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, Value>, ApplyError> {
+    use crate::plans::OBS_ROOT_KEY;
     let mut out: BTreeMap<String, Value> = BTreeMap::new();
     match value {
         SpaceValue::Dict(values) => {
@@ -540,9 +543,8 @@ pub fn space_value_to_obs_map(
                     "dict observation value without a dict space".to_owned(),
                 ));
             };
-            let top: BTreeSet<&str> = referenced.iter().map(|key| top_level_key(key)).collect();
             for (key, child_space) in spec.keys.iter().zip(spec.spaces.iter()) {
-                if top.contains(key.as_str())
+                if referenced.contains(key.as_str())
                     && let Some(child) = values.get(key)
                 {
                     out.insert(key.clone(), space_value_to_value(child, child_space)?);
@@ -551,8 +553,8 @@ pub fn space_value_to_obs_map(
         }
         _ => {
             // A flat (non-Dict) env is a single leaf, presented under the
-            // reserved "." key the plan references for a StateLayout-tagged env.
-            out.insert(".".to_owned(), space_value_to_value(value, space)?);
+            // reserved envelope key a root/Tuple-rooted source references.
+            out.insert(OBS_ROOT_KEY.to_owned(), space_value_to_value(value, space)?);
         }
     }
     Ok(out)
@@ -719,25 +721,27 @@ mod tests {
     }
 
     #[test]
-    fn bridge_flat_box_keys_under_dot() {
+    fn bridge_flat_box_keys_under_root_envelope() {
+        use crate::plans::OBS_ROOT_KEY;
         let tensor = Tensor::from_vec(vec![1, 2, 3, 4], vec![4], DType::Uint8).expect("tensor");
         let value = SpaceValue::Box(tensor.clone());
         let space = flat(vec![4], DType::Uint8);
-        let referenced: BTreeSet<String> = [".".to_owned()].into_iter().collect();
+        let referenced: BTreeSet<String> = [OBS_ROOT_KEY.to_owned()].into_iter().collect();
 
         let map = space_value_to_obs_map(&value, &space, &referenced).expect("bridge");
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get("."), Some(&Value::Tensor(tensor)));
+        assert_eq!(map.get(OBS_ROOT_KEY), Some(&Value::Tensor(tensor)));
     }
 
     #[test]
     fn bridge_discrete_becomes_number() {
+        use crate::plans::OBS_ROOT_KEY;
         let value = SpaceValue::Discrete(7);
         let space = flat(vec![], DType::Int64);
-        let referenced: BTreeSet<String> = [".".to_owned()].into_iter().collect();
+        let referenced: BTreeSet<String> = [OBS_ROOT_KEY.to_owned()].into_iter().collect();
 
         let map = space_value_to_obs_map(&value, &space, &referenced).expect("bridge");
-        assert_eq!(map.get("."), Some(&Value::Number(7.0)));
+        assert_eq!(map.get(OBS_ROOT_KEY), Some(&Value::Number(7.0)));
     }
 
     #[test]
@@ -810,8 +814,8 @@ mod tests {
         // exactly the input frames.
         let adapter = ResolvedAdapter {
             obs_plans: vec![ObsPlan::Image(ImagePlan {
-                model_key: "cam".to_owned(),
-                env_key: "cam".to_owned(),
+                placement: crate::path::NodePath::root().push_key("cam"),
+                source: crate::path::NodePath::root().push_key("cam"),
                 src_layout: ImageLayout::Hwc,
                 dst_layout: ImageLayout::Hwc,
                 flip: false,
@@ -840,8 +844,11 @@ mod tests {
                 .into_iter()
                 .collect()
         };
-        let cam_bytes = |payload: &BTreeMap<String, Value>| -> Vec<u8> {
-            match payload.get("cam").unwrap() {
+        let cam_bytes = |payload: &Value| -> Vec<u8> {
+            let Value::Map(map) = payload else {
+                panic!("payload not a map: {payload:?}");
+            };
+            match map.get("cam").unwrap() {
                 Value::Tensor(tensor) => {
                     assert_eq!(tensor.shape(), &[2, 1, 1, 3]); // (depth, *frame)
                     tensor.to_contiguous_bytes().into_owned()

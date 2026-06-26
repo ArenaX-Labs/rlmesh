@@ -95,9 +95,27 @@ def assert_value(actual: Any, expected: dict[str, Any], atol: float) -> None:
     if expected["kind"] == "text":
         assert actual == expected["data"]
         return
+    if expected["kind"] == "map":
+        # transform_obs now returns the assembled payload TREE; a `map` value is
+        # a Dict payload (or nested Dict) — recurse per key.
+        assert isinstance(actual, dict), f"expected a dict payload, got {type(actual)}"
+        assert sorted(actual) == sorted(expected["data"]), (
+            f"payload keys {sorted(actual)} != expected {sorted(expected['data'])}"
+        )
+        for key, sub in expected["data"].items():
+            assert_value(actual[key], sub, atol)
+        return
     if expected["kind"] == "list":
         assert isinstance(actual, list)
-        np.testing.assert_allclose(actual, expected["data"], atol=atol)
+        data = expected["data"]
+        if data and isinstance(data[0], dict) and "kind" in data[0]:
+            # A positional Tuple payload: each element is an encoded sub-value.
+            assert len(actual) == len(data)
+            for sub_actual, sub_expected in zip(actual, data, strict=True):
+                assert_value(sub_actual, sub_expected, atol)
+        else:
+            # A numeric `container="list"` state value.
+            np.testing.assert_allclose(actual, data, atol=atol)
         return
     assert expected["kind"] == "array"
     arr = np.asarray(actual)
@@ -149,10 +167,10 @@ def test_vector(path: Path) -> None:
     assert case["kind"] == "apply"
     adapter = resolve_case(case)
     atol = case["expect"]["atol"]
+    # transform_obs now returns the assembled payload TREE (a nested dict / list /
+    # bare leaf); the vector's expect.payload is the encoded Value tree, so compare
+    # them structurally (assert_value recurses on map / tuple-list).
     payload = adapter.transform_obs(dec(case["observation"]))
-    expected_payload = case["expect"]["payload"]
-    assert sorted(payload) == sorted(expected_payload)
-    for key, expected in expected_payload.items():
-        assert_value(payload[key], expected, atol)
+    assert_value(payload, case["expect"]["payload"], atol)
     action = adapter.transform_action(dec(case["model_output"]))
     assert_value(action, case["expect"]["action"], atol)

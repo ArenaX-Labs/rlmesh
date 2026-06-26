@@ -67,7 +67,13 @@
   },
   "kind": "resolve",
   "model_spec": {
-    "action": {
+    "input": {
+      "container": "str",
+      "default": null,
+      "role": "text/instruction",
+      "type": "text"
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -78,16 +84,7 @@
           "role": "action/delta_eef_pos"
         }
       ]
-    },
-    "inputs": [
-      {
-        "container": "str",
-        "default": null,
-        "key": "instruction",
-        "role": "text/instruction",
-        "type": "text"
-      }
-    ]
+    }
   },
   "observation_space": {
     "children": [

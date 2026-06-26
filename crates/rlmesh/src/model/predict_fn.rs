@@ -7,8 +7,6 @@
 //! cross via these traits, which a binding (PyO3, or any future language)
 //! implements; a pure-Rust model implements them with no host runtime at all.
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{CustomTransform, EncodingTransform, ResolvedAdapter, Value};
 
@@ -29,7 +27,9 @@ use crate::{Result, model::types::ModelObservation};
 pub trait PredictFn: Send + Sync {
     /// Spec'd route: one lane's assembled model input → one raw action. The
     /// engine has already frame-stacked / customs'd / enc-shimmed the input.
-    fn predict(&self, model_input: BTreeMap<String, Value>) -> Result<Value>;
+    /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
+    /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
+    fn predict(&self, model_input: Value) -> Result<Value>;
 
     /// Spec-less route (no adapter): the whole observation goes straight to the
     /// model, batched, returning one action per lane. Preserves the pre-engine

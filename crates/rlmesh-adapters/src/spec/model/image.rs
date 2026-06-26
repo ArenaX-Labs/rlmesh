@@ -29,9 +29,10 @@ where
 }
 
 /// An image input expected by a model.
+///
+/// There is no `key` — placement is the tree position this leaf sits at.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ImageInput {
-    pub key: String,
+pub struct Image {
     pub role: String,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
     pub height: Option<u32>,
@@ -95,9 +96,9 @@ pub struct ImageInput {
     /// Zero-fill a black frame when the env does not provide this camera, instead
     /// of failing resolution. Needs `height`, `width`, and `channels` so the
     /// blank can be sized without an env image. Additive over the pinned wire
-    /// format (omitted when false). Mirrors a [`StateComponent`]'s `optional`.
+    /// format (omitted when false). Mirrors a [`ConcatPart`]'s `optional`.
     ///
-    /// [`StateComponent`]: crate::spec::StateComponent
+    /// [`ConcatPart`]: crate::spec::ConcatPart
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
     /// Raw 8-bit fill level for an absent `optional` camera: `0` = black (the
@@ -122,17 +123,17 @@ pub struct ImageInput {
 
 #[cfg(test)]
 mod tests {
-    use crate::spec::{ImageLayout, ModelInput};
+    use crate::spec::{ImageLayout, ModelLeaf};
 
-    fn image(extra: &str) -> ModelInput {
-        let json = format!(r#"{{"type": "image", "key": "cam", "role": "image/primary"{extra}}}"#);
+    fn image(extra: &str) -> ModelLeaf {
+        let json = format!(r#"{{"type": "image", "role": "image/primary"{extra}}}"#);
         serde_json::from_str(&json).expect("parse")
     }
 
     #[test]
     fn stack_defaults_to_one_and_is_omitted_from_wire() {
         let input = image("");
-        let ModelInput::Image(img) = &input else {
+        let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
         assert_eq!(img.stack, 1);
@@ -143,7 +144,7 @@ mod tests {
     #[test]
     fn stack_roundtrips_when_set() {
         let input = image(r#", "stack": 4"#);
-        let ModelInput::Image(img) = &input else {
+        let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
         assert_eq!(img.stack, 4);
@@ -157,14 +158,14 @@ mod tests {
     #[test]
     fn stack_bound_enforced() {
         assert!(
-            serde_json::from_str::<ModelInput>(
-                r#"{"type": "image", "key": "cam", "role": "image/primary", "stack": 0}"#
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "stack": 0}"#
             )
             .is_err()
         );
         assert!(
-            serde_json::from_str::<ModelInput>(
-                r#"{"type": "image", "key": "cam", "role": "image/primary", "stack": 1000}"#
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "stack": 1000}"#
             )
             .is_err()
         );
@@ -173,7 +174,7 @@ mod tests {
     #[test]
     fn absent_fill_defaults_to_none_and_is_omitted_from_wire() {
         let input = image("");
-        let ModelInput::Image(img) = &input else {
+        let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
         assert_eq!(img.absent_fill, None);
@@ -187,7 +188,7 @@ mod tests {
     #[test]
     fn absent_fill_roundtrips_when_set() {
         let input = image(r#", "absent_fill": 128"#);
-        let ModelInput::Image(img) = &input else {
+        let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
         assert_eq!(img.absent_fill, Some(128));
@@ -202,8 +203,8 @@ mod tests {
     fn absent_fill_rejects_out_of_range() {
         // A `u8` gives free 0..=255 validation at the codec door.
         assert!(
-            serde_json::from_str::<ModelInput>(
-                r#"{"type": "image", "key": "cam", "role": "image/primary", "absent_fill": 300}"#
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "absent_fill": 300}"#
             )
             .is_err()
         );
@@ -214,20 +215,20 @@ mod tests {
         // A reversed range silently inverts pixel polarity at serve time; the
         // shared range deserializer rejects min > max at the wire boundary.
         assert!(
-            serde_json::from_str::<ModelInput>(
-                r#"{"type": "image", "key": "cam", "role": "image/primary", "normalize_range": [1.0, 0.0]}"#
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "normalize_range": [1.0, 0.0]}"#
             )
             .is_err()
         );
         // A normal (and a degenerate equal) range still parse.
         let signed = image(r#", "normalize_range": [-1.0, 1.0]"#);
-        let ModelInput::Image(img) = &signed else {
+        let ModelLeaf::Image(img) = &signed else {
             panic!("expected image")
         };
         assert_eq!(img.normalize_range, Some((-1.0, 1.0)));
         assert!(
-            serde_json::from_str::<ModelInput>(
-                r#"{"type": "image", "key": "cam", "role": "image/primary", "normalize_range": [0.5, 0.5]}"#
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "normalize_range": [0.5, 0.5]}"#
             )
             .is_ok()
         );
@@ -235,15 +236,11 @@ mod tests {
 
     #[test]
     fn tagged_payload_does_not_reject_unknown_field_yet() {
-        // A typo'd field on a ModelInput variant is still silently dropped: the
+        // A typo'd field on a ModelLeaf variant is still silently dropped: the
         // variant structs do not (yet) carry deny_unknown_fields, unlike the
-        // model-side plain structs (ActionComponent, StateComponent) that do.
-        // The serde limitation that once blocked deny on an internally-tagged
-        // variant is gone in 1.0.228 -- the env-side ObsTag tags now use it
-        // (see env_tags::tag_deny_unknown_tests) -- so migrating these variants
-        // is now possible too; this documents the remaining gap until then.
+        // model-side plain structs (Actuator, ConcatPart) that do.
         let input = image(r#", "layuot": "chw""#);
-        let ModelInput::Image(img) = &input else {
+        let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
         assert_eq!(img.layout, ImageLayout::Hwc); // typo'd "layuot" ignored

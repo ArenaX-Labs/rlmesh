@@ -73,19 +73,22 @@
     },
     "atol": 1e-6,
     "payload": {
-      "instruction": {
-        "data": "stack the cups",
-        "kind": "text"
+      "data": {
+        "instruction": {
+          "data": "stack the cups",
+          "kind": "text"
+        },
+        "state": {
+          "data": [
+            0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 1.0, 0.0, 0.0, 0.0,
+            1.0, 0.03999999910593033, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+          ],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [16]
+        }
       },
-      "state": {
-        "data": [
-          0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 1.0, 0.0, 0.0, 0.0,
-          1.0, 0.03999999910593033, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-        ],
-        "dtype": "float32",
-        "kind": "array",
-        "shape": [16]
-      }
+      "kind": "map"
     }
   },
   "kind": "apply",
@@ -99,7 +102,39 @@
     "shape": [10]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "instruction": {
+        "container": "str",
+        "default": "do the task",
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "encoding": "rot6d",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 3,
+            "optional": true,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "dtype": "float32",
+        "pad_to": 16,
+        "type": "state"
+      }
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -124,58 +159,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_pos"
-          },
-          {
-            "dim": null,
-            "encoding": "rot6d",
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_rot"
-          },
-          {
-            "dim": 1,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/gripper"
-          },
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": true,
-            "range": null,
-            "role": "proprio/eef_pos_2"
-          }
-        ],
-        "container": "array",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": 16,
-        "reshape": null,
-        "type": "state"
-      },
-      {
-        "container": "str",
-        "default": "do the task",
-        "key": "instruction",
-        "role": "text/instruction",
-        "type": "text"
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

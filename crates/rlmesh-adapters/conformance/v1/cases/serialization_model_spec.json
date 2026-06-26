@@ -1,6 +1,38 @@
 {
   "doc": {
-    "action": {
+    "input": {
+      "instruction": {
+        "container": "str",
+        "default": "do the task",
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          {
+            "dim": 3,
+            "role": "proprio/eef_pos"
+          },
+          {
+            "encoding": "rot6d",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          },
+          {
+            "dim": 3,
+            "optional": true,
+            "role": "proprio/eef_pos_2"
+          }
+        ],
+        "dtype": "float32",
+        "pad_to": 16,
+        "type": "state"
+      }
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -25,58 +57,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_pos"
-          },
-          {
-            "dim": null,
-            "encoding": "rot6d",
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_rot"
-          },
-          {
-            "dim": 1,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/gripper"
-          },
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": true,
-            "range": null,
-            "role": "proprio/eef_pos_2"
-          }
-        ],
-        "container": "array",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": 16,
-        "reshape": null,
-        "type": "state"
-      },
-      {
-        "container": "str",
-        "default": "do the task",
-        "key": "instruction",
-        "role": "text/instruction",
-        "type": "text"
-      }
-    ]
+    }
   },
   "kind": "serialization",
   "side": "model"

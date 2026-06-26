@@ -6,10 +6,10 @@ use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_encoding, quoted_keys};
 use crate::plans::{ActionPlan, ActionSegment};
-use crate::spec::{ActionComponent, ActionLayout};
+use crate::spec::{Action, Actuator};
 
 /// Validate that a model/env action component pairing is convertible.
-fn check_action_dims(model: &ActionComponent, env: &ActionComponent) -> Result<()> {
+fn check_action_dims(model: &Actuator, env: &Actuator) -> Result<()> {
     let converting = match (model.encoding, env.encoding) {
         (Some(model_encoding), Some(env_encoding)) => model_encoding != env_encoding,
         _ => false,
@@ -58,7 +58,7 @@ fn check_action_dims(model: &ActionComponent, env: &ActionComponent) -> Result<(
     Ok(())
 }
 
-pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<ActionPlan> {
+pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
     // `execute_horizon` is a model-side cadence knob (the policy chunks its own
     // output); an env action declaration must never carry it. Nothing structural
     // stops a stray env tag from setting it, so reject loudly rather than letting
@@ -84,7 +84,7 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
                 .to_owned(),
         ));
     }
-    let mut offsets: BTreeMap<String, (u32, &ActionComponent)> = BTreeMap::new();
+    let mut offsets: BTreeMap<String, (u32, &Actuator)> = BTreeMap::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
         if offsets.contains_key(&component.role) {
@@ -197,10 +197,10 @@ pub(super) fn plan_action(model: &ActionLayout, env: &ActionLayout) -> Result<Ac
 mod tests {
     use super::plan_action;
     use crate::error::ErrorCode;
-    use crate::spec::{ActionComponent, ActionLayout};
+    use crate::spec::{Action, Actuator};
 
-    fn component(role: &str) -> ActionComponent {
-        ActionComponent {
+    fn component(role: &str) -> Actuator {
+        Actuator {
             role: role.to_owned(),
             dim: 1,
             encoding: None,
@@ -212,8 +212,8 @@ mod tests {
         }
     }
 
-    fn layout(components: Vec<ActionComponent>) -> ActionLayout {
-        ActionLayout {
+    fn layout(components: Vec<Actuator>) -> Action {
+        Action {
             components,
             clip: None,
             execute_horizon: 1,

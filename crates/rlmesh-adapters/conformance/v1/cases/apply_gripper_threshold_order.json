@@ -56,25 +56,28 @@
     },
     "atol": 1e-6,
     "payload": {
-      "image": {
-        "data": [
-          99, 106, 113, 123, 130, 137, 85, 92, 99, 109, 116, 123, 90, 97, 104, 120, 127, 134, 114,
-          121, 128, 144, 151, 158, 125, 132, 139, 149, 156, 163, 111, 118, 125, 135, 142, 149
-        ],
-        "dtype": "uint8",
-        "kind": "array",
-        "shape": [3, 4, 3]
+      "data": {
+        "image": {
+          "data": [
+            99, 106, 113, 123, 130, 137, 85, 92, 99, 109, 116, 123, 90, 97, 104, 120, 127, 134, 114,
+            121, 128, 144, 151, 158, 125, 132, 139, 149, 156, 163, 111, 118, 125, 135, 142, 149
+          ],
+          "dtype": "uint8",
+          "kind": "array",
+          "shape": [3, 4, 3]
+        },
+        "instruction": {
+          "data": "threshold ordering",
+          "kind": "text"
+        },
+        "state": {
+          "data": [0.25, -0.5, 1.5],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [3]
+        }
       },
-      "instruction": {
-        "data": "threshold ordering",
-        "kind": "text"
-      },
-      "state": {
-        "data": [0.25, -0.5, 1.5],
-        "dtype": "float32",
-        "kind": "array",
-        "shape": [3]
-      }
+      "kind": "map"
     }
   },
   "kind": "apply",
@@ -85,7 +88,23 @@
     "shape": [2]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "image": {
+        "height": 3,
+        "role": "image/primary",
+        "type": "image",
+        "width": 4
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": ["proprio/eef_pos"],
+        "type": "state"
+      }
+    },
+    "output": {
       "components": [
         {
           "dim": 1,
@@ -96,30 +115,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "height": 3,
-        "key": "image",
-        "role": "image/primary",
-        "type": "image",
-        "width": 4
-      },
-      {
-        "components": [
-          {
-            "role": "proprio/eef_pos"
-          }
-        ],
-        "key": "state",
-        "type": "state"
-      },
-      {
-        "key": "instruction",
-        "role": "text/instruction",
-        "type": "text"
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

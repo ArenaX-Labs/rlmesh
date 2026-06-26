@@ -3,11 +3,13 @@
 use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::quoted;
+use crate::path::NodePath;
 use crate::plans::CustomPlan;
-use crate::spec::CustomInput;
+use crate::spec::Custom;
 
 pub(super) fn plan_custom(
-    model_input: &CustomInput,
+    model_input: &Custom,
+    placement: NodePath,
     trust_entrypoints: bool,
 ) -> Result<CustomPlan> {
     if !trust_entrypoints {
@@ -16,13 +18,13 @@ pub(super) fn plan_custom(
             format!(
                 "custom input {} references entrypoint {}; pass \
              resolve(..., trust_entrypoints=True) to allow importing it",
-                quoted(&model_input.key),
+                quoted(&placement.to_string()),
                 quoted(&model_input.transform)
             ),
         ));
     }
     Ok(CustomPlan {
-        model_key: model_input.key.clone(),
+        placement,
         transform: model_input.transform.clone(),
     })
 }

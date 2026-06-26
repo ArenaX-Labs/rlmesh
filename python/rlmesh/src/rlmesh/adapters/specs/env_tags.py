@@ -8,9 +8,12 @@ action spaces at resolve time by the native ``join`` step. This is the
 asymmetry with the model side: models fully specify their payload
 (:class:`~rlmesh.adapters.ModelSpec`), environments only tag.
 
-The observation tags are keyed by their observation path (dotted
-paths traverse nested ``Dict`` spaces), so a tag carries no key of
-its own: the mapping key *is* the path.
+``observation`` is a recursive tree whose container type *is* the runtime
+container type: a Python ``dict`` maps a ``Dict`` space, a Python ``tuple``
+maps a ``Tuple`` space, and a bare leaf (an :class:`ImageTag`, :class:`StateTag`,
+:class:`TextTag`, or :class:`Split`) tags a single space leaf. There are no
+dotted keys and no magic root sentinel: nesting is real Python ``dict``
+nesting, and a single-leaf observation is a bare leaf.
 """
 
 from __future__ import annotations
@@ -22,8 +25,8 @@ from typing import Any, TypeAlias, cast
 
 from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
 from ._codec import normalize_spec, one_or_many, to_pair
-from .action import ActionLayout
-from .action_serialization import action_layout_from_dict, action_layout_to_dict
+from .action import Action
+from .action_serialization import action_from_dict, action_to_dict
 from .vocabularies import ImageLayout, RotationEncoding
 
 
@@ -78,19 +81,18 @@ class TextTag:
 
 
 @dataclass(frozen=True)
-class StateField:
+class Field:
     """One contiguous field of a flat numeric observation leaf.
 
-    The observation-side mirror of
-    :class:`~rlmesh.adapters.ActionComponent`: a slice of ``dim`` elements
-    carrying a ``role``, with offsets implied by order within a
-    :class:`StateLayout`. A field with no ``role`` is a *skip* -- it advances
-    the offset but produces no feature, used to step over elements the model
-    never consumes.
+    The observation-side mirror of :class:`~rlmesh.adapters.Actuator`: a slice
+    of ``dim`` elements carrying a ``role``, with offsets implied by order within
+    a :class:`Split`. A field with no ``role`` is a *skip* -- it advances the
+    offset but produces no feature, used to step over elements the model never
+    consumes.
 
     Attributes:
-        role: Semantic role matched against model state components, or None
-            to skip this slice.
+        role: Semantic role matched against model state parts, or None to skip
+            this slice.
         dim: Number of elements this field occupies.
         encoding: Rotation encoding when the field is a rotation. A single
             encoding, or a sequence of them (native first) for negotiation.
@@ -106,52 +108,57 @@ class StateField:
     range: tuple[float, float] | None = None
     # The `dim = 0` default only satisfies dataclass field ordering (the optional
     # `role` precedes it); 0 is never a valid width, so it is rejected at
-    # construction below (matching the Rust StateField codec's `dim >= 1` guard).
+    # construction below (matching the Rust Field codec's `dim >= 1` guard).
     # The role-less-skip rule (a skip carries no encoding/range) stays Rust-side.
 
     def __post_init__(self) -> None:
         if self.dim < 1:
-            raise ValueError(
-                f"StateField {self.role!r}: dim must be >= 1, got {self.dim}"
-            )
+            raise ValueError(f"Field {self.role!r}: dim must be >= 1, got {self.dim}")
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
 
 
 @dataclass(frozen=True, init=False)
-class StateLayout:
+class Split:
     """An ordered split of one flat numeric observation leaf into role fields.
 
-    The observation-side mirror of :class:`~rlmesh.adapters.ActionLayout`:
-    fields are laid out in order, offsets accumulate, and the native ``join``
-    requires the field widths to sum to the leaf width. Use it when an env
-    returns a flat ``Box`` whose fixed index ranges carry distinct semantics
-    (e.g. Metaworld)::
+    A *leaf*, not a container: one tensor split into role fields, the
+    observation-side mirror of :class:`~rlmesh.adapters.Action`. Fields are laid
+    out in order, offsets accumulate, and the native ``join`` requires the field
+    widths to sum to the leaf width. Use it when an env returns a flat ``Box``
+    whose fixed index ranges carry distinct semantics (e.g. Metaworld)::
 
-        StateLayout(StateField(EEF_POS, 3), StateField(GRIPPER, 1))
+        Split(Field(EEF_POS, 3), Field(GRIPPER, 1))
 
     Attributes:
         fields: State fields in vector order.
     """
 
-    fields: tuple[StateField, ...]
+    fields: tuple[Field, ...]
 
-    def __init__(self, *fields: StateField) -> None:
+    def __init__(self, *fields: Field) -> None:
         if not fields:
-            raise ValueError("StateLayout needs at least one StateField")
+            raise ValueError("Split needs at least one Field")
         roles = [field.role for field in fields if field.role is not None]
         if len(roles) != len(set(roles)):
-            raise ValueError("StateLayout declares a role more than once")
+            raise ValueError("Split declares a role more than once")
         object.__setattr__(self, "fields", tuple(fields))
 
 
-ObsTag: TypeAlias = ImageTag | StateTag | StateLayout | TextTag
+# An observation leaf: tags a single space leaf.
+ObsLeaf: TypeAlias = ImageTag | StateTag | TextTag | Split
 
-# A bare tag/layout means "the observation is one leaf"; a mapping tags each
-# key of a Dict observation. The bare form mirrors ``action`` being one layout.
-ObsTags: TypeAlias = Mapping[str, ObsTag] | ObsTag
+# A recursive observation tree: a leaf, a Dict (mapping of str to subtree), or a
+# Tuple (positional sequence of subtrees). The container type *is* the runtime
+# container type. ``Mapping``/``Sequence`` here are the authored forms; a bare
+# leaf is the single-leaf case.
+ObsNode: TypeAlias = "ObsLeaf | Mapping[str, ObsNode] | tuple[ObsNode, ...]"
+
+# Backwards-readable alias name retained for the env observation tree.
+ObsTag: TypeAlias = ObsLeaf
+ObsTags: TypeAlias = ObsNode
 
 
-def _state_field_to_dict(field: StateField) -> dict[str, Any]:
+def _field_to_dict(field: Field) -> dict[str, Any]:
     return {
         "role": field.role,
         "dim": field.dim,
@@ -160,9 +167,9 @@ def _state_field_to_dict(field: StateField) -> dict[str, Any]:
     }
 
 
-def _state_field_from_dict(item: Mapping[str, Any]) -> StateField:
+def _field_from_dict(item: Mapping[str, Any]) -> Field:
     # Canonical (Rust-validated) data: `dim` is present and >= 1.
-    return StateField(
+    return Field(
         role=item.get("role"),
         dim=int(item["dim"]),
         encoding=one_or_many(item.get("encoding")),
@@ -170,8 +177,8 @@ def _state_field_from_dict(item: Mapping[str, Any]) -> StateField:
     )
 
 
-def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
-    """Return the JSON-compatible dict form of an observation tag."""
+def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
+    """Return the JSON-compatible dict form of an observation leaf."""
     if isinstance(tag, ImageTag):
         return {
             "type": "image",
@@ -186,16 +193,40 @@ def obs_tag_to_dict(tag: ObsTag) -> dict[str, Any]:
             "encoding": tag.encoding,
             "range": list(tag.range) if tag.range else None,
         }
-    if isinstance(tag, StateLayout):
+    if isinstance(tag, Split):
         return {
-            "type": "layout",
-            "fields": [_state_field_to_dict(field) for field in tag.fields],
+            "type": "split",
+            "fields": [_field_to_dict(field) for field in tag.fields],
         }
     return {"type": "text", "role": tag.role}
 
 
-def obs_tag_from_dict(item: Mapping[str, Any]) -> ObsTag:
-    """Build an observation tag from canonical (Rust-validated) dict form."""
+def obs_node_to_dict(node: ObsNode) -> Any:
+    """Return the structural wire form of an observation tree node.
+
+    A leaf becomes a dict carrying ``"type"``; a Python ``dict`` (a Dict node)
+    becomes a plain object of recursively-encoded subnodes; a Python ``tuple``
+    (a Tuple node) becomes a JSON array of recursively-encoded subnodes.
+    """
+    if isinstance(node, (ImageTag, StateTag, TextTag, Split)):
+        return _leaf_to_dict(node)
+    if isinstance(node, Mapping):
+        return {key: obs_node_to_dict(child) for key, child in node.items()}
+    if isinstance(node, tuple):
+        return [obs_node_to_dict(child) for child in node]
+    raise TypeError(
+        f"observation node must be a leaf (ImageTag/StateTag/TextTag/Split), a "
+        f"dict, or a tuple, got {type(node).__name__}"
+    )
+
+
+# The leaf-vocabulary `type` discriminants that mark a JSON object as a leaf
+# rather than a Dict node (mirrors the Rust ``OBS_LEAF_TYPES``).
+_OBS_LEAF_TYPES = frozenset({"image", "state", "text", "split"})
+
+
+def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
+    """Build an observation leaf from canonical (Rust-validated) dict form."""
     kind = item["type"]
     if kind == "image":
         return ImageTag(
@@ -209,39 +240,47 @@ def obs_tag_from_dict(item: Mapping[str, Any]) -> ObsTag:
             encoding=one_or_many(item.get("encoding")),
             range=to_pair(item.get("range")),
         )
-    if kind == "layout":
-        return StateLayout(*(_state_field_from_dict(field) for field in item["fields"]))
+    if kind == "split":
+        return Split(*(_field_from_dict(field) for field in item["fields"]))
     if kind == "text":
         return TextTag(role=item["role"])
-    raise ValueError(f"unknown observation tag type {kind!r}")
+    raise ValueError(f"unknown observation leaf type {kind!r}")
 
 
-@dataclass(frozen=True, init=False)
+def obs_node_from_dict(node: object) -> ObsNode:
+    """Build an observation tree node from canonical (Rust-validated) form.
+
+    Discrimination is structural: a list is a Tuple node, an object whose
+    ``"type"`` is a leaf discriminant is a leaf, and any other object is a Dict
+    node (the container type *is* the runtime container type).
+    """
+    if isinstance(node, list):
+        return tuple(obs_node_from_dict(child) for child in node)
+    if isinstance(node, Mapping):
+        kind = node.get("type")
+        if isinstance(kind, str) and kind in _OBS_LEAF_TYPES:
+            return _leaf_from_dict(cast(Mapping[str, Any], node))
+        return {key: obs_node_from_dict(child) for key, child in node.items()}
+    raise TypeError(f"observation node must be an object or array, got {node!r}")
+
+
+@dataclass(frozen=True)
 class EnvTags:
     """Declarative tags of an environment's observation and action.
 
-    ``observation`` is either a mapping from observation path to its tag
-    (dotted paths traverse nested ``Dict`` spaces), or -- when the observation
-    is a single leaf -- a bare tag/layout, mirroring ``action`` being one
-    layout. A bare tag is normalized to ``{".": tag}``, where ``"."`` is the
-    reserved path for the flat/root observation, so the stored ``observation``
-    is always a mapping.
+    ``observation`` is a recursive tree whose container type *is* the runtime
+    container type: a bare leaf (the observation is one space leaf), a
+    ``dict[str, subtree]`` (a ``Dict`` space), or a ``tuple`` of subtrees (a
+    ``Tuple`` space). A leaf is an :class:`ImageTag`, :class:`StateTag`,
+    :class:`TextTag`, or :class:`Split`.
 
     Attributes:
-        observation: Observation tags keyed by observation path (always a
-            mapping after construction; a bare tag is normalized to ``"."``).
+        observation: The observation tag tree.
         action: Layout of the action vector accepted by ``step``.
     """
 
-    observation: Mapping[str, ObsTag]
-    action: ActionLayout
-
-    def __init__(self, observation: ObsTags, action: ActionLayout) -> None:
-        normalized: Mapping[str, ObsTag] = (
-            observation if isinstance(observation, Mapping) else {".": observation}
-        )
-        object.__setattr__(self, "observation", normalized)
-        object.__setattr__(self, "action", action)
+    observation: ObsNode
+    action: Action
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of these tags.
@@ -251,10 +290,8 @@ class EnvTags:
         Rust-canonical form), so Python cannot emit a spec Rust would reject.
         """
         raw = {
-            "observation": {
-                key: obs_tag_to_dict(tag) for key, tag in self.observation.items()
-            },
-            "action": action_layout_to_dict(self.action),
+            "observation": obs_node_to_dict(self.observation),
+            "action": action_to_dict(self.action),
         }
         return normalize_spec("env", raw, allow_custom=True)
 
@@ -281,13 +318,9 @@ class EnvTags:
         Python shape readers below operate on already-valid data.
         """
         canonical = normalize_spec("env", data, allow_custom=True)
-        observation = {
-            key: obs_tag_from_dict(value)
-            for key, value in canonical["observation"].items()
-        }
         return cls(
-            observation=observation,
-            action=action_layout_from_dict(canonical["action"]),
+            observation=obs_node_from_dict(canonical["observation"]),
+            action=action_from_dict(canonical["action"]),
         )
 
     @classmethod
@@ -315,11 +348,13 @@ class EnvTags:
 
 __all__ = [
     "EnvTags",
+    "Field",
     "ImageTag",
+    "ObsLeaf",
+    "ObsNode",
     "ObsTag",
     "ObsTags",
-    "StateField",
-    "StateLayout",
+    "Split",
     "StateTag",
     "TextTag",
 ]

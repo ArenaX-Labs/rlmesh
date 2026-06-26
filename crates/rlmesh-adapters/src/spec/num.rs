@@ -341,12 +341,11 @@ pub(crate) fn de_opt_dims<'de, D: Deserializer<'de>>(
 
 #[cfg(test)]
 mod tests {
-    use crate::spec::ActionComponent;
+    use crate::spec::Actuator;
 
     #[test]
     fn negative_count_reads_in_domain_language() {
-        let err =
-            serde_json::from_str::<ActionComponent>(r#"{"role": "g", "dim": -1}"#).unwrap_err();
+        let err = serde_json::from_str::<Actuator>(r#"{"role": "g", "dim": -1}"#).unwrap_err();
         let message = err.to_string();
         assert!(
             message.contains("must be a non-negative integer, got -1"),
@@ -357,8 +356,7 @@ mod tests {
 
     #[test]
     fn wrong_type_reads_in_domain_language() {
-        let err =
-            serde_json::from_str::<ActionComponent>(r#"{"role": "g", "dim": "x"}"#).unwrap_err();
+        let err = serde_json::from_str::<Actuator>(r#"{"role": "g", "dim": "x"}"#).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("non-negative integer"), "got: {message}");
         assert!(!message.contains("u32"), "leaks the wire type: {message}");
@@ -368,8 +366,7 @@ mod tests {
     fn float_count_reads_in_domain_language() {
         // An integer-valued float literal is still rejected, but in domain
         // language — not serde's leaked "floating point" wire phrasing.
-        let err =
-            serde_json::from_str::<ActionComponent>(r#"{"role": "g", "dim": 3.0}"#).unwrap_err();
+        let err = serde_json::from_str::<Actuator>(r#"{"role": "g", "dim": 3.0}"#).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("non-negative integer"), "got: {message}");
         assert!(
@@ -383,11 +380,11 @@ mod tests {
         // The shared wire ceiling stops an untrusted spec from declaring a
         // dimension large enough to OOM/overflow the apply path.
         let json = format!(r#"{{"role": "g", "dim": {}}}"#, super::MAX_DIM as u64 + 1);
-        let err = serde_json::from_str::<ActionComponent>(&json).unwrap_err();
+        let err = serde_json::from_str::<Actuator>(&json).unwrap_err();
         assert!(err.to_string().contains("no larger than"), "got: {err}");
         // The bound itself is accepted.
         let json = format!(r#"{{"role": "g", "dim": {}}}"#, super::MAX_DIM);
-        let ok: ActionComponent = serde_json::from_str(&json).unwrap();
+        let ok: Actuator = serde_json::from_str(&json).unwrap();
         assert_eq!(ok.dim, super::MAX_DIM);
     }
 }

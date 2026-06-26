@@ -68,6 +68,18 @@ impl SpaceView {
             .position(|candidate| candidate == key)
             .and_then(|index| self.children.get(index))
     }
+
+    /// The `Tuple` child at positional `index`, if any.
+    ///
+    /// The positional analogue of [`child`](Self::child): `Tuple` children
+    /// carry no keys (they are addressed by order), so the recursive `join`
+    /// walk descends a Tuple observation node by index.
+    pub fn child_at(&self, index: usize) -> Option<&SpaceView> {
+        if self.kind != SpaceViewKind::Tuple {
+            return None;
+        }
+        self.children.get(index)
+    }
 }
 
 /// Project the `f64` bounds out of a Box space, decoding byte-typed integer
@@ -220,5 +232,29 @@ mod tests {
             Some(vec![64, 64, 3])
         );
         assert!(view.child("missing").is_none());
+    }
+
+    #[test]
+    fn child_at_indexes_tuple_children() {
+        let spec = SpaceSpec {
+            shape: Vec::new(),
+            dtype: DType::Unspecified,
+            spec: Some(SpaceKind::Tuple(rlmesh_spaces::TupleSpec {
+                spaces: vec![
+                    box_spec(vec![64, 64, 3], DType::Uint8, None),
+                    box_spec(vec![7], DType::Float32, None),
+                ],
+            })),
+        };
+        let view = SpaceView::from(&spec);
+        assert_eq!(view.kind, SpaceViewKind::Tuple);
+        assert_eq!(
+            view.child_at(0).map(|child| child.shape.clone()),
+            Some(vec![64, 64, 3])
+        );
+        assert_eq!(view.child_at(1).map(SpaceView::numel), Some(7));
+        assert!(view.child_at(2).is_none());
+        // A Dict-only accessor never descends a Tuple, and vice-versa.
+        assert!(view.child("0").is_none());
     }
 }

@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 /// An escape-hatch input computed by host-language code.
 ///
 /// The core never evaluates the entrypoint: resolution produces a
-/// [`crate::v1::CustomPlan`] hole that the binding materializes itself.
+/// [`crate::v1::CustomPlan`] hole that the binding materializes itself. There is
+/// no `key` — placement is the tree position this leaf sits at.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CustomInput {
-    pub key: String,
+pub struct Custom {
     /// Opaque host reference, not a transform value the core runs: either a
     /// `module:callable` entrypoint or a `host:<key>` placeholder for an
     /// in-process callable. The binding materializes it; the wire key stays

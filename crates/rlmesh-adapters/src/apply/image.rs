@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use rlmesh_spaces::{DType, Tensor};
 
-use super::lookup::lookup;
+use super::lookup::resolve_in_obs;
 use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::plans::ImagePlan;
@@ -24,7 +24,7 @@ pub(super) fn apply_image(
     if let Some((height, width, channels)) = plan.zero_fill {
         return apply_zero_fill_image(plan, height, width, channels);
     }
-    let mut image = decode_image(lookup(raw_obs, &plan.env_key)?, plan.src_range)?;
+    let mut image = decode_image(resolve_in_obs(raw_obs, &plan.source)?, plan.src_range)?;
     image = to_layout(&image, plan.src_layout, ImageLayout::Hwc)?;
     if plan.flip {
         image = flip_180(&image)?;
@@ -574,8 +574,8 @@ mod tests {
     #[test]
     fn zero_fill_synthesizes_a_black_frame() {
         let plan = ImagePlan {
-            model_key: "image".to_owned(),
-            env_key: String::new(),
+            placement: crate::path::NodePath::root().push_key("image"),
+            source: crate::path::NodePath::root(),
             src_layout: ImageLayout::Hwc,
             dst_layout: ImageLayout::Hwc,
             flip: false,
@@ -608,8 +608,8 @@ mod tests {
     #[test]
     fn zero_fill_uses_the_absent_fill_level() {
         let plan = ImagePlan {
-            model_key: "image".to_owned(),
-            env_key: String::new(),
+            placement: crate::path::NodePath::root().push_key("image"),
+            source: crate::path::NodePath::root(),
             src_layout: ImageLayout::Hwc,
             dst_layout: ImageLayout::Hwc,
             flip: false,

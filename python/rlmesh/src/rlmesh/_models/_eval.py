@@ -510,11 +510,24 @@ def coerce_model(
 def _text_input_keys(spec: object | None) -> tuple[str, ...]:
     if spec is None or spec is NO_ADAPTER:
         return ()
-    from ..adapters import TextInput
+    from ..adapters import Text
+    from ..adapters.resolver import _iter_leaves, _placement
 
-    return tuple(
-        inp.key for inp in getattr(spec, "inputs", ()) if isinstance(inp, TextInput)
-    )
+    input_tree = getattr(spec, "input", None)
+    if input_tree is None:
+        return ()
+    # Instruction injection targets top-level text leaves of a Dict-shaped model
+    # input (the placement is a single bare dict key); a nested/tuple-placed text
+    # leaf is left to the declarative path.
+    keys: list[str] = []
+    for segments, leaf in _iter_leaves(input_tree, ()):
+        if (
+            isinstance(leaf, Text)
+            and len(segments) == 1
+            and isinstance(segments[0], str)
+        ):
+            keys.append(_placement(segments))
+    return tuple(keys)
 
 
 def _connect(

@@ -123,10 +123,10 @@ ACTION14 = box(14, low=-1.0, high=1.0)
 # Shared LIBERO-style env and a synthetic observation.
 # ---------------------------------------------------------------------------
 
-LIBERO_ACTION = adapt.ActionLayout(
-    adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-    adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-    adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+LIBERO_ACTION = adapt.Action(
+    adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+    adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+    adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     clip=(-1.0, 1.0),
 )
 
@@ -177,34 +177,29 @@ def make_obs(size: int = 64) -> dict[str, object]:
 # ---------------------------------------------------------------------------
 
 SMOLVLA = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput(
-            "observation.images.image",
+    input={
+        "observation.images.image": adapt.Image(
             role=adapt.IMAGE_PRIMARY,
             height=64,
             width=64,
         ),
-        adapt.ImageInput(
-            "observation.images.image2",
+        "observation.images.image2": adapt.Image(
             role=adapt.IMAGE_WRIST,
             height=64,
             width=64,
         ),
-        adapt.StateInput(
-            "observation.state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+        "observation.state": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -274,18 +269,16 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
     env = Env(
         tags=adapt.EnvTags(
             observation={"instruction": adapt.TextTag()},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(
-                    adapt.ACTION_GRIPPER, dim=1, invert=True, binary=True
-                ),
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, invert=True, binary=True),
             ),
         ),
         obs_space=gym.spaces.Dict({"instruction": text_space()}),
         action_space=box(1, low=-1.0, high=1.0),
     )
     model = adapt.ModelSpec(
-        inputs=(adapt.TextInput("instruction"),),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={"instruction": adapt.Text()},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     adapter = resolve(env, model)
     # The model says "close" (+0.8); the env's opposite sign + binary snap to -1.
@@ -296,7 +289,7 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
 def test_action_component_positional_binary_is_unchanged() -> None:
     # scale/invert/threshold are appended after binary, so the old positional
     # layout (role, dim, encoding, range, binary) keeps its meaning.
-    c = adapt.ActionComponent(adapt.ACTION_GRIPPER, 1, None, None, True)
+    c = adapt.Actuator(adapt.ACTION_GRIPPER, 1, None, None, True)
     assert c.binary is True
     assert c.scale is None and c.invert is False and c.threshold is None
 
@@ -307,8 +300,8 @@ def test_action_layout_loosely_typed_corrections_rejected() -> None:
     # bindings agree on hand-authored or third-party layout JSON.
     def spec(**correction: Any) -> dict[str, Any]:
         return {
-            "inputs": [],
-            "action": {
+            "input": {},
+            "output": {
                 "components": [{"role": adapt.ACTION_GRIPPER, "dim": 1, **correction}]
             },
         }
@@ -326,9 +319,9 @@ def test_action_layout_loosely_typed_corrections_rejected() -> None:
     ok = adapt.ModelSpec.from_dict(
         spec(invert=True, scale=2.0, threshold=0.5, binary=True)
     )
-    assert ok.action.components[0].invert is True
-    assert ok.action.components[0].scale == 2.0
-    assert ok.action.components[0].threshold == 0.5
+    assert ok.output.components[0].invert is True
+    assert ok.output.components[0].scale == 2.0
+    assert ok.output.components[0].threshold == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -336,14 +329,14 @@ def test_action_layout_loosely_typed_corrections_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 OPENVLA = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=64, width=64),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -363,38 +356,31 @@ def test_openvla_obs_matches_bespoke_adapter():
 # ---------------------------------------------------------------------------
 
 XVLA = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=64, width=64),
-        adapt.ImageInput("image2", role=adapt.IMAGE_WRIST, height=64, width=64),
-        adapt.StateInput(
-            "state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS, dim=3),
-                # X-VLA uses row-major rot6d for both proprio and action (the
-                # m[:, :2].reshape(6) convention from upstream datasets/utils.py
-                # and the Isaac_vla bridge client).
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
-                adapt.StateComponent(adapt.GRIPPER_POS, dim=1),
-                adapt.StateComponent(adapt.EEF_POS_2, dim=3, optional=True),
-                adapt.StateComponent(
-                    adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True
-                ),
-                adapt.StateComponent(adapt.GRIPPER_POS_2, dim=1, optional=True),
-            ),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
+        "image2": adapt.Image(role=adapt.IMAGE_WRIST, height=64, width=64),
+        "state": adapt.Concat(
+            adapt.State(adapt.EEF_POS, dim=3),
+            # X-VLA uses row-major rot6d for both proprio and action (the
+            # m[:, :2].reshape(6) convention from upstream datasets/utils.py
+            # and the Isaac_vla bridge client).
+            adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
+            adapt.State(adapt.GRIPPER_POS, dim=1),
+            adapt.State(adapt.EEF_POS_2, dim=3, optional=True),
+            adapt.State(adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True),
+            adapt.State(adapt.GRIPPER_POS_2, dim=1, optional=True),
             pad_to=20,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS_2, dim=3),
-        adapt.ActionComponent(
-            adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"
-        ),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"),
+        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -450,15 +436,13 @@ BIMANUAL_ENV = Env(
             "robot1_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS_2),
             "instruction": adapt.TextTag(),
         },
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS_2, dim=3),
-            adapt.ActionComponent(
-                adapt.ACTION_DELTA_ROT_2, dim=3, encoding="axis_angle"
-            ),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
             clip=(-1.0, 1.0),
         ),
     ),
@@ -535,13 +519,8 @@ def test_xvla_action_consumes_second_arm_on_bimanual_env():
 
 def test_optional_state_without_width_is_an_error():
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(adapt.StateComponent("proprio/extra", optional=True),),
-            ),
-        ),
-        action=SMOLVLA.action,
+        input={"state": adapt.State("proprio/extra", optional=True)},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="zero fill"):
         resolve(LIBERO_ENV, spec)
@@ -620,44 +599,28 @@ def test_custom_adapter_reset_is_a_no_op_by_default():
 # ---------------------------------------------------------------------------
 
 GR00T = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput(
-            "video.image",
+    input={
+        "video.image": adapt.Image(
             role=adapt.IMAGE_PRIMARY,
             height=64,
             width=64,
             lead_dims=2,
             upside_down=True,
         ),
-        adapt.StateInput(
-            "state.x",
-            components=(adapt.StateComponent(adapt.EEF_POS, index=0),),
-            reshape=(1, 1, 1),
+        "state.x": adapt.State(adapt.EEF_POS, index=0, reshape=(1, 1, 1)),
+        "state.roll": adapt.State(
+            adapt.EEF_ROT, encoding="axis_angle", index=0, reshape=(1, 1, 1)
         ),
-        adapt.StateInput(
-            "state.roll",
-            components=(
-                adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle", index=0),
-            ),
-            reshape=(1, 1, 1),
-        ),
-        adapt.StateInput(
-            "state.gripper",
-            components=(adapt.StateComponent(adapt.GRIPPER_POS, index=0),),
-            reshape=(1, 1, 1),
-        ),
-        adapt.TextInput(
-            "tag.human.action.task_description",
+        "state.gripper": adapt.State(adapt.GRIPPER_POS, index=0, reshape=(1, 1, 1)),
+        "tag.human.action.task_description": adapt.Text(
             container="list",
             default="",
         ),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(
-            adapt.ACTION_GRIPPER, dim=1, range=(0.0, 1.0), binary=True
-        ),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(0.0, 1.0), binary=True),
     ),
 )
 
@@ -725,9 +688,8 @@ def image_env(height: int, width: int, *, role: str = adapt.IMAGE_PRIMARY) -> En
 def test_image_resize_layout_and_normalize():
     obs = make_obs(size=32)
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput(
-                "pixels",
+        input={
+            "pixels": adapt.Image(
                 role=adapt.IMAGE_PRIMARY,
                 height=16,
                 width=16,
@@ -735,8 +697,8 @@ def test_image_resize_layout_and_normalize():
                 dtype="float32",
                 normalize=True,
             ),
-        ),
-        action=SMOLVLA.action,
+        },
+        output=SMOLVLA.output,
     )
     payload = resolve(LIBERO_ENV, spec).transform_obs(obs)
     pixels = payload["pixels"]
@@ -756,8 +718,8 @@ def test_bilinear_aa_resize_matches_pillow_within_one_step():
     )
     for height, width in ((3, 4), (12, 16)):
         spec = adapt.ModelSpec(
-            inputs=(adapt.ImageInput("image", height=height, width=width),),
-            action=SMOLVLA.action,
+            input={"image": adapt.Image(height=height, width=width)},
+            output=SMOLVLA.output,
         )
         ours = (
             resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
@@ -802,8 +764,8 @@ def test_encoded_image_bytes_decode_natively():
     )
     env = image_env(2, 2)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image"),),
-        action=SMOLVLA.action,
+        input={"image": adapt.Image()},
+        output=SMOLVLA.output,
     )
     payload = resolve(env, spec).transform_obs({"rgb": make_png(pixels)})
     np.testing.assert_array_equal(payload["image"], pixels)
@@ -812,8 +774,8 @@ def test_encoded_image_bytes_decode_natively():
 def test_undecodable_image_bytes_is_an_error():
     env = image_env(2, 2)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image"),),
-        action=SMOLVLA.action,
+        input={"image": adapt.Image()},
+        output=SMOLVLA.output,
     )
     with pytest.raises(ValueError, match="could not decode image bytes"):
         resolve(env, spec).transform_obs({"rgb": b"not an image"})
@@ -823,14 +785,14 @@ def test_bytes_are_rejected_for_non_image_adapter_inputs():
     env = Env(
         tags=adapt.EnvTags(
             observation={"state": adapt.StateTag(role=adapt.EEF_POS)},
-            action=SMOLVLA.action,
+            action=SMOLVLA.output,
         ),
         obs_space=gym.spaces.Dict({"state": box(3)}),
         action_space=ACTION7,
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.EEF_POS)},
+        output=SMOLVLA.output,
     )
 
     with pytest.raises(ValueError, match="bytes values are only valid"):
@@ -840,12 +802,10 @@ def test_bytes_are_rejected_for_non_image_adapter_inputs():
 def test_bilinear_resize_preserves_constant_images():
     env = image_env(10, 12)
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput(
-                "image", height=4, width=5, resample="bilinear", fit="stretch"
-            ),
-        ),
-        action=SMOLVLA.action,
+        input={
+            "image": adapt.Image(height=4, width=5, resample="bilinear", fit="stretch"),
+        },
+        output=SMOLVLA.output,
     )
     payload = resolve(env, spec).transform_obs(
         {"rgb": np.full((10, 12, 3), 117, dtype=np.uint8)}
@@ -859,8 +819,8 @@ def test_bilinear_resize_preserves_constant_images():
 def test_single_env_image_fallback_match():
     env = image_env(8, 8, role=adapt.IMAGE_SECONDARY)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY),),
-        action=SMOLVLA.action,
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     obs = {"rgb": np.zeros((8, 8, 3), dtype=np.uint8)}
@@ -885,17 +845,20 @@ def single_state_env(key: str, obs_space: gym.spaces.Space[Any]) -> Env:
 
 
 STATE_ONLY_MODEL = adapt.ModelSpec(
-    inputs=(
-        adapt.StateInput("state", components=(adapt.StateComponent(adapt.EEF_POS),)),
-    ),
-    action=SMOLVLA.action,
+    input={"state": adapt.State(adapt.EEF_POS)},
+    output=SMOLVLA.output,
 )
 
 
 def test_nested_observation_keys():
-    env = single_state_env(
-        "agent.eef_pos",
-        gym.spaces.Dict({"agent": gym.spaces.Dict({"eef_pos": box(3)})}),
+    # Nesting is now a structural tag tree (a nested dict), not a dotted key.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"agent": {"eef_pos": adapt.StateTag(role=adapt.EEF_POS)}},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict({"agent": gym.spaces.Dict({"eef_pos": box(3)})}),
+        action_space=ACTION7,
     )
     adapter = resolve(env, STATE_ONLY_MODEL)
     obs = {"agent": {"eef_pos": [1.0, 2.0, 3.0]}}
@@ -911,12 +874,12 @@ def test_numeric_payload_data_mapping():
 
 def test_custom_callable_transform():
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.InlineCustomInput(
-                "engineered", lambda obs: float(obs["robot0_eef_pos"][0])
+        input={
+            "engineered": adapt.Custom(
+                transform=lambda obs: float(obs["robot0_eef_pos"][0])
             ),
-        ),
-        action=SMOLVLA.action,
+        },
+        output=SMOLVLA.output,
     )
     adapter = resolve(LIBERO_ENV, spec)
     obs = make_obs()
@@ -927,8 +890,8 @@ def test_custom_callable_transform():
 
 def test_custom_entrypoint_requires_trust():
     spec = adapt.ModelSpec(
-        inputs=(adapt.EntrypointCustomInput("count", "builtins:len"),),
-        action=SMOLVLA.action,
+        input={"count": adapt.Custom(entrypoint="builtins:len")},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="trust_entrypoints"):
         resolve(LIBERO_ENV, spec)
@@ -946,8 +909,8 @@ def test_spec_normalize_door_roundtrips_validates_and_gates_custom():
 
     # Round-trips a model spec and env tags through the Rust serde codec.
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={"state": adapt.Concat(adapt.EEF_POS)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     assert (
         adapt.ModelSpec.from_json(
@@ -966,15 +929,15 @@ def test_spec_normalize_door_roundtrips_validates_and_gates_custom():
     # Validation: an unknown field on a plain struct is rejected by the codec.
     with pytest.raises(ValueError):
         adapters_spec_normalize(
-            "model", '{"inputs": [], "action": {"components": [], "bogus": 1}}', True
+            "model", '{"input": {}, "output": {"components": [], "bogus": 1}}', True
         )
 
     # Custom gate: an entrypoint custom is rejected at publish (allow_custom=
     # False) but passes through for resolve (allow_custom=True).
     custom_wire = json.dumps(
         {
-            "inputs": [{"type": "custom", "key": "x", "transform": "builtins:len"}],
-            "action": {"components": []},
+            "input": {"x": {"type": "custom", "transform": "builtins:len"}},
+            "output": {"components": []},
         }
     )
     with pytest.raises(ValueError, match="entrypoint"):
@@ -992,7 +955,7 @@ def test_spec_normalize_rejects_trailing_tokens():
     # explicitly. Without it, malformed wire input would normalize green.
     from rlmesh._rlmesh import adapters_spec_normalize
 
-    valid = '{"inputs": [], "action": {"components": []}}'
+    valid = '{"input": {}, "output": {"components": []}}'
     assert adapters_spec_normalize("model", valid, True)  # sanity: valid passes
     with pytest.raises(ValueError):
         adapters_spec_normalize("model", valid + " junk", True)
@@ -1008,7 +971,7 @@ def test_action_component_missing_dim_is_rejected() -> None:
     # mismatch.
     with pytest.raises(ValueError):
         adapt.ModelSpec.from_dict(
-            {"inputs": [], "action": {"components": [{"role": adapt.ACTION_GRIPPER}]}}
+            {"input": {}, "output": {"components": [{"role": adapt.ACTION_GRIPPER}]}}
         )
 
 
@@ -1019,7 +982,7 @@ def test_empty_state_layout_rejected_by_codec() -> None:
     with pytest.raises(ValueError):
         adapt.EnvTags.from_dict(
             {
-                "observation": {".": {"type": "layout", "fields": []}},
+                "observation": {"type": "split", "fields": []},
                 "action": {"components": []},
             }
         )
@@ -1039,22 +1002,17 @@ def test_normalize_door_rejects_structurally_unconsumable_specs() -> None:
         # (side, doc) -- each is structurally valid JSON the codec must reject.
         (
             "env",
-            '{"observation":{"s":{"type":"layout","fields":[{"role":"r","dim":1},'
+            '{"observation":{"s":{"type":"split","fields":[{"role":"r","dim":1},'
             '{"role":"r","dim":1}]}},"action":{"components":[]}}',
         ),
         (
             "model",
-            '{"inputs":[{"type":"text","key":"s","role":"r"},'
-            '{"type":"text","key":"s","role":"r"}],"action":{"components":[]}}',
+            '{"input":{"s":{"type":"state","components":[]}},'
+            '"output":{"components":[]}}',
         ),
         (
             "model",
-            '{"inputs":[{"type":"state","key":"s","components":[]}],'
-            '"action":{"components":[]}}',
-        ),
-        (
-            "model",
-            '{"inputs":[],"action":{"components":[{"role":"g","dim":1},'
+            '{"input":{},"output":{"components":[{"role":"g","dim":1},'
             '{"role":"g","dim":1}]}}',
         ),
     ]
@@ -1081,15 +1039,15 @@ def test_wrap_predict_round_trip():
 def _chunked_spec(execute_horizon: int, *, stack: int = 1) -> adapt.ModelSpec:
     """A minimal single-image -> 7-dim-action spec with action-chunk replay."""
     return adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput(
-                "image", role=adapt.IMAGE_PRIMARY, height=64, width=64, stack=stack
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY, height=64, width=64, stack=stack
             ),
-        ),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
             execute_horizon=execute_horizon,
         ),
     )
@@ -1194,8 +1152,8 @@ def test_metadata_keys_are_side_specific():
 @pytest.mark.parametrize("method", ["to_dict", "to_metadata"])
 def test_custom_callable_spec_is_not_serializable(method: str):
     spec = adapt.ModelSpec(
-        inputs=(adapt.InlineCustomInput("x", lambda obs: 0),),
-        action=SMOLVLA.action,
+        input={"x": adapt.Custom(transform=lambda obs: 0)},
+        output=SMOLVLA.output,
     )
     with pytest.raises(ValueError, match="cannot be serialized"):
         getattr(spec, method)()
@@ -1207,8 +1165,8 @@ def test_custom_entrypoint_is_not_serializable(method: str):
     # code in a contract a consumer might import). Resolve it locally instead
     # (the resolve path is covered by test_custom_entrypoint_requires_trust).
     spec = adapt.ModelSpec(
-        inputs=(adapt.EntrypointCustomInput("x", "builtins:len"),),
-        action=SMOLVLA.action,
+        input={"x": adapt.Custom(entrypoint="builtins:len")},
+        output=SMOLVLA.output,
     )
     with pytest.raises(ValueError, match="entrypoint"):
         getattr(spec, method)()
@@ -1222,13 +1180,11 @@ def test_host_placeholder_custom_cannot_be_reconstructed_from_wire():
     from rlmesh.adapters.specs.model_serialization import model_input_from_dict
 
     with pytest.raises(ValueError, match="host-placeholder"):
-        model_input_from_dict({"type": "custom", "key": "x", "transform": "host:x"})
+        model_input_from_dict({"type": "custom", "transform": "host:x"})
 
     # A genuine entrypoint custom still reconstructs unchanged.
-    rebuilt = model_input_from_dict(
-        {"type": "custom", "key": "x", "transform": "builtins:len"}
-    )
-    assert isinstance(rebuilt, adapt.EntrypointCustomInput)
+    rebuilt = model_input_from_dict({"type": "custom", "transform": "builtins:len"})
+    assert isinstance(rebuilt, adapt.Custom)
     assert rebuilt.entrypoint == "builtins:len"
 
 
@@ -1239,12 +1195,8 @@ def test_host_placeholder_custom_cannot_be_reconstructed_from_wire():
 
 def test_missing_state_role_is_an_error():
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state", components=(adapt.StateComponent(adapt.JOINT_VEL),)
-            ),
-        ),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.JOINT_VEL)},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="proprio/joint_vel"):
         resolve(LIBERO_ENV, spec)
@@ -1275,13 +1227,8 @@ def test_env_rotation_width_law_is_enforced():
         action_space=ACTION7,
     )
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d"),),
-            ),
-        ),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.EEF_ROT, encoding="rot6d")},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="quat_xyzw"):
         resolve(env, spec)
@@ -1289,15 +1236,8 @@ def test_env_rotation_width_law_is_enforced():
 
 def test_unknown_rotation_encoding_pairing_is_an_error():
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(
-                    adapt.StateComponent(adapt.GRIPPER_POS, encoding="axis_angle"),
-                ),
-            ),
-        ),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.GRIPPER_POS, encoding="axis_angle")},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="encoding"):
         resolve(LIBERO_ENV, spec)
@@ -1305,9 +1245,9 @@ def test_unknown_rotation_encoding_pairing_is_an_error():
 
 def test_missing_action_role_is_an_error():
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image"),),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
+        input={"image": adapt.Image()},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
         ),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="action/delta_eef_rot"):
@@ -1316,11 +1256,11 @@ def test_missing_action_role_is_an_error():
 
 def test_action_dim_mismatch_is_an_error():
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image"),),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=2),
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1),
+        input={"image": adapt.Image()},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=2),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
         ),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="dims"):
@@ -1334,17 +1274,15 @@ def test_action_range_derived_from_bounded_space_maps_model_output():
     env = Env(
         tags=adapt.EnvTags(
             observation={"image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict({"image": image_space()}),
         action_space=box(1, low=0.0, high=1.0),
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY),),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
         ),
     )
     adapter = resolve(env, spec)
@@ -1356,17 +1294,17 @@ def test_action_range_disagreeing_with_bounded_space_is_an_error():
     env = Env(
         tags=adapt.EnvTags(
             observation={"image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
             ),
         ),
         obs_space=gym.spaces.Dict({"image": image_space()}),
         action_space=box(1, low=0.0, high=1.0),
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY),),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0))
         ),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="disagrees"):
@@ -1379,9 +1317,7 @@ def test_float_image_in_byte_range_is_not_saturated():
     env = Env(
         tags=adapt.EnvTags(
             observation={"image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict(
             {"image": gym.spaces.Box(0.0, 255.0, (2, 2, 3), np.float32)}
@@ -1389,8 +1325,8 @@ def test_float_image_in_byte_range_is_not_saturated():
         action_space=box(1, low=-1.0, high=1.0),
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY),),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     adapter = resolve(env, spec)
     pixels = np.full((2, 2, 3), 200.0, dtype=np.float32)
@@ -1406,13 +1342,11 @@ def test_duplicate_env_action_role_is_an_error():
     env = Env(
         tags=adapt.EnvTags(
             observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-                adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),  # duplicate role
-                adapt.ActionComponent(
-                    adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"
-                ),
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+                adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),  # duplicate role
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
             ),
         ),
         obs_space=gym.spaces.Dict({"pos": box(3)}),
@@ -1493,43 +1427,25 @@ def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     # serialize/normalize with a field-path-annotated message. Action components
     # (not behind a tag) get a deep path; model-input payload fields resolve to
     # `inputs[0]` (the ModelInput tag boundary) plus the u32 constraint.
-    gripper = adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1))
+    gripper = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
 
-    def to_dict(
-        *inputs: adapt.ModelInput, action: adapt.ActionLayout = gripper
-    ) -> None:
-        adapt.ModelSpec(inputs=inputs, action=action).to_dict()
+    def to_dict(*, output: adapt.Action = gripper, **inputs: adapt.ModelInput) -> None:
+        adapt.ModelSpec(input=inputs, output=output).to_dict()
 
     with pytest.raises(
-        ValueError, match=r"at action\.components\[0\]\.dim.*non-negative integer"
+        ValueError, match=r"at output\.components\[0\]\.dim.*non-negative integer"
     ):
-        to_dict(
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=-1)
-            )
-        )
-    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
-        to_dict(adapt.ImageInput("image", width=-1))
-    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
-        to_dict(adapt.ImageInput("image", lead_dims=-2))
-    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
-        to_dict(
-            adapt.StateInput(
-                "s", components=(adapt.StateComponent(adapt.EEF_POS, dim=-1),)
-            )
-        )
-    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
-        to_dict(
-            adapt.StateInput(
-                "s", components=(adapt.StateComponent(adapt.EEF_POS, index=-1),)
-            )
-        )
-    with pytest.raises(ValueError, match=r"at inputs\[0\].*non-negative integer"):
-        to_dict(
-            adapt.StateInput(
-                "s", components=(adapt.StateComponent(adapt.EEF_POS),), pad_to=-1
-            )
-        )
+        to_dict(output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=-1)))
+    with pytest.raises(ValueError, match=r"non-negative integer"):
+        to_dict(image=adapt.Image(width=-1))
+    with pytest.raises(ValueError, match=r"non-negative integer"):
+        to_dict(image=adapt.Image(lead_dims=-2))
+    with pytest.raises(ValueError, match=r"non-negative integer"):
+        to_dict(s=adapt.State(adapt.EEF_POS, dim=-1))
+    with pytest.raises(ValueError, match=r"non-negative integer"):
+        to_dict(s=adapt.State(adapt.EEF_POS, index=-1))
+    with pytest.raises(ValueError, match=r"non-negative integer"):
+        to_dict(s=adapt.State(adapt.EEF_POS, pad_to=-1))
 
 
 def test_value_bridge_encodes_numpy_bool_scalar_as_python_bool() -> None:
@@ -1546,45 +1462,30 @@ def test_value_bridge_encodes_numpy_bool_scalar_as_python_bool() -> None:
 
 
 def test_image_input_size_shorthand() -> None:
-    assert adapt.ImageInput("img", size=224) == adapt.ImageInput(
-        "img", height=224, width=224
-    )
+    assert adapt.Image(size=224) == adapt.Image(height=224, width=224)
     with pytest.raises(ValueError, match="size=, or height"):
-        adapt.ImageInput("img", size=224, height=10)
+        adapt.Image(size=224, height=10)
 
 
 def test_state_input_single_component_shorthand() -> None:
-    assert adapt.StateInput(
-        "s", role=adapt.EEF_POS, encoding="axis_angle"
-    ) == adapt.StateInput(
-        "s", components=(adapt.StateComponent(adapt.EEF_POS, encoding="axis_angle"),)
-    )
-    with pytest.raises(ValueError, match="components=, or a single"):
-        adapt.StateInput(
-            "s", components=(adapt.StateComponent(adapt.EEF_POS),), role=adapt.EEF_ROT
-        )
-    with pytest.raises(ValueError, match="needs components"):
-        adapt.StateInput("s")
+    # State takes a role plus part-fields directly; equal instances compare equal.
+    s = adapt.State(adapt.EEF_POS, encoding="axis_angle")
+    assert s == adapt.State(adapt.EEF_POS, encoding="axis_angle")
+    # Concat assembles a multi-part state from bare roles and parameterized parts.
+    c = adapt.Concat(adapt.EEF_POS, adapt.State(adapt.GRIPPER_POS, dim=1))
+    assert len(c.parts) == 2
 
 
 def test_state_input_sugar_resolves_like_explicit() -> None:
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.EEF_POS)},
+        output=SMOLVLA.output,
     )
     adapter = resolve(LIBERO_ENV, spec)
     np.testing.assert_allclose(
         adapter.transform_obs(make_obs())["state"],
         np.asarray(make_obs()["robot0_eef_pos"], dtype=np.float32),
     )
-
-
-def test_model_spec_rejects_duplicate_input_keys() -> None:
-    with pytest.raises(ValueError, match="duplicate input keys"):
-        adapt.ModelSpec(
-            inputs=(adapt.ImageInput("dup"), adapt.TextInput("dup")),
-            action=SMOLVLA.action,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1595,8 +1496,8 @@ def test_model_spec_rejects_duplicate_input_keys() -> None:
 def test_image_frame_stacking_buffers_and_pads() -> None:
     env = image_env(4, 4)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=3),),
-        action=SMOLVLA.action,
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=3)},
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     f1 = np.full((4, 4, 3), 10, dtype=np.uint8)
@@ -1622,8 +1523,8 @@ def test_image_frame_stacking_buffers_and_pads() -> None:
 def test_per_lane_reset_only_clears_on_whole_vector_or_lane_zero() -> None:
     env = image_env(4, 4)
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=3),),
-        action=SMOLVLA.action,
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=3)},
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     f1 = np.full((4, 4, 3), 10, dtype=np.uint8)
@@ -1651,23 +1552,19 @@ def test_per_lane_reset_only_clears_on_whole_vector_or_lane_zero() -> None:
 def test_image_input_stack_round_trips_and_omits_default() -> None:
     from rlmesh.adapters.specs.model_serialization import model_input_to_dict
 
-    spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("img", stack=4),), action=SMOLVLA.action
-    )
+    spec = adapt.ModelSpec(input={"img": adapt.Image(stack=4)}, output=SMOLVLA.output)
     assert adapt.ModelSpec.from_json(spec.to_json()) == spec
-    assert "stack" not in model_input_to_dict(
-        adapt.ImageInput("img")
-    )  # default omitted
-    assert model_input_to_dict(adapt.ImageInput("img", stack=4))["stack"] == 4
+    assert "stack" not in model_input_to_dict(adapt.Image())  # default omitted
+    assert model_input_to_dict(adapt.Image(stack=4))["stack"] == 4
     # stack bounds (1..64) are enforced by the Rust codec at serialize/normalize.
     with pytest.raises(ValueError, match="stack must be between 1 and 64"):
         adapt.ModelSpec(
-            inputs=(adapt.ImageInput("img", stack=0),), action=SMOLVLA.action
+            input={"img": adapt.Image(stack=0)}, output=SMOLVLA.output
         ).to_dict()
     # An untrusted spec cannot demand an unbounded buffer.
     with pytest.raises(ValueError, match="stack must be between 1 and 64"):
         adapt.ModelSpec(
-            inputs=(adapt.ImageInput("img", stack=10_000),), action=SMOLVLA.action
+            input={"img": adapt.Image(stack=10_000)}, output=SMOLVLA.output
         ).to_dict()
 
 
@@ -1681,15 +1578,15 @@ def test_io_adapter_is_stateful_only_with_frame_history() -> None:
     stateless = resolve(
         env,
         adapt.ModelSpec(
-            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY),),
-            action=SMOLVLA.action,
+            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+            output=SMOLVLA.output,
         ),
     )
     stateful = resolve(
         env,
         adapt.ModelSpec(
-            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
-            action=SMOLVLA.action,
+            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
+            output=SMOLVLA.output,
         ),
     )
     assert stateless.is_stateful is False
@@ -1717,13 +1614,13 @@ def test_vector_env_rejected_by_single_env_eval_loop() -> None:
     )
 
     def predict(payload: dict[str, Any]) -> Any:
-        return np.zeros(SMOLVLA.action.dim, dtype=np.float32)
+        return np.zeros(SMOLVLA.output.dim, dtype=np.float32)
 
     model = Model(
         predict,
         spec=adapt.ModelSpec(
-            inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
-            action=SMOLVLA.action,
+            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
+            output=SMOLVLA.output,
         ),
     )
     with pytest.raises(ValueError, match="num_envs=2"):
@@ -1738,12 +1635,12 @@ def test_stateful_adapter_allowed_on_vector_route() -> None:
 
     env = image_env(4, 4)
     stateful_spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY, stack=2),),
-        action=SMOLVLA.action,
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
+        output=SMOLVLA.output,
     )
     stateless_spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("img", role=adapt.IMAGE_PRIMARY),),
-        action=SMOLVLA.action,
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY)},
+        output=SMOLVLA.output,
     )
 
     def contract(num_envs: int) -> Any:
@@ -1787,8 +1684,8 @@ def test_euler_xyz_encoding_converts_end_to_end() -> None:
         action_space=ACTION7,
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="axis_angle"),),
-        action=SMOLVLA.action,
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="axis_angle")},
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     # Pure yaw of 90 degrees -> axis-angle about z.
@@ -1803,39 +1700,37 @@ def test_euler_xyz_encoding_converts_end_to_end() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_bare_layout_observation_normalizes_to_root_key():
+def test_bare_layout_observation_stored_as_bare_leaf():
     tags = adapt.EnvTags(
-        observation=adapt.StateLayout(
-            adapt.StateField(adapt.EEF_POS, 3),
-            adapt.StateField(adapt.GRIPPER_POS, 1),
+        observation=adapt.Split(
+            adapt.Field(adapt.EEF_POS, 3),
+            adapt.Field(adapt.GRIPPER_POS, 1),
         ),
         action=LIBERO_ACTION,
     )
-    assert isinstance(tags.observation, dict)
-    assert list(tags.observation.keys()) == ["."]
-    assert isinstance(tags.observation["."], adapt.StateLayout)
+    # A bare leaf observation is stored as-is, not normalized to {".": tag}.
+    assert isinstance(tags.observation, adapt.Split)
 
 
-def test_bare_obs_tag_observation_normalizes_to_root_key():
+def test_bare_obs_tag_observation_stored_as_bare_leaf():
     tags = adapt.EnvTags(
         observation=adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
         action=LIBERO_ACTION,
     )
-    assert list(tags.observation.keys()) == ["."]
-    assert isinstance(tags.observation["."], adapt.ImageTag)
+    assert isinstance(tags.observation, adapt.ImageTag)
 
 
 def test_action_and_state_layout_take_varargs():
-    action = adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1),
+    action = adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
         clip=(-1.0, 1.0),
     )
     assert action.dim == 4
     assert action.clip == (-1.0, 1.0)
-    layout = adapt.StateLayout(
-        adapt.StateField(adapt.EEF_POS, 3),
-        adapt.StateField(dim=1),
+    layout = adapt.Split(
+        adapt.Field(adapt.EEF_POS, 3),
+        adapt.Field(dim=1),
     )
     assert len(layout.fields) == 2
     assert layout.fields[1].role is None
@@ -1843,18 +1738,18 @@ def test_action_and_state_layout_take_varargs():
 
 def test_state_layout_round_trips_through_dict():
     tags = adapt.EnvTags(
-        observation=adapt.StateLayout(
-            adapt.StateField(adapt.EEF_POS, 3),
-            adapt.StateField(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
-            adapt.StateField(dim=1),  # skip
-            adapt.StateField(adapt.GRIPPER_POS, 1, range=(0.0, 1.0)),
+        observation=adapt.Split(
+            adapt.Field(adapt.EEF_POS, 3),
+            adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
+            adapt.Field(dim=1),  # skip
+            adapt.Field(adapt.GRIPPER_POS, 1, range=(0.0, 1.0)),
         ),
         action=LIBERO_ACTION,
     )
     restored = adapt.EnvTags.from_dict(tags.to_dict())
     assert restored == tags
-    layout = restored.observation["."]
-    assert isinstance(layout, adapt.StateLayout)
+    layout = restored.observation
+    assert isinstance(layout, adapt.Split)
     assert [f.role for f in layout.fields] == [
         adapt.EEF_POS,
         adapt.EEF_ROT,
@@ -1867,11 +1762,11 @@ def _metaworld_env(width_box):
     """A flat-Box env whose 8-wide state splits into role fields."""
     return Env(
         tags=adapt.EnvTags(
-            observation=adapt.StateLayout(
-                adapt.StateField(adapt.EEF_POS, 3),
-                adapt.StateField(adapt.GRIPPER_POS, 1),
-                adapt.StateField(dim=1),  # skip an ignored element
-                adapt.StateField(adapt.JOINT_POS, 3),
+            observation=adapt.Split(
+                adapt.Field(adapt.EEF_POS, 3),
+                adapt.Field(adapt.GRIPPER_POS, 1),
+                adapt.Field(dim=1),  # skip an ignored element
+                adapt.Field(adapt.JOINT_POS, 3),
             ),
             action=LIBERO_ACTION,
         ),
@@ -1883,17 +1778,14 @@ def _metaworld_env(width_box):
 def test_flat_layout_resolves_by_role_and_slices():
     env = _metaworld_env(box(8))
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(
-                    adapt.StateComponent(adapt.EEF_POS),
-                    adapt.StateComponent(adapt.GRIPPER_POS),
-                    adapt.StateComponent(adapt.JOINT_POS),
-                ),
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.GRIPPER_POS,
+                adapt.JOINT_POS,
             ),
-        ),
-        action=SMOLVLA.action,
+        },
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     flat = np.array([0.0, 1.0, 2.0, 9.0, -7.0, 3.0, 4.0, 5.0], dtype=np.float32)
@@ -1904,15 +1796,15 @@ def test_flat_layout_resolves_by_role_and_slices():
     # describe() shows each field's env-side slice (the skipped index is the
     # gap between [3:4] and [5:8]).
     text = adapter.describe()
-    assert ".[0:3]" in text and ".[3:4]" in text and ".[5:8]" in text
+    assert "<root>[0:3]" in text and "<root>[3:4]" in text and "<root>[5:8]" in text
 
 
 def test_flat_layout_rotation_field_converts():
     env = Env(
         tags=adapt.EnvTags(
-            observation=adapt.StateLayout(
-                adapt.StateField(adapt.EEF_POS, 3),
-                adapt.StateField(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
+            observation=adapt.Split(
+                adapt.Field(adapt.EEF_POS, 3),
+                adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
             ),
             action=LIBERO_ACTION,
         ),
@@ -1920,16 +1812,13 @@ def test_flat_layout_rotation_field_converts():
         action_space=ACTION7,
     )
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(
-                    adapt.StateComponent(adapt.EEF_POS),
-                    adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                ),
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
             ),
-        ),
-        action=SMOLVLA.action,
+        },
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
@@ -1943,8 +1832,8 @@ def test_flat_layout_rotation_field_converts():
 def test_flat_layout_width_mismatch_is_an_error():
     env = _metaworld_env(box(5))  # layout sums to 8, space is 5
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("state", role=adapt.EEF_POS),),
-        action=SMOLVLA.action,
+        input={"state": adapt.State(adapt.EEF_POS)},
+        output=SMOLVLA.output,
     )
     with pytest.raises(adapt.AdapterResolutionError, match="sums to 8"):
         resolve(env, spec)
@@ -1952,19 +1841,17 @@ def test_flat_layout_width_mismatch_is_an_error():
 
 def test_state_layout_rejects_duplicate_role_at_construction():
     with pytest.raises(ValueError, match="role more than once"):
-        adapt.StateLayout(
-            adapt.StateField(adapt.EEF_POS, 3),
-            adapt.StateField(adapt.EEF_POS, 3),
+        adapt.Split(
+            adapt.Field(adapt.EEF_POS, 3),
+            adapt.Field(adapt.EEF_POS, 3),
         )
 
 
 def test_state_field_skip_cannot_carry_encoding():
     # A role-less skip carrying an encoding is rejected by the Rust codec at
-    # serialize/normalize (StateField's TryFrom guard).
+    # serialize/normalize (Field's TryFrom guard).
     tags = adapt.EnvTags(
-        observation={
-            "state": adapt.StateLayout(adapt.StateField(dim=4, encoding="quat_xyzw"))
-        },
+        observation={"state": adapt.Split(adapt.Field(dim=4, encoding="quat_xyzw"))},
         action=LIBERO_ACTION,
     )
     with pytest.raises(ValueError, match="role-less"):
@@ -1973,9 +1860,9 @@ def test_state_field_skip_cannot_carry_encoding():
 
 def test_state_field_requires_positive_dim():
     # dim=0 is rejected at construction (the 0 default only satisfies dataclass
-    # field ordering), matching the Rust StateField codec's dim >= 1 guard.
+    # field ordering), matching the Rust Field codec's dim >= 1 guard.
     with pytest.raises(ValueError, match="dim must be >= 1"):
-        adapt.StateField(adapt.EEF_POS, 0)
+        adapt.Field(adapt.EEF_POS, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1997,17 +1884,15 @@ def _rot_obs_env() -> Env:
     return Env(
         tags=adapt.EnvTags(
             observation={"q": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict({"q": box(4)}),
         action_space=box(1, low=-1.0, high=1.0),
     )
 
 
-def _gripper_action() -> adapt.ActionLayout:
-    return adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1))
+def _gripper_action() -> adapt.Action:
+    return adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
 
 
 def test_custom_obs_encoding_repacks_after_base_conversion():
@@ -2015,12 +1900,12 @@ def test_custom_obs_encoding_repacks_after_base_conversion():
     quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
     quat /= np.linalg.norm(quat)
     base_spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="rot6d"),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d")},
+        output=_gripper_action(),
     )
     custom_spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=ROT6D_REV),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV)},
+        output=_gripper_action(),
     )
     base_out = resolve(env, base_spec).transform_obs({"q": quat})["rot"]
     custom_out = resolve(env, custom_spec).transform_obs({"q": quat})["rot"]
@@ -2032,26 +1917,24 @@ def test_custom_action_encoding_repacks_before_base_conversion():
     env = Env(
         tags=adapt.EnvTags(
             observation={"q": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(
-                    adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"
-                )
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle")
             ),
         ),
         obs_space=gym.spaces.Dict({"q": box(4)}),
         action_space=box(3),
     )
-    inputs = (adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="rot6d"),)
+    model_input = {"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d")}
     base_spec = adapt.ModelSpec(
-        inputs=inputs,
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d")
+        input=model_input,
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d")
         ),
     )
     custom_spec = adapt.ModelSpec(
-        inputs=inputs,
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_REV)
+        input=model_input,
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_REV)
         ),
     )
     model_action = np.arange(6, dtype=np.float32)
@@ -2065,8 +1948,8 @@ def test_custom_action_encoding_repacks_before_base_conversion():
 def test_custom_encoding_describe_shows_host_layer():
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=ROT6D_REV),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV)},
+        output=_gripper_action(),
     )
     text = resolve(env, spec).describe()
     assert "host-side encodings:" in text
@@ -2076,18 +1959,15 @@ def test_custom_encoding_describe_shows_host_layer():
 def test_custom_obs_encoding_must_be_sole_component():
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(
-                    adapt.StateComponent(adapt.EEF_POS),
-                    adapt.StateComponent(adapt.EEF_ROT, encoding=ROT6D_REV),
-                ),
+        input={
+            "state": adapt.Concat(
+                adapt.EEF_POS,
+                adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV),
             ),
-        ),
-        action=_gripper_action(),
+        },
+        output=_gripper_action(),
     )
-    with pytest.raises(adapt.AdapterResolutionError, match="sole component"):
+    with pytest.raises(adapt.AdapterResolutionError, match="sole part"):
         resolve(env, spec)
 
 
@@ -2102,14 +1982,8 @@ def test_custom_obs_encoding_must_be_sole_component():
 def test_custom_obs_encoding_rejects_assembly_options(kwargs, match):
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "rot",
-                components=(adapt.StateComponent(adapt.EEF_ROT, encoding=ROT6D_REV),),
-                **kwargs,
-            ),
-        ),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV, **kwargs)},
+        output=_gripper_action(),
     )
     with pytest.raises(adapt.AdapterResolutionError, match=match):
         resolve(env, spec)
@@ -2118,8 +1992,8 @@ def test_custom_obs_encoding_rejects_assembly_options(kwargs, match):
 def test_unknown_encoding_string_rejected_at_resolve():
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="rot6d_typo"),),  # type: ignore[arg-type]
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d_typo")},  # type: ignore[arg-type]
+        output=_gripper_action(),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="unknown rotation encoding"):
         resolve(env, spec)
@@ -2129,8 +2003,8 @@ def test_obs_custom_encoding_without_from_base_is_rejected():
     action_only = adapt.CustomEncoding(base="rot6d", to_base=lambda v: v)
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=action_only),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=action_only)},
+        output=_gripper_action(),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="needs from_base"):
         resolve(env, spec)
@@ -2145,8 +2019,8 @@ def test_non_inverse_custom_encoding_caught_by_self_check():
     )
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=bad),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=bad)},
+        output=_gripper_action(),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="not inverses"):
         resolve(env, spec)
@@ -2158,19 +2032,17 @@ def test_custom_action_encoding_requires_flat_action():
     env = Env(
         tags=adapt.EnvTags(
             observation={"q": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(
-                    adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"
-                )
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle")
             ),
         ),
         obs_space=gym.spaces.Dict({"q": box(4)}),
         action_space=box(3),
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding="rot6d"),),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_REV)
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding="rot6d")},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_REV)
         ),
     )
     adapter = resolve(env, spec)
@@ -2180,7 +2052,7 @@ def test_custom_action_encoding_requires_flat_action():
 
 def test_action_custom_encoding_must_preserve_base_width():
     with pytest.raises(ValueError, match="must be"):
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding=ROT6D_REV)
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding=ROT6D_REV)
 
 
 def test_custom_obs_encoding_preserves_declared_dtype():
@@ -2194,8 +2066,8 @@ def test_custom_obs_encoding_preserves_declared_dtype():
     )
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=upcast),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=upcast)},
+        output=_gripper_action(),
     )
     quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
     quat /= np.linalg.norm(quat)
@@ -2214,8 +2086,8 @@ def test_custom_obs_encoding_rejects_non_1d_transform_output():
     )
     env = _rot_obs_env()
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=twod),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=twod)},
+        output=_gripper_action(),
     )
     adapter = resolve(env, spec)
     quat = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
@@ -2226,8 +2098,8 @@ def test_custom_obs_encoding_rejects_non_1d_transform_output():
 
 def test_custom_encoding_spec_is_not_serializable():
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=ROT6D_REV),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV)},
+        output=_gripper_action(),
     )
     with pytest.raises(ValueError, match="CustomEncoding"):
         spec.to_dict()
@@ -2242,12 +2114,12 @@ def test_scalar_reshape_survives_serialization_and_resolve():
     # reshape=() targets a 0-D scalar; it must not be dropped as falsy.
     env = single_state_env("g", gym.spaces.Dict({"g": box(1)}))
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("state", role=adapt.EEF_POS, reshape=()),),
-        action=SMOLVLA.action,
+        input={"state": adapt.Concat(adapt.EEF_POS, reshape=())},
+        output=SMOLVLA.output,
     )
     restored = adapt.ModelSpec.from_dict(spec.to_dict())
-    restored_input = restored.inputs[0]
-    assert isinstance(restored_input, adapt.StateInput)
+    restored_input = restored.input["state"]
+    assert isinstance(restored_input, adapt.Concat)
     assert restored_input.reshape == ()
     out = resolve(env, spec).transform_obs({"g": np.array([0.5], dtype=np.float32)})
     assert np.asarray(out["state"]).ndim == 0
@@ -2269,8 +2141,8 @@ def test_resolve_from_contract_passes_check_inverse():
         name="broken",
     )
     spec = adapt.ModelSpec(
-        inputs=(adapt.StateInput("rot", role=adapt.EEF_ROT, encoding=bad),),
-        action=_gripper_action(),
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=bad)},
+        output=_gripper_action(),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="not inverses"):
         adapt.resolve_from_contract(contract, spec)
@@ -2282,11 +2154,11 @@ def test_default_only_text_is_not_a_referenced_obs_key():
     # must not be reported as an observation key to decode.
     env = single_state_env("pos", gym.spaces.Dict({"pos": box(3)}))
     spec = adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput("state", role=adapt.EEF_POS),
-            adapt.TextInput("instruction", default="do the task"),
-        ),
-        action=SMOLVLA.action,
+        input={
+            "state": adapt.State(adapt.EEF_POS),
+            "instruction": adapt.Text(default="do the task"),
+        },
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, spec)
     referenced = adapter._plan.referenced_obs_keys()
@@ -2309,8 +2181,8 @@ def test_nonfinite_range_rejected_at_from_dict():
     with pytest.raises(ValueError):
         adapt.ModelSpec.from_dict(
             {
-                "inputs": [],
-                "action": {
+                "input": {},
+                "output": {
                     "components": [
                         {
                             "role": adapt.ACTION_GRIPPER,
@@ -2327,8 +2199,8 @@ def test_nonfinite_scale_rejected_at_from_dict():
     with pytest.raises(ValueError):
         adapt.ModelSpec.from_dict(
             {
-                "inputs": [],
-                "action": {
+                "input": {},
+                "output": {
                     "components": [
                         {"role": adapt.ACTION_GRIPPER, "dim": 1, "scale": float("inf")}
                     ]
@@ -2341,11 +2213,9 @@ def test_nonfinite_rejected_on_emit_to_json():
     # A directly-constructed dataclass bypasses the from_dict guards; allow_nan
     # =False on to_json is the backstop that refuses to emit the Infinity token.
     spec = adapt.ModelSpec(
-        inputs=(),
-        action=adapt.ActionLayout(
-            adapt.ActionComponent(
-                adapt.ACTION_GRIPPER, dim=1, range=(float("inf"), 1.0)
-            ),
+        input={},
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(float("inf"), 1.0)),
         ),
     )
     with pytest.raises(ValueError):
@@ -2360,13 +2230,13 @@ def test_nonfinite_rejected_on_emit_to_json():
 
 def test_from_metadata_reads_v1_and_returns_none_when_absent():
     spec = adapt.ModelSpec(
-        inputs=(),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     assert adapt.ModelSpec.from_metadata(spec.to_metadata()) == spec
     assert adapt.ModelSpec.from_metadata({}) is None
 
-    tags = adapt.EnvTags(observation={}, action=adapt.ActionLayout())
+    tags = adapt.EnvTags(observation={}, action=adapt.Action())
     assert adapt.EnvTags.from_metadata(tags.to_metadata()) == tags
     assert adapt.EnvTags.from_metadata({}) is None
 
@@ -2381,14 +2251,10 @@ def test_from_metadata_reads_v1_and_returns_none_when_absent():
 
 def _rot_model(encoding) -> adapt.ModelSpec:
     return adapt.ModelSpec(
-        inputs=(
-            adapt.StateInput(
-                "state",
-                components=(adapt.StateComponent(adapt.EEF_ROT, encoding=encoding),),
-                container="list",
-            ),
-        ),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={
+            "state": adapt.State(adapt.EEF_ROT, encoding=encoding, container="list"),
+        },
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
 
 
@@ -2396,17 +2262,19 @@ def test_accept_set_authoring_round_trips():
     multi = _rot_model(("rot6d", "quat_xyzw"))
     doc = multi.to_dict()
     # A sequence serializes as a JSON list...
-    assert doc["inputs"][0]["components"][0]["encoding"] == ["rot6d", "quat_xyzw"]
+    assert doc["input"]["state"]["components"][0]["encoding"] == ["rot6d", "quat_xyzw"]
     back = adapt.ModelSpec.from_dict(doc)
     # ...and normalizes to a tuple so the frozen spec stays hashable and equal.
-    back_input = back.inputs[0]
-    assert isinstance(back_input, adapt.StateInput)
-    assert back_input.components[0].encoding == ("rot6d", "quat_xyzw")
+    back_input = back.input["state"]
+    assert isinstance(back_input, adapt.State)
+    assert back_input.encoding == ("rot6d", "quat_xyzw")
     assert back == multi
 
     # Byte-parity: a single encoding stays a bare string, not a one-element list.
     single = _rot_model("quat_xyzw")
-    assert single.to_dict()["inputs"][0]["components"][0]["encoding"] == "quat_xyzw"
+    assert (
+        single.to_dict()["input"]["state"]["components"][0]["encoding"] == "quat_xyzw"
+    )
 
 
 def test_accept_set_prefers_native_then_converts():
@@ -2415,9 +2283,7 @@ def test_accept_set_prefers_native_then_converts():
             observation={
                 "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw")
             },
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict({"eef_quat": box(4)}),
         action_space=box(1),
@@ -2438,31 +2304,31 @@ def test_accept_set_prefers_native_then_converts():
 
 def test_image_fit_list_authoring_round_trips():
     spec = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", height=64, width=64, fit=("crop", "pad")),),
-        action=adapt.ActionLayout(),
+        input={"image": adapt.Image(height=64, width=64, fit=("crop", "pad"))},
+        output=adapt.Action(),
     )
     doc = spec.to_dict()
-    assert doc["inputs"][0]["fit"] == ["crop", "pad"]  # a sequence -> JSON list
+    assert doc["input"]["image"]["fit"] == ["crop", "pad"]  # a sequence -> JSON list
     back = adapt.ModelSpec.from_dict(doc)
-    back_input = back.inputs[0]
-    assert isinstance(back_input, adapt.ImageInput)
+    back_input = back.input["image"]
+    assert isinstance(back_input, adapt.Image)
     assert back_input.fit == ("crop", "pad")  # normalizes to a tuple
     assert back == spec
 
     # Byte-parity: a single fit stays a bare string, not a one-element list.
     single = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", fit="crop"),),
-        action=adapt.ActionLayout(),
+        input={"image": adapt.Image(fit="crop")},
+        output=adapt.Action(),
     )
-    assert single.to_dict()["inputs"][0]["fit"] == "crop"
+    assert single.to_dict()["input"]["image"]["fit"] == "crop"
 
 
 def test_image_fit_list_selects_per_env():
     # fit=[crop, pad] against an aspect-mismatched env: crop downscales a large
     # camera fine, so it resolves to the model's target shape.
     model = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", height=4, width=4, fit=("crop", "pad")),),
-        action=SMOLVLA.action,
+        input={"image": adapt.Image(height=4, width=4, fit=("crop", "pad"))},
+        output=SMOLVLA.output,
     )
     payload = resolve(image_env(8, 16), model).transform_obs(
         {"rgb": np.zeros((8, 16, 3), dtype=np.uint8), "instruction": "go"}
@@ -2476,9 +2342,7 @@ def test_image_channel_mismatch_is_rejected():
     env = Env(
         tags=adapt.EnvTags(
             observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict(
             {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
@@ -2486,8 +2350,8 @@ def test_image_channel_mismatch_is_rejected():
         action_space=box(1),
     )
     model = adapt.ModelSpec(
-        inputs=(adapt.ImageInput("image", channels=3),),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        input={"image": adapt.Image(channels=3)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="channel"):
         resolve(env, model)
@@ -2496,12 +2360,12 @@ def test_image_channel_mismatch_is_rejected():
 def test_image_normalize_range_maps_into_declared_bounds():
     env = image_env(2, 2)
     model = adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput(
-                "image", dtype="float32", normalize=True, normalize_range=(-1.0, 1.0)
+        input={
+            "image": adapt.Image(
+                dtype="float32", normalize=True, normalize_range=(-1.0, 1.0)
             ),
-        ),
-        action=SMOLVLA.action,
+        },
+        output=SMOLVLA.output,
     )
     adapter = resolve(env, model)
     black = adapter.transform_obs(
@@ -2524,9 +2388,7 @@ def test_image_optional_camera_zero_fills_when_absent():
                 "cam0": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
                 "cam1": adapt.ImageTag(role=adapt.IMAGE_WRIST),
             },
-            action=adapt.ActionLayout(
-                adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)
-            ),
+            action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
         ),
         obs_space=gym.spaces.Dict(
             {"cam0": image_space(8, 8), "cam1": image_space(8, 8)}
@@ -2534,18 +2396,17 @@ def test_image_optional_camera_zero_fills_when_absent():
         action_space=box(1),
     )
     model = adapt.ModelSpec(
-        inputs=(
-            adapt.ImageInput("primary", role=adapt.IMAGE_PRIMARY),
-            adapt.ImageInput(
-                "overhead",
+        input={
+            "primary": adapt.Image(role=adapt.IMAGE_PRIMARY),
+            "overhead": adapt.Image(
                 role="image/overhead",
                 height=8,
                 width=8,
                 channels=3,
                 optional=True,
             ),
-        ),
-        action=adapt.ActionLayout(adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1)),
+        },
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     adapter = resolve(env, model)
     payload = adapter.transform_obs(

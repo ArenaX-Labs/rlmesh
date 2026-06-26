@@ -1,4 +1,4 @@
-"""The model-side spec: expected input payload plus the action output."""
+"""The model-side spec: expected input payload tree plus the action output."""
 
 from __future__ import annotations
 
@@ -9,29 +9,32 @@ from typing import Any, cast
 
 from ..constants import MODEL_METADATA_KEY
 from ._codec import normalize_spec
-from .action import ActionLayout
-from .action_serialization import action_layout_from_dict, action_layout_to_dict
-from .model_inputs import ModelInput
+from .action import Action
+from .action_serialization import action_from_dict, action_to_dict
+from .model_inputs import InputNode
 from .model_serialization import model_input_from_dict, model_input_to_dict
 
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """Declarative description of a model's input payload and action output.
+    """Declarative description of a model's input payload tree and action output.
+
+    ``input`` is a recursive tree whose container type *is* the payload container
+    the model's ``predict`` receives: a bare leaf (a single tensor/string), a
+    ``dict[str, subtree]``, or a ``tuple`` of subtrees. A leaf is an
+    :class:`~rlmesh.adapters.Image`, :class:`~rlmesh.adapters.State`,
+    :class:`~rlmesh.adapters.Concat`, :class:`~rlmesh.adapters.Text`, or
+    :class:`~rlmesh.adapters.Custom`. Placement (tree position) is the payload
+    position -- model leaves carry no ``key``, and a role may be reused across
+    leaves (one env camera can feed several input slots).
 
     Attributes:
-        inputs: Input features keyed into the model payload dict.
-        action: Layout of the action vector produced by the model.
+        input: The model input tree.
+        output: Layout of the action vector produced by the model.
     """
 
-    inputs: tuple[ModelInput, ...]
-    action: ActionLayout
-
-    def __post_init__(self) -> None:
-        keys = [item.key for item in self.inputs]
-        duplicates = sorted({key for key in keys if keys.count(key) > 1})
-        if duplicates:
-            raise ValueError(f"ModelSpec has duplicate input keys: {duplicates}")
+    input: InputNode
+    output: Action
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
@@ -41,8 +44,8 @@ class ModelSpec:
                 callable, or an entrypoint custom at the publish boundary).
         """
         raw = {
-            "inputs": [model_input_to_dict(item) for item in self.inputs],
-            "action": action_layout_to_dict(self.action),
+            "input": model_input_to_dict(self.input),
+            "output": action_to_dict(self.output),
         }
         return normalize_spec("model", raw, allow_custom=True)
 
@@ -77,10 +80,9 @@ class ModelSpec:
         Python shape readers below operate on already-valid data.
         """
         canonical = normalize_spec("model", data, allow_custom=True)
-        inputs = tuple(model_input_from_dict(item) for item in canonical["inputs"])
         return cls(
-            inputs=inputs,
-            action=action_layout_from_dict(canonical["action"]),
+            input=model_input_from_dict(canonical["input"]),
+            output=action_from_dict(canonical["output"]),
         )
 
     @classmethod

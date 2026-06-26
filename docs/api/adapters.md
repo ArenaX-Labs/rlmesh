@@ -55,18 +55,18 @@ An environment publishes {class}`~rlmesh.adapters.EnvTags` in its contract metad
 
 ```{tip}
 For a flat numeric leaf whose fixed index ranges carry distinct meaning, tag it with a
-{class}`~rlmesh.adapters.StateLayout` of {class}`~rlmesh.adapters.StateField` slices instead of a
+{class}`~rlmesh.adapters.Split` of {class}`~rlmesh.adapters.Field` slices instead of a
 `StateTag`.
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.StateLayout
+.. autoclass:: rlmesh.adapters.Split
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.StateField
+.. autoclass:: rlmesh.adapters.Field
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
@@ -86,61 +86,55 @@ For a flat numeric leaf whose fixed index ranges carry distinct meaning, tag it 
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.ImageInput
+.. autoclass:: rlmesh.adapters.Image
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.StateInput
+.. autoclass:: rlmesh.adapters.State
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.StateComponent
+.. autoclass:: rlmesh.adapters.Concat
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.TextInput
+.. autoclass:: rlmesh.adapters.Text
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ## Action Layout
 
-The action layout is a shared vocabulary. An environment tags the action vector its `step` accepts; a model declares the action vector it emits. The resolver converts between them per component.
+The action layout is a shared vocabulary. An environment tags the action vector its `step` accepts; a model declares the action vector it emits. The resolver converts between them per actuator.
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.ActionLayout
+.. autoclass:: rlmesh.adapters.Action
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.ActionComponent
+.. autoclass:: rlmesh.adapters.Actuator
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
 
 ## Escape Hatches
 
-When a pairing needs logic a declarative spec cannot express, three mechanisms compose, most local first. A custom input computes one payload key from the raw observation while the rest stays spec-driven. A custom encoding handles a rotation convention the native crate does not ship. A custom adapter subclasses {class}`~rlmesh.adapters.AdapterBase` to add stateful behavior, typically by wrapping a resolved adapter and overriding only the stateful part.
+When a pairing needs logic a declarative spec cannot express, three mechanisms compose, most local first. A custom input computes one payload slot from the raw observation while the rest stays spec-driven. A custom encoding handles a rotation convention the native crate does not ship. A custom adapter subclasses {class}`~rlmesh.adapters.AdapterBase` to add stateful behavior, typically by wrapping a resolved adapter and overriding only the stateful part.
 
 ### Custom inputs
 
-{class}`~rlmesh.adapters.InlineCustomInput` runs an in-process callable that maps the raw observation to one payload key; it is local only. {class}`~rlmesh.adapters.EntrypointCustomInput` names a `module:callable` string that is imported only when you pass `resolve(..., trust_entrypoints=True)`, so it can travel in a contract. A custom input receives the environment's own keys, not roles, and returns the entire payload key, so it does no role-matching, `dim`/`index`, or range-mapping, and is observation-side only.
+A {class}`~rlmesh.adapters.Custom` input runs host-language code that maps the raw observation to one payload slot. `Custom(transform=fn)` runs an in-process callable and is local only; `Custom(entrypoint="module:callable")` names a string that is imported only when you pass `resolve(..., trust_entrypoints=True)`, so it can travel in a contract. A custom input receives the environment's own keys, not roles, and returns the entire payload slot, so it does no role-matching, `dim`/`index`, or range-mapping, and is observation-side only.
 
 ```{eval-rst}
-.. autoclass:: rlmesh.adapters.InlineCustomInput
-   :class-doc-from: class
-   :exclude-members: __init__, __new__
-```
-
-```{eval-rst}
-.. autoclass:: rlmesh.adapters.EntrypointCustomInput
+.. autoclass:: rlmesh.adapters.Custom
    :class-doc-from: class
    :exclude-members: __init__, __new__
 ```
@@ -157,9 +151,9 @@ ROT6D_MINE = adapt.CustomEncoding(
 )
 ```
 
-The packing must preserve the base width, and an observation custom encoding must be the sole component of a single-piece `StateInput` (the offset of a field interior to a multi-piece state is env-dependent). At resolve time the two arms are round-tripped on a probe to catch a mispaired encode/decode; pass `resolve(..., check_inverse=False)` to skip. The transforms are in-process callables, so the spec is local; a serializable `module:callable` form is planned.
+The packing must preserve the base width, and an observation custom encoding must be the sole part of a single-part `State` (the offset of a field interior to a multi-part `Concat` is env-dependent). At resolve time the two arms are round-tripped on a probe to catch a mispaired encode/decode; pass `resolve(..., check_inverse=False)` to skip. The transforms are in-process callables, so the spec is local; a serializable `module:callable` form is planned.
 
-When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field state, or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole payload key with an `InlineCustomInput`. What none of these do is attach a custom encoding to a role in the spec itself: the vocabulary stays closed so specs remain pure data that resolve on a remote client with no code. Reach for the boundary wrapper for a one-off; upstream the encoding once you want it attached to a role and reused.
+When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field state, or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole payload slot with a `Custom` input. What none of these do is attach a custom encoding to a role in the spec itself: the vocabulary stays closed so specs remain pure data that resolve on a remote client with no code. Reach for the boundary wrapper for a one-off; upstream the encoding once you want it attached to a role and reused.
 
 ### Custom adapters
 

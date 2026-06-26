@@ -58,15 +58,12 @@
     },
     "atol": 1e-6,
     "payload": {
-      "state": {
-        "data": [
-          0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 0.0, 1.0, 0.0, 0.0,
-          1.0
-        ],
-        "dtype": "float32",
-        "kind": "array",
-        "shape": [9]
-      }
+      "data": [
+        0.10000000149011612, -0.20000000298023224, 0.30000001192092896, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [9]
     }
   },
   "kind": "apply",
@@ -80,7 +77,21 @@
     "shape": [10]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "components": [
+        {
+          "dim": 3,
+          "role": "proprio/eef_pos"
+        },
+        {
+          "encoding": "rot6d_rowmajor",
+          "role": "proprio/eef_rot"
+        }
+      ],
+      "dtype": "float32",
+      "type": "state"
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -105,35 +116,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "dim": 3,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_pos"
-          },
-          {
-            "dim": null,
-            "encoding": "rot6d_rowmajor",
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/eef_rot"
-          }
-        ],
-        "container": "array",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": null,
-        "reshape": null,
-        "type": "state"
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

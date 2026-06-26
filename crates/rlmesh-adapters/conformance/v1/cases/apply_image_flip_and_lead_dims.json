@@ -52,12 +52,10 @@
     },
     "atol": 1e-6,
     "payload": {
-      "video": {
-        "data": [90, 100, 110, 60, 70, 80, 30, 40, 50, 0, 10, 20],
-        "dtype": "uint8",
-        "kind": "array",
-        "shape": [1, 1, 2, 2, 3]
-      }
+      "data": [90, 100, 110, 60, 70, 80, 30, 40, 50, 0, 10, 20],
+      "dtype": "uint8",
+      "kind": "array",
+      "shape": [1, 1, 2, 2, 3]
     }
   },
   "kind": "apply",
@@ -71,7 +69,19 @@
     "shape": [7]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "dtype": "uint8",
+      "height": null,
+      "layout": "hwc",
+      "lead_dims": 2,
+      "normalize": false,
+      "resample": "bilinear_aa",
+      "role": "image/primary",
+      "type": "image",
+      "upside_down": false,
+      "width": null
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -96,22 +106,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "dtype": "uint8",
-        "height": null,
-        "key": "video",
-        "layout": "hwc",
-        "lead_dims": 2,
-        "normalize": false,
-        "resample": "bilinear_aa",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false,
-        "width": null
-      }
-    ]
+    }
   },
   "observation": {
     "data": {

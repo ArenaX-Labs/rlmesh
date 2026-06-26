@@ -23,36 +23,33 @@ ENV_TAGS = adapt.EnvTags(
         "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
         "goal": adapt.TextTag(),
     },
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )
 ```
 
-The model declares its own format, written without any knowledge of an environment: a 224x224 image, a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action.
+The model declares its own format, written without any knowledge of an environment: a 224x224 image, a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action. The `input` is a tree whose container _is_ the payload the prediction function receives -- here a `dict`, so each key is a payload slot.
 
 ```python
 MODEL_SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=224, width=224),
-        adapt.StateInput(
-            "proprio",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=224, width=224),
+        "proprio": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="rot6d"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("task"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "task": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 ```
@@ -63,7 +60,7 @@ The `predict` function works purely in the model's format; the payload already a
 def predict(payload: dict[str, Any]) -> Any:
     assert payload["image"].shape == (224, 224, 3)
     assert len(payload["proprio"]) == 10  # pos(3) + rot6d(6) + grip(1)
-    return np.zeros(MODEL_SPEC.action.dim, dtype=np.float32)
+    return np.zeros(MODEL_SPEC.output.dim, dtype=np.float32)
 ```
 
 The env is served with its tags published in the contract, then `Model(spec=...).run(env)` resolves the adapter from that contract and runs the episode.
@@ -105,25 +102,22 @@ Each model is one spec module plus a loader; the registry is one line per checkp
 ```python
 # models/smolvla.py
 SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput(
-            "observation.images.image", role=adapt.IMAGE_PRIMARY, height=224, width=224
+    input={
+        "observation.images.image": adapt.Image(
+            role=adapt.IMAGE_PRIMARY, height=224, width=224
         ),
-        adapt.ImageInput(
-            "observation.images.image2", role=adapt.IMAGE_WRIST, height=224, width=224
+        "observation.images.image2": adapt.Image(
+            role=adapt.IMAGE_WRIST, height=224, width=224
         ),
-        adapt.StateInput(
-            "observation.state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+        "observation.state": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(...),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(...),
 )
 ```
 
@@ -144,15 +138,15 @@ def build_adapter(model_name, env_name, env):
     )
 ```
 
-`metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a `StateLayout`, so the same specs that pair with the Dict envs resolve against it unchanged.
+`metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a `Split`, so the same specs that pair with the Dict envs resolve against it unchanged.
 
 ```python
 # envs/metaworld.py — one flat leaf split by index range
-"proprio": adapt.StateLayout(
-    adapt.StateField(adapt.EEF_POS, 3),
-    adapt.StateField(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
-    adapt.StateField(adapt.GRIPPER_POS, 1),
-    adapt.StateField(dim=10),  # object + goal positions: not consumed here
+"proprio": adapt.Split(
+    adapt.Field(adapt.EEF_POS, 3),
+    adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),
+    adapt.Field(adapt.GRIPPER_POS, 1),
+    adapt.Field(dim=10),  # object + goal positions: not consumed here
 ),
 ```
 

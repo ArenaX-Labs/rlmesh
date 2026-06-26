@@ -41,12 +41,25 @@
     }
   },
   "expect": {
-    "describe": "observation:\n  \"image\" <- image \"cam\" (resize 3x4 (bilinear_aa), uint8)\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:6]\n  \"action/gripper\" <- model[6:7] (range (0.0, 1.0)->(-1.0, 1.0)) (sign)\n  clip to (-1.0, 1.0)",
+    "describe": "observation:\n  \"<root>\" <- image \"cam\" (resize 3x4 (bilinear_aa), uint8)\naction:\n  \"action/delta_eef_pos\" <- model[0:3]\n  \"action/delta_eef_rot\" <- model[3:6]\n  \"action/gripper\" <- model[6:7] (range (0.0, 1.0)->(-1.0, 1.0)) (sign)\n  clip to (-1.0, 1.0)",
     "ok": true
   },
   "kind": "resolve",
   "model_spec": {
-    "action": {
+    "input": {
+      "dtype": "uint8",
+      "fit": "stretch",
+      "height": 3,
+      "layout": "hwc",
+      "lead_dims": 0,
+      "normalize": false,
+      "resample": "bilinear_aa",
+      "role": "image/primary",
+      "type": "image",
+      "upside_down": false,
+      "width": 4
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -71,23 +84,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "dtype": "uint8",
-        "fit": "stretch",
-        "height": 3,
-        "key": "image",
-        "layout": "hwc",
-        "lead_dims": 0,
-        "normalize": false,
-        "resample": "bilinear_aa",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false,
-        "width": 4
-      }
-    ]
+    }
   },
   "observation_space": {
     "children": [

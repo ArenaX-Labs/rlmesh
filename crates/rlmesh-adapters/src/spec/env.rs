@@ -4,7 +4,7 @@ mod image;
 mod state;
 mod text;
 
-use super::action::ActionLayout;
+use super::action::Action;
 
 pub use image::EnvImage;
 pub use state::EnvState;
@@ -33,5 +33,5 @@ pub enum EnvFeature {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvFeatures {
     pub observation: Vec<EnvFeature>,
-    pub action: ActionLayout,
+    pub action: Action,
 }

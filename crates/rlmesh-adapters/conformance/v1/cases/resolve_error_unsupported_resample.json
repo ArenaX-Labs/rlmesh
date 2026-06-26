@@ -45,7 +45,19 @@
   },
   "kind": "resolve",
   "model_spec": {
-    "action": {
+    "input": {
+      "dtype": "uint8",
+      "height": 3,
+      "layout": "hwc",
+      "lead_dims": 0,
+      "normalize": false,
+      "resample": "bicubic",
+      "role": "image/primary",
+      "type": "image",
+      "upside_down": false,
+      "width": 4
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -70,22 +82,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "dtype": "uint8",
-        "height": 3,
-        "key": "image",
-        "layout": "hwc",
-        "lead_dims": 0,
-        "normalize": false,
-        "resample": "bicubic",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false,
-        "width": 4
-      }
-    ]
+    }
   },
   "observation_space": {
     "children": [

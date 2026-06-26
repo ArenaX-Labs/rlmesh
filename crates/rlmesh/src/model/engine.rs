@@ -7,7 +7,7 @@
 //! language) binding constructs `AdaptedModelHandler::new(predict, resolver)`
 //! and serves it; a pure-Rust model does the same with no host runtime.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -225,21 +225,20 @@ fn probe_model_internal_state(predict: &Arc<dyn PredictFn>, config: &RouteConfig
     let referenced = obs_keys(config);
     // Sample the env obs space, then run it through the engine so `predict` sees
     // the production-shaped (frame-stacked / adapted) input, not a raw env obs.
-    let assemble =
-        |seed: u64, episode: &str| -> Result<BTreeMap<String, rlmesh_adapters::v1::Value>> {
-            let sampled = rlmesh_spaces::sample_seeded(space, seed)
-                .map_err(|err| Error::Internal(format!("probe sample failed: {err}")))?;
-            let mut scratch = FrameBuffers::new();
-            let raw = space_value_to_obs_map(&sampled, space, &referenced)?;
-            Ok(assemble_obs(
-                &config.adapter,
-                &raw,
-                episode,
-                &mut scratch,
-                config.customs.as_ref(),
-                config.encodings.as_ref(),
-            )?)
-        };
+    let assemble = |seed: u64, episode: &str| -> Result<rlmesh_adapters::v1::Value> {
+        let sampled = rlmesh_spaces::sample_seeded(space, seed)
+            .map_err(|err| Error::Internal(format!("probe sample failed: {err}")))?;
+        let mut scratch = FrameBuffers::new();
+        let raw = space_value_to_obs_map(&sampled, space, &referenced)?;
+        Ok(assemble_obs(
+            &config.adapter,
+            &raw,
+            episode,
+            &mut scratch,
+            config.customs.as_ref(),
+            config.encodings.as_ref(),
+        )?)
+    };
     let a = assemble(PROBE_SEED_A, "probe-a")?;
     let b = assemble(PROBE_SEED_B, "probe-b")?;
     // The model's own back-to-back nondeterminism floor (GPU/dropout noise).

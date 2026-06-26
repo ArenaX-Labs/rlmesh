@@ -7,10 +7,11 @@
 //! the untrusted handshake contract). Every failure names which side
 //! disagreed — the tag or the space.
 
+use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
 use crate::spec::{
-    ActionComponent, ActionLayout, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText,
-    ImageLayout, ObsTag, StateLayout,
+    Action, Actuator, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, ImageLayout,
+    ObsLeaf, ObsNode, SplitLayout,
 };
 
 /// A validation failure while joining tags against a space.
@@ -24,6 +25,14 @@ pub enum JoinError {
         expected: &'static str,
         actual: String,
     },
+    #[error("observation tuple at {path:?} declares {actual} item(s) but the space has {expected}")]
+    TupleArityMismatch {
+        path: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("observation tuple at {path:?} index [{index}] is out of range")]
+    TupleIndexOutOfRange { path: String, index: usize },
     #[error(
         "state {key:?} declares encoding {encoding} ({dims} dims) but the space width is {width}"
     )]
@@ -76,18 +85,19 @@ pub enum JoinError {
 
 type Result<T> = std::result::Result<T, JoinError>;
 
-/// Join sparse tags against the observation and action spaces.
+/// Join the env observation tree and action layout against their spaces.
 pub fn join(
     tags: &EnvTags,
     obs_space: &SpaceView,
     action_space: &SpaceView,
 ) -> Result<EnvFeatures> {
-    let mut observation = Vec::with_capacity(tags.observation.len());
-    for (path, tag) in &tags.observation {
-        let leaf = resolve_leaf(obs_space, path)
-            .ok_or_else(|| JoinError::KeyNotInSpace { key: path.clone() })?;
-        observation.extend(join_feature(path, tag, leaf)?);
-    }
+    let mut observation = Vec::new();
+    join_node(
+        &tags.observation,
+        obs_space,
+        &NodePath::root(),
+        &mut observation,
+    )?;
     let action = resolve_action(&tags.action, action_space)?;
     Ok(EnvFeatures {
         observation,
@@ -95,32 +105,81 @@ pub fn join(
     })
 }
 
-/// Resolve a dotted observation key-path to a leaf of the space. The reserved
-/// `"."` denotes the flat/root observation.
-fn resolve_leaf<'view>(space: &'view SpaceView, path: &str) -> Option<&'view SpaceView> {
-    if path == "." {
-        return Some(space);
+/// Walk the observation tree in lockstep with the space, flattening each leaf
+/// into the `Vec<EnvFeature>` the resolver consumes. A `Dict` node descends each
+/// key (the space must be a `Dict` carrying that key); a `Tuple` node descends
+/// each index positionally (the space must be a same-arity `Tuple`); a `Leaf`
+/// joins against the space leaf at the current `source` path.
+fn join_node(
+    node: &ObsNode,
+    view: &SpaceView,
+    source: &NodePath,
+    out: &mut Vec<EnvFeature>,
+) -> Result<()> {
+    match node {
+        ObsNode::Leaf(leaf) => out.extend(join_feature(source, leaf, view)?),
+        ObsNode::Dict(map) => {
+            if view.kind != SpaceViewKind::Dict {
+                return Err(JoinError::ClassMismatch {
+                    key: source.to_string(),
+                    expected: "a Dict space",
+                    actual: describe_space(view),
+                });
+            }
+            for (key, child) in map {
+                let child_view = view.child(key).ok_or_else(|| JoinError::KeyNotInSpace {
+                    key: source.push_key(key.clone()).to_string(),
+                })?;
+                join_node(child, child_view, &source.push_key(key.clone()), out)?;
+            }
+        }
+        ObsNode::Tuple(items) => {
+            if view.kind != SpaceViewKind::Tuple {
+                return Err(JoinError::ClassMismatch {
+                    key: source.to_string(),
+                    expected: "a Tuple space",
+                    actual: describe_space(view),
+                });
+            }
+            if items.len() != view.children.len() {
+                return Err(JoinError::TupleArityMismatch {
+                    path: source.to_string(),
+                    expected: view.children.len(),
+                    actual: items.len(),
+                });
+            }
+            for (index, item) in items.iter().enumerate() {
+                let child_view =
+                    view.child_at(index)
+                        .ok_or_else(|| JoinError::TupleIndexOutOfRange {
+                            path: source.to_string(),
+                            index,
+                        })?;
+                join_node(item, child_view, &source.push_index(index), out)?;
+            }
+        }
     }
-    let mut node = space;
-    for segment in path.split('.') {
-        node = node.child(segment)?;
-    }
-    Some(node)
+    Ok(())
 }
 
-fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFeature>> {
-    match tag {
-        ObsTag::Image(image) => {
+fn join_feature(
+    source: &NodePath,
+    leaf_tag: &ObsLeaf,
+    leaf: &SpaceView,
+) -> Result<Vec<EnvFeature>> {
+    let path = source.to_string();
+    match leaf_tag {
+        ObsLeaf::Image(image) => {
             if leaf.kind != SpaceViewKind::Box || leaf.shape.len() != 3 {
                 return Err(JoinError::ClassMismatch {
-                    key: path.to_owned(),
+                    key: path,
                     expected: "an image (3-D Box)",
                     actual: describe_space(leaf),
                 });
             }
             let (height, width, channels) = image_hwc(&leaf.shape, image.layout);
             Ok(vec![EnvFeature::Image(EnvImage {
-                key: path.to_owned(),
+                source: source.clone(),
                 role: image.role.clone(),
                 layout: image.layout,
                 upside_down: image.upside_down,
@@ -130,10 +189,10 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 value_range: uniform_finite_range(leaf),
             })])
         }
-        ObsTag::State(state) => {
+        ObsLeaf::State(state) => {
             if !is_numeric(leaf) {
                 return Err(JoinError::ClassMismatch {
-                    key: path.to_owned(),
+                    key: path,
                     expected: "a numeric state",
                     actual: describe_space(leaf),
                 });
@@ -145,15 +204,15 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 && width != native.dims()
             {
                 return Err(JoinError::EncodingWidthMismatch {
-                    key: path.to_owned(),
+                    key: path,
                     encoding: native.as_str(),
                     dims: native.dims(),
                     width,
                 });
             }
-            let range = reconcile_range(uniform_finite_range(leaf), state.range, path)?;
+            let range = reconcile_range(uniform_finite_range(leaf), state.range, &path)?;
             Ok(vec![EnvFeature::State(EnvState {
-                key: path.to_owned(),
+                source: source.clone(),
                 role: state.role.clone(),
                 slice_offset: None,
                 dim: Some(width),
@@ -161,17 +220,17 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
                 range,
             })])
         }
-        ObsTag::Layout(layout) => join_layout(path, layout, leaf),
-        ObsTag::Text(text) => {
+        ObsLeaf::Split(layout) => join_split(source, layout, leaf),
+        ObsLeaf::Text(text) => {
             if leaf.kind != SpaceViewKind::Text {
                 return Err(JoinError::ClassMismatch {
-                    key: path.to_owned(),
+                    key: path,
                     expected: "a text space",
                     actual: describe_space(leaf),
                 });
             }
             Ok(vec![EnvFeature::Text(EnvText {
-                key: path.to_owned(),
+                source: source.clone(),
                 role: text.role.clone(),
             })])
         }
@@ -184,10 +243,15 @@ fn join_feature(path: &str, tag: &ObsTag, leaf: &SpaceView) -> Result<Vec<EnvFea
 /// to the leaf width (mirroring the action width law). A role-less field is a
 /// skip — it advances the offset but emits no feature. Each role field's range
 /// is derived from its own slice of the leaf's bounds.
-fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec<EnvFeature>> {
+fn join_split(
+    source: &NodePath,
+    layout: &SplitLayout,
+    leaf: &SpaceView,
+) -> Result<Vec<EnvFeature>> {
+    let path = source.to_string();
     if !is_numeric(leaf) {
         return Err(JoinError::ClassMismatch {
-            key: path.to_owned(),
+            key: path,
             expected: "a numeric state",
             actual: describe_space(leaf),
         });
@@ -197,12 +261,10 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
         .fields
         .iter()
         .try_fold(0u32, |acc, field| acc.checked_add(field.dim))
-        .ok_or_else(|| JoinError::StateLayoutWidthOverflow {
-            key: path.to_owned(),
-        })?;
+        .ok_or_else(|| JoinError::StateLayoutWidthOverflow { key: path.clone() })?;
     if layout_sum != width {
         return Err(JoinError::StateLayoutWidthMismatch {
-            key: path.to_owned(),
+            key: path,
             layout_sum,
             width,
         });
@@ -216,7 +278,7 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
                 && field.dim != native.dims()
             {
                 return Err(JoinError::EncodingWidthMismatch {
-                    key: path.to_owned(),
+                    key: path,
                     encoding: native.as_str(),
                     dims: native.dims(),
                     width: field.dim,
@@ -224,15 +286,15 @@ fn join_layout(path: &str, layout: &StateLayout, leaf: &SpaceView) -> Result<Vec
             }
             if seen_roles.contains(&role.as_str()) {
                 return Err(JoinError::DuplicateLayoutRole {
-                    key: path.to_owned(),
+                    key: path,
                     role: role.clone(),
                 });
             }
             seen_roles.push(role.as_str());
             let space_range = slice_uniform_finite_range(leaf, offset, field.dim);
-            let range = reconcile_range(space_range, field.range, path)?;
+            let range = reconcile_range(space_range, field.range, &path)?;
             features.push(EnvFeature::State(EnvState {
-                key: path.to_owned(),
+                source: source.clone(),
                 role: role.clone(),
                 slice_offset: Some(offset),
                 dim: Some(field.dim),
@@ -330,7 +392,7 @@ fn uniform_finite_range(leaf: &SpaceView) -> Option<(f64, f64)> {
 /// bounds the model's range should map into (e.g. model `[-1, 1]` into an env
 /// `Box(0, 1)` action). Components are laid out in order; each derives its
 /// range from its own `[offset, offset+dim)` slice of the action bounds.
-fn resolve_action(action: &ActionLayout, action_space: &SpaceView) -> Result<ActionLayout> {
+fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
     if action_space.kind != SpaceViewKind::Box {
         return Err(JoinError::ActionClass {
             actual: describe_space(action_space),
@@ -363,13 +425,13 @@ fn resolve_action(action: &ActionLayout, action_space: &SpaceView) -> Result<Act
         }
         let space_range = slice_uniform_finite_range(action_space, offset, component.dim);
         let range = reconcile_range(space_range, component.range, &component.role)?;
-        components.push(ActionComponent {
+        components.push(Actuator {
             range,
             ..component.clone()
         });
         offset += component.dim;
     }
-    Ok(ActionLayout {
+    Ok(Action {
         components,
         clip: action.clip,
         // The env declaration drives this join; preserve its replay horizon
@@ -426,7 +488,7 @@ mod tests {
 
     use super::*;
     use crate::spec::{AcceptSet, RotationEncoding};
-    use crate::spec::{ActionComponent, ImageTag, StateField, StateLayout, StateTag, TextTag};
+    use crate::spec::{Actuator, Field, ImageTag, SplitLayout, StateTag, TextTag};
 
     fn box_view(shape: Vec<i64>, low: Option<Vec<f64>>, high: Option<Vec<f64>>) -> SpaceView {
         SpaceView {
@@ -464,16 +526,16 @@ mod tests {
         }
     }
 
-    fn action_layout(components: Vec<ActionComponent>) -> ActionLayout {
-        ActionLayout {
+    fn action_layout(components: Vec<Actuator>) -> Action {
+        Action {
             components,
             clip: None,
             execute_horizon: 1,
         }
     }
 
-    fn component(role: &str, dim: u32, encoding: Option<RotationEncoding>) -> ActionComponent {
-        ActionComponent {
+    fn component(role: &str, dim: u32, encoding: Option<RotationEncoding>) -> Actuator {
+        Actuator {
             role: role.to_owned(),
             dim,
             encoding,
@@ -485,13 +547,24 @@ mod tests {
         }
     }
 
+    /// A single-key Dict observation tree carrying one leaf at `key`.
+    fn leaf_at(key: &str, leaf: ObsLeaf) -> ObsNode {
+        let mut map = BTreeMap::new();
+        map.insert(key.to_owned(), ObsNode::Leaf(leaf));
+        ObsNode::Dict(map)
+    }
+
+    /// An empty Dict observation tree (no tagged leaves).
+    fn empty_obs() -> ObsNode {
+        ObsNode::Dict(BTreeMap::new())
+    }
+
     /// Join a single observation entry against its leaf, with an empty action.
-    fn join_obs(key: &str, view: SpaceView, tag: ObsTag) -> Result<EnvFeatures> {
+    /// The source path of the joined feature is `key`.
+    fn join_obs(key: &str, view: SpaceView, leaf: ObsLeaf) -> Result<EnvFeatures> {
         let obs = dict_view(vec![(key, view)]);
-        let mut observation = BTreeMap::new();
-        observation.insert(key.to_owned(), tag);
         let tags = EnvTags {
-            observation,
+            observation: leaf_at(key, leaf),
             action: action_layout(vec![]),
         };
         join(&tags, &obs, &box_view(vec![0], None, None))
@@ -514,28 +587,28 @@ mod tests {
         let mut observation = BTreeMap::new();
         observation.insert(
             "camera".to_owned(),
-            ObsTag::Image(ImageTag {
+            ObsNode::Leaf(ObsLeaf::Image(ImageTag {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
-            }),
+            })),
         );
         observation.insert(
             "eef_pos".to_owned(),
-            ObsTag::State(StateTag {
+            ObsNode::Leaf(ObsLeaf::State(StateTag {
                 role: "proprio/eef_pos".to_owned(),
                 encoding: None,
                 range: None,
-            }),
+            })),
         );
         observation.insert(
             "instruction".to_owned(),
-            ObsTag::Text(TextTag {
+            ObsNode::Leaf(ObsLeaf::Text(TextTag {
                 role: "instruction".to_owned(),
-            }),
+            })),
         );
         let tags = EnvTags {
-            observation,
+            observation: ObsNode::Dict(observation),
             action: action_layout(vec![component("action/delta_pos", 4, None)]),
         };
 
@@ -552,20 +625,174 @@ mod tests {
             .expect("state feature");
         assert_eq!(state.dim, Some(3));
         assert_eq!(state.range, Some((-1.0, 1.0)));
+        assert_eq!(state.source.to_string(), "eef_pos");
+    }
+
+    #[test]
+    fn joins_a_nested_dict_observation() {
+        // The tree shape that replaces dotted keys: robot.eef_pos lives in a
+        // nested Dict, addressed structurally; its source path renders dotted.
+        let obs = dict_view(vec![(
+            "robot",
+            dict_view(vec![(
+                "eef_pos",
+                box_view(vec![3], Some(vec![-1.0]), Some(vec![1.0])),
+            )]),
+        )]);
+        let action = box_view(vec![0], None, None);
+        let mut robot = BTreeMap::new();
+        robot.insert(
+            "eef_pos".to_owned(),
+            ObsNode::Leaf(ObsLeaf::State(StateTag {
+                role: "proprio/eef_pos".to_owned(),
+                encoding: None,
+                range: None,
+            })),
+        );
+        let mut root = BTreeMap::new();
+        root.insert("robot".to_owned(), ObsNode::Dict(robot));
+        let tags = EnvTags {
+            observation: ObsNode::Dict(root),
+            action: action_layout(vec![]),
+        };
+        let features = join(&tags, &obs, &action).expect("join");
+        let EnvFeature::State(state) = &features.observation[0] else {
+            panic!("expected state");
+        };
+        assert_eq!(state.source.to_string(), "robot.eef_pos");
+    }
+
+    #[test]
+    fn joins_a_tuple_observation_positionally() {
+        // A Tuple obs: items descend by index, source paths render `[i]`.
+        let obs = SpaceView {
+            kind: SpaceViewKind::Tuple,
+            shape: Vec::new(),
+            dtype: "unspecified".to_owned(),
+            low: None,
+            high: None,
+            keys: Vec::new(),
+            children: vec![
+                box_view(vec![3], Some(vec![-1.0]), Some(vec![1.0])),
+                text_view(),
+            ],
+        };
+        let action = box_view(vec![0], None, None);
+        let tags = EnvTags {
+            observation: ObsNode::Tuple(vec![
+                ObsNode::Leaf(ObsLeaf::State(StateTag {
+                    role: "proprio/eef_pos".to_owned(),
+                    encoding: None,
+                    range: None,
+                })),
+                ObsNode::Leaf(ObsLeaf::Text(TextTag {
+                    role: "instruction".to_owned(),
+                })),
+            ]),
+            action: action_layout(vec![]),
+        };
+        let features = join(&tags, &obs, &action).expect("join");
+        assert_eq!(features.observation.len(), 2);
+        let EnvFeature::State(state) = &features.observation[0] else {
+            panic!("expected state");
+        };
+        assert_eq!(state.source.to_string(), "[0]");
+    }
+
+    #[test]
+    fn rejects_tuple_arity_mismatch() {
+        let obs = SpaceView {
+            kind: SpaceViewKind::Tuple,
+            shape: Vec::new(),
+            dtype: "unspecified".to_owned(),
+            low: None,
+            high: None,
+            keys: Vec::new(),
+            children: vec![box_view(vec![3], None, None)],
+        };
+        let action = box_view(vec![0], None, None);
+        let tags = EnvTags {
+            observation: ObsNode::Tuple(vec![
+                ObsNode::Leaf(ObsLeaf::State(StateTag {
+                    role: "a".to_owned(),
+                    encoding: None,
+                    range: None,
+                })),
+                ObsNode::Leaf(ObsLeaf::State(StateTag {
+                    role: "b".to_owned(),
+                    encoding: None,
+                    range: None,
+                })),
+            ]),
+            action: action_layout(vec![]),
+        };
+        assert!(matches!(
+            join(&tags, &obs, &action),
+            Err(JoinError::TupleArityMismatch {
+                expected: 1,
+                actual: 2,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_dict_node_against_non_dict_space() {
+        // A Dict observation node against a flat Box space is a class mismatch.
+        let obs = box_view(vec![3], None, None);
+        let action = box_view(vec![0], None, None);
+        let tags = EnvTags {
+            observation: leaf_at(
+                "eef_pos",
+                ObsLeaf::State(StateTag {
+                    role: "a".to_owned(),
+                    encoding: None,
+                    range: None,
+                }),
+            ),
+            action: action_layout(vec![]),
+        };
+        assert!(matches!(
+            join(&tags, &obs, &action),
+            Err(JoinError::ClassMismatch {
+                expected: "a Dict space",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn joins_a_bare_single_leaf_at_root() {
+        // A single-leaf observation is a bare Leaf at the root (no key), and its
+        // source path is the empty root.
+        let obs = box_view(vec![3], Some(vec![-1.0]), Some(vec![1.0]));
+        let action = box_view(vec![0], None, None);
+        let tags = EnvTags {
+            observation: ObsNode::Leaf(ObsLeaf::State(StateTag {
+                role: "proprio/eef_pos".to_owned(),
+                encoding: None,
+                range: None,
+            })),
+            action: action_layout(vec![]),
+        };
+        let features = join(&tags, &obs, &action).expect("join");
+        let EnvFeature::State(state) = &features.observation[0] else {
+            panic!("expected state");
+        };
+        assert!(state.source.is_root());
+        assert_eq!(state.dim, Some(3));
     }
 
     #[test]
     fn rejects_key_not_in_space() {
         let obs = dict_view(vec![("camera", box_view(vec![8, 8, 3], None, None))]);
-        let mut observation = BTreeMap::new();
-        observation.insert(
-            "missing".to_owned(),
-            ObsTag::Text(TextTag {
-                role: "instruction".to_owned(),
-            }),
-        );
         let tags = EnvTags {
-            observation,
+            observation: leaf_at(
+                "missing",
+                ObsLeaf::Text(TextTag {
+                    role: "instruction".to_owned(),
+                }),
+            ),
             action: action_layout(vec![]),
         };
         let action = box_view(vec![0], None, None);
@@ -582,7 +809,7 @@ mod tests {
         let obs = dict_view(vec![]);
         let action = box_view(vec![3], None, None);
         let tags = EnvTags {
-            observation: BTreeMap::new(),
+            observation: empty_obs(),
             action: action_layout(vec![
                 component("action/a", u32::MAX, None),
                 component("action/b", 2, None),
@@ -599,15 +826,15 @@ mod tests {
         let result = join_obs(
             "state",
             box_view(vec![3], None, None),
-            ObsTag::Layout(StateLayout {
+            ObsLeaf::Split(SplitLayout {
                 fields: vec![
-                    StateField {
+                    Field {
                         role: Some("a".to_owned()),
                         dim: u32::MAX,
                         encoding: None,
                         range: None,
                     },
-                    StateField {
+                    Field {
                         role: Some("b".to_owned()),
                         dim: 2,
                         encoding: None,
@@ -627,7 +854,7 @@ mod tests {
         let result = join_obs(
             "camera",
             box_view(vec![64, 64], None, None),
-            ObsTag::Image(ImageTag {
+            ObsLeaf::Image(ImageTag {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
@@ -645,7 +872,7 @@ mod tests {
         let result = join_obs(
             "rot",
             box_view(vec![3], None, None),
-            ObsTag::State(StateTag {
+            ObsLeaf::State(StateTag {
                 role: "proprio/eef_rot".to_owned(),
                 encoding: Some(AcceptSet::single(RotationEncoding::QuatXyzw)),
                 range: None,
@@ -664,7 +891,7 @@ mod tests {
     #[test]
     fn rejects_finite_range_disagreement_but_allows_unbounded_override() {
         let gripper = || {
-            ObsTag::State(StateTag {
+            ObsLeaf::State(StateTag {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 2.0)),
@@ -699,7 +926,7 @@ mod tests {
         let features = join_obs(
             "g",
             box_view(vec![1], Some(vec![0.0]), Some(vec![f32_high])),
-            ObsTag::State(StateTag {
+            ObsLeaf::State(StateTag {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 0.08)),
@@ -712,8 +939,8 @@ mod tests {
         assert_eq!(state.range, Some((0.0, 0.08)));
     }
 
-    fn field(role: Option<&str>, dim: u32, encoding: Option<RotationEncoding>) -> StateField {
-        StateField {
+    fn field(role: Option<&str>, dim: u32, encoding: Option<RotationEncoding>) -> Field {
+        Field {
             role: role.map(str::to_owned),
             dim,
             encoding: encoding.map(AcceptSet::single),
@@ -721,11 +948,10 @@ mod tests {
         }
     }
 
-    fn layout_tags(fields: Vec<StateField>) -> EnvTags {
-        let mut observation = BTreeMap::new();
-        observation.insert(".".to_owned(), ObsTag::Layout(StateLayout { fields }));
+    /// A split-leaf at the root (the flat-Box case the old `"."` sentinel keyed).
+    fn layout_tags(fields: Vec<Field>) -> EnvTags {
         EnvTags {
-            observation,
+            observation: ObsNode::Leaf(ObsLeaf::Split(SplitLayout { fields })),
             action: action_layout(vec![]),
         }
     }
@@ -844,7 +1070,7 @@ mod tests {
         let result = join_obs(
             "text",
             text_view(),
-            ObsTag::Layout(StateLayout {
+            ObsLeaf::Split(SplitLayout {
                 fields: vec![field(Some("proprio/eef_pos"), 3, None)],
             }),
         );
@@ -859,7 +1085,7 @@ mod tests {
         let obs = dict_view(vec![]);
         let action = box_view(vec![7], None, None);
         let tags = EnvTags {
-            observation: BTreeMap::new(),
+            observation: empty_obs(),
             action: action_layout(vec![component("action/delta_pos", 3, None)]),
         };
         assert!(matches!(
@@ -879,7 +1105,7 @@ mod tests {
         let obs = dict_view(vec![]);
         let action = box_view(vec![4], Some(vec![0.0]), Some(vec![1.0]));
         let tags = EnvTags {
-            observation: BTreeMap::new(),
+            observation: empty_obs(),
             action: action_layout(vec![
                 component("action/delta_eef_pos", 3, None),
                 component("action/gripper", 1, None),
@@ -898,7 +1124,7 @@ mod tests {
         let mut gripper = component("action/gripper", 1, None);
         gripper.range = Some((-1.0, 1.0));
         let tags = EnvTags {
-            observation: BTreeMap::new(),
+            observation: empty_obs(),
             action: action_layout(vec![gripper]),
         };
         let features = join(&tags, &obs, &action).expect("join");
@@ -914,7 +1140,7 @@ mod tests {
         let mut gripper = component("action/gripper", 1, None);
         gripper.range = Some((-1.0, 1.0));
         let tags = EnvTags {
-            observation: BTreeMap::new(),
+            observation: empty_obs(),
             action: action_layout(vec![gripper]),
         };
         assert!(matches!(

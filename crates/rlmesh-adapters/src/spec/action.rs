@@ -23,7 +23,7 @@ where
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ActionComponent {
+pub struct Actuator {
     pub role: String,
     // `dim` is required (no `default`): an absent `dim` is a missing-field error
     // at the codec boundary, not a silent 0 that surfaces later as a confusing
@@ -62,15 +62,15 @@ pub struct ActionComponent {
 
 /// Ordered action components plus optional clipping bounds.
 ///
-/// Deserialization goes through `ActionLayoutWire` so a duplicate component
+/// Deserialization goes through `ActionWire` so a duplicate component
 /// role is rejected by the authoritative codec — matching Rust `resolve`
 /// (`plan_action`), which rejects a repeated action role (it would build the
 /// action by repetition instead of a real mapping). Without this the
 /// normalize/publish door would bless a layout resolve cannot consume.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "ActionLayoutWire")]
-pub struct ActionLayout {
-    pub components: Vec<ActionComponent>,
+#[serde(try_from = "ActionWire")]
+pub struct Action {
+    pub components: Vec<Actuator>,
     #[serde(default)]
     pub clip: Option<(f64, f64)>,
     /// Number of actions the model's `predict` returns as a chunk and the engine
@@ -89,11 +89,11 @@ pub struct ActionLayout {
     pub execute_horizon: u32,
 }
 
-/// Wire form of [`ActionLayout`]; see its docs for the duplicate-role rule.
+/// Wire form of [`Action`]; see its docs for the duplicate-role rule.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ActionLayoutWire {
-    components: Vec<ActionComponent>,
+struct ActionWire {
+    components: Vec<Actuator>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     clip: Option<(f64, f64)>,
     #[serde(
@@ -103,10 +103,10 @@ struct ActionLayoutWire {
     execute_horizon: u32,
 }
 
-impl TryFrom<ActionLayoutWire> for ActionLayout {
+impl TryFrom<ActionWire> for Action {
     type Error = String;
 
-    fn try_from(wire: ActionLayoutWire) -> Result<Self, Self::Error> {
+    fn try_from(wire: ActionWire) -> Result<Self, Self::Error> {
         let mut seen = std::collections::BTreeSet::new();
         for component in &wire.components {
             if !seen.insert(component.role.as_str()) {
@@ -116,7 +116,7 @@ impl TryFrom<ActionLayoutWire> for ActionLayout {
                 ));
             }
         }
-        Ok(ActionLayout {
+        Ok(Action {
             components: wire.components,
             clip: wire.clip,
             execute_horizon: wire.execute_horizon,
@@ -126,7 +126,7 @@ impl TryFrom<ActionLayoutWire> for ActionLayout {
 
 #[cfg(test)]
 mod finiteness_contract {
-    use super::ActionLayout;
+    use super::Action;
 
     // The v1 wire contract: range/clip/scale/threshold bounds are finite; an
     // unbounded bound is omitted, never +/-Infinity. serde_json enforces this
@@ -140,7 +140,7 @@ mod finiteness_contract {
     #[test]
     fn rejects_infinity_token() {
         assert!(
-            serde_json::from_str::<ActionLayout>(r#"{"components": [], "clip": [Infinity, 1.0]}"#)
+            serde_json::from_str::<Action>(r#"{"components": [], "clip": [Infinity, 1.0]}"#)
                 .is_err()
         );
     }
@@ -148,11 +148,10 @@ mod finiteness_contract {
     #[test]
     fn rejects_overflow_literal() {
         assert!(
-            serde_json::from_str::<ActionLayout>(r#"{"components": [], "clip": [1e400, 1.0]}"#)
-                .is_err()
+            serde_json::from_str::<Action>(r#"{"components": [], "clip": [1e400, 1.0]}"#).is_err()
         );
         assert!(
-            serde_json::from_str::<ActionLayout>(
+            serde_json::from_str::<Action>(
                 r#"{"components": [{"role": "g", "dim": 1, "scale": 1e400}]}"#
             )
             .is_err()
@@ -161,7 +160,7 @@ mod finiteness_contract {
 
     #[test]
     fn accepts_finite_bounds() {
-        let ok: ActionLayout =
+        let ok: Action =
             serde_json::from_str(r#"{"components": [], "clip": [-1.0, 1.0]}"#).unwrap();
         assert_eq!(ok.clip, Some((-1.0, 1.0)));
     }
@@ -169,31 +168,30 @@ mod finiteness_contract {
 
 #[cfg(test)]
 mod deny_unknown_fields_contract {
-    use super::{ActionComponent, ActionLayout};
+    use super::{Action, Actuator};
 
     #[test]
     fn plain_struct_rejects_typo() {
-        // ActionComponent/ActionLayout are plain structs -> deny_unknown_fields
+        // Actuator/Action are plain structs -> deny_unknown_fields
         // turns a field typo into a hard error instead of a silent drop.
-        let err = serde_json::from_str::<ActionComponent>(
-            r#"{"role": "x", "dim": 1, "rnge": [0.0, 1.0]}"#,
-        )
-        .unwrap_err();
+        let err =
+            serde_json::from_str::<Actuator>(r#"{"role": "x", "dim": 1, "rnge": [0.0, 1.0]}"#)
+                .unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
 
-        let err = serde_json::from_str::<ActionLayout>(r#"{"components": [], "clipp": null}"#)
-            .unwrap_err();
+        let err =
+            serde_json::from_str::<Action>(r#"{"components": [], "clipp": null}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
     }
 }
 
 #[cfg(test)]
 mod chunk_horizon_contract {
-    use super::ActionLayout;
+    use super::Action;
 
     #[test]
     fn defaults_to_one_and_is_omitted_from_wire() {
-        let layout: ActionLayout = serde_json::from_str(r#"{"components": []}"#).unwrap();
+        let layout: Action = serde_json::from_str(r#"{"components": []}"#).unwrap();
         assert_eq!(layout.execute_horizon, 1);
         // Byte parity with the Python serializer: omitted when 1.
         let json = serde_json::to_string(&layout).unwrap();
@@ -202,7 +200,7 @@ mod chunk_horizon_contract {
 
     #[test]
     fn roundtrips_when_set() {
-        let layout: ActionLayout =
+        let layout: Action =
             serde_json::from_str(r#"{"components": [], "execute_horizon": 8}"#).unwrap();
         assert_eq!(layout.execute_horizon, 8);
         assert!(
@@ -215,36 +213,33 @@ mod chunk_horizon_contract {
     #[test]
     fn bound_enforced() {
         assert!(
-            serde_json::from_str::<ActionLayout>(r#"{"components": [], "execute_horizon": 0}"#)
-                .is_err()
+            serde_json::from_str::<Action>(r#"{"components": [], "execute_horizon": 0}"#).is_err()
         );
         assert!(
-            serde_json::from_str::<ActionLayout>(
-                r#"{"components": [], "execute_horizon": 100000}"#
-            )
-            .is_err()
+            serde_json::from_str::<Action>(r#"{"components": [], "execute_horizon": 100000}"#)
+                .is_err()
         );
     }
 }
 
 #[cfg(test)]
 mod dup_role_contract {
-    use super::ActionLayout;
+    use super::Action;
 
     #[test]
     fn rejects_duplicate_component_role() {
         // Parity with Rust resolve (plan_action): two components sharing a role
         // are rejected at the codec, so the publish door never blesses a layout
         // resolve cannot consume. An empty layout stays valid (no action mapping).
-        let err = serde_json::from_str::<ActionLayout>(
+        let err = serde_json::from_str::<Action>(
             r#"{"components": [{"role": "g", "dim": 1}, {"role": "g", "dim": 1}]}"#,
         )
         .unwrap_err();
         assert!(err.to_string().contains("more than once"), "got: {err}");
 
-        let ok: ActionLayout = serde_json::from_str(r#"{"components": []}"#).expect("empty parses");
+        let ok: Action = serde_json::from_str(r#"{"components": []}"#).expect("empty parses");
         assert!(ok.components.is_empty());
-        let ok: ActionLayout = serde_json::from_str(
+        let ok: Action = serde_json::from_str(
             r#"{"components": [{"role": "a", "dim": 1}, {"role": "b", "dim": 1}]}"#,
         )
         .expect("distinct roles parse");

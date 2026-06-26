@@ -18,35 +18,33 @@
       ]
     },
     "observation": {
-      ".": {
-        "fields": [
-          {
-            "dim": 3,
-            "encoding": null,
-            "range": null,
-            "role": "proprio/eef_pos"
-          },
-          {
-            "dim": 1,
-            "encoding": null,
-            "range": null,
-            "role": "proprio/gripper"
-          },
-          {
-            "dim": 1,
-            "encoding": null,
-            "range": null,
-            "role": null
-          },
-          {
-            "dim": 3,
-            "encoding": null,
-            "range": null,
-            "role": "proprio/joint_pos"
-          }
-        ],
-        "type": "layout"
-      }
+      "fields": [
+        {
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "proprio/eef_pos"
+        },
+        {
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "proprio/gripper"
+        },
+        {
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": null
+        },
+        {
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "proprio/joint_pos"
+        }
+      ],
+      "type": "split"
     }
   },
   "expect": {
@@ -58,12 +56,10 @@
     },
     "atol": 1e-6,
     "payload": {
-      "state": {
-        "data": [0.0, 1.0, 2.0, 9.0, 3.0, 4.0, 5.0],
-        "dtype": "float32",
-        "kind": "array",
-        "shape": [7]
-      }
+      "data": [0.0, 1.0, 2.0, 9.0, 3.0, 4.0, 5.0],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
     }
   },
   "kind": "apply",
@@ -74,35 +70,22 @@
     "shape": [1]
   },
   "model_spec": {
-    "action": {
+    "input": {
+      "components": ["proprio/eef_pos", "proprio/gripper", "proprio/joint_pos"],
+      "type": "state"
+    },
+    "output": {
       "components": [
         {
           "dim": 1,
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "role": "proprio/eef_pos"
-          },
-          {
-            "role": "proprio/gripper"
-          },
-          {
-            "role": "proprio/joint_pos"
-          }
-        ],
-        "key": "state",
-        "type": "state"
-      }
-    ]
+    }
   },
   "observation": {
     "data": {
-      ".": {
+      "<obs>": {
         "data": [0.0, 1.0, 2.0, 9.0, -7.0, 3.0, 4.0, 5.0],
         "dtype": "float32",
         "kind": "array",

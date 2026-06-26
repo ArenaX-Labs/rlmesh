@@ -12,9 +12,10 @@ pub enum TextContainer {
 }
 
 /// A text input expected by a model.
+///
+/// There is no `key` — placement is the tree position this leaf sits at.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TextInput {
-    pub key: String,
+pub struct Text {
     pub role: String,
     #[serde(default)]
     pub container: TextContainer,

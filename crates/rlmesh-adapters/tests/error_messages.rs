@@ -35,136 +35,132 @@ fn cases() -> Vec<(&'static str, String)> {
         (
             "dim negative",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":-1}]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":-1}]}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "dim wrong-type",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":"x"}]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":"x"}]}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "dim overflow",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":99999999999}]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":99999999999}]}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "dim float",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":3.0}]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":3.0}]}},"output":{"components":[]}}"#,
             ),
         ),
         // stack bound (image.rs)
         (
             "stack low",
             model_err(
-                r#"{"inputs":[{"type":"image","key":"c","role":"r","stack":0}],"action":{"components":[]}}"#,
+                r#"{"input":{"c":{"type":"image","role":"r","stack":0}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "stack high",
             model_err(
-                r#"{"inputs":[{"type":"image","key":"c","role":"r","stack":1000}],"action":{"components":[]}}"#,
+                r#"{"input":{"c":{"type":"image","role":"r","stack":1000}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "stack negative",
             model_err(
-                r#"{"inputs":[{"type":"image","key":"c","role":"r","stack":-1}],"action":{"components":[]}}"#,
+                r#"{"input":{"c":{"type":"image","role":"r","stack":-1}},"output":{"components":[]}}"#,
             ),
         ),
         // reshape elements (model/state.rs)
         (
             "reshape elem wrong-type",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":1}],"reshape":[1,"x"]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":1}],"reshape":[1,"x"]}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "reshape not array",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[{"role":"r","dim":1}],"reshape":5}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[{"role":"r","dim":1}],"reshape":5}},"output":{"components":[]}}"#,
             ),
         ),
         // state field cross-field rules (env_tags.rs)
         (
             "statefield dim zero",
             env_err(
-                r#"{"observation":{"x":{"type":"layout","fields":[{"role":"r","dim":0}]}},"action":{"components":[]}}"#,
+                r#"{"observation":{"x":{"type":"split","fields":[{"role":"r","dim":0}]}},"action":{"components":[]}}"#,
             ),
         ),
         (
             "statefield roleless skip",
             env_err(
-                r#"{"observation":{"x":{"type":"layout","fields":[{"dim":3,"encoding":"rot6d"}]}},"action":{"components":[]}}"#,
+                r#"{"observation":{"x":{"type":"split","fields":[{"dim":3,"encoding":"rot6d"}]}},"action":{"components":[]}}"#,
             ),
         ),
         (
             "statelayout empty",
             env_err(
-                r#"{"observation":{"x":{"type":"layout","fields":[]}},"action":{"components":[]}}"#,
+                r#"{"observation":{"x":{"type":"split","fields":[]}},"action":{"components":[]}}"#,
             ),
         ),
         // cross-engine parity guards (codec rejects what the read path / resolve reject)
         (
             "statelayout dup role",
             env_err(
-                r#"{"observation":{"x":{"type":"layout","fields":[{"role":"r","dim":1},{"role":"r","dim":1}]}},"action":{"components":[]}}"#,
+                r#"{"observation":{"x":{"type":"split","fields":[{"role":"r","dim":1},{"role":"r","dim":1}]}},"action":{"components":[]}}"#,
             ),
         ),
-        (
-            "model dup input key",
-            model_err(
-                r#"{"inputs":[{"type":"text","key":"s","role":"r"},{"type":"text","key":"s","role":"r"}],"action":{"components":[]}}"#,
-            ),
-        ),
+        // (The old "model dup input key" class is gone: in the recursive tree a
+        // model input's placement is its tree position, so a JSON object cannot
+        // express two inputs under the same key — there is no duplicate-key error
+        // to surface.)
         (
             "state input empty",
             model_err(
-                r#"{"inputs":[{"type":"state","key":"s","components":[]}],"action":{"components":[]}}"#,
+                r#"{"input":{"s":{"type":"state","components":[]}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "action dup role",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1},{"role":"g","dim":1}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1},{"role":"g","dim":1}]}}"#,
             ),
         ),
         // range / clip pairs (num.rs de_opt_range)
         (
             "range too short",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"range":[0.0]}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"range":[0.0]}]}}"#,
             ),
         ),
         (
             "range too long",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"range":[0.0,1.0,2.0]}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"range":[0.0,1.0,2.0]}]}}"#,
             ),
         ),
         (
             "range elem wrong-type",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"range":["lo",1.0]}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"range":["lo",1.0]}]}}"#,
             ),
         ),
         (
             "clip elem wrong-type",
-            model_err(r#"{"inputs":[],"action":{"components":[],"clip":["lo",1.0]}}"#),
+            model_err(r#"{"input":{},"output":{"components":[],"clip":["lo",1.0]}}"#),
         ),
         (
             "scale wrong-type",
-            model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"scale":"x"}]}}"#,
-            ),
+            model_err(r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"scale":"x"}]}}"#),
         ),
         (
             "threshold wrong-type",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"threshold":"x"}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"threshold":"x"}]}}"#,
             ),
         ),
         // frozen vocab / unknown kind / unknown field / missing / wrong-type.
@@ -172,9 +168,14 @@ fn cases() -> Vec<(&'static str, String)> {
         // field is now an accept-set that tolerates an unrecognized (future)
         // encoding at parse and rejects it at *resolve* instead (graceful
         // forward-compatible degradation). See the resolver's selection tests.
+        // An unknown leaf `type` is no longer a tagged-enum "unknown variant"
+        // error: the tree node discriminant is structural, so an object whose
+        // `type` is outside the leaf vocabulary is read as a Dict of nodes and
+        // the unrecognized payload fails as a non-node. The message names the
+        // node vocabulary (leaf / dict / tuple), domain language for the tree.
         (
             "unknown model input",
-            model_err(r#"{"inputs":[{"type":"audio","key":"c"}],"action":{"components":[]}}"#),
+            model_err(r#"{"input":{"c":{"type":"audio"}},"output":{"components":[]}}"#),
         ),
         (
             "unknown obs tag",
@@ -183,22 +184,22 @@ fn cases() -> Vec<(&'static str, String)> {
         (
             "unknown layout",
             model_err(
-                r#"{"inputs":[{"type":"image","key":"c","role":"r","layout":"nhwc"}],"action":{"components":[]}}"#,
+                r#"{"input":{"c":{"type":"image","role":"r","layout":"nhwc"}},"output":{"components":[]}}"#,
             ),
         ),
         (
             "unknown field",
             model_err(
-                r#"{"inputs":[],"action":{"components":[{"role":"g","dim":1,"rnge":[0,1]}]}}"#,
+                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"rnge":[0,1]}]}}"#,
             ),
         ),
         (
             "missing field",
-            model_err(r#"{"inputs":[],"action":{"components":[{"dim":1}]}}"#),
+            model_err(r#"{"input":{},"output":{"components":[{"dim":1}]}}"#),
         ),
         (
             "string wrong-type",
-            model_err(r#"{"inputs":[],"action":{"components":[{"role":5,"dim":1}]}}"#),
+            model_err(r#"{"input":{},"output":{"components":[{"role":5,"dim":1}]}}"#),
         ),
     ]
 }
@@ -222,9 +223,17 @@ fn no_message_leaks_rust_internals() {
         "StateField",
     ];
     for (name, message) in cases() {
+        // The recursive-tree node dispatch describes the user-facing node
+        // vocabulary ("a ... leaf, a dict of nodes, or a tuple (array) of
+        // nodes") when a structurally-misplaced value is rejected. That phrase
+        // is domain language, not a Rust wire-type leak, so strip it before the
+        // sweep — otherwise its benign "tuple" trips the `tuple` ban.
+        let scanned = message
+            .replace("tuple (array) of nodes", "")
+            .replace("a tuple (array)", "");
         for leak in LEAKS {
             assert!(
-                !message.contains(leak),
+                !scanned.contains(leak),
                 "[{name}] leaks {leak:?}: {message}"
             );
         }
@@ -248,7 +257,6 @@ fn rewritten_messages_read_in_domain_language() {
     has("statefield roleless skip", "role-less field");
     has("statelayout empty", "at least one field");
     has("statelayout dup role", "more than once");
-    has("model dup input key", "duplicate model input key");
     has("state input empty", "at least one component");
     has("action dup role", "more than once");
     has("range too short", "pair of numbers [min, max], got 1");

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rlmesh_spaces::{DType, Tensor};
 
 use super::geometry::convert_rotation;
-use super::lookup::{lookup, map_range, numeric_vector};
+use super::lookup::{map_range, numeric_vector, resolve_in_obs};
 use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::plans::StatePlan;
@@ -71,7 +71,7 @@ pub(super) fn apply_state(
             state.extend(std::iter::repeat_n(0.0f32, piece.dim.unwrap_or(0) as usize));
             continue;
         }
-        let mut value = numeric_vector(lookup(raw_obs, &piece.env_key)?)?;
+        let mut value = numeric_vector(resolve_in_obs(raw_obs, &piece.source)?)?;
         // Slice the env field out of its leaf, before any rotation or
         // model-side index/dim. Only a StateLayout field sets src_offset; a
         // whole-leaf state leaves it None and reads the entire runtime value.
@@ -87,7 +87,7 @@ pub(super) fn apply_state(
                 return Err(ApplyError::new(format!(
                     "state layout field '{}' needs indices [{start}, {end}) but the \
                      runtime observation has only {} elements",
-                    piece.env_key,
+                    piece.source,
                     value.len()
                 )));
             }
@@ -119,7 +119,7 @@ pub(super) fn apply_state(
         if state.len() > pad_to {
             return Err(ApplyError::new(format!(
                 "state for '{}' has {} dims, more than pad_to={pad_to}",
-                plan.model_key,
+                plan.placement,
                 state.len()
             )));
         }
@@ -144,14 +144,15 @@ pub(super) fn apply_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plans::StatePiece;
+    use crate::path::NodePath;
+    use crate::plans::{OBS_ROOT_KEY, StatePiece};
 
     #[test]
     fn maps_state_values_from_env_range_into_model_range() {
         let plan = StatePlan {
-            model_key: "state".to_owned(),
+            placement: NodePath::root().push_key("state"),
             pieces: vec![StatePiece {
-                env_key: "gripper".to_owned(),
+                source: NodePath::root().push_key("gripper"),
                 src_offset: None,
                 src_dim: None,
                 src_encoding: None,
@@ -194,9 +195,11 @@ mod tests {
         // A flat width-8 obs; the gripper field is at offset 3, width 1, then a
         // model index picks element 0 of that field.
         let plan = StatePlan {
-            model_key: "state".to_owned(),
+            placement: NodePath::root().push_key("state"),
             pieces: vec![StatePiece {
-                env_key: ".".to_owned(),
+                // A root (single-leaf) source: keyed under the reserved envelope
+                // key, with the layout slice offset applied below.
+                source: NodePath::root(),
                 src_offset: Some(3),
                 src_dim: Some(1),
                 src_encoding: None,
@@ -214,7 +217,7 @@ mod tests {
         };
         let mut raw = BTreeMap::new();
         raw.insert(
-            ".".to_owned(),
+            OBS_ROOT_KEY.to_owned(),
             Value::Tensor(value::tensor_from_f32(
                 vec![8],
                 &[0.0, 0.1, 0.2, 0.9, 0.4, 0.5, 0.6, 0.7],

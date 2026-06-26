@@ -45,7 +45,12 @@
   },
   "kind": "resolve",
   "model_spec": {
-    "action": {
+    "input": {
+      "components": ["proprio/gripper"],
+      "dtype": "float32",
+      "type": "state"
+    },
+    "output": {
       "clip": null,
       "components": [
         {
@@ -70,27 +75,7 @@
           "role": "action/gripper"
         }
       ]
-    },
-    "inputs": [
-      {
-        "components": [
-          {
-            "dim": null,
-            "encoding": null,
-            "index": null,
-            "optional": false,
-            "range": null,
-            "role": "proprio/gripper"
-          }
-        ],
-        "container": "array",
-        "dtype": "float32",
-        "key": "state",
-        "pad_to": null,
-        "reshape": null,
-        "type": "state"
-      }
-    ]
+    }
   },
   "observation_space": {
     "children": [

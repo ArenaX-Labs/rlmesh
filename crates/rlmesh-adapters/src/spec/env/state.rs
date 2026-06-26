@@ -2,16 +2,19 @@
 //!
 //! Internal post-`join` form; never serialized (see `spec::env`), so no serde.
 
+use crate::path::NodePath;
 use crate::spec::AcceptSet;
 use crate::spec::rotations::RotationEncoding;
 
 /// A numeric proprioception entry in an environment observation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvState {
-    pub key: String,
+    /// Structured source path into the raw observation tree this state is read
+    /// from (the env-side placement); empty (root) for a bare single-leaf obs.
+    pub source: NodePath,
     pub role: String,
     /// Start index of this feature within its space leaf, set only when it is
-    /// one field of a [`StateLayout`](crate::spec::env_tags::StateLayout)
+    /// one field of a [`SplitLayout`](crate::spec::env_tags::SplitLayout)
     /// slicing several role fields out of one flat numeric leaf. `None` for a
     /// whole-leaf state, which reads the entire runtime value (the space width
     /// in `dim` is advisory — used for resolve-time bounds checks, not runtime

@@ -9,10 +9,11 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
-use super::action::ActionLayout;
+use super::action::Action;
 use super::layouts::ImageLayout;
 use super::rotations::RotationEncoding;
 
@@ -50,11 +51,11 @@ pub struct TextTag {
     pub role: String,
 }
 
-/// Wire form of a [`StateField`], deserialized before the cross-field
-/// validation `StateField` enforces via [`TryFrom`].
+/// Wire form of a [`Field`], deserialized before the cross-field
+/// validation `Field` enforces via [`TryFrom`].
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StateFieldWire {
+struct FieldWire {
     #[serde(default)]
     role: Option<String>,
     #[serde(deserialize_with = "crate::spec::num::de_count")]
@@ -65,17 +66,17 @@ struct StateFieldWire {
     range: Option<(f64, f64)>,
 }
 
-impl TryFrom<StateFieldWire> for StateField {
+impl TryFrom<FieldWire> for Field {
     type Error = String;
 
-    fn try_from(wire: StateFieldWire) -> Result<Self, Self::Error> {
+    fn try_from(wire: FieldWire) -> Result<Self, Self::Error> {
         if wire.dim < 1 {
             return Err(format!("state field dim must be >= 1, got {}", wire.dim));
         }
         if wire.role.is_none() && (wire.encoding.is_some() || wire.range.is_some()) {
             return Err("a role-less field (a skip) cannot carry an encoding or range".to_owned());
         }
-        Ok(StateField {
+        Ok(Field {
             role: wire.role,
             dim: wire.dim,
             encoding: wire.encoding,
@@ -86,15 +87,15 @@ impl TryFrom<StateFieldWire> for StateField {
 
 /// One contiguous field of a flat numeric observation leaf.
 ///
-/// The observation-side mirror of [`ActionComponent`](super::action::ActionComponent):
+/// The observation-side mirror of [`Actuator`](super::action::Actuator):
 /// a slice of `dim` elements carrying a `role`, with offsets implied by order
-/// within a [`StateLayout`]. A field with no `role` is a *skip* — it advances
+/// within a [`SplitLayout`]. A field with no `role` is a *skip* — it advances
 /// the offset and contributes to the layout's width but produces no feature.
-/// Deserialization goes through `StateFieldWire` so `dim >= 1` and the
+/// Deserialization goes through `FieldWire` so `dim >= 1` and the
 /// role-less-skip rule are enforced by the authoritative Rust codec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "StateFieldWire")]
-pub struct StateField {
+#[serde(try_from = "FieldWire")]
+pub struct Field {
     #[serde(default)]
     pub role: Option<String>,
     pub dim: u32,
@@ -104,23 +105,23 @@ pub struct StateField {
     pub range: Option<(f64, f64)>,
 }
 
-/// Wire form of a [`StateLayout`], validated via [`TryFrom`] so an empty layout
+/// Wire form of a [`SplitLayout`], validated via [`TryFrom`] so an empty layout
 /// (zero fields) and a duplicate role are rejected by the authoritative Rust
-/// codec — matching the Python `StateLayout` guard and Rust `join`
+/// codec — matching the Python `SplitLayout` guard and Rust `join`
 /// ([`JoinError::DuplicateLayoutRole`](crate::v1::JoinError)). Without this the
 /// two engines disagree: Rust accepts `fields: []` (or a repeated role) and
 /// Python's `from_dict` (which normalizes through Rust first, then reconstructs)
 /// crashes in its own constructor on input the codec just called valid.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct StateLayoutWire {
-    fields: Vec<StateField>,
+struct SplitLayoutWire {
+    fields: Vec<Field>,
 }
 
-impl TryFrom<StateLayoutWire> for StateLayout {
+impl TryFrom<SplitLayoutWire> for SplitLayout {
     type Error = String;
 
-    fn try_from(wire: StateLayoutWire) -> Result<Self, Self::Error> {
+    fn try_from(wire: SplitLayoutWire) -> Result<Self, Self::Error> {
         if wire.fields.is_empty() {
             return Err("a state layout needs at least one field".to_owned());
         }
@@ -132,7 +133,7 @@ impl TryFrom<StateLayoutWire> for StateLayout {
                 ));
             }
         }
-        Ok(StateLayout {
+        Ok(SplitLayout {
             fields: wire.fields,
         })
     }
@@ -140,47 +141,135 @@ impl TryFrom<StateLayoutWire> for StateLayout {
 
 /// An ordered split of one flat numeric observation leaf into role fields.
 ///
-/// The observation-side mirror of [`ActionLayout`](super::action::ActionLayout):
+/// The observation-side mirror of [`Action`](super::action::Action):
 /// fields are laid out in order, offsets accumulate, and `join` requires the
 /// field widths to sum to the leaf width. Use it when an env returns a flat
 /// `Box` whose fixed index ranges carry distinct semantics (e.g. Metaworld).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "StateLayoutWire")]
-pub struct StateLayout {
-    pub fields: Vec<StateField>,
+#[serde(try_from = "SplitLayoutWire")]
+pub struct SplitLayout {
+    pub fields: Vec<Field>,
 }
 
-/// One observation tag, tagged by the kind of space leaf it describes.
+/// One observation *leaf*: the semantics of a single space leaf, tagged by the
+/// kind of leaf it describes.
 ///
 /// **Strict v1 kind tag.** A new observation *kind* (a new variant here) is a
 /// structural change = a v2 key bump, not an additive v1 value; an unknown
-/// `type` is rejected at parse by design.
+/// `type` is rejected at parse by design. The `split` discriminant carries a
+/// [`SplitLayout`] — itself a *leaf* (one tensor split into role fields), not a
+/// container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum ObsTag {
+pub enum ObsLeaf {
     Image(ImageTag),
     State(StateTag),
-    Layout(StateLayout),
+    Split(SplitLayout),
     Text(TextTag),
 }
 
-/// The env-side tags: a sparse map from observation key-path to its
-/// semantics, plus the action layout.
+/// A node in the recursive env observation tree: a leaf, a `Dict` of named
+/// sub-nodes, or a `Tuple` of positional sub-nodes.
 ///
-/// Observation keys are space key-paths: a dotted path traverses nested
-/// `Dict` spaces (`"robot.eef_pos"`), and the reserved key `"."` denotes a
-/// flat/root observation (valid only when it is the sole entry). Untagged
-/// space keys are allowed; they simply carry no semantics.
+/// The container type written here **is** the runtime container type: a `Dict`
+/// node maps a gymnasium `Dict` space, a `Tuple` node maps a `Tuple` space, and
+/// a [`Leaf`](ObsNode::Leaf) tags a single space leaf. This replaces the old
+/// flat dotted-key map (`{"robot.eef_pos": tag}`) and the magic `"."` root
+/// sentinel — a single-leaf observation is a bare [`Leaf`](ObsNode::Leaf).
+///
+/// Discrimination on the wire is **structural** (see the hand-written
+/// `Deserialize`): a JSON array is a `Tuple`, a JSON object whose `"type"` is in
+/// the leaf vocabulary (`image`/`state`/`text`/`split`) is a `Leaf`, and any
+/// other JSON object is a `Dict`. `"type"` is therefore a **reserved key**: a
+/// `Dict` child may not be named `"type"`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObsNode {
+    Leaf(ObsLeaf),
+    Dict(BTreeMap<String, ObsNode>),
+    Tuple(Vec<ObsNode>),
+}
+
+/// The leaf-vocabulary `type` discriminants that mark a JSON object as an
+/// [`ObsLeaf`] rather than an [`ObsNode::Dict`].
+const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
+
+impl Serialize for ObsNode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ObsNode::Leaf(leaf) => leaf.serialize(serializer),
+            ObsNode::Dict(map) => map.serialize(serializer),
+            ObsNode::Tuple(items) => items.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ObsNode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(NodeVisitor)
+    }
+}
+
+/// Hand-written visitor mirroring [`AcceptSet`]'s str-or-map pattern, but here
+/// distinguishing a leaf object from a dict object structurally (by the `"type"`
+/// key) so the leaf keeps its own `#[serde(tag = "type")]` form intact.
+struct NodeVisitor;
+
+impl<'de> Visitor<'de> for NodeVisitor {
+    type Value = ObsNode;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("an observation leaf, a dict of nodes, or a tuple (array) of nodes")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<ObsNode, A::Error> {
+        let mut items = Vec::new();
+        while let Some(item) = seq.next_element::<ObsNode>()? {
+            items.push(item);
+        }
+        Ok(ObsNode::Tuple(items))
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<ObsNode, A::Error> {
+        // Buffer the object into an ordered map of raw JSON so we can peek at the
+        // `"type"` key, then re-interpret as either a leaf or a dict of nodes.
+        let mut buffered: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
+            buffered.insert(key, value);
+        }
+        let is_leaf = buffered
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|tag| OBS_LEAF_TYPES.contains(&tag));
+        if is_leaf {
+            let object = serde_json::Value::Object(buffered.into_iter().collect());
+            let leaf = ObsLeaf::deserialize(object).map_err(serde::de::Error::custom)?;
+            return Ok(ObsNode::Leaf(leaf));
+        }
+        let mut children: BTreeMap<String, ObsNode> = BTreeMap::new();
+        for (key, value) in buffered {
+            let child = ObsNode::deserialize(value).map_err(serde::de::Error::custom)?;
+            children.insert(key, child);
+        }
+        Ok(ObsNode::Dict(children))
+    }
+}
+
+/// The env-side tags: the recursive observation tree plus the action layout.
+///
+/// `observation` is an [`ObsNode`] whose container type is the runtime container
+/// type (a `Dict` node maps a `Dict` space, a `Tuple` node maps a `Tuple` space,
+/// a bare `Leaf` tags a single space leaf). Untagged space leaves are allowed
+/// where the tree does not descend; they simply carry no semantics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvTags {
-    pub observation: BTreeMap<String, ObsTag>,
-    pub action: ActionLayout,
+    pub observation: ObsNode,
+    pub action: Action,
 }
 
 #[cfg(test)]
 mod tag_deny_unknown_tests {
-    use super::ObsTag;
+    use super::ObsLeaf;
 
     #[test]
     fn obs_tag_rejects_typod_field_but_accepts_valid() {
@@ -193,71 +282,134 @@ mod tag_deny_unknown_tests {
             r#"{"type": "state", "role": "x", "rnge": [0.0, 1.0]}"#,
             r#"{"type": "text", "role": "x", "rol": "y"}"#,
         ] {
-            let err = serde_json::from_str::<ObsTag>(typo).unwrap_err();
+            let err = serde_json::from_str::<ObsLeaf>(typo).unwrap_err();
             assert!(err.to_string().contains("unknown field"), "got: {err}");
         }
         // Valid tags (including the `type` tag) still parse.
-        let tag: ObsTag =
+        let tag: ObsLeaf =
             serde_json::from_str(r#"{"type": "image", "role": "x", "layout": "chw"}"#).unwrap();
-        assert!(matches!(tag, ObsTag::Image(_)));
+        assert!(matches!(tag, ObsLeaf::Image(_)));
     }
 }
 
 #[cfg(test)]
 mod state_field_wire_tests {
-    use super::StateField;
+    use super::Field;
 
     #[test]
     fn rejects_zero_dim() {
-        let err = serde_json::from_str::<StateField>(r#"{"role": "x", "dim": 0}"#).unwrap_err();
+        let err = serde_json::from_str::<Field>(r#"{"role": "x", "dim": 0}"#).unwrap_err();
         assert!(err.to_string().contains("dim must be >= 1"), "got: {err}");
     }
 
     #[test]
     fn rejects_skip_carrying_encoding_or_range() {
         // A role-less field is a skip; it must not carry an encoding or range.
-        let err =
-            serde_json::from_str::<StateField>(r#"{"dim": 3, "encoding": "rot6d"}"#).unwrap_err();
+        let err = serde_json::from_str::<Field>(r#"{"dim": 3, "encoding": "rot6d"}"#).unwrap_err();
         assert!(err.to_string().contains("role-less"), "got: {err}");
-        let err =
-            serde_json::from_str::<StateField>(r#"{"dim": 3, "range": [0.0, 1.0]}"#).unwrap_err();
+        let err = serde_json::from_str::<Field>(r#"{"dim": 3, "range": [0.0, 1.0]}"#).unwrap_err();
         assert!(err.to_string().contains("role-less"), "got: {err}");
     }
 
     #[test]
     fn accepts_valid_field_and_pure_skip() {
-        let field: StateField = serde_json::from_str(r#"{"role": "x", "dim": 3}"#).unwrap();
+        let field: Field = serde_json::from_str(r#"{"role": "x", "dim": 3}"#).unwrap();
         assert_eq!(field.dim, 3);
-        let skip: StateField = serde_json::from_str(r#"{"dim": 2}"#).unwrap();
+        let skip: Field = serde_json::from_str(r#"{"dim": 2}"#).unwrap();
         assert!(skip.role.is_none());
     }
 
     #[test]
     fn rejects_empty_layout() {
-        // Parity with Python's StateLayout guard: a zero-field layout is
+        // Parity with Python's SplitLayout guard: a zero-field layout is
         // rejected here, so the codec never calls valid a doc Python can't read.
-        use super::StateLayout;
-        let err = serde_json::from_str::<StateLayout>(r#"{"fields": []}"#).unwrap_err();
+        use super::SplitLayout;
+        let err = serde_json::from_str::<SplitLayout>(r#"{"fields": []}"#).unwrap_err();
         assert!(err.to_string().contains("at least one field"), "got: {err}");
-        let ok: StateLayout = serde_json::from_str(r#"{"fields": [{"role": "x", "dim": 1}]}"#)
+        let ok: SplitLayout = serde_json::from_str(r#"{"fields": [{"role": "x", "dim": 1}]}"#)
             .expect("non-empty layout parses");
         assert_eq!(ok.fields.len(), 1);
     }
 
     #[test]
     fn rejects_duplicate_layout_role() {
-        // Parity with Python's StateLayout guard and Rust join's
+        // Parity with Python's SplitLayout guard and Rust join's
         // DuplicateLayoutRole: a role repeated across fields is rejected at the
         // codec, so the normalize/publish door never blesses a layout the read
         // path (or join) rejects. A role-less skip can repeat freely.
-        use super::StateLayout;
-        let err = serde_json::from_str::<StateLayout>(
+        use super::SplitLayout;
+        let err = serde_json::from_str::<SplitLayout>(
             r#"{"fields": [{"role": "r", "dim": 1}, {"role": "r", "dim": 1}]}"#,
         )
         .unwrap_err();
         assert!(err.to_string().contains("more than once"), "got: {err}");
-        let ok: StateLayout =
+        let ok: SplitLayout =
             serde_json::from_str(r#"{"fields": [{"dim": 1}, {"dim": 2}]}"#).expect("skips repeat");
         assert_eq!(ok.fields.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod obs_node_serde_tests {
+    use super::{ObsLeaf, ObsNode};
+
+    /// Parse, serialize, re-parse, and assert structural stability (the
+    /// serializer fills leaf defaults, so we compare the parsed structs rather
+    /// than byte-comparing to the minimal input).
+    fn round_trip(json: &str) -> ObsNode {
+        let node: ObsNode = serde_json::from_str(json).expect("parse node");
+        let serialized = serde_json::to_string(&node).expect("serialize node");
+        let reparsed: ObsNode = serde_json::from_str(&serialized).expect("re-parse node");
+        assert_eq!(node, reparsed, "round-trip differs for {json}");
+        node
+    }
+
+    #[test]
+    fn single_leaf_is_bare() {
+        // A single-leaf observation is a bare leaf object — no `"."` sentinel.
+        let node = round_trip(r#"{"type": "state", "role": "proprio/eef_pos"}"#);
+        assert!(matches!(node, ObsNode::Leaf(ObsLeaf::State(_))));
+    }
+
+    #[test]
+    fn flat_dict_of_leaves() {
+        let node = round_trip(
+            r#"{"cam": {"type": "image", "role": "image/primary"}, "instruction": {"type": "text", "role": "instruction"}}"#,
+        );
+        let ObsNode::Dict(map) = node else {
+            panic!("expected dict")
+        };
+        assert_eq!(map.len(), 2);
+        assert!(matches!(map["cam"], ObsNode::Leaf(ObsLeaf::Image(_))));
+    }
+
+    #[test]
+    fn nested_dict() {
+        let node =
+            round_trip(r#"{"robot": {"eef_pos": {"type": "state", "role": "proprio/eef_pos"}}}"#);
+        let ObsNode::Dict(map) = node else {
+            panic!("expected dict")
+        };
+        assert!(matches!(map["robot"], ObsNode::Dict(_)));
+    }
+
+    #[test]
+    fn tuple_of_nodes() {
+        let node = round_trip(
+            r#"[{"type": "state", "role": "proprio/eef_pos"}, {"type": "text", "role": "instruction"}]"#,
+        );
+        let ObsNode::Tuple(items) = node else {
+            panic!("expected tuple")
+        };
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn split_leaf() {
+        // The `split` discriminant (was `layout`) deserializes as a leaf, not a dict.
+        let node = round_trip(
+            r#"{"type": "split", "fields": [{"role": "proprio/eef_pos", "dim": 3}, {"dim": 1}]}"#,
+        );
+        assert!(matches!(node, ObsNode::Leaf(ObsLeaf::Split(_))));
     }
 }

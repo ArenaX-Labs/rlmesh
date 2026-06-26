@@ -11,7 +11,7 @@ use rlmesh::{
 };
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
@@ -61,12 +61,11 @@ impl PyPredict {
 }
 
 impl PredictFn for PyPredict {
-    fn predict(&self, model_input: BTreeMap<String, Value>) -> rlmesh::Result<Value> {
+    fn predict(&self, model_input: Value) -> rlmesh::Result<Value> {
         Python::attach(|py| -> PyResult<Value> {
-            let input = pyo3::types::PyDict::new(py);
-            for (key, value) in &model_input {
-                input.set_item(key, encode_value(py, value)?)?;
-            }
+            // The assembled input is now a Value tree (a nested dict/list/leaf
+            // matching the model spec's InputNode shape).
+            let input = encode_value(py, &model_input)?;
             let action = self.predict_fn.call1(py, (input,))?;
             decode_value(action.bind(py))
         })

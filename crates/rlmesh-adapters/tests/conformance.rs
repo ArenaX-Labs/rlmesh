@@ -140,6 +140,32 @@ fn enc(value: &Value) -> Json {
 /// Assert one produced value matches its expected conformance encoding.
 fn assert_value(name: &str, key: &str, actual: &Value, expected: &Json, atol: f64) {
     match expected["kind"].as_str().expect("expected kind") {
+        "map" => {
+            // The assembled obs payload is now a single `Value::Map` tree
+            // (placement-keyed), pinned by update mode as one `map`-kind value;
+            // recurse into each entry so a leaf mismatch still localizes.
+            let Value::Map(entries) = actual else {
+                panic!("{name}/{key}: expected map, got {actual:?}");
+            };
+            let expected_entries = expected["data"].as_object().expect("conformance fixture");
+            assert_eq!(
+                entries.len(),
+                expected_entries.len(),
+                "{name}/{key}: map entry count"
+            );
+            for (entry_key, expected_item) in expected_entries {
+                let item = entries
+                    .get(entry_key)
+                    .unwrap_or_else(|| panic!("{name}/{key}: missing map entry {entry_key:?}"));
+                assert_value(
+                    name,
+                    &format!("{key}.{entry_key}"),
+                    item,
+                    expected_item,
+                    atol,
+                );
+            }
+        }
         "text" => {
             let Value::Text(text) = actual else {
                 panic!("{name}/{key}: expected text, got {actual:?}");
@@ -283,11 +309,10 @@ fn updated_case(name: &str, case: &Json) -> Json {
                 .transform_action(&dec(&case["model_output"]))
                 .unwrap_or_else(|e| panic!("{name}: transform_action failed: {e}"));
             let atol = case["expect"]["atol"].clone();
+            // The assembled payload is now a Value tree; the conformance schema
+            // pins it as a single encoded value.
             out["expect"] = json!({
-                "payload": payload
-                    .iter()
-                    .map(|(key, value)| (key.clone(), enc(value)))
-                    .collect::<serde_json::Map<String, Json>>(),
+                "payload": enc(&payload),
                 "action": enc(&Value::Tensor(action)),
                 "atol": if atol.is_null() { json!(1e-6) } else { atol },
             });
@@ -347,14 +372,9 @@ fn verify_case(name: &str, case: &Json) {
             let payload = adapter
                 .transform_obs(&raw_obs, &NoCustoms)
                 .unwrap_or_else(|e| panic!("{name}: transform_obs failed: {e}"));
-            let expected_payload = case["expect"]["payload"].as_object().expect("payload");
-            let mut expected_keys: Vec<&String> = expected_payload.keys().collect();
-            expected_keys.sort();
-            let actual_keys: Vec<&String> = payload.keys().collect();
-            assert_eq!(actual_keys, expected_keys, "{name}: payload keys");
-            for (key, expected) in expected_payload {
-                assert_value(name, key, &payload[key], expected, atol);
-            }
+            // The assembled payload is now a Value tree; the conformance schema
+            // pins it as a single encoded value compared structurally.
+            assert_value(name, "payload", &payload, &case["expect"]["payload"], atol);
 
             let action = adapter
                 .transform_action(&dec(&case["model_output"]))

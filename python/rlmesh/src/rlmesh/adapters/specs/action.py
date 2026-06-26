@@ -9,7 +9,7 @@ from .vocabularies import RotationEncoding
 
 
 @dataclass(frozen=True)
-class ActionComponent:
+class Actuator:
     """One contiguous slice of an action vector.
 
     Attributes:
@@ -55,23 +55,23 @@ class ActionComponent:
             and self.dim != self.encoding.width
         ):
             raise ValueError(
-                f"ActionComponent {self.role!r} with a CustomEncoding on base "
+                f"Actuator {self.role!r} with a CustomEncoding on base "
                 f"{self.encoding.base!r} must keep its width: dim must be "
                 f"{self.encoding.width}, got {self.dim}"
             )
 
 
 @dataclass(frozen=True, init=False)
-class ActionLayout:
-    """Ordered action components plus optional clipping bounds.
+class Action:
+    """Ordered action actuators plus optional clipping bounds.
 
-    Components are passed positionally, mirroring the observation-side
-    :class:`~rlmesh.adapters.StateLayout`::
+    Actuators are passed positionally, mirroring the observation-side
+    :class:`~rlmesh.adapters.Split`::
 
-        ActionLayout(ActionComponent(DELTA_POS, 3), ActionComponent(GRIPPER, 1))
+        Action(Actuator(DELTA_POS, 3), Actuator(GRIPPER, 1))
 
     Attributes:
-        components: Action components in vector order.
+        components: Action actuators in vector order.
         clip: Optional ``(low, high)`` clip applied to the final vector.
         execute_horizon: How many actions ``predict`` returns as a chunk and the
             engine replays before predicting again; ``1`` (the default) predicts
@@ -81,13 +81,13 @@ class ActionLayout:
             knob; the env declaration leaves it ``1``.
     """
 
-    components: tuple[ActionComponent, ...]
+    components: tuple[Actuator, ...]
     clip: tuple[float, float] | None = None
     execute_horizon: int = 1
 
     def __init__(
         self,
-        *components: ActionComponent,
+        *components: Actuator,
         clip: tuple[float, float] | None = None,
         execute_horizon: int = 1,
     ) -> None:
@@ -101,4 +101,4 @@ class ActionLayout:
         return sum(component.dim for component in self.components)
 
 
-__all__ = ["ActionComponent", "ActionLayout"]
+__all__ = ["Action", "Actuator"]

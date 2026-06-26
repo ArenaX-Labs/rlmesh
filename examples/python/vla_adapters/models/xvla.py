@@ -23,35 +23,28 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput("image", role=adapt.IMAGE_PRIMARY, height=256, width=256),
-        adapt.ImageInput("image2", role=adapt.IMAGE_WRIST, height=256, width=256),
-        adapt.StateInput(
-            "state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS, dim=3),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
-                adapt.StateComponent(adapt.GRIPPER_POS, dim=1),
-                adapt.StateComponent(adapt.EEF_POS_2, dim=3, optional=True),
-                adapt.StateComponent(
-                    adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True
-                ),
-                adapt.StateComponent(adapt.GRIPPER_POS_2, dim=1, optional=True),
-            ),
+    input={
+        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=256, width=256),
+        "image2": adapt.Image(role=adapt.IMAGE_WRIST, height=256, width=256),
+        "state": adapt.Concat(
+            adapt.State(adapt.EEF_POS, dim=3),
+            adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
+            adapt.State(adapt.GRIPPER_POS, dim=1),
+            adapt.State(adapt.EEF_POS_2, dim=3, optional=True),
+            adapt.State(adapt.EEF_ROT_2, encoding="rot6d_rowmajor", optional=True),
+            adapt.State(adapt.GRIPPER_POS_2, dim=1, optional=True),
             pad_to=20,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS_2, dim=3),
-        adapt.ActionComponent(
-            adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"
-        ),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=6, encoding="rot6d_rowmajor"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        adapt.Actuator(adapt.ACTION_DELTA_POS_2, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT_2, dim=6, encoding="rot6d_rowmajor"),
+        adapt.Actuator(adapt.ACTION_GRIPPER_2, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -61,6 +54,6 @@ def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:
-        return np.zeros(SPEC.action.dim, dtype=np.float32)
+        return np.zeros(SPEC.output.dim, dtype=np.float32)
 
     return predict

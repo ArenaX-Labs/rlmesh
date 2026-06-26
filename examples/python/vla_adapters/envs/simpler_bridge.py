@@ -1,9 +1,10 @@
 """SimplerEnv (Bridge): a second env with deliberately different conventions.
 
 Compared to LIBERO this env has a single camera, nested observation keys
-(``agent.eef_pos``), a wxyz quaternion, and a different instruction key.
-None of that needs model-side code: the resolver reads it from the
-tags and the spaces.
+(``agent`` holds ``eef_pos``/``eef_quat``/``gripper_width``), a wxyz
+quaternion, and a different instruction key. None of that needs model-side
+code: the resolver reads it from the tags and the spaces. The nesting in the
+tags is real Python ``dict`` nesting that mirrors the ``Dict`` space.
 """
 
 from __future__ import annotations
@@ -17,17 +18,17 @@ import rlmesh.adapters as adapt
 TAGS = adapt.EnvTags(
     observation={
         "rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
-        "agent.eef_pos": adapt.StateTag(role=adapt.EEF_POS),
-        "agent.eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_wxyz"),
-        "agent.gripper_width": adapt.StateTag(
-            role=adapt.GRIPPER_POS, range=(0.0, 0.08)
-        ),
+        "agent": {
+            "eef_pos": adapt.StateTag(role=adapt.EEF_POS),
+            "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_wxyz"),
+            "gripper_width": adapt.StateTag(role=adapt.GRIPPER_POS, range=(0.0, 0.08)),
+        },
         "task_instruction": adapt.TextTag(),
     },
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+    action=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
         clip=(-1.0, 1.0),
     ),
 )

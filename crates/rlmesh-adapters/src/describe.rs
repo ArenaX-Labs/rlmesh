@@ -13,7 +13,10 @@ fn describe_obs_plan(plan: &ObsPlan) -> String {
         ObsPlan::State(state) => describe_state(state),
         ObsPlan::Text(text) => describe_text(text),
         ObsPlan::Custom(custom) => {
-            format!("{} <- custom transform", quoted(&custom.model_key))
+            format!(
+                "{} <- custom transform",
+                quoted(&custom.placement.to_string())
+            )
         }
     }
 }
@@ -29,16 +32,16 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<String> {
         match plan {
             ObsPlan::Image(image) if image.zero_fill.is_some() => notes.push(format!(
                 "image {}: the env provides no source camera; using a blank (zero) frame",
-                quoted(&image.model_key)
+                quoted(&image.placement.to_string())
             )),
             ObsPlan::Image(image) if image.size.is_some() => match image.fit {
                 FitMode::Crop => notes.push(format!(
                     "image {}: aspect crop drops edge pixels",
-                    quoted(&image.model_key)
+                    quoted(&image.placement.to_string())
                 )),
                 FitMode::Pad => notes.push(format!(
                     "image {}: aspect pad adds letterbox borders",
-                    quoted(&image.model_key)
+                    quoted(&image.placement.to_string())
                 )),
                 FitMode::Stretch => {}
             },
@@ -47,7 +50,7 @@ pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<String> {
                 if zeros > 0 {
                     notes.push(format!(
                         "state {}: {zeros} component(s) zero-filled for an absent env role",
-                        quoted(&state.model_key)
+                        quoted(&state.placement.to_string())
                     ));
                 }
             }
@@ -116,7 +119,7 @@ fn describe_image(plan: &ImagePlan) -> String {
     if let Some((height, width, channels)) = plan.zero_fill {
         return format!(
             "{} <- zeros({height}x{width}x{channels})",
-            quoted(&plan.model_key)
+            quoted(&plan.placement.to_string())
         );
     }
     let mut steps: Vec<String> = Vec::new();
@@ -145,8 +148,8 @@ fn describe_image(plan: &ImagePlan) -> String {
     }
     format!(
         "{} <- image {} ({})",
-        quoted(&plan.model_key),
-        quoted(&plan.env_key),
+        quoted(&plan.placement.to_string()),
+        quoted(&plan.source.to_string()),
         steps.join(", ")
     )
 }
@@ -161,8 +164,8 @@ fn describe_state(plan: &StatePlan) -> String {
             ));
             continue;
         }
-        let mut note = piece.env_key.clone();
-        // A StateLayout field reads a fixed `[offset, offset+width)` slice of a
+        let mut note = piece.source.to_string();
+        // A SplitLayout field reads a fixed `[offset, offset+width)` slice of a
         // flat leaf; show it so the split is visible. A whole-leaf state leaves
         // src_offset None and reads the entire value.
         if let Some(offset) = piece.src_offset {
@@ -203,23 +206,22 @@ fn describe_state(plan: &StatePlan) -> String {
     };
     format!(
         "{} <- concat({}){}",
-        quoted(&plan.model_key),
+        quoted(&plan.placement.to_string()),
         parts.join(", "),
         suffix
     )
 }
 
 fn describe_text(plan: &TextPlan) -> String {
-    let source = if plan.env_key.is_empty() {
-        format!(
+    let source = match &plan.source {
+        None => format!(
             "default {}",
             match &plan.default {
                 Some(default) => quoted(default),
                 None => "None".to_owned(),
             }
-        )
-    } else {
-        quoted(&plan.env_key)
+        ),
+        Some(source) => quoted(&source.to_string()),
     };
-    format!("{} <- text {}", quoted(&plan.model_key), source)
+    format!("{} <- text {}", quoted(&plan.placement.to_string()), source)
 }

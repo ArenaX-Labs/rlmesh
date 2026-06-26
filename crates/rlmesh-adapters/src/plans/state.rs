@@ -1,5 +1,6 @@
 //! Resolved instructions for one model state input.
 
+use crate::path::NodePath;
 use crate::spec::{RotationEncoding, StateContainer};
 
 /// One source slice feeding a resolved state input.
@@ -8,9 +9,11 @@ use crate::spec::{RotationEncoding, StateContainer};
 /// `dim` zeros (an optional component the env did not declare).
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatePiece {
-    pub env_key: String,
+    /// Where this piece is read from in the raw observation tree (empty when
+    /// `zero_fill` is set).
+    pub source: NodePath,
     /// Start index of the env feature within its space leaf, set only when the
-    /// feature is one field of a flat-leaf `StateLayout`: the leaf's runtime
+    /// feature is one field of a flat-leaf `SplitLayout`: the leaf's runtime
     /// values are sliced to `[src_offset, src_offset + src_dim)` before any
     /// conversion. `None` reads the whole leaf (a non-layout state).
     pub src_offset: Option<u32>,
@@ -30,7 +33,8 @@ pub struct StatePiece {
 /// Resolved instructions for one model state input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatePlan {
-    pub model_key: String,
+    /// Where this state lands in the assembled payload tree.
+    pub placement: NodePath,
     pub pieces: Vec<StatePiece>,
     pub pad_to: Option<u32>,
     pub dtype: String,

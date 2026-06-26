@@ -2,12 +2,15 @@
 //!
 //! Internal post-`join` form; never serialized (see `spec::env`), so no serde.
 
+use crate::path::NodePath;
 use crate::spec::layouts::ImageLayout;
 
 /// A camera image entry in an environment observation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvImage {
-    pub key: String,
+    /// Structured source path into the raw observation tree this image is read
+    /// from (the env-side placement); empty (root) for a bare single-leaf obs.
+    pub source: NodePath,
     pub role: String,
     pub layout: ImageLayout,
     pub upside_down: bool,

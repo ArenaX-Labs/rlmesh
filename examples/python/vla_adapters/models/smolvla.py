@@ -13,34 +13,29 @@ from typing import Any
 import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
-    inputs=(
-        adapt.ImageInput(
-            "observation.images.image",
+    input={
+        "observation.images.image": adapt.Image(
             role=adapt.IMAGE_PRIMARY,
             height=224,
             width=224,
         ),
-        adapt.ImageInput(
-            "observation.images.image2",
+        "observation.images.image2": adapt.Image(
             role=adapt.IMAGE_WRIST,
             height=224,
             width=224,
         ),
-        adapt.StateInput(
-            "observation.state",
-            components=(
-                adapt.StateComponent(adapt.EEF_POS),
-                adapt.StateComponent(adapt.EEF_ROT, encoding="axis_angle"),
-                adapt.StateComponent(adapt.GRIPPER_POS),
-            ),
+        "observation.state": adapt.Concat(
+            adapt.EEF_POS,
+            adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
+            adapt.GRIPPER_POS,
             container="list",
         ),
-        adapt.TextInput("instruction"),
-    ),
-    action=adapt.ActionLayout(
-        adapt.ActionComponent(adapt.ACTION_DELTA_POS, dim=3),
-        adapt.ActionComponent(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
-        adapt.ActionComponent(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        "instruction": adapt.Text(),
+    },
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
     ),
 )
 
@@ -65,6 +60,6 @@ def load_predict_fn() -> Callable[[Mapping[str, Any]], Any]:
     import numpy as np
 
     def predict(payload: Mapping[str, Any]) -> Any:
-        return np.zeros(SPEC.action.dim, dtype=np.float32)
+        return np.zeros(SPEC.output.dim, dtype=np.float32)
 
     return predict
