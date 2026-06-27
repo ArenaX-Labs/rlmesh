@@ -206,7 +206,10 @@ impl RouteState {
         }
     }
 
-    pub(crate) fn reset_adapter_request(&mut self, episode_ids: Vec<String>) -> ResetAdapterRequest {
+    pub(crate) fn reset_adapter_request(
+        &mut self,
+        episode_ids: Vec<String>,
+    ) -> ResetAdapterRequest {
         ResetAdapterRequest {
             context: Some(AdapterContext {
                 session_id: self.session_id().to_string(),

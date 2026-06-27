@@ -358,9 +358,14 @@ impl ModelHandler for AdaptedModelHandler {
             }
         }
         // Surface the episode-end edge to the model's own hook (one call per
-        // ended episode), e.g. to reset a single-env model's recurrent state.
+        // ended episode), e.g. to reset a single-env model's recurrent state. An
+        // empty `episode_ids` is an evict-ALL/teardown, not an episode end, so it
+        // fires nothing here — model shutdown is `on_close`'s job.
+        let count = episode_ids.len();
+        if count == 0 {
+            return Ok(());
+        }
         let predict = Arc::clone(&self.predict);
-        let count = episode_ids.len().max(1);
         tokio::task::spawn_blocking(move || {
             for _ in 0..count {
                 predict.on_episode_end()?;

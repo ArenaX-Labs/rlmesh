@@ -539,7 +539,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0)"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1, connect_timeout_seconds: float = 30.0)"
           },
           "shutdown": {
             "kind": "function",
@@ -1179,7 +1179,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
           },
           "shutdown": {
             "kind": "function",
@@ -1695,7 +1695,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
           },
           "shutdown": {
             "kind": "function",
@@ -2714,7 +2714,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1, connect_timeout_seconds: float = 30.0) -> Session[object, object]"
           },
           "shutdown": {
             "kind": "function",

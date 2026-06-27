@@ -270,12 +270,12 @@ impl<'de> Deserialize<'de> for ObsLeaf {
 /// sentinel — a single-leaf observation is a bare [`Leaf`](ObsNode::Leaf).
 ///
 /// Discrimination on the wire is **structural** (the shared
-/// `TreeNode` parser): a JSON array is a `Tuple`, a
-/// JSON object whose `"type"` is in the leaf vocabulary
-/// (`image`/`state`/`text`/`split`) is a `Leaf`, an object whose `"type"` is an
-/// unrecognized string is a clear `unknown observation kind` error, and any
-/// other JSON object is a `Dict`. `"type"` is therefore a **reserved key**: a
-/// `Dict` child may not be named `"type"`.
+/// `TreeNode` parser): a JSON array is a `Tuple`, a JSON object whose `"type"` is
+/// a string is a `Leaf` — a recognized leaf kind (`image`/`state`/`text`/`split`)
+/// parses fully, an unrecognized one becomes a tolerant [`ObsLeaf::Unknown`]
+/// (dropped with an advisory at resolve unless a model input references it) — and
+/// any other JSON object is a `Dict`. `"type"` is therefore a **reserved key**: a
+/// `Dict` child may not be named `"type"` (a non-string `"type"` is a clear error).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ObsNode {
     Leaf(ObsLeaf),

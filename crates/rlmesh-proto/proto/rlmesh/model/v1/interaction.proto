@@ -48,10 +48,6 @@ message ResolveAdapterRequest {
   // max. This is AUTHORITATIVE over the model's own (pairwise) handshake result;
   // the model pins to it.
 
-  // tag 3 was selected_protocol_generation, cut with the support-window
-  // machinery: generation is plain equality gated at each pairwise handshake, so
-  // by the time a route is configured all tiers already share it.
-
   // Highest mutual workflow edition across env, model, and runtime (the floor).
   string selected_workflow_edition = 4;
 
@@ -64,17 +60,6 @@ message ResolveAdapterRequest {
   // (predict every step), byte/behaviour-identical to a model with no chunk
   // corner. The runtime bounds it to MAX_HORIZON.
   uint32 action_horizon = 7;
-
-  // tag 5 was active_capabilities (a 3-way intersection), removed: capabilities
-  // are advisory and pairwise (each peer reads the other's advertised map), not a
-  // session-wide floor.
-
-  // NOTE: tag 6 was an EnvSpec consistency fingerprint, cut from the freeze. The
-  // model derives its whole adapter spec from the single forwarded env_spec, so
-  // there is no independent spec to drift against; the length/dtype/leaf-count
-  // guards catch every byte-count drift. Re-add (proto3-additive, 0 = skip) only
-  // when a real consumer exists: mid-adapter respec/epochs, env-side attestation,
-  // or a second independent model implementation that validates its own spec.
 }
 
 message ResolveAdapterResponse {}

@@ -33,7 +33,9 @@ pub(super) fn validate_predict_route(request: &PredictRequest) -> Result<(), Grp
     // The self-describing batch: an ordered, non-empty, duplicate-free vector of
     // per-row episode ids (replaces the old positional slots).
     if request.episode_ids.is_empty() {
-        return Err(decode_error("model predict must include at least one episode_id"));
+        return Err(decode_error(
+            "model predict must include at least one episode_id",
+        ));
     }
     let mut seen = HashSet::new();
     for (index, episode_id) in request.episode_ids.iter().enumerate() {

@@ -69,6 +69,19 @@ def test_resolve_choice_and_range_are_enforced() -> None:
         resolve(_spec(), _make, {"suite": "a", "task_id": 99})
 
 
+def test_param_rejects_ge_le_on_non_numeric_type() -> None:
+    # ge/le are numeric bounds; declaring them on a non-numeric type is an author
+    # error caught at declaration, not deferred to a confusing resolve-time failure
+    # against the operator's value.
+    with pytest.raises(ValueError, match="numeric bounds"):
+        Param("mode", "enum", choices=("lo", "hi"), ge=0)
+    with pytest.raises(ValueError, match="numeric bounds"):
+        Param("name", str, le=10)
+    # Numeric types (Python type or string name) remain valid.
+    Param("task_id", "int", ge=0, le=9)
+    Param("lr", float, ge=0.0, le=1.0)
+
+
 def test_resolve_unknown_key_forbidden_by_default() -> None:
     with pytest.raises(UnknownParamError, match="robtos"):
         resolve(_spec(), _make, {"suite": "a", "robtos": 1})

@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
-    ObservationEmittedEvent, RuntimeHooks, RuntimeEnvContext, SessionEndedEvent,
+    ObservationEmittedEvent, RuntimeEnvContext, RuntimeHooks, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use crate::spec::{RuntimeReport, RuntimeSessionSpec};

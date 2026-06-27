@@ -148,10 +148,10 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 ///
 /// Use this to drive your handler from your own `RuntimeDriver` embedding. The
 /// adapter decodes the runtime's predict request into a
-/// [`ModelObservation`](crate::ModelObservation),
-/// runs the handler's episode lifecycle (`on_reset`/`on_episode_end`) before
-/// each `predict`, and re-encodes the action, matching the choreography the
-/// in-process `run_local` path performs.
+/// [`ModelObservation`](crate::ModelObservation), runs `predict`, and re-encodes
+/// the action, matching the choreography the in-process `run_local` path
+/// performs. Per-episode lifecycle is explicit (see below) — there is no
+/// episode-begin hook; the model's state is lazy-seeded on first predict.
 ///
 /// It borrows the handler mutably so the caller retains ownership (e.g. to run
 /// the close hook afterward). Per-episode lifecycle is explicit (R2): the runtime

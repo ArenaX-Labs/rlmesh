@@ -34,7 +34,7 @@ use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 /// dropped.
 ///
 /// The public per-request methods ([`predict`](Self::predict),
-/// [`configure_route`](Self::configure_route), [`close_route`](Self::close_route),
+/// [`resolve_adapter`](Self::resolve_adapter), [`release_adapter`](Self::release_adapter),
 /// [`close`](Self::close)) take `&mut self` and await their own response, so used
 /// alone they behave exactly as before (one request at a time, response matched
 /// by id). To actually overlap predicts on one connection, use

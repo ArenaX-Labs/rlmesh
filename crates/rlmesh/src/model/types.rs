@@ -198,4 +198,3 @@ mod tests {
         assert!(obs.decoded_lanes().is_err());
     }
 }
-

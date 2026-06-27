@@ -72,6 +72,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             binding = {}
 
     if args.env:
+        # num_envs / vectorization_mode are vectorization controls (their own env
+        # vars), not env make() kwargs; a binding key of either name would otherwise
+        # collide with serve_env's explicit args as an opaque "multiple values"
+        # TypeError. Point the operator at the right knob instead.
+        control_collisions = {"num_envs", "vectorization_mode"} & binding.keys()
+        if control_collisions:
+            parser.error(
+                f"{', '.join(sorted(control_collisions))} control vectorization, not "
+                "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
+                "instead of passing them in RLMESH_MAKE_KWARGS / --kwargs-json"
+            )
         env = resolve_entrypoint(args.env, label="env entrypoint")
         print(f"RLMesh serving env {args.env} on {args.address}", flush=True)
         serve_env(

@@ -226,11 +226,12 @@ impl<'de> Deserialize<'de> for ModelLeaf {
 /// The container type written here **is** the payload container the model's
 /// `predict` receives. Discrimination on the wire is **structural** (the shared
 /// `TreeNode` parser): a JSON array is a `Tuple`, a JSON object whose `"type"`
-/// is in the leaf vocabulary (`image`/`state`/`text`/`custom`) is a `Leaf`, an
-/// object whose `"type"` is an unrecognized string is a clear
-/// `unknown model input kind` error, and any other JSON object is a `Dict`.
-/// `"type"` is therefore a **reserved key**: a `Dict` child may not be named
-/// `"type"`.
+/// is a string is a `Leaf` — a recognized leaf kind
+/// (`image`/`state`/`text`/`custom`) parses fully, an unrecognized one becomes a
+/// tolerant [`ModelLeaf::Unknown`] (rejected only at resolve, and only if a model
+/// input references it) — and any other JSON object is a `Dict`. `"type"` is
+/// therefore a **reserved key**: a `Dict` child may not be named `"type"` (a
+/// non-string `"type"` is a clear error).
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputNode {
     Leaf(ModelLeaf),

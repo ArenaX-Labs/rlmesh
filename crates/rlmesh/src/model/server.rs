@@ -14,9 +14,10 @@ use rlmesh_grpc::lifecycle::{
 use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
     CloseParticipantResponse, GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult,
-    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
-    ReleaseAdapterResponse, ResetAdapterResponse, ResolveAdapterRequest, ResolveAdapterResponse,
-    ShutdownRequest, ShutdownResponse, grouped_predict_result, join_request, join_response,
+    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest,
+    PredictResponse, ReleaseAdapterResponse, ResetAdapterResponse, ResolveAdapterRequest,
+    ResolveAdapterResponse, ShutdownRequest, ShutdownResponse, grouped_predict_result,
+    join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
@@ -398,7 +399,10 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
         Some(join_request::Kind::ResetAdapter(request)) => {
             // Explicit GC (R2): evict the named episodes' per-episode adapter
             // state. Empty episode_ids means evict all of this env's state.
-            let env_id = request.context.as_ref().map(|context| context.env_id.clone());
+            let env_id = request
+                .context
+                .as_ref()
+                .map(|context| context.env_id.clone());
             match env_id.filter(|env_id| !env_id.is_empty()) {
                 Some(env_id) => {
                     let result = handler
@@ -430,7 +434,9 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                             request_id,
                         };
                     }
-                    Some(join_response::Kind::ReleaseAdapter(ReleaseAdapterResponse {}))
+                    Some(join_response::Kind::ReleaseAdapter(
+                        ReleaseAdapterResponse {},
+                    ))
                 }
                 _ => Some(model_error("release_adapter missing env_id")),
             }

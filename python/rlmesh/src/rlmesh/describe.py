@@ -27,6 +27,8 @@ from typing import Any, cast
 from ._entrypoint import resolve_entrypoint
 from .params import describe
 
+__all__ = ["main"]
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Resolve ``--env``/``--model`` and print its parameter surface as JSON."""

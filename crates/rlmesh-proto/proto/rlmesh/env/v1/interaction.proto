@@ -110,8 +110,6 @@ message JoinRequest {
 message ResetResponse {
   rlmesh.spaces.v1.SpaceValue observation = 1;
   rlmesh.spaces.v1.MetaMap infos = 2;
-  // tag 3 was episode_ids: the env no longer mints them (the runtime is the sole
-  // id authority and pushes ids DOWN via ResetRequest.episode_ids). Dropped.
 }
 
 message StepResponse {
@@ -121,10 +119,6 @@ message StepResponse {
   bytes truncated_mask = 4;
   rlmesh.spaces.v1.MetaMap infos = 5;
   repeated EpisodeMetadata completed_episodes = 6;
-  // tag 7 was episode_ids: the env no longer mints them (the runtime is the sole
-  // id authority and pushes ids DOWN via StepRequest.episode_ids). The runtime
-  // detects rolls/completions positionally via `completed_episodes` env_index.
-  // Dropped.
   // Reserved for future partial-width responses. Empty means full-width N. When
   // non-empty, only the k advanced lanes are returned; per-lane fields
   // (`observation` elements, `rewards`, `terminated_mask`, `truncated_mask`)

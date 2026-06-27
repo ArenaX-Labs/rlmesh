@@ -53,6 +53,23 @@ class Param:
     description: str = ""
     group: str | None = None
 
+    def __post_init__(self) -> None:
+        # ``ge``/``le`` are numeric bounds. Declaring them on a non-numeric type
+        # (``str``/``bool``/``enum``/custom) is an author mistake that would
+        # otherwise surface confusingly at resolve time as a "ge/le requires a
+        # numeric value" error against the *operator's* value — fail at the
+        # declaration instead, naming the real culprit.
+        if (self.ge is not None or self.le is not None) and self.type not in (
+            int,
+            float,
+            "int",
+            "float",
+        ):
+            raise ValueError(
+                f"Param {self.name!r}: ge/le are numeric bounds but type is "
+                f"{self.type!r}; remove the bound or declare type int/float"
+            )
+
     @property
     def required(self) -> bool:
         """Whether the param has no default and must be supplied."""

@@ -28,7 +28,6 @@ tokio-util = { workspace = true }
 tonic = { workspace = true }
 tonic-health = { workspace = true }
 tower = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
 
 thiserror = { workspace = true }
 tracing = { workspace = true }

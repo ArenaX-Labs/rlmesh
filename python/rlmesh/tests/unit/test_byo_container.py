@@ -106,7 +106,9 @@ def test_session_serves_then_binds_to_the_env(
     captured: dict[str, object] = {}
 
     class FakePyModelClient:
-        def __init__(self, address: str, contract: object, *_a: object) -> None:
+        def __init__(
+            self, address: str, contract: object, *_a: object, **_kw: object
+        ) -> None:
             captured["address"] = address
             captured["contract"] = contract
 
@@ -175,7 +177,7 @@ def test_session_fails_fast_with_logs_when_container_exits(
     )
 
     class AlwaysFailingClient:
-        def __init__(self, *_a: object) -> None:
+        def __init__(self, *_a: object, **_kw: object) -> None:
             raise OSError("connection refused")
 
     import rlmesh._rlmesh as native
@@ -232,7 +234,9 @@ def _patch_ok_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """A PyModelClient that connects on the first dial (no retries)."""
 
     class OkClient:
-        def __init__(self, address: str, contract: object, *_a: object) -> None:
+        def __init__(
+            self, address: str, contract: object, *_a: object, **_kw: object
+        ) -> None:
             self._address = address
 
         def address(self) -> str:
@@ -304,7 +308,7 @@ class _ConfigErrorClient:
 
     calls = 0
 
-    def __init__(self, *_a: object) -> None:
+    def __init__(self, *_a: object, **_kw: object) -> None:
         type(self).calls += 1
         raise RuntimeError("env contract missing observation_space")
 

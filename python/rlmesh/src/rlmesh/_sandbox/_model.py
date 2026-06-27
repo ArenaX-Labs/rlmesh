@@ -225,6 +225,7 @@ class SandboxModel:
         close_env: bool = False,
         token: str | None = None,
         trust_entrypoints: bool | None = None,
+        action_horizon: int = 1,
         connect_timeout_seconds: float = 30.0,
     ) -> Session[object, object]:
         """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
@@ -242,8 +243,11 @@ class SandboxModel:
                     obs, reward, terminated, truncated, _ = sess.step(sess.predict(obs))
 
         Closing the session stops the container it started. ``instruction`` / ``token`` /
-        ``trust_entrypoints`` apply to local models and are ignored here. Retries the
-        connection while the container starts, up to ``connect_timeout_seconds``.
+        ``trust_entrypoints`` apply to local models and are ignored here. ``action_horizon``
+        requests open-loop action chunking: the runtime replays up to that many actions per
+        predict before re-planning (1 = re-plan every step; only engages if the served policy
+        defines a chunk corner). Retries the connection while the container starts, up to
+        ``connect_timeout_seconds``.
         """
         _ = instruction, token, trust_entrypoints
         try:
@@ -261,7 +265,7 @@ class SandboxModel:
         try:
             contract = env_contract_of(env)
             client = self._dial_with_retry(
-                PyModelClient, contract, connect_timeout_seconds
+                PyModelClient, contract, connect_timeout_seconds, action_horizon
             )
             # Hand ownership (and so container teardown on session close) only to a
             # session that actually started the container. A caller-managed handle
@@ -279,6 +283,7 @@ class SandboxModel:
         client_cls: type[PyModelClient],
         contract: EnvContract,
         connect_timeout_seconds: float,
+        action_horizon: int = 1,
     ) -> PyModelClient:
         """Dial the serving container, retrying while it is still starting.
 
@@ -292,7 +297,7 @@ class SandboxModel:
         last_error: BaseException | None = None
         while True:
             try:
-                return client_cls(self.address, contract)
+                return client_cls(self.address, contract, action_horizon=action_horizon)
             except _TRANSIENT_DIAL_ERRORS as exc:  # the container may still be starting
                 last_error = exc
                 if not self._container_running():

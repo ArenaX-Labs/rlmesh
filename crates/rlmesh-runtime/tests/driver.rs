@@ -672,10 +672,7 @@ impl RuntimeModel for TestModel {
         })
     }
 
-    async fn reset_adapter(
-        &mut self,
-        request: ResetAdapterRequest,
-    ) -> Result<(), RuntimeError> {
+    async fn reset_adapter(&mut self, request: ResetAdapterRequest) -> Result<(), RuntimeError> {
         self.reset_adapters
             .lock()
             .expect("reset_adapter recorder lock poisoned")

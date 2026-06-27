@@ -104,8 +104,11 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
 
     @property
     def env_id(self) -> str:
-        """This connection's container id (UUIDv7). A stable correlation
-        identity, distinct from the human env name (`env_contract.id`)."""
+        """This connection's container id (UUIDv7).
+
+        A stable correlation identity, distinct from the human env name
+        (`env_contract.id`).
+        """
         return self._client.env_id()
 
     @property

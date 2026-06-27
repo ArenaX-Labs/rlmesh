@@ -6,8 +6,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
     AdapterContext, CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse,
-    GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
-    grouped_predict_result, join_request, join_response,
+    GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
+    ResolveAdapterRequest, grouped_predict_result, join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -941,7 +941,10 @@ struct IdRecordingHandler {
 #[async_trait]
 impl ModelHandler for IdRecordingHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
-        self.predict_ids.lock().await.push(observation.episode_ids());
+        self.predict_ids
+            .lock()
+            .await
+            .push(observation.episode_ids());
         Ok((0..observation.num_envs)
             .map(|_| spaces::SpaceValue::Discrete(0))
             .collect())
@@ -1276,7 +1279,10 @@ async fn two_remote_models_in_one_process_use_distinct_env_keys() {
             &mut self,
             observation: ModelObservation,
         ) -> Result<Vec<spaces::SpaceValue>> {
-            self.keys.lock().await.push(observation.route.env_id.clone());
+            self.keys
+                .lock()
+                .await
+                .push(observation.route.env_id.clone());
             Ok(vec![spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
             )])
@@ -1595,7 +1601,10 @@ async fn pipelined_predicts_preserve_per_route_order() {
 
     // Two predicts on the same env: the first is slow, the second fast. Per-env
     // order must keep predict p0 before p1.
-    req_tx.send(predict_join_request("r", "p0", true)).await.unwrap();
+    req_tx
+        .send(predict_join_request("r", "p0", true))
+        .await
+        .unwrap();
     req_tx
         .send(predict_join_request("r", "p1", false))
         .await

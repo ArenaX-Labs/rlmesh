@@ -437,7 +437,13 @@ async fn handle_env_request<E: Environment>(
             // tracker: silently deduping/truncating would start phantom or
             // misaligned episodes (seeds are positionally aligned to lanes).
             let timeout_ms = reset_req.timeout_ms;
-            let result = match validate_partial_reset(partial, &env_indices, &seeds, num_envs) {
+            let result = match validate_partial_reset(
+                partial,
+                &env_indices,
+                &seeds,
+                &pushed_ids,
+                num_envs,
+            ) {
                 Err(message) => Err(EnvError::new(
                     crate::error::EnvErrorCode::InvalidAction,
                     message,
@@ -479,12 +485,7 @@ async fn handle_env_request<E: Environment>(
                     };
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
-                    tracing::debug!(
-                        obs_bytes,
-                        info_bytes,
-                        episode_count,
-                        "env reset completed"
-                    );
+                    tracing::debug!(obs_bytes, info_bytes, episode_count, "env reset completed");
                     Some(join_response::Kind::Reset(ok))
                 }
                 Err(e) => {
@@ -706,14 +707,17 @@ async fn handle_env_request<E: Environment>(
 /// Validate an explicit partial reset (`ResetRequest.env_indices`) before it
 /// reaches the env or the episode tracker. A full reset (empty `env_indices`)
 /// is always allowed. For a partial reset every lane must be in `0..num_envs`
-/// and unique. Because `seeds` is positionally aligned to `env_indices`, it must
-/// either be empty or match that length. Duplicates and length mismatches are
-/// rejected rather than deduped/truncated: the intent is ambiguous and silently
-/// guessing would start phantom or seed-misaligned episodes.
+/// and unique. Because `seeds` and `episode_ids` are positionally aligned to
+/// `env_indices`, each must either be empty or match that length. Duplicates and
+/// length mismatches are rejected rather than deduped/truncated: the intent is
+/// ambiguous and silently guessing would start phantom, seed-misaligned, or
+/// empty-id episodes (the latter then rejected mid-run by the model predict
+/// validator, so the two sides of the wire would disagree).
 fn validate_partial_reset(
     partial: bool,
     env_indices: &[u32],
     seeds: &[i64],
+    episode_ids: &[String],
     num_envs: usize,
 ) -> Result<(), String> {
     if !partial {
@@ -724,6 +728,14 @@ fn validate_partial_reset(
             "partial reset: seeds length {} does not match env_indices length {} \
              (provide one seed per reset lane, or none)",
             seeds.len(),
+            env_indices.len(),
+        ));
+    }
+    if !episode_ids.is_empty() && episode_ids.len() != env_indices.len() {
+        return Err(format!(
+            "partial reset: episode_ids length {} does not match env_indices length {} \
+             (provide one episode id per reset lane, or none)",
+            episode_ids.len(),
             env_indices.len(),
         ));
     }
@@ -1535,7 +1547,11 @@ mod tests {
                 t.active_episode_id(0).is_none(),
                 "DISABLED: terminated lane 0 has no active episode"
             );
-            assert_eq!(t.active_episode_id(1), Some("E1"), "lane 1 keeps its episode");
+            assert_eq!(
+                t.active_episode_id(1),
+                Some("E1"),
+                "lane 1 keeps its episode"
+            );
         }
 
         // Step 2: no phantom episode is delivered for lane 0 (no spurious
@@ -1698,8 +1714,12 @@ mod tests {
         // Done step t: lane 0 terminates, completing the old episode "A". The id
         // has not rolled yet (the lane is now pending-autoreset).
         let t = step_ok(
-            super::handle_env_request(step("s1", vec!["A".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s1", vec!["A".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert_eq!(t.completed_episodes.len(), 1, "lane 0 completes at t");
         assert_eq!(t.completed_episodes[0].episode_id, "A");
@@ -1714,8 +1734,12 @@ mod tests {
         // Fresh-obs step t+1: the env auto-resets lane 0, adopting the rolled id
         // "B" the runtime pushed. No spurious completion.
         let tp1 = step_ok(
-            super::handle_env_request(step("s2", vec!["B".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s2", vec!["B".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert!(
             tp1.completed_episodes.is_empty(),
@@ -1899,20 +1923,32 @@ mod tests {
         };
 
         let _ = step_ok(
-            super::handle_env_request(step("s1", vec!["A".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s1", vec!["A".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         let s2 = step_ok(
-            super::handle_env_request(step("s2", vec!["A".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s2", vec!["A".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert_eq!(s2.completed_episodes.len(), 1, "episode A completes at s2");
         assert_eq!(s2.completed_episodes[0].episode_id, "A");
 
         // s3 rolls episode B (the env adopts the pushed id).
         let s3 = step_ok(
-            super::handle_env_request(step("s3", vec!["B".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s3", vec!["B".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert!(
             s3.completed_episodes.is_empty(),
@@ -1920,23 +1956,39 @@ mod tests {
         );
         {
             let tk = tracker.lock().await;
-            assert_eq!(tk.active_episode_id(0), Some("B"), "s3 rolls a new episode B");
+            assert_eq!(
+                tk.active_episode_id(0),
+                Some("B"),
+                "s3 rolls a new episode B"
+            );
         }
 
         let s4 = step_ok(
-            super::handle_env_request(step("s4", vec!["B".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s4", vec!["B".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert_eq!(s4.completed_episodes.len(), 1, "episode B completes at s4");
         assert_eq!(s4.completed_episodes[0].episode_id, "B");
 
         let s5 = step_ok(
-            super::handle_env_request(step("s5", vec!["C".to_string()]), env.clone(), tracker.clone())
-                .await,
+            super::handle_env_request(
+                step("s5", vec!["C".to_string()]),
+                env.clone(),
+                tracker.clone(),
+            )
+            .await,
         );
         assert!(s5.completed_episodes.is_empty());
         let tk = tracker.lock().await;
-        assert_eq!(tk.active_episode_id(0), Some("C"), "s5 rolls a new episode C");
+        assert_eq!(
+            tk.active_episode_id(0),
+            Some("C"),
+            "s5 rolls a new episode C"
+        );
     }
 
     #[tokio::test]
