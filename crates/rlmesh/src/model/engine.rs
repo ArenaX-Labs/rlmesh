@@ -426,6 +426,16 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         let Some(mut config) = self.resolver.resolve(route_key, env_contract).await? else {
             return Ok(());
         };
+        // Surface the adapter's advisories once at configure. These are the
+        // tolerant reader's only operator signal that something degraded: a
+        // dropped unknown-kind modality (an old core ignoring data a newer env
+        // declares under a kind it cannot read), a zero-filled absent camera, an
+        // aspect crop/letterbox. The route runs regardless, so without this the
+        // signal stays buried on the adapter handle and the degradation is silent
+        // in practice.
+        for note in config.adapter.advisories() {
+            tracing::warn!(route = %route_key, "adapter advisory: {note}");
+        }
         // Stamp the runtime-chosen replay horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
         // has no chunk corner: the route still runs, re-planning every step.

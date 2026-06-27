@@ -718,6 +718,7 @@ mod tests {
                 clip: None,
                 in_dim: 0,
             },
+            Vec::new(),
         );
         // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.
         let obs = |tag: u8| -> BTreeMap<String, Value> {

@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
@@ -21,13 +22,16 @@ use super::rotations::RotationEncoding;
 /// the space, so only the layout (genuinely underdetermined by shape) and the
 /// upside-down flag are carried.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ImageTag {
     pub role: String,
     #[serde(default)]
     pub layout: ImageLayout,
     #[serde(default)]
     pub upside_down: bool,
+    /// Unrecognized additive fields, retained verbatim for round-trip and
+    /// surfaced to the publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// A numeric proprioception entry's semantics. The width is derived from the
@@ -35,20 +39,24 @@ pub struct ImageTag {
 /// then checked against the space) and `range` overrides infinite space
 /// bounds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StateTag {
     pub role: String,
     #[serde(default)]
     pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
+    /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// A text entry's semantics (typically the task instruction).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TextTag {
     pub role: String,
+    /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Wire form of a [`Field`], deserialized before the cross-field
@@ -154,23 +162,103 @@ pub struct SplitLayout {
 /// One observation *leaf*: the semantics of a single space leaf, tagged by the
 /// kind of leaf it describes.
 ///
-/// **Strict v1 kind tag.** A new observation *kind* (a new variant here) is a
-/// structural change = a v2 key bump, not an additive v1 value; an unknown
-/// `type` is rejected at parse with a clear `unknown observation kind` error.
-/// The `split` discriminant carries a [`SplitLayout`] — itself a *leaf* (one
-/// tensor split into role fields), not a container.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+/// **Tolerant kind tag.** A `type` in `OBS_LEAF_TYPES` deserializes into the
+/// strict variant (a malformed payload of a *recognized* kind still hard-errors).
+/// An unrecognized `type` becomes [`Unknown`](ObsLeaf::Unknown), retained
+/// verbatim — a newer env's new modality parses and relays without loss. It
+/// produces no `EnvFeature` at [`join`](crate::join::join) (like an untagged
+/// leaf); the resolver ignores it unless a model input references its `role`, in
+/// which case resolution fails with a localized
+/// [`UnsupportedKind`](crate::v1::ErrorCode). The `split` discriminant carries a
+/// [`SplitLayout`] — itself a *leaf* (one tensor split into role fields).
+#[derive(Debug, Clone, PartialEq)]
 pub enum ObsLeaf {
+    Image(ImageTag),
+    State(StateTag),
+    Split(SplitLayout),
+    Text(TextTag),
+    /// An observation kind this core does not define. `role` is lifted
+    /// opportunistically from the raw object's top-level `role` string (absent ⇒
+    /// unreferenceable ⇒ silently dropped); `raw` re-emits byte-faithfully.
+    Unknown {
+        kind: String,
+        role: Option<String>,
+        raw: serde_json::Value,
+    },
+}
+
+/// The leaf-vocabulary `type` discriminants that mark a JSON object as a known
+/// [`ObsLeaf`] variant; any other string `type` is an `Unknown` leaf.
+pub const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
+
+/// Owned mirror of the *known* [`ObsLeaf`] variants — see
+/// `ModelLeafKnown` for why the serde derive is reused here.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ObsLeafKnown {
     Image(ImageTag),
     State(StateTag),
     Split(SplitLayout),
     Text(TextTag),
 }
 
-/// The leaf-vocabulary `type` discriminants that mark a JSON object as an
-/// [`ObsLeaf`] rather than an [`ObsNode::Dict`].
-pub const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
+impl From<ObsLeafKnown> for ObsLeaf {
+    fn from(known: ObsLeafKnown) -> Self {
+        match known {
+            ObsLeafKnown::Image(tag) => ObsLeaf::Image(tag),
+            ObsLeafKnown::State(tag) => ObsLeaf::State(tag),
+            ObsLeafKnown::Split(layout) => ObsLeaf::Split(layout),
+            ObsLeafKnown::Text(tag) => ObsLeaf::Text(tag),
+        }
+    }
+}
+
+/// Borrowed mirror for Serialize (re-emits the internally-tagged known form).
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ObsLeafKnownRef<'a> {
+    Image(&'a ImageTag),
+    State(&'a StateTag),
+    Split(&'a SplitLayout),
+    Text(&'a TextTag),
+}
+
+impl Serialize for ObsLeaf {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ObsLeaf::Image(tag) => ObsLeafKnownRef::Image(tag).serialize(serializer),
+            ObsLeaf::State(tag) => ObsLeafKnownRef::State(tag).serialize(serializer),
+            ObsLeaf::Split(layout) => ObsLeafKnownRef::Split(layout).serialize(serializer),
+            ObsLeaf::Text(tag) => ObsLeafKnownRef::Text(tag).serialize(serializer),
+            ObsLeaf::Unknown { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ObsLeaf {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let kind = value
+            .get("type")
+            .and_then(|tag| tag.as_str())
+            .ok_or_else(|| de::Error::custom("an observation leaf needs a string \"type\""))?;
+        if OBS_LEAF_TYPES.contains(&kind) {
+            ObsLeafKnown::deserialize(value)
+                .map(ObsLeaf::from)
+                .map_err(de::Error::custom)
+        } else {
+            let role = value
+                .get("role")
+                .and_then(|role| role.as_str())
+                .map(str::to_owned);
+            Ok(ObsLeaf::Unknown {
+                kind: kind.to_owned(),
+                role,
+                raw: value,
+            })
+        }
+    }
+}
 
 /// A node in the recursive env observation tree: a leaf, a `Dict` of named
 /// sub-nodes, or a `Tuple` of positional sub-nodes.
@@ -201,7 +289,6 @@ pub enum ObsNode {
 impl TreeNode for ObsNode {
     type Leaf = ObsLeaf;
 
-    const LEAF_TYPES: &'static [&'static str] = OBS_LEAF_TYPES;
     const KIND: &'static str = "observation";
 
     fn from_shape(shape: NodeShape<<Self as TreeNode>::Leaf, Self>) -> Self {
@@ -243,27 +330,42 @@ pub struct EnvTags {
 }
 
 #[cfg(test)]
-mod tag_deny_unknown_tests {
+mod tag_tolerant_field_tests {
     use super::ObsLeaf;
 
     #[test]
-    fn obs_tag_rejects_typod_field_but_accepts_valid() {
-        // serde 1.0.228 honors deny_unknown_fields on an internally-tagged
-        // variant (the `type` tag is stripped before the variant deserializes),
-        // so a typo'd authoring field on the trust boundary is rejected at parse
-        // instead of silently defaulting.
-        for typo in [
-            r#"{"type": "image", "role": "x", "layuot": "chw"}"#,
-            r#"{"type": "state", "role": "x", "rnge": [0.0, 1.0]}"#,
-            r#"{"type": "text", "role": "x", "rol": "y"}"#,
-        ] {
-            let err = serde_json::from_str::<ObsLeaf>(typo).unwrap_err();
-            assert!(err.to_string().contains("unknown field"), "got: {err}");
-        }
-        // Valid tags (including the `type` tag) still parse.
+    fn obs_tag_captures_unknown_field_and_never_leaks_type() {
+        // Tolerant reader: an unknown (typo'd or future-additive) field on a
+        // known leaf kind is captured verbatim in `unknown`, not rejected at the
+        // serde layer. The publish-door `reject_unknowns` gate is where strictness
+        // lives now. Critically, the internally-tagged `type` discriminant is
+        // consumed before the variant deserializes, so it never pollutes the
+        // capture map (the fragile flatten-on-tagged-variant edge this pins).
+        let tag: ObsLeaf =
+            serde_json::from_str(r#"{"type": "image", "role": "x", "layuot": "chw"}"#).unwrap();
+        let ObsLeaf::Image(image) = &tag else {
+            panic!("expected image")
+        };
+        assert_eq!(image.unknown.get("layuot"), Some(&serde_json::json!("chw")));
+        assert!(
+            !image.unknown.contains_key("type"),
+            "type leaked into capture"
+        );
+        // Round-trips verbatim, and the re-emitted object still carries `type`.
+        let json = serde_json::to_string(&tag).unwrap();
+        assert!(
+            json.contains("layuot") && json.contains(r#""type":"image""#),
+            "got: {json}"
+        );
+
+        // Valid tags (including the `type` tag) still parse, and a clean tag has
+        // an empty capture map.
         let tag: ObsLeaf =
             serde_json::from_str(r#"{"type": "image", "role": "x", "layout": "chw"}"#).unwrap();
-        assert!(matches!(tag, ObsLeaf::Image(_)));
+        let ObsLeaf::Image(image) = &tag else {
+            panic!("expected image")
+        };
+        assert!(image.unknown.is_empty());
     }
 }
 
@@ -389,16 +491,24 @@ mod obs_node_serde_tests {
     }
 
     #[test]
-    fn unknown_type_is_a_clear_kind_error() {
-        // An object whose `type` is a string outside the leaf vocabulary names
-        // the unknown kind directly — `type` is reserved, so it is never
-        // misparsed as a Dict child.
-        let err = serde_json::from_str::<ObsNode>(r#"{"type": "audio", "role": "x"}"#)
-            .expect_err("unknown kind rejected");
+    fn unknown_type_parses_into_a_tolerant_unknown_leaf() {
+        // Tolerant reader: an object whose string `type` is outside the leaf
+        // vocabulary is no longer a parse error — it becomes an `Unknown` leaf
+        // with its `role` lifted and the raw object retained for byte-faithful
+        // relay. Whether it matters is decided at *resolve*, not at parse.
+        let node: ObsNode =
+            serde_json::from_str(r#"{"type": "audio", "role": "x", "sample_rate": 16000}"#)
+                .expect("unknown kind parses");
+        let ObsNode::Leaf(super::ObsLeaf::Unknown { kind, role, .. }) = &node else {
+            panic!("expected an unknown leaf, got {node:?}")
+        };
+        assert_eq!(kind, "audio");
+        assert_eq!(role.as_deref(), Some("x"));
+        // Round-trips verbatim: kind and the unknown sub-field both survive.
+        let json = serde_json::to_string(&node).unwrap();
         assert!(
-            err.to_string()
-                .contains(r#"unknown observation kind "audio""#),
-            "got: {err}"
+            json.contains(r#""type":"audio""#) && json.contains("sample_rate"),
+            "got: {json}"
         );
     }
 

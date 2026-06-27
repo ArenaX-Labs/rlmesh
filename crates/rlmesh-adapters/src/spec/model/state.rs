@@ -1,5 +1,6 @@
 //! A numeric state input expected by a model.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::de::{self, MapAccess, Visitor};
@@ -190,6 +191,11 @@ pub struct State {
     pub reshape: Option<Vec<i64>>,
     #[serde(default, skip_serializing_if = "is_default_container")]
     pub container: StateContainer,
+    /// Unrecognized additive fields, retained for round-trip and surfaced to the
+    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate. Threaded
+    /// through `StateWire` (which previously dropped unknown fields silently).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 fn is_default_container(container: &StateContainer) -> bool {
@@ -208,6 +214,10 @@ struct StateWire {
     reshape: Option<Vec<i64>>,
     #[serde(default)]
     container: StateContainer,
+    // Retained verbatim instead of silently dropped (the pre-tolerance bug): the
+    // single field rule is flatten-capture, threaded into `State` below.
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
 }
 
 impl TryFrom<StateWire> for State {
@@ -223,6 +233,7 @@ impl TryFrom<StateWire> for State {
             dtype: wire.dtype,
             reshape: wire.reshape,
             container: wire.container,
+            unknown: wire.unknown,
         })
     }
 }

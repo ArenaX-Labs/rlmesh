@@ -1,5 +1,7 @@
 //! An escape-hatch input computed by host-language code.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// An escape-hatch input computed by host-language code.
@@ -15,4 +17,7 @@ pub struct Custom {
     /// `transform` (frozen). The Python side names the entrypoint variant's
     /// field `entrypoint`, but it travels under this `transform` key.
     pub transform: String,
+    /// Unrecognized additive fields, retained for round-trip (see the strict-v1 publish gate).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }

@@ -13,6 +13,7 @@ pub(super) fn plan_image(
     model_input: &Image,
     placement: NodePath,
     images_by_role: &BTreeMap<String, &EnvImage>,
+    unknown_roles: &BTreeMap<String, String>,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
     // `absent_fill` only colors the zero-filled frame an `optional` camera
@@ -28,6 +29,12 @@ pub(super) fn plan_image(
         ));
     }
     let mut env_image = images_by_role.get(&model_input.role).copied();
+    if env_image.is_none() {
+        // The role's data is present but under a kind this core can't read: fail
+        // loud before any fallback (lone-camera bind, optional zero-fill) papers
+        // over it. A role the env genuinely lacks passes through to the fallbacks.
+        super::reject_referenced_unknown(&model_input.role, &placement, unknown_roles)?;
+    }
     // The lone-camera fallback papers over role-name mismatches when the env
     // offers exactly one camera. An `optional` input, though, has explicitly
     // opted into zero-filling when its role is absent -- that contract wins, so
@@ -288,7 +295,7 @@ mod image_resolve_tests {
         model: &Image,
         images: &BTreeMap<String, &EnvImage>,
     ) -> Result<crate::plans::ImagePlan, crate::error::AdapterResolutionError> {
-        plan_image(model, NodePath::root(), images)
+        plan_image(model, NodePath::root(), images, &BTreeMap::new())
     }
 
     fn env_image(height: u32, width: u32) -> EnvImage {
@@ -322,6 +329,7 @@ mod image_resolve_tests {
             optional: false,
             absent_fill: None,
             stack: 1,
+            unknown: Default::default(),
         }
     }
 

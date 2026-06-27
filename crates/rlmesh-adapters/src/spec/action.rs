@@ -1,12 +1,13 @@
 //! Action layout types shared by env and model declarations.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::rotations::RotationEncoding;
 
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Actuator {
     pub role: String,
     // `dim` is required (no `default`): an absent `dim` is a missing-field error
@@ -42,6 +43,10 @@ pub struct Actuator {
         deserialize_with = "crate::spec::num::de_opt_number"
     )]
     pub threshold: Option<f64>,
+    /// Unrecognized additive fields, retained for round-trip and surfaced to the
+    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Ordered action components plus optional clipping bounds.
@@ -131,18 +136,32 @@ mod finiteness_contract {
 }
 
 #[cfg(test)]
-mod deny_unknown_fields_contract {
+mod tolerant_field_contract {
     use super::{Action, Actuator};
 
     #[test]
-    fn plain_struct_rejects_typo() {
-        // Actuator/Action are plain structs -> deny_unknown_fields
-        // turns a field typo into a hard error instead of a silent drop.
-        let err =
-            serde_json::from_str::<Actuator>(r#"{"role": "x", "dim": 1, "rnge": [0.0, 1.0]}"#)
-                .unwrap_err();
-        assert!(err.to_string().contains("unknown field"), "got: {err}");
+    fn actuator_captures_unknown_field_for_round_trip() {
+        // Tolerant reader: a typo'd (or future-additive) Actuator field is no
+        // longer rejected at the serde layer — it is captured verbatim in
+        // `unknown` and re-emitted, so a newer peer's field survives an older
+        // core. The strict-v1 gate (`reject_unknowns`) catches it at the publish
+        // door instead; see `spec::strict`.
+        let actuator: Actuator =
+            serde_json::from_str(r#"{"role": "x", "dim": 1, "rnge": [0.0, 1.0]}"#).unwrap();
+        assert_eq!(
+            actuator.unknown.get("rnge"),
+            Some(&serde_json::json!([0.0, 1.0]))
+        );
+        // Round-trips verbatim.
+        let json = serde_json::to_string(&actuator).unwrap();
+        assert!(json.contains("rnge"), "unknown field dropped: {json}");
+    }
 
+    #[test]
+    fn action_envelope_stays_strict() {
+        // The Action/ActionWire envelope keeps deny_unknown_fields (it has a
+        // cross-field TryFrom validator and is not a growable leaf), so a typo on
+        // the envelope is still a hard parse error.
         let err =
             serde_json::from_str::<Action>(r#"{"components": [], "clipp": null}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");

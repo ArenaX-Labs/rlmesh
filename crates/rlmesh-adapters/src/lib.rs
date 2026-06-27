@@ -55,7 +55,7 @@ pub mod v1 {
         Action, Actuator, ConcatPart, Custom, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags,
         EnvText, Field, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, ObsLeaf,
         ObsNode, RotationEncoding, SplitLayout, State, StateContainer, StateTag, Text,
-        TextContainer, TextTag,
+        TextContainer, TextTag, UnknownFeature, reject_unknowns_env, reject_unknowns_model,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,

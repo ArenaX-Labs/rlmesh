@@ -66,14 +66,24 @@ pub struct ResolvedAdapter {
     /// from `obs_plans` in the same step; do not mutate `obs_plans` afterward or
     /// this summary goes stale.
     stacked: Vec<StackedPlacement>,
+    /// Resolve-time advisories the plans cannot reconstruct: one per
+    /// *unreferenced* unknown observation kind the env declared (an old core
+    /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
+    /// the per-apply data-loss notes. Empty on a fully-understood spec.
+    resolve_advisories: Vec<String>,
 }
 
 impl ResolvedAdapter {
     /// Assemble a resolved adapter, precomputing the frame-stacked placements
     /// ([`stacked`](Self::stacked_placements)) once from `obs_plans`. The single
     /// entry point so the precomputed stacking list can never drift from the
-    /// plans it summarizes.
-    pub(crate) fn new(obs_plans: Vec<ObsPlan>, action_plan: ActionPlan) -> Self {
+    /// plans it summarizes. `resolve_advisories` carries notes derived at resolve
+    /// (unreferenced unknown kinds) that the plans no longer encode.
+    pub(crate) fn new(
+        obs_plans: Vec<ObsPlan>,
+        action_plan: ActionPlan,
+        resolve_advisories: Vec<String>,
+    ) -> Self {
         let stacked = obs_plans
             .iter()
             .filter_map(|plan| match plan {
@@ -89,6 +99,7 @@ impl ResolvedAdapter {
             obs_plans,
             action_plan,
             stacked,
+            resolve_advisories,
         }
     }
 
@@ -96,17 +107,32 @@ impl ResolvedAdapter {
     ///
     /// A *reference snapshot*: the conformance vectors pin the exact text so
     /// implementations stay consistent, but the wording is not a stable
-    /// cross-language contract.
+    /// cross-language contract. Ends with a `dropped:` section listing any env
+    /// modality this core ignored (an unrecognized kind no model input needed) —
+    /// a genuine data-loss event the per-plan transform list cannot show, since a
+    /// dropped leaf produces no plan.
     pub fn describe(&self) -> String {
-        describe::describe_adapter(self)
+        let mut summary = describe::describe_adapter(self);
+        if !self.resolve_advisories.is_empty() {
+            summary.push_str("\ndropped:");
+            for note in &self.resolve_advisories {
+                summary.push_str("\n  ");
+                summary.push_str(note);
+            }
+        }
+        summary
     }
 
     /// Per-env data-loss / fabrication notes (a zero-filled camera, an aspect
-    /// crop or letterbox): the "warn" subset of [`describe`](Self::describe),
-    /// for a caller to surface (e.g. log) without failing. Empty when nothing
-    /// noteworthy happened.
+    /// crop or letterbox, a dropped unknown-kind modality): the "warn" subset of
+    /// [`describe`](Self::describe), for a caller to surface (e.g. log) without
+    /// failing. Empty when nothing noteworthy happened.
     pub fn advisories(&self) -> Vec<String> {
-        describe::adapter_advisories(self)
+        // Resolve-time advisories (unreferenced unknown kinds) first, then the
+        // per-apply data-loss notes derived from the plans.
+        let mut all = self.resolve_advisories.clone();
+        all.extend(describe::adapter_advisories(self));
+        all
     }
 
     /// The observation keys this adapter actually reads.

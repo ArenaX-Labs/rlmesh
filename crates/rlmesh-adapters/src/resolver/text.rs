@@ -13,19 +13,26 @@ pub(super) fn plan_text(
     model_input: &Text,
     placement: NodePath,
     texts_by_role: &BTreeMap<String, &EnvText>,
+    unknown_roles: &BTreeMap<String, String>,
 ) -> Result<TextPlan> {
     let env_text = texts_by_role.get(&model_input.role).copied();
-    if env_text.is_none() && model_input.default.is_none() {
-        return Err(err(
-            ErrorCode::MissingRole,
-            format!(
-                "model input {} needs text role {} but the env offers {} and no \
-             default is set",
-                quoted(&placement.to_string()),
-                quoted(&model_input.role),
-                quoted_keys(texts_by_role)
-            ),
-        ));
+    if env_text.is_none() {
+        // The role's data is present but under a kind this core can't read: fail
+        // loud before a default silently masks it. A role the env genuinely lacks
+        // falls through to the default (or the missing-role error below).
+        super::reject_referenced_unknown(&model_input.role, &placement, unknown_roles)?;
+        if model_input.default.is_none() {
+            return Err(err(
+                ErrorCode::MissingRole,
+                format!(
+                    "model input {} needs text role {} but the env offers {} and no \
+                 default is set",
+                    quoted(&placement.to_string()),
+                    quoted(&model_input.role),
+                    quoted_keys(texts_by_role)
+                ),
+            ));
+        }
     }
     Ok(TextPlan {
         placement,

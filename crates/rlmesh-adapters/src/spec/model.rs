@@ -7,7 +7,7 @@ mod text;
 
 use std::collections::BTreeMap;
 
-use serde::de::Visitor;
+use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::action::Action;
@@ -47,14 +47,13 @@ pub(super) enum NodeShape<L, C> {
 /// serializes as its tagged object, a dict as a JSON object, a tuple as a JSON
 /// array — and stays a per-type three-arm match.)
 pub(super) trait TreeNode: Sized + for<'de> Deserialize<'de> {
-    /// The leaf payload, internally `#[serde(tag = "type")]`-tagged.
+    /// The leaf payload. Its own [`Deserialize`] sorts a known `type` into the
+    /// strict variant and an unrecognized `type` into the tolerant `Unknown`
+    /// arm, so the visitor's job is purely structural (leaf / dict / tuple).
     type Leaf: Serialize + for<'de> Deserialize<'de>;
 
-    /// The `type` discriminants that mark a JSON object as a leaf (not a dict).
-    const LEAF_TYPES: &'static [&'static str];
-
-    /// Domain word naming this tree in errors, e.g. `"model input"` →
-    /// `unknown model input kind "audio"`.
+    /// Domain word naming this tree in the reserved-`type`-key error, e.g.
+    /// `"model input"`.
     const KIND: &'static str;
 
     /// Build a node from one of the three owned structural shapes the shared
@@ -101,29 +100,21 @@ impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
         while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
             buffered.insert(key, value);
         }
-        // `"type"` is a reserved Dict key: its presence forces the leaf branch,
-        // so an unknown or non-string `"type"` is a clear error here rather than
-        // a misparse-as-Dict that fails deep with a misleading message.
+        // `"type"` is a reserved Dict key: a *string* `"type"` forces the leaf
+        // branch (the leaf's own Deserialize then sorts known vs `Unknown` kind),
+        // so the visitor stays purely structural. A non-string `"type"` cannot be
+        // a leaf discriminant and is malformed — a clear error here rather than a
+        // misparse-as-Dict that fails deep with a misleading message.
         if let Some(tag) = buffered.get("type") {
-            match tag.as_str() {
-                Some(tag) if N::LEAF_TYPES.contains(&tag) => {
-                    let object = serde_json::Value::Object(buffered.into_iter().collect());
-                    let leaf = N::Leaf::deserialize(object).map_err(serde::de::Error::custom)?;
-                    return Ok(N::from_shape(NodeShape::Leaf(leaf)));
-                }
-                Some(unknown) => {
-                    return Err(serde::de::Error::custom(format!(
-                        "unknown {} kind {unknown:?}",
-                        N::KIND
-                    )));
-                }
-                None => {
-                    return Err(serde::de::Error::custom(format!(
-                        "the reserved key \"type\" may not name a dict child ({} tree)",
-                        N::KIND
-                    )));
-                }
+            if tag.is_string() {
+                let object = serde_json::Value::Object(buffered.into_iter().collect());
+                let leaf = N::Leaf::deserialize(object).map_err(serde::de::Error::custom)?;
+                return Ok(N::from_shape(NodeShape::Leaf(leaf)));
             }
+            return Err(serde::de::Error::custom(format!(
+                "the reserved key \"type\" may not name a dict child ({} tree)",
+                N::KIND
+            )));
         }
         let mut children: BTreeMap<String, N> = BTreeMap::new();
         for (key, value) in buffered {
@@ -136,24 +127,98 @@ impl<'de, N: TreeNode> Visitor<'de> for NodeVisitor<N> {
 
 /// One input *leaf* expected by a model, tagged by the kind of payload it is.
 ///
-/// **Strict v1 kind tag.** A new input *kind* (a new variant here) is a
-/// structural change = a v2 key bump, not an additive v1 value; an unknown
-/// `type` is rejected at parse with a clear `unknown model input kind` error
-/// (the value-vocabulary degradation that applies to
-/// [`crate::spec::RotationEncoding`] is deliberately NOT extended to node kinds
-/// — a new kind has no defined structure for an old reader).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+/// **Tolerant kind tag.** A `type` in `MODEL_LEAF_TYPES` deserializes into the
+/// strict variant (a malformed payload of a *recognized* kind still hard-errors).
+/// An unrecognized `type` becomes [`Unknown`](ModelLeaf::Unknown), retained
+/// verbatim for round-trip — a newer peer's new modality parses and relays
+/// without loss, and surfaces only at *resolve*: a model input of an unknown
+/// kind is always an [`UnsupportedKind`](crate::v1::ErrorCode) error (an old core
+/// has no apply path for it), named by its placement.
+#[derive(Debug, Clone, PartialEq)]
 pub enum ModelLeaf {
+    Image(Image),
+    State(State),
+    Text(Text),
+    Custom(Custom),
+    /// A model input kind this core does not define. Carries the raw object
+    /// verbatim (it already embeds `type`) so it re-emits byte-faithfully.
+    Unknown {
+        kind: String,
+        raw: serde_json::Value,
+    },
+}
+
+/// The leaf-vocabulary `type` discriminants that mark a JSON object as a known
+/// [`ModelLeaf`] variant; any other string `type` is an `Unknown` leaf.
+pub const MODEL_LEAF_TYPES: &[&str] = &["image", "state", "text", "custom"];
+
+/// Owned mirror of the *known* [`ModelLeaf`] variants. Reuses serde's
+/// internally-tagged derive (which strips `type` before the variant's flatten
+/// capture sees it) so the fragile tagged+flatten interaction lives in one
+/// derive, not hand-rolled dispatch.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ModelLeafKnown {
     Image(Image),
     State(State),
     Text(Text),
     Custom(Custom),
 }
 
-/// The leaf-vocabulary `type` discriminants that mark a JSON object as a
-/// [`ModelLeaf`] rather than an [`InputNode::Dict`].
-pub const MODEL_LEAF_TYPES: &[&str] = &["image", "state", "text", "custom"];
+impl From<ModelLeafKnown> for ModelLeaf {
+    fn from(known: ModelLeafKnown) -> Self {
+        match known {
+            ModelLeafKnown::Image(input) => ModelLeaf::Image(input),
+            ModelLeafKnown::State(input) => ModelLeaf::State(input),
+            ModelLeafKnown::Text(input) => ModelLeaf::Text(input),
+            ModelLeafKnown::Custom(input) => ModelLeaf::Custom(input),
+        }
+    }
+}
+
+/// Borrowed mirror for Serialize (re-emits the internally-tagged known form).
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ModelLeafKnownRef<'a> {
+    Image(&'a Image),
+    State(&'a State),
+    Text(&'a Text),
+    Custom(&'a Custom),
+}
+
+impl Serialize for ModelLeaf {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ModelLeaf::Image(input) => ModelLeafKnownRef::Image(input).serialize(serializer),
+            ModelLeaf::State(input) => ModelLeafKnownRef::State(input).serialize(serializer),
+            ModelLeaf::Text(input) => ModelLeafKnownRef::Text(input).serialize(serializer),
+            ModelLeaf::Custom(input) => ModelLeafKnownRef::Custom(input).serialize(serializer),
+            // The raw object already embeds `type`; emit it verbatim.
+            ModelLeaf::Unknown { raw, .. } => raw.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelLeaf {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let kind = value
+            .get("type")
+            .and_then(|tag| tag.as_str())
+            .ok_or_else(|| de::Error::custom("a model input leaf needs a string \"type\""))?;
+        if MODEL_LEAF_TYPES.contains(&kind) {
+            // Malformed payload of a recognized kind still hard-errors here.
+            ModelLeafKnown::deserialize(value)
+                .map(ModelLeaf::from)
+                .map_err(de::Error::custom)
+        } else {
+            Ok(ModelLeaf::Unknown {
+                kind: kind.to_owned(),
+                raw: value,
+            })
+        }
+    }
+}
 
 /// A node in the recursive model input tree: a leaf, a `Dict` of named
 /// sub-nodes, or a `Tuple` of positional sub-nodes.
@@ -179,7 +244,6 @@ pub enum InputNode {
 impl TreeNode for InputNode {
     type Leaf = ModelLeaf;
 
-    const LEAF_TYPES: &'static [&'static str] = MODEL_LEAF_TYPES;
     const KIND: &'static str = "model input";
 
     fn from_shape(shape: NodeShape<<Self as TreeNode>::Leaf, Self>) -> Self {
@@ -293,16 +357,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_type_is_a_clear_kind_error() {
-        // An object whose `type` is a string outside the leaf vocabulary names
-        // the unknown kind directly — `type` is reserved, so it is never
-        // misparsed as a Dict child.
-        let err = serde_json::from_str::<InputNode>(r#"{"type": "audio", "role": "x"}"#)
-            .expect_err("unknown kind rejected");
+    fn unknown_type_parses_into_a_tolerant_unknown_leaf() {
+        // Tolerant reader: an unrecognized string `type` becomes an `Unknown`
+        // leaf retaining the raw object, not a parse error. A model input of an
+        // unknown kind is rejected at *resolve* (UnsupportedKind), never here.
+        let node: InputNode =
+            serde_json::from_str(r#"{"type": "audio", "role": "x", "sample_rate": 16000}"#)
+                .expect("unknown kind parses");
+        let InputNode::Leaf(ModelLeaf::Unknown { kind, .. }) = &node else {
+            panic!("expected an unknown leaf, got {node:?}")
+        };
+        assert_eq!(kind, "audio");
+        // Round-trips verbatim.
+        let json = serde_json::to_string(&node).unwrap();
         assert!(
-            err.to_string()
-                .contains(r#"unknown model input kind "audio""#),
-            "got: {err}"
+            json.contains(r#""type":"audio""#) && json.contains("sample_rate"),
+            "got: {json}"
         );
     }
 

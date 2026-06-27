@@ -451,13 +451,47 @@ def resolve(
         AdapterResolutionError: If a model input or action component has no
             usable counterpart in the env tags and spaces.
     """
+    # to_dict() runs the strict publish normalize; a spec error there (e.g. a
+    # duplicate action role) surfaces as an AdapterResolutionError, matching the
+    # pre-refactor behavior where this serialization sat inside the resolve try.
+    try:
+        env_tags_json = json.dumps(env_tags.to_dict())
+    except ValueError as exc:
+        raise AdapterResolutionError(str(exc)) from None
+    return _resolve_with_env_json(
+        env_tags_json,
+        observation_space,
+        action_space,
+        model_spec,
+        trust_entrypoints=trust_entrypoints,
+        check_inverse=check_inverse,
+    )
+
+
+def _resolve_with_env_json(
+    env_tags_json: str,
+    observation_space: object,
+    action_space: object,
+    model_spec: ModelSpec,
+    *,
+    trust_entrypoints: bool,
+    check_inverse: bool,
+) -> Adapter:
+    """Shared resolve body, parameterized on the env tags JSON.
+
+    :func:`resolve` passes its locally-authored :class:`EnvTags` through
+    ``to_dict()`` (the strict publish door). :func:`resolve_from_contract` passes
+    a peer's raw contract tags **verbatim** to the native READ door — tolerant,
+    so a newer env's unrecognized observation kind parses and relays, and fails
+    only here if a model input references it (a typed ``UnsupportedKind``).
+    """
     if check_inverse:
         _check_inverses(model_spec)
     shadow, obs_shims, act_shims = _substitute_encodings(model_spec)
     wire, customs = _model_wire(shadow, trust_entrypoints=trust_entrypoints)
     try:
         plan = adapters_resolve(
-            json.dumps(env_tags.to_dict()),
+            env_tags_json,
             observation_space,
             action_space,
             json.dumps(wire),
@@ -493,14 +527,33 @@ def resolve_from_contract(
             resolution fails.
     """
     metadata = cast("dict[str, Any] | None", contract.metadata) or {}
-    tags = EnvTags.from_metadata(metadata)
-    if tags is None:
+    # Consume path: pass the peer's raw contract tags straight to the tolerant
+    # native READ door, NOT through EnvTags.from_metadata (the strict publish
+    # door, which would reject a newer peer's unrecognized kind/field). The
+    # frozen Python dataclasses cannot represent an unknown leaf anyway; an
+    # unknown kind is the env's to declare and the resolver's to fail on (only if
+    # referenced), never the consumer's to parse.
+    env_tags_raw = metadata.get(ENV_METADATA_KEY)
+    if env_tags_raw is None:
         raise AdapterResolutionError(
             "env contract carries no adapter tags under "
             f"{ENV_METADATA_KEY!r}; serve the env with rlmesh.adapters.tag(...)"
         )
-    return resolve(
-        tags,
+    if not isinstance(env_tags_raw, Mapping):
+        raise AdapterResolutionError(
+            f"metadata key {ENV_METADATA_KEY!r} must hold a mapping"
+        )
+    try:
+        env_tags_json = json.dumps(env_tags_raw, allow_nan=False)
+    except (ValueError, TypeError) as exc:
+        # ValueError = NaN/inf (allow_nan=False); TypeError = a non-JSON value
+        # (set, bytes, custom object). Both are "not serializable", surfaced as a
+        # clean AdapterResolutionError rather than a raw traceback to the caller.
+        raise AdapterResolutionError(
+            f"env contract tags are not serializable JSON: {exc}"
+        ) from None
+    return _resolve_with_env_json(
+        env_tags_json,
         contract.observation_space,
         contract.action_space,
         model_spec,

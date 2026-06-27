@@ -163,37 +163,27 @@ fn cases() -> Vec<(&'static str, String)> {
                 r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"threshold":"x"}]}}"#,
             ),
         ),
-        // frozen vocab / unknown kind / unknown field / missing / wrong-type.
+        // frozen vocab / unknown layout / missing / wrong-type.
         // An unknown *rotation encoding* is deliberately absent here: a rotation
         // field is now an accept-set that tolerates an unrecognized (future)
         // encoding at parse and rejects it at *resolve* instead (graceful
         // forward-compatible degradation). See the resolver's selection tests.
-        // An unknown leaf `type` is rejected at parse with a clear unknown-kind
-        // error: the tree node discriminant is structural, but `"type"` is a
-        // reserved key, so an object whose `"type"` is a string outside the leaf
-        // vocabulary is named directly (`unknown model input kind "audio"`)
-        // rather than misparsed as a Dict that fails deep with a misleading
-        // "expected a ... leaf, a dict of nodes, or a tuple" message.
-        (
-            "unknown model input",
-            model_err(r#"{"input":{"c":{"type":"audio"}},"output":{"components":[]}}"#),
-        ),
-        (
-            "unknown obs tag",
-            env_err(r#"{"observation":{"x":{"type":"audio"}},"action":{"components":[]}}"#),
-        ),
+        // An unknown leaf `type` is likewise no longer a parse error under the
+        // tolerant reader: it becomes an `Unknown` leaf, retained for relay, and
+        // surfaces as a typed `UnsupportedKind` at *resolve* (only if a model
+        // input references it). So neither an unknown obs kind nor an unknown
+        // model-input kind appears in this parse-error sweep anymore.
         (
             "unknown layout",
             model_err(
                 r#"{"input":{"c":{"type":"image","role":"r","layout":"nhwc"}},"output":{"components":[]}}"#,
             ),
         ),
-        (
-            "unknown field",
-            model_err(
-                r#"{"input":{},"output":{"components":[{"role":"g","dim":1,"rnge":[0,1]}]}}"#,
-            ),
-        ),
+        // (The old "unknown field" parse-error class is gone: the tolerant reader
+        // captures an unrecognized field verbatim instead of failing at parse, and
+        // the strict-v1 publish gate (`reject_unknowns`) rejects it post-parse —
+        // see the `spec::strict` tests. There is no field-level parse error to
+        // surface here anymore.)
         (
             "missing field",
             model_err(r#"{"input":{},"output":{"components":[{"dim":1}]}}"#),
@@ -282,8 +272,7 @@ fn rewritten_messages_read_in_domain_language() {
     has("range elem wrong-type", "expected a number");
     has("scale wrong-type", "expected a number");
     has("threshold wrong-type", "expected a number");
-    // An unknown leaf `type` names the unrecognized kind directly in domain
-    // language, not a misleading "expected a ... leaf, a dict, or a tuple".
-    has("unknown model input", r#"unknown model input kind "audio""#);
-    has("unknown obs tag", r#"unknown observation kind "audio""#);
+    // (Unknown leaf kinds are no longer parse errors under the tolerant reader;
+    // their `UnsupportedKind` resolve-time message is exercised in the resolver
+    // tests, not this parse-error sweep.)
 }

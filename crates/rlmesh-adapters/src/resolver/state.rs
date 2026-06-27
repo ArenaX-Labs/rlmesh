@@ -101,11 +101,16 @@ pub(super) fn plan_state(
     model_input: &State,
     placement: NodePath,
     states_by_role: &BTreeMap<String, &EnvState>,
+    unknown_roles: &BTreeMap<String, String>,
 ) -> Result<StatePlan> {
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
         let Some(env_state) = states_by_role.get(&component.role).copied() else {
+            // The role's data is present but under a kind this core can't read:
+            // fail loud before the optional zero-fill silently degrades it. A
+            // role the env genuinely lacks falls through to the optional branch.
+            super::reject_referenced_unknown(&component.role, &placement, unknown_roles)?;
             if component.optional {
                 pieces.push(StatePiece {
                     source: NodePath::root(),

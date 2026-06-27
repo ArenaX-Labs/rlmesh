@@ -1,5 +1,7 @@
 //! A text input expected by a model.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Container kind for a resolved text value.
@@ -21,4 +23,7 @@ pub struct Text {
     pub container: TextContainer,
     #[serde(default)]
     pub default: Option<String>,
+    /// Unrecognized additive fields, retained for round-trip (see the strict-v1 publish gate).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }

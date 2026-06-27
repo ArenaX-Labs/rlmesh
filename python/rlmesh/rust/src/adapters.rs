@@ -24,10 +24,21 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
-    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve,
-    roles,
+    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
+    reject_unknowns_env, reject_unknowns_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
+
+/// Total-byte ceiling on an untrusted spec blob. A spec now originates from a
+/// possibly-untrusted env contract and is retained + re-emitted (the tolerant
+/// reader keeps unknown kinds/fields verbatim), so an unbounded blob is a DoS
+/// amplifier. 4 MiB is absurdly generous for any real spec yet caps a hostile
+/// contract; JSON nesting depth is separately bounded by serde_json's default
+/// 128-deep recursion limit, and per-dimension size by `num::MAX_DIM`.
+// ponytail: total-byte cap only. Per-unknown count/size sub-caps are subsumed by
+// this (an unknown blob cannot exceed the whole-spec cap); add them if a tighter
+// budget per retained blob is ever needed.
+const MAX_SPEC_BYTES: usize = 4 << 20;
 
 /// Deserialize a spec JSON string with a field-path-annotated error.
 ///
@@ -45,6 +56,12 @@ use serde::de::DeserializeOwned;
 ///   field path and still names the Rust struct (`expected struct ModelSpec`).
 ///   `json.dumps(dict)` never produces such input; only a raw native caller can.
 fn de_spec<T: DeserializeOwned>(label: &str, json: &str) -> PyResult<T> {
+    if json.len() > MAX_SPEC_BYTES {
+        return Err(PyValueError::new_err(format!(
+            "invalid {label}: spec is {} bytes, over the {MAX_SPEC_BYTES}-byte limit",
+            json.len()
+        )));
+    }
     // Strip serde_json's "... at line N column M" tail: line/column is
     // meaningless to a caller who passed a dict, not a file. rsplit (not split):
     // the echoed content can itself contain " at line ", so drop only the
@@ -542,6 +559,10 @@ pub fn adapters_join_check(
     action_space: &Bound<'_, PyAny>,
 ) -> PyResult<()> {
     let tags: EnvTags = de_spec("env tags", env_tags_json)?;
+    // Authoring-time check is a PUBLISH door: an env validating its own tags must
+    // see a typo or unbuildable kind now, not relay it to a peer.
+    reject_unknowns_env(&tags)
+        .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
     join(&tags, &obs_view, &action_view).map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -575,12 +596,21 @@ pub fn adapters_spec_normalize(
     match side {
         "env" => {
             let tags: EnvTags = de_spec("env tags", spec_json)?;
+            // PUBLISH mode: the strict-v1 gate. A typo'd field or an
+            // unrecognized leaf kind dies here at the trust boundary, never
+            // reaching a peer. The READ door (`adapters_resolve`) skips this.
+            reject_unknowns_env(&tags)
+                .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
             })
         }
         "model" => {
             let spec: ModelSpec = de_spec("model spec", spec_json)?;
+            // PUBLISH mode: the strict-v1 gate (see the env branch).
+            reject_unknowns_model(&spec).map_err(|message| {
+                PyValueError::new_err(format!("invalid model spec: {message}"))
+            })?;
             // Defense-in-depth at the publish boundary. Today the live gate is
             // Python's model_input_to_dict, which raises on any custom before a
             // spec ever reaches here, so every Python caller passes

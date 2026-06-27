@@ -26,6 +26,12 @@ pub enum ErrorCode {
     Unsupported,
     /// A custom-input entrypoint was referenced without trust.
     UntrustedEntrypoint,
+    /// A leaf declares a *kind* this core does not define: a model input of an
+    /// unrecognized kind, or a model input whose role the env offers only as an
+    /// unrecognized observation kind. The fix is to upgrade the runtime, not to
+    /// edit the spec — distinct from [`MissingRole`](Self::MissingRole), which
+    /// asks the author to add a role.
+    UnsupportedKind,
 }
 
 /// A model input or action component has no usable counterpart in the env

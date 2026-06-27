@@ -192,6 +192,7 @@ mod tests {
             scale: None,
             invert: false,
             threshold: None,
+            unknown: Default::default(),
         }
     }
 

@@ -2091,6 +2091,117 @@ def test_resolve_from_contract_passes_check_inverse():
     adapt.resolve_from_contract(contract, spec, check_inverse=False)  # no raise
 
 
+def _contract_with_unknown_kind() -> Any:
+    # A peer's raw contract declaring an `audio` observation an old core cannot
+    # build. The frozen Python dataclasses cannot represent this kind, so the
+    # contract is built as a raw metadata dict — exactly the wire shape the
+    # consume path must tolerate.
+    metadata = {
+        adapt.ENV_METADATA_KEY: {
+            "observation": {
+                "cam": {"type": "image", "role": adapt.IMAGE_PRIMARY},
+                "mic": {"type": "audio", "role": "audio/mic", "sample_rate": 16000},
+            },
+            "action": {"components": [{"role": adapt.ACTION_DELTA_POS, "dim": 3}]},
+        }
+    }
+    return SimpleNamespace(
+        metadata=metadata,
+        observation_space=gym.spaces.Dict({"cam": image_space(), "mic": box(16)}),
+        action_space=box(3, low=-1.0, high=1.0),
+    )
+
+
+def test_unreferenced_unknown_obs_kind_resolves_through_contract():
+    # The tolerant consume path: a model that references only the camera resolves
+    # against a contract carrying an unrecognized `audio` kind, which is ignored
+    # with an advisory. The frozen Python EnvTags reader is bypassed entirely.
+    contract = _contract_with_unknown_kind()
+    spec = adapt.ModelSpec(
+        input={"pixels": adapt.Image(adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    adapter = adapt.resolve_from_contract(contract, spec)
+    assert any("audio" in note and "mic" in note for note in adapter.advisories()), (
+        adapter.advisories()
+    )
+
+
+def test_referenced_unknown_obs_kind_is_unsupported_through_contract():
+    # Referencing the role the env offers only as an unrecognized kind fails with
+    # a typed "upgrade the runtime" error, not a misdirecting missing-role one.
+    contract = _contract_with_unknown_kind()
+    spec = adapt.ModelSpec(
+        input={"sound": adapt.State("audio/mic")},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="upgrade the runtime"):
+        adapt.resolve_from_contract(contract, spec)
+
+
+def test_bare_unknown_field_on_contract_taints_resolve():
+    # §8 central asymmetry through the consume path: a bare additive field on a
+    # recognized kind fails closed (must-understand), while the same field marked
+    # `x-` is tolerated. A peer's raw contract is the only way to inject it (the
+    # frozen authoring dataclasses reject the kwarg outright).
+    cam: dict[str, Any] = {
+        "type": "image",
+        "role": adapt.IMAGE_PRIMARY,
+        "normalize": False,
+    }
+    metadata = {
+        adapt.ENV_METADATA_KEY: {
+            "observation": {"cam": cam},
+            "action": {"components": [{"role": adapt.ACTION_DELTA_POS, "dim": 3}]},
+        }
+    }
+    contract: Any = SimpleNamespace(
+        metadata=metadata,
+        observation_space=gym.spaces.Dict({"cam": image_space()}),
+        action_space=box(3, low=-1.0, high=1.0),
+    )
+    spec = adapt.ModelSpec(
+        input={"pixels": adapt.Image(adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="normalize"):
+        adapt.resolve_from_contract(contract, spec)
+
+    # Mark it `x-` and the same contract resolves.
+    del cam["normalize"]
+    cam["x-normalize"] = False
+    adapt.resolve_from_contract(contract, spec)
+
+
+def test_non_serializable_contract_metadata_is_a_clean_error():
+    # A peer's contract whose adapter-tag metadata holds a non-JSON value (here a
+    # set) must surface a clean AdapterResolutionError, not a raw TypeError that
+    # escapes the json.dumps guard (which only catches ValueError = NaN/inf).
+    metadata = {
+        adapt.ENV_METADATA_KEY: {
+            "observation": {
+                "cam": {
+                    "type": "image",
+                    "role": adapt.IMAGE_PRIMARY,
+                    "x-vendor": {1, 2, 3},  # a set is not JSON-serializable
+                }
+            },
+            "action": {"components": [{"role": adapt.ACTION_DELTA_POS, "dim": 3}]},
+        }
+    }
+    contract: Any = SimpleNamespace(
+        metadata=metadata,
+        observation_space=gym.spaces.Dict({"cam": image_space()}),
+        action_space=box(3, low=-1.0, high=1.0),
+    )
+    spec = adapt.ModelSpec(
+        input={"pixels": adapt.Image(adapt.IMAGE_PRIMARY)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="not serializable JSON"):
+        adapt.resolve_from_contract(contract, spec)
+
+
 def test_default_only_text_is_not_a_referenced_obs_key():
     # A TextInput satisfied only by its default has env_key ""; that empty key
     # must not be reported as an observation key to decode.

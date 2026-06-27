@@ -1,5 +1,7 @@
 //! An image input expected by a model.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::spec::layouts::ImageLayout;
@@ -119,6 +121,10 @@ pub struct Image {
         skip_serializing_if = "crate::spec::num::is_one"
     )]
     pub stack: u32,
+    /// Unrecognized additive fields, retained for round-trip and surfaced to the
+    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -235,14 +241,19 @@ mod tests {
     }
 
     #[test]
-    fn tagged_payload_does_not_reject_unknown_field_yet() {
-        // A typo'd field on a ModelLeaf variant is still silently dropped: the
-        // variant structs do not (yet) carry deny_unknown_fields, unlike the
-        // model-side plain structs (Actuator, ConcatPart) that do.
+    fn tagged_payload_captures_unknown_field_for_round_trip() {
+        // Tolerant reader: a typo'd (or future-additive) field on a model leaf is
+        // retained verbatim in `unknown`, not silently dropped. The known fields
+        // still default; the publish-door `reject_unknowns` gate rejects the
+        // stray field (see `spec::strict`).
         let input = image(r#", "layuot": "chw""#);
         let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
-        assert_eq!(img.layout, ImageLayout::Hwc); // typo'd "layuot" ignored
+        assert_eq!(img.layout, ImageLayout::Hwc); // known field still defaults
+        assert_eq!(img.unknown.get("layuot"), Some(&serde_json::json!("chw")));
+        // Re-emitted verbatim, with `type` never leaking into the capture.
+        assert!(!img.unknown.contains_key("type"));
+        assert!(serde_json::to_string(&input).unwrap().contains("layuot"));
     }
 }

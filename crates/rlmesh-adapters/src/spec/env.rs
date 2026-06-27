@@ -4,6 +4,8 @@ mod image;
 mod state;
 mod text;
 
+use crate::path::NodePath;
+
 use super::action::Action;
 
 pub use image::EnvImage;
@@ -23,6 +25,20 @@ pub enum EnvFeature {
     Text(EnvText),
 }
 
+/// An observation leaf the env declared with a kind this core does not define.
+///
+/// It produces no `EnvFeature` (an old core has no apply path for it), but is
+/// recorded so the resolver can tell *referenced* from *unreferenced*: an unknown
+/// kind whose `role` a model input asks for is a localized
+/// [`UnsupportedKind`](crate::error::ErrorCode) error; an unreferenced one is
+/// ignored with an advisory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownFeature {
+    pub source: NodePath,
+    pub role: Option<String>,
+    pub kind: String,
+}
+
 /// An environment's resolved observation features plus its action layout.
 ///
 /// This is the internal, fully-keyed form the resolver consumes: every
@@ -34,4 +50,7 @@ pub enum EnvFeature {
 pub struct EnvFeatures {
     pub observation: Vec<EnvFeature>,
     pub action: Action,
+    /// Observation leaves of an unrecognized kind (see [`UnknownFeature`]).
+    /// Empty on any spec this core fully understands.
+    pub unknown: Vec<UnknownFeature>,
 }

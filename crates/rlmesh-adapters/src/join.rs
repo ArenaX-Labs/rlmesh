@@ -11,7 +11,7 @@ use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
 use crate::spec::{
     Action, Actuator, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, ImageLayout,
-    ObsLeaf, ObsNode, SplitLayout,
+    ObsLeaf, ObsNode, SplitLayout, UnknownFeature,
 };
 
 /// A validation failure while joining tags against a space.
@@ -90,16 +90,19 @@ pub fn join(
     action_space: &SpaceView,
 ) -> Result<EnvFeatures> {
     let mut observation = Vec::new();
+    let mut unknown = Vec::new();
     join_node(
         &tags.observation,
         obs_space,
         &NodePath::root(),
         &mut observation,
+        &mut unknown,
     )?;
     let action = resolve_action(&tags.action, action_space)?;
     Ok(EnvFeatures {
         observation,
         action,
+        unknown,
     })
 }
 
@@ -113,8 +116,17 @@ fn join_node(
     view: &SpaceView,
     source: &NodePath,
     out: &mut Vec<EnvFeature>,
+    unknown: &mut Vec<UnknownFeature>,
 ) -> Result<()> {
     match node {
+        // An unrecognized kind produces no feature; it is recorded (not joined
+        // against the space — an old core cannot validate a kind it does not
+        // define) so the resolver can detect whether a model input references it.
+        ObsNode::Leaf(ObsLeaf::Unknown { kind, role, .. }) => unknown.push(UnknownFeature {
+            source: source.clone(),
+            role: role.clone(),
+            kind: kind.clone(),
+        }),
         ObsNode::Leaf(leaf) => out.extend(join_feature(source, leaf, view)?),
         ObsNode::Dict(map) => {
             if view.kind != SpaceViewKind::Dict {
@@ -129,7 +141,7 @@ fn join_node(
                 let child_view = view.child(key).ok_or_else(|| JoinError::KeyNotInSpace {
                     key: child_path.to_string(),
                 })?;
-                join_node(child, child_view, &child_path, out)?;
+                join_node(child, child_view, &child_path, out, unknown)?;
             }
         }
         ObsNode::Tuple(items) => {
@@ -150,7 +162,13 @@ fn join_node(
             // Arity is checked above, so `index < children.len()` holds for
             // every item: index the children directly.
             for (index, item) in items.iter().enumerate() {
-                join_node(item, &view.children[index], &source.push_index(index), out)?;
+                join_node(
+                    item,
+                    &view.children[index],
+                    &source.push_index(index),
+                    out,
+                    unknown,
+                )?;
             }
         }
     }
@@ -164,6 +182,9 @@ fn join_feature(
 ) -> Result<Vec<EnvFeature>> {
     let path = source.to_string();
     match leaf_tag {
+        // Unknown leaves are intercepted in `join_node` (recorded, not joined);
+        // this arm is unreachable but keeps the match total without a panic.
+        ObsLeaf::Unknown { .. } => Ok(Vec::new()),
         ObsLeaf::Image(image) => {
             if leaf.kind != SpaceViewKind::Box || leaf.shape.len() != 3 {
                 return Err(JoinError::ClassMismatch {
@@ -535,6 +556,7 @@ mod tests {
             invert: false,
             threshold: None,
             binary: false,
+            unknown: Default::default(),
         }
     }
 
@@ -582,6 +604,7 @@ mod tests {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
+                unknown: Default::default(),
             })),
         );
         observation.insert(
@@ -590,12 +613,14 @@ mod tests {
                 role: "proprio/eef_pos".to_owned(),
                 encoding: None,
                 range: None,
+                unknown: Default::default(),
             })),
         );
         observation.insert(
             "instruction".to_owned(),
             ObsNode::Leaf(ObsLeaf::Text(TextTag {
                 role: "instruction".to_owned(),
+                unknown: Default::default(),
             })),
         );
         let tags = EnvTags {
@@ -638,6 +663,7 @@ mod tests {
                 role: "proprio/eef_pos".to_owned(),
                 encoding: None,
                 range: None,
+                unknown: Default::default(),
             })),
         );
         let mut root = BTreeMap::new();
@@ -675,9 +701,11 @@ mod tests {
                     role: "proprio/eef_pos".to_owned(),
                     encoding: None,
                     range: None,
+                    unknown: Default::default(),
                 })),
                 ObsNode::Leaf(ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
+                    unknown: Default::default(),
                 })),
             ]),
             action: action_layout(vec![]),
@@ -708,11 +736,13 @@ mod tests {
                     role: "a".to_owned(),
                     encoding: None,
                     range: None,
+                    unknown: Default::default(),
                 })),
                 ObsNode::Leaf(ObsLeaf::State(StateTag {
                     role: "b".to_owned(),
                     encoding: None,
                     range: None,
+                    unknown: Default::default(),
                 })),
             ]),
             action: action_layout(vec![]),
@@ -739,6 +769,7 @@ mod tests {
                     role: "a".to_owned(),
                     encoding: None,
                     range: None,
+                    unknown: Default::default(),
                 }),
             ),
             action: action_layout(vec![]),
@@ -763,6 +794,7 @@ mod tests {
                 role: "proprio/eef_pos".to_owned(),
                 encoding: None,
                 range: None,
+                unknown: Default::default(),
             })),
             action: action_layout(vec![]),
         };
@@ -782,6 +814,7 @@ mod tests {
                 "missing",
                 ObsLeaf::Text(TextTag {
                     role: "instruction".to_owned(),
+                    unknown: Default::default(),
                 }),
             ),
             action: action_layout(vec![]),
@@ -849,6 +882,7 @@ mod tests {
                 role: "image/primary".to_owned(),
                 layout: Default::default(),
                 upside_down: false,
+                unknown: Default::default(),
             }),
         );
         assert!(matches!(
@@ -867,6 +901,7 @@ mod tests {
                 role: "proprio/eef_rot".to_owned(),
                 encoding: Some(AcceptSet::single(RotationEncoding::QuatXyzw)),
                 range: None,
+                unknown: Default::default(),
             }),
         );
         assert!(matches!(
@@ -886,6 +921,7 @@ mod tests {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 2.0)),
+                unknown: Default::default(),
             })
         };
         // Finite space bounds [0, 1] disagree with tag [0, 2] -> error.
@@ -921,6 +957,7 @@ mod tests {
                 role: "proprio/gripper".to_owned(),
                 encoding: None,
                 range: Some((0.0, 0.08)),
+                unknown: Default::default(),
             }),
         )
         .expect("join");
