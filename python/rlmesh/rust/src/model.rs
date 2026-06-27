@@ -44,6 +44,17 @@ fn model_client_runtime() -> &'static tokio::runtime::Runtime {
 /// converts between the adapter [`Value`] model and the neutral Python tree.
 struct PyPredict {
     predict_fn: Py<PyAny>,
+    /// Optional chunk corner (the model's `predict_chunk`): one assembled input ->
+    /// a chunk of actions (leading axis = chunk). Absent for a single-action model;
+    /// its presence is what [`has_chunk`](PredictFn::has_chunk) reports so the
+    /// runtime can pin a replay horizon > 1.
+    predict_chunk_fn: Option<Py<PyAny>>,
+    /// Optional batched corner (`predict_batch`): a list of N assembled lane inputs
+    /// -> N actions, in one call (one forward for the vector).
+    predict_batch_fn: Option<Py<PyAny>>,
+    /// Optional batched chunk corner (`predict_chunk_batch`): a list of N inputs ->
+    /// N action chunks, in one call.
+    predict_chunk_batch_fn: Option<Py<PyAny>>,
     on_reset: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
@@ -70,6 +81,54 @@ impl PredictFn for PyPredict {
             decode_value(action.bind(py))
         })
         .map_err(|err| RLMeshError::Internal(err.to_string()))
+    }
+
+    fn predict_chunk(&self, model_input: Value, horizon: u32) -> rlmesh::Result<Option<Value>> {
+        let Some(predict_chunk_fn) = self.predict_chunk_fn.as_ref() else {
+            return Ok(None);
+        };
+        Python::attach(|py| -> PyResult<Value> {
+            // The assembled input is a Value tree (dict/list/leaf matching the
+            // model spec's InputNode shape), encoded as one Python argument.
+            let input = encode_value(py, &model_input)?;
+            // `predict_chunk(observation, horizon)`: the model returns up to
+            // `horizon` actions; its chunk's leading axis is the chunk axis, which
+            // the native engine's `split_chunk` unstacks into per-step frames.
+            let chunk = predict_chunk_fn.call1(py, (input, horizon))?;
+            decode_value(chunk.bind(py))
+        })
+        .map(Some)
+        .map_err(|err| RLMeshError::Internal(err.to_string()))
+    }
+
+    fn has_chunk(&self) -> bool {
+        self.predict_chunk_fn.is_some()
+    }
+
+    fn predict_batch(&self, inputs: Vec<Value>) -> rlmesh::Result<Vec<Value>> {
+        match self.predict_batch_fn.as_ref() {
+            Some(f) => call_batched(f, inputs, None),
+            None => Err(RLMeshError::Internal(
+                "predict_batch not implemented".to_string(),
+            )),
+        }
+    }
+
+    fn has_batch(&self) -> bool {
+        self.predict_batch_fn.is_some()
+    }
+
+    fn predict_chunk_batch(&self, inputs: Vec<Value>, horizon: u32) -> rlmesh::Result<Vec<Value>> {
+        match self.predict_chunk_batch_fn.as_ref() {
+            Some(f) => call_batched(f, inputs, Some(horizon)),
+            None => Err(RLMeshError::Internal(
+                "predict_chunk_batch not implemented".to_string(),
+            )),
+        }
+    }
+
+    fn has_chunk_batch(&self) -> bool {
+        self.predict_chunk_batch_fn.is_some()
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
@@ -138,6 +197,36 @@ impl PredictFn for PyPredict {
     fn on_close(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_close)
     }
+}
+
+/// Call a Python batched corner (`predict_batch` / `predict_chunk_batch`) with N
+/// assembled lane inputs and decode its N returned actions/chunks. The Python side
+/// receives a list of N neutral input dicts and returns a sequence of N actions
+/// (one per lane, in order); the model owns how it batches the forward pass. When
+/// `horizon` is `Some(h)` (the chunk-batch corner) it is passed as a second
+/// argument, so the model can size each chunk to the replay horizon.
+fn call_batched(
+    fn_obj: &Py<PyAny>,
+    inputs: Vec<Value>,
+    horizon: Option<u32>,
+) -> rlmesh::Result<Vec<Value>> {
+    Python::attach(|py| -> PyResult<Vec<Value>> {
+        let list = pyo3::types::PyList::empty(py);
+        for model_input in &inputs {
+            // Each lane's assembled input is a Value tree, encoded as one element.
+            list.append(encode_value(py, model_input)?)?;
+        }
+        let result = match horizon {
+            Some(h) => fn_obj.call1(py, (list, h))?,
+            None => fn_obj.call1(py, (list,))?,
+        };
+        let mut out = Vec::with_capacity(inputs.len());
+        for item in result.bind(py).try_iter()? {
+            out.push(decode_value(&item?)?);
+        }
+        Ok(out)
+    })
+    .map_err(|err| RLMeshError::Internal(err.to_string()))
 }
 
 /// The per-route resolver the served model exposes via `route_setup`. Runs the
@@ -225,6 +314,9 @@ fn optional_callable(value: Option<Bound<'_, PyAny>>) -> Option<Py<PyAny>> {
 #[pyclass(module = "rlmesh._rlmesh")]
 pub struct PyModel {
     predict_fn: Py<PyAny>,
+    predict_chunk_fn: Option<Py<PyAny>>,
+    predict_batch_fn: Option<Py<PyAny>>,
+    predict_chunk_batch_fn: Option<Py<PyAny>>,
     configure_fn: Option<Py<PyAny>>,
     on_reset: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
@@ -240,6 +332,12 @@ impl PyModel {
     fn build_handler(&self) -> AdaptedModelHandler {
         let predict = Python::attach(|py| PyPredict {
             predict_fn: self.predict_fn.clone_ref(py),
+            predict_chunk_fn: self.predict_chunk_fn.as_ref().map(|cb| cb.clone_ref(py)),
+            predict_batch_fn: self.predict_batch_fn.as_ref().map(|cb| cb.clone_ref(py)),
+            predict_chunk_batch_fn: self
+                .predict_chunk_batch_fn
+                .as_ref()
+                .map(|cb| cb.clone_ref(py)),
             on_reset: self.on_reset.as_ref().map(|cb| cb.clone_ref(py)),
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
@@ -256,13 +354,17 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_reset=None, on_episode_end=None, on_close=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_reset=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None))]
+    #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
         configure_fn: Option<Py<PyAny>>,
         on_reset: Option<Py<PyAny>>,
         on_episode_end: Option<Py<PyAny>>,
         on_close: Option<Py<PyAny>>,
+        predict_chunk_fn: Option<Py<PyAny>>,
+        predict_batch_fn: Option<Py<PyAny>>,
+        predict_chunk_batch_fn: Option<Py<PyAny>>,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -275,6 +377,9 @@ impl PyModel {
 
         Ok(Self {
             predict_fn,
+            predict_chunk_fn,
+            predict_batch_fn,
+            predict_chunk_batch_fn,
             configure_fn,
             on_reset,
             on_episode_end,
@@ -387,7 +492,7 @@ submit! {
 import collections.abc
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
     def run_local(self, env_address: str, token: str) -> None: ...
     def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
@@ -400,7 +505,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, token: str = "") -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, token: str = "", action_horizon: int = 1) -> None: ...
     def address(self) -> str: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
@@ -433,12 +538,13 @@ pub struct PyModelClient {
 #[pymethods]
 impl PyModelClient {
     #[new]
-    #[pyo3(signature = (address, env_contract, token=""))]
+    #[pyo3(signature = (address, env_contract, token="", action_horizon=1))]
     fn new(
         py: Python<'_>,
         address: &str,
         env_contract: &Bound<'_, PyAny>,
         token: &str,
+        action_horizon: u32,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -451,11 +557,14 @@ impl PyModelClient {
         let runtime = model_client_runtime();
         let address = address.to_string();
         let token = token.to_string();
-        let inner = py
+        let mut inner = py
             .detach(|| {
                 runtime.block_on(RemoteModel::connect_with_token(&address, &token, contract))
             })
             .map_err(to_py_err)?;
+        // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
+        // replayed open-loop by RemoteModel. 1 = no chunking.
+        inner.set_action_horizon(action_horizon);
         let address = inner.address().to_string();
         Ok(Self {
             inner,

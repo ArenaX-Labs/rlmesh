@@ -26,8 +26,4 @@ pub struct ActionPlan {
     pub segments: Vec<ActionSegment>,
     pub clip: Option<(f64, f64)>,
     pub in_dim: u32,
-    /// Number of model actions to replay per predicted chunk before re-planning;
-    /// `1` = predict every step. Resolved from the *model's* `ActionLayout`; the
-    /// per-episode replay queue lives in [`crate::stateful::ChunkBuffers`].
-    pub execute_horizon: u32,
 }

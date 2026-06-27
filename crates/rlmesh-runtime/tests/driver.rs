@@ -65,6 +65,54 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
 }
 
 #[tokio::test]
+async fn runtime_replays_buffered_chunk_frames_and_skips_predict() {
+    // Runtime-owned action chunking: a model returns its ordered frames in
+    // `actions` (frame 0 plus `replay_frames` future frames); the driver applies
+    // one per step WITHOUT re-calling the model and re-plans only when the buffer
+    // drains. With chunk size 3 (2 replay frames) over a 6-step episode, predict
+    // fires on steps 1 and 4 only, while env.step and the observation ledger fire
+    // every step — the invariant the managed perturbation hooks depend on.
+    let env = TestEnv {
+        terminal_after: 6,
+        ..Default::default()
+    };
+    let model = TestModel {
+        replay_frames: 2,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let spec = one_episode_spec();
+
+    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_steps, 6, "env advanced a full 6-step episode");
+    assert_eq!(report.total_episodes, 1);
+    // Chunk size 3 => predict on steps 1 and 4 only (4 of 6 steps are replays).
+    assert_eq!(
+        model.predicts.load(Ordering::SeqCst),
+        2,
+        "model.predict fires once per chunk (every 3 steps), not every step",
+    );
+    assert_eq!(
+        env.step_count.load(Ordering::SeqCst),
+        6,
+        "env stepped every step, replay or not",
+    );
+    // The observation ledger stays intact: one observation emitted per step input
+    // (reset obs + 5 step obs), even on the 4 replay steps the model never saw.
+    assert_eq!(
+        hooks.emitted_observations.lock().unwrap().len(),
+        6,
+        "observation emitted every step, including replay steps",
+    );
+    // action_received fires every step (action perturbations apply to replays too).
+    assert_eq!(hooks.actions.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test]
 async fn model_predict_timeout_fails_session() {
     let env = TestEnv::default();
     let model = TestModel {
@@ -523,6 +571,10 @@ struct TestModel {
     predicts: Arc<AtomicUsize>,
     predict_delay: Option<Duration>,
     seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
+    // Number of chunk replay frames to return per predict (frames 1.. of the
+    // ordered `actions` list; frame 0 is always present). 0 = not chunking (a
+    // single-frame `actions`, the unchanged path).
+    replay_frames: usize,
     // Simulates a close_route impl that blocks (e.g. an RPC on a hung
     // connection) without honoring the supplied timeout.
     close_route_hangs: bool,
@@ -548,10 +600,14 @@ impl RuntimeModel for TestModel {
             .lock()
             .expect("model observation recorder lock poisoned")
             .push(observation_bytes);
+        // Ordered chunk frames: `actions[0]` is this step, `actions[1..]` are the
+        // replay frames the driver buffers and replays without re-calling the model.
+        let mut actions = vec![leaves_value(payload([0]))];
+        actions.extend((0..self.replay_frames).map(|i| leaves_value(payload([100 + i as u8]))));
         Ok(RuntimeModelPrediction {
             response: PredictResponse {
                 context: request.context,
-                action: Some(leaves_value(payload([0]))),
+                actions,
             },
             endpoint_total_ns: None,
         })

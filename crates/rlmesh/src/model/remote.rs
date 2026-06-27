@@ -47,6 +47,18 @@ pub struct RemoteModel {
     configured: bool,
     episode_id: Option<String>,
     step: i64,
+    /// Runtime-chosen replay horizon `h`, sent on `ConfigureRoute`. When `> 1` and
+    /// the served model defines a chunk corner, each real `predict` returns up to
+    /// `h` ordered frames in `PredictResponse.actions`; this client buffers and
+    /// replays the frames open-loop (skipping the RPC after frame 0), so a
+    /// `RemoteModel` is a single-lane replay mini-driver. `1` (the default) = no
+    /// chunking.
+    action_horizon: u32,
+    /// Decoded chunk frames awaiting replay (the whole `PredictResponse.actions`
+    /// list — frame 0 plus frames 1..). Drained one per `predict`; the next real
+    /// RPC fires only once it empties. Flushed on `reset` — the only episode
+    /// boundary this client can observe.
+    replay_buffer: std::collections::VecDeque<spaces::SpaceValue>,
     /// Set by [`reset`](RemoteModel::reset), consumed by the first
     /// [`predict`](RemoteModel::predict) after it, which marks the wire reset
     /// boundary. Making the boundary explicit (rather than inferring it from
@@ -185,9 +197,22 @@ impl RemoteModel {
             configured: false,
             episode_id: None,
             step: 0,
+            action_horizon: 1,
+            replay_buffer: std::collections::VecDeque::new(),
             pending_reset: false,
             selected_workflow_edition,
         })
+    }
+
+    /// Set the replay horizon `h` this client requests from the served model.
+    ///
+    /// `h > 1` opts a chunk-capable served model into action chunking: each real
+    /// `predict` returns the chunk's future frames, which this client replays
+    /// open-loop. Must be set **before the first `predict`** (the route is
+    /// configured lazily there and the horizon is pinned on `ConfigureRoute`);
+    /// `1` (the default) leaves chunking off.
+    pub fn set_action_horizon(&mut self, action_horizon: u32) {
+        self.action_horizon = action_horizon;
     }
 
     /// The workflow edition this session runs at (the floor across env, model, and runtime).
@@ -213,6 +238,11 @@ impl RemoteModel {
         self.episode_id = Some(format!("{}-ep-{}", self.route_id, self.episode_counter));
         self.step = 0;
         self.pending_reset = true;
+        // Drop any un-replayed chunk tail: a new episode re-plans from its first
+        // observation. This is the only flush point — the client cannot observe the
+        // server's episode end, so a stale tail would otherwise bleed across the
+        // boundary.
+        self.replay_buffer.clear();
     }
 
     /// Ask the policy for an action given `observation`.
@@ -234,57 +264,81 @@ impl RemoteModel {
             self.configured = true;
         }
 
-        // Encode the observation the same way the env wire path does (a
-        // one-lane batched-partial payload): the served model decodes it with
-        // decode_batched_partial_values, so a plain single-value encoding would
-        // be misread as carrying a batch dimension.
-        let observation_value = encode_batched_partial_values(
-            std::slice::from_ref(&observation),
-            &self.observation_space,
-        )
-        .map_err(|error| Error::Internal(error.to_string()))?;
-        // The reset boundary is the explicit pending flag set by reset(), not
-        // an inference from step == 0. The two agree for correct usage, but the
-        // flag stays correct even when this client cannot see an episode's end.
-        // Peek it here; only clear it after the RPC succeeds, so a failed
-        // predict leaves the reset edge intact for a retry.
-        let reset = self.pending_reset;
-        let request = PredictRequest {
-            context: Some(PredictContext {
-                session_id: self.session_id.clone(),
-                route_id: self.route_id.clone(),
-                request_id: self.next_request_id(),
-                slots: vec![PredictSlot {
-                    env_index: 0,
-                    episode_id,
-                    // `step` is int64 on both the native and proto side.
-                    step: self.step,
-                    reset,
-                }],
-            }),
-            observation: Some(observation_value),
-        };
+        // Re-call predict only when the replay buffer is empty; otherwise replay a
+        // buffered chunk frame without an RPC (and without consuming the
+        // observation). The buffer is filled by a real predict below and flushed on
+        // reset, so a replay step is never the reset edge (pending_reset is already
+        // cleared by the predict that filled the buffer).
+        if self.replay_buffer.is_empty() {
+            // Encode the observation the same way the env wire path does (a
+            // one-lane batched-partial payload): the served model decodes it with
+            // decode_batched_partial_values, so a plain single-value encoding would
+            // be misread as carrying a batch dimension.
+            let observation_value = encode_batched_partial_values(
+                std::slice::from_ref(&observation),
+                &self.observation_space,
+            )
+            .map_err(|error| Error::Internal(error.to_string()))?;
+            // The reset boundary is the explicit pending flag set by reset(), not
+            // an inference from step == 0. The two agree for correct usage, but the
+            // flag stays correct even when this client cannot see an episode's end.
+            // Peek it here; only clear it after the RPC succeeds, so a failed
+            // predict leaves the reset edge intact for a retry.
+            let reset = self.pending_reset;
+            let request = PredictRequest {
+                context: Some(PredictContext {
+                    session_id: self.session_id.clone(),
+                    route_id: self.route_id.clone(),
+                    request_id: self.next_request_id(),
+                    slots: vec![PredictSlot {
+                        env_index: 0,
+                        episode_id,
+                        // `step` is int64 on both the native and proto side.
+                        step: self.step,
+                        reset,
+                    }],
+                }),
+                observation: Some(observation_value),
+            };
 
-        let response = self.inner.predict(request).await.map_err(Error::from)?;
+            let response = self.inner.predict(request).await.map_err(Error::from)?;
 
-        // Single-lane route: decode with N=1 and assert exactly one action,
-        // never silently take the first lane (§5).
-        let mut actions =
-            decode_batched_partial_values(response.action.as_ref(), &self.action_space, 1)
-                .map_err(|error| Error::Internal(error.to_string()))?;
-        if actions.len() != 1 {
-            return Err(Error::Internal(format!(
-                "predict returned {} actions for a single-env route",
-                actions.len()
-            )));
+            if response.actions.is_empty() {
+                return Err(Error::Internal(
+                    "predict returned no actions for a single-env route".to_string(),
+                ));
+            }
+            // Push every ordered frame (`actions[0]` is this step, `actions[1..]`
+            // the open-loop replay frames) for the next steps; a non-chunking model
+            // returns exactly one frame, so this is the unchanged single-action
+            // path. Each frame is the batched (one-lane) action for its step;
+            // decode with N=1 and assert exactly one action, never silently take
+            // the first lane (§5).
+            for frame in &response.actions {
+                let mut frames = decode_batched_partial_values(Some(frame), &self.action_space, 1)
+                    .map_err(|error| Error::Internal(error.to_string()))?;
+                if frames.len() != 1 {
+                    return Err(Error::Internal(format!(
+                        "predict frame decoded to {} actions for a single-env route",
+                        frames.len()
+                    )));
+                }
+                self.replay_buffer.push_back(frames.remove(0));
+            }
+
+            // Advance only once the response is fully decoded into the buffer, so a
+            // malformed (action-less or undecodable) response leaves
+            // step/pending_reset intact for a retry, exactly like an RPC-level
+            // error does. The replay steps that drain the buffer advance `step`
+            // below without re-touching `pending_reset` (already cleared here).
+            self.pending_reset = false;
         }
-        let action = actions.remove(0);
 
-        // Advance only once a fully-decoded action is in hand, so a malformed
-        // (action-less) response leaves step/pending_reset intact for a retry,
-        // exactly like an RPC-level error does.
+        let action = self
+            .replay_buffer
+            .pop_front()
+            .expect("replay buffer is non-empty after a refill");
         self.step += 1;
-        self.pending_reset = false;
         Ok(action)
     }
 
@@ -321,6 +375,9 @@ impl RemoteModel {
                 // Pin the model to the runtime-selected route edition: authoritative
                 // over the model's own (pairwise) handshake result.
                 selected_workflow_edition: self.selected_workflow_edition.clone(),
+                // Runtime-chosen replay horizon, pinned on the route (see
+                // [`set_action_horizon`](Self::set_action_horizon)). 1 = no chunking.
+                action_horizon: self.action_horizon,
             })
             .await
             .map_err(Error::from)

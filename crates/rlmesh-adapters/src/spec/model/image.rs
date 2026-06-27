@@ -19,7 +19,7 @@ fn default_bilinear_aa() -> String {
 const MAX_STACK: u32 = 64;
 
 /// Deserialize `stack`, enforcing the `1..=MAX_STACK` bound at the wire boundary
-/// (shares the bound/default/skip helpers with `execute_horizon`; see
+/// (via the shared bounded-count helper; see
 /// [`de_bounded_count`](crate::spec::num::de_bounded_count)).
 fn de_stack<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where

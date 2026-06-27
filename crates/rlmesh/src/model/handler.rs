@@ -21,10 +21,15 @@ pub trait ModelRouteSetup: Send + Sync {
     /// Resolve and cache state for `route_key` from its `env_contract`. Returning
     /// an error fails route configuration, so the client never predicts against
     /// unresolved route state.
+    ///
+    /// `action_horizon` is the runtime-chosen replay horizon pinned on
+    /// `ConfigureRoute` (1 = no chunking). The setup caches it so predict knows how
+    /// many actions to emit per chunk; the runtime owns the replay.
     async fn configure_route(
         &self,
         route_key: &str,
         env_contract: &spaces::EnvContract,
+        action_horizon: u32,
     ) -> Result<()>;
 
     /// Tear down state cached for `route_key` at `CloseRoute`, so a long-lived
@@ -33,6 +38,20 @@ pub trait ModelRouteSetup: Send + Sync {
     async fn close_route(&self, _route_key: &str) -> Result<()> {
         Ok(())
     }
+}
+
+/// One predict's per-lane action plus any open-loop chunk replay frames.
+///
+/// `actions` is frame 0 — one action per lane (`len == num_envs`), applied this
+/// step. `replay` is the future-step frames the runtime buffers and applies
+/// WITHOUT re-calling the model (action chunking): `replay[j]` is the per-lane
+/// actions for future step `j + 1` (each `len == num_envs`). An empty `replay`
+/// means the model is not chunking — one action this step, re-plan next step.
+pub struct PredictFrames {
+    /// Frame 0: one action per lane, applied this step.
+    pub actions: Vec<spaces::SpaceValue>,
+    /// Future-step frames (`replay[step][lane]`); empty when not chunking.
+    pub replay: Vec<Vec<spaces::SpaceValue>>,
 }
 
 /// User policy plus episode lifecycle hooks.
@@ -69,6 +88,24 @@ pub trait ModelHandler: Send {
     /// interleave, still one at a time. The `model.concurrent_predict.v1`
     /// handshake capability advertises this pipelining to clients.
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>>;
+
+    /// Produce an action for `observation` plus any open-loop chunk replay frames
+    /// (action chunking).
+    ///
+    /// The default emits no replay frames — behaviorally identical to
+    /// [`predict`](ModelHandler::predict) — so a non-chunking handler needs no
+    /// change. The stateful engine overrides this to split a chunked policy's
+    /// output into per-step frames. The runtime driver calls this and replays the
+    /// frames itself; the served endpoint packs them into the ordered
+    /// `PredictResponse.actions` list (frame 0 first, replay frames after).
+    /// `PredictFrames::actions` keeps the same `== num_envs` length contract as
+    /// `predict`.
+    async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
+        Ok(PredictFrames {
+            actions: self.predict(observation).await?,
+            replay: Vec::new(),
+        })
+    }
 
     /// Produce actions for a batch of routed observations in one call.
     ///

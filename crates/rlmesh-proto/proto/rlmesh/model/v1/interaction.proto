@@ -60,6 +60,16 @@ message ConfigureRouteRequest {
   // Highest mutual workflow edition across env, model, and runtime (the floor).
   string selected_workflow_edition = 4;
 
+  // Replay horizon h, chosen by the runtime and pinned here (runtime-local
+  // scheduling, exactly like selected_workflow_edition above). When h > 1 AND the
+  // model defines a chunk corner (predict_chunk / predict_chunk_batch), a Predict
+  // emits min(K, h) per-step frames in PredictResponse.actions: actions[0] is
+  // THIS step, actions[1..] the open-loop replay frames the runtime buffers and
+  // replays without re-calling the model. 0 or 1 (the default) = no chunking
+  // (predict every step), byte/behaviour-identical to a model with no chunk
+  // corner. The runtime bounds it to MAX_HORIZON.
+  uint32 action_horizon = 7;
+
   // tag 5 was active_capabilities (a 3-way intersection), removed: capabilities
   // are advisory and pairwise (each peer reads the other's advertised map), not a
   // session-wide floor.
@@ -87,8 +97,11 @@ message PredictResponse {
   // Route identity copied from the request this action answers.
   PredictContext context = 1;
 
-  // Action data encoded per route action space.
-  rlmesh.spaces.v1.SpaceValue action = 2;
+  // Ordered action frames for this predict: actions[0] is THIS step, actions[1..]
+  // are open-loop replay frames. Length 1 = no chunking. Each element is a single
+  // SpaceValue already batched over all num_envs lanes/episodes (the lane/batch axis
+  // lives INSIDE each SpaceValue; this repeated axis is TIME/chunk-frame).
+  repeated rlmesh.spaces.v1.SpaceValue actions = 2;
 }
 
 // One request carrying N independent predict groups (control-plane-decided

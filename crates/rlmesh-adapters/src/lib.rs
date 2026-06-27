@@ -58,7 +58,7 @@ pub mod v1 {
         TextContainer, TextTag,
     };
     pub use crate::stateful::{
-        ChunkBuffers, EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
+        EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,
         space_value_to_obs_map, space_value_to_value, split_chunk, value_max_abs_diff,
     };
 }

@@ -70,9 +70,9 @@ impl EncodingTransform for NoEncodings {
 /// An `episode_id -> V` map with the edge-driven per-episode lifecycle the
 /// stateful engine shares across its buffers: insert at episode START
 /// ([`seed`](Self::seed)), drop at END ([`evict`](Self::evict)), drop all on
-/// close ([`clear`](Self::clear)) — never on absence. [`FrameBuffers`] and
-/// [`ChunkBuffers`] are thin wrappers that add only their value-specific access,
-/// so the lifecycle (and the keying rationale below) lives in exactly one place.
+/// close ([`clear`](Self::clear)) — never on absence. [`FrameBuffers`] is a thin
+/// wrapper that adds only its value-specific access, so the lifecycle (and the
+/// keying rationale below) lives in exactly one place.
 ///
 /// The key is the `episode_id` (a UUIDv4), **not** the lane index:
 /// - autoreset reuses a lane's index across episodes, but `episode_id` is fresh
@@ -104,11 +104,6 @@ impl<V: Default> EpisodeMap<V> {
     /// The entry for an episode, created lazily (default) if absent.
     fn entry(&mut self, episode_id: &str) -> &mut V {
         self.inner.entry(episode_id.to_owned()).or_default()
-    }
-
-    /// The entry for an episode, only if it is already present.
-    fn get(&mut self, episode_id: &str) -> Option<&mut V> {
-        self.inner.get_mut(episode_id)
     }
 
     /// Drop an episode's entry at episode END or a close sweep.
@@ -183,73 +178,14 @@ impl FrameBuffers {
     }
 }
 
-/// Per-route, episode-keyed action-chunk replay queues.
-///
-/// The action-side twin of [`FrameBuffers`]: when a model declares
-/// `execute_horizon > 1`, its `predict` returns a *chunk* of actions and the
-/// engine replays them one per step before predicting again. Each episode's
-/// pending (not-yet-emitted) raw model actions live here. Lifecycle and keying
-/// are owned by `EpisodeMap` exactly like [`FrameBuffers`]; [`refill`](Self::refill)
-/// when a fresh chunk is predicted, [`evict`](Self::evict) at episode END,
-/// [`clear`](Self::clear) on close. A drained queue (or an absent episode) simply
-/// re-plans, so — unlike frame windows — a missed END only leaks a queue the close
-/// sweep reclaims; there is no `seed`/assert.
-#[derive(Default)]
-pub struct ChunkBuffers {
-    inner: EpisodeMap<VecDeque<Value>>,
-}
-
-impl ChunkBuffers {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            inner: EpisodeMap::new(),
-        }
-    }
-
-    /// Pop the next queued action for an episode, if its queue is non-empty.
-    /// `None` means "re-plan" (no chunk buffered, or the chunk drained).
-    pub fn next_action(&mut self, episode_id: &str) -> Option<Value> {
-        self.inner.get(episode_id).and_then(VecDeque::pop_front)
-    }
-
-    /// Replace an episode's queue with a freshly predicted chunk. A new plan
-    /// supersedes any stale tail (receding horizon discards un-executed actions).
-    pub fn refill(&mut self, episode_id: &str, actions: impl IntoIterator<Item = Value>) {
-        let queue = self.inner.entry(episode_id);
-        queue.clear();
-        queue.extend(actions);
-    }
-
-    /// Evict an episode's queue at episode END or a close sweep.
-    pub fn evict(&mut self, episode_id: &str) {
-        self.inner.evict(episode_id);
-    }
-
-    /// Drop every episode's queue (session shutdown / route close).
-    pub fn clear(&mut self) {
-        self.inner.clear();
-    }
-
-    /// Number of live episodes currently buffered.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-}
-
 /// Split a chunked model action into its per-step actions (the leading axis is
 /// the chunk axis). A `Value::Tensor` of shape `[chunk, ..]` unstacks along axis
 /// 0 into per-step tensors; a scalar (0-d) tensor has no chunk axis and is a
 /// degenerate single-step "chunk" (matching the run(env) path, which treats a 0-d
 /// output as one step); a `Value::List` is already a list of per-step actions; any
-/// other leaf is a single-step chunk. Called only when `execute_horizon > 1`, so
-/// the leading axis is taken as the chunk. A mis-shaped multi-dim output (e.g. a
+/// other leaf is a single-step chunk. Called only when the runtime pins a replay
+/// horizon > 1, so the leading axis is taken as the chunk. A mis-shaped multi-dim
+/// output (e.g. a
 /// flat `[dim]` action where `dim > 1`) splits into per-step scalars that fail the
 /// action-space reshape downstream; a flat `[1]` against a dim-1 action space,
 /// however, splits cleanly and is accepted — shape inference cannot catch that
@@ -668,66 +604,6 @@ mod tests {
     }
 
     #[test]
-    fn chunk_buffers_drain_in_order_and_refill_supersedes() {
-        let mut chunks = ChunkBuffers::new();
-        assert!(chunks.is_empty());
-        // No queue yet -> re-plan.
-        assert!(chunks.next_action("ep-a").is_none());
-
-        chunks.refill("ep-a", [Value::Number(1.0), Value::Number(2.0)]);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(1.0)));
-        // A fresh chunk discards any un-executed tail (receding horizon re-plan).
-        chunks.refill("ep-a", [Value::Number(9.0)]);
-        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(9.0)));
-        assert!(chunks.next_action("ep-a").is_none());
-
-        chunks.refill("ep-b", [Value::Number(3.0)]);
-        chunks.evict("ep-a");
-        assert!(chunks.next_action("ep-a").is_none());
-        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(3.0)));
-        chunks.clear();
-        assert!(chunks.is_empty());
-    }
-
-    #[test]
-    fn chunk_buffers_replay_per_episode_independently() {
-        // The keying guarantee a vectorized route relies on: two concurrent
-        // episodes (the per-lane case) each drain their own chunk in FIFO order
-        // with zero cross-contamination, even when interleaved.
-        let mut chunks = ChunkBuffers::new();
-        chunks.refill("ep-a", [Value::Number(10.0), Value::Number(11.0)]);
-        chunks.refill("ep-b", [Value::Number(20.0), Value::Number(21.0)]);
-        assert_eq!(chunks.len(), 2);
-
-        // Interleave the two episodes' pops: each sees only its own actions.
-        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(10.0)));
-        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(20.0)));
-        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(11.0)));
-        assert_eq!(chunks.next_action("ep-b"), Some(Value::Number(21.0)));
-        // Both drained -> both re-plan, independently.
-        assert!(chunks.next_action("ep-a").is_none());
-        assert!(chunks.next_action("ep-b").is_none());
-    }
-
-    #[test]
-    fn chunk_buffers_evict_drops_a_partially_drained_queue() {
-        // The mid-chunk episode-END case the served engine relies on: an episode
-        // that terminates with actions still queued has its whole queue reclaimed
-        // by evict, so a later (re-keyed) episode never replays a stale tail.
-        let mut chunks = ChunkBuffers::new();
-        chunks.refill(
-            "ep-a",
-            [Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
-        );
-        assert_eq!(chunks.next_action("ep-a"), Some(Value::Number(1.0)));
-        // Two actions still pending when the episode ends.
-        chunks.evict("ep-a");
-        assert!(chunks.is_empty());
-        assert!(chunks.next_action("ep-a").is_none());
-    }
-
-    #[test]
     fn bridge_flat_box_keys_under_root_envelope() {
         use crate::plans::OBS_ROOT_KEY;
         let tensor = Tensor::from_vec(vec![1, 2, 3, 4], vec![4], DType::Uint8).expect("tensor");
@@ -841,7 +717,6 @@ mod tests {
                 segments: vec![],
                 clip: None,
                 in_dim: 0,
-                execute_horizon: 1,
             },
         );
         // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.

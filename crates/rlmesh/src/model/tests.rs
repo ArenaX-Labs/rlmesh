@@ -580,16 +580,17 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
 
     let box_response = expect_group_response(&results[0]);
     assert_eq!(box_response.context.as_ref().unwrap().route_id, "route-box");
-    assert!(
-        box_response.action.is_some(),
-        "the box group's action was encoded against its own action space"
+    assert_eq!(
+        box_response.actions.len(),
+        1,
+        "the box group's action was encoded against its own action space (no chunking)"
     );
     let disc_response = expect_group_response(&results[1]);
     assert_eq!(
         disc_response.context.as_ref().unwrap().route_id,
         "route-disc"
     );
-    assert!(disc_response.action.is_some());
+    assert_eq!(disc_response.actions.len(), 1);
 
     // Both groups reached the handler in group order, each decoded against its
     // own route config.

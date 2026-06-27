@@ -97,7 +97,21 @@ class ModelBase(Generic[ObsT, ActT]):
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
+        # Subclass-overridden predict corners declare their capability; capture each
+        # so the worker advertises it (wrapper-mode models, which supply a single
+        # predict callable, never define them).
+        def _overridden(method_name: str) -> Callable[..., object] | None:
+            if getattr(type(self), method_name) is getattr(ModelBase, method_name):
+                return None
+            return cast("Callable[..., object]", getattr(self, method_name))
+
+        raw_predict_chunk = _overridden("predict_chunk")
+        raw_predict_batch = _overridden("predict_batch")
+        raw_predict_chunk_batch = _overridden("predict_chunk_batch")
         self._raw_predict = cast("PredictFn[ObsT, ActT]", raw_predict)
+        self._raw_predict_chunk = raw_predict_chunk
+        self._raw_predict_batch = raw_predict_batch
+        self._raw_predict_chunk_batch = raw_predict_chunk_batch
         self.spec = resolved_spec
         self._policy = policy
         self._on_reset = on_reset if on_reset is not None else coerced_on_reset
@@ -122,6 +136,54 @@ class ModelBase(Generic[ObsT, ActT]):
         raise NotImplementedError(
             "Model subclasses must override predict(), or construct a Model by "
             "wrapping a predict callable, e.g. Model(lambda obs: ...)."
+        )
+
+    def predict_chunk(self, observation: ObsT, horizon: int) -> ActT:
+        """Optional: map one observation to a CHUNK of actions (leading axis = chunk).
+
+        Override this alongside :meth:`predict` when the policy emits an action
+        chunk in one forward pass (ACT, diffusion, flow, VLA action heads). The
+        runtime owns the replay: it replays the chunk one action per step without
+        re-calling the model. Defining this method *is* the chunk capability — a
+        single-action model leaves it unimplemented and the runtime re-plans every
+        step.
+
+        ``horizon`` is the runtime-chosen replay horizon: return **up to**
+        ``horizon`` actions (the runtime replays them before re-planning). An
+        autoregressive head should decode exactly ``horizon`` actions so it does not
+        waste decode on a longer natural chunk; a fixed-size head may return more and
+        the runtime caps to ``horizon``. The default raises.
+        """
+        raise NotImplementedError(
+            "this model does not emit action chunks; override predict_chunk() to "
+            "return a chunk (leading axis = chunk), or use predict() per step."
+        )
+
+    def predict_batch(self, observations: list[ObsT]) -> list[ActT]:
+        """Optional: map N lane observations to N actions in one batched call.
+
+        Override (alongside :meth:`predict`) to run a single forward pass for a
+        vectorized route instead of one call per lane. Receives a list of N
+        observations (one per sub-environment) and returns N actions in order. The
+        engine prefers this corner for a vectorized route; the default raises and the
+        route is driven per-lane through :meth:`predict`.
+        """
+        raise NotImplementedError(
+            "this model does not define a batched predict_batch(); it is driven "
+            "one lane at a time through predict()."
+        )
+
+    def predict_chunk_batch(self, observations: list[ObsT], horizon: int) -> list[ActT]:
+        """Optional: map N lane observations to N action CHUNKS in one batched call.
+
+        The batched counterpart of :meth:`predict_chunk` — one forward for the whole
+        vector, returning N chunks (each leading axis = chunk) in order, each up to
+        ``horizon`` actions. The engine prefers it for a vectorized chunked route.
+        The default raises.
+        """
+        raise NotImplementedError(
+            "this model does not define a batched predict_chunk_batch(); use "
+            "predict_chunk() (per lane) or predict_batch()."
         )
 
     def reset(self) -> None:
@@ -167,12 +229,53 @@ class ModelBase(Generic[ObsT, ActT]):
             # observation through the identical path (no adapter).
             return bridge.encode(raw_predict(cast(ObsT, bridge.decode(observation))))
 
+        # The chunk corner, when the model defines one: identical bridging, but the
+        # user returns a chunk (leading axis = chunk) the native engine splits.
+        raw_predict_chunk = self._raw_predict_chunk
+        predict_chunk_neutral: Callable[[Value, int], Value] | None = None
+        if raw_predict_chunk is not None:
+
+            def predict_chunk_neutral(observation: Value, horizon: int) -> Value:
+                return bridge.encode(
+                    raw_predict_chunk(cast(ObsT, bridge.decode(observation)), horizon)
+                )
+
+        # The batched corners (one forward for the whole vector), when defined: the
+        # engine hands a list of N neutral lane inputs; bridge each, run the user's
+        # batched predict, then bridge each returned action/chunk back. The chunk
+        # corner additionally receives the replay horizon.
+        raw_predict_batch = self._raw_predict_batch
+        predict_batch_neutral: Callable[[list[Value]], list[Value]] | None = None
+        if raw_predict_batch is not None:
+
+            def predict_batch_neutral(observations: list[Value]) -> list[Value]:
+                framework = [bridge.decode(o) for o in observations]
+                return [bridge.encode(a) for a in raw_predict_batch(framework)]
+
+        raw_predict_chunk_batch = self._raw_predict_chunk_batch
+        predict_chunk_batch_neutral: (
+            Callable[[list[Value], int], list[Value]] | None
+        ) = None
+        if raw_predict_chunk_batch is not None:
+
+            def predict_chunk_batch_neutral(
+                observations: list[Value], horizon: int
+            ) -> list[Value]:
+                framework = [bridge.decode(o) for o in observations]
+                return [
+                    bridge.encode(c)
+                    for c in raw_predict_chunk_batch(framework, horizon)
+                ]
+
         self._worker: PyModel = PyModel(
             predict_fn=predict_neutral,
             configure_fn=configure,
             on_reset=on_reset,
             on_episode_end=self._on_episode_end,
             on_close=self._on_close,
+            predict_chunk_fn=predict_chunk_neutral,
+            predict_batch_fn=predict_batch_neutral,
+            predict_chunk_batch_fn=predict_chunk_batch_neutral,
         )
 
     def run(
@@ -184,6 +287,7 @@ class ModelBase(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         token: str = "",
+        action_horizon: int = 1,
     ) -> RunResult:
         """Drive this model against an env and return a :class:`RunResult`.
 
@@ -197,12 +301,17 @@ class ModelBase(Generic[ObsT, ActT]):
         exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
         :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
         object with an ``address``, or a bare address string the loop dials.
+
+        ``action_horizon`` (> 1) replays an action chunk one step per env step,
+        re-planning every ``action_horizon`` steps — only when this model defines
+        :meth:`predict_chunk`; otherwise it runs un-chunked.
         """
         return self.session(
             env_or_address,
             instruction=instruction,
             close_env=close_env,
             token=token,
+            action_horizon=action_horizon,
         ).run(seeds=seeds, max_episodes=max_episodes)
 
     def session(
@@ -213,6 +322,7 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         token: str = "",
         trust_entrypoints: bool | None = None,
+        action_horizon: int = 1,
     ) -> Session[ObsT, ActT]:
         """Bind this model to an env and return a :class:`Session` to drive by hand.
 
@@ -220,11 +330,14 @@ class ModelBase(Generic[ObsT, ActT]):
         yourself, or call :meth:`Session.run` to pump whole episodes. ``env_or_address``
         is an env object, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an
         address string (see :meth:`run`).
+        ``action_horizon`` (> 1) replays an action chunk one step per env step when
+        this model defines :meth:`predict_chunk` (see :meth:`run`).
         """
         from ._eval import Session
 
         return Session(
             predict=self._raw_predict,
+            predict_chunk=self._raw_predict_chunk,
             spec=self.spec,
             env=env_or_address,
             on_reset=self._on_reset,
@@ -240,6 +353,7 @@ class ModelBase(Generic[ObsT, ActT]):
             instruction=instruction,
             close_env=close_env,
             token=token,
+            action_horizon=action_horizon,
         )
 
     def serve(

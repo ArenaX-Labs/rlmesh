@@ -429,9 +429,6 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
     Ok(Action {
         components,
         clip: action.clip,
-        // The env declaration drives this join; preserve its replay horizon
-        // (always 1 env-side, but carried through rather than reset by hand).
-        execute_horizon: action.execute_horizon,
     })
 }
 
@@ -525,7 +522,6 @@ mod tests {
         Action {
             components,
             clip: None,
-            execute_horizon: 1,
         }
     }
 

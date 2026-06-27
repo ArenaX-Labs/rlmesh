@@ -13,8 +13,10 @@ use crate::{Error, Result, spaces};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ModelAction {
-    /// Finished wire value built by the worker (codec already ran).
-    pub(super) action: Option<SpaceValue>,
+    /// Finished ordered action frames built by the worker (codec already ran):
+    /// `actions[0]` is THIS step, `actions[1..]` the open-loop chunk replay
+    /// frames. Exactly one element when the predict is not chunking.
+    pub(super) actions: Vec<SpaceValue>,
     pub(super) route: ModelRouteContext,
 }
 
@@ -80,8 +82,33 @@ pub(super) fn model_observation_from_endpoint_request(
 pub(super) fn model_action_to_endpoint_response(action: ModelAction) -> PredictResponse {
     PredictResponse {
         context: Some((&action.route).into()),
-        action: action.action,
+        actions: action.actions,
     }
+}
+
+/// Encode the per-step chunk replay frames (each a per-lane action batch) into
+/// wire `SpaceValue`s — one per future step — validating each against the route
+/// action space. These are `PredictResponse.actions[1..]` for a chunked predict;
+/// an empty `replay` yields an empty vec (not chunking).
+pub(super) fn encode_replay_frames(
+    replay: &[Vec<spaces::SpaceValue>],
+    num_envs: usize,
+    action_space: &spaces::SpaceSpec,
+) -> Result<Vec<SpaceValue>> {
+    replay
+        .iter()
+        .map(|frame| {
+            if frame.len() != num_envs {
+                return Err(Error::model(format!(
+                    "chunk replay frame produced {} actions for {num_envs} lanes",
+                    frame.len()
+                )));
+            }
+            check_actions_conform(action_space, frame)?;
+            rlmesh_grpc::wire::encode_batched_partial_values(frame, action_space)
+                .map_err(|err| Error::model(err.to_string()))
+        })
+        .collect()
 }
 
 /// Structurally validate each per-lane action against the route's action space

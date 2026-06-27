@@ -66,7 +66,7 @@ pub(crate) fn de_count<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32
     deserializer.deserialize_any(CountVisitor)
 }
 
-/// `1` default for an "omitted-when-1" count field (`stack`, `execute_horizon`).
+/// `1` default for an "omitted-when-1" count field (`stack`).
 pub(crate) fn default_one() -> u32 {
     1
 }
@@ -80,8 +80,8 @@ pub(crate) fn is_one(value: &u32) -> bool {
 
 /// Deserialize a count constrained to `1..=max`, routed through [`de_count`] (so
 /// a negative/non-integer still reads in domain language) with a field-named
-/// range error. Backs the `stack` and `execute_horizon` wire guards, which each
-/// wrap it with their own field name and ceiling.
+/// range error. Backs the `stack` wire guard, which wraps it with its own field
+/// name and ceiling.
 pub(crate) fn de_bounded_count<'de, D: Deserializer<'de>>(
     deserializer: D,
     field: &str,

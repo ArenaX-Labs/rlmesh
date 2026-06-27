@@ -31,6 +31,58 @@ pub trait PredictFn: Send + Sync {
     /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
     fn predict(&self, model_input: Value) -> Result<Value>;
 
+    /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw
+    /// actions (the leading axis is the chunk axis, unstacked by
+    /// [`split_chunk`](rlmesh_adapters::v1::split_chunk)). `None` (the default)
+    /// means the model has no distinct chunk corner, so the engine falls back to
+    /// [`predict`](Self::predict). A model that authors a separate chunk policy
+    /// (e.g. a Python `predict_chunk`) returns `Some(chunk)`.
+    ///
+    /// `horizon` is the runtime-chosen replay horizon `h`: the model should return
+    /// up to `h` actions (the runtime replays them before re-planning). Emitting
+    /// exactly `h` lets an autoregressive head decode only what is used instead of
+    /// its full natural chunk; a fixed-size head may return more and the engine
+    /// caps to `h`.
+    fn predict_chunk(&self, _model_input: Value, _horizon: u32) -> Result<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Whether this model defines a chunk corner. Queried once at `ConfigureRoute`
+    /// so the engine can warn when the runtime pins a horizon > 1 but the model
+    /// cannot chunk (chunking is then inactive — the runtime re-plans every step).
+    fn has_chunk(&self) -> bool {
+        false
+    }
+
+    /// Batched corner: N assembled lane inputs → N raw actions (one per lane) in a
+    /// single call, so the model runs one forward pass for the whole vector. The
+    /// engine prefers this over the per-lane `predict` loop when [`has_batch`] is
+    /// true. Default unimplemented (only ever called when the flag is set).
+    fn predict_batch(&self, _inputs: Vec<Value>) -> Result<Vec<Value>> {
+        Err(crate::Error::model("predict_batch is not implemented"))
+    }
+
+    /// Whether this model defines the batched corner ([`predict_batch`]).
+    fn has_batch(&self) -> bool {
+        false
+    }
+
+    /// Batched chunk corner: N assembled lane inputs → N action *chunks* (leading
+    /// axis = chunk) in a single call. Preferred for a vectorized chunked route when
+    /// [`has_chunk_batch`] is true. `horizon` is the replay horizon `h` (see
+    /// [`predict_chunk`](Self::predict_chunk)). Default unimplemented (gated by the
+    /// flag).
+    fn predict_chunk_batch(&self, _inputs: Vec<Value>, _horizon: u32) -> Result<Vec<Value>> {
+        Err(crate::Error::model(
+            "predict_chunk_batch is not implemented",
+        ))
+    }
+
+    /// Whether this model defines the batched chunk corner ([`predict_chunk_batch`]).
+    fn has_chunk_batch(&self) -> bool {
+        false
+    }
+
     /// Spec-less route (no adapter): the whole observation goes straight to the
     /// model, batched, returning one action per lane. Preserves the pre-engine
     /// behavior byte-for-byte (the binding reproduces the original path).
@@ -71,6 +123,11 @@ pub struct RouteConfig {
     pub(crate) action_space: SpaceSpec,
     pub(crate) customs: Box<dyn CustomTransform + Send>,
     pub(crate) encodings: Box<dyn EncodingTransform + Send>,
+    /// Runtime-chosen replay horizon, set by the engine from the `ConfigureRoute`
+    /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the
+    /// resolver builds the spec-derived config and the engine stamps the horizon
+    /// on top, since it is a runtime decision, not part of the model spec.
+    pub(crate) action_horizon: u32,
 }
 
 impl RouteConfig {
@@ -92,6 +149,9 @@ impl RouteConfig {
             action_space,
             customs,
             encodings,
+            // Spec-derived default; the engine overwrites it with the route's
+            // runtime-pinned action_horizon at ConfigureRoute.
+            action_horizon: 1,
         }
     }
 }

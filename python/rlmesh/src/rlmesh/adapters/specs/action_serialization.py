@@ -28,10 +28,6 @@ def action_to_dict(action: Action) -> dict[str, Any]:
         "components": [_actuator_to_dict(component) for component in action.components],
         "clip": list(action.clip) if action.clip else None,
     }
-    # Emit only when chunking (>1), so a non-chunked layout -- every env layout
-    # and most model layouts -- serializes byte-identically to before.
-    if action.execute_horizon != 1:
-        out["execute_horizon"] = action.execute_horizon
     return out
 
 
@@ -72,7 +68,6 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
     return Action(
         *components,
         clip=to_pair(data.get("clip")),
-        execute_horizon=int(data.get("execute_horizon", 1)),
     )
 
 

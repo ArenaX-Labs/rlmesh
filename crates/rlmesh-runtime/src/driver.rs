@@ -357,50 +357,84 @@ where
 
         let mut pending_observation_msg = reset_msg;
 
+        // Runtime-owned action-chunk replay buffer. A predict returns its ordered
+        // action frames in `PredictResponse.actions` (frame 0 = this step, frames
+        // 1.. = open-loop replay); the driver pushes every frame here (whole-batch
+        // frames, one `SpaceValue`'s leaves per step, covering every lane), pops one
+        // per step, and re-calls the model only when the buffer drains. A
+        // non-chunking predict returns exactly one frame, so the predict-every-step
+        // path is unchanged.
+        let mut replay_buffer: std::collections::VecDeque<Vec<Bytes>> =
+            std::collections::VecDeque::new();
+
         loop {
             if cancellation.is_cancelled() {
                 return Err(self.cancelled_error(state, state.snapshot().step));
             }
 
             let predict_snapshot = state.snapshot();
-            let predict_timeout = self.spec.limits.model_predict_timeout;
-            let expected_context = pending_observation_msg.context.clone();
-            let predict_request_bytes = pending_observation_msg.encoded_len() as u64;
-            let predict_started = Instant::now();
-            let action_msg = await_runtime_operation(
-                cancellation,
-                predict_timeout,
-                RuntimeError::operation_timeout(
-                    state.route_id(),
-                    state.model_component_id(),
-                    "model.predict",
-                    predict_snapshot.step,
+            // Re-call model.predict only when the replay buffer is empty; otherwise
+            // replay a buffered chunk frame (no RPC, no obs re-encode). A predict
+            // returns its ordered frames in `actions` (frame 0 = this step, frames
+            // 1.. = open-loop replay): push every frame, then pop one. env.step +
+            // the observation transform/emit below run every iteration regardless,
+            // so a replay step still feeds the observation ledger.
+            if replay_buffer.is_empty() {
+                let predict_timeout = self.spec.limits.model_predict_timeout;
+                let expected_context = pending_observation_msg.context.clone();
+                let predict_request_bytes = pending_observation_msg.encoded_len() as u64;
+                let predict_started = Instant::now();
+                let action_msg = await_runtime_operation(
+                    cancellation,
                     predict_timeout,
-                ),
-                self.cancelled_error(state, predict_snapshot.step),
-                self.model.predict(pending_observation_msg),
-            )
-            .await?;
-            let predict_rpc = predict_started.elapsed();
-            if action_msg.response.context != expected_context {
-                let request_id = expected_context
-                    .as_ref()
-                    .map(|context| context.request_id.clone())
-                    .unwrap_or_default();
-                return Err(RuntimeError::ModelRouteMismatch {
-                    component_id: state.model_component_id().to_string(),
-                    request_id,
-                });
+                    RuntimeError::operation_timeout(
+                        state.route_id(),
+                        state.model_component_id(),
+                        "model.predict",
+                        predict_snapshot.step,
+                        predict_timeout,
+                    ),
+                    self.cancelled_error(state, predict_snapshot.step),
+                    self.model.predict(pending_observation_msg),
+                )
+                .await?;
+                let predict_rpc = predict_started.elapsed();
+                if action_msg.response.context != expected_context {
+                    let request_id = expected_context
+                        .as_ref()
+                        .map(|context| context.request_id.clone())
+                        .unwrap_or_default();
+                    return Err(RuntimeError::ModelRouteMismatch {
+                        component_id: state.model_component_id().to_string(),
+                        request_id,
+                    });
+                }
+                record_op(
+                    telemetry,
+                    SRC_PREDICT,
+                    predict_rpc,
+                    action_msg.endpoint_total_ns,
+                    predict_request_bytes,
+                    action_msg.response.encoded_len() as u64,
+                );
+                if action_msg.response.actions.is_empty() {
+                    return Err(RuntimeError::Protocol(format!(
+                        "model endpoint {} returned a predict response with no actions",
+                        state.model_component_id()
+                    )));
+                }
+                // Push every ordered frame (frame 0 = this step, frames 1.. =
+                // open-loop replay); the pop below applies frame 0 now and the rest
+                // on the following steps without re-calling the model.
+                for frame in &action_msg.response.actions {
+                    if let Some(leaves) = value_leaves(Some(frame))? {
+                        replay_buffer.push_back(leaves);
+                    }
+                }
             }
-            record_op(
-                telemetry,
-                SRC_PREDICT,
-                predict_rpc,
-                action_msg.endpoint_total_ns,
-                predict_request_bytes,
-                action_msg.response.encoded_len() as u64,
-            );
-            let model_action = value_leaves(action_msg.response.action.as_ref())?;
+            let model_action = replay_buffer
+                .pop_front()
+                .expect("replay buffer is non-empty after a refill");
 
             let action_step = predict_snapshot.step + 1;
             let mut action_event = ActionReceivedEvent {
@@ -413,7 +447,7 @@ where
                 step: action_step,
                 env_index: predict_snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
-                action: model_action,
+                action: Some(model_action),
             };
             action_event.action = self.invoke_transform_action(action_event.clone()).await?;
             fan_out_event!(self, action_received, action_event.clone());
@@ -481,6 +515,14 @@ where
 
             self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
                 .await;
+
+            // A lane that completed this step gets a fresh episode, so its buffered
+            // future actions are stale. The replay buffer holds whole-batch frames
+            // and cannot be partially invalidated, so flush it and re-plan on the
+            // next step (receding horizon on reset). No-op when not chunking.
+            if !step_ok.response.completed_episodes.is_empty() {
+                replay_buffer.clear();
+            }
 
             // Under NEXT_STEP, the final episode completes at its done step `t`
             // and this early-return fires before the `t+1` roll. So the

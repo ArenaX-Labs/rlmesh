@@ -8,6 +8,8 @@ model's spec, and runs a per-episode loop that returns a typed :class:`RunResult
 
 from __future__ import annotations
 
+import functools
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar, cast
@@ -160,6 +162,7 @@ class Session(Generic[ObsT, ActT]):
         *,
         env: object,
         predict: Callable[[Any], Any] | None = None,
+        predict_chunk: Callable[[Any], Any] | None = None,
         spec: object | None = None,
         on_reset: Callable[[], None] | None = None,
         on_episode_end: Callable[[], None] | None = None,
@@ -170,6 +173,7 @@ class Session(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         token: str = "",
+        action_horizon: int = 1,
         model_client: PyModelClient | None = None,
         owner: Any = None,
     ) -> None:
@@ -177,6 +181,8 @@ class Session(Generic[ObsT, ActT]):
         # served model (``model_client`` -- the server applies its adapter). ``owner``
         # is a managed source (e.g. a SandboxModel container) to shut down on close.
         self._predict = predict
+        self._predict_chunk = predict_chunk
+        self._action_horizon = action_horizon
         self._spec = spec
         self._env = env
         self._on_reset = on_reset
@@ -218,10 +224,17 @@ class Session(Generic[ObsT, ActT]):
                 _adapter_env_bridge(client) if self._adapter is not None else None
             )
             self._text_placements = _text_placements(self._spec)
+            # The replay horizon is a caller decision (action_horizon), not the
+            # spec. It engages only when the model exposes a predict_chunk corner;
+            # without one, fall back to single-step predict.
+            if self._action_horizon > 1 and self._predict_chunk is None:
+                warnings.warn(
+                    f"action_horizon={self._action_horizon} was requested but the "
+                    "model defines no predict_chunk(); running un-chunked.",
+                    stacklevel=2,
+                )
             self._horizon = (
-                getattr(self._adapter, "execute_horizon", 1)
-                if self._adapter is not None
-                else 1
+                self._action_horizon if self._predict_chunk is not None else 1
             )
             # Seed the replay with the resolved horizon so a hand-driven predict()
             # before the first reset() already replays the right chunk length.
@@ -262,11 +275,20 @@ class Session(Generic[ObsT, ActT]):
             action = self._model_client.predict(bridge.encode(observation))
             return cast("ActT", bridge.decode(action))
         model_bridge = self._bridge if self._bridge is not None else self._env_bridge
-        # Local mode always has a predict (only the served-model branch above lacks one).
-        local_predict = cast("Callable[[Any], Any]", self._predict)
+        # Local mode always has a predict (only the served-model branch above lacks
+        # one). When chunking (horizon > 1) the replay re-plans through
+        # predict_chunk(payload, horizon) -- which returns a chunk the queue splits
+        # and replays one step at a time -- otherwise through single-step predict.
+        if self._horizon > 1 and self._predict_chunk is not None:
+            replay_fn = cast(
+                "Callable[[Any], Any]",
+                functools.partial(self._predict_chunk, horizon=self._horizon),
+            )
+        else:
+            replay_fn = cast("Callable[[Any], Any]", self._predict)
         raw_action = self._replay.next_action(
             lambda: _predict_step(
-                local_predict,
+                replay_fn,
                 observation,
                 self._adapter,
                 self._instruction,

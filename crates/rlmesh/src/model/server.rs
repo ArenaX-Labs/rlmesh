@@ -27,12 +27,12 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
-use super::handler::{ModelHandler, ModelRouteSetup};
+use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
 use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::types::{ModelObservation, ModelRouteContext};
 use super::wire::{
-    ModelAction, check_actions_conform, model_action_to_endpoint_response, model_endpoint_total_ns,
-    model_error, model_error_from_error, model_error_value,
+    ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
+    model_endpoint_total_ns, model_error, model_error_from_error, model_error_value,
     model_observation_from_endpoint_request,
 };
 use crate::bound::BoundListener;
@@ -561,8 +561,12 @@ async fn handle_configure_route(
     // adapter. This runs off the predict-serialization lock (see
     // `ModelRouteSetup`), so configuring one route never blocks on an in-flight
     // predict on another.
+    // Runtime-chosen replay horizon pinned on this route (1 = no chunking).
+    let action_horizon = request.action_horizon;
     if let Some(route_setup) = route_setup
-        && let Err(error) = route_setup.configure_route(&route_key, &env_contract).await
+        && let Err(error) = route_setup
+            .configure_route(&route_key, &env_contract, action_horizon)
+            .await
     {
         return Some(model_error_from_error(&error));
     }
@@ -661,15 +665,18 @@ async fn prepare_predict_locked<H: ModelHandler>(
     })
 }
 
-/// Turn one group's predicted actions into a wire [`PredictResponse`]: enforce
-/// the `== num_envs` lane count and structural conformance, then encode against
-/// this route's action space.
+/// Turn one group's predicted frames into a wire [`PredictResponse`]: enforce the
+/// `== num_envs` lane count and structural conformance on frame 0, then encode it
+/// (the action for this step) plus any chunk replay frames against this route's
+/// action space, into the single ordered `actions` list (`actions[0]` is this
+/// step, `actions[1..]` the replay frames).
 fn finish_predict(
-    actions: Vec<spaces::SpaceValue>,
+    frames: PredictFrames,
     num_envs: usize,
     action_space: &spaces::SpaceSpec,
     route: ModelRouteContext,
 ) -> Result<PredictResponse> {
+    let PredictFrames { actions, replay } = frames;
     if actions.len() != num_envs {
         return Err(Error::model(format!(
             "predict returned {} actions for {num_envs} lanes",
@@ -677,10 +684,13 @@ fn finish_predict(
         )));
     }
     check_actions_conform(action_space, &actions)?;
-    let wire = rlmesh_grpc::wire::encode_batched_partial_values(&actions, action_space)
+    let frame0 = rlmesh_grpc::wire::encode_batched_partial_values(&actions, action_space)
         .map_err(|err| Error::model(err.to_string()))?;
+    let mut wire_actions = Vec::with_capacity(1 + replay.len());
+    wire_actions.push(frame0);
+    wire_actions.extend(encode_replay_frames(&replay, num_envs, action_space)?);
     Ok(model_action_to_endpoint_response(ModelAction {
-        action: Some(wire),
+        actions: wire_actions,
         route,
     }))
 }
@@ -703,8 +713,8 @@ async fn handle_predict<H: ModelHandler + 'static>(
             num_envs,
             route,
         } = prepared;
-        let actions = handler.predict(observation).await?;
-        finish_predict(actions, num_envs, &action_space, route)
+        let frames = handler.predict_chunked(observation).await?;
+        finish_predict(frames, num_envs, &action_space, route)
     }
     .await;
     Some(match result {
@@ -783,7 +793,17 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
                     action_space,
                     route,
                 } => match actions.next() {
-                    Some(Ok(actions)) => finish_predict(actions, num_envs, &action_space, route),
+                    // Grouped predict does not chunk: each group yields one action
+                    // per lane (no replay frames).
+                    Some(Ok(actions)) => finish_predict(
+                        PredictFrames {
+                            actions,
+                            replay: Vec::new(),
+                        },
+                        num_envs,
+                        &action_space,
+                        route,
+                    ),
                     Some(Err(error)) => Err(error),
                     // A correct `predict_grouped` returns one result per prepared
                     // group; a short Vec is a handler-contract violation.
