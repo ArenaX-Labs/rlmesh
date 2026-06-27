@@ -206,6 +206,49 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     assert tuple(env_obj.last_action.shape) == (7,)
 
 
+@pytest.mark.parametrize(
+    ("container", "expected"),
+    [("str", "follow the override"), ("list", ["follow the override"])],
+)
+def test_instruction_override_reaches_predict_in_declared_shape(
+    container: str, expected: object
+) -> None:
+    """``run(..., instruction=)`` overrides the text input in its declared shape.
+
+    The env publishes its own instruction ("pick up the cube"); the override must
+    win and land as a bare ``str`` for ``container='str'`` and as ``[instruction]``
+    for ``container='list'``.
+    """
+    pytest.importorskip("numpy")
+
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8),
+            "instruction": adapt.Text(container=container),  # pyright: ignore[reportArgumentType]
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    )
+    env_obj = TinyArmEnv()
+    seen: dict[str, Any] = {"instruction": None}
+
+    def predict(payload: dict[str, Any]) -> Any:
+        import numpy as np
+
+        seen["instruction"] = payload["instruction"]
+        return np.zeros(spec.output.dim, dtype=np.float32)
+
+    tagged = adapt.tag(env_obj, _tags())
+    Model(predict, spec=spec).run(
+        tagged, max_episodes=1, instruction="follow the override"
+    )
+
+    assert seen["instruction"] == expected
+
+
 # (framework module, leaf tensor type, zeros constructor) for the cross-framework
 # local-driving test. A torch/jax model driven against a local numpy gym env must
 # encode the env's numpy obs with the *env's* (numpy) bridge, not the model's.

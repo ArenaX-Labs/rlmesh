@@ -109,7 +109,7 @@ def _predict_step(
     obs: Any,
     adapter: Any,
     instruction: str | None,
-    text_keys: tuple[str, ...],
+    text_placements: tuple[_TextPlacement, ...],
     env_bridge: ValueBridge | None,
     model_bridge: ValueBridge | None,
 ) -> Any:
@@ -117,7 +117,8 @@ def _predict_step(
 
     The re-plan half of the chunk-replay loop (skipped while a chunk is replaying):
     the declarative obs transform (or the raw obs for a spec-less model),
-    instruction injection into a shallow copy, then the model forward.
+    instruction injection (one rebuilt copy, never the env's obs), then the model
+    forward.
     """
     if adapter is not None:
         payload = from_value(
@@ -128,11 +129,15 @@ def _predict_step(
         )
     else:
         payload = obs
-    if instruction is not None and isinstance(payload, dict):
-        # Inject into a shallow copy; don't mutate the obs the env returned.
-        payload = cast("dict[str, Any]", payload).copy()
-        for key in text_keys:
-            payload[key] = instruction
+    if instruction is not None:
+        # Inject into every text leaf the spec declares, at its tree placement and
+        # in its declared shape: ``[instruction]`` for container='list', a bare
+        # ``str`` otherwise. ``_tree_set`` rebuilds the path it touches (the empty
+        # path replaces the whole payload, for a bare-root text input), so the obs
+        # the env returned is never mutated.
+        for placement in text_placements:
+            value: Any = [instruction] if placement.as_list else instruction
+            payload = _tree_set(payload, placement.segments, value)
     return predict(payload)
 
 
@@ -190,7 +195,7 @@ class Session(Generic[ObsT, ActT]):
         self._owns_client = False
         self._adapter: Any = None
         self._env_bridge: ValueBridge | None = None
-        self._text_keys: tuple[str, ...] = ()
+        self._text_placements: tuple[_TextPlacement, ...] = ()
         self._horizon = 1
         self._replay = ChunkReplay(1)
         self._terminated = False
@@ -212,7 +217,7 @@ class Session(Generic[ObsT, ActT]):
             self._env_bridge = (
                 _adapter_env_bridge(client) if self._adapter is not None else None
             )
-            self._text_keys = _text_input_keys(self._spec)
+            self._text_placements = _text_placements(self._spec)
             self._horizon = (
                 getattr(self._adapter, "execute_horizon", 1)
                 if self._adapter is not None
@@ -265,7 +270,7 @@ class Session(Generic[ObsT, ActT]):
                 observation,
                 self._adapter,
                 self._instruction,
-                self._text_keys,
+                self._text_placements,
                 self._env_bridge,
                 model_bridge,
             )
@@ -507,27 +512,73 @@ def coerce_model(
     )
 
 
-def _text_input_keys(spec: object | None) -> tuple[str, ...]:
+class _TextPlacement(NamedTuple):
+    """Where (and how) the ``instruction=`` override lands in the model payload.
+
+    ``segments`` is the text leaf's position in the model input tree (str for a
+    Dict key, int for a Tuple index; the empty tuple is a bare-root text input,
+    whose payload *is* the text leaf). ``as_list`` is True when the leaf declares
+    ``container='list'`` (inject ``[instruction]``, not a bare ``str``, to keep
+    the model's declared shape).
+    """
+
+    segments: tuple[str | int, ...]
+    as_list: bool
+
+
+def _text_placements(spec: object | None) -> tuple[_TextPlacement, ...]:
+    """Find every text leaf the ``instruction=`` override should be written into.
+
+    Walks the model spec's input tree locally (a public structure: a leaf
+    dataclass, a ``dict`` Dict node, or a ``tuple`` Tuple node), so the override
+    reaches *every* text leaf -- bare-root, top-level, and nested -- and carries
+    each leaf's ``container`` so a list-shaped leaf gets ``[instruction]``. A
+    spec-less / ``NO_ADAPTER`` model declares no text inputs, so none.
+    """
     if spec is None or spec is NO_ADAPTER:
         return ()
     from ..adapters import Text
-    from ..adapters.resolver import _iter_leaves, _placement
 
     input_tree = getattr(spec, "input", None)
     if input_tree is None:
         return ()
-    # Instruction injection targets top-level text leaves of a Dict-shaped model
-    # input (the placement is a single bare dict key); a nested/tuple-placed text
-    # leaf is left to the declarative path.
-    keys: list[str] = []
-    for segments, leaf in _iter_leaves(input_tree, ()):
-        if (
-            isinstance(leaf, Text)
-            and len(segments) == 1
-            and isinstance(segments[0], str)
-        ):
-            keys.append(_placement(segments))
-    return tuple(keys)
+    placements: list[_TextPlacement] = []
+
+    def walk(node: Any, segments: tuple[str | int, ...]) -> None:
+        if isinstance(node, Text):
+            placements.append(_TextPlacement(segments, node.container == "list"))
+        elif isinstance(node, Mapping):
+            for key, child in cast("Mapping[str, Any]", node).items():
+                walk(child, (*segments, key))
+        elif isinstance(node, tuple):
+            for index, child in enumerate(cast("tuple[Any, ...]", node)):
+                walk(child, (*segments, index))
+
+    walk(input_tree, ())
+    return tuple(placements)
+
+
+def _tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
+    """Return ``tree`` with the value at ``segments`` replaced by ``value``.
+
+    A small structured set over the payload tree (dict for str segments, list for
+    int segments). Rebuilds only the path it touches, so the env's observation is
+    never mutated; the empty path replaces the whole payload (a bare-root leaf).
+    """
+    if not segments:
+        return value
+    head, rest = segments[0], segments[1:]
+    if isinstance(head, int):
+        items: list[Any] = list(cast("Sequence[Any]", tree))
+        items[head] = _tree_set(items[head], rest, value)
+        return items
+    node: dict[str, Any] = (
+        dict(cast("Mapping[str, Any]", tree)) if isinstance(tree, Mapping) else {}
+    )
+    # A subtree may not exist yet (e.g. injecting into a missing nested key);
+    # descend into an empty dict rather than indexing a missing key.
+    node[head] = _tree_set(node.get(head, {}), rest, value)
+    return node
 
 
 def _connect(

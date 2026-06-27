@@ -189,8 +189,11 @@ class ModelBase(Generic[ObsT, ActT]):
 
         Resolves the adapter from the env's tags and this model's spec, then runs a
         per-episode loop. ``seeds`` gives a per-episode seed and sets the episode
-        count unless ``max_episodes`` is given; ``instruction`` is written into the
-        model's text inputs each episode. ``env_or_address`` is an env object
+        count unless ``max_episodes`` is given; ``instruction``, when given,
+        overrides *every* text input the spec declares on each step -- at its
+        placement in the input tree (bare-root, top-level, or nested) and in that
+        input's declared shape (a bare ``str``, or ``[instruction]`` for a
+        ``container='list'`` text input). ``env_or_address`` is an env object
         exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
         :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
         object with an ``address``, or a bare address string the loop dials.
