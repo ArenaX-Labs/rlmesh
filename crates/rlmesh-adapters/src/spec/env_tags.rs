@@ -9,12 +9,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
 use super::action::Action;
 use super::layouts::ImageLayout;
+use super::model::{NodeShape, TreeNode, deserialize_node};
 use super::rotations::RotationEncoding;
 
 /// A camera image entry's semantics. Width/height/channels are derived from
@@ -156,9 +156,9 @@ pub struct SplitLayout {
 ///
 /// **Strict v1 kind tag.** A new observation *kind* (a new variant here) is a
 /// structural change = a v2 key bump, not an additive v1 value; an unknown
-/// `type` is rejected at parse by design. The `split` discriminant carries a
-/// [`SplitLayout`] — itself a *leaf* (one tensor split into role fields), not a
-/// container.
+/// `type` is rejected at parse with a clear `unknown observation kind` error.
+/// The `split` discriminant carries a [`SplitLayout`] — itself a *leaf* (one
+/// tensor split into role fields), not a container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ObsLeaf {
@@ -167,6 +167,10 @@ pub enum ObsLeaf {
     Split(SplitLayout),
     Text(TextTag),
 }
+
+/// The leaf-vocabulary `type` discriminants that mark a JSON object as an
+/// [`ObsLeaf`] rather than an [`ObsNode::Dict`].
+pub const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
 
 /// A node in the recursive env observation tree: a leaf, a `Dict` of named
 /// sub-nodes, or a `Tuple` of positional sub-nodes.
@@ -177,9 +181,11 @@ pub enum ObsLeaf {
 /// flat dotted-key map (`{"robot.eef_pos": tag}`) and the magic `"."` root
 /// sentinel — a single-leaf observation is a bare [`Leaf`](ObsNode::Leaf).
 ///
-/// Discrimination on the wire is **structural** (see the hand-written
-/// `Deserialize`): a JSON array is a `Tuple`, a JSON object whose `"type"` is in
-/// the leaf vocabulary (`image`/`state`/`text`/`split`) is a `Leaf`, and any
+/// Discrimination on the wire is **structural** (the shared
+/// [`TreeNode`](super::model::TreeNode) parser): a JSON array is a `Tuple`, a
+/// JSON object whose `"type"` is in the leaf vocabulary
+/// (`image`/`state`/`text`/`split`) is a `Leaf`, an object whose `"type"` is an
+/// unrecognized string is a clear `unknown observation kind` error, and any
 /// other JSON object is a `Dict`. `"type"` is therefore a **reserved key**: a
 /// `Dict` child may not be named `"type"`.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,9 +195,23 @@ pub enum ObsNode {
     Tuple(Vec<ObsNode>),
 }
 
-/// The leaf-vocabulary `type` discriminants that mark a JSON object as an
-/// [`ObsLeaf`] rather than an [`ObsNode::Dict`].
-const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
+/// Wires [`ObsNode`] into the shared structural [`TreeNode`] parser; the only
+/// observation-specific knowledge is its leaf type, leaf vocabulary, and the
+/// `KIND` word used in the unknown-kind error.
+impl TreeNode for ObsNode {
+    type Leaf = ObsLeaf;
+
+    const LEAF_TYPES: &'static [&'static str] = OBS_LEAF_TYPES;
+    const KIND: &'static str = "observation";
+
+    fn from_shape(shape: NodeShape<<Self as TreeNode>::Leaf, Self>) -> Self {
+        match shape {
+            NodeShape::Leaf(leaf) => ObsNode::Leaf(leaf),
+            NodeShape::Dict(map) => ObsNode::Dict(map),
+            NodeShape::Tuple(items) => ObsNode::Tuple(items),
+        }
+    }
+}
 
 impl Serialize for ObsNode {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -205,52 +225,7 @@ impl Serialize for ObsNode {
 
 impl<'de> Deserialize<'de> for ObsNode {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(NodeVisitor)
-    }
-}
-
-/// Hand-written visitor mirroring [`AcceptSet`]'s str-or-map pattern, but here
-/// distinguishing a leaf object from a dict object structurally (by the `"type"`
-/// key) so the leaf keeps its own `#[serde(tag = "type")]` form intact.
-struct NodeVisitor;
-
-impl<'de> Visitor<'de> for NodeVisitor {
-    type Value = ObsNode;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("an observation leaf, a dict of nodes, or a tuple (array) of nodes")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<ObsNode, A::Error> {
-        let mut items = Vec::new();
-        while let Some(item) = seq.next_element::<ObsNode>()? {
-            items.push(item);
-        }
-        Ok(ObsNode::Tuple(items))
-    }
-
-    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<ObsNode, A::Error> {
-        // Buffer the object into an ordered map of raw JSON so we can peek at the
-        // `"type"` key, then re-interpret as either a leaf or a dict of nodes.
-        let mut buffered: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
-            buffered.insert(key, value);
-        }
-        let is_leaf = buffered
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|tag| OBS_LEAF_TYPES.contains(&tag));
-        if is_leaf {
-            let object = serde_json::Value::Object(buffered.into_iter().collect());
-            let leaf = ObsLeaf::deserialize(object).map_err(serde::de::Error::custom)?;
-            return Ok(ObsNode::Leaf(leaf));
-        }
-        let mut children: BTreeMap<String, ObsNode> = BTreeMap::new();
-        for (key, value) in buffered {
-            let child = ObsNode::deserialize(value).map_err(serde::de::Error::custom)?;
-            children.insert(key, child);
-        }
-        Ok(ObsNode::Dict(children))
+        deserialize_node(deserializer)
     }
 }
 
@@ -411,5 +386,33 @@ mod obs_node_serde_tests {
             r#"{"type": "split", "fields": [{"role": "proprio/eef_pos", "dim": 3}, {"dim": 1}]}"#,
         );
         assert!(matches!(node, ObsNode::Leaf(ObsLeaf::Split(_))));
+    }
+
+    #[test]
+    fn unknown_type_is_a_clear_kind_error() {
+        // An object whose `type` is a string outside the leaf vocabulary names
+        // the unknown kind directly — `type` is reserved, so it is never
+        // misparsed as a Dict child.
+        let err = serde_json::from_str::<ObsNode>(r#"{"type": "audio", "role": "x"}"#)
+            .expect_err("unknown kind rejected");
+        assert!(
+            err.to_string()
+                .contains(r#"unknown observation kind "audio""#),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn non_string_type_is_a_reserved_key_error() {
+        // `type` is a reserved Dict key: a non-string `type` cannot be a leaf
+        // discriminant, so it is rejected rather than misparsed as a Dict child.
+        let err = serde_json::from_str::<ObsNode>(r#"{"type": 7}"#)
+            .expect_err("non-string type rejected");
+        assert!(
+            err.to_string().contains(
+                r#"the reserved key "type" may not name a dict child (observation tree)"#
+            ),
+            "got: {err}"
+        );
     }
 }

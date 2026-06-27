@@ -3,7 +3,7 @@
 //! The Rust codec is the single source of spec-validation errors (Python and,
 //! later, the FE binding surface them verbatim with a field path). A spec
 //! author should never see a Rust wire type (`u32`, `f64`, `tuple of size 2`)
-//! or a Rust type name (`ImageInput`, `StateField`) in an error — those are
+//! or a Rust type name (`Image`, `Field`, `ObsNode`) in an error — those are
 //! implementation leaks. This pins every parse-error class to domain language;
 //! if a new field reintroduces a leak, the sweep below fails.
 //!
@@ -168,11 +168,12 @@ fn cases() -> Vec<(&'static str, String)> {
         // field is now an accept-set that tolerates an unrecognized (future)
         // encoding at parse and rejects it at *resolve* instead (graceful
         // forward-compatible degradation). See the resolver's selection tests.
-        // An unknown leaf `type` is no longer a tagged-enum "unknown variant"
-        // error: the tree node discriminant is structural, so an object whose
-        // `type` is outside the leaf vocabulary is read as a Dict of nodes and
-        // the unrecognized payload fails as a non-node. The message names the
-        // node vocabulary (leaf / dict / tuple), domain language for the tree.
+        // An unknown leaf `type` is rejected at parse with a clear unknown-kind
+        // error: the tree node discriminant is structural, but `"type"` is a
+        // reserved key, so an object whose `"type"` is a string outside the leaf
+        // vocabulary is named directly (`unknown model input kind "audio"`)
+        // rather than misparsed as a Dict that fails deep with a misleading
+        // "expected a ... leaf, a dict of nodes, or a tuple" message.
         (
             "unknown model input",
             model_err(r#"{"input":{"c":{"type":"audio"}},"output":{"components":[]}}"#),
@@ -209,8 +210,11 @@ fn cases() -> Vec<(&'static str, String)> {
 fn no_message_leaks_rust_internals() {
     // serde phrases its wire scalars as bare type names; our custom
     // deserializers must replace these with domain words. `1..=` is Rust range
-    // syntax; the type names are our own structs.
+    // syntax; the type names are our own current spec structs/enums (capitalized
+    // identifiers — author-facing domain words are lowercase, so these guard
+    // against a serde-derived message naming an internal type).
     const LEAKS: &[&str] = &[
+        // wire scalars
         "u32",
         "i64",
         "f64",
@@ -219,15 +223,29 @@ fn no_message_leaks_rust_internals() {
         "1..=",
         "tuple",
         "floating point",
-        "ImageInput",
-        "StateField",
+        // current spec type names (the deleted ImageInput/StateField are gone)
+        "Image",
+        "Field",
+        "State",
+        "Actuator",
+        "Concat",
+        "Action",
+        "Text",
+        "Custom",
+        "SplitLayout",
+        "ObsLeaf",
+        "ObsNode",
+        "ModelLeaf",
+        "InputNode",
     ];
     for (name, message) in cases() {
-        // The recursive-tree node dispatch describes the user-facing node
-        // vocabulary ("a ... leaf, a dict of nodes, or a tuple (array) of
-        // nodes") when a structurally-misplaced value is rejected. That phrase
-        // is domain language, not a Rust wire-type leak, so strip it before the
-        // sweep — otherwise its benign "tuple" trips the `tuple` ban.
+        // When a structurally-misplaced value (not an object/array) sits in a
+        // node position, the recursive-tree dispatch describes the user-facing
+        // node vocabulary ("a ... leaf, a dict of nodes, or a tuple (array) of
+        // nodes"). That phrase is domain language, not a Rust wire-type leak, so
+        // strip it before the sweep — otherwise its benign "tuple" trips the
+        // `tuple` ban. (An unknown leaf `type` no longer reaches this phrase: it
+        // is named directly by the `unknown ... kind` error.)
         let scanned = message
             .replace("tuple (array) of nodes", "")
             .replace("a tuple (array)", "");
@@ -264,4 +282,8 @@ fn rewritten_messages_read_in_domain_language() {
     has("range elem wrong-type", "expected a number");
     has("scale wrong-type", "expected a number");
     has("threshold wrong-type", "expected a number");
+    // An unknown leaf `type` names the unrecognized kind directly in domain
+    // language, not a misleading "expected a ... leaf, a dict, or a tuple".
+    has("unknown model input", r#"unknown model input kind "audio""#);
+    has("unknown obs tag", r#"unknown observation kind "audio""#);
 }
