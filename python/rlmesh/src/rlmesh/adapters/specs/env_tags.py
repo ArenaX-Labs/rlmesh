@@ -27,6 +27,7 @@ from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
 from ._codec import normalize_spec, one_or_many, to_pair
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
+from .model_serialization import COMMON_LEAF_TYPES, decode_node, encode_node
 from .vocabularies import ImageLayout, RotationEncoding
 
 
@@ -153,10 +154,6 @@ ObsLeaf: TypeAlias = ImageTag | StateTag | TextTag | Split
 # leaf is the single-leaf case.
 ObsNode: TypeAlias = "ObsLeaf | Mapping[str, ObsNode] | tuple[ObsNode, ...]"
 
-# Backwards-readable alias name retained for the env observation tree.
-ObsTag: TypeAlias = ObsLeaf
-ObsTags: TypeAlias = ObsNode
-
 
 def _field_to_dict(field: Field) -> dict[str, Any]:
     return {
@@ -201,6 +198,10 @@ def _leaf_to_dict(tag: ObsLeaf) -> dict[str, Any]:
     return {"type": "text", "role": tag.role}
 
 
+def _is_obs_leaf(node: object) -> bool:
+    return isinstance(node, (ImageTag, StateTag, TextTag, Split))
+
+
 def obs_node_to_dict(node: ObsNode) -> Any:
     """Return the structural wire form of an observation tree node.
 
@@ -208,21 +209,13 @@ def obs_node_to_dict(node: ObsNode) -> Any:
     becomes a plain object of recursively-encoded subnodes; a Python ``tuple``
     (a Tuple node) becomes a JSON array of recursively-encoded subnodes.
     """
-    if isinstance(node, (ImageTag, StateTag, TextTag, Split)):
-        return _leaf_to_dict(node)
-    if isinstance(node, Mapping):
-        return {key: obs_node_to_dict(child) for key, child in node.items()}
-    if isinstance(node, tuple):
-        return [obs_node_to_dict(child) for child in node]
-    raise TypeError(
-        f"observation node must be a leaf (ImageTag/StateTag/TextTag/Split), a "
-        f"dict, or a tuple, got {type(node).__name__}"
-    )
+    return encode_node(node, _leaf_to_dict, _is_obs_leaf, "observation")
 
 
 # The leaf-vocabulary `type` discriminants that mark a JSON object as a leaf
-# rather than a Dict node (mirrors the Rust ``OBS_LEAF_TYPES``).
-_OBS_LEAF_TYPES = frozenset({"image", "state", "text", "split"})
+# rather than a Dict node (mirrors the Rust ``OBS_LEAF_TYPES``); the env side
+# adds ``split`` to the shared common vocabulary.
+_OBS_LEAF_TYPES = COMMON_LEAF_TYPES | {"split"}
 
 
 def _leaf_from_dict(item: Mapping[str, Any]) -> ObsLeaf:
@@ -254,14 +247,10 @@ def obs_node_from_dict(node: object) -> ObsNode:
     ``"type"`` is a leaf discriminant is a leaf, and any other object is a Dict
     node (the container type *is* the runtime container type).
     """
-    if isinstance(node, list):
-        return tuple(obs_node_from_dict(child) for child in node)
-    if isinstance(node, Mapping):
-        kind = node.get("type")
-        if isinstance(kind, str) and kind in _OBS_LEAF_TYPES:
-            return _leaf_from_dict(cast(Mapping[str, Any], node))
-        return {key: obs_node_from_dict(child) for key, child in node.items()}
-    raise TypeError(f"observation node must be an object or array, got {node!r}")
+    return cast(
+        "ObsNode",
+        decode_node(node, _leaf_from_dict, _OBS_LEAF_TYPES, "observation"),
+    )
 
 
 @dataclass(frozen=True)
@@ -352,8 +341,6 @@ __all__ = [
     "ImageTag",
     "ObsLeaf",
     "ObsNode",
-    "ObsTag",
-    "ObsTags",
     "Split",
     "StateTag",
     "TextTag",

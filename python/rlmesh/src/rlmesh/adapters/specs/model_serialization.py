@@ -8,11 +8,16 @@ Discrimination on the wire is structural (mirroring the Rust ``InputNode``): a
 JSON array is a Tuple, a JSON object whose ``"type"`` is a leaf discriminant
 (``image``/``state``/``text``/``custom``) is a leaf, and any other JSON object is
 a Dict. Placement in the tree is the payload position -- there is no ``key``.
+
+The generic structural tree-walkers (:func:`encode_node` / :func:`decode_node`)
+and the shared leaf-vocabulary base (:data:`COMMON_LEAF_TYPES`) live here and are
+reused by the observation side (:mod:`.env_tags`), which differs only in its leaf
+encoder/decoder and its one extra leaf discriminant.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 from ._codec import one_or_many, to_pair
@@ -28,9 +33,72 @@ from .model_inputs import (
     Text,
 )
 
+# The leaf-vocabulary `type` discriminants shared by both sides; each side adds
+# its one own leaf (model: `custom`, env: `split`). Single-sourced here so the
+# two sides cannot drift on the common vocabulary. Package-internal (imported by
+# :mod:`.env_tags`) but not part of the public API, hence no leading underscore.
+COMMON_LEAF_TYPES = frozenset({"image", "state", "text"})
+
 # The leaf-vocabulary `type` discriminants that mark a JSON object as a leaf
 # rather than a Dict node (mirrors the Rust ``MODEL_LEAF_TYPES``).
-_MODEL_LEAF_TYPES = frozenset({"image", "state", "text", "custom"})
+_MODEL_LEAF_TYPES = COMMON_LEAF_TYPES | {"custom"}
+
+
+def encode_node(
+    node: object,
+    encode_leaf: Callable[[Any], dict[str, Any]],
+    is_leaf: Callable[[object], bool],
+    what: str,
+) -> Any:
+    """Encode a recursive spec tree node to its structural wire form.
+
+    A leaf (``is_leaf(node)`` true) becomes a dict carrying ``"type"`` via
+    ``encode_leaf``; a Python ``Mapping`` (a Dict node) becomes a plain object of
+    recursively-encoded subnodes; a Python ``tuple`` (a Tuple node) becomes a JSON
+    array. ``what`` names the side for the error message.
+    """
+    if is_leaf(node):
+        return encode_leaf(node)
+    if isinstance(node, Mapping):
+        mapping = cast("Mapping[str, Any]", node)
+        return {
+            key: encode_node(child, encode_leaf, is_leaf, what)
+            for key, child in mapping.items()
+        }
+    if isinstance(node, tuple):
+        children = cast("tuple[Any, ...]", node)
+        return [encode_node(child, encode_leaf, is_leaf, what) for child in children]
+    raise TypeError(f"{what} node must be a leaf, a dict, or a tuple, got {node!r}")
+
+
+def decode_node(
+    node: object,
+    decode_leaf: Callable[[Mapping[str, Any]], Any],
+    leaf_types: frozenset[str],
+    what: str,
+) -> Any:
+    """Decode a structural wire form back to a recursive spec tree node.
+
+    Discrimination is structural: a list is a Tuple node, an object whose
+    ``"type"`` is in ``leaf_types`` is a leaf (decoded via ``decode_leaf``), and
+    any other object is a Dict node (the container type *is* the runtime
+    container type). ``what`` names the side for the error message.
+    """
+    if isinstance(node, list):
+        items = cast("list[Any]", node)
+        return tuple(
+            decode_node(child, decode_leaf, leaf_types, what) for child in items
+        )
+    if isinstance(node, Mapping):
+        mapping = cast("Mapping[str, Any]", node)
+        kind = mapping.get("type")
+        if isinstance(kind, str) and kind in leaf_types:
+            return decode_leaf(mapping)
+        return {
+            key: decode_node(child, decode_leaf, leaf_types, what)
+            for key, child in mapping.items()
+        }
+    raise TypeError(f"{what} node must be an object or array, got {node!r}")
 
 
 def _image_to_dict(item: Image) -> dict[str, Any]:
@@ -100,13 +168,49 @@ def _part_to_dict(part: State) -> Any:
 
 
 def _state_parts(item: State | Concat) -> tuple[State, ...]:
-    """The concat parts of a State (one) or Concat (several), as ``State``s."""
+    """The concat parts of a State (one) or Concat (several), as ``State``s.
+
+    A bare ``State`` leaf is its own single part; its container fields belong to
+    the leaf and are emitted at the leaf level by :func:`_state_to_dict`. A
+    ``Concat`` part may only carry part fields: a part's container fields cannot
+    be represented in the Rust ``ConcatPart`` and would be silently dropped, so a
+    non-default one is rejected here (an honest authoring-time error).
+    """
     if isinstance(item, State):
         return (item,)
     parts: list[State] = []
     for part in item.parts:
+        if isinstance(part, State):
+            _check_part_container_default(part)
         parts.append(State(part) if isinstance(part, str) else part)
     return tuple(parts)
+
+
+def _check_part_container_default(part: State) -> None:
+    """Reject a Concat part that carries non-default container fields.
+
+    A part contributes only part fields (role/encoding/dim/index/optional/range);
+    its assembly options (``pad_to``/``dtype``/``reshape``/``container``) live on
+    the enclosing :class:`Concat`, not the part, and the Rust ``ConcatPart`` has
+    no slot for them. Serializing would silently drop them, so raise instead.
+    """
+    offenders = [
+        name
+        for name, value, default in (
+            ("pad_to", part.pad_to, None),
+            ("dtype", part.dtype, "float32"),
+            ("reshape", part.reshape, None),
+            ("container", part.container, "array"),
+        )
+        if value != default
+    ]
+    if offenders:
+        raise ValueError(
+            f"State part {part.role!r} sets {', '.join(offenders)}, but a Concat "
+            "part carries only part fields (role/encoding/dim/index/optional/"
+            "range); set the assembly options (pad_to/dtype/reshape/container) on "
+            "the enclosing Concat instead"
+        )
 
 
 def _state_to_dict(item: State | Concat) -> dict[str, Any]:
@@ -157,6 +261,10 @@ def model_leaf_to_dict(item: ModelLeaf) -> dict[str, Any]:
     raise TypeError(f"unknown model input leaf {type(item).__name__}")
 
 
+def _is_model_leaf(node: object) -> bool:
+    return isinstance(node, (Image, State, Concat, Text, Custom))
+
+
 def model_input_to_dict(node: InputNode) -> Any:
     """Return the structural wire form of a model input tree node.
 
@@ -164,16 +272,7 @@ def model_input_to_dict(node: InputNode) -> Any:
     becomes a plain object of recursively-encoded subnodes; a Python ``tuple``
     (a Tuple node) becomes a JSON array.
     """
-    if isinstance(node, (Image, State, Concat, Text, Custom)):
-        return model_leaf_to_dict(node)
-    if isinstance(node, Mapping):
-        return {key: model_input_to_dict(child) for key, child in node.items()}
-    if isinstance(node, tuple):
-        return [model_input_to_dict(child) for child in node]
-    raise TypeError(
-        "model input node must be a leaf (Image/State/Concat/Text/Custom), a "
-        f"dict, or a tuple, got {type(node).__name__}"
-    )
+    return encode_node(node, model_leaf_to_dict, _is_model_leaf, "model input")
 
 
 def _part_from_dict(item: object) -> ConcatPart:
@@ -216,10 +315,19 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
     if kind == "state":
         reshape = data.get("reshape")
         reshape_t = None if reshape is None else tuple(int(n) for n in reshape)
+        pad_to = data.get("pad_to")
+        dtype = data.get("dtype", "float32")
+        container = data.get("container", "array")
+        # `_part_from_dict` yields a bare role ``str`` for a role-only wire
+        # component and a parameterized ``State`` for an object component.
         parts = tuple(_part_from_dict(part) for part in data["components"])
-        # A single role-only part round-trips to a bare State; otherwise the
-        # multi/parameterized case is a Concat. A 1-part Concat with container
-        # options on a parameterized part is represented as State directly.
+        # A single *parameterized* part round-trips to a bare State carrying the
+        # leaf's container fields: a State and a one-part Concat over the same
+        # parameterized part serialize identically, and State is the natural
+        # author for the single-part case (the documented wire equivalence). A
+        # single *bare* role string, or more than one part, is a genuine Concat --
+        # collapsing those would change the authored leaf type (a bare role-only
+        # Concat, and a multi-part Concat, must survive as Concat).
         if len(parts) == 1 and isinstance(parts[0], State):
             base = parts[0]
             return State(
@@ -229,17 +337,17 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
                 index=base.index,
                 optional=base.optional,
                 range=base.range,
-                pad_to=data.get("pad_to"),
-                dtype=data.get("dtype", "float32"),
+                pad_to=pad_to,
+                dtype=dtype,
                 reshape=reshape_t,
-                container=data.get("container", "array"),
+                container=container,
             )
         return Concat(
             *parts,
-            pad_to=data.get("pad_to"),
-            dtype=data.get("dtype", "float32"),
+            pad_to=pad_to,
+            dtype=dtype,
             reshape=reshape_t,
-            container=data.get("container", "array"),
+            container=container,
         )
     if kind == "text":
         return Text(
@@ -273,17 +381,15 @@ def model_input_from_dict(node: object) -> InputNode:
     Discrimination is structural: a list is a Tuple, an object whose ``"type"``
     is a leaf discriminant is a leaf, any other object is a Dict.
     """
-    if isinstance(node, list):
-        return tuple(model_input_from_dict(child) for child in node)
-    if isinstance(node, Mapping):
-        kind = node.get("type")
-        if isinstance(kind, str) and kind in _MODEL_LEAF_TYPES:
-            return model_leaf_from_dict(cast(Mapping[str, Any], node))
-        return {key: model_input_from_dict(child) for key, child in node.items()}
-    raise TypeError(f"model input node must be an object or array, got {node!r}")
+    return cast(
+        "InputNode",
+        decode_node(node, model_leaf_from_dict, _MODEL_LEAF_TYPES, "model input"),
+    )
 
 
 __all__ = [
+    "decode_node",
+    "encode_node",
     "model_input_from_dict",
     "model_input_to_dict",
     "model_leaf_from_dict",

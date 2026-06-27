@@ -269,16 +269,12 @@ ModelLeaf: TypeAlias = Image | State | Concat | Text | Custom
 # *is* the payload container the model's predict receives.
 InputNode: TypeAlias = "ModelLeaf | Mapping[str, InputNode] | tuple[InputNode, ...]"
 
-# Backwards-readable alias retained.
-ModelInput: TypeAlias = ModelLeaf
-
 __all__ = [
     "Concat",
     "ConcatPart",
     "Custom",
     "Image",
     "InputNode",
-    "ModelInput",
     "ModelLeaf",
     "ObsTransform",
     "State",

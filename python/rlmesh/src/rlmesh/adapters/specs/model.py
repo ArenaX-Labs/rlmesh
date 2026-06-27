@@ -36,6 +36,17 @@ class ModelSpec:
     input: InputNode
     output: Action
 
+    def __hash__(self) -> int:
+        # `input` can be a Dict node (an unhashable Python ``dict``), so the
+        # dataclass-default field hash would fail even though the spec is frozen
+        # and compares by value. Hash the dataclass ``repr`` instead: it is a
+        # stable, field-by-field rendering, so equal specs (equal fields) render
+        # identically and hash equal -- consistent with the generated ``__eq__``.
+        # ``repr`` (unlike ``to_dict``) never raises, so a Custom-input spec stays
+        # hashable, and it applies no canonicalization, so distinct authored forms
+        # cannot collide. (frozen=True keeps the generated __eq__.)
+        return hash(repr(self))
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
 
