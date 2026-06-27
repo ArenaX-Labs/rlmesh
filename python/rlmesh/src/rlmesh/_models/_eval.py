@@ -162,7 +162,7 @@ class Session(Generic[ObsT, ActT]):
         *,
         env: object,
         predict: Callable[[Any], Any] | None = None,
-        predict_chunk: Callable[[Any], Any] | None = None,
+        predict_chunk: Callable[..., Any] | None = None,
         spec: object | None = None,
         on_reset: Callable[[], None] | None = None,
         on_episode_end: Callable[[], None] | None = None,

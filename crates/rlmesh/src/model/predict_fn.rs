@@ -56,20 +56,21 @@ pub trait PredictFn: Send + Sync {
 
     /// Batched corner: N assembled lane inputs → N raw actions (one per lane) in a
     /// single call, so the model runs one forward pass for the whole vector. The
-    /// engine prefers this over the per-lane `predict` loop when [`has_batch`] is
-    /// true. Default unimplemented (only ever called when the flag is set).
+    /// engine prefers this over the per-lane `predict` loop when
+    /// [`has_batch`](Self::has_batch) is true. Default unimplemented (only ever
+    /// called when the flag is set).
     fn predict_batch(&self, _inputs: Vec<Value>) -> Result<Vec<Value>> {
         Err(crate::Error::model("predict_batch is not implemented"))
     }
 
-    /// Whether this model defines the batched corner ([`predict_batch`]).
+    /// Whether this model defines the batched corner ([`predict_batch`](Self::predict_batch)).
     fn has_batch(&self) -> bool {
         false
     }
 
     /// Batched chunk corner: N assembled lane inputs → N action *chunks* (leading
     /// axis = chunk) in a single call. Preferred for a vectorized chunked route when
-    /// [`has_chunk_batch`] is true. `horizon` is the replay horizon `h` (see
+    /// [`has_chunk_batch`](Self::has_chunk_batch) is true. `horizon` is the replay horizon `h` (see
     /// [`predict_chunk`](Self::predict_chunk)). Default unimplemented (gated by the
     /// flag).
     fn predict_chunk_batch(&self, _inputs: Vec<Value>, _horizon: u32) -> Result<Vec<Value>> {
@@ -78,7 +79,7 @@ pub trait PredictFn: Send + Sync {
         ))
     }
 
-    /// Whether this model defines the batched chunk corner ([`predict_chunk_batch`]).
+    /// Whether this model defines the batched chunk corner ([`predict_chunk_batch`](Self::predict_chunk_batch)).
     fn has_chunk_batch(&self) -> bool {
         false
     }

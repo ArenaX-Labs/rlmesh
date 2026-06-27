@@ -234,11 +234,14 @@ class ModelBase(Generic[ObsT, ActT]):
         raw_predict_chunk = self._raw_predict_chunk
         predict_chunk_neutral: Callable[[Value, int], Value] | None = None
         if raw_predict_chunk is not None:
+            chunk_fn = raw_predict_chunk
 
-            def predict_chunk_neutral(observation: Value, horizon: int) -> Value:
+            def _predict_chunk_neutral(observation: Value, horizon: int) -> Value:
                 return bridge.encode(
-                    raw_predict_chunk(cast(ObsT, bridge.decode(observation)), horizon)
+                    chunk_fn(cast(ObsT, bridge.decode(observation)), horizon)
                 )
+
+            predict_chunk_neutral = _predict_chunk_neutral
 
         # The batched corners (one forward for the whole vector), when defined: the
         # engine hands a list of N neutral lane inputs; bridge each, run the user's
@@ -247,25 +250,30 @@ class ModelBase(Generic[ObsT, ActT]):
         raw_predict_batch = self._raw_predict_batch
         predict_batch_neutral: Callable[[list[Value]], list[Value]] | None = None
         if raw_predict_batch is not None:
+            batch_fn = raw_predict_batch
 
-            def predict_batch_neutral(observations: list[Value]) -> list[Value]:
+            def _predict_batch_neutral(observations: list[Value]) -> list[Value]:
                 framework = [bridge.decode(o) for o in observations]
-                return [bridge.encode(a) for a in raw_predict_batch(framework)]
+                actions = cast("Sequence[object]", batch_fn(framework))
+                return [bridge.encode(a) for a in actions]
+
+            predict_batch_neutral = _predict_batch_neutral
 
         raw_predict_chunk_batch = self._raw_predict_chunk_batch
         predict_chunk_batch_neutral: (
             Callable[[list[Value], int], list[Value]] | None
         ) = None
         if raw_predict_chunk_batch is not None:
+            chunk_batch_fn = raw_predict_chunk_batch
 
-            def predict_chunk_batch_neutral(
+            def _predict_chunk_batch_neutral(
                 observations: list[Value], horizon: int
             ) -> list[Value]:
                 framework = [bridge.decode(o) for o in observations]
-                return [
-                    bridge.encode(c)
-                    for c in raw_predict_chunk_batch(framework, horizon)
-                ]
+                chunks = cast("Sequence[object]", chunk_batch_fn(framework, horizon))
+                return [bridge.encode(c) for c in chunks]
+
+            predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 
         self._worker: PyModel = PyModel(
             predict_fn=predict_neutral,

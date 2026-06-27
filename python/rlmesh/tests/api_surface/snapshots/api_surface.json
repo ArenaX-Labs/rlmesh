@@ -132,13 +132,25 @@
             "kind": "function",
             "signature": "predict(observation: ObsT) -> ActT"
           },
+          "predict_batch": {
+            "kind": "function",
+            "signature": "predict_batch(observations: list[ObsT]) -> list[ActT]"
+          },
+          "predict_chunk": {
+            "kind": "function",
+            "signature": "predict_chunk(observation: ObsT, horizon: int) -> ActT"
+          },
+          "predict_chunk_batch": {
+            "kind": "function",
+            "signature": "predict_chunk_batch(observations: list[ObsT], horizon: int) -> list[ActT]"
+          },
           "reset": {
             "kind": "function",
             "signature": "reset() -> None"
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1) -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -154,7 +166,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[ObsT, ActT]"
           },
           "spec": {
             "kind": "attribute",
@@ -246,7 +258,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -590,7 +602,7 @@
             "signature": "step(action: ActT)"
           }
         },
-        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, spec: object | None = None, on_reset: Callable[[], None] | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', model_client: PyModelClient | None = None, owner: Any = None)",
+        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, predict_chunk: Callable[..., Any] | None = None, spec: object | None = None, on_reset: Callable[[], None] | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1, model_client: PyModelClient | None = None, owner: Any = None)",
         "stability": "Stable"
       },
       "Tensor": {
@@ -718,13 +730,25 @@
             "kind": "function",
             "signature": "predict(observation: ObsT) -> ActT"
           },
+          "predict_batch": {
+            "kind": "function",
+            "signature": "predict_batch(observations: list[ObsT]) -> list[ActT]"
+          },
+          "predict_chunk": {
+            "kind": "function",
+            "signature": "predict_chunk(observation: ObsT, horizon: int) -> ActT"
+          },
+          "predict_chunk_batch": {
+            "kind": "function",
+            "signature": "predict_chunk_batch(observations: list[ObsT], horizon: int) -> list[ActT]"
+          },
           "reset": {
             "kind": "function",
             "signature": "reset() -> None"
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1) -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -740,7 +764,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[ObsT, ActT]"
           },
           "spec": {
             "kind": "attribute",
@@ -822,7 +846,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -1161,13 +1185,25 @@
             "kind": "function",
             "signature": "predict(observation: ObsT) -> ActT"
           },
+          "predict_batch": {
+            "kind": "function",
+            "signature": "predict_batch(observations: list[ObsT]) -> list[ActT]"
+          },
+          "predict_chunk": {
+            "kind": "function",
+            "signature": "predict_chunk(observation: ObsT, horizon: int) -> ActT"
+          },
+          "predict_chunk_batch": {
+            "kind": "function",
+            "signature": "predict_chunk_batch(observations: list[ObsT], horizon: int) -> list[ActT]"
+          },
           "reset": {
             "kind": "function",
             "signature": "reset() -> None"
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1) -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -1183,7 +1219,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[ObsT, ActT]"
           },
           "spec": {
             "kind": "attribute",
@@ -1270,7 +1306,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
@@ -2117,13 +2153,25 @@
             "kind": "function",
             "signature": "predict(observation: ObsT) -> ActT"
           },
+          "predict_batch": {
+            "kind": "function",
+            "signature": "predict_batch(observations: list[ObsT]) -> list[ActT]"
+          },
+          "predict_chunk": {
+            "kind": "function",
+            "signature": "predict_chunk(observation: ObsT, horizon: int) -> ActT"
+          },
+          "predict_chunk_batch": {
+            "kind": "function",
+            "signature": "predict_chunk_batch(observations: list[ObsT], horizon: int) -> list[ActT]"
+          },
           "reset": {
             "kind": "function",
             "signature": "reset() -> None"
           },
           "run": {
             "kind": "function",
-            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '') -> RunResult"
+            "signature": "run(env_or_address: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1) -> RunResult"
           },
           "run_local": {
             "kind": "function",
@@ -2139,7 +2187,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None) -> Session[ObsT, ActT]"
+            "signature": "session(env_or_address: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[ObsT, ActT]"
           },
           "spec": {
             "kind": "attribute",
@@ -2221,7 +2269,7 @@
           },
           "session": {
             "kind": "function",
-            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None) -> Session[Any, Any]"
+            "signature": "session(env: object, *, instruction: str | None = None, close_env: bool = False, token: str | None = None, trust_entrypoints: bool | None = None, action_horizon: int = 1) -> Session[Any, Any]"
           }
         },
         "signature": "RemoteModel(address: str, *, token: str = '') -> None",
