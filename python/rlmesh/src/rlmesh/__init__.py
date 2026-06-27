@@ -39,7 +39,9 @@ from ._native import (
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import ServeOptions, Tensor
+from ._sandbox import SandboxOptions
 from ._server import EnvServer
+from .params import Param, ParamSpec
 
 try:
     __version__ = package_version("rlmesh")
@@ -61,12 +63,15 @@ __all__ = [
     "EnvServer",
     "EpisodeResult",
     "Model",
+    "Param",
+    "ParamSpec",
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
     "RunResult",
     "SandboxEnv",
     "SandboxModel",
+    "SandboxOptions",
     "SandboxVectorEnv",
     "ServeOptions",
     "Session",

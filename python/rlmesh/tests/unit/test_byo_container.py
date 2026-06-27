@@ -138,7 +138,7 @@ def test_session_serves_then_binds_to_the_env(
 
 
 def test_image_source_requires_a_tag() -> None:
-    with pytest.raises(ValueError, match="must include a tag"):
+    with pytest.raises(ValueError, match="image tag"):
         rlmesh.SandboxModel("image://")
 
 

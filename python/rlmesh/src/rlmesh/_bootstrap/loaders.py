@@ -34,6 +34,7 @@ from .spec_resolution import (
 if TYPE_CHECKING:
     from rlmesh._server import EnvLike, VectorServerEnvLike
     from rlmesh.numpy import NumpyValue
+    from rlmesh.params import ParamSpec
 
     ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
@@ -82,13 +83,41 @@ def load_environment(
 
 
 def load_env_from_spec(spec: Mapping[str, object]) -> object:
-    """Load an environment from a sandbox bootstrap spec (gym or hf)."""
+    """Load an environment from a sandbox bootstrap spec (gym, hf, or factory)."""
     kind = expect_str(spec.get("kind"), "bootstrap spec.kind")
     if kind == "gym":
         return load_gym_env(spec)
     if kind == "hf":
         return load_hf_env(spec)
+    if kind == "factory":
+        return load_factory_env(spec)
     raise ValueError(f"unsupported bootstrap kind: {kind}")
+
+
+def load_factory_env(spec: Mapping[str, object]) -> object:
+    """Construct an :class:`~rlmesh.EnvFactory` env from a bootstrap spec.
+
+    Lets a prebuilt EnvFactory image boot any binding: the ``entrypoint``
+    (``module:Class``) is resolved and constructed with the spec's ``kwargs`` as
+    the ``make`` binding. The binding is validated against the factory's declared
+    ``params`` (if any) inside :func:`construct_authored_env`, before construction.
+    ``num_envs``/``vectorization_mode`` fan the factory out into a vector env, the
+    same as the gym/hf paths.
+    """
+    import_packages(expect_str_list(spec.get("imports"), "bootstrap imports"))
+    entrypoint = expect_str(spec.get("entrypoint"), "bootstrap spec.entrypoint")
+    kwargs = mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
+    num_envs = expect_num_envs(spec.get("num_envs"), "bootstrap spec.num_envs")
+    vectorization_mode = expect_vectorization_mode(
+        spec.get("vectorization_mode"), "bootstrap spec.vectorization_mode"
+    )
+    factory = resolve_entrypoint(entrypoint, label="env entrypoint")
+    return construct_authored_env(
+        factory,
+        num_envs=num_envs,
+        vectorization_mode=vectorization_mode,
+        **kwargs,
+    )
 
 
 class EntrypointConstructionError(RuntimeError, ImportError):
@@ -278,19 +307,101 @@ def looks_like_policy(value: object) -> bool:
     return callable(getattr(value, "predict", None))
 
 
-def construct_authored_model(source: Any) -> Any:
-    """Instantiate a duck-typed policy class (or accept an instance), run ``load()``, return it."""
-    inst = source() if isinstance(source, type) else source
+def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
+    """Instantiate a model/policy (class or instance), ``load(**binding)``, return it.
+
+    The bootstrap-authoritative model path: a class source is instantiated with
+    the eager ``__init__`` auto-load suppressed (a ``Model`` subclass builds its
+    worker but does not load weights), then the binding is validated against the
+    declared ``params`` and ``load(**resolved)`` runs exactly once. With no
+    ``kwargs`` and no ``params`` this is the prior behavior -- a single ``load()``.
+    """
+    from rlmesh._models.base import ModelBase, suppress_autoload
+    from rlmesh.params import resolve
+
+    if isinstance(source, type):
+        with suppress_autoload():
+            inst = source()
+    else:
+        inst = source
+
+    spec = cast("ParamSpec | None", getattr(inst, "params", None))
     load = getattr(inst, "load", None)
-    if callable(load):
-        load()
+    if not callable(load):
+        if kwargs:
+            raise TypeError(
+                f"{type(inst).__name__} has no load(...) to receive construction "
+                f"params: {', '.join(sorted(kwargs))}"
+            )
+        return inst
+    resolved = resolve(spec, load, kwargs)
+    # The default ModelBase.load is a no-op: a non-empty binding would be silently
+    # swallowed (and the eager auto-load was already suppressed). Fail loud so the
+    # operator's requested variation is never silently dropped. (getattr identity,
+    # mirroring base.py's overridden-method probe.)
+    inst_type = cast("type[object]", type(inst))
+    if resolved and getattr(inst_type, "load", None) is getattr(
+        ModelBase, "load", None
+    ):
+        raise TypeError(
+            f"{type(inst).__name__} received construction params "
+            f"({', '.join(sorted(resolved))}) but does not override load(...) to "
+            "apply them; implement load(**kwargs) to consume the binding"
+        )
+    load(**resolved)
     return inst
 
 
-def construct_authored_env(source: Any, **kwargs: object) -> Any:
-    """Instantiate an EnvFactory class (or accept an instance), ``prepare()``, return ``make()``."""
+def construct_authored_env(
+    source: Any,
+    /,
+    *,
+    num_envs: int = 1,
+    vectorization_mode: str | None = None,
+    **kwargs: object,
+) -> Any:
+    """Instantiate an EnvFactory class (or accept an instance), ``prepare()``, ``make()``.
+
+    The binding is validated against the factory's declared ``params`` (a
+    :class:`~rlmesh.ParamSpec`, or ``None`` for blind passthrough) *before*
+    ``make`` runs, so a typo'd or out-of-range key fails pre-construction. The
+    resolved binding is then published into the env's ``metadata`` (under
+    :data:`rlmesh.params.PARAM_METADATA_KEY`) via the same merge rail as tags, so
+    the operator can read back exactly what was sent.
+
+    ``num_envs > 1`` builds a self-describing vector env: the binding is validated
+    once, then ``make`` is fanned out into a gym Sync/Async vector wrapper (see
+    :func:`rlmesh._bootstrap.gym_support.vectorize`) so a prebuilt EnvFactory image
+    honors a ``SandboxVectorEnv`` request instead of serving a lone env.
+    """
+    from rlmesh.params import resolve, to_metadata
+
     inst = source() if isinstance(source, type) else source
     prepare = getattr(inst, "prepare", None)
     if callable(prepare):
         prepare()
-    return inst.make(**kwargs)
+
+    spec = cast("ParamSpec | None", getattr(inst, "params", None))
+    resolved = resolve(spec, inst.make, kwargs)
+    if num_envs > 1:
+        from .gym_support import vectorize
+
+        make = inst.make
+        env = vectorize(lambda: make(**resolved), num_envs, vectorization_mode)
+    else:
+        env = inst.make(**resolved)
+    if spec is not None:
+        _merge_metadata(env, to_metadata(spec, inst.make, resolved))
+    return env
+
+
+def _merge_metadata(env: object, fragment: Mapping[str, object]) -> None:
+    """Merge a metadata fragment into ``env.metadata`` (mirrors ``adapters.tag``)."""
+    existing = getattr(env, "metadata", None)
+    merged: dict[str, object] = (
+        dict(cast("Mapping[str, object]", existing))
+        if isinstance(existing, Mapping)
+        else {}
+    )
+    merged.update(fragment)
+    env.metadata = merged  # type: ignore[attr-defined]

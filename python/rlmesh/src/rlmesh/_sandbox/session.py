@@ -3,15 +3,46 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import shutil
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from os import PathLike, fspath
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
+
+#: Port an rlmesh-serving container binds inside the container (the templated
+#: entrypoint default, ``RLMESH_ADDRESS=0.0.0.0:50051``).
+CONTAINER_SERVE_PORT = 50051
+
+SourceKind = Literal["build", "prebuilt"]
+
+
+@dataclass(frozen=True)
+class SandboxOptions:
+    """Build/run infrastructure for a sandbox container -- the single reserved knob.
+
+    Everything here configures how the container is *built or run*, never the
+    environment/model itself: env/model construction params are the sandbox's
+    ``**params`` (the binding forwarded to ``make``/``load``). For a prebuilt
+    image (run, not built) the build-only fields are meaningless and ignored with
+    a warning.
+    """
+
+    base_image: str | None = None
+    rlmesh_package: str | PathLike[str] | None = None
+    packages: Sequence[str] | None = None
+    imports: Sequence[str] | None = None
+    trust_remote_code: bool = False
+    allow_unpinned_hf: bool = False
+    build_memory: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,78 +125,353 @@ class SandboxLifecycle:
 def start_sandbox_container(
     source: str,
     *,
-    base_image: str | None,
-    rlmesh_package: str | PathLike[str] | None,
-    packages: Sequence[str] | None,
-    imports: Sequence[str] | None,
-    trust_remote_code: bool,
-    allow_unpinned_hf: bool,
+    options: SandboxOptions | None,
     num_envs: int,
     vectorization_mode: str | None,
-    build_memory: str | None,
-    task: str | None,
-    config: Mapping[str, object] | str | PathLike[str] | None,
-    capabilities: Sequence[str] | None,
-    override: str | PathLike[str] | None,
-    cwd: str | PathLike[str] | None,
-    repo_root: str | PathLike[str] | None,
-    gym_make_kwargs: dict[str, object],
+    binding: Mapping[str, object],
 ) -> SandboxInfo:
-    """Resolve the package spec, reject removed options, and start the container.
+    """Resolve the source, then build-from-source or run a prebuilt image.
 
-    The shared ``__init__`` prelude for the sandbox env sessions.
+    The shared ``__init__`` prelude for the sandbox env sessions. A ``gym://``/
+    ``hf://`` (or bare gym id) source is built from source via the native sandbox
+    builder; a ``docker://``/``image://`` or bare image-shaped source is run
+    directly as a prebuilt rlmesh-serving image, with the binding injected as
+    ``RLMESH_MAKE_KWARGS`` (no build, no rlmesh pin).
     """
-    resolved_rlmesh_package = _resolve_rlmesh_package(rlmesh_package, gym_make_kwargs)
-    _reject_removed_option("task", task)
-    _reject_removed_option("config", config)
-    _reject_removed_option("capabilities", capabilities)
-    _reject_removed_option("override", override)
-    _reject_removed_option("cwd", cwd)
-    _reject_removed_option("repo_root", repo_root)
-    return _start_sandbox(
+    opts = options or SandboxOptions()
+    kind, resolved = resolve_source_kind(source)
+    if kind == "prebuilt":
+        _warn_ignored_build_options(opts)
+        return start_prebuilt_container(
+            resolved,
+            requested_source=source,
+            binding=binding,
+            num_envs=num_envs,
+            vectorization_mode=vectorization_mode,
+        )
+    return _start_build(
         source,
-        base_image=base_image,
-        rlmesh_package=resolved_rlmesh_package,
-        packages=packages,
-        imports=imports,
-        trust_remote_code=trust_remote_code,
-        allow_unpinned_hf=allow_unpinned_hf,
+        options=opts,
         num_envs=num_envs,
         vectorization_mode=vectorization_mode,
-        build_memory=build_memory,
-        gym_make_kwargs=gym_make_kwargs,
+        binding=binding,
     )
 
 
-def _start_sandbox(
-    source: str,
+def resolve_source_kind(source: str) -> tuple[SourceKind, str]:
+    """Classify a sandbox source and return ``(kind, resolved_ref)``.
+
+    * ``gym://`` / ``hf://`` / bare gym id (no tag) -> build from source.
+    * ``docker://img`` / ``image://img`` -> prebuilt (explicit).
+    * bare image-shaped (``:tag`` / ``@sha256:``), local image -> prebuilt.
+    * bare image-shaped, not local -> ``docker pull`` then prebuilt, else error.
+
+    The resolved kind is always logged -- silent autodetect is the trap. Use an
+    explicit ``gym://`` / ``docker://`` scheme to override the bare-source guess.
+    """
+    value = source.strip()
+    if not value:
+        raise ValueError("sandbox source must not be empty")
+    if value.startswith(("gym://", "hf://")):
+        return "build", value
+    for scheme in ("docker://", "image://"):
+        if value.startswith(scheme):
+            ref = value[len(scheme) :].strip()
+            if not ref:
+                raise ValueError(f"{scheme} source must include an image tag")
+            _log_resolution(source, "prebuilt", f"explicit {scheme}{ref}")
+            return "prebuilt", ref
+    if "://" in value:
+        raise ValueError(f"unsupported sandbox source scheme: {source!r}")
+    if not _is_image_shaped(value):
+        _log_resolution(source, "build", "gym id")
+        return "build", value
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            f"{source!r} looks like a Docker image but the Docker CLI is not on "
+            "PATH; install Docker, or use gym://... to build from source / "
+            "docker://... to force a prebuilt image"
+        )
+    if docker_image_exists(value):
+        _log_resolution(source, "prebuilt", "local Docker image")
+        return "prebuilt", value
+    if docker_pull(value):
+        _log_resolution(source, "prebuilt", "pulled Docker image")
+        return "prebuilt", value
+    raise ValueError(
+        f"{source!r} looks like a Docker image but was not found locally or "
+        "pullable; use gym://... to build from source or docker://... to force a "
+        "prebuilt image"
+    )
+
+
+#: Gymnasium's mandatory version suffix (``-v<int>``). A registered id ends with
+#: it, including the module-import form ``pkg:Env-v0`` and ``ALE/Pong-v5``.
+_GYM_VERSION_RE = re.compile(r"-v\d+$")
+
+
+def looks_like_gym_id(value: str) -> bool:
+    """Whether a bare source carries Gymnasium's mandatory ``-v<int>`` suffix.
+
+    The reliable signal that a colon-bearing source is a gym env id (``pkg:Env-v0``,
+    ``ALE/Pong-v5``) rather than a Docker image ref -- so it routes to the build
+    path / is rejected as a model image instead of being probed as an image.
+    """
+    return _GYM_VERSION_RE.search(value) is not None
+
+
+def _is_image_shaped(value: str) -> bool:
+    """Whether a bare source looks like a Docker image ref rather than a gym id.
+
+    An image ref carries a ``:tag`` (a colon in the final path segment) or an
+    ``@sha256:`` digest; a gym id like ``CartPole-v1`` or ``ALE/Pong-v5`` has
+    neither, so it never triggers a Docker probe. The module-import gym id form
+    ``pkg:Env-v0`` *does* carry a colon, so the gym version suffix short-circuits
+    first -- otherwise it would be misrouted to the Docker path.
+
+    ponytail: the ``-v<N>`` heuristic loses to a Docker tag literally ending in
+    ``-v0``; use an explicit ``docker://``/``gym://`` scheme for that rare clash.
+    """
+    if looks_like_gym_id(value):
+        return False
+    return "@sha256:" in value or ":" in value.rsplit("/", 1)[-1]
+
+
+def start_prebuilt_container(
+    image: str,
     *,
-    base_image: str | None,
-    rlmesh_package: str | None,
-    packages: Sequence[str] | None,
-    imports: Sequence[str] | None,
-    trust_remote_code: bool,
-    allow_unpinned_hf: bool,
+    requested_source: str,
+    binding: Mapping[str, object],
     num_envs: int,
     vectorization_mode: str | None,
-    build_memory: str | None = None,
-    gym_make_kwargs: Mapping[str, object],
+    gpus: str | None = None,
 ) -> SandboxInfo:
-    kwargs_json = json.dumps(gym_make_kwargs) if gym_make_kwargs else None
+    """Run a prebuilt rlmesh-serving image and return its connection info.
+
+    The image runs as-is (its own ``CMD``); the binding and eval shape are injected
+    as environment variables (``RLMESH_MAKE_KWARGS`` etc.), the serve port is
+    published on a Docker-assigned host port, and the host port is read back. No
+    build and no rlmesh pin -- the image is whatever the publisher baked.
+    """
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            "Docker CLI not found on PATH; install Docker to run a prebuilt "
+            "sandbox image, or use gym://... to build from source"
+        )
+    reap_orphans()
+    env_vars: dict[str, str] = {}
+    if binding:
+        env_vars["RLMESH_MAKE_KWARGS"] = json.dumps(dict(binding), sort_keys=True)
+    if num_envs and num_envs != 1:
+        env_vars["RLMESH_NUM_ENVS"] = str(num_envs)
+    if vectorization_mode:
+        env_vars["RLMESH_VECTORIZATION_MODE"] = vectorization_mode
+
+    cmd = prebuilt_run_cmd(
+        image,
+        env_vars=env_vars,
+        gpus=gpus,
+        container_port=CONTAINER_SERVE_PORT,
+        owner_pid=os.getpid(),
+        owner_pid_ns=pid_namespace_id(),
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"failed to start prebuilt container ({proc.returncode}):\n{proc.stderr}"
+        )
+    container_id = proc.stdout.strip()
+    try:
+        port = _resolve_published_port(container_id)
+    except BaseException:
+        # Port discovery failed after the container started: stop it before
+        # re-raising so the container is not leaked.
+        try:
+            _sandbox_stop_env(container_id=container_id)
+        except Exception:
+            pass
+        raise
+    return SandboxInfo(
+        requested_source=requested_source,
+        resolved_source=f"docker://{image}",
+        address=f"127.0.0.1:{port}",
+        container_id=container_id,
+    )
+
+
+def prebuilt_run_cmd(
+    image: str,
+    *,
+    env_vars: Mapping[str, str],
+    gpus: str | None,
+    container_port: int,
+    owner_pid: int,
+    owner_pid_ns: str | None,
+) -> list[str]:
+    """Build the ``docker run`` argv for a prebuilt sandbox container (pure).
+
+    The one place container hardening lives (``--cap-drop ALL``,
+    ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
+    by the env and model prebuilt paths so the flags never drift apart. The image
+    is always last and env vars precede it, so callers/tests can rely on argv shape.
+    """
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "-p",
+        f"127.0.0.1:0:{container_port}",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--label",
+        "rlmesh.sandbox=1",
+        "--label",
+        f"rlmesh.sandbox.owner-pid={owner_pid}",
+    ]
+    if owner_pid_ns is not None:
+        cmd += ["--label", f"rlmesh.sandbox.owner-pid-ns={owner_pid_ns}"]
+    if gpus is not None:
+        cmd += ["--gpus", gpus]
+    for key, value in env_vars.items():
+        cmd += ["-e", f"{key}={value}"]
+    cmd.append(image)
+    return cmd
+
+
+def parse_published_port(stdout: str, container_port: int) -> int:
+    """Parse the host port from ``docker port`` output, or raise.
+
+    The host port is the last ``:``-separated field of any mapping line, so an
+    IPv6 binding like ``[::]:51000`` parses, not just IPv4 prefixes.
+    """
+    for line in stdout.splitlines():
+        _, sep, port = line.strip().rpartition(":")
+        if sep and port.isdigit():
+            return int(port)
+    raise RuntimeError(
+        f"container published no host port for {container_port}; "
+        f"docker port output:\n{stdout}"
+    )
+
+
+def _resolve_published_port(container_id: str) -> int:
+    proc = subprocess.run(
+        ["docker", "port", container_id, str(CONTAINER_SERVE_PORT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"failed to read published port for container "
+            f"({proc.returncode}):\n{proc.stderr}"
+        )
+    return parse_published_port(proc.stdout, CONTAINER_SERVE_PORT)
+
+
+def docker_image_exists(image: str) -> bool:
+    """Whether a Docker image is present locally (``docker image inspect``)."""
+    proc = subprocess.run(
+        ["docker", "image", "inspect", image],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def docker_pull(image: str) -> bool:
+    """Attempt ``docker pull``; return whether it succeeded."""
+    proc = subprocess.run(
+        ["docker", "pull", image], capture_output=True, text=True, check=False
+    )
+    return proc.returncode == 0
+
+
+def reap_orphans() -> None:
+    """Best-effort sweep of containers orphaned by a prior hard kill.
+
+    Delegates to the native ``sandbox_reap_orphans`` reaper. The getattr guard
+    degrades to a no-op against a version-skewed native extension that predates
+    the reaper; failures are swallowed -- reaping is hygiene, never a reason to
+    fail a start.
+    """
+    import rlmesh._rlmesh as _rlmesh
+
+    reap = getattr(_rlmesh, "sandbox_reap_orphans", None)
+    if reap is None:
+        return
+    try:
+        reap()
+    except Exception:
+        pass
+
+
+def pid_namespace_id() -> str | None:
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+
+
+def _warn_ignored_build_options(options: SandboxOptions) -> None:
+    """Warn when build-only options are set on a run-prebuilt (not built) source."""
+    ignored = [
+        name
+        for name in (
+            "base_image",
+            "rlmesh_package",
+            "packages",
+            "imports",
+            "build_memory",
+        )
+        if getattr(options, name) is not None
+    ]
+    if ignored:
+        import warnings
+
+        warnings.warn(
+            "prebuilt image source ignores build options "
+            f"{', '.join(ignored)} (the image is already built)",
+            stacklevel=3,
+        )
+
+
+def _log_resolution(source: str, kind: SourceKind, detail: str) -> None:
+    # Autodetect must never be silent: always announce the resolved kind.
+    print(
+        f"rlmesh: resolved {source!r} -> {kind} ({detail})", file=sys.stderr, flush=True
+    )
+
+
+def _start_build(
+    source: str,
+    *,
+    options: SandboxOptions,
+    num_envs: int,
+    vectorization_mode: str | None,
+    binding: Mapping[str, object],
+) -> SandboxInfo:
+    rlmesh_package = (
+        fspath(options.rlmesh_package) if options.rlmesh_package is not None else None
+    )
+    kwargs_json = json.dumps(dict(binding)) if binding else None
     started = cast(
         _SandboxStartInfo,
         _sandbox_start_env(
             source,
-            base_image=base_image,
+            base_image=options.base_image,
             rlmesh_package=rlmesh_package,
-            packages=string_sequence("packages", packages),
-            imports=string_sequence("imports", imports),
+            packages=string_sequence("packages", options.packages),
+            imports=string_sequence("imports", options.imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
-            trust_remote_code=trust_remote_code,
-            allow_unpinned_hf=allow_unpinned_hf,
-            build_memory=build_memory,
+            trust_remote_code=options.trust_remote_code,
+            allow_unpinned_hf=options.allow_unpinned_hf,
+            build_memory=options.build_memory,
         ),
     )
     return SandboxInfo(**started)
@@ -188,42 +494,48 @@ def string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
     return list(value)
 
 
-def _reject_removed_option(name: str, value: object) -> None:
-    if value is not None:
-        raise TypeError(
-            f"SandboxEnv no longer supports {name}=...; use base_image=, "
-            "rlmesh_package=, packages=, imports=, and environment make kwargs"
-        )
-
-
-def _resolve_rlmesh_package(
-    rlmesh_package: str | PathLike[str] | None,
-    gym_make_kwargs: dict[str, object],
-) -> str | None:
-    package_spec = gym_make_kwargs.pop("package_spec", None)
-    if package_spec is not None:
-        if rlmesh_package is not None:
-            raise TypeError(
-                "SandboxEnv got both rlmesh_package=... and package_spec=...; "
-                "use rlmesh_package=..."
-            )
-        rlmesh_package = cast(str | PathLike[str], package_spec)
-    return fspath(rlmesh_package) if rlmesh_package is not None else None
-
-
-def reject_single_env_vector_option(kwargs: Mapping[str, object]) -> None:
+def reject_single_env_vector_option(params: Mapping[str, object]) -> None:
     for name in ("num_envs", "vectorization_mode"):
-        if name in kwargs:
+        if name in params:
             raise TypeError(
                 f"SandboxEnv is single-env only; use SandboxVectorEnv for {name}=..."
             )
 
 
+def reject_sandbox_option_params(params: Mapping[str, object]) -> None:
+    """Reject construction params that collide with a :class:`SandboxOptions` field.
+
+    These names (``trust_remote_code``, ``base_image``, ``packages``, ...) configure
+    how the container is built/run, not the env/model. Letting them fall into
+    ``**params`` (the make/load binding) would silently drop a security flag or a
+    build setting and forward it as a bogus construction kwarg, so fail loud and
+    point at ``options=``. Derived from the dataclass so the two never drift.
+    """
+    collisions = sorted({f.name for f in fields(SandboxOptions)} & set(params))
+    if collisions:
+        raise TypeError(
+            f"{', '.join(collisions)} configure the sandbox container build/run, "
+            "not the env/model construction params; pass them via "
+            f"options=SandboxOptions({collisions[0]}=...)"
+        )
+
+
 __all__ = [
+    "CONTAINER_SERVE_PORT",
     "SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS",
     "SandboxInfo",
     "SandboxLifecycle",
+    "SandboxOptions",
+    "docker_image_exists",
+    "docker_pull",
+    "looks_like_gym_id",
+    "parse_published_port",
+    "prebuilt_run_cmd",
+    "reap_orphans",
+    "reject_sandbox_option_params",
     "reject_single_env_vector_option",
+    "resolve_source_kind",
+    "start_prebuilt_container",
     "start_sandbox_container",
     "string_sequence",
 ]

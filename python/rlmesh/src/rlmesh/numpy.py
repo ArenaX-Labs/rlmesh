@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
-from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from ._sandbox import (
+    SandboxEnvBase,
+    SandboxInfo,
+    SandboxOptions,
+    SandboxVectorEnvBase,
+)
 from ._sandbox._model import SandboxModel
 from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
 from .spaces import Space
@@ -222,20 +227,18 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
     client to it, and stops the owned container when closed.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment
-            source such as an EnvHub/Hugging Face reference.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
-            in the sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **gym_make_kwargs: Keyword arguments forwarded to environment creation.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
+        options: Optional :class:`SandboxOptions` build/run infrastructure (base
+            image, packages, rlmesh pin, ...); the single reserved keyword.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated in the container before construction).
 
     Examples:
-        >>> from rlmesh.numpy import SandboxEnv
-        >>> env = SandboxEnv("CartPole-v1", packages=["gymnasium==1.3.0"])
+        >>> from rlmesh.numpy import SandboxEnv, SandboxOptions
+        >>> env = SandboxEnv(
+        ...     "CartPole-v1", options=SandboxOptions(packages=["gymnasium==1.3.0"])
+        ... )
         >>> observation, info = env.reset(seed=42)
         >>> env.close()
     """
@@ -251,18 +254,14 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
     through the same vector client interface as a separately served endpoint.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment
-            source such as an EnvHub/Hugging Face reference.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested inside the sandbox.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
-            in the sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **env_make_kwargs: Keyword arguments forwarded to environment creation.
+        options: Optional :class:`SandboxOptions` build/run infrastructure; the
+            single reserved keyword.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated in the container before construction).
 
     Examples:
         >>> from rlmesh.numpy import SandboxVectorEnv
@@ -283,6 +282,7 @@ __all__ = [
     "SandboxEnv",
     "SandboxInfo",
     "SandboxModel",
+    "SandboxOptions",
     "SandboxVectorEnv",
     "asarray",
     "ensure_available",

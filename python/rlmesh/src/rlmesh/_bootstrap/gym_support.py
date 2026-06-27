@@ -30,27 +30,40 @@ def make_gym_environment(
             make_vec_kwargs["vectorization_mode"] = vectorization_mode
         return make_vec(env_id, **make_vec_kwargs)
 
-    vector_module = getattr(gym_module, "vector", None)
-    if vector_module is None:
-        raise ValueError(
-            f"module '{getattr(gym_module, '__name__', '<unknown>')}' does not expose vector env helpers"
-        )
-
-    vector_cls_name = (
-        "AsyncVectorEnv" if vectorization_mode == "async" else "SyncVectorEnv"
+    return vectorize(
+        lambda: make(env_id, **env_kwargs),
+        num_envs,
+        vectorization_mode,
+        gym_module=gym_module,
     )
-    vector_cls = getattr(vector_module, vector_cls_name, None)
-    if not callable(vector_cls):
-        raise ValueError(
-            f"module '{getattr(gym_module, '__name__', '<unknown>')}' does not expose {vector_cls_name}"
-        )
 
-    factory = cast(Callable[[list[Callable[[], object]]], object], vector_cls)
 
-    def make_one() -> object:
-        return make(env_id, **env_kwargs)
+def vectorize(
+    make_one: Callable[[], object],
+    num_envs: int,
+    vectorization_mode: str | None,
+    *,
+    gym_module: object | None = None,
+) -> object:
+    """Wrap ``num_envs`` copies of ``make_one()`` in a gym Sync/Async vector env.
 
-    return factory([make_one for _ in range(num_envs)])
+    The one fan-out used to vectorize *any* env factory -- a gym ``make`` thunk or
+    an :class:`~rlmesh.EnvFactory`'s ``make`` -- into a self-describing vector env
+    (``num_envs`` + ``single_*`` spaces) the native vector server serves. The
+    sub-envs must be gym-compatible (the gym vector wrappers build the batched
+    space from each sub-env's spaces).
+    """
+    modules = [gym_module] if gym_module is not None else import_gym_modules()
+    cls_name = "AsyncVectorEnv" if vectorization_mode == "async" else "SyncVectorEnv"
+    for module in modules:
+        vector_module = getattr(module, "vector", None)
+        vector_cls = getattr(vector_module, cls_name, None) if vector_module else None
+        if callable(vector_cls):
+            factory = cast("Callable[[list[Callable[[], object]]], object]", vector_cls)
+            return factory([make_one for _ in range(num_envs)])
+    raise ValueError(
+        f"no gym vector env support available for {cls_name}; install gymnasium/gym"
+    )
 
 
 def import_gym_modules() -> list[ModuleType]:

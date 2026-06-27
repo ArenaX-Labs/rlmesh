@@ -115,7 +115,7 @@ def test_sandbox_cleanup_runs_on_remote_attach_exception(
     assert stopped == ["container-1"]
 
 
-def test_sandbox_package_spec_alias_sets_rlmesh_package(
+def test_sandbox_options_set_rlmesh_package_and_params_are_the_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -125,9 +125,10 @@ def test_sandbox_package_spec_alias_sets_rlmesh_package(
     _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
+    # Build infra rides in options=; everything else is the make-binding (**params).
     with rlmesh.SandboxEnv(
         "CartPole-v1",
-        package_spec="local",
+        options=rlmesh.SandboxOptions(rlmesh_package="local"),
         render_mode="rgb_array",
     ):
         pass
@@ -137,23 +138,6 @@ def test_sandbox_package_spec_alias_sets_rlmesh_package(
         "render_mode": "rgb_array"
     }
     assert stopped == ["container-1"]
-
-
-def test_sandbox_package_spec_alias_rejects_ambiguous_rlmesh_package(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        sandbox,
-        "_sandbox_start_env",
-        lambda *_args, **_kwargs: pytest.fail("sandbox should not start"),
-    )
-
-    with pytest.raises(TypeError, match=r"both rlmesh_package=.*package_spec"):
-        rlmesh.SandboxEnv(
-            "CartPole-v1",
-            rlmesh_package="local",
-            package_spec="wheel.whl",
-        )
 
 
 def test_sandbox_retries_close_after_transient_stop_failure(
@@ -184,7 +168,7 @@ def test_sandbox_retries_close_after_transient_stop_failure(
 
 
 @pytest.mark.parametrize("field", ["packages", "imports"])
-def test_sandbox_rejects_bare_str_packages_imports(
+def test_sandbox_options_reject_bare_str_packages_imports(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -195,12 +179,12 @@ def test_sandbox_rejects_bare_str_packages_imports(
     )
 
     with pytest.raises(TypeError, match=rf"{field}= expects a sequence of strings"):
-        kwargs: dict[str, Any] = {field: "ale-py"}
-        rlmesh.SandboxEnv("CartPole-v1", **kwargs)
+        options = rlmesh.SandboxOptions(**{field: "ale-py"})  # type: ignore[arg-type]
+        rlmesh.SandboxEnv("CartPole-v1", options=options)
 
 
 @pytest.mark.parametrize("field", ["packages", "imports"])
-def test_sandbox_accepts_string_sequence_packages_imports(
+def test_sandbox_options_accept_string_sequence(
     field: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,8 +195,8 @@ def test_sandbox_accepts_string_sequence_packages_imports(
     _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
-    kwargs: dict[str, Any] = {field: ["ale-py"]}
-    with rlmesh.SandboxEnv("CartPole-v1", **kwargs):
+    options = rlmesh.SandboxOptions(**{field: ["ale-py"]})  # type: ignore[arg-type]
+    with rlmesh.SandboxEnv("CartPole-v1", options=options):
         pass
 
     assert captured[field] == ["ale-py"]
@@ -221,7 +205,7 @@ def test_sandbox_accepts_string_sequence_packages_imports(
 def test_start_sandbox_gym_path_forwards_imports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # On the gym/hf source-string path, imports= is forwarded to _sandbox_start_env.
+    # On the gym/hf source-string path, imports= (from options) is forwarded.
     captured: dict[str, object] = {}
 
     def start_result(*_args: object, **kwargs: object) -> dict[str, str]:
@@ -232,22 +216,10 @@ def test_start_sandbox_gym_path_forwards_imports(
 
     sandbox.start_sandbox_container(
         "CartPole-v1",
-        base_image=None,
-        rlmesh_package=None,
-        packages=None,
-        imports=["ale_py"],
-        trust_remote_code=False,
-        allow_unpinned_hf=False,
+        options=rlmesh.SandboxOptions(imports=["ale_py"]),
         num_envs=1,
         vectorization_mode=None,
-        build_memory=None,
-        task=None,
-        config=None,
-        capabilities=None,
-        override=None,
-        cwd=None,
-        repo_root=None,
-        gym_make_kwargs={},
+        binding={},
     )
 
     assert captured["imports"] == ["ale_py"]
@@ -278,9 +250,42 @@ def test_sandbox_model_shutdown_is_idempotent(
     assert stops == ["container-x"]
 
 
-def test_sandbox_model_requires_image_source() -> None:
-    # SandboxModel is image:// only; a non-image source is rejected.
+def test_sandbox_model_source_resolution() -> None:
+    # A model is always a prebuilt image: bare tags and explicit schemes resolve;
+    # a non-string source and an empty/scheme-only tag are rejected.
     from rlmesh._sandbox._model import SandboxModel
 
+    assert SandboxModel("smolvla:latest")._image == "smolvla:latest"
+    assert SandboxModel("policy/run-test")._image == "policy/run-test"
+    assert SandboxModel("image://m:latest")._image == "m:latest"
+    assert SandboxModel("docker://m:latest")._image == "m:latest"
+
     with pytest.raises(TypeError, match="prebuilt image source"):
-        SandboxModel("policy/run-test")
+        SandboxModel(123)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="image tag"):
+        SandboxModel("image://")
+    # A bare gym env id is never a model image -- reject it before docker run.
+    with pytest.raises(ValueError, match="gym env id"):
+        SandboxModel("CartPole-v1")
+
+
+# --- regression: source autodetect + swallowed options ----------------------
+
+
+def test_gym_module_id_with_colon_routes_to_build_not_docker() -> None:
+    # `pkg:Env-v0` is a valid gym module-import id (has a colon); it must build,
+    # never be probed as a Docker image. Pure -- the version suffix short-circuits.
+    assert sandbox.looks_like_gym_id("my_envs:MyEnv-v0") is True
+    assert sandbox._is_image_shaped("my_envs:MyEnv-v0") is False
+    kind, ref = sandbox.resolve_source_kind("my_envs:MyEnv-v0")
+    assert (kind, ref) == ("build", "my_envs:MyEnv-v0")
+    # A real tagged image still resolves image-shaped.
+    assert sandbox._is_image_shaped("registry/img:v1.2") is True
+
+
+def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:
+    # Security/build flags moved to options=; passing them top-level must fail loud
+    # rather than vanish into the make-binding (a silent security downgrade).
+    for name in ("trust_remote_code", "allow_unpinned_hf", "packages"):
+        with pytest.raises(TypeError, match="options=SandboxOptions"):
+            sandbox.reject_sandbox_option_params({name: True})

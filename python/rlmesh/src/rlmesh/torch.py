@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, ClassVar, TypeAlias, cast, final
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
-from ._sandbox import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from ._sandbox import (
+    SandboxEnvBase,
+    SandboxInfo,
+    SandboxOptions,
+    SandboxVectorEnvBase,
+)
 from ._sandbox._model import SandboxModel
 from ._value_conversion import UNHANDLED, FrameworkBridge, ValueBridge
 from .spaces import Space
@@ -269,16 +274,12 @@ class SandboxEnv(SandboxEnvBase[TorchValue, TorchValue]):
     """Experimental Torch-backed owned sandbox session for one environment.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment
-            source.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
-            in the sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **gym_make_kwargs: Keyword arguments forwarded to environment creation.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
+        options: Optional :class:`SandboxOptions` build/run infrastructure; the
+            single reserved keyword.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated in the container before construction).
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
@@ -289,18 +290,14 @@ class SandboxVectorEnv(SandboxVectorEnvBase[TorchValue, TorchValue]):
     """Experimental Torch-backed owned sandbox session for vectorized environments.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment
-            source.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested inside the sandbox.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed
-            in the sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **env_make_kwargs: Keyword arguments forwarded to environment creation.
+        options: Optional :class:`SandboxOptions` build/run infrastructure; the
+            single reserved keyword.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated in the container before construction).
     """
 
     _bridge: ClassVar[ValueBridge] = _torch_bridge
@@ -314,6 +311,7 @@ __all__ = [
     "SandboxEnv",
     "SandboxInfo",
     "SandboxModel",
+    "SandboxOptions",
     "SandboxVectorEnv",
     "TorchValue",
     "as_tensor",

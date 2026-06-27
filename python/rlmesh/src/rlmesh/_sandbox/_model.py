@@ -10,32 +10,34 @@ env for the drive loop.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import time
 from typing import TYPE_CHECKING
+
+from .session import (
+    CONTAINER_SERVE_PORT as _CONTAINER_SERVE_PORT,
+)
+from .session import (
+    looks_like_gym_id,
+    parse_published_port,
+    pid_namespace_id,
+    prebuilt_run_cmd,
+    reap_orphans,
+)
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
     from .._models._eval import Session
     from ..specs import EnvContract
+    from .session import SandboxOptions
 
 __all__ = ["SandboxModel"]
 
-# The port a BYO model container serves on inside the container (the
-# byo_container/model serve-mode default, RLMESH_ADDRESS=0.0.0.0:50051).
-_CONTAINER_SERVE_PORT = 50051
-
-
-def _pid_namespace_id() -> str | None:
-    try:
-        return os.readlink("/proc/self/ns/pid")
-    except OSError:
-        return None
-
-
-_IMAGE_SCHEME = "image://"
+_IMAGE_SCHEMES = ("image://", "docker://")
 
 # Only these are retried while the container boots: a refused/unavailable
 # connection (ConnectionError/OSError) or a connect timeout. Deterministic
@@ -46,41 +48,43 @@ _IMAGE_SCHEME = "image://"
 _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
-def _parse_image_source(source: object) -> str | None:
-    """Return the tag from an ``image://<tag>`` source, or None.
+def _resolve_model_source(source: object) -> str:
+    """Resolve a model source to a prebuilt image tag.
 
-    A prebuilt (BYO) container image is run directly: recipe resolution and the
-    image build are bypassed, and the container's own baked ``runtime.json``
-    drives it.
+    A model is always a prebuilt rlmesh-serving image (BYO) -- there is no
+    build-from-source for models. An explicit ``image://``/``docker://`` scheme
+    is stripped; a bare string is taken as the image tag (an untagged repo ref
+    like ``policy/run-test`` is valid), but an obvious gym env id (``CartPole-v1``,
+    ``pkg:Env-v0``) is rejected up front rather than failing opaquely at
+    ``docker run`` -- a model is never a gym source.
     """
-    if isinstance(source, str) and source.startswith(_IMAGE_SCHEME):
-        tag = source[len(_IMAGE_SCHEME) :].strip()
-        if not tag:
-            raise ValueError(
-                "image:// source must include a tag, e.g. image://my-model:latest"
-            )
-        return tag
-    return None
-
-
-def _reap_orphans() -> None:
-    """Best-effort sweep of containers orphaned by a prior hard kill.
-
-    Delegates to the native ``sandbox_reap_orphans`` reaper, which sweeps any
-    rlmesh-owned container (env or model) whose owner process is gone. The
-    getattr guard degrades to a no-op against a version-skewed native extension
-    that predates the reaper; failures are swallowed -- reaping is hygiene, never
-    a reason to fail a serve.
-    """
-    import rlmesh._rlmesh as _rlmesh
-
-    reap = getattr(_rlmesh, "sandbox_reap_orphans", None)
-    if reap is None:
-        return
-    try:
-        reap()
-    except Exception:
-        pass
+    if not isinstance(source, str):
+        raise TypeError(
+            "SandboxModel requires a prebuilt image source string (e.g. "
+            f"'smolvla:latest' or 'docker://smolvla:latest'); got "
+            f"{type(source).__name__}"
+        )
+    raw = source.strip()
+    tag = raw
+    had_scheme = False
+    for scheme in _IMAGE_SCHEMES:
+        if tag.startswith(scheme):
+            tag = tag[len(scheme) :].strip()
+            had_scheme = True
+            break
+    if not tag or "://" in tag:
+        raise ValueError(
+            "SandboxModel source must be an image tag (e.g. 'smolvla:latest') or "
+            f"image://<tag> / docker://<tag>; got {source!r}"
+        )
+    # A bare gym env id (version-suffixed) is never a model image; an explicit
+    # scheme is trusted, and an untagged repo ref is a valid image.
+    if not had_scheme and looks_like_gym_id(tag):
+        raise ValueError(
+            f"SandboxModel source {source!r} looks like a gym env id, not a model "
+            "image; pass a prebuilt image (e.g. 'smolvla:latest') or image://<tag>"
+        )
+    return tag
 
 
 def _normalize_gpus(gpus: str | int | None) -> str | None:
@@ -100,64 +104,68 @@ def _normalize_gpus(gpus: str | int | None) -> str | None:
 class SandboxModel:
     """A model served from an isolated container.
 
-    The source is a prebuilt ``image://<tag>`` container you built yourself (BYO):
-    the tag is run directly and its baked ``runtime.json`` drives it.
+    The source is a prebuilt rlmesh-serving image you built yourself (BYO), given
+    as a bare ``smolvla:latest`` or an explicit ``image://``/``docker://`` tag: the
+    image is run directly and its baked ``CMD`` drives it. ``**params`` are the
+    model's construction params -- forwarded into the container as the
+    ``load(**binding)`` binding (``RLMESH_MAKE_KWARGS``), validated against the
+    model's declared ``params`` before weights load.
     """
 
     def __init__(
         self,
         source: object,
+        /,
         *,
         gpus: str | int | None = None,
+        options: SandboxOptions | None = None,
+        **params: object,
     ) -> None:
-        # BYO prebuilt container: ``image://<tag>`` is run directly, and the
-        # container's own baked runtime.json drives it.
-        prebuilt = _parse_image_source(source)
-        if prebuilt is None:
-            raise TypeError(
-                "SandboxModel requires a prebuilt image source, e.g. "
-                f"image://my-model:latest; got {type(source).__name__}"
-            )
-        self._image = prebuilt
+        self._image = _resolve_model_source(source)
         self._gpus = _normalize_gpus(gpus)
+        self._binding = dict(params)
+        if options is not None:
+            import warnings
+
+            # A model is always a prebuilt image (run, not built), so build infra
+            # has nothing to act on.
+            warnings.warn(
+                "SandboxModel runs a prebuilt image; SandboxOptions build "
+                "settings are ignored",
+                stacklevel=2,
+            )
         self._address: str | None = None
         self._container_id: str | None = None
         self._closed = False
 
-    def _gpu_args(self) -> list[str]:
-        return ["--gpus", self._gpus] if self._gpus is not None else []
-
     def _serve_image(self) -> SandboxModel:
-        """Start a long-lived container for a BYO ``image://`` tag (serve mode).
+        """Start a long-lived container for a prebuilt image tag (serve mode).
 
         Publishes the container's serve port on a Docker-assigned host port (no
         host-side bind/close, so no TOCTOU race), then reads the real port back
         with ``docker port``. The container enters serve mode because no
-        ``RLMESH_DRIVE_ENV_ADDRESS`` is set (the BYO model protocol). Readiness is
-        the caller's connect-with-retry (see :meth:`against`).
+        ``RLMESH_DRIVE_ENV_ADDRESS`` is set (the BYO model protocol); the model's
+        construction params, if any, ride in as ``RLMESH_MAKE_KWARGS``. Readiness
+        is the caller's connect-with-retry (see :meth:`session`).
         """
         assert self._image is not None
-        _reap_orphans()
-        cmd = [
-            "docker",
-            "run",
-            "-d",
-            "-p",
-            f"127.0.0.1:0:{_CONTAINER_SERVE_PORT}",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--label",
-            "rlmesh.sandbox=1",
-            "--label",
-            f"rlmesh.sandbox.owner-pid={os.getpid()}",
-        ]
-        pid_ns = _pid_namespace_id()
-        if pid_ns is not None:
-            cmd += ["--label", f"rlmesh.sandbox.owner-pid-ns={pid_ns}"]
-        cmd += self._gpu_args()
-        cmd.append(self._image)
+        if shutil.which("docker") is None:
+            raise RuntimeError(
+                "Docker CLI not found on PATH; install Docker to run a prebuilt "
+                "model image"
+            )
+        reap_orphans()
+        env_vars: dict[str, str] = {}
+        if self._binding:
+            env_vars["RLMESH_MAKE_KWARGS"] = json.dumps(self._binding, sort_keys=True)
+        cmd = prebuilt_run_cmd(
+            self._image,
+            env_vars=env_vars,
+            gpus=self._gpus,
+            container_port=_CONTAINER_SERVE_PORT,
+            owner_pid=os.getpid(),
+            owner_pid_ns=pid_namespace_id(),
+        )
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if proc.returncode != 0:
             raise RuntimeError(
@@ -195,17 +203,7 @@ class SandboxModel:
                 f"failed to read published port for model container "
                 f"({proc.returncode}):\n{proc.stderr}"
             )
-        for line in proc.stdout.splitlines():
-            # Mirror the Rust sibling (docker::parse_published_port): the host
-            # port is the last `:`-separated field of any mapping line, so an
-            # IPv6 binding like `[::]:51000` parses, not just IPv4 prefixes.
-            _, sep, port = line.strip().rpartition(":")
-            if sep and port.isdigit():
-                return int(port)
-        raise RuntimeError(
-            "model container published no host port for "
-            f"{_CONTAINER_SERVE_PORT}; docker port output:\n{proc.stdout}"
-        )
+        return parse_published_port(proc.stdout, _CONTAINER_SERVE_PORT)
 
     def serve(self) -> SandboxModel:
         """Start a long-lived container serving the policy as a model endpoint.

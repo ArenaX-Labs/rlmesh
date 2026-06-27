@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import contextlib
+import contextvars
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from .._value_conversion import ValueBridge
@@ -10,6 +12,7 @@ from ..types import Value
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
+    from rlmesh.params import ParamSpec
 
     from ._eval import RunResult, Session
 
@@ -17,6 +20,30 @@ ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 LifecycleCallback = Callable[[], None]
 PredictFn = Callable[[ObsT], ActT]
+
+# Suppresses the ``__init__`` auto-load on the served-construction path so the
+# bootstrap is authoritative: ``construct_authored_model`` builds the worker
+# without loading, then runs ``load(**binding)`` once with the resolved params.
+# Local-dev construction (the contextvar default ``False``) keeps the eager
+# auto-load. See the model load() seam in the declared-params design.
+_suppress_autoload: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rlmesh_suppress_model_autoload", default=False
+)
+
+
+@contextlib.contextmanager
+def suppress_autoload() -> Iterator[None]:
+    """Suppress ``ModelBase``'s ``__init__`` auto-load within the block.
+
+    The served-construction seam: build the worker without loading weights, then
+    apply the resolved binding via ``load(**binding)`` once (see
+    :func:`rlmesh._bootstrap.loaders.construct_authored_model`).
+    """
+    token = _suppress_autoload.set(True)
+    try:
+        yield
+    finally:
+        _suppress_autoload.reset(token)
 
 
 class ModelBase(Generic[ObsT, ActT]):
@@ -63,6 +90,11 @@ class ModelBase(Generic[ObsT, ActT]):
     #: The model's content: a ``ModelSpec``, ``NO_ADAPTER``, or ``None``. Set it as a
     #: class attribute when subclassing; the ``spec=`` kwarg overrides it per instance.
     spec: object | None = None
+    #: Optional declared construction-parameter surface for ``load`` -- the model
+    #: counterpart of :attr:`rlmesh.EnvFactory.params`, presented/swept the same way
+    #: (see :mod:`rlmesh.params`). Advisory today: a dashboard reads it via
+    #: ``rlmesh.describe``; binding it into ``load`` is gated on the served-load seam.
+    params: ClassVar[ParamSpec | None] = None
 
     def __init__(
         self,
@@ -79,8 +111,11 @@ class ModelBase(Generic[ObsT, ActT]):
         if source is None and type(self).predict is not ModelBase.predict:  # pyright: ignore[reportUnknownMemberType]
             # Subclass-authoring mode: a Model subclass that overrides predict (and
             # optionally load/reset/close/spec). Load weights once, before the worker
-            # is built, then drive self.predict.
-            self.load()
+            # is built, then drive self.predict. The served-construction path
+            # suppresses this eager load and calls load(**binding) itself once the
+            # params are resolved (worker capture below doesn't need weights yet).
+            if not _suppress_autoload.get():
+                self.load()
             raw_predict: Callable[..., object] = self.predict
             resolved_spec = spec if spec is not None else type(self).spec
             coerced_on_reset: LifecycleCallback | None = self.reset

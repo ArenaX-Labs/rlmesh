@@ -230,3 +230,31 @@ def test_env_recipe_serve_prepares_makes_and_serves(
 
 def test_authoring_bases_are_exported() -> None:
     assert rlmesh.EnvFactory is EnvFactory
+
+
+# --- regression: model binding must not be silently swallowed ----------------
+
+
+def test_construct_authored_model_rejects_swallowed_binding() -> None:
+    # A Model that does not override load() has nowhere to apply a binding; the
+    # default no-op load would swallow it silently. Fail loud instead.
+    class _NoLoad(rlmesh.Model):
+        def predict(self, observation: object) -> int:
+            return 0
+
+    with pytest.raises(TypeError, match="does not override load"):
+        construct_authored_model(_NoLoad, checkpoint="x")
+
+
+def test_construct_authored_model_applies_binding_via_load() -> None:
+    seen: dict[str, object] = {}
+
+    class _Loads(rlmesh.Model):
+        def load(self, *, checkpoint: str = "default") -> None:
+            seen["checkpoint"] = checkpoint
+
+        def predict(self, observation: object) -> int:
+            return 0
+
+    construct_authored_model(_Loads, checkpoint="x")
+    assert seen["checkpoint"] == "x"

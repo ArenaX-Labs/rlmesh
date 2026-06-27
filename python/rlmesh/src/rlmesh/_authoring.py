@@ -16,6 +16,7 @@ from rlmesh.types import EnvLike
 
 if TYPE_CHECKING:
     from .adapters import EnvTags
+    from .params import ParamSpec
 
 
 class EnvFactory(ABC):
@@ -25,9 +26,17 @@ class EnvFactory(ABC):
     are that contract. ``make(**kwargs)`` is the factory and may return a single env or a
     vectorized batch; task selection and ``num_envs`` are its parameters, not separate
     subclasses. ``tags = None`` (the default) means a generic, un-adapted env.
+
+    Optionally set ``params`` to a :class:`~rlmesh.ParamSpec` declaring ``make``'s
+    construction parameters; a managed dashboard then presents/validates/sweeps
+    them, and a bad binding is rejected before construction (see
+    :mod:`rlmesh.params`). ``params = None`` (default) keeps today's blind
+    passthrough to ``make``.
     """
 
     tags: ClassVar[EnvTags | None] = None
+    #: Optional declared construction-parameter surface validated against ``make``.
+    params: ClassVar[ParamSpec | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # Stamp the factory's ``tags`` onto every env ``make()`` returns, so the tag

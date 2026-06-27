@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from .env import SandboxEnvBase, SandboxInfo, SandboxVectorEnvBase
+from .env import (
+    SandboxEnvBase,
+    SandboxInfo,
+    SandboxOptions,
+    SandboxVectorEnvBase,
+)
 
 __all__ = [
     "SandboxEnvBase",
     "SandboxInfo",
+    "SandboxOptions",
     "SandboxVectorEnvBase",
 ]

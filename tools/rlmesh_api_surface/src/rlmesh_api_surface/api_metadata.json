@@ -146,6 +146,14 @@
     "rlmesh.Model": {
       "description": "Dependency-free model wrapper."
     },
+    "rlmesh.Param": {
+      "stability": "Experimental",
+      "description": "One declared construction parameter (validated, presentable, sweepable)."
+    },
+    "rlmesh.ParamSpec": {
+      "stability": "Experimental",
+      "description": "A factory's or model's declared construction-parameter surface."
+    },
     "rlmesh.ServeOptions": {
       "description": "Server lifecycle options."
     },

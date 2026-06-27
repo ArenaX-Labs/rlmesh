@@ -7,8 +7,6 @@ construction and stopped on close.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from os import PathLike
 from typing import TypeVar
 
 from .._client import RemoteEnvBase, RemoteVectorEnvBase
@@ -17,6 +15,8 @@ from .session import (
     SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
     SandboxInfo,
     SandboxLifecycle,
+    SandboxOptions,
+    reject_sandbox_option_params,
     reject_single_env_vector_option,
     start_sandbox_container,
 )
@@ -27,6 +27,7 @@ ActionT = TypeVar("ActionT")
 __all__ = [
     "SandboxEnvBase",
     "SandboxInfo",
+    "SandboxOptions",
     "SandboxVectorEnvBase",
 ]
 
@@ -38,58 +39,36 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
     container; closing the session detaches the client and stops the container.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment source
-            such as an EnvHub/Hugging Face reference.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed in the
-            sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **gym_make_kwargs: Keyword arguments forwarded to environment creation.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``) run
+            directly (see :func:`rlmesh._sandbox.session.resolve_source_kind`).
+        options: Optional :class:`~rlmesh._sandbox.session.SandboxOptions` carrying
+            build/run infrastructure (base image, packages, rlmesh pin, ...); the
+            single reserved keyword, ignored for a prebuilt image.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated against its declared ``params`` in the
+            container, before construction). ``source`` is positional-only so a
+            param named ``source`` flows here cleanly.
     """
 
     def __init__(
         self,
         source: str,
+        /,
         *,
-        base_image: str | None = None,
-        rlmesh_package: str | PathLike[str] | None = None,
-        packages: Sequence[str] | None = None,
-        imports: Sequence[str] | None = None,
-        trust_remote_code: bool = False,
-        allow_unpinned_hf: bool = False,
-        build_memory: str | None = None,
-        task: str | None = None,
-        config: Mapping[str, object] | str | PathLike[str] | None = None,
-        capabilities: Sequence[str] | None = None,
-        override: str | PathLike[str] | None = None,
-        cwd: str | PathLike[str] | None = None,
-        repo_root: str | PathLike[str] | None = None,
-        **gym_make_kwargs: object,
+        options: SandboxOptions | None = None,
+        **params: object,
     ) -> None:
-        reject_single_env_vector_option(gym_make_kwargs)
+        reject_single_env_vector_option(params)
+        reject_sandbox_option_params(params)
         self._source = source
         self._closed = False
         self.sandbox = start_sandbox_container(
             source,
-            base_image=base_image,
-            rlmesh_package=rlmesh_package,
-            packages=packages,
-            imports=imports,
-            trust_remote_code=trust_remote_code,
-            allow_unpinned_hf=allow_unpinned_hf,
+            options=options,
             num_envs=1,
             vectorization_mode=None,
-            build_memory=build_memory,
-            task=task,
-            config=config,
-            capabilities=capabilities,
-            override=override,
-            cwd=cwd,
-            repo_root=repo_root,
-            gym_make_kwargs=gym_make_kwargs,
+            binding=params,
         )
         # Attach *this* client to the started container; stop it on any failure so the
         # original error propagates instead of leaking the container.
@@ -119,62 +98,37 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
     container.
 
     Args:
-        source: Gymnasium id, explicit ``gym://`` source, or pinned environment source.
+        source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
+            prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create (must be >= 2).
         vectorization_mode: Vectorization mode requested in the sandbox.
-        base_image: Optional Docker base image override.
-        rlmesh_package: Optional RLMesh package, wheel, or ``"local"`` installed in the
-            sandbox.
-        packages: Extra environment packages installed in the sandbox.
-        imports: Import names checked during sandbox startup.
-        trust_remote_code: Allow remote environment code to execute.
-        allow_unpinned_hf: Allow Hugging Face sources without a pinned revision.
-        **env_make_kwargs: Keyword arguments forwarded to environment creation.
+        options: Optional :class:`~rlmesh._sandbox.session.SandboxOptions` carrying
+            build/run infrastructure; the single reserved keyword.
+        **params: Environment construction params -- the binding forwarded to the
+            factory's ``make`` (validated in the container before construction).
     """
 
     def __init__(
         self,
         source: str,
+        /,
         num_envs: int,
         *,
         vectorization_mode: str = "sync",
-        base_image: str | None = None,
-        rlmesh_package: str | PathLike[str] | None = None,
-        packages: Sequence[str] | None = None,
-        imports: Sequence[str] | None = None,
-        trust_remote_code: bool = False,
-        allow_unpinned_hf: bool = False,
-        build_memory: str | None = None,
-        task: str | None = None,
-        config: Mapping[str, object] | str | PathLike[str] | None = None,
-        capabilities: Sequence[str] | None = None,
-        override: str | PathLike[str] | None = None,
-        cwd: str | PathLike[str] | None = None,
-        repo_root: str | PathLike[str] | None = None,
-        **env_make_kwargs: object,
+        options: SandboxOptions | None = None,
+        **params: object,
     ) -> None:
         if num_envs < 2:
             raise ValueError("SandboxVectorEnv requires num_envs >= 2")
+        reject_sandbox_option_params(params)
         self._source = source
         self._closed = False
         self.sandbox = start_sandbox_container(
             source,
-            base_image=base_image,
-            rlmesh_package=rlmesh_package,
-            packages=packages,
-            imports=imports,
-            trust_remote_code=trust_remote_code,
-            allow_unpinned_hf=allow_unpinned_hf,
+            options=options,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
-            build_memory=build_memory,
-            task=task,
-            config=config,
-            capabilities=capabilities,
-            override=override,
-            cwd=cwd,
-            repo_root=repo_root,
-            gym_make_kwargs=env_make_kwargs,
+            binding=params,
         )
         try:
             self._initialize(
