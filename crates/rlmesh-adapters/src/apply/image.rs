@@ -96,6 +96,12 @@ pub fn decode_image(value: &Value, src_range: Option<(f64, f64)>) -> Result<Tens
             ));
         }
     };
+    // Fast path: an already-uint8, already-contiguous tensor is the pipeline's
+    // canonical pixel buffer as-is. `to_u8_pixels` would copy every byte out and
+    // `tensor_from_u8` re-wrap it into an identical tensor, so skip both.
+    if tensor.dtype() == DType::Uint8 && tensor.is_contiguous() {
+        return Ok(tensor);
+    }
     Ok(value::tensor_from_u8(
         tensor.shape().to_vec(),
         value::to_u8_pixels(&tensor, src_range),
@@ -382,12 +388,15 @@ pub fn finalize_dtype(
     })?;
     if let Some((low, high)) = normalize {
         let (low, high) = (low as f32, high as f32);
-        let scaled: Vec<f32> = value::to_f32_vec(tensor)
+        // Fuse normalize + cast: scale in f32 (the exact arithmetic of the old
+        // Float32 staging tensor), widen to f64, and encode straight to the
+        // target dtype — skipping the intermediate float32 tensor and its
+        // decode/re-encode round-trip while preserving the bit-identical result.
+        let scaled: Vec<f64> = value::to_f32_vec(tensor)
             .into_iter()
-            .map(|value| low + (value / 255.0) * (high - low))
+            .map(|value| f64::from(low + (value / 255.0) * (high - low)))
             .collect();
-        let scaled = value::tensor_from_f32(tensor.shape().to_vec(), &scaled);
-        return value::cast(&scaled, target);
+        return value::encode_f64_to(scaled, tensor.shape().to_vec(), target);
     }
     value::cast(tensor, target)
 }

@@ -1,11 +1,74 @@
 //! Observation payload access helpers.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use super::value::{self, Value};
 use crate::error::ApplyError;
 use crate::path::{NodePath, PathSeg};
 use crate::plans::{OBS_ROOT_KEY, envelope_key};
+
+/// Render a borrowed `[PathSeg]` slice exactly like [`NodePath`]'s `Display`
+/// (`<root>` for empty, dotted `Key`s, bracketed `Index`es) without allocating a
+/// `NodePath` to wrap it — so the resolve walk can take a slice (no per-call
+/// clone of the source path) yet keep identical path text in its error messages.
+struct PathDisplay<'a>(&'a [PathSeg]);
+
+impl fmt::Display for PathDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            return f.write_str("<root>");
+        }
+        for (position, segment) in self.0.iter().enumerate() {
+            match segment {
+                PathSeg::Key(key) => {
+                    if position > 0 {
+                        f.write_str(".")?;
+                    }
+                    f.write_str(key)?;
+                }
+                PathSeg::Index(index) => write!(f, "[{index}]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Walk a structured path into a `Value` tree, shared by the shared-ref and
+/// mutable-ref resolvers. The two differ only in the borrow (`get` vs `get_mut`)
+/// and their error wording, so this macro is the single source of the descent
+/// logic: each invocation supplies the map/list accessor and the error
+/// expressions, keeping the deliberately distinct `observation`/`payload`
+/// messages intact while the navigation cannot drift between them.
+///
+/// `$path` is a `&[PathSeg]` slice so the immutable resolver can be handed the
+/// source's `rest()` (or whole) segments without cloning a `NodePath`. The
+/// out-of-range error expression receives the list `len`, captured before the
+/// element borrow so the mutable `get_mut` arm still type-checks.
+macro_rules! resolve_walk {
+    (
+        $root:expr, $path:expr,
+        $map_get:ident, $list_get:ident,
+        |$key:ident, $map:ident| $missing_key:expr,
+        |$index:ident, $items:ident, $len:ident| $oob:expr,
+        |$pseg:ident, $other:ident| $mismatch:expr $(,)?
+    ) => {{
+        let mut cur = $root;
+        for segment in $path {
+            cur = match (segment, cur) {
+                (PathSeg::Key($key), Value::Map($map)) => {
+                    $map.$map_get($key).ok_or_else(|| $missing_key)?
+                }
+                (PathSeg::Index($index), Value::List($items)) => {
+                    let $len = $items.len();
+                    $items.$list_get(*$index).ok_or_else(|| $oob)?
+                }
+                ($pseg, $other) => return Err($mismatch),
+            };
+        }
+        Ok(cur)
+    }};
+}
 
 /// Resolve a [`NodePath`] source against the raw-obs *envelope*: the top-level
 /// `BTreeMap` whose entries are keyed by the first path segment (a Dict-rooted
@@ -30,50 +93,57 @@ pub fn resolve_in_obs<'obs>(
     // whole obs (root/Tuple-rooted, under the reserved key). For a Dict-rooted
     // source the first segment has been consumed by the key selection, so walk
     // only the rest; otherwise walk the full path against the whole-obs value.
-    let remaining: NodePath = if key == OBS_ROOT_KEY {
-        source.clone()
+    // Both are borrowed slices of `source` -- no `NodePath` clone per step.
+    let remaining: &[PathSeg] = if key == OBS_ROOT_KEY {
+        &source.0
     } else {
-        NodePath(source.rest().to_vec())
+        source.rest()
     };
-    resolve_source(entry, &remaining)
+    resolve_source(entry, remaining)
 }
 
-/// Resolve a structured [`NodePath`] into a (possibly nested) value tree.
+/// Resolve a structured path into a (possibly nested) value tree.
 ///
 /// An empty path returns the value itself (the root / single leaf), a `Key` step
 /// descends a [`Value::Map`], and an `Index` step descends a [`Value::List`]. A
 /// shape that cannot take the next step is a typed error rather than a silent
-/// miss.
-pub fn resolve_source<'obs>(root: &'obs Value, path: &NodePath) -> Result<&'obs Value, ApplyError> {
-    let mut cur = root;
-    for segment in &path.0 {
-        cur = match (segment, cur) {
-            (PathSeg::Key(key), Value::Map(map)) => map.get(key).ok_or_else(|| {
-                let available: Vec<String> = map.keys().map(|key| format!("'{key}'")).collect();
-                ApplyError::new(format!(
-                    "observation path '{path}' is missing key '{key}'; available: [{}]",
-                    available.join(", ")
-                ))
-            })?,
-            (PathSeg::Index(index), Value::List(items)) => items.get(*index).ok_or_else(|| {
-                ApplyError::new(format!(
-                    "observation path '{path}' index [{index}] is out of range (len {})",
-                    items.len()
-                ))
-            })?,
-            (segment, other) => {
-                let (want, at) = match segment {
-                    PathSeg::Key(key) => ("a Dict", format!("'{key}'")),
-                    PathSeg::Index(index) => ("a Tuple", format!("[{index}]")),
-                };
-                return Err(ApplyError::new(format!(
-                    "observation path '{path}' expected {want} at {at}, got {}",
-                    value_kind(other)
-                )));
-            }
-        };
-    }
-    Ok(cur)
+/// miss. The path is a borrowed `[PathSeg]` slice so callers can pass a sub-path
+/// of a [`NodePath`] without cloning it.
+pub fn resolve_source<'obs>(
+    root: &'obs Value,
+    path: &[PathSeg],
+) -> Result<&'obs Value, ApplyError> {
+    resolve_walk!(
+        root,
+        path,
+        get,
+        get,
+        |key, map| {
+            let available: Vec<String> = map.keys().map(|key| format!("'{key}'")).collect();
+            ApplyError::new(format!(
+                "observation path '{}' is missing key '{key}'; available: [{}]",
+                PathDisplay(path),
+                available.join(", ")
+            ))
+        },
+        |index, _items, len| {
+            ApplyError::new(format!(
+                "observation path '{}' index [{index}] is out of range (len {len})",
+                PathDisplay(path)
+            ))
+        },
+        |segment, other| {
+            let (want, at) = match segment {
+                PathSeg::Key(key) => ("a Dict", format!("'{key}'")),
+                PathSeg::Index(index) => ("a Tuple", format!("[{index}]")),
+            };
+            ApplyError::new(format!(
+                "observation path '{}' expected {want} at {at}, got {}",
+                PathDisplay(path),
+                value_kind(other)
+            ))
+        },
+    )
 }
 
 /// Mutable variant of [`resolve_source`]: walk a [`NodePath`] into a `Value`
@@ -84,33 +154,29 @@ pub fn resolve_source_mut<'obs>(
     root: &'obs mut Value,
     path: &NodePath,
 ) -> Result<&'obs mut Value, ApplyError> {
-    let mut cur = root;
-    for segment in &path.0 {
-        cur = match (segment, cur) {
-            (PathSeg::Key(key), Value::Map(map)) => map.get_mut(key).ok_or_else(|| {
-                ApplyError::new(format!("payload path '{path}' is missing key '{key}'"))
-            })?,
-            (PathSeg::Index(index), Value::List(items)) => {
-                let len = items.len();
-                items.get_mut(*index).ok_or_else(|| {
-                    ApplyError::new(format!(
-                        "payload path '{path}' index [{index}] is out of range (len {len})"
-                    ))
-                })?
-            }
-            (segment, other) => {
-                let (want, at) = match segment {
-                    PathSeg::Key(key) => ("a Dict", format!("'{key}'")),
-                    PathSeg::Index(index) => ("a Tuple", format!("[{index}]")),
-                };
-                return Err(ApplyError::new(format!(
-                    "payload path '{path}' expected {want} at {at}, got {}",
-                    value_kind(other)
-                )));
-            }
-        };
-    }
-    Ok(cur)
+    let segments = &path.0[..];
+    resolve_walk!(
+        root,
+        segments,
+        get_mut,
+        get_mut,
+        |key, _map| ApplyError::new(format!("payload path '{path}' is missing key '{key}'")),
+        |index, _items, len| {
+            ApplyError::new(format!(
+                "payload path '{path}' index [{index}] is out of range (len {len})"
+            ))
+        },
+        |segment, other| {
+            let (want, at) = match segment {
+                PathSeg::Key(key) => ("a Dict", format!("'{key}'")),
+                PathSeg::Index(index) => ("a Tuple", format!("[{index}]")),
+            };
+            ApplyError::new(format!(
+                "payload path '{path}' expected {want} at {at}, got {}",
+                value_kind(other)
+            ))
+        },
+    )
 }
 
 /// A short human label for a [`Value`]'s kind, for path-mismatch errors.

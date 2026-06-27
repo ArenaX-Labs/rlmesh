@@ -46,9 +46,15 @@ pub fn to_f64_vec(tensor: &Tensor) -> Vec<f64> {
 /// magnitudes beyond `f32`'s exact range therefore lose precision here. That
 /// is a deliberate engine-wide choice, not a per-call rounding bug.
 pub fn to_f32_vec(tensor: &Tensor) -> Vec<f32> {
-    to_f64_vec(tensor)
-        .into_iter()
-        .map(|value| value as f32)
+    // Decode each scalar through the same dtype-aware `f64` view as `to_f64_vec`
+    // (the intermediate `f64` is the deliberate reference-matching precision
+    // choice), then narrow to `f32` in one pass without a second full buffer.
+    let dtype = tensor.dtype();
+    let bytes = tensor.to_contiguous_bytes();
+    decode_scalars(&bytes, dtype)
+        .expect("a constructed tensor has a concrete dtype and whole elements")
+        .iter()
+        .map(|scalar| scalar.to_f64(dtype) as f32)
         .collect()
 }
 
@@ -137,7 +143,19 @@ pub fn cast(tensor: &Tensor, target: DType) -> Result<Tensor, ApplyError> {
     if tensor.dtype() == target {
         return Ok(tensor.clone());
     }
-    let values = to_f64_vec(tensor);
+    encode_f64_to(to_f64_vec(tensor), tensor.shape().to_vec(), target)
+}
+
+/// Encode already-decoded `f64` values into a tensor of `target`, applying the
+/// same NumPy-`astype` semantics as [`cast`]: integer targets reject
+/// non-integral or out-of-range values rather than truncating or wrapping. This
+/// is the shared encode tail so a fused decode/scale step can hand its `f64`
+/// results straight to the target dtype without a Float32 round-trip tensor.
+pub fn encode_f64_to(
+    values: Vec<f64>,
+    shape: Vec<i64>,
+    target: DType,
+) -> Result<Tensor, ApplyError> {
     let scalars: Vec<Scalar> = if is_integer(target) {
         let mut out = Vec::with_capacity(values.len());
         for value in values {
@@ -157,8 +175,7 @@ pub fn cast(tensor: &Tensor, target: DType) -> Result<Tensor, ApplyError> {
         values.into_iter().map(Scalar::Float).collect()
     };
     let bytes = encode_scalars(&scalars, target).map_err(|err| ApplyError::new(err.to_string()))?;
-    Tensor::from_vec(bytes, tensor.shape().to_vec(), target)
-        .map_err(|err| ApplyError::new(err.to_string()))
+    Tensor::from_vec(bytes, shape, target).map_err(|err| ApplyError::new(err.to_string()))
 }
 
 /// Convert a shape to the tensor `i64` form.
