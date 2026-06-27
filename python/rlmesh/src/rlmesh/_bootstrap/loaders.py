@@ -308,13 +308,18 @@ def looks_like_policy(value: object) -> bool:
 
 
 def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
-    """Instantiate a model/policy (class or instance), ``load(**binding)``, return it.
+    """Instantiate a model/policy (class or instance) and return it ready to serve.
 
-    The bootstrap-authoritative model path: a class source is instantiated with
-    the eager ``__init__`` auto-load suppressed (a ``Model`` subclass builds its
+    A ``rlmesh.Model`` subclass is the bootstrap-authoritative path: it is
+    instantiated with the eager ``__init__`` auto-load suppressed (it builds its
     worker but does not load weights), then the binding is validated against the
-    declared ``params`` and ``load(**resolved)`` runs exactly once. With no
-    ``kwargs`` and no ``params`` this is the prior behavior -- a single ``load()``.
+    declared ``params`` and ``load(**resolved)`` runs exactly once.
+
+    A duck-typed (non-``Model``) policy constructs entirely in its own ``__init__``
+    -- which we cannot suppress -- so ``__init__`` is authoritative and ``load()``
+    is NOT called again here (calling it would load weights a second time). A
+    binding has no channel on such a policy, so a non-empty one is rejected rather
+    than silently dropped.
     """
     from rlmesh._models.base import ModelBase, suppress_autoload
     from rlmesh.params import resolve
@@ -325,31 +330,33 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
     else:
         inst = source
 
-    spec = cast("ParamSpec | None", getattr(inst, "params", None))
-    load = getattr(inst, "load", None)
-    if not callable(load):
+    if not isinstance(inst, ModelBase):
+        # __init__ already constructed (and loaded) it; a second load() would
+        # double-load, and there is no binding channel for a duck-typed policy.
         if kwargs:
             raise TypeError(
-                f"{type(inst).__name__} has no load(...) to receive construction "
-                f"params: {', '.join(sorted(kwargs))}"
+                f"{type(inst).__name__} is not an rlmesh.Model subclass; construction "
+                f"params ({', '.join(sorted(kwargs))}) require a Model subclass that "
+                "applies them in load(**kwargs)"
             )
         return inst
-    resolved = resolve(spec, load, kwargs)
+
+    model = cast("ModelBase[Any, Any]", inst)
+    spec = model.params
+    resolved = resolve(spec, model.load, kwargs)
     # The default ModelBase.load is a no-op: a non-empty binding would be silently
     # swallowed (and the eager auto-load was already suppressed). Fail loud so the
-    # operator's requested variation is never silently dropped. (getattr identity,
-    # mirroring base.py's overridden-method probe.)
-    inst_type = cast("type[object]", type(inst))
-    if resolved and getattr(inst_type, "load", None) is getattr(
-        ModelBase, "load", None
-    ):
+    # operator's requested variation is never silently dropped. (getattr identity
+    # via a name, mirroring base.py's overridden-method probe.)
+    load_attr = "load"
+    if resolved and getattr(type(model), load_attr) is getattr(ModelBase, load_attr):
         raise TypeError(
-            f"{type(inst).__name__} received construction params "
+            f"{type(model).__name__} received construction params "
             f"({', '.join(sorted(resolved))}) but does not override load(...) to "
             "apply them; implement load(**kwargs) to consume the binding"
         )
-    load(**resolved)
-    return inst
+    model.load(**resolved)
+    return model
 
 
 def construct_authored_env(

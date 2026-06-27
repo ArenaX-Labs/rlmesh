@@ -21,7 +21,7 @@ ENV_TAGS = adapt.EnvTags(
         "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
         "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
         "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextTag(),
+        "goal": adapt.TextTag(role=adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -44,7 +44,7 @@ MODEL_SPEC = adapt.ModelSpec(
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "task": adapt.Text(),
+        "task": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -115,7 +115,7 @@ SPEC = adapt.ModelSpec(
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(...),
 )
@@ -180,7 +180,8 @@ if is_plain:
 else:
     adapter = build_adapter(model_name, env_name, ENVS[env_name])
     model = Model(
-        adapter.wrap_predict(model_entry.load_predict_fn()), on_reset=adapter.reset
+        adapter.wrap_predict(model_entry.load_predict_fn()),
+        on_episode_end=adapter.reset,
     )
     model.run(env, max_episodes=episodes)
 ```

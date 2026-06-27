@@ -68,12 +68,14 @@ class ModelBase(Generic[ObsT, ActT]):
         spec: Optional :class:`rlmesh.adapters.ModelSpec`; makes this an *adapted*
             model. Pass :data:`rlmesh.NO_ADAPTER` to explicitly skip adapter
             resolution. Overrides the ``spec`` class attribute when both are set.
-        on_reset / on_episode_end / on_close: Optional lifecycle callbacks (they
-            override a subclass's ``reset``/``close`` methods). ``on_reset`` fires
-            only on the local ``run(env)`` / ``session`` loop (it marks an episode
-            begin, which that loop controls); the served / ``run_local`` wire path
-            has no episode-begin signal, so a stateful served model resets its
-            state in ``on_episode_end`` (driven by the explicit ``ResetAdapter``).
+        on_episode_end / on_close: Optional lifecycle callbacks (they override a
+            subclass's ``reset``/``close`` methods, and a wrapped policy's). There is
+            no episode-*begin* hook: per-episode state is lazy-seeded on first
+            predict, so a stateful model clears its state at episode *end* via
+            ``on_episode_end`` (a subclass's ``reset()`` is wired here). This fires
+            identically on the local ``run(env)``/``session`` loop and the served
+            wire path (driven there by the explicit ``ResetAdapter``), so local and
+            served behave the same.
         trust_entrypoints: Allow ``module:callable`` custom-input entrypoints in a
             spec to be imported during adapter resolution.
 
@@ -101,7 +103,6 @@ class ModelBase(Generic[ObsT, ActT]):
         source: Callable[..., object] | object | None = None,
         *,
         spec: object | None = None,
-        on_reset: LifecycleCallback | None = None,
         on_episode_end: LifecycleCallback | None = None,
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
@@ -118,7 +119,9 @@ class ModelBase(Generic[ObsT, ActT]):
                 self.load()
             raw_predict: Callable[..., object] = self.predict
             resolved_spec = spec if spec is not None else type(self).spec
-            coerced_on_reset: LifecycleCallback | None = self.reset
+            # A subclass's reset() is wired to the episode-END edge (on_episode_end),
+            # the only per-episode boundary both local and served paths signal.
+            coerced_on_episode_end: LifecycleCallback | None = self.reset
             coerced_on_close: LifecycleCallback | None = self.close
             policy: object = self
         elif source is None:
@@ -132,7 +135,7 @@ class ModelBase(Generic[ObsT, ActT]):
             coerced = coerce_model(source, spec=spec)
             raw_predict = coerced.predict
             resolved_spec = coerced.spec
-            coerced_on_reset = coerced.on_reset
+            coerced_on_episode_end = coerced.on_episode_end
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
@@ -153,9 +156,10 @@ class ModelBase(Generic[ObsT, ActT]):
         self._raw_predict_chunk_batch = raw_predict_chunk_batch
         self.spec = resolved_spec
         self._policy = policy
-        self._on_reset = on_reset if on_reset is not None else coerced_on_reset
         self._on_close = on_close if on_close is not None else coerced_on_close
-        self._on_episode_end = on_episode_end
+        self._on_episode_end = (
+            on_episode_end if on_episode_end is not None else coerced_on_episode_end
+        )
         self._trust_entrypoints = trust_entrypoints
         self._install_worker()
 
@@ -386,7 +390,6 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_chunk=self._raw_predict_chunk,
             spec=self.spec,
             env=env_or_address,
-            on_reset=self._on_reset,
             on_episode_end=self._on_episode_end,
             on_close=self._on_close,
             trust_entrypoints=(

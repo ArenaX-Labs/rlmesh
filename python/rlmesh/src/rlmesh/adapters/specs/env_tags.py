@@ -23,7 +23,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
-from ..constants import ENV_METADATA_KEY, IMAGE_PRIMARY, INSTRUCTION, JOINT_POS
+from ..constants import ENV_METADATA_KEY
 from ._codec import normalize_spec, one_or_many, to_pair
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
@@ -42,7 +42,7 @@ class ImageTag:
             relative to the canonical upright orientation.
     """
 
-    role: str = IMAGE_PRIMARY
+    role: str
     layout: ImageLayout = "hwc"
     upside_down: bool = False
 
@@ -62,7 +62,7 @@ class StateTag:
             silently overriding them.
     """
 
-    role: str = JOINT_POS
+    role: str
     encoding: RotationEncoding | Sequence[RotationEncoding] | None = None
     range: tuple[float, float] | None = None
 
@@ -75,10 +75,10 @@ class TextTag:
     """A text entry (typically the task instruction) in an observation.
 
     Attributes:
-        role: Semantic role used for matching.
+        role: Semantic role used for matching (required, e.g. ``INSTRUCTION``).
     """
 
-    role: str = INSTRUCTION
+    role: str
 
 
 @dataclass(frozen=True)

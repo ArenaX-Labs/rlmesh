@@ -26,6 +26,7 @@ mod action;
 mod env;
 mod env_tags;
 mod layouts;
+mod leaf_codec;
 mod model;
 mod num;
 mod rotations;

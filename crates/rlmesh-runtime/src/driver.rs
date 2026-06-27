@@ -477,7 +477,7 @@ where
             // roll (a lane in `pending_roll`), substitute the freshly minted id so
             // the env tags its rolled episode with our id; the slot itself rolls to
             // the same id below, after the step.
-            let step_episode_ids = episode_ids_with_roll(&state.episode_ids(), &pending_roll);
+            let step_episode_ids = episode_ids_with_roll(state.episode_ids(), &pending_roll);
             let step_request = StepRequest {
                 action: action_event.action.map(leaves_value),
                 timeout_ms: step_timeout_ms,
@@ -533,7 +533,7 @@ where
             // rolling our own slots to the same ids. The env no longer mints or
             // returns ids — the runtime is authoritative.
             if !pending_roll.is_empty() {
-                let roll_ids = episode_ids_with_roll(&state.episode_ids(), &pending_roll);
+                let roll_ids = episode_ids_with_roll(state.episode_ids(), &pending_roll);
                 pending_roll.clear();
                 let started_episodes = state.observe_episode_ids(roll_ids);
                 self.invoke_started_episodes(state, started_episodes).await;
@@ -1033,10 +1033,11 @@ fn mint_episode_ids(count: usize) -> Vec<String> {
 /// minted next id. Used for both the env down-push and our own slot roll so they
 /// stay byte-identical.
 fn episode_ids_with_roll(
-    current: &[String],
+    mut ids: Vec<String>,
     pending_roll: &std::collections::HashMap<u32, String>,
 ) -> Vec<String> {
-    let mut ids = current.to_vec();
+    // Consume the already-allocated id vector and roll in place; an empty
+    // `pending_roll` (the steady-state common case) is then zero-copy.
     for (env_index, new_id) in pending_roll {
         if let Some(slot) = ids.get_mut(*env_index as usize) {
             *slot = new_id.clone();

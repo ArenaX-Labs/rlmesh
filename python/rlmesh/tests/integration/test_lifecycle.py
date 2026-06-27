@@ -911,9 +911,6 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
     server.start()
     calls: list[str] = []
 
-    def on_reset() -> None:
-        calls.append("reset")
-
     def on_episode_end() -> None:
         calls.append("episode_end")
 
@@ -924,7 +921,6 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
         remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
         model = rlmesh.Model(
             lambda _observation: 0,
-            on_reset=on_reset,
             on_episode_end=on_episode_end,
             on_close=on_close,
         )
@@ -932,7 +928,37 @@ def test_model_lifecycle_callbacks_are_zero_argument() -> None:
     finally:
         server.shutdown()
 
-    assert calls == ["reset", "episode_end", "close"]
+    assert calls == ["episode_end", "close"]
+
+
+def test_hand_driven_session_fires_episode_end_between_episodes() -> None:
+    """A stateful model driven BY HAND (reset/predict/step, not run()) still gets
+    its per-episode reset between episodes: on_episode_end fires once per episode
+    boundary (at the next reset, and at session close for the last), so a stateful
+    local policy clears its state the same as on the run()/served paths.
+    """
+    import rlmesh
+
+    env = TinyEnv()
+    server = env_server(env, rlmesh.ServeOptions(allow_remote_shutdown=True))
+    server.start()
+    ends: list[int] = []
+
+    try:
+        remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+        model = rlmesh.Model(
+            lambda _observation: 0, on_episode_end=lambda: ends.append(1)
+        )
+        with model.session(remote, close_env=True) as sess:
+            for _ in range(2):
+                obs, _info = sess.reset()
+                while not sess.done:
+                    obs, *_rest = sess.step(sess.predict(obs))
+        # Two episodes by hand: episode_end fired once per boundary (the second
+        # reset ends episode 1; session close ends episode 2).
+        assert sum(ends) == 2
+    finally:
+        server.shutdown()
 
 
 def test_server_client_lifecycle_process_exits_promptly() -> None:

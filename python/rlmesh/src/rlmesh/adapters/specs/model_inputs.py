@@ -11,7 +11,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
 
-from ..constants import IMAGE_PRIMARY, INSTRUCTION
 from ._codec import one_or_many
 from .custom_encoding import CustomEncoding
 from .vocabularies import FitMode, ImageLayout, RotationEncoding
@@ -72,7 +71,7 @@ class Image:
             ``width``. Pass ``size`` or ``height``/``width``, not both.
     """
 
-    role: str = IMAGE_PRIMARY
+    role: str
     height: int | None = None
     width: int | None = None
     layout: ImageLayout = "hwc"
@@ -227,7 +226,7 @@ class Text:
             None the input is omitted from the payload instead.
     """
 
-    role: str = INSTRUCTION
+    role: str
     container: Literal["str", "list"] = "str"
     default: str | None = None
 

@@ -4,7 +4,7 @@ Serves a tagged env, then runs an adapted ``Model(spec=...)`` against it:
 the adapter is resolved from the env's published tags in the contract,
 the prediction function works in the model's own format, and the env receives
 actions in its format. This exercises tag -> serve -> resolve_from_contract
--> Model(spec=).run() and the on_reset chaining, over a real transport.
+-> Model(spec=).run() and the on_episode_end chaining, over a real transport.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def _tags() -> adapt.EnvTags:
             "eef_pos": adapt.StateTag(role=adapt.EEF_POS),
             "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
             "gripper": adapt.StateTag(role=adapt.GRIPPER_POS),
-            "instruction": adapt.TextTag(),
+            "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
         },
         action=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -54,7 +54,7 @@ def _model_spec() -> adapt.ModelSpec:
                 adapt.GRIPPER_POS,
                 container="list",
             ),
-            "instruction": adapt.Text(),
+            "instruction": adapt.Text(role=adapt.INSTRUCTION),
         },
         output=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -129,7 +129,7 @@ def test_adapted_model_runs_against_tagged_server() -> None:
     spec = _model_spec()
     env_obj = TinyArmEnv()
 
-    seen: dict[str, Any] = {"resets": 0, "payload_keys": None}
+    seen: dict[str, Any] = {"episode_ends": 0, "payload_keys": None}
 
     def predict(payload: dict[str, Any]) -> Any:
         import numpy as np
@@ -137,8 +137,8 @@ def test_adapted_model_runs_against_tagged_server() -> None:
         seen["payload_keys"] = sorted(payload)
         return np.zeros(spec.output.dim, dtype=np.float32)
 
-    def on_reset() -> None:
-        seen["resets"] = cast(int, seen["resets"]) + 1
+    def on_episode_end() -> None:
+        seen["episode_ends"] = cast(int, seen["episode_ends"]) + 1
 
     server = rlmesh.EnvServer(env_obj, "127.0.0.1:0", tags=tags)
     server.start()
@@ -149,17 +149,19 @@ def test_adapted_model_runs_against_tagged_server() -> None:
         recovered = adapt.EnvTags.from_metadata(client.env_contract.metadata or {})
         assert recovered == tags
 
-        Model(predict, spec=spec, on_reset=on_reset).run(client, max_episodes=1)
+        Model(predict, spec=spec, on_episode_end=on_episode_end).run(
+            client, max_episodes=1
+        )
         client.close()
     finally:
         server.shutdown()
 
     # The prediction function saw the model's declared payload, and the env
-    # received a transformed 7-dim action; reset chained to the adapter.
+    # received a transformed 7-dim action; the episode-end hook chained.
     assert seen["payload_keys"] == ["image", "instruction", "state"]
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
-    assert cast(int, seen["resets"]) >= 1
+    assert cast(int, seen["episode_ends"]) >= 1
 
 
 class TinyArmFactory(rlmesh.EnvFactory):
@@ -224,7 +226,7 @@ def test_instruction_override_reaches_predict_in_declared_shape(
     spec = adapt.ModelSpec(
         input={
             "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8),
-            "instruction": adapt.Text(container=container),  # pyright: ignore[reportArgumentType]
+            "instruction": adapt.Text(role=adapt.INSTRUCTION, container=container),  # pyright: ignore[reportArgumentType]
         },
         output=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

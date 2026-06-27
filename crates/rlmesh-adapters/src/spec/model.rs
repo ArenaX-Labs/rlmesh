@@ -7,10 +7,11 @@ mod text;
 
 use std::collections::BTreeMap;
 
-use serde::de::{self, Visitor};
+use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::action::Action;
+use super::leaf_codec::leaf_codec;
 
 pub use custom::Custom;
 pub use image::Image;
@@ -148,75 +149,24 @@ pub enum ModelLeaf {
     },
 }
 
-/// The leaf-vocabulary `type` discriminants that mark a JSON object as a known
-/// [`ModelLeaf`] variant; any other string `type` is an `Unknown` leaf.
-pub const MODEL_LEAF_TYPES: &[&str] = &["image", "state", "text", "custom"];
-
-/// Owned mirror of the *known* [`ModelLeaf`] variants. Reuses serde's
-/// internally-tagged derive (which strips `type` before the variant's flatten
-/// capture sees it) so the fragile tagged+flatten interaction lives in one
-/// derive, not hand-rolled dispatch.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum ModelLeafKnown {
-    Image(Image),
-    State(State),
-    Text(Text),
-    Custom(Custom),
-}
-
-impl From<ModelLeafKnown> for ModelLeaf {
-    fn from(known: ModelLeafKnown) -> Self {
-        match known {
-            ModelLeafKnown::Image(input) => ModelLeaf::Image(input),
-            ModelLeafKnown::State(input) => ModelLeaf::State(input),
-            ModelLeafKnown::Text(input) => ModelLeaf::Text(input),
-            ModelLeafKnown::Custom(input) => ModelLeaf::Custom(input),
-        }
-    }
-}
-
-/// Borrowed mirror for Serialize (re-emits the internally-tagged known form).
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum ModelLeafKnownRef<'a> {
-    Image(&'a Image),
-    State(&'a State),
-    Text(&'a Text),
-    Custom(&'a Custom),
-}
-
-impl Serialize for ModelLeaf {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            ModelLeaf::Image(input) => ModelLeafKnownRef::Image(input).serialize(serializer),
-            ModelLeaf::State(input) => ModelLeafKnownRef::State(input).serialize(serializer),
-            ModelLeaf::Text(input) => ModelLeafKnownRef::Text(input).serialize(serializer),
-            ModelLeaf::Custom(input) => ModelLeafKnownRef::Custom(input).serialize(serializer),
-            // The raw object already embeds `type`; emit it verbatim.
-            ModelLeaf::Unknown { raw, .. } => raw.serialize(serializer),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ModelLeaf {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let kind = value
-            .get("type")
-            .and_then(|tag| tag.as_str())
-            .ok_or_else(|| de::Error::custom("a model input leaf needs a string \"type\""))?;
-        if MODEL_LEAF_TYPES.contains(&kind) {
-            // Malformed payload of a recognized kind still hard-errors here.
-            ModelLeafKnown::deserialize(value)
-                .map(ModelLeaf::from)
-                .map_err(de::Error::custom)
-        } else {
-            Ok(ModelLeaf::Unknown {
-                kind: kind.to_owned(),
-                raw: value,
-            })
-        }
+// The fragile, internally-tagged + flatten-aware serde codec for this leaf —
+// shared verbatim with `ObsLeaf` — lives in one place. The macro emits the
+// `MODEL_LEAF_TYPES` vocabulary, the owned/borrowed known-variant mirrors, the
+// `From` lift, and the hand-written Serialize/Deserialize impls. Unlike
+// `ObsLeaf`, the `Unknown` arm does not lift `role` (`lift_role: no`): a model
+// input of an unknown kind is always an `UnsupportedKind` error at resolve.
+leaf_codec! {
+    leaf: ModelLeaf,
+    known: ModelLeafKnown,
+    known_ref: ModelLeafKnownRef,
+    vocab: MODEL_LEAF_TYPES = "The leaf-vocabulary `type` discriminants that mark a JSON object as a known\n[`ModelLeaf`] variant; any other string `type` is an `Unknown` leaf.",
+    missing_type_msg: "a model input leaf needs a string \"type\"",
+    lift_role: no,
+    variants: {
+        Image(Image) = "image",
+        State(State) = "state",
+        Text(Text) = "text",
+        Custom(Custom) = "custom",
     }
 }
 

@@ -138,5 +138,13 @@ pub use rlmesh_runtime::RuntimeReport;
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 
+/// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
+/// never repeats). The single id-format home for this crate's id authorities (the
+/// direct env client and the in-process / remote model paths). The runtime driver
+/// mints its own ids in `rlmesh-runtime` (it does not depend on this crate).
+pub(crate) fn mint_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 #[cfg(test)]
 mod tests;

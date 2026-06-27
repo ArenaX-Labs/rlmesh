@@ -242,8 +242,8 @@ def start_prebuilt_container(
     *,
     requested_source: str,
     binding: Mapping[str, object],
-    num_envs: int,
-    vectorization_mode: str | None,
+    num_envs: int | None = None,
+    vectorization_mode: str | None = None,
     gpus: str | None = None,
 ) -> SandboxInfo:
     """Run a prebuilt rlmesh-serving image and return its connection info.
@@ -252,6 +252,11 @@ def start_prebuilt_container(
     as environment variables (``RLMESH_MAKE_KWARGS`` etc.), the serve port is
     published on a Docker-assigned host port, and the host port is read back. No
     build and no rlmesh pin -- the image is whatever the publisher baked.
+
+    ``num_envs`` / ``vectorization_mode`` are the vectorized-env eval shape: when
+    left ``None`` (the model path -- a model is never vectorized) the corresponding
+    ``RLMESH_NUM_ENVS`` / ``RLMESH_VECTORIZATION_MODE`` env vars are not injected, so
+    the container serves in its default (single, model) mode.
     """
     if shutil.which("docker") is None:
         raise RuntimeError(

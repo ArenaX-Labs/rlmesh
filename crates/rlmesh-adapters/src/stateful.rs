@@ -275,7 +275,15 @@ pub fn assemble_obs(
             let Value::Tensor(frame) = std::mem::replace(slot, Value::Number(0.0)) else {
                 unreachable!("frame confirmed a tensor above")
             };
-            let window = windows.entry(entry.key.clone()).or_default();
+            // After the first frame the window exists, so the steady-state path is a
+            // borrow with no key clone; only the first-frame insert pays the clone.
+            let window = if windows.contains_key(&entry.key) {
+                windows
+                    .get_mut(&entry.key)
+                    .expect("window present (just checked)")
+            } else {
+                windows.entry(entry.key.clone()).or_default()
+            };
             let stacked_tensor = stack_frame(window, frame, entry.depth)?;
             *slot = Value::Tensor(stacked_tensor);
         }

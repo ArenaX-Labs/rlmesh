@@ -127,7 +127,7 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
             print(adapter.describe())
             model = Model(
                 adapter.wrap_predict(model_entry.load_predict_fn()),
-                on_reset=adapter.reset,
+                on_episode_end=adapter.reset,
             )
             model.run(env, max_episodes=episodes)
     finally:

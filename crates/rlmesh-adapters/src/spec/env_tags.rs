@@ -9,12 +9,12 @@
 
 use std::collections::BTreeMap;
 
-use serde::de;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::AcceptSet;
 use super::action::Action;
 use super::layouts::ImageLayout;
+use super::leaf_codec::leaf_codec;
 use super::model::{NodeShape, TreeNode, deserialize_node};
 use super::rotations::RotationEncoding;
 
@@ -187,76 +187,24 @@ pub enum ObsLeaf {
     },
 }
 
-/// The leaf-vocabulary `type` discriminants that mark a JSON object as a known
-/// [`ObsLeaf`] variant; any other string `type` is an `Unknown` leaf.
-pub const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
-
-/// Owned mirror of the *known* [`ObsLeaf`] variants — see
-/// `ModelLeafKnown` for why the serde derive is reused here.
-#[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum ObsLeafKnown {
-    Image(ImageTag),
-    State(StateTag),
-    Split(SplitLayout),
-    Text(TextTag),
-}
-
-impl From<ObsLeafKnown> for ObsLeaf {
-    fn from(known: ObsLeafKnown) -> Self {
-        match known {
-            ObsLeafKnown::Image(tag) => ObsLeaf::Image(tag),
-            ObsLeafKnown::State(tag) => ObsLeaf::State(tag),
-            ObsLeafKnown::Split(layout) => ObsLeaf::Split(layout),
-            ObsLeafKnown::Text(tag) => ObsLeaf::Text(tag),
-        }
-    }
-}
-
-/// Borrowed mirror for Serialize (re-emits the internally-tagged known form).
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum ObsLeafKnownRef<'a> {
-    Image(&'a ImageTag),
-    State(&'a StateTag),
-    Split(&'a SplitLayout),
-    Text(&'a TextTag),
-}
-
-impl Serialize for ObsLeaf {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            ObsLeaf::Image(tag) => ObsLeafKnownRef::Image(tag).serialize(serializer),
-            ObsLeaf::State(tag) => ObsLeafKnownRef::State(tag).serialize(serializer),
-            ObsLeaf::Split(layout) => ObsLeafKnownRef::Split(layout).serialize(serializer),
-            ObsLeaf::Text(tag) => ObsLeafKnownRef::Text(tag).serialize(serializer),
-            ObsLeaf::Unknown { raw, .. } => raw.serialize(serializer),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for ObsLeaf {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let kind = value
-            .get("type")
-            .and_then(|tag| tag.as_str())
-            .ok_or_else(|| de::Error::custom("an observation leaf needs a string \"type\""))?;
-        if OBS_LEAF_TYPES.contains(&kind) {
-            ObsLeafKnown::deserialize(value)
-                .map(ObsLeaf::from)
-                .map_err(de::Error::custom)
-        } else {
-            let role = value
-                .get("role")
-                .and_then(|role| role.as_str())
-                .map(str::to_owned);
-            Ok(ObsLeaf::Unknown {
-                kind: kind.to_owned(),
-                role,
-                raw: value,
-            })
-        }
+// The fragile, internally-tagged + flatten-aware serde codec for this leaf —
+// shared verbatim with `ModelLeaf` — lives in one place. The macro emits the
+// `OBS_LEAF_TYPES` vocabulary, the owned/borrowed known-variant mirrors, the
+// `From` lift, and the hand-written Serialize/Deserialize impls. `lift_role:
+// yes` opportunistically lifts the raw object's top-level `role` into the
+// `Unknown` arm (absent ⇒ unreferenceable ⇒ silently dropped at resolve).
+leaf_codec! {
+    leaf: ObsLeaf,
+    known: ObsLeafKnown,
+    known_ref: ObsLeafKnownRef,
+    vocab: OBS_LEAF_TYPES = "The leaf-vocabulary `type` discriminants that mark a JSON object as a known\n[`ObsLeaf`] variant; any other string `type` is an `Unknown` leaf.",
+    missing_type_msg: "an observation leaf needs a string \"type\"",
+    lift_role: yes,
+    variants: {
+        Image(ImageTag) = "image",
+        State(StateTag) = "state",
+        Split(SplitLayout) = "split",
+        Text(TextTag) = "text",
     }
 }
 

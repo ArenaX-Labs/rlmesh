@@ -610,12 +610,21 @@ async fn prepare_predict_locked(
     route_configs: &Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Result<PreparedPredict> {
     let mut observation = model_observation_from_endpoint_request(request)?;
-    let route = observation.route.clone();
-    let route_key = model_route_config_key(&route);
+    // The response only echoes the routing scalars (`AdapterContext` = session/env/
+    // request id; see `From<&ModelRouteContext>`), never the per-row `episode_ids`.
+    // `predict` consumes `observation` below, so capture the route here — but clone
+    // only the scalars and skip the per-lane id vector that would otherwise be
+    // cloned on every predict.
+    let route = ModelRouteContext {
+        session_id: observation.route.session_id.clone(),
+        env_id: observation.route.env_id.clone(),
+        request_id: observation.route.request_id.clone(),
+        ..Default::default()
+    };
     let config = route_configs
         .lock()
         .await
-        .get(&route_key)
+        .get(&route.env_id)
         .cloned()
         .ok_or_else(|| Error::model("model env adapter was not resolved"))?;
     observation.env_contract = config.env_contract;
@@ -984,10 +993,6 @@ fn route_config_key(context: &rlmesh_proto::model::v1::AdapterContext) -> Option
     }
     // env_id is globally unique (UUIDv7), so it alone keys the adapter.
     Some(context.env_id.clone())
-}
-
-fn model_route_config_key(route: &super::types::ModelRouteContext) -> String {
-    route.env_id.clone()
 }
 
 /// Log an inbound Join-stream error meaningfully instead of swallowing it.

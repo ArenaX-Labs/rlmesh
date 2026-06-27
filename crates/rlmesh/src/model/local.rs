@@ -43,7 +43,7 @@ where
     }
     // The runtime is the env-id authority (R1); for the in-process path mint a
     // UUIDv7 container id. The human env name lives on the SDK's own contract.
-    let env_id = uuid::Uuid::now_v7().to_string();
+    let env_id = crate::mint_id();
     let num_envs = handshake.num_envs;
     let session_id = format!("local-{}", std::process::id());
 

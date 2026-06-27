@@ -55,7 +55,10 @@ RANDOM_SAMPLE = _RandomSample()
 class CoercedModel(NamedTuple):
     predict: Callable[[Any], Any]
     spec: object | None
-    on_reset: Callable[[], None] | None
+    # A duck-typed policy's ``reset()`` is wired here, to the episode-END edge: it
+    # is the only per-episode boundary both the local loop and the served wire path
+    # signal, so a stateful policy clears its state identically either way.
+    on_episode_end: Callable[[], None] | None
     on_close: Callable[[], None] | None
     policy: Any
 
@@ -164,7 +167,6 @@ class Session(Generic[ObsT, ActT]):
         predict: Callable[[Any], Any] | None = None,
         predict_chunk: Callable[..., Any] | None = None,
         spec: object | None = None,
-        on_reset: Callable[[], None] | None = None,
         on_episode_end: Callable[[], None] | None = None,
         on_close: Callable[[], None] | None = None,
         trust_entrypoints: bool = False,
@@ -185,7 +187,6 @@ class Session(Generic[ObsT, ActT]):
         self._action_horizon = action_horizon
         self._spec = spec
         self._env = env
-        self._on_reset = on_reset
         self._on_episode_end = on_episode_end
         self._on_close = on_close
         self._trust = trust_entrypoints
@@ -208,6 +209,10 @@ class Session(Generic[ObsT, ActT]):
         self._truncated = False
         self._steps = 0
         self._reward = 0.0
+        #: Whether an episode has been reset and not yet ended. The local episode
+        #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
+        #: begins or the session closes — see `_end_episode`.
+        self._episode_open = False
 
     def _ensure_connected(self) -> None:
         if self._connected:
@@ -246,21 +251,43 @@ class Session(Generic[ObsT, ActT]):
         """Whether the current episode has terminated or truncated."""
         return self._terminated or self._truncated
 
+    def _end_episode(self) -> None:
+        """Fire the local model's `on_episode_end` once for the currently-open episode.
+
+        The episode boundary on the local drive path: an open episode ends when the
+        next reset() begins, or when the session closes. This fires the same
+        `on_episode_end` the served path drives via `ResetAdapter`, so a stateful
+        local model (a subclass/duck-typed policy's `reset()` is wired here) clears
+        its per-episode state identically whether driven by hand or via `run()`. For
+        a served model `_on_episode_end` is None (the remote engine owns the hook),
+        so this is a no-op there. Idempotent: safe to call from both reset() and
+        close().
+        """
+        if self._episode_open:
+            self._episode_open = False
+            if self._on_episode_end is not None:
+                self._on_episode_end()
+
     def reset(self, *, seed: int | None = None) -> tuple[ObsT, Mapping[str, Any]]:
-        """Begin a new episode: reset the env and the model's adapter/lifecycle state."""
+        """Begin a new episode: end the previous one, then reset the env and adapter.
+
+        Ending the previous episode fires the model's `on_episode_end` (the local
+        per-episode boundary), so a stateful model clears its state between episodes
+        on the hand-driven path too, not only via `run()`.
+        """
         self._ensure_connected()
+        self._end_episode()
         obs, info = _reset(self._client, seed)
         if self._model_client is not None:
             self._model_client.reset()  # mark a reset boundary on the served route
         else:
             if self._adapter is not None:
                 self._adapter.reset()
-            if self._on_reset is not None:
-                self._on_reset()
             self._replay = ChunkReplay(self._horizon)
         self._terminated = self._truncated = False
         self._steps = 0
         self._reward = 0.0
+        self._episode_open = True
         return cast("ObsT", obs), info
 
     def predict(self, observation: ObsT) -> ActT:
@@ -366,9 +393,10 @@ class Session(Generic[ObsT, ActT]):
                         truncated=self._truncated,
                     )
                 )
-                if self._on_episode_end is not None:
-                    self._on_episode_end()
         finally:
+            # End the final episode (earlier ones end at the next reset()), then the
+            # close hook — `["episode_end", ..., "close"]`.
+            self._end_episode()
             if self._on_close is not None:
                 try:
                     self._on_close()
@@ -386,6 +414,9 @@ class Session(Generic[ObsT, ActT]):
         started (e.g. a ``SandboxModel`` container). For the env, shuts it down only on
         the ``close_env`` opt-in and closes a connection this session dialed.
         """
+        # End an episode left open by a hand-driven loop, so a stateful model's
+        # `on_episode_end` fires for the last episode even without a following reset().
+        self._end_episode()
         model_client = self._model_client
         if model_client is not None:
             self._model_client = None

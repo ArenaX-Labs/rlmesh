@@ -17,7 +17,7 @@ use rlmesh_adapters::v1::{
 
 use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
-use super::types::{ModelObservation, ModelRouteContext};
+use super::types::ModelObservation;
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
 use crate::{Error, Result};
 
@@ -66,12 +66,6 @@ impl AdaptedModelHandler {
     }
 }
 
-/// The adapter map is keyed by `env_id` (one resolved adapter per connected env,
-/// no sharing).
-fn route_key(route: &ModelRouteContext) -> String {
-    route.env_id.clone()
-}
-
 /// The top-level obs keys to materialize for `config`: a declarative-only route
 /// needs just the referenced keys (lazy); a route with custom holes needs the
 /// full observation so the custom callback sees everything.
@@ -106,7 +100,7 @@ fn predict_route(
     predict: &Arc<dyn PredictFn>,
     observation: ModelObservation,
 ) -> Result<PredictFrames> {
-    let episode_ids = observation.episode_ids();
+    let episode_ids = &observation.route.episode_ids;
     let num_envs = observation.num_envs;
 
     // The wire contract requires every predict request to carry a decodable
@@ -315,7 +309,7 @@ impl ModelHandler for AdaptedModelHandler {
     }
 
     async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
-        let entry = self.entry(&route_key(&observation.route));
+        let entry = self.entry(&observation.route.env_id);
         let predict = Arc::clone(&self.predict);
         // Decode + frame-stack + the model's predict are CPU/host work; run them
         // off the async worker so concurrent (pipelined) requests on other routes

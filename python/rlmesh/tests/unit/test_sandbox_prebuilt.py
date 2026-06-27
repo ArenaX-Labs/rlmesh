@@ -149,7 +149,7 @@ def test_sandbox_model_params_inject_make_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, list[str]] = {}
-    monkeypatch.setattr(model_mod, "reap_orphans", lambda: None)
+    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
     monkeypatch.setattr(model_mod.subprocess, "run", _docker_dispatch(captured))
 
     model = rlmesh.SandboxModel(

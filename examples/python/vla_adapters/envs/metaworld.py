@@ -34,7 +34,7 @@ TAGS = adapt.EnvTags(
             adapt.Field(adapt.GRIPPER_POS, 1),
             adapt.Field(dim=10),  # object + goal positions: not consumed here
         ),
-        "task": adapt.TextTag(),
+        "task": adapt.TextTag(role=adapt.INSTRUCTION),
     },
     # Metaworld is position-controlled: the model's rotation output has no env
     # counterpart and is dropped, the same way unused obs features are.

@@ -29,7 +29,7 @@ def _make(
 def _spec(extra: str = "forbid") -> ParamSpec:
     return ParamSpec(
         Param("suite", str, choices=("a", "b"), group="task"),
-        Param("task_id", "int", default=0, ge=0, le=9),
+        Param("task_id", "int", default=0),
         Param("cam_width", "int", default=256),
         extra=extra,  # type: ignore[arg-type]
     )
@@ -60,26 +60,9 @@ def test_resolve_missing_required_raises_before_construction() -> None:
         resolve(_spec(), _make, {})
 
 
-def test_resolve_choice_and_range_are_enforced() -> None:
+def test_resolve_choices_are_enforced() -> None:
     with pytest.raises(ParamError, match="not in choices"):
         resolve(_spec(), _make, {"suite": "z"})
-    with pytest.raises(ParamError, match="ge=0"):
-        resolve(_spec(), _make, {"suite": "a", "task_id": -1})
-    with pytest.raises(ParamError, match="le=9"):
-        resolve(_spec(), _make, {"suite": "a", "task_id": 99})
-
-
-def test_param_rejects_ge_le_on_non_numeric_type() -> None:
-    # ge/le are numeric bounds; declaring them on a non-numeric type is an author
-    # error caught at declaration, not deferred to a confusing resolve-time failure
-    # against the operator's value.
-    with pytest.raises(ValueError, match="numeric bounds"):
-        Param("mode", "enum", choices=("lo", "hi"), ge=0)
-    with pytest.raises(ValueError, match="numeric bounds"):
-        Param("name", str, le=10)
-    # Numeric types (Python type or string name) remain valid.
-    Param("task_id", "int", ge=0, le=9)
-    Param("lr", float, ge=0.0, le=1.0)
 
 
 def test_resolve_unknown_key_forbidden_by_default() -> None:
@@ -178,7 +161,7 @@ class _Env(rlmesh.EnvFactory):
     tags = None
     params = ParamSpec(
         Param("suite", str, choices=("a", "b")),
-        Param("task_id", "int", default=0, ge=0),
+        Param("task_id", "int", default=0),
         extra="forbid",
     )
 
@@ -220,8 +203,9 @@ def test_load_env_from_spec_factory_kind_builds_a_binding() -> None:
 
 
 def test_resolve_rejects_non_finite_float() -> None:
-    # NaN/inf compare False against every ge/le bound and would slip the gate.
-    spec = ParamSpec(Param("lr", "float", default=0.1, ge=0.0, le=1.0))
+    # A construction param is never legitimately NaN/inf; the float coercion
+    # rejects them outright.
+    spec = ParamSpec(Param("lr", "float", default=0.1))
 
     def target(*, lr: float = 0.1) -> None: ...
 

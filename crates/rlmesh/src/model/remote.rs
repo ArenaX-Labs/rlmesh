@@ -181,7 +181,7 @@ impl RemoteModel {
             action_space,
             env_contract,
             session_id: new_session_id(),
-            env_id: Uuid::now_v7().to_string(),
+            env_id: crate::mint_id(),
             request_counter: 0,
             configured: false,
             episode_id: None,
@@ -230,7 +230,7 @@ impl RemoteModel {
         // The client is the local id authority for the direct path: mint a fresh
         // UUIDv7 per episode (never repeats, time-ordered). The new id is itself
         // the reset boundary on the wire.
-        self.episode_id = Some(Uuid::now_v7().to_string());
+        self.episode_id = Some(crate::mint_id());
         // Drop any un-replayed chunk tail: a new episode re-plans from its first
         // observation. This is the only flush point — the client cannot observe the
         // server's episode end, so a stale tail would otherwise bleed across the

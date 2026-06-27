@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import rlmesh
 import rlmesh._sandbox._model as model_mod
+import rlmesh._sandbox.session as session_mod
 
 
 class _StartProc:
@@ -61,7 +62,7 @@ def test_image_source_serve_starts_a_published_container(
     assert cmd[:3] == ["docker", "run", "-d"]
     assert cmd[-1] == "my-model:latest"
     # Publishes the serve port on a Docker-assigned host port (BUG #4: no TOCTOU).
-    assert f"127.0.0.1:0:{model_mod._CONTAINER_SERVE_PORT}" in cmd
+    assert f"127.0.0.1:0:{session_mod.CONTAINER_SERVE_PORT}" in cmd
     assert "--cap-drop" in cmd and "no-new-privileges" in cmd
     assert model.container_id == "container-abc"
     # The address is read back from `docker port`, not from a host-side guess.
@@ -69,7 +70,7 @@ def test_image_source_serve_starts_a_published_container(
         "docker",
         "port",
         "container-abc",
-        str(model_mod._CONTAINER_SERVE_PORT),
+        str(session_mod.CONTAINER_SERVE_PORT),
     ]
     assert model.address == "127.0.0.1:49153"
 
@@ -341,12 +342,12 @@ def test_resolve_published_port_accepts_ipv6_mapping(
         stderr = ""
 
     monkeypatch.setattr(
-        model_mod.subprocess,
+        session_mod.subprocess,
         "run",
         lambda *_a, **_k: _IPv6PortProc(),
     )
 
     # #14: an IPv6 host binding must parse (mirrors the Rust parser tested
-    # against `[::]:51000`), not raise "published no host port".
-    model = rlmesh.SandboxModel("image://m:latest")
-    assert model._resolve_published_port("container-abc") == 51000
+    # against `[::]:51000`), not raise "published no host port". The model path
+    # now shares this helper with the env path (session._resolve_published_port).
+    assert session_mod._resolve_published_port("container-abc") == 51000

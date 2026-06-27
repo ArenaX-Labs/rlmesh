@@ -19,7 +19,7 @@ tags = adapt.EnvTags(
         "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
         "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
         "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextTag(),
+        "goal": adapt.TextTag(role=adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -67,7 +67,7 @@ spec = adapt.ModelSpec(
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "task": adapt.Text(),
+        "task": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

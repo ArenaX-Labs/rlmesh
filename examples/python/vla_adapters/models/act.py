@@ -37,7 +37,7 @@ SPEC = adapt.ModelSpec(
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
             adapt.State(adapt.GRIPPER_POS, dim=1),
         ),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     # The layout of ONE action; the chunk dimension is adapter business.
     output=adapt.Action(
@@ -57,7 +57,7 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
     single action to the resolved adapter for spec-driven conversion.
 
     Call :meth:`reset` at episode boundaries (wire it to the model worker's
-    ``on_reset`` callback) so chunks never ensemble across episodes.
+    ``on_episode_end`` callback) so chunks never ensemble across episodes.
     """
 
     def __init__(

@@ -20,23 +20,28 @@ from rlmesh._models._eval import coerce_model
 
 
 class _Policy:
-    """A duck-typed policy object (NOT a ``Model`` subclass): wrapped via coerce_model."""
+    """A duck-typed policy object (NOT a ``Model`` subclass): wrapped via coerce_model.
+
+    rlmesh treats ``__init__`` as authoritative for a duck-typed policy and never
+    calls ``load()`` (doing so would load weights twice). ``reset()`` is wired to the
+    episode-END edge.
+    """
 
     # a stand-in for a ModelSpec; coercion only reads the attribute by name.
     spec = "SPEC"
 
     def __init__(self) -> None:
-        self.loaded = False
-        self.resets = 0
+        self.loads = 1  # constructs fully here
+        self.episode_ends = 0
 
     def load(self) -> None:
-        self.loaded = True
+        self.loads += 1  # must NOT be auto-called by rlmesh (would double-load)
 
     def predict(self, observation: object) -> int:
         return 7
 
     def reset(self) -> None:
-        self.resets += 1
+        self.episode_ends += 1
 
     def close(self) -> None:
         pass
@@ -48,10 +53,11 @@ def test_looks_like_policy_gate() -> None:
     assert looks_like_policy(lambda obs: 0) is False  # bare callable has no .predict
 
 
-def test_construct_authored_model_instantiates_and_loads() -> None:
+def test_construct_authored_model_instantiates_without_double_loading() -> None:
+    # __init__ is authoritative for a duck-typed policy; rlmesh must NOT call load().
     inst = construct_authored_model(_Policy)
     assert isinstance(inst, _Policy)
-    assert inst.loaded is True
+    assert inst.loads == 1
     assert inst.predict(None) == 7
 
 
@@ -59,20 +65,21 @@ def test_construct_authored_model_accepts_an_instance() -> None:
     given = _Policy()
     inst = construct_authored_model(given)
     assert inst is given
-    assert inst.loaded is True
+    assert inst.loads == 1  # not re-loaded
 
 
 def test_coerce_model_wires_policy_into_the_policy_slot() -> None:
     coerced = coerce_model(_Policy, spec=None)
     assert isinstance(coerced.policy, _Policy)
-    assert coerced.policy.loaded is True
+    assert coerced.policy.loads == 1  # __init__ only; no auto load()
     assert coerced.predict == coerced.policy.predict  # bound method of the instance
     assert coerced.spec == "SPEC"  # falls back to the policy's spec
-    # reset/close are the policy's bound methods, so the run loop fires them.
-    assert coerced.on_reset is not None
-    assert coerced.on_reset == coerced.policy.reset
-    coerced.on_reset()
-    assert coerced.policy.resets == 1
+    # reset/close are the policy's bound methods; reset() fires at the episode-END
+    # edge (on_episode_end), the same on local and served paths.
+    assert coerced.on_episode_end is not None
+    assert coerced.on_episode_end == coerced.policy.reset
+    coerced.on_episode_end()
+    assert coerced.policy.episode_ends == 1
 
 
 def test_coerce_model_explicit_spec_overrides_policy_spec() -> None:
@@ -85,7 +92,7 @@ def test_coerce_model_bare_callable_is_unchanged() -> None:
     coerced = coerce_model(fn, spec=None)
     assert coerced.predict is fn
     assert coerced.policy is None
-    assert coerced.on_reset is None
+    assert coerced.on_episode_end is None
 
 
 def test_coerce_model_rejects_non_callable_non_policy() -> None:

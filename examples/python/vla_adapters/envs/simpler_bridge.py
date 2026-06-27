@@ -23,7 +23,7 @@ TAGS = adapt.EnvTags(
             "eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_wxyz"),
             "gripper_width": adapt.StateTag(role=adapt.GRIPPER_POS, range=(0.0, 0.08)),
         },
-        "task_instruction": adapt.TextTag(),
+        "task_instruction": adapt.TextTag(role=adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

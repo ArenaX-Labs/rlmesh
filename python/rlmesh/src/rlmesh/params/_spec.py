@@ -27,7 +27,7 @@ class Param:
     """One declared construction parameter -- validated, presentable, sweepable.
 
     Declaring a ``Param`` *is* the act of marking a knob primary: it is presented
-    as a first-class widget, validated (type/choices/range/required) before
+    as a first-class widget, validated (type/choices/required) before
     construction, and offered as a sweep axis. Undeclared keyword args of
     ``make``/``load`` are still presented and type-checked for free (the
     signature-derived tier); ``Param`` enriches one with domains, choices,
@@ -38,8 +38,8 @@ class Param:
         type: A Python type (``int``/``float``/``str``/``bool``) or its string
             name, or ``"enum"`` (domain defined entirely by ``choices``).
         default: The default value; omit for a required param.
-        choices: Allowed values; a supplied value outside them is rejected.
-        ge / le: Inclusive numeric bounds.
+        choices: Allowed values -- the enumeration/sweep axis; a supplied value
+            outside them is rejected.
         description: Human-facing help text for the dashboard widget.
         group: Optional UI grouping label (advisory; the core never reads it).
     """
@@ -48,27 +48,8 @@ class Param:
     type: type | str = "str"
     default: Any = _UNSET
     choices: tuple[Any, ...] | None = None
-    ge: float | None = None
-    le: float | None = None
     description: str = ""
     group: str | None = None
-
-    def __post_init__(self) -> None:
-        # ``ge``/``le`` are numeric bounds. Declaring them on a non-numeric type
-        # (``str``/``bool``/``enum``/custom) is an author mistake that would
-        # otherwise surface confusingly at resolve time as a "ge/le requires a
-        # numeric value" error against the *operator's* value — fail at the
-        # declaration instead, naming the real culprit.
-        if (self.ge is not None or self.le is not None) and self.type not in (
-            int,
-            float,
-            "int",
-            "float",
-        ):
-            raise ValueError(
-                f"Param {self.name!r}: ge/le are numeric bounds but type is "
-                f"{self.type!r}; remove the bound or declare type int/float"
-            )
 
     @property
     def required(self) -> bool:

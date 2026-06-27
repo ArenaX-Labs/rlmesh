@@ -244,10 +244,6 @@ def _coerce(param: Param, value: object) -> object:
         raise ParamError(
             f"{param.name}: {coerced!r} not in choices {list(param.choices)}"
         )
-    if param.ge is not None and _as_number(param.name, coerced) < param.ge:
-        raise ParamError(f"{param.name}: {coerced!r} < ge={param.ge}")
-    if param.le is not None and _as_number(param.name, coerced) > param.le:
-        raise ParamError(f"{param.name}: {coerced!r} > le={param.le}")
     return coerced
 
 
@@ -270,8 +266,7 @@ def _coerce_scalar(name: str, kind: str, value: object) -> object:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ParamError(f"{name}: expected float, got {_typename(value)}")
         result = float(value)
-        # NaN/inf compare False against every ge/le bound, so they would silently
-        # bypass the range gate; a construction param is never legitimately NaN/inf.
+        # A construction param is never legitimately NaN/inf; reject them outright.
         if not math.isfinite(result):
             raise ParamError(f"{name}: expected a finite float, got {result!r}")
         return result
@@ -335,10 +330,6 @@ def _param_to_dict(param: Param) -> dict[str, object]:
         out["default"] = _json_safe(param.default)
     if param.choices is not None:
         out["choices"] = [_json_safe(c) for c in param.choices]
-    if param.ge is not None:
-        out["ge"] = param.ge
-    if param.le is not None:
-        out["le"] = param.le
     if param.description:
         out["description"] = param.description
     if param.group is not None:
@@ -416,14 +407,6 @@ def _json_safe(value: object) -> object:
     if isinstance(value, (list, tuple)):
         return [_json_safe(v) for v in cast("Sequence[object]", value)]
     return repr(value)
-
-
-def _as_number(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ParamError(
-            f"{name}: ge/le requires a numeric value, got {_typename(value)}"
-        )
-    return float(value)
 
 
 def _typename(value: object) -> str:

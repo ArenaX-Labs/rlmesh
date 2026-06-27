@@ -26,7 +26,7 @@ TAGS = adapt.EnvTags(
         "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
         "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
         "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "instruction": adapt.TextTag(),
+        "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

@@ -184,7 +184,7 @@
             "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NO_ADAPTER": {
@@ -207,17 +207,9 @@
             "kind": "attribute",
             "signature": "description: str"
           },
-          "ge": {
-            "kind": "attribute",
-            "signature": "ge: float | None"
-          },
           "group": {
             "kind": "attribute",
             "signature": "group: str | None"
-          },
-          "le": {
-            "kind": "attribute",
-            "signature": "le: float | None"
           },
           "name": {
             "kind": "attribute",
@@ -232,7 +224,7 @@
             "signature": "type: type | str"
           }
         },
-        "signature": "Param(name: str, type: type | str = 'str', default: Any = _UNSET, choices: tuple[Any, ...] | None = None, ge: float | None = None, le: float | None = None, description: str = '', group: str | None = None)",
+        "signature": "Param(name: str, type: type | str = 'str', default: Any = _UNSET, choices: tuple[Any, ...] | None = None, description: str = '', group: str | None = None)",
         "stability": "Experimental"
       },
       "ParamSpec": {
@@ -726,7 +718,7 @@
             "signature": "step(action: ActT)"
           }
         },
-        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, predict_chunk: Callable[..., Any] | None = None, spec: object | None = None, on_reset: Callable[[], None] | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1, model_client: PyModelClient | None = None, owner: Any = None)",
+        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, predict_chunk: Callable[..., Any] | None = None, spec: object | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', action_horizon: int = 1, model_client: PyModelClient | None = None, owner: Any = None)",
         "stability": "Stable"
       },
       "Tensor": {
@@ -900,7 +892,7 @@
             "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {
@@ -1411,7 +1403,7 @@
             "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Stable"
       },
       "NumpyValue": {
@@ -2435,7 +2427,7 @@
             "signature": "spec: object | None"
           }
         },
-        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_reset: LifecycleCallback | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
+        "signature": "Model(source: Callable[..., object] | object | None = None, *, spec: object | None = None, on_episode_end: LifecycleCallback | None = None, on_close: LifecycleCallback | None = None, trust_entrypoints: bool = False) -> None",
         "stability": "Experimental"
       },
       "RemoteEnv": {

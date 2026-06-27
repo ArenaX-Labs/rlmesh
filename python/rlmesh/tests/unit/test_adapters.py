@@ -138,7 +138,7 @@ LIBERO_ENV = Env(
             "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
             "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
             "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
-            "instruction": adapt.TextTag(),
+            "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
         },
         action=LIBERO_ACTION,
     ),
@@ -194,7 +194,7 @@ SMOLVLA = adapt.ModelSpec(
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -269,7 +269,7 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
     # of a hand-rolled invert_gripper_action escape hatch on the model side.
     env = Env(
         tags=adapt.EnvTags(
-            observation={"instruction": adapt.TextTag()},
+            observation={"instruction": adapt.TextTag(role=adapt.INSTRUCTION)},
             action=adapt.Action(
                 adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, invert=True, binary=True),
             ),
@@ -278,7 +278,7 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
         action_space=box(1, low=-1.0, high=1.0),
     )
     model = adapt.ModelSpec(
-        input={"instruction": adapt.Text()},
+        input={"instruction": adapt.Text(role=adapt.INSTRUCTION)},
         output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     adapter = resolve(env, model)
@@ -332,7 +332,7 @@ def test_action_layout_loosely_typed_corrections_rejected() -> None:
 OPENVLA = adapt.ModelSpec(
     input={
         "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -373,7 +373,7 @@ XVLA = adapt.ModelSpec(
             pad_to=20,
             container="list",
         ),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -435,7 +435,7 @@ BIMANUAL_ENV = Env(
                 role=adapt.EEF_ROT_2, encoding="quat_xyzw"
             ),
             "robot1_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS_2),
-            "instruction": adapt.TextTag(),
+            "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
         },
         action=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -614,6 +614,7 @@ GR00T = adapt.ModelSpec(
         ),
         "state.gripper": adapt.State(adapt.GRIPPER_POS, index=0, reshape=(1, 1, 1)),
         "tag.human.action.task_description": adapt.Text(
+            role=adapt.INSTRUCTION,
             container="list",
             default="",
         ),
@@ -675,7 +676,7 @@ def image_env(height: int, width: int, *, role: str = adapt.IMAGE_PRIMARY) -> En
         tags=adapt.EnvTags(
             observation={
                 "rgb": adapt.ImageTag(role=role),
-                "instruction": adapt.TextTag(),
+                "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
             },
             action=LIBERO_ACTION,
         ),
@@ -723,7 +724,12 @@ def test_bilinear_aa_resize_matches_pillow_within_one_step():
             # behind allow_upscale; this test deliberately exercises both
             # directions of the bilinear-AA resize.
             input={
-                "image": adapt.Image(height=height, width=width, allow_upscale=True)
+                "image": adapt.Image(
+                    role=adapt.IMAGE_PRIMARY,
+                    height=height,
+                    width=width,
+                    allow_upscale=True,
+                )
             },
             output=SMOLVLA.output,
         )
@@ -770,7 +776,7 @@ def test_encoded_image_bytes_decode_natively():
     )
     env = image_env(2, 2)
     spec = adapt.ModelSpec(
-        input={"image": adapt.Image()},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=SMOLVLA.output,
     )
     payload = resolve(env, spec).transform_obs({"rgb": make_png(pixels)})
@@ -780,7 +786,7 @@ def test_encoded_image_bytes_decode_natively():
 def test_undecodable_image_bytes_is_an_error():
     env = image_env(2, 2)
     spec = adapt.ModelSpec(
-        input={"image": adapt.Image()},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=SMOLVLA.output,
     )
     with pytest.raises(ValueError, match="could not decode image bytes"):
@@ -809,7 +815,13 @@ def test_bilinear_resize_preserves_constant_images():
     env = image_env(10, 12)
     spec = adapt.ModelSpec(
         input={
-            "image": adapt.Image(height=4, width=5, resample="bilinear", fit="stretch"),
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY,
+                height=4,
+                width=5,
+                resample="bilinear",
+                fit="stretch",
+            ),
         },
         output=SMOLVLA.output,
     )
@@ -1150,11 +1162,11 @@ def test_env_rotation_width_law_is_enforced():
     env = Env(
         tags=adapt.EnvTags(
             observation={
-                "agentview_image": adapt.ImageTag(),
+                "agentview_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
                 "robot0_eef_quat": adapt.StateTag(
                     role=adapt.EEF_ROT, encoding="quat_xyzw"
                 ),
-                "instruction": adapt.TextTag(),
+                "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
             },
             action=LIBERO_ACTION,
         ),
@@ -1186,7 +1198,7 @@ def test_unknown_rotation_encoding_pairing_is_an_error():
 
 def test_missing_action_role_is_an_error():
     spec = adapt.ModelSpec(
-        input={"image": adapt.Image()},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
         ),
@@ -1197,7 +1209,7 @@ def test_missing_action_role_is_an_error():
 
 def test_action_dim_mismatch_is_an_error():
     spec = adapt.ModelSpec(
-        input={"image": adapt.Image()},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY)},
         output=adapt.Action(
             adapt.Actuator(adapt.ACTION_DELTA_POS, dim=2),
             adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
@@ -1378,9 +1390,9 @@ def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     ):
         to_dict(output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=-1)))
     with pytest.raises(ValueError, match=r"non-negative integer"):
-        to_dict(image=adapt.Image(width=-1))
+        to_dict(image=adapt.Image(role=adapt.IMAGE_PRIMARY, width=-1))
     with pytest.raises(ValueError, match=r"non-negative integer"):
-        to_dict(image=adapt.Image(lead_dims=-2))
+        to_dict(image=adapt.Image(role=adapt.IMAGE_PRIMARY, lead_dims=-2))
     with pytest.raises(ValueError, match=r"non-negative integer"):
         to_dict(s=adapt.State(adapt.EEF_POS, dim=-1))
     with pytest.raises(ValueError, match=r"non-negative integer"):
@@ -1403,9 +1415,11 @@ def test_value_bridge_encodes_numpy_bool_scalar_as_python_bool() -> None:
 
 
 def test_image_input_size_shorthand() -> None:
-    assert adapt.Image(size=224) == adapt.Image(height=224, width=224)
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, size=224) == adapt.Image(
+        role=adapt.IMAGE_PRIMARY, height=224, width=224
+    )
     with pytest.raises(ValueError, match="size=, or height"):
-        adapt.Image(size=224, height=10)
+        adapt.Image(role=adapt.IMAGE_PRIMARY, size=224, height=10)
 
 
 def test_state_input_single_component_shorthand() -> None:
@@ -1493,19 +1507,29 @@ def test_per_lane_reset_only_clears_on_whole_vector_or_lane_zero() -> None:
 def test_image_input_stack_round_trips_and_omits_default() -> None:
     from rlmesh.adapters.specs.model_serialization import model_input_to_dict
 
-    spec = adapt.ModelSpec(input={"img": adapt.Image(stack=4)}, output=SMOLVLA.output)
+    spec = adapt.ModelSpec(
+        input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4)},
+        output=SMOLVLA.output,
+    )
     assert adapt.ModelSpec.from_json(spec.to_json()) == spec
-    assert "stack" not in model_input_to_dict(adapt.Image())  # default omitted
-    assert model_input_to_dict(adapt.Image(stack=4))["stack"] == 4
+    assert "stack" not in model_input_to_dict(
+        adapt.Image(role=adapt.IMAGE_PRIMARY)
+    )  # default omitted
+    assert (
+        model_input_to_dict(adapt.Image(role=adapt.IMAGE_PRIMARY, stack=4))["stack"]
+        == 4
+    )
     # stack bounds (1..64) are enforced by the Rust codec at serialize/normalize.
     with pytest.raises(ValueError, match="stack must be between 1 and 64"):
         adapt.ModelSpec(
-            input={"img": adapt.Image(stack=0)}, output=SMOLVLA.output
+            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=0)},
+            output=SMOLVLA.output,
         ).to_dict()
     # An untrusted spec cannot demand an unbounded buffer.
     with pytest.raises(ValueError, match="stack must be between 1 and 64"):
         adapt.ModelSpec(
-            input={"img": adapt.Image(stack=10_000)}, output=SMOLVLA.output
+            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=10_000)},
+            output=SMOLVLA.output,
         ).to_dict()
 
 
@@ -2209,7 +2233,7 @@ def test_default_only_text_is_not_a_referenced_obs_key():
     spec = adapt.ModelSpec(
         input={
             "state": adapt.State(adapt.EEF_POS),
-            "instruction": adapt.Text(default="do the task"),
+            "instruction": adapt.Text(role=adapt.INSTRUCTION, default="do the task"),
         },
         output=SMOLVLA.output,
     )
@@ -2358,7 +2382,11 @@ def test_accept_set_prefers_native_then_converts():
 
 def test_image_fit_list_authoring_round_trips():
     spec = adapt.ModelSpec(
-        input={"image": adapt.Image(height=64, width=64, fit=("crop", "pad"))},
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY, height=64, width=64, fit=("crop", "pad")
+            )
+        },
         output=adapt.Action(),
     )
     doc = spec.to_dict()
@@ -2372,7 +2400,7 @@ def test_image_fit_list_authoring_round_trips():
 
     # Byte-parity: a single fit stays a bare string, not a one-element list.
     single = adapt.ModelSpec(
-        input={"image": adapt.Image(fit="crop")},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, fit="crop")},
         output=adapt.Action(),
     )
     assert single.to_dict()["input"]["image"]["fit"] == "crop"
@@ -2382,7 +2410,11 @@ def test_image_fit_list_selects_per_env():
     # fit=[crop, pad] against an aspect-mismatched env: crop downscales a large
     # camera fine, so it resolves to the model's target shape.
     model = adapt.ModelSpec(
-        input={"image": adapt.Image(height=4, width=4, fit=("crop", "pad"))},
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY, height=4, width=4, fit=("crop", "pad")
+            )
+        },
         output=SMOLVLA.output,
     )
     payload = resolve(image_env(8, 16), model).transform_obs(
@@ -2405,7 +2437,7 @@ def test_image_channel_mismatch_is_rejected():
         action_space=box(1),
     )
     model = adapt.ModelSpec(
-        input={"image": adapt.Image(channels=3)},
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, channels=3)},
         output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     with pytest.raises(adapt.AdapterResolutionError, match="channel"):
@@ -2417,7 +2449,10 @@ def test_image_normalize_range_maps_into_declared_bounds():
     model = adapt.ModelSpec(
         input={
             "image": adapt.Image(
-                dtype="float32", normalize=True, normalize_range=(-1.0, 1.0)
+                role=adapt.IMAGE_PRIMARY,
+                dtype="float32",
+                normalize=True,
+                normalize_range=(-1.0, 1.0),
             ),
         },
         output=SMOLVLA.output,

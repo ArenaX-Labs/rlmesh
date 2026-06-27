@@ -10,22 +10,13 @@ env for the drive loop.
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
 import subprocess
 import time
 from typing import TYPE_CHECKING
 
 from .session import (
-    CONTAINER_SERVE_PORT as _CONTAINER_SERVE_PORT,
-)
-from .session import (
     looks_like_gym_id,
-    parse_published_port,
-    pid_namespace_id,
-    prebuilt_run_cmd,
-    reap_orphans,
+    start_prebuilt_container,
 )
 
 if TYPE_CHECKING:
@@ -141,69 +132,27 @@ class SandboxModel:
     def _serve_image(self) -> SandboxModel:
         """Start a long-lived container for a prebuilt image tag (serve mode).
 
-        Publishes the container's serve port on a Docker-assigned host port (no
-        host-side bind/close, so no TOCTOU race), then reads the real port back
-        with ``docker port``. The container enters serve mode because no
-        ``RLMESH_DRIVE_ENV_ADDRESS`` is set (the BYO model protocol); the model's
-        construction params, if any, ride in as ``RLMESH_MAKE_KWARGS``. Readiness
-        is the caller's connect-with-retry (see :meth:`session`).
+        Delegates to the shared :func:`start_prebuilt_container` (the same path the
+        env sandbox uses), passing ``num_envs``/``vectorization_mode`` as ``None`` so
+        the container serves in single (model) mode -- a model is never vectorized.
+        The container enters serve mode because no ``RLMESH_DRIVE_ENV_ADDRESS`` is set
+        (the BYO model protocol); the model's construction params, if any, ride in as
+        ``RLMESH_MAKE_KWARGS``. The port is published on a Docker-assigned host port
+        and read back (no host-side bind/close, so no TOCTOU race); on port-discovery
+        failure the helper stops the container before re-raising, so nothing leaks.
+        Readiness is the caller's connect-with-retry (see :meth:`session`).
         """
         assert self._image is not None
-        if shutil.which("docker") is None:
-            raise RuntimeError(
-                "Docker CLI not found on PATH; install Docker to run a prebuilt "
-                "model image"
-            )
-        reap_orphans()
-        env_vars: dict[str, str] = {}
-        if self._binding:
-            env_vars["RLMESH_MAKE_KWARGS"] = json.dumps(self._binding, sort_keys=True)
-        cmd = prebuilt_run_cmd(
+        info = start_prebuilt_container(
             self._image,
-            env_vars=env_vars,
+            requested_source=self._image,
+            binding=self._binding,
             gpus=self._gpus,
-            container_port=_CONTAINER_SERVE_PORT,
-            owner_pid=os.getpid(),
-            owner_pid_ns=pid_namespace_id(),
         )
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"failed to start model container ({proc.returncode}):\n{proc.stderr}"
-            )
-        container_id = proc.stdout.strip()
-        self._container_id = container_id
-        try:
-            port = self._resolve_published_port(container_id)
-        except BaseException:
-            # Port discovery failed after the container started: stop it before
-            # re-raising so a retry doesn't overwrite _container_id and leak it.
-            from .._rlmesh import sandbox_stop_env
-
-            try:
-                sandbox_stop_env(container_id=container_id)
-            except Exception:
-                pass
-            self._container_id = None
-            raise
-        self._address = f"127.0.0.1:{port}"
+        self._container_id = info.container_id
+        self._address = info.address
         self._closed = False
         return self
-
-    def _resolve_published_port(self, container_id: str) -> int:
-        """Read the host port Docker assigned for the container's serve port."""
-        proc = subprocess.run(
-            ["docker", "port", container_id, str(_CONTAINER_SERVE_PORT)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"failed to read published port for model container "
-                f"({proc.returncode}):\n{proc.stderr}"
-            )
-        return parse_published_port(proc.stdout, _CONTAINER_SERVE_PORT)
 
     def serve(self) -> SandboxModel:
         """Start a long-lived container serving the policy as a model endpoint.

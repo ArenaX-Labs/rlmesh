@@ -36,7 +36,7 @@ SPEC = adapt.ModelSpec(
             pad_to=20,
             container="list",
         ),
-        "instruction": adapt.Text(),
+        "instruction": adapt.Text(role=adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

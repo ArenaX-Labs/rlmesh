@@ -93,20 +93,24 @@ def test_text_placements_covers_every_placement_and_container() -> None:
     from rlmesh._models._eval import _text_placements, _TextPlacement
 
     # bare-root: the whole payload IS the text leaf (empty placement)
-    assert _text_placements(_spec(adapt.Text())) == (_TextPlacement((), False),)
+    assert _text_placements(_spec(adapt.Text(role=adapt.INSTRUCTION))) == (
+        _TextPlacement((), False),
+    )
     # top-level dict key, both container shapes
-    assert _text_placements(_spec({"prompt": adapt.Text(container="str")})) == (
-        _TextPlacement(("prompt",), False),
-    )
-    assert _text_placements(_spec({"prompt": adapt.Text(container="list")})) == (
-        _TextPlacement(("prompt",), True),
-    )
+    assert _text_placements(
+        _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="str")})
+    ) == (_TextPlacement(("prompt",), False),)
+    assert _text_placements(
+        _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="list")})
+    ) == (_TextPlacement(("prompt",), True),)
     # nested dict placement
-    assert _text_placements(_spec({"lang": {"instr": adapt.Text()}})) == (
-        _TextPlacement(("lang", "instr"), False),
-    )
+    assert _text_placements(
+        _spec({"lang": {"instr": adapt.Text(role=adapt.INSTRUCTION)}})
+    ) == (_TextPlacement(("lang", "instr"), False),)
     # tuple placement (positional)
-    assert _text_placements(_spec((adapt.Text(),))) == (_TextPlacement((0,), False),)
+    assert _text_placements(_spec((adapt.Text(role=adapt.INSTRUCTION),))) == (
+        _TextPlacement((0,), False),
+    )
 
 
 def test_text_placements_empty_for_specless_models() -> None:

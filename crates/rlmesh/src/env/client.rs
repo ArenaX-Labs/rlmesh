@@ -15,12 +15,6 @@ use super::wire::{
 };
 use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, spaces};
 
-/// Mint one authoritative episode id (UUIDv7 — time-ordered, never repeats). The
-/// direct env-client path is its own id authority (no runtime in the loop).
-fn new_episode_id() -> String {
-    uuid::Uuid::now_v7().to_string()
-}
-
 /// A client handle to a remote vector environment server.
 ///
 /// Connect with [`RemoteVectorEnv::connect`] (or
@@ -105,7 +99,7 @@ impl RemoteVectorEnv {
             action_space,
             num_envs: handshake.num_envs,
             session_offer,
-            env_id: uuid::Uuid::now_v7().to_string(),
+            env_id: crate::mint_id(),
             episode_ids: vec![String::new(); handshake.num_envs],
         })
     }
@@ -188,11 +182,11 @@ impl RemoteVectorEnv {
         // them down (the env adopts them; it never mints). Full reset = all lanes;
         // partial reset = the listed lanes, with pushed ids aligned to them.
         let pushed_ids: Vec<String> = if env_indices.is_empty() {
-            let ids: Vec<String> = (0..self.num_envs).map(|_| new_episode_id()).collect();
+            let ids: Vec<String> = (0..self.num_envs).map(|_| crate::mint_id()).collect();
             self.episode_ids = ids.clone();
             ids
         } else {
-            let ids: Vec<String> = env_indices.iter().map(|_| new_episode_id()).collect();
+            let ids: Vec<String> = env_indices.iter().map(|_| crate::mint_id()).collect();
             for (lane, id) in env_indices.iter().zip(&ids) {
                 if let Some(slot) = self.episode_ids.get_mut(*lane as usize) {
                     *slot = id.clone();
@@ -318,7 +312,7 @@ impl RemoteVectorEnv {
         if self.env_contract.autoreset_mode == spaces::types::AutoresetMode::NextStep {
             for completed in &result.completed_episodes {
                 if let Some(slot) = self.episode_ids.get_mut(completed.env_index as usize) {
-                    *slot = new_episode_id();
+                    *slot = crate::mint_id();
                 }
             }
         }
