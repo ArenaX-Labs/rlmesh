@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 
@@ -23,14 +23,15 @@ ActionT = TypeVar("ActionT")
 # Dict space, or a single bare leaf (array) for a flat (non-Dict) space.
 RawObs = Mapping[str, Any] | NumpyArray
 
+# A structured placement path into the model input payload tree: each step is a
+# ``str`` (Dict key) or ``int`` (Tuple index); the empty tuple is the root of a
+# bare-leaf input. Mirrors the native ``NodePath`` without a string to re-parse.
+Placement = tuple[str | int, ...]
+
 # The reserved raw-obs envelope key the native core uses for a flat (non-Dict)
 # observation: the single top-level entry holding the whole observation Value.
 # Mirrors ``rlmesh_adapters::plans::OBS_ROOT_KEY``.
 _OBS_ROOT_KEY = "<obs>"
-
-# The native ``NodePath`` render for a bare-leaf input (empty placement path).
-# Mirrors ``rlmesh_adapters::path::NodePath`` ``Display`` of the root.
-_ROOT_PLACEMENT = "<root>"
 
 
 def _numpy_value_bridge() -> ValueBridge:
@@ -59,12 +60,13 @@ def _serve_custom(
 class ObsEncShim:
     """Repack one observation payload leaf from its base encoding to custom.
 
-    Keyed by the leaf's ``placement`` path in the input tree (the canonical
-    native ``NodePath`` string, e.g. ``state``, ``robot.eef_pos``, ``[0]``, or
-    ``<root>`` for a bare-leaf input).
+    Keyed by the leaf's structured ``segments`` path in the input tree (each
+    step a ``str`` Dict key or ``int`` Tuple index; the empty tuple is the root
+    of a bare-leaf input). Mirrors the native ``NodePath`` without any string to
+    render and re-parse on the host side.
     """
 
-    placement: str
+    segments: tuple[str | int, ...]
     base: str
     width: int
     name: str
@@ -86,44 +88,7 @@ class ActEncShim:
     to_base: RotationTransform
 
 
-def _parse_placement(placement: str) -> tuple[str | int, ...]:
-    """Parse a canonical native ``NodePath`` string into segments.
-
-    Inverse of the resolver's ``_placement``: ``<root>`` is the empty path,
-    ``[i]`` segments are tuple indices, dot-joined tokens are dict keys
-    (``robot.eef_pos`` -> ``("robot", "eef_pos")``, ``cams[0]`` ->
-    ``("cams", 0)``).
-    """
-    if placement == _ROOT_PLACEMENT:
-        return ()
-    segments: list[str | int] = []
-    token = ""
-    index = ""
-    in_index = False
-    for char in placement:
-        if char == "[":
-            if token:
-                segments.append(token)
-                token = ""
-            in_index = True
-            index = ""
-        elif char == "]":
-            segments.append(int(index))
-            in_index = False
-        elif char == "." and not in_index:
-            if token:
-                segments.append(token)
-                token = ""
-        elif in_index:
-            index += char
-        else:
-            token += char
-    if token:
-        segments.append(token)
-    return tuple(segments)
-
-
-def _tree_get(tree: Any, segments: tuple[str | int, ...]) -> Any:
+def _tree_get(tree: Any, segments: Placement) -> Any:
     """Read the value at ``segments`` within a Value tree (dict/list/leaf)."""
     node = tree
     for segment in segments:
@@ -131,11 +96,13 @@ def _tree_get(tree: Any, segments: tuple[str | int, ...]) -> Any:
     return node
 
 
-def _tree_contains(tree: Any, segments: tuple[str | int, ...]) -> bool:
+def _tree_contains(tree: Any, segments: Placement) -> bool:
     node = tree
     for segment in segments:
         if isinstance(segment, int):
-            if not isinstance(node, (list, tuple)) or segment >= len(node):
+            if not isinstance(node, (list, tuple)):
+                return False
+            if segment >= len(cast("Sequence[object]", node)):
                 return False
         elif not isinstance(node, Mapping) or segment not in node:
             return False
@@ -143,25 +110,64 @@ def _tree_contains(tree: Any, segments: tuple[str | int, ...]) -> bool:
     return True
 
 
-def _tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
+def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
     """Return ``tree`` with the value at ``segments`` replaced by ``value``.
 
     The empty path (a bare-leaf payload) replaces the whole tree. List nodes are
-    rebuilt as lists so an in-place index assignment is well defined.
+    rebuilt as lists so an in-place index assignment is well defined. Mirrors the
+    native ``insert_at`` (`apply/obs.rs`): an ``int`` segment requires a List node
+    and grows it with empty-dict placeholders, a ``str`` segment requires a Map.
     """
     if not segments:
         return value
     head, rest = segments[0], segments[1:]
     if isinstance(head, int):
-        items = list(tree)
+        if not isinstance(tree, (list, tuple)):
+            # Mirror the native ``insert_at`` placement-conflict guard: an int
+            # segment needs a List node. (A grow placeholder is an empty dict, so
+            # an int placement nested under another int would hit this -- the same
+            # input the native path rejects, kept consistent here.)
+            raise ValueError(
+                f"payload placement conflict: expected a list to place index [{head}]"
+            )
+        items = list(cast("Sequence[Any]", tree))
+        # A trailing custom leaf at a Tuple index may not exist in the native
+        # payload list yet; grow the list before assigning (mirrors the native
+        # ``insert_at``'s ``resize``) rather than indexing past the end.
+        if head >= len(items):
+            items.extend({} for _ in range(head + 1 - len(items)))
         items[head] = _tree_set(items[head], rest, value)
         return items
-    node = dict(tree)
+    if not isinstance(tree, Mapping):
+        raise ValueError(
+            f"payload placement conflict: expected a mapping to place key {head!r}"
+        )
+    node = dict(cast("Mapping[Any, Any]", tree))
     # A custom leaf's placement is omitted from the native payload tree, so the
     # key may not exist yet -- descend into an empty subtree rather than indexing
     # a missing key.
     node[head] = _tree_set(node.get(head, {}), rest, value)
     return node
+
+
+def _render_placement(segments: Placement) -> str:
+    """Render a structured placement as the canonical native ``NodePath`` string.
+
+    Mirrors ``rlmesh_adapters::path::NodePath`` ``Display``: dot-joined keys,
+    ``[i]`` for Tuple indices, and ``<root>`` for the empty path (a bare leaf).
+    Used only to key the served-route customs map against Rust, which looks each
+    host hole up by ``NodePath::to_string()``; the in-process path keys by the
+    structured tuple directly.
+    """
+    if not segments:
+        return "<root>"
+    out = ""
+    for position, segment in enumerate(segments):
+        if isinstance(segment, int):
+            out += f"[{segment}]"
+        else:
+            out += ("." if position > 0 else "") + segment
+    return out
 
 
 class AdapterBase(ABC, Generic[ActionT]):
@@ -270,17 +276,20 @@ class Adapter(AdapterBase[NumpyArray]):
     def __init__(
         self,
         plan: AdapterPlan,
-        customs: Mapping[str, ObsTransform],
-        stacks: Mapping[str, int] | None = None,
+        customs: Mapping[Placement, ObsTransform],
+        stacks: Mapping[Placement, int] | None = None,
         obs_enc_shims: tuple[ObsEncShim, ...] = (),
         action_enc_shims: tuple[ActEncShim, ...] = (),
     ) -> None:
         self._plan = plan
+        # All host-side holes are keyed by the structured placement path (a
+        # ``str``/``int`` segment tuple), so the in-process path never re-parses
+        # a rendered placement string.
         self._customs = dict(customs)
-        # Per-key frame-history depth (>1 only) and the rolling buffers that
-        # back it. Stacking happens host-side, after the native transform.
+        # Per-placement frame-history depth (>1 only) and the rolling buffers
+        # that back it. Stacking happens host-side, after the native transform.
         self._stacks = {key: n for key, n in (stacks or {}).items() if n > 1}
-        self._buffers: dict[str, deque[Any]] = {}
+        self._buffers: dict[Placement, deque[Any]] = {}
         # Host-side custom-encoding shims: the native plan resolves each to a
         # base encoding; these repack the field at the boundary (obs after the
         # native transform, action before it).
@@ -319,37 +328,37 @@ class Adapter(AdapterBase[NumpyArray]):
         )
         # Repack custom-encoded leaves from their resolved base encoding into the
         # model's convention, before stacking (so a stacked input stacks the
-        # model's representation). Shims and stacks are keyed by placement path.
+        # model's representation). Shims, stacks, and customs are all keyed by
+        # the structured segment path (str Dict key / int Tuple index).
         numpy_bridge = _numpy_value_bridge()
         for shim in self._obs_enc_shims:
-            segments = _parse_placement(shim.placement)
-            if _tree_contains(payload, segments):
+            if _tree_contains(payload, shim.segments):
                 repacked = to_value(
                     self._apply_obs_enc(
-                        shim, from_value(_tree_get(payload, segments), numpy_bridge)
+                        shim,
+                        from_value(_tree_get(payload, shim.segments), numpy_bridge),
                     ),
                     numpy_bridge,
                 )
-                payload = _tree_set(payload, segments, repacked)
-        for placement, depth in self._stacks.items():
-            segments = _parse_placement(placement)
+                payload = _tree_set(payload, shim.segments, repacked)
+        for segments, depth in self._stacks.items():
             if _tree_contains(payload, segments):
                 stacked = to_value(
                     self._stack_frames(
-                        placement,
+                        segments,
                         from_value(_tree_get(payload, segments), numpy_bridge),
                         depth,
                     ),
                     numpy_bridge,
                 )
                 payload = _tree_set(payload, segments, stacked)
-        for placement, transform in self._customs.items():
+        for segments, transform in self._customs.items():
             # Custom inputs see the full observation (not just the plan's
             # referenced keys), normalized to a mapping -- identical to raw_obs
             # for a Dict env, and {<obs>: leaf} for a flat one. The result lands
             # at the custom leaf's placement path in the payload tree.
             value = to_value(transform(obs), custom_bridge)
-            payload = _tree_set(payload, _parse_placement(placement), value)
+            payload = _tree_set(payload, segments, value)
         return payload
 
     def transform_obs(self, raw_obs: RawObs) -> Any:
@@ -366,7 +375,7 @@ class Adapter(AdapterBase[NumpyArray]):
             bridge,
         )
 
-    def _stack_frames(self, key: str, frame: Any, depth: int) -> NumpyArray:
+    def _stack_frames(self, key: Placement, frame: Any, depth: int) -> NumpyArray:
         import numpy as np
 
         frames = self._buffers.get(key)
@@ -386,10 +395,11 @@ class Adapter(AdapterBase[NumpyArray]):
     def _apply_obs_enc(self, shim: ObsEncShim, value: Any) -> NumpyArray:
         import numpy as np
 
+        placement = _render_placement(shim.segments)
         base = cast("NumpyArray", np.asarray(value))
         if int(base.size) != shim.width:
             raise ValueError(
-                f"custom encoding {shim.name!r} for {shim.placement!r} expected "
+                f"custom encoding {shim.name!r} for {placement!r} expected "
                 f"a width-{shim.width} {shim.base} value, got size {int(base.size)}"
             )
         out = cast("NumpyArray", np.asarray(shim.from_base(base)))
@@ -398,7 +408,7 @@ class Adapter(AdapterBase[NumpyArray]):
         # reorder elements.
         if out.ndim != 1 or int(out.size) != shim.width:
             raise ValueError(
-                f"custom encoding {shim.name!r} for {shim.placement!r} must "
+                f"custom encoding {shim.name!r} for {placement!r} must "
                 f"return a flat width-{shim.width} vector, from_base returned "
                 f"shape {out.shape}"
             )
@@ -505,9 +515,12 @@ class Adapter(AdapterBase[NumpyArray]):
         stays here). Used only on the serve path; :meth:`transform_obs_value`
         remains the in-process run(env) single-lane path.
         """
+        # The served engine looks each host hole up by the native
+        # ``NodePath::to_string()``; render the structured placement to that
+        # canonical string here (the only place the serve path needs it).
         customs = {
-            key: _serve_custom(transform, bridge)
-            for key, transform in self._customs.items()
+            _render_placement(segments): _serve_custom(transform, bridge)
+            for segments, transform in self._customs.items()
         }
         return {
             "plan": self._plan,
@@ -527,15 +540,14 @@ class Adapter(AdapterBase[NumpyArray]):
         numpy_bridge = _numpy_value_bridge()
         result: Value = payload
         for shim in self._obs_enc_shims:
-            segments = _parse_placement(shim.placement)
-            if _tree_contains(result, segments):
+            if _tree_contains(result, shim.segments):
                 repacked = to_value(
                     self._apply_obs_enc(
-                        shim, from_value(_tree_get(result, segments), numpy_bridge)
+                        shim, from_value(_tree_get(result, shim.segments), numpy_bridge)
                     ),
                     numpy_bridge,
                 )
-                result = _tree_set(result, segments, repacked)
+                result = _tree_set(result, shim.segments, repacked)
         return result
 
     def _serve_action_encodings(self, action: Value) -> Value:
@@ -551,7 +563,8 @@ class Adapter(AdapterBase[NumpyArray]):
             return native
         lines = [native, "host-side encodings:"]
         for shim in self._obs_enc_shims:
-            lines.append(f"  obs    {shim.placement!r}: {shim.base} -> {shim.name}")
+            placement = _render_placement(shim.segments)
+            lines.append(f"  obs    {placement!r}: {shim.base} -> {shim.name}")
         for shim in self._action_enc_shims:
             stop = shim.offset + shim.width
             lines.append(f"  action [{shim.offset}:{stop}]: {shim.name} -> {shim.base}")

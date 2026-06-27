@@ -24,7 +24,8 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
-    ObsPlan, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve, roles,
+    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value, join, resolve,
+    roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -268,6 +269,22 @@ pub(crate) fn encode_value<'py>(py: Python<'py>, value: &Value) -> PyResult<Boun
     }
 }
 
+/// Build a Python list of placement segments from a native [`NodePath`].
+///
+/// Each step is a `str` (`Dict` key) or `int` (`Tuple` index); an empty list is
+/// the root. Hands the caller the structured path directly, so nothing has to
+/// re-parse a rendered placement string.
+fn path_segments_to_py<'py>(py: Python<'py>, path: &NodePath) -> PyResult<Py<PyList>> {
+    let segments = PyList::empty(py);
+    for segment in &path.0 {
+        match segment {
+            PathSeg::Key(key) => segments.append(key)?,
+            PathSeg::Index(index) => segments.append(*index)?,
+        }
+    }
+    Ok(segments.unbind())
+}
+
 /// Build a neutral Python dict from an adapter value map (`encode_value` each).
 fn value_map_to_py<'py>(
     py: Python<'py>,
@@ -421,17 +438,26 @@ impl PyAdapterPlan {
             .collect()
     }
 
-    /// `(placement, transform)` pairs for custom-input holes, plan order. The
-    /// placement is the canonical tree-position string (replacing the old key).
-    fn custom_inputs(&self) -> Vec<(String, String)> {
+    /// `(segments, transform)` pairs for custom-input holes, plan order.
+    ///
+    /// `segments` is the custom leaf's structured placement path: each step is a
+    /// `str` (`Dict` key) or `int` (`Tuple` index), built directly from the
+    /// native `NodePath` — no placement string for the caller to re-parse. An
+    /// empty segment list is the root (a bare-leaf payload).
+    #[gen_stub(override_return_type(
+        type_repr = "builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.str]]",
+        imports = ("builtins")
+    ))]
+    fn custom_inputs<'py>(&self, py: Python<'py>) -> PyResult<Vec<(Py<PyList>, String)>> {
         self.adapter
             .obs_plans
             .iter()
             .filter_map(|plan| match plan {
-                ObsPlan::Custom(custom) => {
-                    Some((custom.placement.to_string(), custom.transform.clone()))
-                }
+                ObsPlan::Custom(custom) => Some((&custom.placement, &custom.transform)),
                 _ => None,
+            })
+            .map(|(placement, transform)| {
+                Ok((path_segments_to_py(py, placement)?, transform.clone()))
             })
             .collect()
     }
@@ -439,8 +465,10 @@ impl PyAdapterPlan {
     /// Apply the observation plans to a canonical value-tree observation map.
     ///
     /// Returns the assembled payload as a neutral Python object (a nested
-    /// dict/list/leaf — the model spec's `InputNode` shape); custom inputs are
-    /// omitted (the caller fills them from the raw host observation).
+    /// dict/list/leaf — the model spec's `InputNode` shape, a Value tree);
+    /// custom inputs are omitted (the caller fills them from the raw host
+    /// observation).
+    #[gen_stub(override_return_type(type_repr = "typing.Any", imports = ("typing")))]
     fn transform_obs<'py>(
         &self,
         py: Python<'py>,

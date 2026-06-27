@@ -8,15 +8,16 @@ host-language concerns where they belong: entrypoint trust gating, custom
 callables, and the error type.
 
 Custom-input host holes and custom-encoding shims are keyed by the leaf's
-*placement path* in the input tree -- the canonical ``NodePath`` string the
-native core uses (``pixels``, ``robot.eef_pos``, ``[0]``, or ``<root>`` for a
-bare-leaf input). This replaces the old flat ``key`` label.
+*structured placement path* in the input tree -- a tuple of ``str`` (Dict key)
+and ``int`` (Tuple index) segments, mirroring the native ``NodePath`` (the empty
+tuple is the root of a bare-leaf input). The rendered ``host:<placement>`` string
+goes into the wire spec only; nothing parses it back.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -85,43 +86,75 @@ def _is_leaf(node: object) -> bool:
     return isinstance(node, (Image, State, Concat, Text, Custom))
 
 
+def _walk_tree(
+    node: InputNode,
+    *,
+    on_leaf: Callable[[tuple[str | int, ...], object], Any],
+    on_dict: Callable[[dict[str, Any]], Any],
+    on_tuple: Callable[[list[Any]], Any],
+    segments: tuple[str | int, ...] = (),
+) -> Any:
+    """Recurse the input tree, calling the per-node/per-leaf callbacks.
+
+    The single tree-walk every resolver traversal is built on. The segment walk
+    mirrors the native ``collect_leaves`` (a ``Dict`` pushes the key, a ``Tuple``
+    pushes the index), so a rendered placement matches the core's. Leaf detection
+    is by ``isinstance`` against the public leaf dataclasses, never a string
+    vocabulary. The three node callbacks decide the result shape:
+
+    - ``on_leaf(segments, leaf)`` -- the value produced for each leaf;
+    - ``on_dict(children)`` -- combines a ``{key: result}`` map;
+    - ``on_tuple(children)`` -- combines an ordered ``[result, ...]`` list.
+    """
+
+    def recurse(node: InputNode, segments: tuple[str | int, ...]) -> Any:
+        if _is_leaf(node):
+            return on_leaf(segments, node)
+        if isinstance(node, Mapping):
+            return on_dict(
+                {key: recurse(child, (*segments, key)) for key, child in node.items()}
+            )
+        if isinstance(node, tuple):
+            return on_tuple(
+                [recurse(child, (*segments, index)) for index, child in enumerate(node)]
+            )
+        raise TypeError(f"unexpected input tree node {type(node).__name__}")
+
+    return recurse(node, segments)
+
+
 def _iter_leaves(
-    node: InputNode, segments: tuple[str | int, ...]
+    node: InputNode, segments: tuple[str | int, ...] = ()
 ) -> Iterator[tuple[tuple[str | int, ...], object]]:
     """Yield ``(segments, leaf)`` for each leaf in the input tree, DFS order.
 
-    The segment walk mirrors the native ``collect_leaves`` (Dict pushes the key,
-    Tuple pushes the index), so the rendered placement matches the core's.
+    ``segments`` seeds the walk's path prefix (default: the root).
     """
-    if _is_leaf(node):
-        yield segments, node
-    elif isinstance(node, Mapping):
-        for key, child in node.items():
-            yield from _iter_leaves(child, (*segments, key))
-    elif isinstance(node, tuple):
-        for index, child in enumerate(node):
-            yield from _iter_leaves(child, (*segments, index))
-    else:  # pragma: no cover - guarded by serialization
-        raise TypeError(f"unexpected input tree node {type(node).__name__}")
+    leaves: list[tuple[tuple[str | int, ...], object]] = []
+    _walk_tree(
+        node,
+        on_leaf=lambda path, leaf: leaves.append((path, leaf)),
+        on_dict=lambda _children: None,
+        on_tuple=lambda _children: None,
+        segments=segments,
+    )
+    return iter(leaves)
 
 
-def _map_leaves(
-    node: InputNode, transform: Any, segments: tuple[str | int, ...] = ()
-) -> InputNode:
-    """Rebuild the input tree, replacing each leaf with ``transform(seg, leaf)``."""
-    if _is_leaf(node):
-        return cast(InputNode, transform(segments, node))
-    if isinstance(node, Mapping):
-        return {
-            key: _map_leaves(child, transform, (*segments, key))
-            for key, child in node.items()
-        }
-    if isinstance(node, tuple):
-        return tuple(
-            _map_leaves(child, transform, (*segments, index))
-            for index, child in enumerate(node)
-        )
-    raise TypeError(f"unexpected input tree node {type(node).__name__}")
+def _map_leaves(node: InputNode, transform: Any) -> InputNode:
+    """Rebuild the input tree, replacing each leaf with ``transform(seg, leaf)``.
+
+    Containers keep their declared kind (``Dict`` -> dict, ``Tuple`` -> tuple).
+    """
+    return cast(
+        InputNode,
+        _walk_tree(
+            node,
+            on_leaf=transform,
+            on_dict=lambda children: children,
+            on_tuple=lambda children: tuple(children),
+        ),
+    )
 
 
 def _check_native_encoding(encoding: object, where: str) -> None:
@@ -137,13 +170,16 @@ def _check_native_encoding(encoding: object, where: str) -> None:
         )
 
 
-def _shadow_state(placement: str, state: State, obs_shims: list[ObsEncShim]) -> State:
+def _shadow_state(
+    segments: tuple[str | int, ...], state: State, obs_shims: list[ObsEncShim]
+) -> State:
     """Replace a custom-encoded single-part state with its base-encoding shadow.
 
-    Records an observation shim keyed by placement path. A custom encoding must
-    be the sole content of a single-part :class:`State`, with no width-altering
-    or assembly options.
+    Records an observation shim keyed by the structured placement path. A custom
+    encoding must be the sole content of a single-part :class:`State`, with no
+    width-altering or assembly options.
     """
+    placement = _placement(segments)
     _check_native_encoding(state.encoding, f"state input {placement!r}")
     if not isinstance(state.encoding, CustomEncoding):
         return state
@@ -177,7 +213,7 @@ def _shadow_state(placement: str, state: State, obs_shims: list[ObsEncShim]) -> 
         )
     obs_shims.append(
         ObsEncShim(
-            placement=placement,
+            segments=segments,
             base=encoding.base,
             width=encoding.width,
             name=encoding.name,
@@ -188,8 +224,11 @@ def _shadow_state(placement: str, state: State, obs_shims: list[ObsEncShim]) -> 
     return replace(state, encoding=encoding.base)
 
 
-def _reject_concat_custom_encoding(placement: str, concat: Concat) -> None:
+def _reject_concat_custom_encoding(
+    segments: tuple[str | int, ...], concat: Concat
+) -> None:
     """A CustomEncoding inside a multi-part Concat is unsupported (env offsets)."""
+    placement = _placement(segments)
     for part in concat.parts:
         encoding = part.encoding if isinstance(part, State) else None
         _check_native_encoding(encoding, f"state input {placement!r}")
@@ -244,7 +283,7 @@ def _shadow_action(action: Action, act_shims: list[ActEncShim]) -> Action:
 
 
 def _custom_encodings(model_spec: ModelSpec) -> Iterator[CustomEncoding]:
-    for _segments, leaf in _iter_leaves(model_spec.input, ()):
+    for _segments, leaf in _iter_leaves(model_spec.input):
         if isinstance(leaf, State) and isinstance(leaf.encoding, CustomEncoding):
             yield leaf.encoding
         elif isinstance(leaf, Concat):
@@ -310,11 +349,10 @@ def _substitute_encodings(
     act_shims: list[ActEncShim] = []
 
     def shadow_leaf(segments: tuple[str | int, ...], leaf: object) -> object:
-        placement = _placement(segments)
         if isinstance(leaf, State):
-            return _shadow_state(placement, leaf, obs_shims)
+            return _shadow_state(segments, leaf, obs_shims)
         if isinstance(leaf, Concat):
-            _reject_concat_custom_encoding(placement, leaf)
+            _reject_concat_custom_encoding(segments, leaf)
             return leaf
         return leaf
 
@@ -326,32 +364,34 @@ def _substitute_encodings(
 
 def _model_wire(
     model_spec: ModelSpec, *, trust_entrypoints: bool
-) -> tuple[dict[str, Any], dict[str, ObsTransform]]:
+) -> tuple[dict[str, Any], dict[tuple[str | int, ...], ObsTransform]]:
     """Split a model spec into its wire form and the local custom callables.
 
     Custom inputs never cross to the native core as code: an entrypoint
     string is gated on ``trust_entrypoints`` and imported here; an
     in-process callable stays here and is referenced by a ``host:<placement>``
     placeholder. Either way the native plan keeps the input as a hole that
-    :class:`Adapter` fills from the raw observation, keyed by placement path.
+    :class:`Adapter` fills from the raw observation. The returned callables are
+    keyed by the structured placement path (a ``str``/``int`` segment tuple); the
+    rendered ``host:<placement>`` string lives only in the wire spec, never
+    parsed back.
     """
-    customs: dict[str, ObsTransform] = {}
+    customs: dict[tuple[str | int, ...], ObsTransform] = {}
 
     def wire_leaf(segments: tuple[str | int, ...], leaf: object) -> Any:
-        placement = _placement(segments)
         if isinstance(leaf, Custom):
             if leaf.transform is not None:
-                customs[placement] = leaf.transform
-                wire_transform = f"host:{placement}"
+                customs[segments] = leaf.transform
+                wire_transform = f"host:{_placement(segments)}"
             else:
                 entrypoint = cast(str, leaf.entrypoint)
                 if not trust_entrypoints:
                     raise AdapterResolutionError(
-                        f"custom input at {placement!r} references entrypoint "
-                        f"{entrypoint!r}; pass "
+                        f"custom input at {_placement(segments)!r} references "
+                        f"entrypoint {entrypoint!r}; pass "
                         "resolve(..., trust_entrypoints=True) to allow importing it"
                     )
-                customs[placement] = cast(
+                customs[segments] = cast(
                     ObsTransform,
                     resolve_entrypoint(entrypoint, label="custom input transform"),
                 )
@@ -359,36 +399,24 @@ def _model_wire(
             return {"type": "custom", "transform": wire_transform}
         return model_input_to_dict(cast(InputNode, leaf))
 
-    wire_input = _wire_tree(model_spec.input, wire_leaf)
+    # The structural wire form: a Tuple serializes to a JSON list, a Dict to a
+    # JSON object, each leaf via ``wire_leaf``.
+    wire_input = _walk_tree(
+        model_spec.input,
+        on_leaf=wire_leaf,
+        on_dict=lambda children: children,
+        on_tuple=lambda children: children,
+    )
     wire = {"input": wire_input, "output": action_to_dict(model_spec.output)}
     return wire, customs
 
 
-def _wire_tree(
-    node: InputNode, leaf_fn: Any, segments: tuple[str | int, ...] = ()
-) -> Any:
-    """Walk the input tree to its structural wire form, customs via ``leaf_fn``."""
-    if _is_leaf(node):
-        return leaf_fn(segments, node)
-    if isinstance(node, Mapping):
-        return {
-            key: _wire_tree(child, leaf_fn, (*segments, key))
-            for key, child in node.items()
-        }
-    if isinstance(node, tuple):
-        return [
-            _wire_tree(child, leaf_fn, (*segments, index))
-            for index, child in enumerate(node)
-        ]
-    raise TypeError(f"unexpected input tree node {type(node).__name__}")
-
-
-def _image_stacks(model_spec: ModelSpec) -> dict[str, int]:
-    """Frame-stack depths the model wants, keyed by placement path (>1 only)."""
-    stacks: dict[str, int] = {}
-    for segments, leaf in _iter_leaves(model_spec.input, ()):
+def _image_stacks(model_spec: ModelSpec) -> dict[tuple[str | int, ...], int]:
+    """Frame-stack depths the model wants, keyed by structured placement (>1)."""
+    stacks: dict[tuple[str | int, ...], int] = {}
+    for segments, leaf in _iter_leaves(model_spec.input):
         if isinstance(leaf, Image) and leaf.stack > 1:
-            stacks[_placement(segments)] = leaf.stack
+            stacks[segments] = leaf.stack
     return stacks
 
 

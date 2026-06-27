@@ -141,16 +141,23 @@ class AdapterPlan:
         [`transform_obs`](Self::transform_obs), so an unused — possibly
         unencodable — observation key never aborts a step.
         """
-    def custom_inputs(self) -> builtins.list[tuple[builtins.str, builtins.str]]:
+    def custom_inputs(self) -> builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.str]]:
         r"""
-        `(model_key, transform)` pairs for custom-input holes, plan order.
+        `(segments, transform)` pairs for custom-input holes, plan order.
+        
+        `segments` is the custom leaf's structured placement path: each step is a
+        `str` (`Dict` key) or `int` (`Tuple` index), built directly from the
+        native `NodePath` — no placement string for the caller to re-parse. An
+        empty segment list is the root (a bare-leaf payload).
         """
-    def transform_obs(self, raw_obs: typing.Any) -> builtins.dict[builtins.str, typing.Any]:
+    def transform_obs(self, raw_obs: typing.Any) -> typing.Any:
         r"""
         Apply the observation plans to a canonical value-tree observation map.
         
-        Returns `{model_key: encoded_value}`; custom inputs are omitted
-        (the caller fills them from the raw host observation).
+        Returns the assembled payload as a neutral Python object (a nested
+        dict/list/leaf — the model spec's `InputNode` shape, a Value tree);
+        custom inputs are omitted (the caller fills them from the raw host
+        observation).
         """
     def transform_action(self, raw_action: typing.Any) -> typing.Any:
         r"""
