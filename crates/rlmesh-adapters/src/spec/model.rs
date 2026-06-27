@@ -160,7 +160,7 @@ pub const MODEL_LEAF_TYPES: &[&str] = &["image", "state", "text", "custom"];
 ///
 /// The container type written here **is** the payload container the model's
 /// `predict` receives. Discrimination on the wire is **structural** (the shared
-/// [`TreeNode`] parser): a JSON array is a `Tuple`, a JSON object whose `"type"`
+/// `TreeNode` parser): a JSON array is a `Tuple`, a JSON object whose `"type"`
 /// is in the leaf vocabulary (`image`/`state`/`text`/`custom`) is a `Leaf`, an
 /// object whose `"type"` is an unrecognized string is a clear
 /// `unknown model input kind` error, and any other JSON object is a `Dict`.

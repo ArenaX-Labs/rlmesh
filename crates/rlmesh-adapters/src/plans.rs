@@ -154,8 +154,8 @@ impl ResolvedAdapter {
     /// placements. This is the single source of truth for stacking depth
     /// (replacing the old Python `stacks` dict). The key is the placement's
     /// [`Display`](std::fmt::Display) form so a nested/positioned stacked input
-    /// has a stable canonical name. Built from the precomputed
-    /// [`stacked_placements`](Self::stacked_placements).
+    /// has a stable canonical name. Built from the precomputed per-episode
+    /// `stacked_placements` list.
     pub fn stacks(&self) -> BTreeMap<String, u32> {
         self.stacked
             .iter()

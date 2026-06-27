@@ -238,27 +238,27 @@ def model_leaf_to_dict(item: ModelLeaf) -> dict[str, Any]:
             "container": item.container,
             "default": item.default,
         }
-    if isinstance(item, Custom):
-        if item.entrypoint is None:
-            # Publish boundary: an in-process callable cannot be serialized.
-            raise ValueError(
-                "custom input holds an in-process callable and cannot be "
-                "serialized; use Custom(entrypoint='module:callable') instead"
-            )
-        # An entrypoint custom carries an importable `module:callable`, so
-        # publishing it would ship executable code in a contract a remote
-        # consumer might import. Until an allowlist-based trust model exists,
-        # refuse to serialize it here. Local resolve still runs it (gated by
-        # trust_entrypoints) via the resolver's _model_wire, which handles
-        # customs itself and never routes them through this serializer -- so this
-        # gate is publish-only.
+    # The only remaining ModelLeaf variant is Custom; a custom input can never
+    # be serialized into v1 contract metadata, so both branches below reject.
+    if item.entrypoint is None:
+        # Publish boundary: an in-process callable cannot be serialized.
         raise ValueError(
-            f"custom input carries an entrypoint ({item.entrypoint!r}) and "
-            "cannot be published in v1 contract metadata; resolve the spec "
-            "locally (the model spec need not travel), or wait for the "
-            "allowlist-gated trust system"
+            "custom input holds an in-process callable and cannot be "
+            "serialized; use Custom(entrypoint='module:callable') instead"
         )
-    raise TypeError(f"unknown model input leaf {type(item).__name__}")
+    # An entrypoint custom carries an importable `module:callable`, so
+    # publishing it would ship executable code in a contract a remote
+    # consumer might import. Until an allowlist-based trust model exists,
+    # refuse to serialize it here. Local resolve still runs it (gated by
+    # trust_entrypoints) via the resolver's _model_wire, which handles
+    # customs itself and never routes them through this serializer -- so this
+    # gate is publish-only.
+    raise ValueError(
+        f"custom input carries an entrypoint ({item.entrypoint!r}) and "
+        "cannot be published in v1 contract metadata; resolve the spec "
+        "locally (the model spec need not travel), or wait for the "
+        "allowlist-gated trust system"
+    )
 
 
 def _is_model_leaf(node: object) -> bool:

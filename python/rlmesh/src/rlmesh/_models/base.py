@@ -319,14 +319,19 @@ def session(
     if model is RANDOM_SAMPLE:
         # A random baseline samples the env's action space and ignores observations,
         # so it adapts nothing -- skip adapter resolution even on a tagged env.
-        return Session(
-            env=env,
-            predict=RANDOM_SAMPLE,
-            spec=NO_ADAPTER,
-            instruction=instruction,
-            close_env=close_env,
-            token=token,
-            trust_entrypoints=bool(trust_entrypoints),
+        return cast(
+            "Session[Any, Any]",
+            Session(
+                env=env,
+                # RANDOM_SAMPLE is a private sentinel Session special-cases by
+                # identity; cast keeps it out of the public `predict` signature.
+                predict=cast("Any", RANDOM_SAMPLE),
+                spec=NO_ADAPTER,
+                instruction=instruction,
+                close_env=close_env,
+                token=token,
+                trust_entrypoints=bool(trust_entrypoints),
+            ),
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
     # its own ``.session``; anything else (a callable / subclass class) is normalized.

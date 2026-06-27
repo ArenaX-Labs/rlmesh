@@ -182,7 +182,7 @@ pub const OBS_LEAF_TYPES: &[&str] = &["image", "state", "text", "split"];
 /// sentinel — a single-leaf observation is a bare [`Leaf`](ObsNode::Leaf).
 ///
 /// Discrimination on the wire is **structural** (the shared
-/// [`TreeNode`](super::model::TreeNode) parser): a JSON array is a `Tuple`, a
+/// `TreeNode` parser): a JSON array is a `Tuple`, a
 /// JSON object whose `"type"` is in the leaf vocabulary
 /// (`image`/`state`/`text`/`split`) is a `Leaf`, an object whose `"type"` is an
 /// unrecognized string is a clear `unknown observation kind` error, and any

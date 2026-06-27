@@ -283,13 +283,28 @@ def test_from_dlpack_rejects_non_cpu_devices() -> None:
 
 
 def _rss_bytes() -> int:
-    """Resident set size of this process, from /proc/self/statm (Linux)."""
-    import os
+    """Resident set size of this process, in bytes.
 
-    page_size = os.sysconf("SC_PAGE_SIZE")
-    with open("/proc/self/statm", encoding="ascii") as statm:
-        resident_pages = int(statm.read().split()[1])
-    return resident_pages * page_size
+    Linux exposes current RSS via ``/proc/self/statm``. Elsewhere (macOS/BSD)
+    fall back to peak RSS from ``getrusage`` -- for this leak test that is an
+    equally valid signal: a holder or storage leak keeps the high-water mark
+    climbing across the stress loop, while a leak-free run holds it flat.
+    """
+    import sys
+
+    if sys.platform.startswith("linux"):
+        import os
+
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            resident_pages = int(statm.read().split()[1])
+        return resident_pages * page_size
+
+    import resource
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # ru_maxrss is bytes on macOS, kibibytes on Linux/BSD.
+    return peak if sys.platform == "darwin" else peak * 1024
 
 
 def test_dlpack_capsule_lifecycle_does_not_leak() -> None:
@@ -300,10 +315,6 @@ def test_dlpack_capsule_lifecycle_does_not_leak() -> None:
     far beyond the assertion threshold.
     """
     import gc
-    import sys
-
-    if not sys.platform.startswith("linux"):
-        pytest.skip("RSS measurement uses /proc/self/statm")
 
     import rlmesh
 

@@ -236,6 +236,7 @@ def test_adapter_value_path_uses_native_tensor_leaves():
         obs, input_bridge=_numpy_bridge, custom_bridge=_numpy_bridge
     )
 
+    assert isinstance(payload, dict)
     assert isinstance(payload["observation.images.image"], Tensor)
     assert isinstance(payload["observation.images.image2"], Tensor)
     assert payload["instruction"] == "pick up the bowl"
@@ -718,7 +719,12 @@ def test_bilinear_aa_resize_matches_pillow_within_one_step():
     )
     for height, width in ((3, 4), (12, 16)):
         spec = adapt.ModelSpec(
-            input={"image": adapt.Image(height=height, width=width)},
+            # (12, 16) upscales the 6x8 env image, which the resolver gates
+            # behind allow_upscale; this test deliberately exercises both
+            # directions of the bilinear-AA resize.
+            input={
+                "image": adapt.Image(height=height, width=width, allow_upscale=True)
+            },
             output=SMOLVLA.output,
         )
         ours = (
@@ -1429,7 +1435,7 @@ def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     # `inputs[0]` (the ModelInput tag boundary) plus the u32 constraint.
     gripper = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
 
-    def to_dict(*, output: adapt.Action = gripper, **inputs: adapt.ModelInput) -> None:
+    def to_dict(*, output: adapt.Action = gripper, **inputs: adapt.ModelLeaf) -> None:
         adapt.ModelSpec(input=inputs, output=output).to_dict()
 
     with pytest.raises(
@@ -2118,6 +2124,7 @@ def test_scalar_reshape_survives_serialization_and_resolve():
         output=SMOLVLA.output,
     )
     restored = adapt.ModelSpec.from_dict(spec.to_dict())
+    assert isinstance(restored.input, dict)
     restored_input = restored.input["state"]
     assert isinstance(restored_input, adapt.Concat)
     assert restored_input.reshape == ()
@@ -2265,6 +2272,7 @@ def test_accept_set_authoring_round_trips():
     assert doc["input"]["state"]["components"][0]["encoding"] == ["rot6d", "quat_xyzw"]
     back = adapt.ModelSpec.from_dict(doc)
     # ...and normalizes to a tuple so the frozen spec stays hashable and equal.
+    assert isinstance(back.input, dict)
     back_input = back.input["state"]
     assert isinstance(back_input, adapt.State)
     assert back_input.encoding == ("rot6d", "quat_xyzw")
@@ -2310,6 +2318,7 @@ def test_image_fit_list_authoring_round_trips():
     doc = spec.to_dict()
     assert doc["input"]["image"]["fit"] == ["crop", "pad"]  # a sequence -> JSON list
     back = adapt.ModelSpec.from_dict(doc)
+    assert isinstance(back.input, dict)
     back_input = back.input["image"]
     assert isinstance(back_input, adapt.Image)
     assert back_input.fit == ("crop", "pad")  # normalizes to a tuple
