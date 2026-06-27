@@ -55,7 +55,6 @@ struct PyPredict {
     /// Optional batched chunk corner (`predict_chunk_batch`): a list of N inputs ->
     /// N action chunks, in one call.
     predict_chunk_batch_fn: Option<Py<PyAny>>,
-    on_reset: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
 }
@@ -186,10 +185,6 @@ impl PredictFn for PyPredict {
         .map_err(|err| RLMeshError::Internal(err.to_string()))
     }
 
-    fn on_reset(&self) -> rlmesh::Result<()> {
-        Self::fire(&self.on_reset)
-    }
-
     fn on_episode_end(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_episode_end)
     }
@@ -318,7 +313,6 @@ pub struct PyModel {
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
     configure_fn: Option<Py<PyAny>>,
-    on_reset: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
     runtime: tokio::runtime::Runtime,
@@ -338,7 +332,6 @@ impl PyModel {
                 .predict_chunk_batch_fn
                 .as_ref()
                 .map(|cb| cb.clone_ref(py)),
-            on_reset: self.on_reset.as_ref().map(|cb| cb.clone_ref(py)),
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
         });
@@ -354,12 +347,11 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_reset=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
         configure_fn: Option<Py<PyAny>>,
-        on_reset: Option<Py<PyAny>>,
         on_episode_end: Option<Py<PyAny>>,
         on_close: Option<Py<PyAny>>,
         predict_chunk_fn: Option<Py<PyAny>>,
@@ -381,7 +373,6 @@ impl PyModel {
             predict_batch_fn,
             predict_chunk_batch_fn,
             configure_fn,
-            on_reset,
             on_episode_end,
             on_close,
             runtime,
@@ -492,7 +483,7 @@ submit! {
 import collections.abc
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_reset: collections.abc.Callable[[], None] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
     def run_local(self, env_address: str, token: str) -> None: ...
     def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
     def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
@@ -507,6 +498,7 @@ submit! {
 class PyModelClient:
     def __init__(self, address: str, env_contract: EnvContract, token: str = "", action_horizon: int = 1) -> None: ...
     def address(self) -> str: ...
+    def env_id(self) -> str: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
     def reset(self) -> None: ...
@@ -577,6 +569,12 @@ impl PyModelClient {
 
     fn address(&self) -> String {
         self.address.clone()
+    }
+
+    /// The env (adapter) routing key this client uses with the model — a UUIDv7
+    /// minted at connect.
+    fn env_id(&self) -> String {
+        self.inner.env_id().to_string()
     }
 
     fn observation_space(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

@@ -13,10 +13,10 @@ use rlmesh_grpc::lifecycle::{
 };
 use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
-    CloseParticipantResponse, CloseRouteResponse, ConfigureRouteRequest, ConfigureRouteResponse,
-    GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult, HandshakeRequest,
-    HandshakeResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse, ShutdownRequest,
-    ShutdownResponse, grouped_predict_result, join_request, join_response,
+    CloseParticipantResponse, GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult,
+    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
+    ReleaseAdapterResponse, ResetAdapterResponse, ResolveAdapterRequest, ResolveAdapterResponse,
+    ShutdownRequest, ShutdownResponse, grouped_predict_result, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
@@ -28,7 +28,6 @@ use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
-use super::lifecycle::{finish_lifecycle, finish_route_lifecycle, update_lifecycle};
 use super::types::{ModelObservation, ModelRouteContext};
 use super::wire::{
     ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
@@ -132,7 +131,6 @@ async fn close_model(
 struct ServedModelServer<H> {
     handler: Arc<Mutex<H>>,
     route_setup: Option<Arc<dyn ModelRouteSetup>>,
-    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
     token: String,
     activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
@@ -143,16 +141,16 @@ struct ServedModelServer<H> {
 #[derive(Debug, Clone)]
 pub(super) struct ModelRouteConfig {
     pub(super) env_contract: Option<Arc<spaces::EnvContract>>,
-    /// The route edition the runtime pinned via `ConfigureRoute` (the floor — the
+    /// The env edition the runtime pinned via `ResolveAdapter` (the floor — the
     /// highest edition env, model, and runtime all support). Authoritative over the
     /// model's own (pairwise) handshake result. Stored/logged here; full enforcement
     /// is minimal while the build holds a single generation and edition.
     pub(super) floor: Option<RouteFloor>,
 }
 
-/// Edition the runtime pinned a route to (from `ConfigureRouteRequest`).
+/// Edition the runtime pinned an env to (from `ResolveAdapterRequest`).
 /// Generation is gated by equality at the handshake; capabilities are advisory
-/// and pairwise, so neither is part of the route floor.
+/// and pairwise, so neither is part of the env floor.
 #[derive(Debug, Clone)]
 pub(super) struct RouteFloor {
     pub(super) selected_workflow_edition: String,
@@ -172,7 +170,6 @@ where
     ModelServiceServer::new(ServedModelServer {
         handler,
         route_setup,
-        active_episodes: Arc::new(Mutex::new(HashMap::new())),
         route_configs: Arc::new(Mutex::new(HashMap::new())),
         token,
         activity_tx,
@@ -238,7 +235,6 @@ where
         let mut request_stream = request.into_inner();
         let handler = Arc::clone(&self.handler);
         let route_setup = self.route_setup.clone();
-        let active_episodes = Arc::clone(&self.active_episodes);
         let route_configs = Arc::clone(&self.route_configs);
         let activity_tx = self.activity_tx.clone();
         let concurrency = self
@@ -306,7 +302,6 @@ where
 
                 let handler = Arc::clone(&handler);
                 let route_setup = route_setup.clone();
-                let active_episodes = Arc::clone(&active_episodes);
                 let route_configs = Arc::clone(&route_configs);
                 let tx = tx.clone();
 
@@ -317,14 +312,8 @@ where
                     // per-route arrival order (or, for Close, after every route).
                     gate.wait().await;
 
-                    let response = handle_model_request(
-                        request,
-                        handler,
-                        route_setup,
-                        active_episodes,
-                        route_configs,
-                    )
-                    .await;
+                    let response =
+                        handle_model_request(request, handler, route_setup, route_configs).await;
 
                     // Release successors on this request's route(s) *before* sending
                     // the response, so per-route ordering does not depend on the
@@ -391,42 +380,49 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     request: JoinRequest,
     handler: Arc<Mutex<H>>,
     route_setup: Option<Arc<dyn ModelRouteSetup>>,
-    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> JoinResponse {
     let request_id = request.request_id.clone();
     let started_at = Instant::now();
 
     let kind = match request.kind {
-        Some(join_request::Kind::ConfigureRoute(request)) => {
-            handle_configure_route(request, route_setup.as_deref(), route_configs).await
+        Some(join_request::Kind::ResolveAdapter(request)) => {
+            handle_resolve_adapter(request, route_setup.as_deref(), route_configs).await
         }
         Some(join_request::Kind::Predict(request)) => {
-            handle_predict(request, handler, active_episodes, route_configs).await
+            handle_predict(request, handler, route_configs).await
         }
         Some(join_request::Kind::GroupedPredict(request)) => {
-            handle_grouped_predict(request, handler, active_episodes, route_configs).await
+            handle_grouped_predict(request, handler, route_configs).await
         }
-        Some(join_request::Kind::CloseRoute(request)) => {
-            let route_key = request.context.as_ref().and_then(route_config_key);
-            match route_key {
-                Some(route_key) => {
-                    let drain_result = {
-                        let mut handler = handler.lock().await;
-                        let mut active_episodes = active_episodes.lock().await;
-                        finish_route_lifecycle(&mut *handler, &mut active_episodes, &route_key)
-                            .await
-                    };
-                    if let Err(error) = drain_result {
-                        return JoinResponse {
-                            kind: Some(model_error(error.to_string())),
-                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
-                            request_id,
-                        };
+        Some(join_request::Kind::ResetAdapter(request)) => {
+            // Explicit GC (R2): evict the named episodes' per-episode adapter
+            // state. Empty episode_ids means evict all of this env's state.
+            let env_id = request.context.as_ref().map(|context| context.env_id.clone());
+            match env_id.filter(|env_id| !env_id.is_empty()) {
+                Some(env_id) => {
+                    let result = handler
+                        .lock()
+                        .await
+                        .reset_adapter(&env_id, request.episode_ids)
+                        .await;
+                    match result {
+                        Ok(()) => Some(join_response::Kind::ResetAdapter(ResetAdapterResponse {})),
+                        Err(error) => Some(model_error_from_error(&error)),
                     }
-                    route_configs.lock().await.remove(&route_key);
+                }
+                None => Some(model_error("reset_adapter missing env_id")),
+            }
+        }
+        Some(join_request::Kind::ReleaseAdapter(request)) => {
+            let env_id = request.context.as_ref().and_then(route_config_key);
+            match env_id {
+                Some(env_id) => {
+                    // ReleaseAdapter removes the adapter entirely (implies
+                    // reset-all): drop the config and tear down its setup.
+                    route_configs.lock().await.remove(&env_id);
                     if let Some(route_setup) = route_setup.as_deref()
-                        && let Err(error) = route_setup.close_route(&route_key).await
+                        && let Err(error) = route_setup.release_adapter(&env_id).await
                     {
                         return JoinResponse {
                             kind: Some(model_error(error.to_string())),
@@ -434,32 +430,19 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                             request_id,
                         };
                     }
-                    Some(join_response::Kind::CloseRoute(CloseRouteResponse {}))
+                    Some(join_response::Kind::ReleaseAdapter(ReleaseAdapterResponse {}))
                 }
-                _ => Some(model_error("close_route missing route_id")),
+                _ => Some(model_error("release_adapter missing env_id")),
             }
         }
         Some(join_request::Kind::Close(_request)) => {
-            let drain_result = {
-                let mut handler = handler.lock().await;
-                let mut active_episodes = active_episodes.lock().await;
-                finish_lifecycle(&mut *handler, &mut active_episodes).await
-            };
-            if let Err(error) = drain_result {
-                return JoinResponse {
-                    kind: Some(model_error(error.to_string())),
-                    endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
-                    request_id,
-                };
-            }
-            // Close drains every route globally above, so tear down every
-            // route's per-route setup and config too rather than leaking them
-            // for the server's lifetime. Drop the configs guard before the
-            // async close_route calls; re-lock only to clear.
-            let route_keys: Vec<String> = route_configs.lock().await.keys().cloned().collect();
+            // Tear down every env's adapter rather than leaking them for the
+            // server's lifetime. Drop the configs guard before the async
+            // release_adapter calls; re-lock only to clear.
+            let env_ids: Vec<String> = route_configs.lock().await.keys().cloned().collect();
             if let Some(route_setup) = route_setup.as_deref() {
-                for route_key in &route_keys {
-                    if let Err(error) = route_setup.close_route(route_key).await {
+                for env_id in &env_ids {
+                    if let Err(error) = route_setup.release_adapter(env_id).await {
                         return JoinResponse {
                             kind: Some(model_error_from_error(&error)),
                             endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
@@ -481,42 +464,38 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     }
 }
 
-async fn handle_configure_route(
-    request: ConfigureRouteRequest,
+async fn handle_resolve_adapter(
+    request: ResolveAdapterRequest,
     route_setup: Option<&dyn ModelRouteSetup>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     let route = match request.context {
         Some(route) => route,
-        None => return Some(model_error("configure_route missing route context")),
+        None => return Some(model_error("resolve_adapter missing adapter context")),
     };
-    let route_id = route.route_id.clone();
-    if route_id.is_empty() {
-        return Some(model_error("configure_route route_id is empty"));
+    let env_id = route.env_id.clone();
+    if env_id.is_empty() {
+        return Some(model_error("resolve_adapter env_id is empty"));
     }
     let route_key = match route_config_key(&route) {
         Some(route_key) => route_key,
-        None => {
-            return Some(model_error(
-                "configure_route missing session_id or route_id",
-            ));
-        }
+        None => return Some(model_error("resolve_adapter missing env_id")),
     };
     let env_spec = match request.env_spec {
         Some(env_spec) => env_spec,
-        None => return Some(model_error("configure_route missing env_spec")),
+        None => return Some(model_error("resolve_adapter missing env_spec")),
     };
-    // The runtime pins the route edition (the floor — highest mutual across env,
+    // The runtime pins the env edition (the floor — highest mutual across env,
     // model, and runtime), authoritative over this model's own (pairwise, possibly
     // higher) handshake result.
     let floor = if request.selected_workflow_edition.is_empty() {
         // Empty pin: a legacy/older runtime that predates edition propagation.
         // Harmless while a single edition exists (the floor could only be CURRENT).
-        // Once the support window grows, an unpinned route could silently run newest
+        // Once the support window grows, an unpinned env could silently run newest
         // semantics, so reject it then — production must select the floor.
         if rlmesh_proto::SUPPORTED_WORKFLOW_EDITIONS.len() > 1 {
             return Some(model_error(
-                "configure_route arrived without a workflow edition pin; the runtime must \
+                "resolve_adapter arrived without a workflow edition pin; the runtime must \
                  select the session floor once more than one edition is supported",
             ));
         }
@@ -526,7 +505,7 @@ async fn handle_configure_route(
             selected_workflow_edition: request.selected_workflow_edition,
         };
         // Minimal enforcement: the pinned edition is authoritative over this
-        // model's own handshake. Reject a route the runtime pinned to an edition
+        // model's own handshake. Reject an env the runtime pinned to an edition
         // this build cannot drive, instead of silently running the wrong semantics.
         // (With a single edition this never fires; the path exists so the edition
         // is honored, not merely logged, once a second edition lands.)
@@ -534,9 +513,9 @@ async fn handle_configure_route(
             return Some(model_error(error));
         }
         tracing::debug!(
-            route = %route_id,
+            env_id = %env_id,
             selected_workflow_edition = %floor.selected_workflow_edition,
-            "model route pinned to runtime-selected edition"
+            "model adapter pinned to runtime-selected edition"
         );
         Some(floor)
     };
@@ -553,19 +532,18 @@ async fn handle_configure_route(
     // (observation_space stays optional: a None observation is a valid relay.)
     if env_contract.action_space.is_none() {
         return Some(model_error(
-            "route EnvSpec has no action_space; a model worker cannot encode actions without it",
+            "env EnvSpec has no action_space; a model worker cannot encode actions without it",
         ));
     }
-    // Resolve the route's adapter before storing the config: a failure here
-    // fails configuration, so the client never predicts against an unresolved
-    // adapter. This runs off the predict-serialization lock (see
-    // `ModelRouteSetup`), so configuring one route never blocks on an in-flight
-    // predict on another.
-    // Runtime-chosen replay horizon pinned on this route (1 = no chunking).
+    // Resolve the env's adapter before storing the config: a failure here fails
+    // resolution, so the client never predicts against an unresolved adapter.
+    // This runs off the predict-serialization lock (see `ModelRouteSetup`), so
+    // resolving one env's adapter never blocks on an in-flight predict on another.
+    // Runtime-chosen replay horizon pinned on this env (1 = no chunking).
     let action_horizon = request.action_horizon;
     if let Some(route_setup) = route_setup
         && let Err(error) = route_setup
-            .configure_route(&route_key, &env_contract, action_horizon)
+            .resolve_adapter(&route_key, &env_contract, action_horizon)
             .await
     {
         return Some(model_error_from_error(&error));
@@ -577,8 +555,8 @@ async fn handle_configure_route(
             floor,
         },
     );
-    Some(join_response::Kind::ConfigureRoute(
-        ConfigureRouteResponse {},
+    Some(join_response::Kind::ResolveAdapter(
+        ResolveAdapterResponse {},
     ))
 }
 
@@ -616,14 +594,13 @@ struct PreparedPredict {
     route: ModelRouteContext,
 }
 
-/// Resolve a predict's route config and run its lifecycle — everything up to
-/// (but not including) the handler `predict` call. Must run with the handler and
-/// active-episodes locks already held: `update_lifecycle` drives the handler's
-/// `&mut self` hooks, and the per-route episode map is shared.
-async fn prepare_predict_locked<H: ModelHandler>(
+/// Resolve a predict's adapter config — everything up to (but not including) the
+/// handler `predict` call. No lifecycle hooks run here anymore (R2): per-episode
+/// state is lazy-seeded on first predict and evicted via `reset_adapter`, so
+/// there is no position-diff and no shared active-episodes map. The handler lock
+/// is held by the caller across prepare + predict for per-handler ordering.
+async fn prepare_predict_locked(
     request: PredictRequest,
-    handler: &mut H,
-    active_episodes: &mut HashMap<(String, i32), String>,
     route_configs: &Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Result<PreparedPredict> {
     let mut observation = model_observation_from_endpoint_request(request)?;
@@ -634,21 +611,20 @@ async fn prepare_predict_locked<H: ModelHandler>(
         .await
         .get(&route_key)
         .cloned()
-        .ok_or_else(|| Error::model("model route was not configured"))?;
+        .ok_or_else(|| Error::model("model env adapter was not resolved"))?;
     observation.env_contract = config.env_contract;
-    // The route runs at the runtime-reconciled floor (authoritative over this
+    // The adapter runs at the runtime-reconciled floor (authoritative over this
     // model's own handshake). With a single edition this is the build's edition;
     // trace it so the active session value is observable.
     if let Some(floor) = config.floor.as_ref() {
         tracing::trace!(
             selected_workflow_edition = %floor.selected_workflow_edition,
-            "predict on route pinned to session floor"
+            "predict on adapter pinned to session floor"
         );
     }
-    // The route config no longer carries num_envs (the model gets only the
-    // stable EnvSpec); the per-predict lane count comes from the slots, already
+    // The adapter config no longer carries num_envs (the model gets only the
+    // stable EnvSpec); the per-predict row count comes from episode_ids, already
     // set by `model_observation_from_endpoint_request`.
-    update_lifecycle(handler, active_episodes, &observation).await?;
     // Capture the action space + lane count before predict consumes the obs;
     // the worker owns the typed->wire encode (D10).
     let num_envs = observation.num_envs;
@@ -698,15 +674,11 @@ fn finish_predict(
 async fn handle_predict<H: ModelHandler + 'static>(
     request: PredictRequest,
     handler: Arc<Mutex<H>>,
-    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     let result = async {
         let mut handler = handler.lock().await;
-        let mut active_episodes = active_episodes.lock().await;
-        let prepared =
-            prepare_predict_locked(request, &mut *handler, &mut active_episodes, &route_configs)
-                .await?;
+        let prepared = prepare_predict_locked(request, &route_configs).await?;
         let PreparedPredict {
             observation,
             action_space,
@@ -734,7 +706,6 @@ async fn handle_predict<H: ModelHandler + 'static>(
 async fn handle_grouped_predict<H: ModelHandler + 'static>(
     request: GroupedPredictRequest,
     handler: Arc<Mutex<H>>,
-    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
 ) -> Option<join_response::Kind> {
     // A finished group is either a prepare-time failure to report verbatim, or a
@@ -749,17 +720,14 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     }
 
     let mut handler = handler.lock().await;
-    let mut active_episodes = active_episodes.lock().await;
 
-    // Prepare every group under the lock (per-route lookup + lifecycle). A group
-    // whose route is unconfigured (or otherwise fails to prepare) records its own
+    // Prepare every group under the lock (per-env adapter lookup). A group whose
+    // env adapter is unresolved (or otherwise fails to prepare) records its own
     // error and is excluded from the batched predict.
     let mut batch: Vec<ModelObservation> = Vec::with_capacity(request.groups.len());
     let mut finishers: Vec<Finisher> = Vec::with_capacity(request.groups.len());
     for group in request.groups {
-        match prepare_predict_locked(group, &mut *handler, &mut active_episodes, &route_configs)
-            .await
-        {
+        match prepare_predict_locked(group, &route_configs).await {
             Ok(prepared) => {
                 let PreparedPredict {
                     observation,
@@ -972,12 +940,13 @@ impl RequestGate {
 /// by the caller, and ungated malformed requests still produce an in-band error.
 fn join_request_route_key(request: &JoinRequest) -> Option<String> {
     let context = match request.kind.as_ref()? {
-        join_request::Kind::ConfigureRoute(request) => request.context.as_ref()?,
+        join_request::Kind::ResolveAdapter(request) => request.context.as_ref()?,
         join_request::Kind::Predict(request) => request.context.as_ref()?,
-        join_request::Kind::CloseRoute(request) => request.context.as_ref()?,
+        join_request::Kind::ResetAdapter(request) => request.context.as_ref()?,
+        join_request::Kind::ReleaseAdapter(request) => request.context.as_ref()?,
         join_request::Kind::Close(_) => return None,
-        // A grouped predict spans multiple routes, so it has no single route key;
-        // the dispatch loop gates it on all of its referenced routes via
+        // A grouped predict spans multiple envs, so it has no single key; the
+        // dispatch loop gates it on all of its referenced envs via
         // `grouped_predict_route_keys` + `next_multi_keyed_gate` instead.
         join_request::Kind::GroupedPredict(_) => return None,
     };
@@ -1003,15 +972,16 @@ fn grouped_predict_route_keys(request: &JoinRequest) -> Option<Vec<String>> {
     Some(keys)
 }
 
-fn route_config_key(context: &rlmesh_proto::model::v1::PredictContext) -> Option<String> {
-    if context.session_id.is_empty() || context.route_id.is_empty() {
+fn route_config_key(context: &rlmesh_proto::model::v1::AdapterContext) -> Option<String> {
+    if context.env_id.is_empty() {
         return None;
     }
-    Some(format!("{}:{}", context.session_id, context.route_id))
+    // env_id is globally unique (UUIDv7), so it alone keys the adapter.
+    Some(context.env_id.clone())
 }
 
 fn model_route_config_key(route: &super::types::ModelRouteContext) -> String {
-    format!("{}:{}", route.session_id, route.route_id)
+    route.env_id.clone()
 }
 
 /// Log an inbound Join-stream error meaningfully instead of swallowing it.
@@ -1114,7 +1084,6 @@ mod tests {
         ServedModelServer {
             handler: Arc::new(Mutex::new(NoopModelHandler)),
             route_setup: None,
-            active_episodes: Arc::new(Mutex::new(HashMap::new())),
             route_configs: Arc::new(Mutex::new(HashMap::new())),
             token: String::new(),
             activity_tx: None,
@@ -1322,10 +1291,10 @@ mod tests {
 
     #[test]
     fn grouped_predict_route_keys_dedups_referenced_routes() {
-        let group = |route: &str| PredictRequest {
-            context: Some(rlmesh_proto::model::v1::PredictContext {
+        let group = |env_id: &str| PredictRequest {
+            context: Some(rlmesh_proto::model::v1::AdapterContext {
                 session_id: "s".to_owned(),
-                route_id: route.to_owned(),
+                env_id: env_id.to_owned(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1338,7 +1307,7 @@ mod tests {
         };
         assert_eq!(
             grouped_predict_route_keys(&grouped),
-            Some(vec!["s:a".to_owned(), "s:b".to_owned()])
+            Some(vec!["a".to_owned(), "b".to_owned()])
         );
         // A non-grouped request carries a single route key, so this returns None.
         let predict = JoinRequest {
@@ -1376,7 +1345,6 @@ mod tests {
             },
             Arc::clone(&server.handler),
             server.route_setup.clone(),
-            Arc::clone(&server.active_episodes),
             Arc::clone(&server.route_configs),
         )
         .await;

@@ -17,7 +17,7 @@ use rlmesh_adapters::v1::{
 
 use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
-use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation, ModelRouteContext};
+use super::types::{ModelObservation, ModelRouteContext};
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
 use crate::{Error, Result};
 
@@ -42,36 +42,34 @@ pub struct AdaptedModelHandler {
     predict: Arc<dyn PredictFn>,
     resolver: Option<Arc<dyn RouteResolver>>,
     routes: Routes,
-    /// The route the server is currently processing, set by `enter_route` before
-    /// its per-lane resets fire (the lane events carry no route key).
-    current_route: Option<String>,
 }
 
 impl AdaptedModelHandler {
     /// Build a handler from the model's predict hole and an optional route
-    /// resolver. `resolver = None` means a spec-less model: every route serves
+    /// resolver. `resolver = None` means a spec-less model: every env serves
     /// through [`PredictFn::predict_spec_less`].
     pub fn new(predict: Arc<dyn PredictFn>, resolver: Option<Arc<dyn RouteResolver>>) -> Self {
         Self {
             predict,
             resolver,
             routes: Arc::new(Mutex::new(HashMap::new())),
-            current_route: None,
         }
     }
 
-    /// Look up the per-route entry (cloning the `Arc`), if the route is spec'd.
-    fn entry(&self, route_key: &str) -> Option<Arc<Mutex<RouteEntry>>> {
+    /// Look up the per-env entry (cloning the `Arc`), if the env is spec'd.
+    fn entry(&self, env_id: &str) -> Option<Arc<Mutex<RouteEntry>>> {
         self.routes
             .lock()
             .expect("routes map poisoned")
-            .get(route_key)
+            .get(env_id)
             .cloned()
     }
 }
 
+/// The adapter map is keyed by `env_id` (one resolved adapter per connected env,
+/// no sharing).
 fn route_key(route: &ModelRouteContext) -> String {
-    format!("{}:{}", route.session_id, route.route_id)
+    route.env_id.clone()
 }
 
 /// The top-level obs keys to materialize for `config`: a declarative-only route
@@ -344,53 +342,33 @@ impl ModelHandler for AdaptedModelHandler {
         }))
     }
 
-    async fn enter_route(&mut self, route_key: &str) -> Result<()> {
-        self.current_route = Some(route_key.to_string());
-        Ok(())
-    }
-
-    async fn on_lane_reset(&mut self, event: ModelLaneReset) -> Result<()> {
-        // Seed the new episode's (empty) buffer on the current route. Edge-driven:
-        // the row's first predict first-frame-pads. Asserts the episode is not
-        // already mid-stack — a missed END surfaces loudly here.
-        if let Some(route_key) = self.current_route.as_deref()
-            && let Some(entry) = self.entry(route_key)
-        {
-            let seeded = entry
-                .lock()
-                .expect("route entry poisoned")
-                .buffers
-                .seed(&event.episode_id);
-            debug_assert!(
-                seeded,
-                "episode {} already mid-stack at reset (missed on_episode_end)",
-                event.episode_id
-            );
-        }
-        Ok(())
-    }
-
-    async fn on_reset(&mut self, _observation: &ModelObservation) -> Result<()> {
-        let predict = Arc::clone(&self.predict);
-        tokio::task::spawn_blocking(move || predict.on_reset())
-            .await
-            .map_err(|err| Error::Internal(format!("on_reset task panicked: {err}")))?
-    }
-
-    async fn on_episode_end(&mut self, event: ModelEpisodeEnd) -> Result<()> {
-        // Evict the ended episode's buffers (edge-driven). During close sweeps no
-        // route is entered, so this may target the wrong/absent route — harmless,
-        // since close_route / on_close are the authoritative reclaimers.
-        if let Some(route_key) = self.current_route.as_deref()
-            && let Some(entry) = self.entry(route_key)
-        {
+    async fn reset_adapter(&mut self, env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        // Explicit GC (R2): evict the ended episodes' frame buffers on this env's
+        // adapter. Buffers are lazy-seeded on each episode's first predict (via
+        // `assemble_obs`), so there is no seed step and no position-diffing. Empty
+        // `episode_ids` evicts ALL of this env's episode state.
+        if let Some(entry) = self.entry(env_id) {
             let mut guard = entry.lock().expect("route entry poisoned");
-            guard.buffers.evict(&event.episode_id);
+            if episode_ids.is_empty() {
+                guard.buffers.clear();
+            } else {
+                for episode_id in &episode_ids {
+                    guard.buffers.evict(episode_id);
+                }
+            }
         }
+        // Surface the episode-end edge to the model's own hook (one call per
+        // ended episode), e.g. to reset a single-env model's recurrent state.
         let predict = Arc::clone(&self.predict);
-        tokio::task::spawn_blocking(move || predict.on_episode_end())
-            .await
-            .map_err(|err| Error::Internal(format!("on_episode_end task panicked: {err}")))?
+        let count = episode_ids.len().max(1);
+        tokio::task::spawn_blocking(move || {
+            for _ in 0..count {
+                predict.on_episode_end()?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| Error::Internal(format!("on_episode_end task panicked: {err}")))?
     }
 
     async fn on_close(&mut self) -> Result<()> {
@@ -417,13 +395,13 @@ struct AdaptedRouteSetup {
 
 #[async_trait]
 impl ModelRouteSetup for AdaptedRouteSetup {
-    async fn configure_route(
+    async fn resolve_adapter(
         &self,
-        route_key: &str,
+        env_id: &str,
         env_contract: &EnvContract,
         action_horizon: u32,
     ) -> Result<()> {
-        let Some(mut config) = self.resolver.resolve(route_key, env_contract).await? else {
+        let Some(mut config) = self.resolver.resolve(env_id, env_contract).await? else {
             return Ok(());
         };
         // Surface the adapter's advisories once at configure. These are the
@@ -434,7 +412,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // signal stays buried on the adapter handle and the degradation is silent
         // in practice.
         for note in config.adapter.advisories() {
-            tracing::warn!(route = %route_key, "adapter advisory: {note}");
+            tracing::warn!(env_id = %env_id, "adapter advisory: {note}");
         }
         // Stamp the runtime-chosen replay horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
@@ -442,7 +420,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         config.action_horizon = action_horizon.max(1);
         if config.action_horizon > 1 && !self.predict.has_chunk() {
             tracing::warn!(
-                route = %route_key,
+                env_id = %env_id,
                 action_horizon = config.action_horizon,
                 "runtime pinned action_horizon > 1 but the model defines no chunk corner \
                  (predict_chunk); chunking is inactive — the model re-plans every step",
@@ -487,15 +465,15 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         self.routes
             .lock()
             .expect("routes map poisoned")
-            .insert(route_key.to_string(), entry);
+            .insert(env_id.to_string(), entry);
         Ok(())
     }
 
-    async fn close_route(&self, route_key: &str) -> Result<()> {
+    async fn release_adapter(&self, env_id: &str) -> Result<()> {
         self.routes
             .lock()
             .expect("routes map poisoned")
-            .remove(route_key);
+            .remove(env_id);
         Ok(())
     }
 }

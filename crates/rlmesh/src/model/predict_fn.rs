@@ -96,13 +96,11 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
-    /// Fires on a coarse reset edge (structurally-discovered model hook).
-    fn on_reset(&self) -> Result<()> {
-        Ok(())
-    }
-
-    /// Fires when an episode ends (structurally-discovered model hook). The
-    /// engine separately evicts that episode's frame buffers.
+    /// Fires when an episode ends (structurally-discovered model hook), driven by
+    /// the explicit `ResetAdapter` op. The engine separately evicts that
+    /// episode's frame buffers. There is no episode-*begin* hook: per-episode
+    /// state is lazy-seeded on first predict, so a stateful model resets its
+    /// state here at episode end rather than at a (no-longer-signalled) begin.
     fn on_episode_end(&self) -> Result<()> {
         Ok(())
     }

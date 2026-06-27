@@ -103,6 +103,12 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
         return self._address
 
     @property
+    def env_id(self) -> str:
+        """This connection's container id (UUIDv7). A stable correlation
+        identity, distinct from the human env name (`env_contract.id`)."""
+        return self._client.env_id()
+
+    @property
     def env_contract(self) -> EnvContract:
         """Environment contract returned by the endpoint handshake."""
         return self._env_contract
@@ -214,7 +220,7 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}(address={self.address!r}, "
-            f"env_id={self._env_contract.id!r})"
+            f"id={self._env_contract.id!r})"
         )
 
     def __enter__(self) -> RemoteEnvBase[ValueT, ActionT]:

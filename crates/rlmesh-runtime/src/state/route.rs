@@ -1,9 +1,11 @@
 use prost::bytes::Bytes;
-use rlmesh_proto::model::v1::{CloseRouteRequest, PredictContext, PredictRequest, PredictSlot};
+use rlmesh_proto::model::v1::{
+    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
+};
 use rlmesh_proto::spaces::v1::SpaceValue;
 
 use crate::episodes::{EpisodeRecord, EpisodeRecordRegistry};
-use crate::hooks::RuntimeRouteContext;
+use crate::hooks::RuntimeEnvContext;
 use crate::spec::RuntimeSessionSpec;
 
 use super::{EpisodeState, RouteSnapshot, SlotState, StartedEpisode};
@@ -30,7 +32,7 @@ fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
 #[derive(Debug)]
 pub(crate) struct RouteState {
     session_id: String,
-    route_id: String,
+    env_id: String,
     env_component_id: String,
     model_component_id: String,
     slots: Vec<SlotState>,
@@ -53,7 +55,7 @@ impl RouteState {
 
         Self {
             session_id: spec.session_id.clone(),
-            route_id: spec.route_id.clone(),
+            env_id: spec.env_id.clone(),
             env_component_id: spec.env_component_id.clone(),
             model_component_id: spec.model_component_id.clone(),
             slots,
@@ -68,8 +70,8 @@ impl RouteState {
         &self.session_id
     }
 
-    pub(crate) fn route_id(&self) -> &str {
-        &self.route_id
+    pub(crate) fn env_id(&self) -> &str {
+        &self.env_id
     }
 
     pub(crate) fn env_component_id(&self) -> &str {
@@ -80,9 +82,9 @@ impl RouteState {
         &self.model_component_id
     }
 
-    pub(crate) fn route_context(&self) -> RuntimeRouteContext {
-        RuntimeRouteContext {
-            route_id: self.route_id.clone(),
+    pub(crate) fn env_context(&self) -> RuntimeEnvContext {
+        RuntimeEnvContext {
+            env_id: self.env_id.clone(),
             env_component_id: self.env_component_id.clone(),
             model_component_id: self.model_component_id.clone(),
         }
@@ -98,29 +100,21 @@ impl RouteState {
 
     pub(crate) fn next_request_id(&mut self, phase: &str) -> String {
         self.request_seq += 1;
-        // Include route_id: a session can fan out to multiple routes, and
-        // request_seq restarts at 0 per RouteState, so omitting it would make
-        // sibling routes emit identical request IDs.
-        format!(
-            "{}:{}:{}:{:06}",
-            self.session_id, self.route_id, phase, self.request_seq
-        )
+        // env_id is globally unique (UUIDv7), so it alone disambiguates request
+        // ids across every adapter; request_seq restarts at 0 per RouteState.
+        format!("{}:{}:{:06}", self.env_id, phase, self.request_seq)
     }
 
-    pub(crate) fn slots(&self) -> Vec<PredictSlot> {
+    /// Ordered per-row episode ids — the self-describing batch. Row `i` belongs
+    /// to `episode_ids()[i]`. Empty string for a lane with no active episode.
+    pub(crate) fn episode_ids(&self) -> Vec<String> {
         self.slots
             .iter()
-            .map(|slot| PredictSlot {
-                // Native env_index is i32 (>=0); proto field is uint32. `step` is
-                // int64 on both sides, so it carries across with no conversion.
-                env_index: slot.env_index.max(0) as u32,
-                episode_id: slot
-                    .episode
+            .map(|slot| {
+                slot.episode
                     .as_ref()
                     .map(|episode| episode.episode_id.clone())
-                    .unwrap_or_default(),
-                step: slot.step,
-                reset: slot.reset,
+                    .unwrap_or_default()
             })
             .collect()
     }
@@ -200,24 +194,38 @@ impl RouteState {
         observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
     ) -> PredictRequest {
+        let episode_ids = self.episode_ids();
         PredictRequest {
-            context: Some(PredictContext {
+            context: Some(AdapterContext {
                 session_id: self.session_id().to_string(),
-                route_id: self.route_id().to_string(),
+                env_id: self.env_id().to_string(),
                 request_id: self.next_request_id(phase.as_str()),
-                slots: self.slots(),
             }),
             observation: observation.map(leaves_value),
+            episode_ids,
         }
     }
 
-    pub(crate) fn close_route_request(&mut self, reason: impl Into<String>) -> CloseRouteRequest {
-        CloseRouteRequest {
-            context: Some(PredictContext {
+    pub(crate) fn reset_adapter_request(&mut self, episode_ids: Vec<String>) -> ResetAdapterRequest {
+        ResetAdapterRequest {
+            context: Some(AdapterContext {
                 session_id: self.session_id().to_string(),
-                route_id: self.route_id().to_string(),
-                request_id: self.next_request_id("close_route"),
-                slots: self.slots(),
+                env_id: self.env_id().to_string(),
+                request_id: self.next_request_id("reset_adapter"),
+            }),
+            episode_ids,
+        }
+    }
+
+    pub(crate) fn release_adapter_request(
+        &mut self,
+        reason: impl Into<String>,
+    ) -> ReleaseAdapterRequest {
+        ReleaseAdapterRequest {
+            context: Some(AdapterContext {
+                session_id: self.session_id().to_string(),
+                env_id: self.env_id().to_string(),
+                request_id: self.next_request_id("release_adapter"),
             }),
             reason: reason.into(),
         }

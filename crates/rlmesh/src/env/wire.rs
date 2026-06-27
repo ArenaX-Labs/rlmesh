@@ -207,7 +207,6 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
         Ok(ProtoResetResponse {
             observation: Some(observations),
             infos: result.info.as_ref().map(meta_map_to_proto),
-            episode_ids: result.episode_ids,
         })
     }
 
@@ -364,7 +363,6 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
                 .iter()
                 .map(public_episode_metadata_to_proto)
                 .collect::<std::result::Result<Vec<_>, _>>()?,
-            episode_ids: result.episode_ids,
             // Full-width response; partial-width is reserved-but-deferred.
             env_indices: Vec::new(),
         })
@@ -730,6 +728,7 @@ mod tests {
                 action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
                 env_indices: vec![],
+                episode_ids: vec![],
             },
         )
         .await
@@ -755,6 +754,7 @@ mod tests {
                 action: Some(encode_batched_partial_values(&actions, &action_space).unwrap()),
                 timeout_ms: 0,
                 env_indices: vec![],
+                episode_ids: vec![],
             },
         )
         .await

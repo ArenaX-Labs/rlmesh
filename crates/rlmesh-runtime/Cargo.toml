@@ -23,6 +23,9 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 tokio-util = { workspace = true }
 prost = { workspace = true }
+# The runtime is the sole episode-id authority (R1): it mints UUIDv7 episode ids
+# (time-ordered) on every reset and pushes them down to the env.
+uuid = { workspace = true, features = ["v7"] }
 
 tracing = { workspace = true }
 

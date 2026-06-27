@@ -422,6 +422,10 @@ async fn handle_env_request<E: Environment>(
             // environment seeds itself from entropy, so the episode has no seed
             // rather than a fabricated 0.
             let seeds = reset_req.seeds.clone();
+            // Authoritative episode ids minted by the runtime and pushed down
+            // (R1): the env adopts these and never mints. Positional — aligned to
+            // `env_indices` for a partial reset, to lanes 0..num_envs for a full one.
+            let pushed_ids = reset_req.episode_ids.clone();
             // Non-empty env_indices is an explicit partial / subenv reset: only
             // those lanes restart, with `seeds` positionally aligned to them.
             let env_indices = reset_req.env_indices.clone();
@@ -452,39 +456,33 @@ async fn handle_env_request<E: Environment>(
             };
 
             match result {
-                Ok(mut ok) => {
+                Ok(ok) => {
                     let mut tracker = episode_tracker.lock().await;
-                    let episode_ids: Vec<String> = if partial {
-                        // Start a fresh episode only for the reset lanes; other
-                        // lanes keep their active id. Returned ids are full-width.
+                    let episode_count = if partial {
+                        // Start a fresh episode only for the reset lanes, adopting
+                        // the runtime-pushed ids (aligned to env_indices). Other
+                        // lanes keep their active id.
                         for (i, &env_idx) in env_indices.iter().enumerate() {
                             let seed = seeds.get(i).copied();
+                            let id = pushed_ids.get(i).cloned().unwrap_or_default();
                             // Wire env_index is uint32; the tracker keys on i32.
-                            tracker.start_episode(env_idx as i32, seed);
+                            tracker.start_episode(env_idx as i32, seed, id);
                         }
-                        (0..num_envs)
-                            .map(|env_idx| {
-                                tracker
-                                    .active_episode_id(env_idx as i32)
-                                    .unwrap_or_default()
-                                    .to_string()
-                            })
-                            .collect()
+                        env_indices.len()
                     } else {
-                        (0..num_envs)
-                            .map(|env_idx| {
-                                let seed = seeds.get(env_idx).copied();
-                                tracker.start_episode(env_idx as i32, seed)
-                            })
-                            .collect()
+                        for env_idx in 0..num_envs {
+                            let seed = seeds.get(env_idx).copied();
+                            let id = pushed_ids.get(env_idx).cloned().unwrap_or_default();
+                            tracker.start_episode(env_idx as i32, seed, id);
+                        }
+                        num_envs
                     };
-                    ok.episode_ids = episode_ids;
                     let obs_bytes = space_value_len(ok.observation.as_ref());
                     let info_bytes = ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
                     tracing::debug!(
                         obs_bytes,
                         info_bytes,
-                        episode_count = ok.episode_ids.len(),
+                        episode_count,
                         "env reset completed"
                     );
                     Some(join_response::Kind::Reset(ok))
@@ -513,6 +511,10 @@ async fn handle_env_request<E: Environment>(
                 )))
             } else {
                 let timeout_ms = step_req.timeout_ms;
+                // Authoritative per-lane ids pushed down by the runtime (R1).
+                // Under NEXT_STEP the env adopts this lane's id when it rolls the
+                // fresh autoreset episode; it never mints its own.
+                let pushed_ids = step_req.episode_ids.clone();
                 let result =
                     run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
 
@@ -544,12 +546,12 @@ async fn handle_env_request<E: Environment>(
                             let mut completed_episodes = tracker.drain_interrupted();
                             let shared_info = ok.infos.clone();
 
-                            // Per-lane episode ids. The id flips only at the
-                            // NEXT_STEP boundary (t+1, the fresh-obs step), never
-                            // on the done step t, so the terminal observation
-                            // stays labelled with the episode that just ended.
-                            let mut episode_ids = vec![String::new(); num_envs];
-                            for (env_idx, episode_id) in episode_ids.iter_mut().enumerate() {
+                            // The env no longer emits per-lane episode ids (R1):
+                            // the runtime is authoritative and keys lifecycle by
+                            // env_index. We still advance tracker state, surface
+                            // completed metadata (tagged with the runtime-pushed
+                            // id), and adopt the pushed id when a lane rolls.
+                            for env_idx in 0..num_envs {
                                 let terminated = lane_bit(&ok.terminated_mask, env_idx);
                                 let truncated = lane_bit(&ok.truncated_mask, env_idx);
                                 let done = terminated || truncated;
@@ -561,9 +563,8 @@ async fn handle_env_request<E: Environment>(
                                         // A real action-step on a running lane: reward counts.
                                         tracker.record_step(lane, reward);
                                         if done {
-                                            // Done step t: complete the episode. The terminal
-                                            // obs belongs to the old episode, so episode_ids
-                                            // keeps the completed id; any new id rolls at t+1.
+                                            // Done step t: complete the episode (its metadata
+                                            // carries the runtime id we adopted at start).
                                             if let Some(metadata) = tracker.complete_episode(
                                                 lane,
                                                 terminated,
@@ -574,7 +575,6 @@ async fn handle_env_request<E: Environment>(
                                                     num_envs,
                                                 ),
                                             ) {
-                                                *episode_id = metadata.episode_id.clone();
                                                 completed_episodes.push(metadata);
                                             }
                                             // Under NEXT_STEP the env owes this lane a fresh
@@ -583,31 +583,27 @@ async fn handle_env_request<E: Environment>(
                                             if next_step {
                                                 tracker.expect_autoreset(lane);
                                             }
-                                        } else {
-                                            *episode_id = tracker
-                                                .active_episode_id(lane)
-                                                .unwrap_or_default()
-                                                .to_string();
                                         }
                                     }
                                     LaneState::PendingAutoreset => {
                                         // Validated as the fresh autoreset observation
                                         // (non-terminal, reward 0). Roll the new episode
-                                        // (step 0); not a reward-bearing step, so no
-                                        // record_step; gym reseeds autoreset from entropy
-                                        // (seed None).
-                                        *episode_id = tracker.start_episode(lane, None);
+                                        // (step 0) adopting the runtime-pushed id; not a
+                                        // reward-bearing step, so no record_step; gym reseeds
+                                        // autoreset from entropy (seed None).
+                                        let id =
+                                            pushed_ids.get(env_idx).cloned().unwrap_or_default();
+                                        tracker.start_episode(lane, None, id);
                                     }
                                     LaneState::Idle => {
                                         // DISABLED only (validation rejects an Idle NEXT_STEP
-                                        // lane): an inactive lane awaits an explicit reset; leave
-                                        // its id empty, never a phantom episode.
+                                        // lane): an inactive lane awaits an explicit reset; no
+                                        // phantom episode.
                                     }
                                 }
                             }
 
                             ok.completed_episodes = completed_episodes;
-                            ok.episode_ids = episode_ids;
                             let obs_bytes = space_value_len(ok.observation.as_ref());
                             let info_bytes =
                                 ok.infos.as_ref().map(MetaMap::encoded_len).unwrap_or(0);
@@ -1505,9 +1501,12 @@ mod tests {
         )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
-        // Reset both lanes.
+        // Reset both lanes, pushing the runtime-minted ids the env adopts (R1).
         let reset = JoinRequest {
-            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                episode_ids: vec!["E0".to_string(), "E1".to_string()],
+                ..Default::default()
+            })),
             request_id: "reset".to_string(),
         };
         let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
@@ -1517,26 +1516,27 @@ mod tests {
             request_id: id.to_string(),
         };
 
-        // Step 1: lane 0 terminates. Its episode completes exactly once. The
-        // terminal observation still belongs to the episode that just ended, so
-        // lane 0's `episode_id` is the COMPLETED id (not empty). This env is
-        // DISABLED, so no replacement episode is started.
+        // Step 1: lane 0 terminates. Its episode completes exactly once, carrying
+        // the adopted id (the env no longer emits per-lane response ids). This env
+        // is DISABLED, so no replacement episode is started.
         let first = super::handle_env_request(step_req("s1"), env.clone(), tracker.clone()).await;
         let first = match first.kind {
             Some(join_response::Kind::Step(ok)) => ok,
             other => panic!("expected step response, got {other:?}"),
         };
         assert_eq!(first.completed_episodes.len(), 1, "lane 0 should complete");
-        assert_eq!(first.episode_ids.len(), 2);
         assert_eq!(
-            first.episode_ids[0], first.completed_episodes[0].episode_id,
-            "the terminal step labels lane 0 with the episode that just ended"
+            first.completed_episodes[0].episode_id, "E0",
+            "the completed episode carries the runtime-pushed id"
         );
-        assert!(!first.episode_ids[0].is_empty());
-        assert!(
-            !first.episode_ids[1].is_empty(),
-            "lane 1 keeps its active episode"
-        );
+        {
+            let t = tracker.lock().await;
+            assert!(
+                t.active_episode_id(0).is_none(),
+                "DISABLED: terminated lane 0 has no active episode"
+            );
+            assert_eq!(t.active_episode_id(1), Some("E1"), "lane 1 keeps its episode");
+        }
 
         // Step 2: no phantom episode is delivered for lane 0 (no spurious
         // truncated 0-step completion), and lane 0 still has no active episode.
@@ -1549,13 +1549,19 @@ mod tests {
             second.completed_episodes.is_empty(),
             "no phantom episode may be delivered for the terminated lane"
         );
-        assert!(second.episode_ids[0].is_empty());
-        assert!(!second.episode_ids[1].is_empty());
+        {
+            let t = tracker.lock().await;
+            assert!(t.active_episode_id(0).is_none());
+            assert_eq!(t.active_episode_id(1), Some("E1"));
+        }
 
         // An explicit Reset re-establishes a tracked episode for every lane.
         let _ = super::handle_env_request(
             JoinRequest {
-                kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                    episode_ids: vec!["F0".to_string(), "F1".to_string()],
+                    ..Default::default()
+                })),
                 request_id: "reset2".to_string(),
             },
             env.clone(),
@@ -1563,8 +1569,9 @@ mod tests {
         )
         .await;
         let tracker = tracker.lock().await;
-        assert!(
-            tracker.active_episode_id(0).is_some(),
+        assert_eq!(
+            tracker.active_episode_id(0),
+            Some("F0"),
             "Reset must re-establish lane 0's tracked episode"
         );
     }
@@ -1664,7 +1671,10 @@ mod tests {
 
         let _ = super::handle_env_request(
             JoinRequest {
-                kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+                kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                    episode_ids: vec!["A".to_string()],
+                    ..Default::default()
+                })),
                 request_id: "reset".to_string(),
             },
             env.clone(),
@@ -1672,8 +1682,12 @@ mod tests {
         )
         .await;
 
-        let step = |id: &str| JoinRequest {
-            kind: Some(join_request::Kind::Step(StepRequest::default())),
+        // A step that pushes the runtime-minted ids the env adopts on a roll.
+        let step = |id: &str, episode_ids: Vec<String>| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest {
+                episode_ids,
+                ..Default::default()
+            })),
             request_id: id.to_string(),
         };
         let step_ok = |r: super::JoinResponse| match r.kind {
@@ -1681,31 +1695,37 @@ mod tests {
             other => panic!("expected step response, got {other:?}"),
         };
 
-        // Done step t: lane 0 terminates. The terminal obs keeps the old id; the
-        // id has not rolled yet.
-        let t = step_ok(super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await);
-        assert_eq!(t.completed_episodes.len(), 1, "lane 0 completes at t");
-        let old_id = t.completed_episodes[0].episode_id.clone();
-        assert_eq!(
-            t.episode_ids[0], old_id,
-            "terminal obs at t must keep the completed (old) episode id"
+        // Done step t: lane 0 terminates, completing the old episode "A". The id
+        // has not rolled yet (the lane is now pending-autoreset).
+        let t = step_ok(
+            super::handle_env_request(step("s1", vec!["A".to_string()]), env.clone(), tracker.clone())
+                .await,
         );
+        assert_eq!(t.completed_episodes.len(), 1, "lane 0 completes at t");
+        assert_eq!(t.completed_episodes[0].episode_id, "A");
+        {
+            let tk = tracker.lock().await;
+            assert!(
+                tk.active_episode_id(0).is_none(),
+                "lane 0 is pending-autoreset at t, no active episode"
+            );
+        }
 
-        // Fresh-obs step t+1: the env auto-reset lane 0. NOW the id rolls to a new
-        // episode (step 0), with no spurious completion.
-        let tp1 =
-            step_ok(super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await);
+        // Fresh-obs step t+1: the env auto-resets lane 0, adopting the rolled id
+        // "B" the runtime pushed. No spurious completion.
+        let tp1 = step_ok(
+            super::handle_env_request(step("s2", vec!["B".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
         assert!(
             tp1.completed_episodes.is_empty(),
             "no completion on the fresh-obs step"
         );
-        assert!(
-            !tp1.episode_ids[0].is_empty(),
-            "lane 0 has a fresh active episode at t+1"
-        );
-        assert_ne!(
-            tp1.episode_ids[0], old_id,
-            "the fresh obs at t+1 carries a NEW episode id"
+        let tk = tracker.lock().await;
+        assert_eq!(
+            tk.active_episode_id(0),
+            Some("B"),
+            "the fresh obs at t+1 adopts the NEW pushed episode id"
         );
     }
 
@@ -1858,12 +1878,19 @@ mod tests {
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));
 
         let reset = JoinRequest {
-            kind: Some(join_request::Kind::Reset(ProtoResetRequest::default())),
+            kind: Some(join_request::Kind::Reset(ProtoResetRequest {
+                episode_ids: vec!["A".to_string()],
+                ..Default::default()
+            })),
             request_id: "r".to_string(),
         };
         let _ = super::handle_env_request(reset, env.clone(), tracker.clone()).await;
-        let step = |id: &str| JoinRequest {
-            kind: Some(join_request::Kind::Step(StepRequest::default())),
+        // Steps push the runtime-minted ids the env adopts on each roll.
+        let step = |id: &str, episode_ids: Vec<String>| JoinRequest {
+            kind: Some(join_request::Kind::Step(StepRequest {
+                episode_ids,
+                ..Default::default()
+            })),
             request_id: id.to_string(),
         };
         let step_ok = |r: super::JoinResponse| match r.kind {
@@ -1871,27 +1898,45 @@ mod tests {
             other => panic!("expected step response, got {other:?}"),
         };
 
-        let _ = step_ok(super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await);
-        let s2 = step_ok(super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await);
+        let _ = step_ok(
+            super::handle_env_request(step("s1", vec!["A".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
+        let s2 = step_ok(
+            super::handle_env_request(step("s2", vec!["A".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
         assert_eq!(s2.completed_episodes.len(), 1, "episode A completes at s2");
-        let id_a = s2.completed_episodes[0].episode_id.clone();
+        assert_eq!(s2.completed_episodes[0].episode_id, "A");
 
-        let s3 = step_ok(super::handle_env_request(step("s3"), env.clone(), tracker.clone()).await);
+        // s3 rolls episode B (the env adopts the pushed id).
+        let s3 = step_ok(
+            super::handle_env_request(step("s3", vec!["B".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
         assert!(
             s3.completed_episodes.is_empty(),
             "no completion on the roll"
         );
-        let id_b = s3.episode_ids[0].clone();
-        assert!(!id_b.is_empty() && id_b != id_a, "s3 rolls a new episode B");
+        {
+            let tk = tracker.lock().await;
+            assert_eq!(tk.active_episode_id(0), Some("B"), "s3 rolls a new episode B");
+        }
 
-        let s4 = step_ok(super::handle_env_request(step("s4"), env.clone(), tracker.clone()).await);
+        let s4 = step_ok(
+            super::handle_env_request(step("s4", vec!["B".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
         assert_eq!(s4.completed_episodes.len(), 1, "episode B completes at s4");
-        assert_eq!(s4.completed_episodes[0].episode_id, id_b);
+        assert_eq!(s4.completed_episodes[0].episode_id, "B");
 
-        let s5 = step_ok(super::handle_env_request(step("s5"), env.clone(), tracker.clone()).await);
+        let s5 = step_ok(
+            super::handle_env_request(step("s5", vec!["C".to_string()]), env.clone(), tracker.clone())
+                .await,
+        );
         assert!(s5.completed_episodes.is_empty());
-        let id_c = s5.episode_ids[0].clone();
-        assert!(!id_c.is_empty() && id_c != id_b, "s5 rolls a new episode C");
+        let tk = tracker.lock().await;
+        assert_eq!(tk.active_episode_id(0), Some("C"), "s5 rolls a new episode C");
     }
 
     #[tokio::test]

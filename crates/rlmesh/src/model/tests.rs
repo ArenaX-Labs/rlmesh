@@ -5,75 +5,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
-    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest,
+    AdapterContext, CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse,
+    GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
     grouped_predict_result, join_request, join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::TcpListenerStream;
 
-use super::lifecycle::update_lifecycle;
 use super::server::{ModelRouteConfig, handle_model_request};
 use super::*;
 use crate::{BindAddress, ConnectAddress, Result, ServeOptions, spaces};
-
-#[derive(Default)]
-struct RecordingHandler {
-    resets: Vec<(String, i32)>,
-    episode_ends: Vec<ModelEpisodeEnd>,
-    predictions: Vec<(String, i64, i32)>,
-}
-
-#[async_trait]
-impl ModelHandler for RecordingHandler {
-    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
-        self.predictions.push((
-            observation.episode_id().to_string(),
-            observation.step(),
-            observation.env_index(),
-        ));
-        Ok(vec![spaces::SpaceValue::Discrete(0)])
-    }
-
-    async fn on_reset(&mut self, observation: &ModelObservation) -> Result<()> {
-        self.resets.push((
-            observation.episode_id().to_string(),
-            observation.env_index(),
-        ));
-        Ok(())
-    }
-
-    async fn on_episode_end(&mut self, event: ModelEpisodeEnd) -> Result<()> {
-        self.episode_ends.push(event);
-        Ok(())
-    }
-}
-
-fn raw_observation(
-    episode_id: &str,
-    step: i64,
-    env_index: i32,
-    is_reset: bool,
-) -> ModelObservation {
-    ModelObservation {
-        observation: None,
-        route: ModelRouteContext {
-            session_id: "test-session".to_string(),
-            route_id: "test-route".to_string(),
-            request_id: format!("request-{episode_id}-{step}"),
-            slots: vec![ModelRouteSlot {
-                episode_id: episode_id.to_string(),
-                env_index,
-                step,
-                reset: is_reset,
-            }],
-        },
-        reset: is_reset,
-        num_envs: 1,
-        env_contract: None,
-    }
-}
 
 struct SmokeEnv {
     obs_space: spaces::SpaceSpec,
@@ -258,19 +200,22 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
     }
 
     // With a user-set base_seed, the env's first reset receives a concrete
-    // (deterministic) seed rather than None.
+    // (derived) seed rather than None.
     let seeded = run_with_base_seed(Some(4242)).await;
     assert!(
         seeded.first().map(Option::is_some).unwrap_or(false),
         "expected a concrete reset seed, got {seeded:?}"
     );
 
-    // Determinism: the same base_seed yields the same reset seed.
+    // base_seed is reproducible: the derived per-lane reset seed depends only on
+    // (base_seed, session_id, reset_generation, lane) — NOT the per-attach random
+    // env_id — so two runs with the same base_seed in the same session replay the
+    // identical derived seed.
     let seeded_again = run_with_base_seed(Some(4242)).await;
     assert_eq!(
         seeded.first(),
         seeded_again.first(),
-        "the same base_seed must produce the same reset seed"
+        "the same base_seed must derive the same reset seed (reproducibility)"
     );
 
     // Without a base_seed, no seed is injected (the env decides).
@@ -319,27 +264,25 @@ fn run_local_and_serve_options_cover_all_axes() {
 }
 
 #[tokio::test]
-async fn served_model_configure_route_requires_env_spec() {
+async fn served_model_resolve_adapter_requires_env_spec() {
     let response = handle_model_request(
         JoinRequest {
-            kind: Some(join_request::Kind::ConfigureRoute(ConfigureRouteRequest {
-                context: Some(rlmesh_proto::model::v1::PredictContext {
+            kind: Some(join_request::Kind::ResolveAdapter(ResolveAdapterRequest {
+                context: Some(AdapterContext {
                     session_id: "session-1".to_string(),
-                    route_id: "route-1".to_string(),
-                    request_id: "configure-1".to_string(),
-                    ..Default::default()
+                    env_id: "env-1".to_string(),
+                    request_id: "resolve-1".to_string(),
                 }),
                 env_spec: None,
                 ..Default::default()
             })),
-            request_id: "configure-1".to_string(),
+            request_id: "resolve-1".to_string(),
         },
         Arc::new(Mutex::new(SmokeModel {
             predicts: Arc::new(AtomicUsize::new(0)),
             closes: Arc::new(AtomicUsize::new(0)),
         })),
         None,
-        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::new())),
     )
     .await;
@@ -349,22 +292,17 @@ async fn served_model_configure_route_requires_env_spec() {
 
 #[tokio::test]
 async fn served_model_predict_mirrors_route_context() {
-    let context = rlmesh_proto::model::v1::PredictContext {
+    let context = AdapterContext {
         session_id: "session-1".to_string(),
-        route_id: "route-1".to_string(),
+        env_id: "env-1".to_string(),
         request_id: "request-1".to_string(),
-        slots: vec![rlmesh_proto::model::v1::PredictSlot {
-            episode_id: "episode-1".to_string(),
-            env_index: 0,
-            step: 7,
-            reset: false,
-        }],
     };
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::Predict(PredictRequest {
                 context: Some(context.clone()),
                 observation: None,
+                episode_ids: vec!["episode-1".to_string()],
             })),
             request_id: "request-1".to_string(),
         },
@@ -373,9 +311,8 @@ async fn served_model_predict_mirrors_route_context() {
             closes: Arc::new(AtomicUsize::new(0)),
         })),
         None,
-        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::from([(
-            "session-1:route-1".to_string(),
+            "env-1".to_string(),
             ModelRouteConfig {
                 env_contract: Some(std::sync::Arc::new(SmokeEnv::new().env_contract)),
                 floor: None,
@@ -394,32 +331,21 @@ async fn served_model_predict_mirrors_route_context() {
 
 // NOTE: the former `served_model_predict_rejects_route_wider_than_opened_route`
 // test was removed in the C8 EnvSpec split. The model now receives only the
-// stable `EnvSpec` (no `num_envs`), so the configured route no longer carries a
-// lane bound to clamp predict slots against; the per-predict lane count is taken
-// from the request's slots. There is no contract-derived width to reject.
+// stable `EnvSpec` (no `num_envs`), so the resolved adapter no longer carries a
+// lane bound to clamp the batch against; the per-predict row count is taken from
+// the request's `episode_ids`. There is no contract-derived width to reject.
 #[tokio::test]
-async fn served_model_predict_uses_slot_count_as_lane_count() {
+async fn served_model_predict_uses_episode_id_count_as_lane_count() {
     let response = handle_model_request(
         JoinRequest {
             kind: Some(join_request::Kind::Predict(PredictRequest {
-                context: Some(rlmesh_proto::model::v1::PredictContext {
+                context: Some(AdapterContext {
                     session_id: "session-1".to_string(),
-                    route_id: "route-1".to_string(),
+                    env_id: "env-1".to_string(),
                     request_id: "request-1".to_string(),
-                    slots: vec![
-                        rlmesh_proto::model::v1::PredictSlot {
-                            episode_id: "episode-0".to_string(),
-                            env_index: 0,
-                            ..Default::default()
-                        },
-                        rlmesh_proto::model::v1::PredictSlot {
-                            episode_id: "episode-1".to_string(),
-                            env_index: 1,
-                            ..Default::default()
-                        },
-                    ],
                 }),
                 observation: None,
+                episode_ids: vec!["episode-0".to_string(), "episode-1".to_string()],
             })),
             request_id: "request-1".to_string(),
         },
@@ -428,9 +354,8 @@ async fn served_model_predict_uses_slot_count_as_lane_count() {
             closes: Arc::new(AtomicUsize::new(0)),
         })),
         None,
-        Arc::new(Mutex::new(HashMap::new())),
         Arc::new(Mutex::new(HashMap::from([(
-            "session-1:route-1".to_string(),
+            "env-1".to_string(),
             ModelRouteConfig {
                 env_contract: Some(std::sync::Arc::new(SmokeEnv::new().env_contract)),
                 floor: None,
@@ -439,18 +364,18 @@ async fn served_model_predict_uses_slot_count_as_lane_count() {
     )
     .await;
 
-    // A two-slot predict against a configured route now succeeds: the model
-    // takes the lane count from the slots rather than a contract bound.
+    // A two-row predict against a resolved adapter now succeeds: the model takes
+    // the row count from the `episode_ids` vector rather than a contract bound.
     assert!(matches!(
         response.kind,
         Some(join_response::Kind::Predict(_))
     ));
 }
 
-/// Returns a per-lane action that conforms to the route's pinned action space,
-/// keyed by route_id, so a grouped predict across routes with *different* action
+/// Returns a per-lane action that conforms to the adapter's pinned action space,
+/// keyed by env_id, so a grouped predict across adapters with *different* action
 /// spaces round-trips each group against its own space. Records
-/// `(route_id, episode_id)` in handler-entry order.
+/// `(env_id, episode_id)` in handler-entry order.
 #[derive(Clone, Default)]
 struct PerRouteActionHandler {
     seen: Arc<Mutex<Vec<(String, String)>>>,
@@ -460,14 +385,14 @@ struct PerRouteActionHandler {
 impl ModelHandler for PerRouteActionHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
         self.seen.lock().await.push((
-            observation.route.route_id.clone(),
+            observation.route.env_id.clone(),
             observation.episode_id().to_string(),
         ));
-        // "route-disc" pinned a Discrete action space; every other route here is
-        // the SmokeEnv Uint8 Box[1]. Returning the action that conforms to *this*
-        // route's space proves each group is finished against its own spec — the
-        // Discrete action would fail conformance if encoded against the Box route.
-        let action = if observation.route.route_id == "route-disc" {
+        // "env-disc" pinned a Discrete action space; every other env here is the
+        // SmokeEnv Uint8 Box[1]. Returning the action that conforms to *this*
+        // env's space proves each group is finished against its own spec — the
+        // Discrete action would fail conformance if encoded against the Box env.
+        let action = if observation.route.env_id == "env-disc" {
             spaces::SpaceValue::Discrete(0)
         } else {
             spaces::SpaceValue::Box(
@@ -496,21 +421,16 @@ fn discrete_action_contract() -> spaces::EnvContract {
     .expect("discrete env spec builds a contract")
 }
 
-/// One group of a grouped predict: a routed, single-slot `PredictRequest`.
-fn grouped_member(route_id: &str, request_id: &str, episode_id: &str) -> PredictRequest {
+/// One group of a grouped predict: a routed, single-row `PredictRequest`.
+fn grouped_member(env_id: &str, request_id: &str, episode_id: &str) -> PredictRequest {
     PredictRequest {
-        context: Some(rlmesh_proto::model::v1::PredictContext {
+        context: Some(AdapterContext {
             session_id: "session-1".to_string(),
-            route_id: route_id.to_string(),
+            env_id: env_id.to_string(),
             request_id: request_id.to_string(),
-            slots: vec![rlmesh_proto::model::v1::PredictSlot {
-                episode_id: episode_id.to_string(),
-                env_index: 0,
-                step: 0,
-                reset: true,
-            }],
         }),
         observation: None,
+        episode_ids: vec![episode_id.to_string()],
     }
 }
 
@@ -537,17 +457,16 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
     let handler = Arc::new(Mutex::new(PerRouteActionHandler {
         seen: Arc::clone(&seen),
     }));
-    let active = Arc::new(Mutex::new(HashMap::new()));
     let configs = Arc::new(Mutex::new(HashMap::from([
         (
-            "session-1:route-box".to_string(),
+            "env-box".to_string(),
             ModelRouteConfig {
                 env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
                 floor: None,
             },
         ),
         (
-            "session-1:route-disc".to_string(),
+            "env-disc".to_string(),
             ModelRouteConfig {
                 env_contract: Some(Arc::new(discrete_action_contract())),
                 floor: None,
@@ -559,15 +478,14 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
         JoinRequest {
             kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
                 groups: vec![
-                    grouped_member("route-box", "p-box", "ep-box"),
-                    grouped_member("route-disc", "p-disc", "ep-disc"),
+                    grouped_member("env-box", "p-box", "ep-box"),
+                    grouped_member("env-disc", "p-disc", "ep-disc"),
                 ],
             })),
             request_id: "grouped-1".to_string(),
         },
         Arc::clone(&handler),
         None,
-        Arc::clone(&active),
         Arc::clone(&configs),
     )
     .await;
@@ -579,26 +497,23 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
     assert_eq!(results.len(), 2, "one result per group, in order");
 
     let box_response = expect_group_response(&results[0]);
-    assert_eq!(box_response.context.as_ref().unwrap().route_id, "route-box");
+    assert_eq!(box_response.context.as_ref().unwrap().env_id, "env-box");
     assert_eq!(
         box_response.actions.len(),
         1,
         "the box group's action was encoded against its own action space (no chunking)"
     );
     let disc_response = expect_group_response(&results[1]);
-    assert_eq!(
-        disc_response.context.as_ref().unwrap().route_id,
-        "route-disc"
-    );
+    assert_eq!(disc_response.context.as_ref().unwrap().env_id, "env-disc");
     assert_eq!(disc_response.actions.len(), 1);
 
     // Both groups reached the handler in group order, each decoded against its
-    // own route config.
+    // own adapter config.
     assert_eq!(
         *seen.lock().await,
         vec![
-            ("route-box".to_string(), "ep-box".to_string()),
-            ("route-disc".to_string(), "ep-disc".to_string()),
+            ("env-box".to_string(), "ep-box".to_string()),
+            ("env-disc".to_string(), "ep-disc".to_string()),
         ]
     );
 }
@@ -611,9 +526,8 @@ async fn grouped_predict_isolates_a_single_group_failure() {
     let handler = Arc::new(Mutex::new(PerRouteActionHandler {
         seen: Arc::clone(&seen),
     }));
-    let active = Arc::new(Mutex::new(HashMap::new()));
     let configs = Arc::new(Mutex::new(HashMap::from([(
-        "session-1:route-box".to_string(),
+        "env-box".to_string(),
         ModelRouteConfig {
             env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
             floor: None,
@@ -624,15 +538,14 @@ async fn grouped_predict_isolates_a_single_group_failure() {
         JoinRequest {
             kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
                 groups: vec![
-                    grouped_member("route-box", "p-box", "ep-box"),
-                    grouped_member("route-missing", "p-missing", "ep-missing"),
+                    grouped_member("env-box", "p-box", "ep-box"),
+                    grouped_member("env-missing", "p-missing", "ep-missing"),
                 ],
             })),
             request_id: "grouped-2".to_string(),
         },
         Arc::clone(&handler),
         None,
-        Arc::clone(&active),
         Arc::clone(&configs),
     )
     .await;
@@ -652,43 +565,62 @@ async fn grouped_predict_isolates_a_single_group_failure() {
     match results[1].outcome.as_ref().unwrap() {
         grouped_predict_result::Outcome::Error(error) => {
             assert!(
-                error.message.contains("was not configured"),
+                error.message.contains("was not resolved"),
                 "got: {}",
                 error.message
             );
         }
-        other => panic!("expected an error for the unconfigured group, got {other:?}"),
+        other => panic!("expected an error for the unresolved group, got {other:?}"),
     }
     // Only the configured group reached the handler.
     assert_eq!(
         *seen.lock().await,
-        vec![("route-box".to_string(), "ep-box".to_string())]
+        vec![("env-box".to_string(), "ep-box".to_string())]
     );
 }
 
+/// A `ModelRouteSetup` that records which envs it was asked to release, so a
+/// teardown test can assert `release_adapter` fired for exactly the right envs.
+#[derive(Clone, Default)]
+struct ReleaseRecordingSetup {
+    released: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl ModelRouteSetup for ReleaseRecordingSetup {
+    async fn resolve_adapter(
+        &self,
+        _env_id: &str,
+        _env_contract: &spaces::EnvContract,
+        _action_horizon: u32,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn release_adapter(&self, env_id: &str) -> Result<()> {
+        self.released.lock().await.push(env_id.to_string());
+        Ok(())
+    }
+}
+
 #[tokio::test]
-async fn served_model_close_route_drains_route_episodes() {
-    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
-    let active_episodes = Arc::new(Mutex::new(HashMap::from([
-        (
-            ("session-1:route-1".to_string(), 0),
-            "episode-route-1".to_string(),
-        ),
-        (
-            ("session-1:route-2".to_string(), 0),
-            "episode-route-2".to_string(),
-        ),
-    ])));
+async fn served_model_release_adapter_tears_down_only_its_env() {
+    // ReleaseAdapter removes exactly the named env's adapter (config dropped +
+    // its setup released), leaving every other env's adapter intact.
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let route_setup: Arc<dyn ModelRouteSetup> = Arc::new(ReleaseRecordingSetup {
+        released: Arc::clone(&released),
+    });
     let route_configs = Arc::new(Mutex::new(HashMap::from([
         (
-            "session-1:route-1".to_string(),
+            "env-1".to_string(),
             ModelRouteConfig {
                 env_contract: None,
                 floor: None,
             },
         ),
         (
-            "session-1:route-2".to_string(),
+            "env-2".to_string(),
             ModelRouteConfig {
                 env_contract: None,
                 floor: None,
@@ -698,58 +630,59 @@ async fn served_model_close_route_drains_route_episodes() {
 
     let response = handle_model_request(
         JoinRequest {
-            kind: Some(join_request::Kind::CloseRoute(CloseRouteRequest {
-                context: Some(rlmesh_proto::model::v1::PredictContext {
+            kind: Some(join_request::Kind::ReleaseAdapter(ReleaseAdapterRequest {
+                context: Some(AdapterContext {
                     session_id: "session-1".to_string(),
-                    route_id: "route-1".to_string(),
-                    request_id: "close-route-1".to_string(),
-                    ..Default::default()
+                    env_id: "env-1".to_string(),
+                    request_id: "release-1".to_string(),
                 }),
-                reason: "route complete".to_string(),
+                reason: "env complete".to_string(),
             })),
-            request_id: "close-route-1".to_string(),
+            request_id: "release-1".to_string(),
         },
-        Arc::clone(&handler),
-        None,
-        Arc::clone(&active_episodes),
+        Arc::new(Mutex::new(SmokeModel {
+            predicts: Arc::new(AtomicUsize::new(0)),
+            closes: Arc::new(AtomicUsize::new(0)),
+        })),
+        Some(Arc::clone(&route_setup)),
         Arc::clone(&route_configs),
     )
     .await;
 
     assert!(matches!(
         response.kind,
-        Some(join_response::Kind::CloseRoute(_))
+        Some(join_response::Kind::ReleaseAdapter(_))
     ));
-    assert_eq!(
-        handler.lock().await.episode_ends,
-        vec![ModelEpisodeEnd {
-            episode_id: "episode-route-1".to_string(),
-            env_index: 0,
-        }]
-    );
-    let active_episodes = active_episodes.lock().await;
-    assert!(!active_episodes.contains_key(&("session-1:route-1".to_string(), 0)));
-    assert_eq!(
-        active_episodes.get(&("session-1:route-2".to_string(), 0)),
-        Some(&"episode-route-2".to_string())
-    );
-    drop(active_episodes);
+    // The setup was torn down for exactly the released env.
+    assert_eq!(*released.lock().await, vec!["env-1".to_string()]);
+    // Only env-1's config was dropped; env-2 stays resolved.
     let route_configs = route_configs.lock().await;
-    assert!(!route_configs.contains_key("session-1:route-1"));
-    assert!(route_configs.contains_key("session-1:route-2"));
+    assert!(!route_configs.contains_key("env-1"));
+    assert!(route_configs.contains_key("env-2"));
 }
 
 #[tokio::test]
-async fn served_model_close_drains_all_active_episodes() {
-    let handler = Arc::new(Mutex::new(RecordingHandler::default()));
-    let active_episodes = Arc::new(Mutex::new(HashMap::from([
+async fn served_model_close_releases_every_adapter() {
+    // Whole-session Close tears down every resolved adapter (config cleared +
+    // each setup released) rather than leaking them for the server's lifetime.
+    let released = Arc::new(Mutex::new(Vec::new()));
+    let route_setup: Arc<dyn ModelRouteSetup> = Arc::new(ReleaseRecordingSetup {
+        released: Arc::clone(&released),
+    });
+    let route_configs = Arc::new(Mutex::new(HashMap::from([
         (
-            ("session-1:route-1".to_string(), 0),
-            "episode-route-1".to_string(),
+            "env-1".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                floor: None,
+            },
         ),
         (
-            ("session-1:route-2".to_string(), 1),
-            "episode-route-2".to_string(),
+            "env-2".to_string(),
+            ModelRouteConfig {
+                env_contract: None,
+                floor: None,
+            },
         ),
     ])));
 
@@ -760,28 +693,21 @@ async fn served_model_close_drains_all_active_episodes() {
             })),
             request_id: "close-1".to_string(),
         },
-        Arc::clone(&handler),
-        None,
-        Arc::clone(&active_episodes),
-        Arc::new(Mutex::new(HashMap::new())),
+        Arc::new(Mutex::new(SmokeModel {
+            predicts: Arc::new(AtomicUsize::new(0)),
+            closes: Arc::new(AtomicUsize::new(0)),
+        })),
+        Some(Arc::clone(&route_setup)),
+        Arc::clone(&route_configs),
     )
     .await;
 
     assert!(matches!(response.kind, Some(join_response::Kind::Close(_))));
-    assert_eq!(
-        handler.lock().await.episode_ends,
-        vec![
-            ModelEpisodeEnd {
-                episode_id: "episode-route-1".to_string(),
-                env_index: 0,
-            },
-            ModelEpisodeEnd {
-                episode_id: "episode-route-2".to_string(),
-                env_index: 1,
-            },
-        ]
-    );
-    assert!(active_episodes.lock().await.is_empty());
+    // Every adapter's setup was released (order is map iteration, so sort).
+    let mut released = released.lock().await.clone();
+    released.sort();
+    assert_eq!(released, vec!["env-1".to_string(), "env-2".to_string()]);
+    assert!(route_configs.lock().await.is_empty());
 }
 
 #[tokio::test]
@@ -868,6 +794,7 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
             options: None,
             timeout_ms: 0,
             env_indices: vec![],
+            episode_ids: vec![],
         })
         .await
         .expect("adapter reset must succeed");
@@ -877,6 +804,210 @@ async fn public_env_runtime_adapter_drives_a_remote_env_with_telemetry() {
     );
 
     env_server.abort();
+}
+
+/// A served NEXT_STEP vector env with a per-lane terminal schedule. It mimics gym
+/// autoreset: a lane terminates at its scheduled step, then on the FOLLOWING step
+/// the env delivers a fresh (non-terminal, reward-0) observation. The env never
+/// mints ids — the runtime pushes them down and the env server's tracker adopts
+/// them; this env only drives the masks the tracker keys on.
+struct AutoresetVectorEnv {
+    obs_space: spaces::SpaceSpec,
+    action_space: spaces::SpaceSpec,
+    env_contract: spaces::EnvContract,
+    terminal_after: Vec<usize>,
+    lane_step: Vec<usize>,
+    pending: Vec<bool>,
+}
+
+impl AutoresetVectorEnv {
+    fn new(terminal_after: Vec<usize>) -> Self {
+        let n = terminal_after.len();
+        let obs_space = spaces::spaces::BoxSpaceBuilder::scalar(-1.0, 1.0, vec![1])
+            .dtype(spaces::DType::Float32)
+            .build()
+            .unwrap();
+        let action_space = spaces::spaces::DiscreteBuilder::new(2).build().unwrap();
+        let env_contract = spaces::EnvContract {
+            id: "AutoresetVectorEnv-v0".to_string(),
+            autoreset_mode: spaces::types::AutoresetMode::NextStep,
+            observation_space: Some(obs_space.clone()),
+            action_space: Some(action_space.clone()),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs: n as u32,
+        };
+        Self {
+            obs_space,
+            action_space,
+            env_contract,
+            lane_step: vec![0; n],
+            pending: vec![false; n],
+            terminal_after,
+        }
+    }
+
+    fn lane_obs() -> spaces::SpaceValue {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![0u8; 4], vec![1], spaces::DType::Float32).unwrap(),
+        )
+    }
+}
+
+#[async_trait]
+impl crate::VectorEnv for AutoresetVectorEnv {
+    fn observation_space(&self) -> &spaces::SpaceSpec {
+        &self.obs_space
+    }
+    fn action_space(&self) -> &spaces::SpaceSpec {
+        &self.action_space
+    }
+    fn num_envs(&self) -> usize {
+        self.terminal_after.len()
+    }
+    fn env_contract(&self) -> &spaces::EnvContract {
+        &self.env_contract
+    }
+
+    async fn reset(
+        &mut self,
+        _req: crate::VectorResetRequest,
+    ) -> std::result::Result<crate::VectorResetResult, spaces::EnvRuntimeError> {
+        let n = self.terminal_after.len();
+        self.lane_step = vec![0; n];
+        self.pending = vec![false; n];
+        Ok(crate::VectorResetResult {
+            observations: (0..n).map(|_| Self::lane_obs()).collect(),
+            info: None,
+            episode_ids: Vec::new(),
+        })
+    }
+
+    async fn step(
+        &mut self,
+        _req: crate::VectorStepRequest,
+    ) -> std::result::Result<crate::VectorStepResult, spaces::EnvRuntimeError> {
+        let n = self.terminal_after.len();
+        let mut rewards = vec![1.0; n];
+        let mut terminated = vec![false; n];
+        for lane in 0..n {
+            if self.pending[lane] {
+                // Fresh autoreset observation: non-terminal, reward 0.
+                self.pending[lane] = false;
+                self.lane_step[lane] = 0;
+                rewards[lane] = 0.0;
+            } else {
+                self.lane_step[lane] += 1;
+                if self.lane_step[lane] >= self.terminal_after[lane] {
+                    terminated[lane] = true;
+                    self.pending[lane] = true;
+                }
+            }
+        }
+        Ok(crate::VectorStepResult {
+            observations: (0..n).map(|_| Self::lane_obs()).collect(),
+            rewards,
+            terminated,
+            truncated: vec![false; n],
+            info: None,
+            completed_episodes: Vec::new(),
+            episode_ids: Vec::new(),
+        })
+    }
+
+    async fn render(
+        &mut self,
+        _req: spaces::RenderRequest,
+    ) -> std::result::Result<spaces::RenderResult, spaces::EnvRuntimeError> {
+        Ok(spaces::RenderResult::default())
+    }
+
+    async fn close(
+        &mut self,
+        _req: spaces::CloseRequest,
+    ) -> std::result::Result<crate::VectorCloseResult, spaces::EnvRuntimeError> {
+        Ok(crate::VectorCloseResult::default())
+    }
+}
+
+/// Records the per-row episode ids it sees in predict and the ids it is asked to
+/// evict via the explicit ResetAdapter op.
+#[derive(Clone, Default)]
+struct IdRecordingHandler {
+    predict_ids: Arc<Mutex<Vec<Vec<String>>>>,
+    evicted_ids: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl ModelHandler for IdRecordingHandler {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        self.predict_ids.lock().await.push(observation.episode_ids());
+        Ok((0..observation.num_envs)
+            .map(|_| spaces::SpaceValue::Discrete(0))
+            .collect())
+    }
+
+    async fn reset_adapter(&mut self, _env_id: &str, episode_ids: Vec<String>) -> Result<()> {
+        self.evicted_ids.lock().await.extend(episode_ids);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn next_step_episode_ids_round_trip_through_the_real_env_server() {
+    // End-to-end across the REAL gRPC stack (runtime driver -> EnvClient -> env
+    // server -> EpisodeTracker), not a mock: the runtime mints UUIDv7 ids and
+    // pushes them down, the env server adopts them and (under NEXT_STEP) rolls a
+    // lane on autoreset, and the model sees the rolled ids — proving the
+    // pending_roll push-down + adoption + echo + resolve loop works on the wire.
+    let bound = crate::VectorEnvServer::new(AutoresetVectorEnv::new(vec![2, 3]))
+        .bind(BindAddress::Tcp {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+        })
+        .await
+        .unwrap();
+    let address = bound.local_addr().to_string();
+    let server = tokio::spawn(async move { bound.serve().await });
+
+    let handler = IdRecordingHandler::default();
+    let predict_ids = Arc::clone(&handler.predict_ids);
+    let evicted_ids = Arc::clone(&handler.evicted_ids);
+
+    ModelWorker::new(handler)
+        .run_local_async(RunLocalOptions::parse(&address).unwrap().for_episodes(6))
+        .await
+        .unwrap();
+    server.abort();
+
+    let predicts = predict_ids.lock().await.clone();
+    assert!(!predicts.is_empty(), "the model ran at least one predict");
+    // Every id the model ever saw is a runtime-minted UUIDv7 (round-tripped
+    // through the real env server), never empty or an env placeholder.
+    for row in &predicts {
+        assert_eq!(row.len(), 2, "two lanes per predict");
+        for id in row {
+            assert_eq!(id.len(), 36, "episode id must be a UUID, got {id:?}");
+            assert_eq!(id.as_bytes()[14], b'7', "UUIDv7 version nibble: {id:?}");
+        }
+    }
+    // Lane 0 rolled: its id changed across the run (the autoreset boundary minted
+    // a fresh id the env adopted), so the model saw more than one distinct lane-0 id.
+    let lane0: std::collections::BTreeSet<&str> =
+        predicts.iter().map(|row| row[0].as_str()).collect();
+    assert!(
+        lane0.len() >= 2,
+        "lane 0's episode id must roll across autoreset, saw {lane0:?}"
+    );
+    // Completed episodes were evicted via ResetAdapter, each a real minted id.
+    let evicted = evicted_ids.lock().await.clone();
+    assert!(
+        !evicted.is_empty(),
+        "ResetAdapter must evict completed episodes"
+    );
+    for id in &evicted {
+        assert_eq!(id.len(), 36, "evicted a UUID id, got {id:?}");
+    }
 }
 
 #[tokio::test]
@@ -1128,12 +1259,12 @@ async fn remote_model_predict_requires_reset() {
 }
 
 #[tokio::test]
-async fn two_remote_models_in_one_process_use_distinct_route_keys() {
+async fn two_remote_models_in_one_process_use_distinct_env_keys() {
     // Two RemoteModels connected to the same server from one process must not
-    // collide on the served model's session_id:route_id-keyed caches. route_id
-    // is stable per instance ("remote-model"), so the session id is what keeps
-    // the keys distinct; a regression would make both clients share one key and
-    // clobber each other's contract/adapter/lifecycle.
+    // collide on the served model's env_id-keyed caches. Each RemoteModel mints
+    // its own env_id (UUIDv7) on connect, so the keys are distinct; a regression
+    // would make both clients share one key and clobber each other's
+    // contract/adapter state.
     #[derive(Clone)]
     struct KeyRecordingModel {
         keys: Arc<Mutex<Vec<String>>>,
@@ -1145,11 +1276,7 @@ async fn two_remote_models_in_one_process_use_distinct_route_keys() {
             &mut self,
             observation: ModelObservation,
         ) -> Result<Vec<spaces::SpaceValue>> {
-            let key = format!(
-                "{}:{}",
-                observation.route.session_id, observation.route.route_id
-            );
-            self.keys.lock().await.push(key);
+            self.keys.lock().await.push(observation.route.env_id.clone());
             Ok(vec![spaces::SpaceValue::Box(
                 spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
             )])
@@ -1257,49 +1384,38 @@ async fn served_model_reports_grpc_health_serving() {
     shutdown_and_join(server).await;
 }
 
-/// A handler whose `predict` latency is controlled per-request by the slot
-/// `step` field (`step == 0` sleeps `slow_delay`, otherwise returns promptly),
-/// recording the order in which predicts *complete* and the per-route order in
-/// which lifecycle hooks and predicts *enter* the critical section.
+/// A handler whose `predict` latency is controlled per-request by the row's
+/// episode id (an id containing `"slow"` sleeps `slow_delay`, otherwise returns
+/// promptly), recording the order in which predicts *enter* the critical section
+/// (both globally and per-env) so a test can assert pipelining/ordering.
 #[derive(Clone)]
 struct OrderingHandler {
     slow_delay: Duration,
-    /// `(route_id, step)` in handler-entry order for predicts.
-    predict_order: Arc<Mutex<Vec<(String, i64)>>>,
-    /// `(route_id, event)` where event is one of "reset"/"predict"/"close" in
-    /// handler-entry order, to assert per-route lifecycle ordering.
+    /// `(env_id, request_id)` in handler-entry order for predicts.
+    predict_order: Arc<Mutex<Vec<(String, String)>>>,
+    /// `(env_id, event)` where event is one of "predict"/"close" in
+    /// handler-entry order, to assert per-env ordering.
     route_events: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 #[async_trait]
 impl ModelHandler for OrderingHandler {
     async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
-        let route_id = observation.route.route_id.clone();
-        let step = observation.step();
+        let env_id = observation.route.env_id.clone();
+        let request_id = observation.route.request_id.clone();
+        let slow = observation.episode_id().contains("slow");
         self.predict_order
             .lock()
             .await
-            .push((route_id.clone(), step));
+            .push((env_id.clone(), request_id));
         self.route_events
             .lock()
             .await
-            .push((route_id, "predict".to_string()));
-        if step == 0 {
+            .push((env_id, "predict".to_string()));
+        if slow {
             tokio::time::sleep(self.slow_delay).await;
         }
-        Ok(vec![spaces::SpaceValue::Discrete(step)])
-    }
-
-    async fn on_reset(&mut self, observation: &ModelObservation) -> Result<()> {
-        self.route_events
-            .lock()
-            .await
-            .push((observation.route.route_id.clone(), "reset".to_string()));
-        Ok(())
-    }
-
-    async fn on_episode_end(&mut self, _event: ModelEpisodeEnd) -> Result<()> {
-        Ok(())
+        Ok(vec![spaces::SpaceValue::Discrete(0)])
     }
 }
 
@@ -1340,37 +1456,18 @@ async fn bound_ordering_server(
     (server, client, port)
 }
 
-fn predict_context(
-    route_id: &str,
-    request_id: &str,
-    step: i64,
-) -> rlmesh_proto::model::v1::PredictContext {
-    rlmesh_proto::model::v1::PredictContext {
-        session_id: "session".to_string(),
-        route_id: route_id.to_string(),
-        request_id: request_id.to_string(),
-        slots: vec![rlmesh_proto::model::v1::PredictSlot {
-            episode_id: format!("ep-{route_id}"),
-            env_index: 0,
-            step,
-            reset: step == 0,
-        }],
-    }
-}
-
-fn configure_route_request(route_id: &str, request_id: &str) -> JoinRequest {
+fn resolve_adapter_request(env_id: &str, request_id: &str) -> JoinRequest {
     JoinRequest {
-        kind: Some(join_request::Kind::ConfigureRoute(ConfigureRouteRequest {
-            context: Some(rlmesh_proto::model::v1::PredictContext {
+        kind: Some(join_request::Kind::ResolveAdapter(ResolveAdapterRequest {
+            context: Some(AdapterContext {
                 session_id: "session".to_string(),
-                route_id: route_id.to_string(),
+                env_id: env_id.to_string(),
                 request_id: request_id.to_string(),
-                ..Default::default()
             }),
             env_spec: Some(rlmesh_proto::core::v1::EnvSpec {
                 id: "Ordering-v0".to_string(),
                 observation_space: None,
-                // The typed worker encodes the action, so the route needs a real
+                // The typed worker encodes the action, so the adapter needs a real
                 // action space; OrderingHandler returns Discrete.
                 action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
                     shape: vec![],
@@ -1387,11 +1484,20 @@ fn configure_route_request(route_id: &str, request_id: &str) -> JoinRequest {
     }
 }
 
-fn predict_join_request(route_id: &str, request_id: &str, step: i64) -> JoinRequest {
+/// A single-row predict for `env_id`. `slow` rides on the row's episode id so
+/// the [`OrderingHandler`] knows to sleep for it (the only way to mark a request
+/// slow now that there is no positional slot/step on the wire).
+fn predict_join_request(env_id: &str, request_id: &str, slow: bool) -> JoinRequest {
+    let suffix = if slow { "-slow" } else { "" };
     JoinRequest {
         kind: Some(join_request::Kind::Predict(PredictRequest {
-            context: Some(predict_context(route_id, request_id, step)),
+            context: Some(AdapterContext {
+                session_id: "session".to_string(),
+                env_id: env_id.to_string(),
+                request_id: request_id.to_string(),
+            }),
             observation: None,
+            episode_ids: vec![format!("ep-{env_id}-{request_id}{suffix}")],
         })),
         request_id: request_id.to_string(),
     }
@@ -1401,8 +1507,8 @@ fn predict_join_request(route_id: &str, request_id: &str, step: i64) -> JoinRequ
 async fn pipelined_requests_complete_out_of_order() {
     // Under option (a) the handler mutex is held across `predict`, so two
     // *predicts* serialize at the handler. Pipelining still removes head-of-line
-    // blocking for work that does not touch the handler: `ConfigureRoute` only
-    // mutates the route table. A configure sent *after* a slow in-flight predict
+    // blocking for work that does not touch the handler: `ResolveAdapter` only
+    // mutates the adapter table. A resolve sent *after* a slow in-flight predict
     // therefore completes *first*. That is the out-of-order guarantee the
     // server delivers and that the single-flight design could not.
     let handler = OrderingHandler {
@@ -1420,36 +1526,36 @@ async fn pipelined_requests_complete_out_of_order() {
         .unwrap()
         .into_inner();
 
-    // Configure the "slow" route and read its ack.
+    // Resolve the "slow" env's adapter and read its ack.
     req_tx
-        .send(configure_route_request("slow", "cfg-slow"))
+        .send(resolve_adapter_request("slow", "cfg-slow"))
         .await
         .unwrap();
     let ack = responses.message().await.unwrap().unwrap();
     assert!(matches!(
         ack.kind,
-        Some(join_response::Kind::ConfigureRoute(_))
+        Some(join_response::Kind::ResolveAdapter(_))
     ));
 
-    // Send a slow predict on the "slow" route, then a ConfigureRoute on a
-    // different route. The configure response must arrive first.
+    // Send a slow predict on the "slow" env, then a ResolveAdapter on a
+    // different env. The resolve response must arrive first.
     req_tx
-        .send(predict_join_request("slow", "predict-slow", 0))
+        .send(predict_join_request("slow", "predict-slow", true))
         .await
         .unwrap();
     req_tx
-        .send(configure_route_request("other", "cfg-other"))
+        .send(resolve_adapter_request("other", "cfg-other"))
         .await
         .unwrap();
 
     let first = responses.message().await.unwrap().unwrap();
     assert_eq!(
         first.request_id, "cfg-other",
-        "a configure must not be head-of-line-blocked by an in-flight slow predict"
+        "a resolve must not be head-of-line-blocked by an in-flight slow predict"
     );
     assert!(matches!(
         first.kind,
-        Some(join_response::Kind::ConfigureRoute(_))
+        Some(join_response::Kind::ResolveAdapter(_))
     ));
     let second = responses.message().await.unwrap().unwrap();
     assert_eq!(second.request_id, "predict-slow");
@@ -1478,27 +1584,24 @@ async fn pipelined_predicts_preserve_per_route_order() {
         .into_inner();
 
     req_tx
-        .send(configure_route_request("r", "cfg"))
+        .send(resolve_adapter_request("r", "cfg"))
         .await
         .unwrap();
     let ack = responses.message().await.unwrap().unwrap();
     assert!(matches!(
         ack.kind,
-        Some(join_response::Kind::ConfigureRoute(_))
+        Some(join_response::Kind::ResolveAdapter(_))
     ));
 
-    // Two predicts on the same route: the first is slow (step 0, reset), the
-    // second fast (step 1). Per-route order must keep predict step 0 before 1.
+    // Two predicts on the same env: the first is slow, the second fast. Per-env
+    // order must keep predict p0 before p1.
+    req_tx.send(predict_join_request("r", "p0", true)).await.unwrap();
     req_tx
-        .send(predict_join_request("r", "p0", 0))
-        .await
-        .unwrap();
-    req_tx
-        .send(predict_join_request("r", "p1", 1))
+        .send(predict_join_request("r", "p1", false))
         .await
         .unwrap();
 
-    // Same-route responses also arrive in order.
+    // Same-env responses also arrive in order.
     let first = responses.message().await.unwrap().unwrap();
     assert_eq!(first.request_id, "p0");
     let second = responses.message().await.unwrap().unwrap();
@@ -1508,16 +1611,16 @@ async fn pipelined_predicts_preserve_per_route_order() {
     let _ = responses.message().await;
 
     let events = route_events.lock().await.clone();
-    // For route "r": reset (from step-0 predict) then predict p0 then predict p1.
+    // For env "r": predict p0 (slow) entered the handler before predict p1.
     let r_events: Vec<&str> = events
         .iter()
-        .filter(|(route, _)| route == "r")
+        .filter(|(env_id, _)| env_id == "r")
         .map(|(_, event)| event.as_str())
         .collect();
     assert_eq!(
         r_events,
-        vec!["reset", "predict", "predict"],
-        "per-route lifecycle order must match send order: {events:?}"
+        vec!["predict", "predict"],
+        "per-env predict order must match send order: {events:?}"
     );
     server.abort();
 }
@@ -1542,7 +1645,7 @@ async fn close_drains_after_in_flight_same_route_predict() {
         .into_inner();
 
     req_tx
-        .send(configure_route_request("r", "cfg"))
+        .send(resolve_adapter_request("r", "cfg"))
         .await
         .unwrap();
     let _ = responses.message().await.unwrap().unwrap();
@@ -1550,7 +1653,7 @@ async fn close_drains_after_in_flight_same_route_predict() {
     // A slow predict followed immediately by a whole-session Close. The Close
     // barrier must not overtake the in-flight predict.
     req_tx
-        .send(predict_join_request("r", "p0", 0))
+        .send(predict_join_request("r", "p0", true))
         .await
         .unwrap();
     req_tx
@@ -1574,7 +1677,7 @@ async fn close_drains_after_in_flight_same_route_predict() {
 
     // The predict's handler entry happened before the Close drain.
     let order = predict_order.lock().await.clone();
-    assert_eq!(order, vec![("r".to_string(), 0)]);
+    assert_eq!(order, vec![("r".to_string(), "p0".to_string())]);
 
     drop(req_tx);
     server.abort();
@@ -1612,17 +1715,16 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
         .unwrap();
     client.handshake().await.unwrap();
     client
-        .configure_route(ConfigureRouteRequest {
-            context: Some(rlmesh_proto::model::v1::PredictContext {
+        .resolve_adapter(ResolveAdapterRequest {
+            context: Some(AdapterContext {
                 session_id: "s".to_string(),
-                route_id: "r".to_string(),
+                env_id: "r".to_string(),
                 request_id: "cfg".to_string(),
-                ..Default::default()
             }),
             env_spec: Some(rlmesh_proto::core::v1::EnvSpec {
                 id: "Ordering-v0".to_string(),
                 observation_space: None,
-                // The typed worker encodes the action, so the route needs a real
+                // The typed worker encodes the action, so the adapter needs a real
                 // action space; OrderingHandler returns Discrete.
                 action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
                     shape: vec![],
@@ -1639,26 +1741,24 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
         .unwrap();
 
     let client = Arc::new(client);
-    let make_predict = |request_id: &str, step: i64| PredictRequest {
-        context: Some(rlmesh_proto::model::v1::PredictContext {
+    let make_predict = |request_id: &str, slow: bool| PredictRequest {
+        context: Some(AdapterContext {
             session_id: "s".to_string(),
-            route_id: "r".to_string(),
+            env_id: "r".to_string(),
             request_id: request_id.to_string(),
-            slots: vec![rlmesh_proto::model::v1::PredictSlot {
-                episode_id: "ep".to_string(),
-                env_index: 0,
-                step,
-                reset: step == 0,
-            }],
         }),
         observation: None,
+        episode_ids: vec![format!(
+            "ep-{request_id}{}",
+            if slow { "-slow" } else { "" }
+        )],
     };
 
     let c1 = Arc::clone(&client);
-    let p1 = make_predict("predict-1", 0);
+    let p1 = make_predict("predict-1", true);
     let first = tokio::spawn(async move { c1.predict_concurrent(p1).await });
     let c2 = Arc::clone(&client);
-    let p2 = make_predict("predict-2", 1);
+    let p2 = make_predict("predict-2", false);
     let second = tokio::spawn(async move { c2.predict_concurrent(p2).await });
 
     let r1 = first.await.unwrap().unwrap();
@@ -1712,14 +1812,14 @@ async fn pipelined_idle_activity_stays_balanced() {
             .unwrap()
             .into_inner();
         req_tx
-            .send(configure_route_request("r", "cfg"))
+            .send(resolve_adapter_request("r", "cfg"))
             .await
             .unwrap();
         let _ = responses.message().await.unwrap().unwrap();
-        // Fire several overlapping predicts.
+        // Fire several overlapping predicts (the first is slow).
         for i in 0..5 {
             req_tx
-                .send(predict_join_request("r", &format!("p{i}"), i as i64))
+                .send(predict_join_request("r", &format!("p{i}"), i == 0))
                 .await
                 .unwrap();
         }
@@ -1737,84 +1837,6 @@ async fn pipelined_idle_activity_stays_balanced() {
         .expect("server must idle-shut-down (balanced idle activity)")
         .unwrap()
         .unwrap();
-}
-
-#[tokio::test]
-async fn served_lifecycle_allows_predict_for_every_observation() {
-    let observations = vec![
-        raw_observation("ep-1", 0, 0, true),
-        raw_observation("ep-1", 1, 0, false),
-    ];
-    let mut handler = RecordingHandler::default();
-    let mut active_episodes = HashMap::new();
-
-    for observation in observations {
-        update_lifecycle(&mut handler, &mut active_episodes, &observation)
-            .await
-            .unwrap();
-        handler.predict(observation).await.unwrap();
-    }
-
-    assert_eq!(
-        handler.predictions,
-        vec![("ep-1".to_string(), 0, 0), ("ep-1".to_string(), 1, 0)]
-    );
-    assert_eq!(handler.resets, vec![("ep-1".to_string(), 0)]);
-}
-
-#[tokio::test]
-async fn served_lifecycle_closes_previous_episode_on_reset_boundary() {
-    let observations = vec![
-        raw_observation("ep-1", 0, 0, true),
-        raw_observation("ep-1", 1, 0, false),
-        raw_observation("ep-2", 0, 0, true),
-        raw_observation("ep-2", 1, 0, false),
-    ];
-    let mut handler = RecordingHandler::default();
-    let mut active_episodes = HashMap::new();
-
-    for observation in observations {
-        update_lifecycle(&mut handler, &mut active_episodes, &observation)
-            .await
-            .unwrap();
-    }
-
-    assert_eq!(
-        handler.resets,
-        vec![("ep-1".to_string(), 0), ("ep-2".to_string(), 0)]
-    );
-    assert_eq!(
-        handler.episode_ends,
-        vec![ModelEpisodeEnd {
-            episode_id: "ep-1".to_string(),
-            env_index: 0,
-        }]
-    );
-}
-
-#[tokio::test]
-async fn served_lifecycle_tracks_episode_boundaries_per_env_index() {
-    let observations = vec![
-        raw_observation("ep-a", 0, 0, true),
-        raw_observation("ep-b", 0, 1, true),
-        raw_observation("ep-c", 0, 0, true),
-    ];
-    let mut handler = RecordingHandler::default();
-    let mut active_episodes = HashMap::new();
-
-    for observation in observations {
-        update_lifecycle(&mut handler, &mut active_episodes, &observation)
-            .await
-            .unwrap();
-    }
-
-    assert_eq!(
-        handler.episode_ends,
-        vec![ModelEpisodeEnd {
-            episode_id: "ep-a".to_string(),
-            env_index: 0,
-        }]
-    );
 }
 
 #[tokio::test]

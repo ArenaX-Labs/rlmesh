@@ -4,7 +4,7 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
-    CloseRouteRequest, ConfigureRouteRequest, PredictContext, PredictRequest, PredictSlot,
+    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
 };
 use rlmesh_proto::{SessionOffer, supported_workflow_editions};
 use uuid::Uuid;
@@ -41,13 +41,13 @@ pub struct RemoteModel {
     action_space: Arc<spaces::SpaceSpec>,
     env_contract: spaces::EnvContract,
     session_id: String,
-    route_id: String,
+    /// The env (adapter) routing key, a UUIDv7 minted by this client (the local
+    /// id authority for the direct path). Replaces the old route_id + lane/slot.
+    env_id: String,
     request_counter: u64,
-    episode_counter: u64,
     configured: bool,
     episode_id: Option<String>,
-    step: i64,
-    /// Runtime-chosen replay horizon `h`, sent on `ConfigureRoute`. When `> 1` and
+    /// Runtime-chosen replay horizon `h`, sent on `ResolveAdapter`. When `> 1` and
     /// the served model defines a chunk corner, each real `predict` returns up to
     /// `h` ordered frames in `PredictResponse.actions`; this client buffers and
     /// replays the frames open-loop (skipping the RPC after frame 0), so a
@@ -59,23 +59,13 @@ pub struct RemoteModel {
     /// RPC fires only once it empties. Flushed on `reset` — the only episode
     /// boundary this client can observe.
     replay_buffer: std::collections::VecDeque<spaces::SpaceValue>,
-    /// Set by [`reset`](RemoteModel::reset), consumed by the first
-    /// [`predict`](RemoteModel::predict) after it, which marks the wire reset
-    /// boundary. Making the boundary explicit (rather than inferring it from
-    /// `step == 0`) keeps it correct even though this client cannot observe an
-    /// episode's end from the server.
-    pending_reset: bool,
-    /// The route edition this session runs at: the floor — the highest edition env,
-    /// model, AND this runtime all support. Sent to the model in `ConfigureRoute` as
-    /// AUTHORITATIVE over its own (pairwise) handshake result.
+    /// The env edition this session runs at: the floor — the highest edition env,
+    /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
+    /// as AUTHORITATIVE over its own (pairwise) handshake result.
     selected_workflow_edition: String,
 }
 
-/// Per-instance session id. The served model caches route configs, the
-/// resolved adapter, and active episodes keyed by `session_id:route_id`, so a
-/// globally unique id keeps two clients — even in separate containers that both
-/// run at PID 1 — from colliding on that key and clobbering each other's
-/// contract/adapter/lifecycle.
+/// Per-instance session id, kept for correlation only.
 fn new_session_id() -> String {
     format!("remote-model-{}", Uuid::new_v4())
 }
@@ -181,7 +171,7 @@ impl RemoteModel {
         // the three share no edition (before any Join/ConfigureRoute is sent). The
         // helper lives in rlmesh-grpc so the production runtime computes the same
         // floor; here the facade just consumes it.
-        let selected_workflow_edition = rlmesh_grpc::route_floor(&env_offer, &model_offer)
+        let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer)
             .map_err(Error::from)?
             .selected_workflow_edition;
 
@@ -191,15 +181,12 @@ impl RemoteModel {
             action_space,
             env_contract,
             session_id: new_session_id(),
-            route_id: "remote-model".to_string(),
+            env_id: Uuid::now_v7().to_string(),
             request_counter: 0,
-            episode_counter: 0,
             configured: false,
             episode_id: None,
-            step: 0,
             action_horizon: 1,
             replay_buffer: std::collections::VecDeque::new(),
-            pending_reset: false,
             selected_workflow_edition,
         })
     }
@@ -220,6 +207,12 @@ impl RemoteModel {
         &self.selected_workflow_edition
     }
 
+    /// The env (adapter) routing key this client uses with the model — a UUIDv7
+    /// minted at connect. The single model-facing identity for this connection.
+    pub fn env_id(&self) -> &str {
+        &self.env_id
+    }
+
     /// The address this client is connected to.
     pub fn address(&self) -> &str {
         self.inner.address()
@@ -234,10 +227,10 @@ impl RemoteModel {
     /// finished episode without an intervening `reset()` continues the prior
     /// episode rather than starting a new one.
     pub fn reset(&mut self) {
-        self.episode_counter += 1;
-        self.episode_id = Some(format!("{}-ep-{}", self.route_id, self.episode_counter));
-        self.step = 0;
-        self.pending_reset = true;
+        // The client is the local id authority for the direct path: mint a fresh
+        // UUIDv7 per episode (never repeats, time-ordered). The new id is itself
+        // the reset boundary on the wire.
+        self.episode_id = Some(Uuid::now_v7().to_string());
         // Drop any un-replayed chunk tail: a new episode re-plans from its first
         // observation. This is the only flush point — the client cannot observe the
         // server's episode end, so a stale tail would otherwise bleed across the
@@ -260,7 +253,7 @@ impl RemoteModel {
             .ok_or_else(|| Error::Internal("call reset() before predict()".into()))?;
 
         if !self.configured {
-            self.configure_route().await?;
+            self.resolve_adapter().await?;
             self.configured = true;
         }
 
@@ -279,26 +272,16 @@ impl RemoteModel {
                 &self.observation_space,
             )
             .map_err(|error| Error::Internal(error.to_string()))?;
-            // The reset boundary is the explicit pending flag set by reset(), not
-            // an inference from step == 0. The two agree for correct usage, but the
-            // flag stays correct even when this client cannot see an episode's end.
-            // Peek it here; only clear it after the RPC succeeds, so a failed
-            // predict leaves the reset edge intact for a retry.
-            let reset = self.pending_reset;
+            // The wire carries no per-row reset flag; the reset boundary is the
+            // fresh episode id minted in reset(), which rides episode_ids below.
             let request = PredictRequest {
-                context: Some(PredictContext {
+                context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
-                    route_id: self.route_id.clone(),
+                    env_id: self.env_id.clone(),
                     request_id: self.next_request_id(),
-                    slots: vec![PredictSlot {
-                        env_index: 0,
-                        episode_id,
-                        // `step` is int64 on both the native and proto side.
-                        step: self.step,
-                        reset,
-                    }],
                 }),
                 observation: Some(observation_value),
+                episode_ids: vec![episode_id],
             };
 
             let response = self.inner.predict(request).await.map_err(Error::from)?;
@@ -325,20 +308,12 @@ impl RemoteModel {
                 }
                 self.replay_buffer.push_back(frames.remove(0));
             }
-
-            // Advance only once the response is fully decoded into the buffer, so a
-            // malformed (action-less or undecodable) response leaves
-            // step/pending_reset intact for a retry, exactly like an RPC-level
-            // error does. The replay steps that drain the buffer advance `step`
-            // below without re-touching `pending_reset` (already cleared here).
-            self.pending_reset = false;
         }
 
         let action = self
             .replay_buffer
             .pop_front()
             .expect("replay buffer is non-empty after a refill");
-        self.step += 1;
         Ok(action)
     }
 
@@ -349,12 +324,11 @@ impl RemoteModel {
             return Ok(());
         }
         self.inner
-            .close_route(CloseRouteRequest {
-                context: Some(PredictContext {
+            .release_adapter(ReleaseAdapterRequest {
+                context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
-                    route_id: self.route_id.clone(),
-                    request_id: format!("{}:close_route", self.route_id),
-                    slots: Vec::new(),
+                    env_id: self.env_id.clone(),
+                    request_id: format!("{}:release_adapter", self.env_id),
                 }),
                 reason: "remote model session complete".to_string(),
             })
@@ -362,20 +336,19 @@ impl RemoteModel {
             .map_err(Error::from)
     }
 
-    async fn configure_route(&mut self) -> Result<()> {
+    async fn resolve_adapter(&mut self) -> Result<()> {
         self.inner
-            .configure_route(ConfigureRouteRequest {
-                context: Some(PredictContext {
+            .resolve_adapter(ResolveAdapterRequest {
+                context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
-                    route_id: self.route_id.clone(),
-                    request_id: format!("{}:configure_route", self.route_id),
-                    slots: Vec::new(),
+                    env_id: self.env_id.clone(),
+                    request_id: format!("{}:resolve_adapter", self.env_id),
                 }),
                 env_spec: Some(env_spec_to_proto(&self.env_contract)),
-                // Pin the model to the runtime-selected route edition: authoritative
+                // Pin the model to the runtime-selected env edition: authoritative
                 // over the model's own (pairwise) handshake result.
                 selected_workflow_edition: self.selected_workflow_edition.clone(),
-                // Runtime-chosen replay horizon, pinned on the route (see
+                // Runtime-chosen replay horizon, pinned on the env (see
                 // [`set_action_horizon`](Self::set_action_horizon)). 1 = no chunking.
                 action_horizon: self.action_horizon,
             })
@@ -385,7 +358,7 @@ impl RemoteModel {
 
     fn next_request_id(&mut self) -> String {
         self.request_counter += 1;
-        format!("{}:predict:{}", self.route_id, self.request_counter)
+        format!("{}:predict:{}", self.env_id, self.request_counter)
     }
 }
 

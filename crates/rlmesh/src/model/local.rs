@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,15 +5,13 @@ use async_trait::async_trait;
 use rlmesh_grpc::wire::{
     encode_batched_partial_values, env_contract_from_proto, env_contract_to_proto,
 };
-use rlmesh_proto::model::v1::PredictRequest;
+use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
 use rlmesh_runtime::{
-    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeModel,
-    RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
+    NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
+    RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
 };
-use tokio::sync::Mutex;
 
 use super::handler::{ModelHandler, PredictFrames};
-use super::lifecycle::{finish_lifecycle, update_lifecycle};
 use super::wire::{
     ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
     model_observation_from_endpoint_request,
@@ -44,20 +41,17 @@ where
                 .to_string(),
         ));
     }
-    let env_id = if env_contract.id.is_empty() {
-        "local-env".to_string()
-    } else {
-        env_contract.id.clone()
-    };
+    // The runtime is the env-id authority (R1); for the in-process path mint a
+    // UUIDv7 container id. The human env name lives on the SDK's own contract.
+    let env_id = uuid::Uuid::now_v7().to_string();
     let num_envs = handshake.num_envs;
     let session_id = format!("local-{}", std::process::id());
 
     let spec = RuntimeSessionSpec {
         session_id,
-        route_id: "local".to_string(),
+        env_id,
         env_component_id: "local-env".to_string(),
         model_component_id: "local-model".to_string(),
-        env_id,
         workflow_edition: handshake.workflow_edition,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
@@ -67,25 +61,12 @@ where
         limits: Default::default(),
     };
     let env = EnvClientRuntimeEnv::new(env);
-    let active_episodes = Arc::new(Mutex::new(HashMap::new()));
-    let model = ModelHandlerRuntimeModel::new(
-        handler,
-        env_contract,
-        num_envs,
-        Arc::clone(&active_episodes),
-    );
+    let model = ModelHandlerRuntimeModel::new(handler, env_contract, num_envs);
 
-    let result = RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
+    RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
         .run()
         .await
-        .map_err(|err| Error::Internal(err.to_string()));
-
-    if result.is_ok() {
-        let mut active_episodes = active_episodes.lock().await;
-        finish_lifecycle(handler, &mut active_episodes).await?;
-    }
-
-    result
+        .map_err(|err| Error::Internal(err.to_string()))
 }
 
 /// Adapts a connected [`rlmesh_grpc::EnvClient`] to the [`RuntimeEnv`] trait
@@ -173,29 +154,22 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
 /// in-process `run_local` path performs.
 ///
 /// It borrows the handler mutably so the caller retains ownership (e.g. to run
-/// the close hook afterward). `active_episodes` is shared lifecycle state; pass
-/// a fresh `Arc<Mutex<_>>` and drain it with the model lifecycle helpers when
-/// the session ends.
+/// the close hook afterward). Per-episode lifecycle is explicit (R2): the runtime
+/// driver emits `ResetAdapter` on episode end, routed here to the handler's
+/// `reset_adapter`; there is no position-diff / active-episodes state.
 pub struct ModelHandlerRuntimeModel<'a, H> {
     handler: &'a mut H,
     env_contract: Arc<spaces::EnvContract>,
     num_envs: usize,
-    active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
 }
 
 impl<'a, H> ModelHandlerRuntimeModel<'a, H> {
     /// Build an adapter for `handler` against the given env contract.
-    pub fn new(
-        handler: &'a mut H,
-        env_contract: spaces::EnvContract,
-        num_envs: usize,
-        active_episodes: Arc<Mutex<HashMap<(String, i32), String>>>,
-    ) -> Self {
+    pub fn new(handler: &'a mut H, env_contract: spaces::EnvContract, num_envs: usize) -> Self {
         Self {
             handler,
             env_contract: Arc::new(env_contract),
             num_envs,
-            active_episodes,
         }
     }
 }
@@ -214,10 +188,6 @@ where
         let route = observation.route.clone();
         observation.env_contract = Some(Arc::clone(&self.env_contract));
         observation.num_envs = self.num_envs;
-        let mut active_episodes = self.active_episodes.lock().await;
-        update_lifecycle(self.handler, &mut active_episodes, &observation)
-            .await
-            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         let num_envs = self.num_envs;
         let action_space = self.env_contract.action_space.clone().ok_or_else(|| {
             rlmesh_runtime::RuntimeError::model_rpc(
@@ -256,5 +226,20 @@ where
             }),
             endpoint_total_ns: None,
         })
+    }
+
+    async fn reset_adapter(
+        &mut self,
+        request: ResetAdapterRequest,
+    ) -> std::result::Result<(), RuntimeError> {
+        // Route the driver's explicit episode-end GC to the handler's evict hook.
+        let env_id = request
+            .context
+            .map(|context| context.env_id)
+            .unwrap_or_default();
+        self.handler
+            .reset_adapter(&env_id, request.episode_ids)
+            .await
+            .map_err(|err| RuntimeError::model_rpc("local-model", err))
     }
 }

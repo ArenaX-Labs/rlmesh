@@ -11,7 +11,11 @@ message EpisodeMetadata {
   // seeded itself from entropy). Present for every explicitly seeded episode,
   // including a genuine seed of 0.
   optional int64 seed = 2;
-  // Lane index within the env vector; always a non-negative array offset.
+  // Env-container-internal lane index within the env vector; a non-negative
+  // array offset. Load-bearing: the channel by which the (untrusted) env tells
+  // the (trusted) runtime which lane reset/completed, so the runtime can mint
+  // episode ids against (env_id, env_index). Used for runtime minting +
+  // forensics; never a model-facing routing key.
   uint32 env_index = 3;
   int64 step_count = 4;
   double cumulative_reward = 5;
@@ -35,6 +39,12 @@ message ResetRequest {
   // vector envs via options["reset_mask"]); others reject with UNSUPPORTED.
   // Lane indices are non-negative array offsets.
   repeated uint32 env_indices = 4;
+  // Authoritative episode ids the runtime minted for the lanes this reset starts
+  // (UUIDv7). Flow DOWN to the env for logging/correlation only — the env tags
+  // its episodes with these but never mints; the runtime stays authoritative.
+  // Positional: aligns with the lanes being reset (full-width for a whole reset,
+  // or aligned to `env_indices` for a partial reset).
+  repeated string episode_ids = 5;
 }
 
 message StepRequest {
@@ -47,6 +57,12 @@ message StepRequest {
   // are aligned by position (length == len(env_indices)). Lane indices are
   // non-negative array offsets.
   repeated uint32 env_indices = 3;
+  // Authoritative per-lane episode ids the runtime minted (UUIDv7), full-width
+  // (one per lane). Flow DOWN for logging/correlation only — under NEXT_STEP the
+  // env tags a fresh autoreset roll with this lane's id, but never mints. The
+  // runtime stays authoritative and keys lifecycle by env_index, not by any id
+  // the env echoes back.
+  repeated string episode_ids = 4;
 }
 
 message RenderRequest {
@@ -94,7 +110,8 @@ message JoinRequest {
 message ResetResponse {
   rlmesh.spaces.v1.SpaceValue observation = 1;
   rlmesh.spaces.v1.MetaMap infos = 2;
-  repeated string episode_ids = 3;
+  // tag 3 was episode_ids: the env no longer mints them (the runtime is the sole
+  // id authority and pushes ids DOWN via ResetRequest.episode_ids). Dropped.
 }
 
 message StepResponse {
@@ -104,14 +121,17 @@ message StepResponse {
   bytes truncated_mask = 4;
   rlmesh.spaces.v1.MetaMap infos = 5;
   repeated EpisodeMetadata completed_episodes = 6;
-  repeated string episode_ids = 7;
+  // tag 7 was episode_ids: the env no longer mints them (the runtime is the sole
+  // id authority and pushes ids DOWN via StepRequest.episode_ids). The runtime
+  // detects rolls/completions positionally via `completed_episodes` env_index.
+  // Dropped.
   // Reserved for future partial-width responses. Empty means full-width N. When
   // non-empty, only the k advanced lanes are returned; per-lane fields
-  // (`observation` elements, `rewards`, `terminated_mask`, `truncated_mask`,
-  // `episode_ids`) have length len(env_indices) and align by position.
-  // `completed_episodes` is not positional: it is a sparse list of lanes that
-  // completed this step, and each EpisodeMetadata carries its own env_index.
-  // Lane indices are non-negative array offsets.
+  // (`observation` elements, `rewards`, `terminated_mask`, `truncated_mask`)
+  // have length len(env_indices) and align by position. `completed_episodes` is
+  // not positional: it is a sparse list of lanes that completed this step, and
+  // each EpisodeMetadata carries its own env_index. Lane indices are
+  // non-negative array offsets.
   repeated uint32 env_indices = 8;
 }
 

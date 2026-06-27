@@ -15,6 +15,12 @@ use super::wire::{
 };
 use crate::{ConnectAddress, EnvironmentError, Error, ErrorCode, Result, spaces};
 
+/// Mint one authoritative episode id (UUIDv7 — time-ordered, never repeats). The
+/// direct env-client path is its own id authority (no runtime in the loop).
+fn new_episode_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 /// A client handle to a remote vector environment server.
 ///
 /// Connect with [`RemoteVectorEnv::connect`] (or
@@ -31,6 +37,15 @@ pub struct RemoteVectorEnv {
     /// The env's negotiation offer (generations/editions/capabilities) captured
     /// at handshake, for three-way (relay) session-floor reconciliation.
     session_offer: rlmesh_proto::SessionOffer,
+    /// This connection's container id (UUIDv7), minted at connect. On the direct
+    /// path there is no model to route to, so this is a stable correlation
+    /// identity for the connected env rather than a routing key.
+    env_id: String,
+    /// Per-lane current episode ids. On the direct (no-runtime) client path this
+    /// client is the id authority (R1): it mints UUIDv7 ids on reset, pushes them
+    /// down so the env tags its episodes, rolls a lane's id when it completes
+    /// (NEXT_STEP autoreset), and surfaces them as `info["episode_ids"]`.
+    episode_ids: Vec<String>,
 }
 
 impl RemoteVectorEnv {
@@ -90,7 +105,16 @@ impl RemoteVectorEnv {
             action_space,
             num_envs: handshake.num_envs,
             session_offer,
+            env_id: uuid::Uuid::now_v7().to_string(),
+            episode_ids: vec![String::new(); handshake.num_envs],
         })
+    }
+
+    /// This connection's container id (UUIDv7), a stable correlation identity for
+    /// the connected env. Distinct from [`env_contract().id`](spaces::EnvContract),
+    /// the human env name.
+    pub fn env_id(&self) -> &str {
+        &self.env_id
     }
 
     /// The address this client is connected to.
@@ -141,6 +165,42 @@ impl RemoteVectorEnv {
     pub async fn reset(&mut self, req: VectorResetRequest) -> Result<VectorResetResult> {
         let observation_space = std::sync::Arc::clone(&self.observation_space);
 
+        // Lane offsets must be non-negative array indices: reject a negative lane
+        // loudly rather than clamping it to 0, which would silently reset the wrong
+        // lane and misalign the paired seed.
+        let env_indices = req
+            .env_indices
+            .into_iter()
+            .map(|index| {
+                u32::try_from(index).map_err(|_| {
+                    Error::Environment(EnvironmentError {
+                        code: ErrorCode::InvalidAction,
+                        message: format!(
+                            "partial reset: env_index {index} must be a non-negative lane offset"
+                        ),
+                        is_recoverable: false,
+                    })
+                })
+            })
+            .collect::<Result<Vec<u32>>>()?;
+
+        // Mint authoritative episode ids for the lanes this reset starts and push
+        // them down (the env adopts them; it never mints). Full reset = all lanes;
+        // partial reset = the listed lanes, with pushed ids aligned to them.
+        let pushed_ids: Vec<String> = if env_indices.is_empty() {
+            let ids: Vec<String> = (0..self.num_envs).map(|_| new_episode_id()).collect();
+            self.episode_ids = ids.clone();
+            ids
+        } else {
+            let ids: Vec<String> = env_indices.iter().map(|_| new_episode_id()).collect();
+            for (lane, id) in env_indices.iter().zip(&ids) {
+                if let Some(slot) = self.episode_ids.get_mut(*lane as usize) {
+                    *slot = id.clone();
+                }
+            }
+            ids
+        };
+
         let response = self
             .inner
             .reset(ProtoResetRequest {
@@ -150,26 +210,9 @@ impl RemoteVectorEnv {
                 timeout_ms: req.timeout_ms.max(0) as u64,
                 // Forward the requested lanes: empty = whole-vector reset; a
                 // non-empty list is a partial reset the server routes to
-                // reset_subset (honored only by envs that support it). Lane
-                // offsets must be non-negative array indices: reject a negative
-                // lane loudly rather than clamping it to 0, which would silently
-                // reset the wrong lane and misalign the paired seed.
-                env_indices: req
-                    .env_indices
-                    .into_iter()
-                    .map(|index| {
-                        u32::try_from(index).map_err(|_| {
-                            Error::Environment(EnvironmentError {
-                                code: ErrorCode::InvalidAction,
-                                message: format!(
-                                    "partial reset: env_index {index} must be a \
-                                     non-negative lane offset"
-                                ),
-                                is_recoverable: false,
-                            })
-                        })
-                    })
-                    .collect::<Result<Vec<u32>>>()?,
+                // reset_subset (honored only by envs that support it).
+                env_indices,
+                episode_ids: pushed_ids,
             })
             .await
             .map_err(Error::from)?;
@@ -186,7 +229,7 @@ impl RemoteVectorEnv {
         Ok(VectorResetResult {
             observations,
             info: response.infos.map(meta_map_from_proto),
-            episode_ids: response.episode_ids,
+            episode_ids: self.episode_ids.clone(),
         })
     }
 
@@ -216,6 +259,10 @@ impl RemoteVectorEnv {
                 timeout_ms: req.timeout_ms.max(0) as u64,
                 // Full-width step; subset-stepping is reserved-but-deferred.
                 env_indices: Vec::new(),
+                // Push the authoritative per-lane ids (the env adopts a rolled id
+                // on a NEXT_STEP autoreset). Rolled ids were minted at the end of
+                // the previous step (see below).
+                episode_ids: self.episode_ids.clone(),
             })
             .await
             .map_err(Error::from)?;
@@ -253,15 +300,29 @@ impl RemoteVectorEnv {
         validate_count(&response.rewards, env_count, "rewards values")
             .map_err(|error| Error::Environment(error.into()))?;
 
-        Ok(VectorStepResult {
+        // Surface the ids as-of this step (the terminal obs of a completing lane
+        // still belongs to the episode that just ended).
+        let result = VectorStepResult {
             observations,
             rewards: response.rewards,
             terminated,
             truncated,
             info: response.infos.map(meta_map_from_proto),
+            episode_ids: self.episode_ids.clone(),
             completed_episodes,
-            episode_ids: response.episode_ids,
-        })
+        };
+        // Under NEXT_STEP the env autoresets each completed lane next step and
+        // adopts the fresh id we push then, so roll it now. Under any other mode
+        // (DISABLED) the lane stays done until an explicit `reset` re-mints, so
+        // leave its id in place rather than surfacing an id for a dead lane.
+        if self.env_contract.autoreset_mode == spaces::types::AutoresetMode::NextStep {
+            for completed in &result.completed_episodes {
+                if let Some(slot) = self.episode_ids.get_mut(completed.env_index as usize) {
+                    *slot = new_episode_id();
+                }
+            }
+        }
+        Ok(result)
     }
 
     /// Request a render frame from the remote environment.
@@ -346,6 +407,12 @@ impl RemoteEnv {
     /// The address this client is connected to.
     pub fn address(&self) -> &str {
         self.inner.address()
+    }
+
+    /// This connection's container id (UUIDv7), a stable correlation identity
+    /// distinct from the human env name (`env_contract().id`).
+    pub fn env_id(&self) -> &str {
+        self.inner.env_id()
     }
 
     /// The env's negotiation offer captured at handshake.

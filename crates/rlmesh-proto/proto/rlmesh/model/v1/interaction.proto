@@ -5,48 +5,43 @@ package rlmesh.model.v1;
 import "rlmesh/core/v1/env_contract.proto";
 import "rlmesh/spaces/v1/value.proto";
 
-// Runtime-owned model execution context.
+// Runtime-owned adapter execution context.
 //
-// A route is a configured model-side context within a runtime session. Predict
-// requests on a route may carry one or more slots when the observation/action
-// payload is vectorized.
-message PredictContext {
+// An adapter is the resolved model-side context for one connected env container
+// (single OR vector env), keyed by `env_id`. Predict requests carry an ordered
+// `episode_ids` vector (see PredictRequest) when the observation/action payload
+// is batched; the lane/slot positional index is no longer a wire concept.
+message AdapterContext {
+  // Correlation only; OSS does not key on it (the managed layer owns session
+  // lifecycle). Kept on the wire so closed can correlate.
   string session_id = 1;
-  string route_id = 2;
+  // The connected env container this adapter serves (UUIDv7, minted by the
+  // runtime on env attach). The single model-facing routing key; replaces the
+  // old route_id + positional lane/slot.
+  string env_id = 2;
   // The producer's correlation id for this request. The model client copies it
   // onto the envelope `JoinRequest.request_id` (tag 5) — the field the server
   // demuxes responses on and the authoritative correlation id — and it is echoed
   // back inside `PredictResponse.context`. It rides here (not only on the
   // envelope) because the client API takes a `PredictRequest`, so this is the
   // producer's channel for assigning and reading back the id (e.g. the runtime's
-  // phase/step-labeled ids and its route-mismatch error). Both copies always
+  // phase/step-labeled ids and its env-mismatch error). Both copies always
   // carry the same value; tag 5 is authoritative for response routing.
   string request_id = 3;
-  repeated PredictSlot slots = 4;
 }
 
-// Identity for one row in a predict observation/action batch.
-message PredictSlot {
-  // Lane index within the env vector; always a non-negative array offset.
-  uint32 env_index = 1;
-  string episode_id = 2;
-  // Monotonic step counter; always non-negative. Typed `int64` to match the
-  // native runtime counter and `EpisodeMetadata.step_count`, so the value rides
-  // the wire with no signed<->unsigned conversion on either side.
-  int64 step = 3;
-  bool reset = 4;
-}
+message ResolveAdapterRequest {
+  // The env whose adapter is being resolved. env_id is required. Idempotent
+  // upsert: creates the adapter on first call, updates it on later calls. Must
+  // precede the first Predict for that env.
+  AdapterContext context = 1;
 
-message ConfigureRouteRequest {
-  // Runtime route being configured. route_id is required.
-  PredictContext context = 1;
-
-  // Stable env spec for all later Predict calls on this route. The model only
+  // Stable env spec for all later Predict calls on this env. The model only
   // needs the observation/action interface; the runtime owns the orchestration
   // knobs (num_envs/render_mode/autoreset) and never forwards them here.
   rlmesh.core.v1.EnvSpec env_spec = 2;
 
-  // The route's selected workflow edition, decided at bind time by the runtime.
+  // The env's selected workflow edition, decided at bind time by the runtime.
   // The runtime re-frames env<->model traffic (prost drops fields it doesn't
   // know), so the session runs at the FLOOR all three speak — the highest edition
   // mutual across env, model, AND the runtime — never the env<->model pairwise
@@ -75,27 +70,36 @@ message ConfigureRouteRequest {
   // session-wide floor.
 
   // NOTE: tag 6 was an EnvSpec consistency fingerprint, cut from the freeze. The
-  // model derives its whole route spec from the single forwarded env_spec, so
+  // model derives its whole adapter spec from the single forwarded env_spec, so
   // there is no independent spec to drift against; the length/dtype/leaf-count
   // guards catch every byte-count drift. Re-add (proto3-additive, 0 = skip) only
-  // when a real consumer exists: mid-route respec/epochs, env-side attestation,
+  // when a real consumer exists: mid-adapter respec/epochs, env-side attestation,
   // or a second independent model implementation that validates its own spec.
 }
 
-message ConfigureRouteResponse {}
+message ResolveAdapterResponse {}
 
 // Observation sent from the runtime to the model.
 message PredictRequest {
-  // Runtime route identity. Responses must mirror this context.
-  PredictContext context = 1;
+  // Runtime adapter identity. Responses must mirror this context.
+  AdapterContext context = 1;
 
-  // Observation data encoded per route observation space.
+  // Observation data encoded per env observation space. A single SpaceValue
+  // already batched over all rows (the batch axis lives INSIDE the SpaceValue).
   rlmesh.spaces.v1.SpaceValue observation = 2;
+
+  // Ordered per-row episode ids: the self-describing batch. Row `i` of the
+  // batched observation belongs to episode `episode_ids[i]`, decided per tick.
+  // The model keys all per-episode state (frame-stack buffers) by this id, never
+  // by position-across-ticks. Length == the batch row count (num_envs). One id
+  // for a single env. Minted by the runtime (UUIDv7); never repeats.
+  repeated string episode_ids = 3;
 }
 
 message PredictResponse {
-  // Route identity copied from the request this action answers.
-  PredictContext context = 1;
+  // Adapter identity copied from the request this action answers. Actions
+  // inherit the request's `episode_ids` order positionally.
+  AdapterContext context = 1;
 
   // Ordered action frames for this predict: actions[0] is THIS step, actions[1..]
   // are open-loop replay frames. Length 1 = no chunking. Each element is a single
@@ -106,12 +110,12 @@ message PredictResponse {
 
 // One request carrying N independent predict groups (control-plane-decided
 // grouping). Each group is a complete, already-routed `PredictRequest` the
-// server processes against its OWN route's spec — like a DB GROUP BY: the model
-// keeps every loaded EnvSpec/route and resolves each group's adapter/space by
-// its `route_id`, so no spec ever rides the predict. Purely additive: a peer
-// that never sends this still uses single `predict`, and an old server that does
-// not understand the arm leaves `kind` unset (the client treats that as an
-// unexpected message, never as a silent drop).
+// server processes against its OWN env's spec — like a DB GROUP BY: the model
+// keeps every resolved EnvSpec/adapter and demuxes each group by its `env_id`,
+// so no spec ever rides the predict. Purely additive: a peer that never sends
+// this still uses single `predict`, and an old server that does not understand
+// the arm leaves `kind` unset (the client treats that as an unexpected message,
+// never as a silent drop).
 message GroupedPredictRequest {
   repeated PredictRequest groups = 1;
 }
@@ -132,12 +136,25 @@ message GroupedPredictResponse {
   repeated GroupedPredictResult results = 1;
 }
 
-message CloseRouteRequest {
-  PredictContext context = 1;
+message ReleaseAdapterRequest {
+  AdapterContext context = 1;
   string reason = 2;
 }
 
-message CloseRouteResponse {}
+message ReleaseAdapterResponse {}
+
+// Drop per-episode adapter state (frame-stack buffers) for an env. With
+// `episode_ids` non-empty, evict exactly those keys; empty evicts ALL of the
+// env's episode state. The adapter itself stays resolved (use ReleaseAdapter to
+// remove it). Because UUIDv7 ids never repeat, a missed/late ResetAdapter only
+// leaks memory — it can never alias a new episode — so this is GC, not a
+// correctness gate; the runtime fires it without blocking the predict pipeline.
+message ResetAdapterRequest {
+  AdapterContext context = 1;
+  repeated string episode_ids = 2;
+}
+
+message ResetAdapterResponse {}
 
 // Request graceful shutdown of the model participant after the runtime reaches
 // a normal terminal condition. Fault paths may still rely on pod/runtime
@@ -173,14 +190,17 @@ message ModelError {
 
 message JoinRequest {
   oneof kind {
-    ConfigureRouteRequest configure_route = 1;
+    ResolveAdapterRequest resolve_adapter = 1;
     PredictRequest predict = 2;
-    CloseRouteRequest close_route = 3;
+    ReleaseAdapterRequest release_adapter = 3;
     CloseParticipantRequest close = 4;
-    // Additive: a batch of independent predict groups across configured routes.
+    // Additive: a batch of independent predict groups across resolved adapters.
     // Absence is exactly today's behavior (single `predict`). Tag 5 is the
     // sibling `request_id` scalar, not an oneof arm, so 6 is the first free arm.
     GroupedPredictRequest grouped_predict = 6;
+    // Drop per-episode adapter state, keyed by env_id. Tag 7 is the next free
+    // arm after grouped_predict.
+    ResetAdapterRequest reset_adapter = 7;
   }
 
   // Per-message correlation id, harmonized to tag 5 across all four Join
@@ -192,14 +212,16 @@ message JoinRequest {
 
 message JoinResponse {
   oneof kind {
-    ConfigureRouteResponse configure_route = 1;
+    ResolveAdapterResponse resolve_adapter = 1;
     PredictResponse predict = 2;
-    CloseRouteResponse close_route = 3;
+    ReleaseAdapterResponse release_adapter = 3;
     CloseParticipantResponse close = 4;
     // Additive: per-group results answering a GroupedPredictRequest. Tags 5/6
     // are the sibling request_id/endpoint_total_ns scalars; 7 is the first free
     // oneof arm (error stays at 10).
     GroupedPredictResponse grouped_predict = 7;
+    // Acks a ResetAdapterRequest. Tag 8 is the next free arm.
+    ResetAdapterResponse reset_adapter = 8;
     ModelError error = 10;
   }
 

@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 use rlmesh_proto::env::v1::EpisodeMetadata;
 use rlmesh_proto::spaces::v1::MetaMap;
@@ -30,12 +29,12 @@ struct Episode {
 }
 
 impl Episode {
-    fn new(env_index: i32, seed: Option<i64>) -> Self {
+    fn new(env_index: i32, seed: Option<i64>, id: String) -> Self {
         let start_time = Instant::now();
         let start_timestamp_ns = unix_nanos_now();
 
         Self {
-            id: Uuid::new_v4().to_string(),
+            id,
             seed,
             env_index,
             step_count: 0,
@@ -172,9 +171,13 @@ impl EpisodeTracker {
     /// (it seeded itself from entropy), so the episode metadata honestly records
     /// the absence of a seed instead of fabricating one.
     ///
+    /// `id` is the authoritative episode id minted by the runtime and pushed
+    /// down on the reset/step request — the env never mints its own (R1). It is
+    /// recorded for logging/correlation and echoed back in completed metadata.
+    ///
     /// Returns the episode ID.
-    pub fn start_episode(&mut self, env_index: i32, seed: Option<i64>) -> String {
-        let episode = Episode::new(env_index, seed);
+    pub fn start_episode(&mut self, env_index: i32, seed: Option<i64>, id: String) -> String {
+        let episode = Episode::new(env_index, seed, id);
         let episode_id = episode.id.clone();
 
         // Starting an episode (autoreset roll or explicit reset) discharges any
@@ -253,7 +256,10 @@ impl EpisodeTracker {
         completed
     }
 
-    /// Get the active episode ID for a specific environment index.
+    /// Get the active episode ID for a specific environment index. Now that the
+    /// env adopts runtime-pushed ids (and no longer emits per-lane response ids),
+    /// this is used only by tests to assert lane state.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn active_episode_id(&self, env_index: i32) -> Option<&str> {
         self.active
             .get(&env_index)
@@ -301,12 +307,20 @@ mod tests {
         tracker.active.len()
     }
 
+    /// A globally-unique synthetic id standing in for the runtime-minted id the
+    /// env adopts (the env no longer mints — R1).
+    fn next_id() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        format!("ep-{}", N.fetch_add(1, Ordering::Relaxed))
+    }
+
     #[test]
     fn test_episode_lifecycle() {
         let mut tracker = EpisodeTracker::new();
 
         // Start episode
-        let ep_id = tracker.start_episode(0, Some(42));
+        let ep_id = tracker.start_episode(0, Some(42), next_id());
         assert_eq!(active_count(&tracker), 1);
 
         // Record steps
@@ -334,7 +348,7 @@ mod tests {
         assert_eq!(tracker.lane_state(0), LaneState::Idle);
 
         // Starting an episode makes it Active.
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         assert_eq!(tracker.lane_state(0), LaneState::Active);
 
         // Completing it returns to Idle (no autoreset expected by default —
@@ -343,20 +357,20 @@ mod tests {
         assert_eq!(tracker.lane_state(0), LaneState::Idle);
 
         // Under NEXT_STEP the handler marks the lane pending after completion.
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         tracker.complete_episode(0, true, false, None);
         tracker.expect_autoreset(0);
         assert_eq!(tracker.lane_state(0), LaneState::PendingAutoreset);
 
         // The fresh autoreset roll discharges the expectation and re-activates.
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         assert_eq!(tracker.lane_state(0), LaneState::Active);
     }
 
     #[test]
     fn active_episode_takes_precedence_over_pending_autoreset() {
         let mut tracker = EpisodeTracker::new();
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         // Defensive: even if a stale expectation is set, an active episode wins.
         tracker.expect_autoreset(0);
         assert_eq!(tracker.lane_state(0), LaneState::Active);
@@ -365,7 +379,7 @@ mod tests {
     #[test]
     fn complete_all_clears_pending_autoreset() {
         let mut tracker = EpisodeTracker::new();
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         tracker.complete_episode(0, true, false, None);
         tracker.expect_autoreset(0);
         assert_eq!(tracker.lane_state(0), LaneState::PendingAutoreset);
@@ -378,13 +392,13 @@ mod tests {
     fn interrupted_episode_is_completed_as_truncated_and_drained_once() {
         let mut tracker = EpisodeTracker::new();
 
-        let first = tracker.start_episode(0, Some(7));
+        let first = tracker.start_episode(0, Some(7), next_id());
         tracker.record_step(0, 1.5);
         tracker.record_step(0, 2.5);
 
         // A replacing reset interrupts the in-flight episode: its accounting
         // must surface as a truncated completion instead of being dropped.
-        let second = tracker.start_episode(0, None);
+        let second = tracker.start_episode(0, None, next_id());
         assert_ne!(first, second);
         assert_eq!(active_count(&tracker), 1);
 
@@ -404,9 +418,9 @@ mod tests {
     fn complete_all_includes_undrained_interrupted_episodes() {
         let mut tracker = EpisodeTracker::new();
 
-        let first = tracker.start_episode(0, Some(1));
+        let first = tracker.start_episode(0, Some(1), next_id());
         tracker.record_step(0, 1.0);
-        let second = tracker.start_episode(0, None);
+        let second = tracker.start_episode(0, None, next_id());
 
         let mut all = tracker.complete_all("client close");
         all.sort_by(|a, b| a.episode_id.cmp(&b.episode_id));
@@ -424,7 +438,7 @@ mod tests {
 
         let resets = MAX_INTERRUPTED_EPISODES * 5;
         for _ in 0..resets {
-            tracker.start_episode(0, None);
+            tracker.start_episode(0, None, next_id());
             // The buffer must never grow past the cap, regardless of reset count.
             assert!(
                 tracker.interrupted.len() <= MAX_INTERRUPTED_EPISODES,
@@ -453,9 +467,9 @@ mod tests {
         let mut tracker = EpisodeTracker::new();
 
         // Start multiple episodes
-        let ep0 = tracker.start_episode(0, Some(100));
-        let ep1 = tracker.start_episode(1, Some(200));
-        let _ep2 = tracker.start_episode(2, Some(300));
+        let ep0 = tracker.start_episode(0, Some(100), next_id());
+        let ep1 = tracker.start_episode(1, Some(200), next_id());
+        let _ep2 = tracker.start_episode(2, Some(300), next_id());
         assert_eq!(active_count(&tracker), 3);
 
         // Record steps for each
@@ -484,9 +498,9 @@ mod tests {
     fn test_complete_all() {
         let mut tracker = EpisodeTracker::new();
 
-        tracker.start_episode(0, Some(1));
-        tracker.start_episode(1, Some(2));
-        tracker.start_episode(2, Some(3));
+        tracker.start_episode(0, Some(1), next_id());
+        tracker.start_episode(1, Some(2), next_id());
+        tracker.start_episode(2, Some(3), next_id());
 
         tracker.record_step(0, 1.0);
         tracker.record_step(1, 2.0);
@@ -507,7 +521,7 @@ mod tests {
         let mut tracker = EpisodeTracker::new();
 
         // Reset without an explicit seed (the env seeded itself from entropy).
-        tracker.start_episode(0, None);
+        tracker.start_episode(0, None, next_id());
         let meta = tracker.complete_episode(0, true, false, None).unwrap();
 
         // The seed must be absent, never a fabricated 0 that downstream
@@ -515,7 +529,7 @@ mod tests {
         assert_eq!(meta.seed, None);
 
         // An explicit seed of 0 is still recorded faithfully as Some(0).
-        tracker.start_episode(1, Some(0));
+        tracker.start_episode(1, Some(0), next_id());
         let meta = tracker.complete_episode(1, true, false, None).unwrap();
         assert_eq!(meta.seed, Some(0));
     }

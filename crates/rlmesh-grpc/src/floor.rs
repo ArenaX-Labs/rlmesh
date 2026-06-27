@@ -23,7 +23,7 @@ use crate::error::{Error as GrpcError, ProtocolError};
 /// must fail before opening any Join stream. The returned
 /// [`SessionFloor::selected_workflow_edition`] is what the runtime pins onto the
 /// model's `ConfigureRoute` and the env's `ConfigureEnv`.
-pub fn route_floor(
+pub fn env_floor(
     env_offer: &SessionOffer,
     model_offer: &SessionOffer,
 ) -> Result<SessionFloor, GrpcError> {

@@ -3,12 +3,11 @@ use std::time::Instant;
 
 use rlmesh_grpc::wire::value_leaves;
 use rlmesh_proto::model::v1::{
-    ModelError, ModelErrorCode, PredictContext, PredictRequest, PredictResponse, PredictSlot,
-    join_response,
+    AdapterContext, ModelError, ModelErrorCode, PredictRequest, PredictResponse, join_response,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
-use super::types::{ModelObservation, ModelRouteContext, ModelRouteSlot};
+use super::types::{ModelObservation, ModelRouteContext};
 use crate::{Error, Result, spaces};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,13 +65,22 @@ pub(super) fn model_endpoint_total_ns(started_at: Instant) -> u64 {
 pub(super) fn model_observation_from_endpoint_request(
     request: PredictRequest,
 ) -> Result<ModelObservation> {
-    let route = model_route_from_proto(request.context)?;
-    let num_envs = route.slots.len();
+    let context = request
+        .context
+        .ok_or_else(|| Error::Internal("model request missing adapter context".to_string()))?;
+    // The self-describing batch: episode_ids ride the PredictRequest, not the
+    // context. Build the route context from both.
+    let route = ModelRouteContext {
+        session_id: context.session_id,
+        env_id: context.env_id,
+        request_id: context.request_id,
+        episode_ids: request.episode_ids,
+    };
     validate_predict_route(&route)?;
+    let num_envs = route.episode_ids.len();
 
     Ok(ModelObservation {
         observation: value_leaves(request.observation.as_ref()).map(<[_]>::to_vec),
-        reset: route.primary_reset(),
         num_envs,
         env_contract: None,
         route,
@@ -132,37 +140,29 @@ pub(super) fn check_actions_conform(
     Ok(())
 }
 
-fn model_route_from_proto(route: Option<PredictContext>) -> Result<ModelRouteContext> {
-    route
-        .map(ModelRouteContext::from)
-        .ok_or_else(|| Error::Internal("model request missing route context".to_string()))
-}
-
 fn validate_predict_route(route: &ModelRouteContext) -> Result<()> {
-    if route.route_id.is_empty() {
-        return Err(Error::Internal("model route_id is empty".to_string()));
+    if route.env_id.is_empty() {
+        return Err(Error::Internal("model env_id is empty".to_string()));
     }
     if route.request_id.is_empty() {
         return Err(Error::Internal("model request_id is empty".to_string()));
     }
-    if route.slots.is_empty() {
+    if route.episode_ids.is_empty() {
         return Err(Error::Internal(
-            "model route must include at least one slot".to_string(),
+            "model predict must include at least one episode_id".to_string(),
         ));
     }
 
-    let mut env_indexes = HashSet::new();
-    for (index, slot) in route.slots.iter().enumerate() {
-        if slot.episode_id.is_empty() {
+    let mut seen = HashSet::new();
+    for (index, episode_id) in route.episode_ids.iter().enumerate() {
+        if episode_id.is_empty() {
             return Err(Error::Internal(format!(
-                "model route slot {index} missing episode_id"
+                "model predict episode_ids[{index}] is empty"
             )));
         }
-        // Wire env_index is uint32, so a slot's native i32 is always >= 0 here.
-        if !env_indexes.insert(slot.env_index) {
+        if !seen.insert(episode_id.as_str()) {
             return Err(Error::Internal(format!(
-                "model route has duplicate env_index {}",
-                slot.env_index
+                "model predict has duplicate episode_id {episode_id:?}"
             )));
         }
     }
@@ -170,50 +170,12 @@ fn validate_predict_route(route: &ModelRouteContext) -> Result<()> {
     Ok(())
 }
 
-impl From<PredictContext> for ModelRouteContext {
-    fn from(value: PredictContext) -> Self {
-        Self {
-            session_id: value.session_id,
-            route_id: value.route_id,
-            request_id: value.request_id,
-            slots: value.slots.into_iter().map(ModelRouteSlot::from).collect(),
-        }
-    }
-}
-
-impl From<&ModelRouteContext> for PredictContext {
+impl From<&ModelRouteContext> for AdapterContext {
     fn from(value: &ModelRouteContext) -> Self {
         Self {
             session_id: value.session_id.clone(),
-            route_id: value.route_id.clone(),
+            env_id: value.env_id.clone(),
             request_id: value.request_id.clone(),
-            slots: value.slots.iter().map(PredictSlot::from).collect(),
-        }
-    }
-}
-
-impl From<PredictSlot> for ModelRouteSlot {
-    fn from(value: PredictSlot) -> Self {
-        Self {
-            episode_id: value.episode_id,
-            // Proto env_index is uint32; native is i32. `step` is int64 on both
-            // sides, so it carries across with no conversion.
-            env_index: i32::try_from(value.env_index).unwrap_or(i32::MAX),
-            step: value.step,
-            reset: value.reset,
-        }
-    }
-}
-
-impl From<&ModelRouteSlot> for PredictSlot {
-    fn from(value: &ModelRouteSlot) -> Self {
-        Self {
-            episode_id: value.episode_id.clone(),
-            // Native env_index is i32 (>=0); proto field is uint32. `step` is
-            // int64 on both sides, so it carries across with no conversion.
-            env_index: value.env_index.max(0) as u32,
-            step: value.step,
-            reset: value.reset,
         }
     }
 }

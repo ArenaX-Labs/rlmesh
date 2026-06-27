@@ -12,11 +12,17 @@ static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default)
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSessionSpec {
+    /// Correlation label only; OSS does not key on it (the managed layer owns
+    /// session lifecycle). Kept as plumbing for telemetry/logs — its removal is
+    /// the deferred closed split, out of scope here.
     pub session_id: String,
-    pub route_id: String,
+    /// The connected env container, UUIDv7 (minted by the runtime on attach).
+    /// The single routing key: replaces the old `route_id` + positional lane.
+    /// (Repurposed from the former descriptive-name field; the human env name
+    /// now lives only in the language SDK's own contract type.)
+    pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
-    pub env_id: String,
     /// Workflow edition negotiated at the env handshake. The runtime refuses an
     /// edition it was not built to drive (see [`RuntimeSessionSpec::validate`]).
     pub workflow_edition: String,
@@ -33,8 +39,8 @@ impl RuntimeSessionSpec {
         if self.session_id.trim().is_empty() {
             return Err("runtime session_id must not be empty".to_string());
         }
-        if self.route_id.trim().is_empty() {
-            return Err("runtime route_id must not be empty".to_string());
+        if self.env_id.trim().is_empty() {
+            return Err("runtime env_id must not be empty".to_string());
         }
         if self.env_component_id.trim().is_empty() {
             return Err("runtime env_component_id must not be empty".to_string());
@@ -107,9 +113,9 @@ impl RuntimeSessionSpec {
         Ok(())
     }
 
-    pub fn route_context(&self) -> crate::hooks::RuntimeRouteContext {
-        crate::hooks::RuntimeRouteContext {
-            route_id: self.route_id.clone(),
+    pub fn env_context(&self) -> crate::hooks::RuntimeEnvContext {
+        crate::hooks::RuntimeEnvContext {
+            env_id: self.env_id.clone(),
             env_component_id: self.env_component_id.clone(),
             model_component_id: self.model_component_id.clone(),
         }
@@ -166,7 +172,7 @@ impl RuntimeSessionSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeReport {
     pub session_id: String,
-    pub route_id: String,
+    pub env_id: String,
     pub total_steps: i64,
     pub total_episodes: i64,
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
@@ -334,10 +340,9 @@ mod tests {
     fn valid_spec() -> RuntimeSessionSpec {
         RuntimeSessionSpec {
             session_id: "session".to_string(),
-            route_id: "route".to_string(),
+            env_id: "env-id".to_string(),
             env_component_id: "env".to_string(),
             model_component_id: "model".to_string(),
-            env_id: "env-id".to_string(),
             workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
             env_contract: EnvContract {
                 spec: Some(EnvSpec {

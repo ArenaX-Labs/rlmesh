@@ -14,7 +14,9 @@ use rlmesh_proto::core::v1::{EnvContract, EnvSpec};
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
-use rlmesh_proto::model::v1::{CloseRouteRequest, PredictRequest, PredictResponse};
+use rlmesh_proto::model::v1::{
+    PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
+};
 use rlmesh_proto::spaces::v1::{SpaceSpec, SpaceValue};
 use rlmesh_runtime::{
     ActionReceivedEvent, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
@@ -62,6 +64,47 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
     assert!(model.closed.load(Ordering::SeqCst));
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 1);
     assert_eq!(hooks.ended.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn runtime_mints_uuidv7_episode_id_and_emits_reset_adapter_on_episode_end() {
+    // R1 + R2: the runtime is the sole id authority — it mints a fresh UUIDv7
+    // episode id per reset (the env merely adopts + echoes it) — and fires an
+    // explicit ResetAdapter to the model when the episode ends, so the model
+    // evicts that episode's state without any position-diffing.
+    let env = TestEnv::default();
+    let model = TestModel::default();
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+    assert_eq!(report.total_episodes, 1);
+
+    let resets = model
+        .reset_adapters
+        .lock()
+        .expect("reset_adapter recorder lock poisoned");
+    assert_eq!(
+        resets.len(),
+        1,
+        "ResetAdapter fires exactly once, on the single episode's end"
+    );
+    assert_eq!(resets[0].len(), 1, "one ended episode id was evicted");
+    let id = &resets[0][0];
+    // A runtime-minted UUIDv7 in hyphenated string form (8-4-4-4-12), not the
+    // old env-minted placeholder. Version nibble is 7.
+    assert_eq!(id.len(), 36, "episode id must be a UUID string, got {id:?}");
+    assert_eq!(id.matches('-').count(), 4, "UUID has four hyphens: {id:?}");
+    assert_eq!(
+        id.as_bytes()[14],
+        b'7',
+        "episode id must be a UUIDv7 (version nibble 7): {id:?}"
+    );
 }
 
 #[tokio::test]
@@ -467,7 +510,7 @@ async fn observation_emitted_always_carries_transformed_payload() {
 async fn shutdown_enforces_service_close_timeout_on_hung_model() {
     let env = TestEnv::default();
     let model = TestModel {
-        close_route_hangs: true,
+        release_adapter_hangs: true,
         ..Default::default()
     };
     let mut spec = one_episode_spec();
@@ -500,6 +543,9 @@ struct TestEnv {
     closed: Arc<AtomicBool>,
     step_count: Arc<AtomicUsize>,
     reset_seeds: Arc<Mutex<Vec<Vec<i64>>>>,
+    // The runtime is the id authority: the env adopts the id pushed down on
+    // reset and echoes it back in completed_episodes (never mints its own).
+    current_episode: Arc<Mutex<String>>,
     terminal_after: usize,
 }
 
@@ -509,6 +555,7 @@ impl Default for TestEnv {
             closed: Arc::new(AtomicBool::new(false)),
             step_count: Arc::new(AtomicUsize::new(0)),
             reset_seeds: Arc::new(Mutex::new(Vec::new())),
+            current_episode: Arc::new(Mutex::new(String::new())),
             terminal_after: 1,
         }
     }
@@ -521,12 +568,17 @@ impl RuntimeEnv for TestEnv {
             .lock()
             .expect("reset seed recorder lock poisoned")
             .push(request.seeds);
+        // Adopt the runtime-pushed id (the env never mints).
+        *self
+            .current_episode
+            .lock()
+            .expect("current episode lock poisoned") =
+            request.episode_ids.first().cloned().unwrap_or_default();
         self.step_count.store(0, Ordering::SeqCst);
         Ok(RuntimeEnvReset {
             response: ResetResponse {
                 observation: Some(leaves_value(payload([1]))),
                 infos: None,
-                episode_ids: vec!["episode-1".to_string()],
             },
             endpoint_total_ns: None,
         })
@@ -535,6 +587,11 @@ impl RuntimeEnv for TestEnv {
     async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let step = self.step_count.fetch_add(1, Ordering::SeqCst) + 1;
         let terminal = step >= self.terminal_after;
+        let episode_id = self
+            .current_episode
+            .lock()
+            .expect("current episode lock poisoned")
+            .clone();
         Ok(RuntimeEnvStep {
             response: StepResponse {
                 observation: Some(leaves_value(payload([step as u8]))),
@@ -544,7 +601,7 @@ impl RuntimeEnv for TestEnv {
                 infos: None,
                 completed_episodes: terminal
                     .then(|| EpisodeMetadata {
-                        episode_id: "episode-1".to_string(),
+                        episode_id,
                         step_count: step as i64,
                         cumulative_reward: step as f64,
                         terminated: true,
@@ -552,7 +609,6 @@ impl RuntimeEnv for TestEnv {
                     })
                     .into_iter()
                     .collect(),
-                episode_ids: vec![],
                 env_indices: vec![],
             },
             endpoint_total_ns: None,
@@ -571,13 +627,16 @@ struct TestModel {
     predicts: Arc<AtomicUsize>,
     predict_delay: Option<Duration>,
     seen_observations: Arc<Mutex<Vec<Vec<u8>>>>,
+    // Episode ids the driver asked the model to evict via ResetAdapter (R2), in
+    // order — one ResetAdapterRequest's episode_ids per entry.
+    reset_adapters: Arc<Mutex<Vec<Vec<String>>>>,
     // Number of chunk replay frames to return per predict (frames 1.. of the
     // ordered `actions` list; frame 0 is always present). 0 = not chunking (a
     // single-frame `actions`, the unchanged path).
     replay_frames: usize,
-    // Simulates a close_route impl that blocks (e.g. an RPC on a hung
+    // Simulates a release_adapter impl that blocks (e.g. an RPC on a hung
     // connection) without honoring the supplied timeout.
-    close_route_hangs: bool,
+    release_adapter_hangs: bool,
 }
 
 #[async_trait]
@@ -613,12 +672,23 @@ impl RuntimeModel for TestModel {
         })
     }
 
-    async fn close_route(
+    async fn reset_adapter(
         &mut self,
-        _request: CloseRouteRequest,
+        request: ResetAdapterRequest,
+    ) -> Result<(), RuntimeError> {
+        self.reset_adapters
+            .lock()
+            .expect("reset_adapter recorder lock poisoned")
+            .push(request.episode_ids);
+        Ok(())
+    }
+
+    async fn release_adapter(
+        &mut self,
+        _request: ReleaseAdapterRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
-        if self.close_route_hangs {
+        if self.release_adapter_hangs {
             // Ignore the supplied timeout entirely, like a misbehaving impl.
             std::future::pending::<()>().await;
         }
@@ -734,10 +804,9 @@ impl RuntimeHooks for RecordingHooks {
 fn one_episode_spec() -> RuntimeSessionSpec {
     RuntimeSessionSpec {
         session_id: "session-1".to_string(),
-        route_id: "route-1".to_string(),
+        env_id: "TestEnv-v0".to_string(),
         env_component_id: "env-1".to_string(),
         model_component_id: "model-1".to_string(),
-        env_id: "TestEnv-v0".to_string(),
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             spec: Some(EnvSpec {
@@ -774,7 +843,9 @@ struct VectorTestEnv {
     closed: Arc<AtomicBool>,
     terminal_after: Vec<usize>,
     lane_step: Vec<usize>,
-    lane_episode: Vec<usize>,
+    // The runtime is the id authority: each lane adopts the id pushed down on
+    // reset / on the autoreset roll, and echoes it in completed_episodes.
+    current_ids: Vec<String>,
     pending_autoreset: Vec<bool>,
 }
 
@@ -786,13 +857,9 @@ impl VectorTestEnv {
             closed: Arc::new(AtomicBool::new(false)),
             terminal_after,
             lane_step: vec![0; n],
-            lane_episode: vec![0; n],
+            current_ids: vec![String::new(); n],
             pending_autoreset: vec![false; n],
         }
-    }
-
-    fn episode_id(lane: usize, episode: usize) -> String {
-        format!("ep-{lane}-{episode}")
     }
 }
 
@@ -805,42 +872,42 @@ impl RuntimeEnv for VectorTestEnv {
             .push(request.seeds);
         let n = self.terminal_after.len();
         self.lane_step = vec![0; n];
-        self.lane_episode = vec![0; n];
         self.pending_autoreset = vec![false; n];
-        let episode_ids = (0..n).map(|lane| Self::episode_id(lane, 0)).collect();
+        // Adopt the runtime-pushed ids (full-width on a whole-vector reset).
+        self.current_ids = request.episode_ids.clone();
+        self.current_ids.resize(n, String::new());
         Ok(RuntimeEnvReset {
             response: ResetResponse {
                 observation: Some(leaves_value(payload([0]))),
                 infos: None,
-                episode_ids,
             },
             endpoint_total_ns: None,
         })
     }
 
-    async fn step(&mut self, _request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
+    async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError> {
         let n = self.terminal_after.len();
         let mut rewards = vec![1.0; n];
         let mut terminated_mask = vec![0u8; n];
         let mut completed_episodes = Vec::new();
-        let mut episode_ids = vec![String::new(); n];
 
         for lane in 0..n {
             if self.pending_autoreset[lane] {
                 // t+1: the env auto-resets this lane and delivers the fresh obs of
-                // a new episode (step 0, reward 0, terminated=false).
+                // a new episode (step 0, reward 0, terminated=false). It adopts the
+                // rolled id the runtime pushed for this lane.
                 self.pending_autoreset[lane] = false;
-                self.lane_episode[lane] += 1;
                 self.lane_step[lane] = 0;
                 rewards[lane] = 0.0;
-                episode_ids[lane] = Self::episode_id(lane, self.lane_episode[lane]);
+                if let Some(id) = request.episode_ids.get(lane) {
+                    self.current_ids[lane] = id.clone();
+                }
             } else {
                 self.lane_step[lane] += 1;
-                let id = Self::episode_id(lane, self.lane_episode[lane]);
                 if self.lane_step[lane] >= self.terminal_after[lane] {
                     terminated_mask[lane] = 1;
                     completed_episodes.push(EpisodeMetadata {
-                        episode_id: id.clone(),
+                        episode_id: self.current_ids[lane].clone(),
                         env_index: lane as u32,
                         step_count: self.lane_step[lane] as i64,
                         cumulative_reward: self.lane_step[lane] as f64,
@@ -849,9 +916,6 @@ impl RuntimeEnv for VectorTestEnv {
                     });
                     self.pending_autoreset[lane] = true;
                 }
-                // The terminal obs keeps the old id; an ongoing step keeps the
-                // active id. Neither is a roll.
-                episode_ids[lane] = id;
             }
         }
 
@@ -863,7 +927,6 @@ impl RuntimeEnv for VectorTestEnv {
                 truncated_mask: vec![0u8; n],
                 infos: None,
                 completed_episodes,
-                episode_ids,
                 env_indices: vec![],
             },
             endpoint_total_ns: None,
@@ -879,10 +942,9 @@ impl RuntimeEnv for VectorTestEnv {
 fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
     RuntimeSessionSpec {
         session_id: "session-vec".to_string(),
-        route_id: "route-vec".to_string(),
+        env_id: "VectorTestEnv-v0".to_string(),
         env_component_id: "env-vec".to_string(),
         model_component_id: "model-vec".to_string(),
-        env_id: "VectorTestEnv-v0".to_string(),
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: EnvContract {
             spec: Some(EnvSpec {
@@ -940,4 +1002,52 @@ async fn next_step_vector_env_completes_lanes_independently_without_whole_vector
         model.predicts.load(Ordering::SeqCst) as i64,
         report.total_steps
     );
+}
+
+#[tokio::test]
+async fn chunking_does_not_break_autoreset_eviction() {
+    // Chunking × NEXT_STEP autoreset. Chunk replay skips most predict calls, but
+    // env.step + completion detection + ResetAdapter eviction still run every
+    // step — so each episode end is evicted exactly once, with a runtime-minted
+    // UUIDv7 id, even while the model is mid-chunk and not being re-called.
+    let env = VectorTestEnv::new(vec![2, 3]);
+    let model = TestModel {
+        replay_frames: 4, // chunk of 5; most steps replay without a predict
+        ..Default::default()
+    };
+    let report = RuntimeDriver::new(
+        vector_spec(2, 4),
+        env.clone(),
+        model.clone(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    assert!(report.total_episodes >= 4);
+    // Predict was skipped on most steps (chunk replay), proving the eviction
+    // below fired independently of the predict cadence.
+    assert!(
+        (model.predicts.load(Ordering::SeqCst) as i64) < report.total_steps,
+        "chunk replay must skip some predict calls"
+    );
+    // Exactly one ResetAdapter eviction per completed episode, each a UUIDv7.
+    let evicted: Vec<String> = model
+        .reset_adapters
+        .lock()
+        .expect("reset_adapter recorder lock poisoned")
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    assert_eq!(
+        evicted.len() as i64,
+        report.total_episodes,
+        "one eviction per completed episode, even under chunking"
+    );
+    for id in &evicted {
+        assert_eq!(id.len(), 36, "evicted a UUID id, got {id:?}");
+        assert_eq!(id.as_bytes()[14], b'7', "UUIDv7 version nibble: {id:?}");
+    }
 }

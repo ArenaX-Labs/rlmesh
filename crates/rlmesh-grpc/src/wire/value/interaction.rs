@@ -19,6 +19,9 @@ pub fn reset_request_to_proto(
         timeout_ms: request.timeout_ms.max(0) as u64,
         // Whole-vector reset; partial reset threads through reset_subset (A3).
         env_indices: Vec::new(),
+        // Runtime-minted ids are pushed by the orchestrating runtime, not this
+        // bare single-env conversion; left empty here.
+        episode_ids: Vec::new(),
     })
 }
 
@@ -29,7 +32,9 @@ pub fn reset_result_from_proto(
     Ok(native::ResetResult {
         observation: decode_value(response.observation.as_ref(), observation_space)?,
         info: response.infos.map(meta_map_from_proto),
-        episode_id: response.episode_ids.into_iter().next(),
+        // The env no longer returns ids (R1); the runtime is authoritative and
+        // pushes ids down. This bare conversion has no runtime, so no id.
+        episode_id: None,
     })
 }
 
@@ -47,6 +52,8 @@ pub fn step_request_to_proto(
         timeout_ms: request.timeout_ms.max(0) as u64,
         // Full-width step; subset-stepping is reserved-but-deferred.
         env_indices: Vec::new(),
+        // See reset_request_to_proto: ids are runtime-pushed, not minted here.
+        episode_ids: Vec::new(),
     })
 }
 
@@ -115,7 +122,6 @@ pub fn reset_result_to_proto(
             .map(|value| encode_value(value, observation_space))
             .transpose()?,
         infos: result.info.as_ref().map(meta_map_to_proto),
-        episode_ids: result.episode_id.iter().cloned().collect(),
     })
 }
 
@@ -134,7 +140,6 @@ pub fn step_result_to_proto(
         truncated_mask: vec![u8::from(result.truncated)],
         infos: result.info.as_ref().map(meta_map_to_proto),
         completed_episodes: vec![],
-        episode_ids: vec![],
         // Full-width response; partial-width is reserved-but-deferred.
         env_indices: vec![],
     })

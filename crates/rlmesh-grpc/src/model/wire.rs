@@ -26,10 +26,11 @@ pub(super) fn model_error_to_grpc_error(error: ProtoModelError) -> GrpcError {
 
 pub(super) fn join_request_kind_name(kind: Option<&join_request::Kind>) -> &'static str {
     match kind {
-        Some(join_request::Kind::ConfigureRoute(_)) => "configure_route",
+        Some(join_request::Kind::ResolveAdapter(_)) => "resolve_adapter",
         Some(join_request::Kind::Predict(_)) => "predict",
         Some(join_request::Kind::GroupedPredict(_)) => "grouped_predict",
-        Some(join_request::Kind::CloseRoute(_)) => "close_route",
+        Some(join_request::Kind::ResetAdapter(_)) => "reset_adapter",
+        Some(join_request::Kind::ReleaseAdapter(_)) => "release_adapter",
         Some(join_request::Kind::Close(_)) => "close",
         None => "empty",
     }

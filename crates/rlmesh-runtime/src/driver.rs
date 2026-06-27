@@ -8,13 +8,15 @@ use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
-use rlmesh_proto::model::v1::{CloseRouteRequest, PredictRequest, PredictResponse};
+use rlmesh_proto::model::v1::{
+    PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
+};
 use rlmesh_proto::spaces::v1::SpaceValue;
 use tokio_util::sync::CancellationToken;
 
 use crate::hooks::{
     ActionReceivedEvent, EpisodeCompletedEvent, EpisodeStartedEvent, LogEvent, LogLevel,
-    ObservationEmittedEvent, RuntimeHooks, RuntimeRouteContext, SessionEndedEvent,
+    ObservationEmittedEvent, RuntimeHooks, RuntimeEnvContext, SessionEndedEvent,
     SessionFailedEvent, SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 use crate::spec::{RuntimeReport, RuntimeSessionSpec};
@@ -75,9 +77,18 @@ pub trait RuntimeModel: Send {
         request: PredictRequest,
     ) -> Result<RuntimeModelPrediction, RuntimeError>;
 
-    async fn close_route(
+    /// Evict the model's per-episode adapter state (frame-stack buffers) for the
+    /// ended episodes. Best-effort GC, not a correctness gate: because episode
+    /// ids never repeat (UUIDv7), a dropped ResetAdapter only leaks memory and
+    /// can never alias a new episode. Default no-op for impls that hold no
+    /// per-episode state.
+    async fn reset_adapter(&mut self, _request: ResetAdapterRequest) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
+    async fn release_adapter(
         &mut self,
-        _request: CloseRouteRequest,
+        _request: ReleaseAdapterRequest,
         _timeout: Duration,
     ) -> Result<(), String> {
         Ok(())
@@ -164,7 +175,6 @@ where
                 deterministic_reset_seed(
                     base_seed,
                     &self.spec.session_id,
-                    &self.spec.route_id,
                     reset_generation,
                     env_index,
                 )
@@ -227,7 +237,7 @@ where
                 Arc::clone(&self.hooks),
                 self.spec.limits.telemetry_window,
                 state.session_id().to_string(),
-                state.route_context(),
+                state.env_context(),
             )
         });
         let result = self.run_loop(&mut state, &cancellation, &telemetry).await;
@@ -241,7 +251,7 @@ where
             on_telemetry,
             TelemetrySnapshotEvent {
                 session_id: state.session_id().to_string(),
-                route: state.route_context(),
+                route: state.env_context(),
                 snapshot: final_snapshot,
             }
         );
@@ -261,7 +271,7 @@ where
         skip_all,
         fields(
             session_id = %state.session_id(),
-            route_id = %self.spec.route_id,
+            env_id = %self.spec.env_id,
             num_envs = self.spec.num_envs,
         ),
     )]
@@ -276,7 +286,7 @@ where
             session_started,
             SessionStartedEvent {
                 session_id: state.session_id().to_string(),
-                route: state.route_context(),
+                route: state.env_context(),
                 env_id: self.spec.env_id.clone(),
             }
         );
@@ -286,11 +296,16 @@ where
         // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
         let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms().max(0) as u64;
         let reset_seeds = self.reset_seeds(reset_generation);
+        // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per lane
+        // and push them DOWN so the env tags its episodes with our ids; we never
+        // read ids back from the env.
+        let initial_episode_ids = mint_episode_ids(self.spec.num_envs);
         let reset_request = ResetRequest {
             seeds: reset_seeds,
             options: None,
             timeout_ms: reset_timeout_ms,
             env_indices: Vec::new(),
+            episode_ids: initial_episode_ids.clone(),
         };
         let reset_request_bytes = reset_request.encoded_len() as u64;
         // Time only the RPC (after building the request), matching the predict /
@@ -300,7 +315,7 @@ where
             cancellation,
             reset_timeout,
             RuntimeError::operation_timeout(
-                state.route_id(),
+                state.env_id(),
                 state.env_component_id(),
                 "env.reset",
                 0,
@@ -324,25 +339,28 @@ where
             log,
             LogEvent {
                 session_id: state.session_id().to_string(),
-                route: state.route_context(),
+                route: state.env_context(),
                 level: LogLevel::Info,
                 message: format!(
                     "env reset complete in {:.0}ms ({} episode(s) ready)",
                     reset_latency.as_secs_f64() * 1000.0,
-                    reset_ok
-                        .response
-                        .episode_ids
-                        .iter()
-                        .filter(|value| !value.is_empty())
-                        .count()
+                    initial_episode_ids.len()
                 ),
                 source: Some("runtime".to_string()),
             }
         );
 
         let reset_observation = value_leaves(reset_ok.response.observation.as_ref())?;
-        let started_episodes = state.start_episodes(reset_ok.response.episode_ids, false);
+        let started_episodes = state.start_episodes(initial_episode_ids, false);
         self.invoke_started_episodes(state, started_episodes).await;
+
+        // Runtime-side mirror of the env's NEXT_STEP autoreset expectation: maps a
+        // lane that completed this step to the fresh UUIDv7 we minted for its next
+        // episode. Set on completion (step t), consumed on the autoreset roll
+        // (step t+1) — both the down-push to the env and our own slot roll read
+        // from here, so the env tags the rolled episode with exactly our id.
+        let mut pending_roll: std::collections::HashMap<u32, String> =
+            std::collections::HashMap::new();
 
         let mut reset_msg =
             state.predict_request(reset_observation.clone(), RequestPhase::ResetObservation);
@@ -388,7 +406,7 @@ where
                     cancellation,
                     predict_timeout,
                     RuntimeError::operation_timeout(
-                        state.route_id(),
+                        state.env_id(),
                         state.model_component_id(),
                         "model.predict",
                         predict_snapshot.step,
@@ -439,7 +457,7 @@ where
             let action_step = predict_snapshot.step + 1;
             let mut action_event = ActionReceivedEvent {
                 session_id: state.session_id().to_string(),
-                route: state.route_context(),
+                route: state.env_context(),
                 episode_id: predict_snapshot.episode_id.clone(),
                 episode_record_id: predict_snapshot.episode_record_id.clone(),
                 episode_ids: predict_snapshot.episode_ids.clone(),
@@ -455,10 +473,16 @@ where
             let step_timeout = self.spec.limits.env_step_timeout;
             // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
             let step_timeout_ms = self.spec.limits.env_step_timeout_ms().max(0) as u64;
+            // Down-push the authoritative per-lane ids. For a NEXT_STEP autoreset
+            // roll (a lane in `pending_roll`), substitute the freshly minted id so
+            // the env tags its rolled episode with our id; the slot itself rolls to
+            // the same id below, after the step.
+            let step_episode_ids = episode_ids_with_roll(&state.episode_ids(), &pending_roll);
             let step_request = StepRequest {
                 action: action_event.action.map(leaves_value),
                 timeout_ms: step_timeout_ms,
                 env_indices: Vec::new(),
+                episode_ids: step_episode_ids,
             };
             let step_request_bytes = step_request.encoded_len() as u64;
             let step_started = Instant::now();
@@ -466,7 +490,7 @@ where
                 cancellation,
                 step_timeout,
                 RuntimeError::operation_timeout(
-                    state.route_id(),
+                    state.env_id(),
                     state.env_component_id(),
                     "env.step",
                     action_step,
@@ -494,7 +518,7 @@ where
                 step_completed,
                 StepCompletedEvent {
                     session_id: state.session_id().to_string(),
-                    route: state.route_context(),
+                    route: state.env_context(),
                     episode_id: step_snapshot.episode_id.clone(),
                     episode_record_id: step_snapshot.episode_record_id.clone(),
                     step: step_snapshot.step,
@@ -503,8 +527,15 @@ where
                 }
             );
 
-            if !step_ok.response.episode_ids.is_empty() {
-                let started_episodes = state.observe_episode_ids(step_ok.response.episode_ids);
+            // Apply any NEXT_STEP autoreset roll the env just performed. The env
+            // rolled the lanes in `pending_roll` (from the previous step's
+            // completions) using the ids we pushed above; mirror that here by
+            // rolling our own slots to the same ids. The env no longer mints or
+            // returns ids — the runtime is authoritative.
+            if !pending_roll.is_empty() {
+                let roll_ids = episode_ids_with_roll(&state.episode_ids(), &pending_roll);
+                pending_roll.clear();
+                let started_episodes = state.observe_episode_ids(roll_ids);
                 self.invoke_started_episodes(state, started_episodes).await;
             }
             // The observation_emitted hook fires once per observation actually
@@ -515,6 +546,10 @@ where
 
             self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
                 .await;
+            // Tell the model to evict the ended episodes' frame-stack buffers
+            // (best-effort GC; ids never repeat so a miss only leaks memory).
+            self.emit_reset_adapter(state, &step_ok.response.completed_episodes)
+                .await;
 
             // A lane that completed this step gets a fresh episode, so its buffered
             // future actions are stale. The replay buffer holds whole-batch frames
@@ -522,6 +557,20 @@ where
             // next step (receding horizon on reset). No-op when not chunking.
             if !step_ok.response.completed_episodes.is_empty() {
                 replay_buffer.clear();
+            }
+
+            // Under NEXT_STEP, a lane that completed this step (t) autoresets at
+            // t+1. Mint its next id now and stash it; the next step's down-push and
+            // slot roll both consume it. Mirrors the env's `expect_autoreset`.
+            if matches!(
+                self.autoreset_mode(),
+                AutoresetMode::NextStep | AutoresetMode::SameStep
+            ) {
+                for completed in &step_ok.response.completed_episodes {
+                    pending_roll
+                        .entry(completed.env_index)
+                        .or_insert_with(mint_episode_id);
+                }
             }
 
             // Under NEXT_STEP, the final episode completes at its done step `t`
@@ -535,9 +584,13 @@ where
                 .max_episodes
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
             {
-                let close_request = state.close_route_request("completed requested episodes");
-                self.shutdown_terminal_route(state, "completed requested episodes", close_request)
-                    .await;
+                let release_request = state.release_adapter_request("completed requested episodes");
+                self.shutdown_terminal_route(
+                    state,
+                    "completed requested episodes",
+                    release_request,
+                )
+                .await;
                 // The single final session push is delivered by the epilogue in
                 // run_with_cancellation_reason (on every exit path); here we only
                 // capture the durable pull snapshot for the returned report.
@@ -547,7 +600,7 @@ where
                     session_ended,
                     SessionEndedEvent {
                         session_id: state.session_id().to_string(),
-                        route: state.route_context(),
+                        route: state.env_context(),
                         reason: "completed requested episodes".to_string(),
                         total_steps: state.total_steps(),
                         total_episodes: state.total_episodes(),
@@ -555,7 +608,7 @@ where
                 );
                 return Ok(RuntimeReport {
                     session_id: state.session_id().to_string(),
-                    route_id: self.spec.route_id.clone(),
+                    env_id: self.spec.env_id.clone(),
                     total_steps: state.total_steps(),
                     total_episodes: state.total_episodes(),
                     telemetry: telemetry_snapshot,
@@ -612,12 +665,20 @@ where
                         let reset_timeout_ms =
                             self.spec.limits.env_reset_timeout_ms().max(0) as u64;
                         let whole_vector = done_lanes.len() == self.spec.num_envs;
-                        let (reset_seeds, env_indices) = if whole_vector {
-                            (self.reset_seeds(reset_generation), Vec::new())
+                        // Mint the authoritative ids for the lanes this reset
+                        // restarts (full-width for a whole reset, aligned to
+                        // done_lanes for a partial one) and push them DOWN.
+                        let (reset_seeds, env_indices, reset_episode_ids) = if whole_vector {
+                            (
+                                self.reset_seeds(reset_generation),
+                                Vec::new(),
+                                mint_episode_ids(self.spec.num_envs),
+                            )
                         } else {
                             (
                                 self.reset_subset_seeds(reset_generation, &done_lanes),
                                 done_lanes.clone(),
+                                mint_episode_ids(done_lanes.len()),
                             )
                         };
                         let reset_request = ResetRequest {
@@ -625,6 +686,7 @@ where
                             options: None,
                             timeout_ms: reset_timeout_ms,
                             env_indices,
+                            episode_ids: reset_episode_ids.clone(),
                         };
                         let reset_request_bytes = reset_request.encoded_len() as u64;
                         let inloop_reset_started = Instant::now();
@@ -632,7 +694,7 @@ where
                             cancellation,
                             reset_timeout,
                             RuntimeError::operation_timeout(
-                                state.route_id(),
+                                state.env_id(),
                                 state.env_component_id(),
                                 "env.reset",
                                 step,
@@ -652,11 +714,18 @@ where
                         );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
-                        // rolls only the lanes whose id actually changed.
+                        // rolls only the lanes it restarted (build a full-width id
+                        // vector: current ids with the reset lanes replaced).
                         let started_episodes = if whole_vector {
-                            state.start_episodes(reset_ok.response.episode_ids, true)
+                            state.start_episodes(reset_episode_ids, true)
                         } else {
-                            state.observe_episode_ids(reset_ok.response.episode_ids)
+                            let mut full = state.episode_ids();
+                            for (lane, id) in done_lanes.iter().zip(reset_episode_ids) {
+                                if let Some(slot) = full.get_mut(*lane as usize) {
+                                    *slot = id;
+                                }
+                            }
+                            state.observe_episode_ids(full)
                         };
                         self.invoke_started_episodes(state, started_episodes).await;
                         (next_obs, RequestPhase::ResetObservation, true)
@@ -683,14 +752,14 @@ where
 
     async fn shutdown_after_failure(&mut self, state: &mut RouteState, error: &RuntimeError) {
         let reason = error.to_string();
-        let request = state.close_route_request(reason.clone());
+        let request = state.release_adapter_request(reason.clone());
         self.shutdown_terminal_route(state, &reason, request).await;
 
         if let Err(err) = self
             .hooks
             .session_failed(SessionFailedEvent {
                 session_id: state.session_id().to_string(),
-                route: state.route_context(),
+                route: state.env_context(),
                 reason,
             })
             .await
@@ -703,14 +772,15 @@ where
         &mut self,
         state: &RouteState,
         reason: &str,
-        request: CloseRouteRequest,
+        request: ReleaseAdapterRequest,
     ) {
         let timeout = self.spec.limits.service_close_timeout;
         // The timeout is also forwarded to the impls, but the driver enforces
         // it independently: a close impl that blocks (e.g. an RPC on a hung
         // connection) without honoring the deadline must not be able to hang
         // run()/run_with_cancellation() forever during shutdown.
-        let model_close = tokio::time::timeout(timeout, self.model.close_route(request, timeout));
+        let model_close =
+            tokio::time::timeout(timeout, self.model.release_adapter(request, timeout));
         if self.spec.close_env_on_end {
             let env_close = tokio::time::timeout(timeout, self.env.close(timeout));
             let (env_result, model_result) = tokio::join!(env_close, model_close);
@@ -731,15 +801,15 @@ where
         }
 
         tracing::debug!(
-            route_id = %state.route_id(),
+            env_id = %state.env_id(),
             reason,
-            "skipping environment close for route; endpoint remains owned by the run"
+            "skipping environment close for adapter; endpoint remains owned by the run"
         );
         log_model_close_result(model_close.await, reason, timeout);
     }
 
     fn cancelled_error(&self, state: &RouteState, step: i64) -> RuntimeError {
-        RuntimeError::route_cancelled(state.route_id(), step, self.cancellation_reason.as_str())
+        RuntimeError::route_cancelled(state.env_id(), step, self.cancellation_reason.as_str())
     }
 
     async fn invoke_started_episodes(&self, state: &RouteState, episodes: Vec<StartedEpisode>) {
@@ -750,7 +820,7 @@ where
                 episode_started,
                 EpisodeStartedEvent {
                     session_id: state.session_id().to_string(),
-                    route: state.route_context(),
+                    route: state.env_context(),
                     episode_id: episode.episode_id.clone(),
                     episode_record_id: record.record_id.clone(),
                     episode_index: record.index,
@@ -775,7 +845,7 @@ where
                 episode_completed,
                 EpisodeCompletedEvent {
                     session_id: state.session_id().to_string(),
-                    route: state.route_context(),
+                    route: state.env_context(),
                     episode_id: completed.episode_id.clone(),
                     episode_record_id,
                     episode_index: record.as_ref().map_or(0, |record| record.index),
@@ -788,6 +858,32 @@ where
                     final_info: completed.final_info.clone(),
                 }
             );
+        }
+    }
+
+    /// Tell the model to evict the ended episodes' per-episode adapter state.
+    /// Best-effort GC (R2): a failure is logged and the route keeps moving — a
+    /// missed evict only leaks model memory, never corrupts state (ids never
+    /// repeat). Skips the call when nothing completed.
+    ///
+    /// The id to evict is resolved POSITIONALLY from the runtime's own slot by
+    /// `env_index` (decision A) — the env's `completed_episodes[].episode_id`
+    /// echo is never trusted as the authority. At the completion step the slot
+    /// still holds the completing id (the autoreset roll lands at t+1), so this
+    /// is the id the model lazily seeded and must drop.
+    async fn emit_reset_adapter(&mut self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
+        let slot_ids = state.episode_ids();
+        let episode_ids: Vec<String> = episodes
+            .iter()
+            .filter_map(|completed| slot_ids.get(completed.env_index as usize).cloned())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if episode_ids.is_empty() {
+            return;
+        }
+        let request = state.reset_adapter_request(episode_ids);
+        if let Err(err) = self.model.reset_adapter(request).await {
+            tracing::warn!("model reset_adapter (evict) failed: {err}");
         }
     }
 
@@ -826,7 +922,7 @@ where
     ) -> ObservationEmittedEvent {
         ObservationEmittedEvent {
             session_id: state.session_id().to_string(),
-            route: state.route_context(),
+            route: state.env_context(),
             episode_id: snapshot.episode_id,
             episode_record_id: snapshot.episode_record_id,
             episode_ids: snapshot.episode_ids,
@@ -841,10 +937,13 @@ where
     }
 }
 
+// The per-lane reset seed is derived purely from reproducible inputs: the
+// user's base_seed, the session id, the reset generation, and the lane index.
+// The container env_id is deliberately NOT mixed in — it is a per-attach random
+// UUIDv7, so including it would make a base_seed non-reproducible across runs.
 fn deterministic_reset_seed(
     base_seed: i64,
     session_id: &str,
-    route_id: &str,
     reset_generation: u64,
     env_index: usize,
 ) -> i64 {
@@ -863,8 +962,6 @@ fn deterministic_reset_seed(
     hash = update(hash, &base_seed.to_le_bytes());
     hash = update(hash, &[0xff]);
     hash = update(hash, session_id.as_bytes());
-    hash = update(hash, &[0xfe]);
-    hash = update(hash, route_id.as_bytes());
     hash = update(hash, &[0xfd]);
     hash = update(hash, &reset_generation.to_le_bytes());
     hash = update(hash, &[0xfc]);
@@ -917,6 +1014,35 @@ fn log_model_close_result(
 
 fn leaves_value(leaves: Vec<Bytes>) -> SpaceValue {
     SpaceValue { leaves }
+}
+
+/// Mint one authoritative episode id. UUIDv7 is time-ordered (sortable by
+/// creation) and never repeats, so a missed ResetAdapter can only leak memory —
+/// never alias a fresh episode.
+fn mint_episode_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
+/// Mint `count` fresh episode ids (one per lane being started).
+fn mint_episode_ids(count: usize) -> Vec<String> {
+    (0..count).map(|_| mint_episode_id()).collect()
+}
+
+/// Current per-lane ids with the pending NEXT_STEP autoreset rolls substituted
+/// in. Lanes not rolling keep their current id; a rolling lane takes its freshly
+/// minted next id. Used for both the env down-push and our own slot roll so they
+/// stay byte-identical.
+fn episode_ids_with_roll(
+    current: &[String],
+    pending_roll: &std::collections::HashMap<u32, String>,
+) -> Vec<String> {
+    let mut ids = current.to_vec();
+    for (env_index, new_id) in pending_roll {
+        if let Some(slot) = ids.get_mut(*env_index as usize) {
+            *slot = new_id.clone();
+        }
+    }
+    ids
 }
 
 // The relay is content-blind: it carries the peer's leaf vector through
@@ -979,7 +1105,7 @@ impl TelemetryTicker {
         hooks: Arc<dyn RuntimeHooks>,
         window: Duration,
         session_id: String,
-        route: RuntimeRouteContext,
+        route: RuntimeEnvContext,
     ) -> Self {
         // The caller skips spawning for a zero window (disabled live streaming).
         // Defensive floor for any sub-ms value: interval panics on a zero period.

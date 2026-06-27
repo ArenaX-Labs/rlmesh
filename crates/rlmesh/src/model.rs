@@ -3,7 +3,6 @@
 
 mod engine;
 mod handler;
-mod lifecycle;
 mod local;
 mod predict_fn;
 mod remote;
@@ -18,9 +17,7 @@ pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use remote::RemoteModel;
 pub use server::BoundModelServer;
-pub use types::{
-    ModelEpisodeEnd, ModelLaneReset, ModelObservation, ModelRouteContext, ModelRouteSlot,
-};
+pub use types::{ModelObservation, ModelRouteContext};
 pub use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 
 #[cfg(test)]

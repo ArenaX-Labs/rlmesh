@@ -16,10 +16,7 @@ fn route_state_tracks_slot_episode_records() {
         state.snapshot().episode_record_ids,
         ["ep-000001", "ep-000002"]
     );
-    assert_eq!(state.slots()[0].env_index, 0);
-    assert_eq!(state.slots()[1].env_index, 1);
-    assert_eq!(state.slots()[0].episode_id, "env-ep-a");
-    assert_eq!(state.slots()[1].episode_id, "env-ep-b");
+    assert_eq!(state.episode_ids(), ["env-ep-a", "env-ep-b"]);
 }
 
 #[test]
@@ -27,16 +24,16 @@ fn route_state_generates_monotonic_request_ids() {
     let state_spec = test_session_spec();
     let mut state = RouteState::new(&state_spec);
 
-    assert_eq!(state.next_request_id("reset"), "session:route:reset:000001");
-    assert_eq!(state.next_request_id("step"), "session:route:step:000002");
+    assert_eq!(state.next_request_id("reset"), "test-env:reset:000001");
+    assert_eq!(state.next_request_id("step"), "test-env:step:000002");
 }
 
 #[test]
-fn request_ids_do_not_collide_across_sibling_routes() {
+fn request_ids_do_not_collide_across_sibling_envs() {
     let mut spec_a = test_session_spec();
-    spec_a.route_id = "route-a".to_string();
+    spec_a.env_id = "env-a".to_string();
     let mut spec_b = test_session_spec();
-    spec_b.route_id = "route-b".to_string();
+    spec_b.env_id = "env-b".to_string();
     assert_eq!(spec_a.session_id, spec_b.session_id);
 
     let mut state_a = RouteState::new(&spec_a);
@@ -47,19 +44,18 @@ fn request_ids_do_not_collide_across_sibling_routes() {
 
     assert_ne!(
         id_a, id_b,
-        "sibling routes in the same session must not share request IDs"
+        "sibling envs in the same session must not share request IDs"
     );
-    assert_eq!(id_a, "session:route-a:reset:000001");
-    assert_eq!(id_b, "session:route-b:reset:000001");
+    assert_eq!(id_a, "env-a:reset:000001");
+    assert_eq!(id_b, "env-b:reset:000001");
 }
 
 fn test_session_spec() -> RuntimeSessionSpec {
     RuntimeSessionSpec {
         session_id: "session".to_string(),
-        route_id: "route".to_string(),
+        env_id: "test-env".to_string(),
         env_component_id: "env".to_string(),
         model_component_id: "model".to_string(),
-        env_id: "test-env".to_string(),
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: Default::default(),
         num_envs: 1,

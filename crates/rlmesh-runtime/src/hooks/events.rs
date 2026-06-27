@@ -5,8 +5,8 @@ use rlmesh_proto::spaces::v1::MetaMap;
 use rlmesh_proto::spaces::v1::SpaceSpec;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RuntimeRouteContext {
-    pub route_id: String,
+pub struct RuntimeEnvContext {
+    pub env_id: String,
     pub env_component_id: String,
     pub model_component_id: String,
 }
@@ -14,27 +14,27 @@ pub struct RuntimeRouteContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvConnectedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub env_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelConnectedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionStartedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub env_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionEndedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub reason: String,
     pub total_steps: i64,
     pub total_episodes: i64,
@@ -43,14 +43,14 @@ pub struct SessionEndedEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFailedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub level: LogLevel,
     pub message: String,
     pub source: Option<String>,
@@ -67,7 +67,7 @@ pub enum LogLevel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeStartedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub episode_id: String,
     pub episode_record_id: String,
     pub episode_index: i64,
@@ -78,7 +78,7 @@ pub struct EpisodeStartedEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EpisodeCompletedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub episode_id: String,
     pub episode_record_id: String,
     pub episode_index: i64,
@@ -94,7 +94,7 @@ pub struct EpisodeCompletedEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActionReceivedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub episode_id: String,
     pub episode_record_id: String,
     pub episode_ids: Vec<String>,
@@ -111,7 +111,7 @@ pub struct ActionReceivedEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StepCompletedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub episode_id: String,
     pub episode_record_id: String,
     pub step: i64,
@@ -122,7 +122,7 @@ pub struct StepCompletedEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObservationEmittedEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub episode_id: String,
     pub episode_record_id: String,
     pub episode_ids: Vec<String>,
@@ -148,6 +148,6 @@ pub struct ObservationEmittedEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetrySnapshotEvent {
     pub session_id: String,
-    pub route: RuntimeRouteContext,
+    pub route: RuntimeEnvContext,
     pub snapshot: crate::telemetry::Snapshot,
 }

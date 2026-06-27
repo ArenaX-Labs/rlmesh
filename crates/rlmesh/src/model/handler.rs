@@ -2,40 +2,40 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::types::{ModelEpisodeEnd, ModelLaneReset, ModelObservation};
+use super::types::ModelObservation;
 use crate::{Result, spaces};
 
-/// Resolves per-route state (e.g. an env→model adapter) when a route is
-/// configured.
+/// Resolves per-env adapter state (e.g. an env→model adapter) when an adapter is
+/// resolved.
 ///
 /// Obtained once from [`ModelHandler::route_setup`] when serving begins and
-/// shared (`Arc`) across every route, so the server can run it at
-/// `ConfigureRoute` **without** taking the predict-serialization lock:
-/// configuring one route never blocks on an in-flight `predict` on another.
-/// Implementations must therefore synchronize their own state. Resolution
-/// happens before any `predict` on the route, and per-route ordering guarantees
-/// a route is fully configured before that route's first predict — so a route is
-/// never reconfigured while its own predict is in flight.
+/// shared (`Arc`) across every env, so the server can run it at `ResolveAdapter`
+/// **without** taking the predict-serialization lock: resolving one env's adapter
+/// never blocks on an in-flight `predict` on another. Implementations must
+/// therefore synchronize their own state. Resolution happens before any `predict`
+/// on the env, and per-env ordering guarantees an adapter is fully resolved
+/// before that env's first predict — so an adapter is never re-resolved while its
+/// own predict is in flight.
 #[async_trait]
 pub trait ModelRouteSetup: Send + Sync {
-    /// Resolve and cache state for `route_key` from its `env_contract`. Returning
-    /// an error fails route configuration, so the client never predicts against
-    /// unresolved route state.
+    /// Resolve and cache the adapter for `env_id` from its `env_contract`.
+    /// Returning an error fails adapter resolution, so the client never predicts
+    /// against an unresolved adapter. Idempotent upsert: a later call updates it.
     ///
     /// `action_horizon` is the runtime-chosen replay horizon pinned on
-    /// `ConfigureRoute` (1 = no chunking). The setup caches it so predict knows how
+    /// `ResolveAdapter` (1 = no chunking). The setup caches it so predict knows how
     /// many actions to emit per chunk; the runtime owns the replay.
-    async fn configure_route(
+    async fn resolve_adapter(
         &self,
-        route_key: &str,
+        env_id: &str,
         env_contract: &spaces::EnvContract,
         action_horizon: u32,
     ) -> Result<()>;
 
-    /// Tear down state cached for `route_key` at `CloseRoute`, so a long-lived
-    /// server does not retain per-route state for every session it ever served.
-    /// Defaults to a no-op.
-    async fn close_route(&self, _route_key: &str) -> Result<()> {
+    /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a
+    /// long-lived server does not retain per-env state for every session it ever
+    /// served. Defaults to a no-op.
+    async fn release_adapter(&self, _env_id: &str) -> Result<()> {
         Ok(())
     }
 }
@@ -68,8 +68,8 @@ pub trait ModelHandler: Send {
     /// Read the observation with
     /// [`decoded_lanes`](ModelObservation::decoded_lanes) (or
     /// [`decoded`](ModelObservation::decoded) for a single-env route) and return
-    /// **one typed action per lane** — `Vec` length `== observation.num_envs`
-    /// (`== PredictContext.slots.len()`); a single-env route returns a 1-element
+    /// **one typed action per row** — `Vec` length `== observation.num_envs`
+    /// (`== route.episode_ids.len()`); a single-env route returns a 1-element
     /// `Vec`. The codec turns the typed values into wire leaves; policy code
     /// never touches bytes.
     ///
@@ -148,51 +148,17 @@ pub trait ModelHandler: Send {
         None
     }
 
-    /// Called when an episode begins, before its first `predict`.
+    /// Drop per-episode policy/adapter state for the given episodes (the explicit
+    /// `ResetAdapter` op). The runtime fires this when episodes end, keyed by
+    /// `env_id`; with `episode_ids` empty it means "evict ALL of this env's
+    /// episode state". The adapter itself stays resolved (see
+    /// [`ModelRouteSetup::release_adapter`] for full teardown).
     ///
-    /// Defaults to a no-op. For a single (non-vectorized) env, use it to reset
-    /// per-episode policy state.
-    ///
-    /// # Vectorized envs: fires on *any* lane's reset, not just whole-vector
-    ///
-    /// Under a vectorized env this hook fires whenever **any** lane's episode
-    /// rolls — at the initial reset and at every NEXT_STEP autoreset boundary —
-    /// receiving the whole-batch observation, **not** only when all lanes reset
-    /// together. A handler that clears *all* lanes' policy state here will wipe
-    /// the still-running lanes each time a single lane rolls, corrupting their
-    /// in-flight episodes.
-    ///
-    /// So a stateful vectorized model must reset per-lane state in
-    /// [`on_lane_reset`](ModelHandler::on_lane_reset) (which carries the
-    /// `env_index` of the lane that rolled) and treat `on_reset` only as a coarse
-    /// "something reset" signal. Restricting `on_reset` to fire only on a true
-    /// whole-vector reset is a deliberate semantic change deferred to a future
-    /// release; until then, prefer `on_lane_reset` for per-lane affinity.
-    async fn on_reset(&mut self, _observation: &ModelObservation) -> Result<()> {
-        Ok(())
-    }
-
-    /// Records the route key whose lifecycle is about to be processed, before
-    /// any per-lane [`on_lane_reset`](ModelHandler::on_lane_reset) for it. The
-    /// per-lane event carries only an `env_index`, so a handler that needs the
-    /// route (e.g. to resolve a per-route adapter) captures it here. Defaults to
-    /// a no-op.
-    async fn enter_route(&mut self, _route_key: &str) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called when a single lane's episode rolls (a per-lane reset edge),
-    /// carrying the `env_index`. Fires once per lane whose episode id changed —
-    /// at the initial reset and at each NEXT_STEP autoreset boundary. Defaults
-    /// to a no-op; a stateful per-lane adapter resets exactly that lane's state.
-    /// The route is the one most recently named by
-    /// [`enter_route`](ModelHandler::enter_route).
-    async fn on_lane_reset(&mut self, _event: ModelLaneReset) -> Result<()> {
-        Ok(())
-    }
-
-    /// Called when an episode ends. Defaults to a no-op.
-    async fn on_episode_end(&mut self, _event: ModelEpisodeEnd) -> Result<()> {
+    /// Defaults to a no-op. Because episode ids never repeat (UUIDv7), a missed
+    /// `reset_adapter` only leaks memory — it can never alias a new episode — so
+    /// a stateful policy lazy-seeds per-episode state on first `predict` and
+    /// evicts it here, with no position-diffing.
+    async fn reset_adapter(&mut self, _env_id: &str, _episode_ids: Vec<String>) -> Result<()> {
         Ok(())
     }
 

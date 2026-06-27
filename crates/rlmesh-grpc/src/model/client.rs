@@ -2,9 +2,10 @@ use rlmesh_proto::{
     capabilities,
     core::v1::{ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse},
     model::v1::{
-        CloseParticipantRequest, CloseRouteRequest, ConfigureRouteRequest, GroupedPredictRequest,
-        GroupedPredictResponse, JoinRequest, JoinResponse, PredictRequest, PredictResponse,
-        ShutdownRequest, join_request, join_response, model_service_client::ModelServiceClient,
+        CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse, JoinRequest,
+        JoinResponse, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
+        ResolveAdapterRequest, ShutdownRequest, join_request, join_response,
+        model_service_client::ModelServiceClient,
     },
 };
 use std::collections::HashMap;
@@ -170,30 +171,30 @@ impl ModelClient {
         Ok(())
     }
 
-    pub async fn configure_route(
+    pub async fn resolve_adapter(
         &mut self,
-        request: ConfigureRouteRequest,
+        request: ResolveAdapterRequest,
     ) -> Result<(), GrpcError> {
         self.ensure_ready()?;
         validate_route(
             request
                 .context
                 .as_ref()
-                .ok_or_else(|| decode_error("configure_route missing route context"))?,
+                .ok_or_else(|| decode_error("resolve_adapter missing adapter context"))?,
         )?;
         let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
         let response = self
             .send_on_stream(JoinRequest {
-                kind: Some(join_request::Kind::ConfigureRoute(request)),
+                kind: Some(join_request::Kind::ResolveAdapter(request)),
                 request_id,
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
         match response.kind {
-            Some(join_response::Kind::ConfigureRoute(_)) => Ok(()),
+            Some(join_response::Kind::ResolveAdapter(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
-                expected: "ConfigureRouteResponse".to_string(),
+                expected: "ResolveAdapterResponse".to_string(),
                 actual: format!("{:?}", response.kind),
             }
             .into()),
@@ -202,12 +203,7 @@ impl ModelClient {
 
     pub async fn predict(&mut self, request: PredictRequest) -> Result<PredictResponse, GrpcError> {
         self.ensure_ready()?;
-        validate_predict_route(
-            request
-                .context
-                .as_ref()
-                .ok_or_else(|| decode_error("predict missing route context"))?,
-        )?;
+        validate_predict_route(&request)?;
         let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
         let response = self
             .send_on_stream(JoinRequest {
@@ -228,27 +224,57 @@ impl ModelClient {
         }
     }
 
-    pub async fn close_route(&mut self, request: CloseRouteRequest) -> Result<(), GrpcError> {
+    pub async fn reset_adapter(&mut self, request: ResetAdapterRequest) -> Result<(), GrpcError> {
         self.ensure_ready()?;
         validate_route(
             request
                 .context
                 .as_ref()
-                .ok_or_else(|| decode_error("close_route missing route context"))?,
+                .ok_or_else(|| decode_error("reset_adapter missing adapter context"))?,
         )?;
         let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
         let response = self
             .send_on_stream(JoinRequest {
-                kind: Some(join_request::Kind::CloseRoute(request)),
+                kind: Some(join_request::Kind::ResetAdapter(request)),
                 request_id,
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
         match response.kind {
-            Some(join_response::Kind::CloseRoute(_)) => Ok(()),
+            Some(join_response::Kind::ResetAdapter(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
-                expected: "CloseRouteResponse".to_string(),
+                expected: "ResetAdapterResponse".to_string(),
+                actual: format!("{:?}", response.kind),
+            }
+            .into()),
+        }
+    }
+
+    pub async fn release_adapter(
+        &mut self,
+        request: ReleaseAdapterRequest,
+    ) -> Result<(), GrpcError> {
+        self.ensure_ready()?;
+        validate_route(
+            request
+                .context
+                .as_ref()
+                .ok_or_else(|| decode_error("release_adapter missing adapter context"))?,
+        )?;
+        let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
+        let response = self
+            .send_on_stream(JoinRequest {
+                kind: Some(join_request::Kind::ReleaseAdapter(request)),
+                request_id,
+            })
+            .await?;
+        self.last_endpoint_total_ns = response.endpoint_total_ns;
+        match response.kind {
+            Some(join_response::Kind::ReleaseAdapter(_)) => Ok(()),
+            Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
+            _ => Err(ProtocolError::UnexpectedMessage {
+                expected: "ReleaseAdapterResponse".to_string(),
                 actual: format!("{:?}", response.kind),
             }
             .into()),
@@ -345,12 +371,7 @@ impl ModelClient {
         request: PredictRequest,
     ) -> Result<PredictResponse, GrpcError> {
         self.ensure_ready()?;
-        validate_predict_route(
-            request
-                .context
-                .as_ref()
-                .ok_or_else(|| decode_error("predict missing route context"))?,
-        )?;
+        validate_predict_route(&request)?;
         let request_id = route_request_id(request.context.as_ref(), || self.next_request_id());
         let response = self
             .send_on_stream(JoinRequest {
@@ -390,12 +411,7 @@ impl ModelClient {
             ));
         }
         for group in &request.groups {
-            validate_predict_route(
-                group
-                    .context
-                    .as_ref()
-                    .ok_or_else(|| decode_error("grouped predict group missing route context"))?,
-            )?;
+            validate_predict_route(group)?;
         }
         // A grouped request spans multiple routes, so it gets its OWN envelope
         // request_id (never a group's): the demux is one response per request_id.
@@ -524,7 +540,7 @@ impl ModelClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlmesh_proto::model::v1::{PredictContext, PredictResponse, PredictSlot};
+    use rlmesh_proto::model::v1::{AdapterContext, PredictResponse};
     use tonic::transport::Endpoint;
 
     /// Build a `Ready` client wired to an in-memory request channel, plus a
@@ -630,21 +646,16 @@ mod tests {
         assert_eq!(second.await.unwrap().unwrap().request_id, "req-2");
     }
 
-    /// A routed, single-slot predict usable as a grouped-predict member.
+    /// A routed, single-row predict usable as a grouped-predict member.
     fn valid_member(request_id: &str, episode: &str) -> PredictRequest {
         PredictRequest {
-            context: Some(PredictContext {
+            context: Some(AdapterContext {
                 session_id: "s".to_string(),
-                route_id: "r".to_string(),
+                env_id: "r".to_string(),
                 request_id: request_id.to_string(),
-                slots: vec![PredictSlot {
-                    episode_id: episode.to_string(),
-                    env_index: 0,
-                    step: 0,
-                    reset: true,
-                }],
             }),
             observation: None,
+            episode_ids: vec![episode.to_string()],
         }
     }
 
