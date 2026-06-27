@@ -41,11 +41,9 @@ pub fn transform_obs(
                 }
             }
             ObsPlan::Custom(custom_plan) => {
-                if let Some(value) = customs.apply(
-                    &custom_plan.placement.to_string(),
-                    &custom_plan.transform,
-                    raw_obs,
-                )? {
+                if let Some(value) =
+                    customs.apply(&custom_plan.placement_key, &custom_plan.transform, raw_obs)?
+                {
                     builder.place(&custom_plan.placement, value)?;
                 }
             }

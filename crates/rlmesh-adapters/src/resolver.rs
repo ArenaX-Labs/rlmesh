@@ -134,10 +134,7 @@ pub fn resolve(
     }
 
     let action_plan = action::plan_action(&model_spec.output, &env_spec.action)?;
-    let resolved = ResolvedAdapter {
-        obs_plans,
-        action_plan,
-    };
+    let resolved = ResolvedAdapter::new(obs_plans, action_plan);
     // Frame-stacking and action-chunk replay are mutually exclusive. During chunk
     // replay the engine skips observation assembly (it is replaying a buffered
     // action), so a stacked input would only ever observe decision-point frames
@@ -146,16 +143,17 @@ pub fn resolve(
     // served engine and the run(env) loop resolve through, rather than silently
     // feeding temporally-aliased frames.
     if resolved.action_plan.execute_horizon > 1
-        && let Some((key, depth)) = resolved.stacks().into_iter().next()
+        && let Some(stacked) = resolved.stacked_placements().first()
     {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "frame-stacking (input {} stack={depth}) cannot be combined with action-chunk \
+                "frame-stacking (input {} stack={}) cannot be combined with action-chunk \
                  replay (execute_horizon={}): during replay the engine skips observation \
                  assembly, so the frame window would hold only decision-point frames. Use \
                  stack=1 or execute_horizon=1.",
-                quoted(&key),
+                quoted(&stacked.key),
+                stacked.depth,
                 resolved.action_plan.execute_horizon,
             ),
         ));

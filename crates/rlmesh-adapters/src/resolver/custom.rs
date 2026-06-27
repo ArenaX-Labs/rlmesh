@@ -23,8 +23,10 @@ pub(super) fn plan_custom(
             ),
         ));
     }
+    let placement_key = placement.to_string();
     Ok(CustomPlan {
         placement,
+        placement_key,
         transform: model_input.transform.clone(),
     })
 }

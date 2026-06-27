@@ -40,14 +40,58 @@ pub enum ObsPlan {
     Custom(CustomPlan),
 }
 
+/// One frame-stacked placement, precomputed once at resolve time.
+///
+/// The single source of truth for stacking: the assemble path walks these to
+/// stack in place (using `placement` for the payload-tree slot and `key` for
+/// the per-episode window), and presence (`any_stacking`) is a cheap check on
+/// this list. `key` is `placement.to_string()`, precomputed so the per-step
+/// path never re-renders the canonical name.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StackedPlacement {
+    pub placement: NodePath,
+    pub key: String,
+    pub depth: u32,
+}
+
 /// A resolved env-to-model adapter: build instances with [`resolve`](crate::resolver::resolve).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedAdapter {
     pub obs_plans: Vec<ObsPlan>,
     pub action_plan: ActionPlan,
+    /// Frame-stacked placements (depth `> 1`), precomputed once from
+    /// `obs_plans` so both the stacking presence check and the per-step assemble
+    /// path read one canonical list — see [`StackedPlacement`]. Private and only
+    /// ever built by [`ResolvedAdapter::new`] (the resolver), which derives it
+    /// from `obs_plans` in the same step; do not mutate `obs_plans` afterward or
+    /// this summary goes stale.
+    stacked: Vec<StackedPlacement>,
 }
 
 impl ResolvedAdapter {
+    /// Assemble a resolved adapter, precomputing the frame-stacked placements
+    /// ([`stacked`](Self::stacked_placements)) once from `obs_plans`. The single
+    /// entry point so the precomputed stacking list can never drift from the
+    /// plans it summarizes.
+    pub(crate) fn new(obs_plans: Vec<ObsPlan>, action_plan: ActionPlan) -> Self {
+        let stacked = obs_plans
+            .iter()
+            .filter_map(|plan| match plan {
+                ObsPlan::Image(image) if image.stack > 1 => Some(StackedPlacement {
+                    placement: image.placement.clone(),
+                    key: image.placement.to_string(),
+                    depth: image.stack,
+                }),
+                _ => None,
+            })
+            .collect();
+        Self {
+            obs_plans,
+            action_plan,
+            stacked,
+        }
+    }
+
     /// Human-readable summary of the resolved transformations.
     ///
     /// A *reference snapshot*: the conformance vectors pin the exact text so
@@ -110,16 +154,26 @@ impl ResolvedAdapter {
     /// placements. This is the single source of truth for stacking depth
     /// (replacing the old Python `stacks` dict). The key is the placement's
     /// [`Display`](std::fmt::Display) form so a nested/positioned stacked input
-    /// has a stable canonical name.
+    /// has a stable canonical name. Built from the precomputed
+    /// [`stacked_placements`](Self::stacked_placements).
     pub fn stacks(&self) -> BTreeMap<String, u32> {
-        let mut stacks = BTreeMap::new();
-        for plan in &self.obs_plans {
-            if let ObsPlan::Image(image) = plan
-                && image.stack > 1
-            {
-                stacks.insert(image.placement.to_string(), image.stack);
-            }
-        }
-        stacks
+        self.stacked
+            .iter()
+            .map(|entry| (entry.key.clone(), entry.depth))
+            .collect()
+    }
+
+    /// The precomputed frame-stacked placements: the single iterator the assemble
+    /// path consumes so it never re-derives the `stack > 1` filter (or re-renders
+    /// each placement string) on the per-step hot path.
+    pub(crate) fn stacked_placements(&self) -> &[StackedPlacement] {
+        &self.stacked
+    }
+
+    /// Whether any model input frame-stacks (depth `> 1`). A cheap presence check
+    /// for callers that only need "does this adapter stack?" — they avoid
+    /// materializing the [`stacks`](Self::stacks) map.
+    pub fn any_stacking(&self) -> bool {
+        !self.stacked.is_empty()
     }
 }

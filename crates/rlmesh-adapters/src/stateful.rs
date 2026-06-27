@@ -25,7 +25,7 @@ use rlmesh_spaces::{SpaceKind, SpaceSpec, SpaceValue, Tensor};
 use crate::apply::value::{cast, to_f64_vec};
 use crate::apply::{CustomTransform, Value};
 use crate::error::ApplyError;
-use crate::plans::{ObsPlan, ResolvedAdapter};
+use crate::plans::ResolvedAdapter;
 
 /// Upper bound on frame-stack depth (mirrors the spec's `MAX_STACK`). A raw
 /// native caller must not buffer an unbounded window and exhaust memory; the
@@ -318,24 +318,19 @@ pub fn assemble_obs(
 ) -> Result<Value, ApplyError> {
     let mut payload = adapter.transform_obs(raw_obs, customs)?;
     encodings.repack_obs(&mut payload)?;
-    // Frame-stacking runs as a post-scatter pass: walk the assembled tree to each
-    // stacked placement and stack in place, keyed (in the per-episode window) by
-    // the placement's canonical string.
-    let stacked: Vec<(&crate::path::NodePath, u32)> = adapter
-        .obs_plans
-        .iter()
-        .filter_map(|plan| match plan {
-            ObsPlan::Image(image) if image.stack > 1 => Some((&image.placement, image.stack)),
-            _ => None,
-        })
-        .collect();
+    // Frame-stacking runs as a post-scatter pass over the single precomputed
+    // stacking list ([`ResolvedAdapter::stacked_placements`]): walk the assembled
+    // tree to each stacked placement and stack in place, keyed (in the
+    // per-episode window) by the placement's precomputed canonical string.
+    let stacked = adapter.stacked_placements();
     if !stacked.is_empty() {
         let windows = buffers.episode(episode_id);
-        for (placement, depth) in stacked {
-            let slot = crate::apply::lookup::resolve_source_mut(&mut payload, placement)?;
+        for entry in stacked {
+            let slot = crate::apply::lookup::resolve_source_mut(&mut payload, &entry.placement)?;
             if !matches!(slot, Value::Tensor(_)) {
                 return Err(ApplyError::new(format!(
-                    "frame-stacked input '{placement}' must be a tensor"
+                    "frame-stacked input '{}' must be a tensor",
+                    entry.key
                 )));
             }
             // Move the frame out of the payload slot (overwritten with the
@@ -344,8 +339,8 @@ pub fn assemble_obs(
             let Value::Tensor(frame) = std::mem::replace(slot, Value::Number(0.0)) else {
                 unreachable!("frame confirmed a tensor above")
             };
-            let window = windows.entry(placement.to_string()).or_default();
-            let stacked_tensor = stack_frame(window, frame, depth)?;
+            let window = windows.entry(entry.key.clone()).or_default();
+            let stacked_tensor = stack_frame(window, frame, entry.depth)?;
             *slot = Value::Tensor(stacked_tensor);
         }
     }
@@ -547,6 +542,18 @@ pub fn space_value_to_obs_map(
                 if referenced.contains(key.as_str())
                     && let Some(child) = values.get(key)
                 {
+                    // A referenced Dict-space top-level key must not equal the
+                    // reserved whole-observation envelope key, or it would
+                    // silently collide with the root/Tuple-rooted source's
+                    // envelope entry. Only referenced keys are checked: an unused
+                    // env key never aborts a step (it is dropped, not inserted),
+                    // matching `referenced_obs_keys`.
+                    if key == OBS_ROOT_KEY {
+                        return Err(ApplyError::new(format!(
+                            "env observation has a top-level key '{OBS_ROOT_KEY}', which collides \
+                             with the reserved whole-observation envelope key; rename the env key"
+                        )));
+                    }
                     out.insert(key.clone(), space_value_to_value(child, child_space)?);
                 }
             }
@@ -812,8 +819,8 @@ mod tests {
         // A frame-stacking (depth-2) single-image adapter that passes the image
         // through unchanged (no resize/flip/normalize), so the stacked bytes are
         // exactly the input frames.
-        let adapter = ResolvedAdapter {
-            obs_plans: vec![ObsPlan::Image(ImagePlan {
+        let adapter = ResolvedAdapter::new(
+            vec![ObsPlan::Image(ImagePlan {
                 placement: crate::path::NodePath::root().push_key("cam"),
                 source: crate::path::NodePath::root().push_key("cam"),
                 src_layout: ImageLayout::Hwc,
@@ -830,13 +837,13 @@ mod tests {
                 zero_fill: None,
                 absent_fill: 0,
             })],
-            action_plan: ActionPlan {
+            ActionPlan {
                 segments: vec![],
                 clip: None,
                 in_dim: 0,
                 execute_horizon: 1,
             },
-        };
+        );
         // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.
         let obs = |tag: u8| -> BTreeMap<String, Value> {
             let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8).unwrap();
