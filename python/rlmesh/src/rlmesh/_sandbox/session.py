@@ -15,7 +15,12 @@ from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from ._sources import resolve_source_kind
 
-SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
+#: Default seconds a sandbox env client waits for its container to become
+#: reachable. The server only binds its port after the env factory's ``make()``
+#: runs, so a heavy env (large sim/asset load -- e.g. a LIBERO task suite takes
+#: ~12s) needs headroom; matches ``SandboxModel``'s 30s default. Overridable per
+#: construction via ``SandboxEnv(..., connect_timeout_seconds=...)``.
+SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 
 #: Port an rlmesh-serving container binds inside the container (the templated
 #: entrypoint default, ``RLMESH_ADDRESS=0.0.0.0:50051``).
