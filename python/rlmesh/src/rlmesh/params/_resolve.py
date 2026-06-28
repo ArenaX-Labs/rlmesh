@@ -19,7 +19,7 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
-from ._spec import Param, ParamSpec
+from ._spec import Param, ParamSpec, Vector
 
 #: Metadata key the resolved binding publishes under (namespaced like the
 #: adapter tags ``rlmesh.adapters.v1.env_tags``). Python-only: there is no Rust
@@ -28,6 +28,9 @@ PARAM_METADATA_KEY = "rlmesh.params.v1.binding"
 
 # JSON value types a binding/default may carry verbatim.
 _JSON_SCALAR = (str, int, float, bool, type(None))
+
+# Tolerance on the L2 norm for a ``Vector(unit=True)`` value.
+_UNIT_TOL = 1e-3
 
 
 class ParamError(ValueError):
@@ -225,8 +228,10 @@ def _signature_facts(
 _TYPE_NAMES: dict[type, str] = {int: "int", float: "float", str: "str", bool: "bool"}
 
 
-def _type_name(declared: type | str) -> str:
+def _type_name(declared: type | str | Vector) -> str:
     """Normalize a ``Param.type`` to its canonical string name."""
+    if isinstance(declared, Vector):
+        return f"vec{declared.dim}"
     if isinstance(declared, str):
         return declared
     return _TYPE_NAMES.get(declared, getattr(declared, "__name__", "str"))
@@ -234,13 +239,48 @@ def _type_name(declared: type | str) -> str:
 
 def _coerce(param: Param, value: object) -> object:
     """Validate and lightly coerce ``value`` against ``param``."""
-    kind = _type_name(param.type)
-    coerced = _coerce_scalar(param.name, kind, value)
+    if isinstance(param.type, Vector):
+        coerced = _coerce_vector(param.name, param.type, value)
+    else:
+        coerced = _coerce_scalar(param.name, _type_name(param.type), value)
     if param.choices is not None and not _in_choices(coerced, param.choices):
         raise ParamError(
             f"{param.name}: {coerced!r} not in choices {list(param.choices)}"
         )
     return coerced
+
+
+def _coerce_vector(name: str, spec: Vector, value: object) -> tuple[float, ...]:
+    """Validate a fixed-length float vector; canonicalize list/tuple -> tuple.
+
+    The binding path matters: a vector bound via JSON (env var, recorded
+    metadata) arrives as a ``list``, so accept both and always return a tuple.
+    """
+    if not isinstance(value, (list, tuple)):
+        raise ParamError(
+            f"{name}: expected a {spec.dim}-vector, got {_typename(value)}"
+        )
+    elements = cast("Sequence[object]", value)
+    if len(elements) != spec.dim:
+        raise ParamError(
+            f"{name}: expected a {spec.dim}-vector, got length {len(elements)}"
+        )
+    out: list[float] = []
+    for element in elements:
+        # ``bool`` is an ``int`` subclass; reject it so ``True`` is not silently 1.
+        if isinstance(element, bool) or not isinstance(element, (int, float)):
+            raise ParamError(f"{name}: vector element is not a number: {element!r}")
+        result = float(element)
+        if not math.isfinite(result):
+            raise ParamError(f"{name}: vector element is not finite: {element!r}")
+        out.append(result)
+    if spec.unit:
+        norm = math.sqrt(sum(x * x for x in out))
+        if abs(norm - 1.0) > _UNIT_TOL:
+            raise ParamError(
+                f"{name}: expected a unit-norm vector, got norm {norm:.6f}"
+            )
+    return tuple(out)
 
 
 def _coerce_scalar(name: str, kind: str, value: object) -> object:
@@ -322,6 +362,10 @@ def _param_to_dict(param: Param) -> dict[str, object]:
         "type": _type_name(param.type),
         "required": param.required,
     }
+    if isinstance(param.type, Vector):
+        out["dim"] = param.type.dim
+        if param.type.unit:
+            out["unit"] = True
     if not param.required:
         out["default"] = _json_safe(param.default)
     if param.choices is not None:

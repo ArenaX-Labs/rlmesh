@@ -16,7 +16,7 @@ from ._resolve import (
     ParamError,
     UnknownParamError,
 )
-from ._spec import Param, ParamSpec
+from ._spec import Param, ParamSpec, Vector
 
 __all__ = [
     "PARAM_METADATA_KEY",
@@ -25,4 +25,5 @@ __all__ = [
     "ParamError",
     "ParamSpec",
     "UnknownParamError",
+    "Vector",
 ]

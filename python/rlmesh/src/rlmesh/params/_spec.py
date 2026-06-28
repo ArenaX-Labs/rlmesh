@@ -23,6 +23,26 @@ ExtraPolicy = Literal["forbid", "passthrough"]
 
 
 @dataclass(frozen=True)
+class Vector:
+    """A fixed-length float-vector ``Param`` type, passed as ``Param(type=Vector(3))``.
+
+    The *value* stays a plain tuple of ``dim`` finite floats; a JSON-bound
+    ``list`` is canonicalized to a tuple. ``Vector`` is only a schema descriptor
+    sitting in :attr:`Param.type` next to ``"float"``/``"enum"`` -- it is not a
+    container the runtime carries. ``unit`` requires unit L2 norm (the
+    quaternion/direction case). Sweeps come from ``choices`` (a list of whole
+    vectors): there is no continuous vector domain.
+    """
+
+    dim: int
+    unit: bool = False
+
+    def __post_init__(self) -> None:
+        if self.dim < 1:
+            raise ValueError(f"Vector dim must be >= 1, got {self.dim}")
+
+
+@dataclass(frozen=True)
 class Param:
     """One declared construction parameter -- validated, presentable, sweepable.
 
@@ -36,7 +56,8 @@ class Param:
     Args:
         name: The keyword name, matching the ``make``/``load`` parameter.
         type: A Python type (``int``/``float``/``str``/``bool``) or its string
-            name, or ``"enum"`` (domain defined entirely by ``choices``).
+            name, ``"enum"`` (domain defined entirely by ``choices``), or a
+            :class:`Vector` (a fixed-length float vector).
         default: The default value; omit for a required param.
         choices: Allowed values -- the enumeration/sweep axis; a supplied value
             outside them is rejected.
@@ -45,7 +66,7 @@ class Param:
     """
 
     name: str
-    type: type | str = "str"
+    type: type | str | Vector = "str"
     default: Any = _UNSET
     choices: tuple[Any, ...] | None = None
     description: str = ""
@@ -87,4 +108,4 @@ class ParamSpec:
         object.__setattr__(self, "extra", extra)
 
 
-__all__ = ["Param", "ParamSpec"]
+__all__ = ["Param", "ParamSpec", "Vector"]

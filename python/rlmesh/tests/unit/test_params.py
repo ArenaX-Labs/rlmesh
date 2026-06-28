@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 import rlmesh
-from rlmesh import Param, ParamSpec
+from rlmesh import Param, ParamSpec, Vector
 from rlmesh._bootstrap.loaders import construct_authored_env, load_env_from_spec
 from rlmesh.params import (
     PARAM_METADATA_KEY,
@@ -270,3 +270,110 @@ def test_construct_authored_env_vectorizes_a_factory() -> None:
     vec = construct_authored_env(_GymFactory, num_envs=3)
     assert getattr(vec, "num_envs", None) == 3
     assert hasattr(vec, "single_observation_space")
+
+
+# --- Vector type -------------------------------------------------------------
+
+
+def _vec_target(
+    *,
+    cam_pos: object = (0.0, 0.0, 0.0),
+    cam_quat: object = (1.0, 0.0, 0.0, 0.0),
+) -> None: ...
+
+
+def test_vector_accepts_tuple_and_coerces_ints_to_float() -> None:
+    spec = ParamSpec(Param("cam_pos", type=Vector(3)))
+    coerced = cast(
+        "tuple[float, ...]",
+        resolve(spec, _vec_target, {"cam_pos": (1, 2, 3)})["cam_pos"],
+    )
+    assert coerced == (1.0, 2.0, 3.0)
+    assert all(isinstance(x, float) for x in coerced)  # proves coercion, not just ==
+
+
+def test_vector_canonicalizes_json_list_to_tuple() -> None:
+    # The binding path hands a JSON list; it must arrive as a tuple.
+    spec = ParamSpec(Param("cam_quat", type=Vector(4)))
+    out = resolve(spec, _vec_target, {"cam_quat": [1.0, 0.0, 0.0, 0.0]})
+    assert out["cam_quat"] == (1.0, 0.0, 0.0, 0.0)
+    assert isinstance(out["cam_quat"], tuple)
+
+
+def test_vector_rejects_wrong_length() -> None:
+    spec = ParamSpec(Param("cam_pos", type=Vector(3)))
+    with pytest.raises(ParamError, match="3-vector"):
+        resolve(spec, _vec_target, {"cam_pos": (1.0, 2.0)})
+
+
+def test_vector_rejects_non_sequence() -> None:
+    spec = ParamSpec(Param("cam_pos", type=Vector(3)))
+    with pytest.raises(ParamError, match="3-vector"):
+        resolve(spec, _vec_target, {"cam_pos": 1.0})
+
+
+def test_vector_rejects_non_finite_element() -> None:
+    spec = ParamSpec(Param("cam_pos", type=Vector(3)))
+    with pytest.raises(ParamError, match="not finite"):
+        resolve(spec, _vec_target, {"cam_pos": (1.0, float("nan"), 0.0)})
+
+
+def test_vector_rejects_bool_element() -> None:
+    spec = ParamSpec(Param("cam_pos", type=Vector(3)))
+    with pytest.raises(ParamError, match="not a number"):
+        resolve(spec, _vec_target, {"cam_pos": (True, 0.0, 0.0)})
+
+
+def test_vector_unit_accepts_unit_norm_and_rejects_otherwise() -> None:
+    spec = ParamSpec(Param("cam_quat", type=Vector(4, unit=True)))
+    assert resolve(spec, _vec_target, {"cam_quat": (1.0, 0.0, 0.0, 0.0)})[
+        "cam_quat"
+    ] == (
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    with pytest.raises(ParamError, match="unit-norm"):
+        resolve(spec, _vec_target, {"cam_quat": (1.0, 1.0, 0.0, 0.0)})
+
+
+def test_vector_choices_sweep_over_whole_vectors() -> None:
+    presets = ((1.0, 0.0, 0.0, 0.0), (0.0, 1.0, 0.0, 0.0))
+    spec = ParamSpec(Param("cam_quat", type=Vector(4), choices=presets))
+    assert resolve(spec, _vec_target, {"cam_quat": [0.0, 1.0, 0.0, 0.0]})[
+        "cam_quat"
+    ] == (
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+    )
+    with pytest.raises(ParamError, match="not in choices"):
+        resolve(spec, _vec_target, {"cam_quat": (0.0, 0.0, 1.0, 0.0)})
+
+
+def test_vector_validates_declared_default() -> None:
+    # A malformed default (wrong length) must fail before construction.
+    spec = ParamSpec(Param("cam_pos", type=Vector(3), default=(0.0, 0.0)))
+    with pytest.raises(ParamError, match="3-vector"):
+        resolve(spec, _vec_target, {})
+
+
+def test_describe_emits_vector_dim_and_unit() -> None:
+    spec = ParamSpec(
+        Param("cam_quat", type=Vector(4, unit=True), default=(1.0, 0.0, 0.0, 0.0))
+    )
+    assert describe(spec, _vec_target)["param_spec"] == {
+        "params": [
+            {
+                "name": "cam_quat",
+                "type": "vec4",
+                "required": False,
+                "dim": 4,
+                "unit": True,
+                "default": [1.0, 0.0, 0.0, 0.0],
+            }
+        ],
+        "extra": "forbid",
+    }

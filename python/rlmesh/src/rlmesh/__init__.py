@@ -42,7 +42,7 @@ from ._rlmesh import ServeOptions, Tensor
 from ._sandbox import SandboxOptions
 from ._server import EnvServer
 from ._variants import Variant
-from .params import Param, ParamSpec
+from .params import Param, ParamSpec, Vector
 
 try:
     __version__ = package_version("rlmesh")
@@ -78,6 +78,7 @@ __all__ = [
     "Session",
     "Tensor",
     "Variant",
+    "Vector",
     "__version__",
     "adapters",
     "run",
