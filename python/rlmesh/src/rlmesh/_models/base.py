@@ -248,6 +248,12 @@ class ModelBase(Generic[ObsT, ActT]):
     #: (see :mod:`rlmesh.params`). Advisory today: a dashboard reads it via
     #: ``rlmesh.describe``; binding it into ``load`` is gated on the served-load seam.
     params: ClassVar[ParamSpec | None] = None
+    #: Compute device for model inputs (torch/jax only). Set it in :meth:`load`
+    #: alongside moving your weights -- one source of truth -- and rlmesh moves every
+    #: obs tensor leaf onto it before :meth:`predict`, so you never call ``.to(device)``
+    #: yourself. ``None`` (the default) leaves obs as decoded; ignored by the numpy /
+    #: raw-Value model (no device concept).
+    device: object | None = None
 
     def __init__(
         self,
@@ -354,6 +360,24 @@ class ModelBase(Generic[ObsT, ActT]):
         )
         self._trust_entrypoints = trust_entrypoints
         self._install_worker()
+
+    def _to_device(self, value: object) -> object:
+        """Move every framework tensor leaf of an input onto :attr:`device`.
+
+        A no-op when ``device`` is None or this model's framework has no device
+        (numpy / raw Value); non-tensor leaves pass through. Read at predict time so
+        a ``device`` set in :meth:`load` (which runs after the served worker is built)
+        is honored.
+        """
+        return self._bridge.to_device(value, self.device)
+
+    def _require_device_support(self) -> None:
+        """Reject a ``device`` set on a framework with no device (mirrors EnvServer)."""
+        if self.device is not None and not self._bridge.supports_device():
+            raise ValueError(
+                "device=... requires a torch/jax model; this model's framework "
+                "(numpy / raw Value) has no device."
+            )
 
     def load(self, **kwargs: Any) -> None:
         """Load weights into ``self`` (``from_pretrained`` etc.); heavy imports here.
@@ -472,7 +496,9 @@ class ModelBase(Generic[ObsT, ActT]):
             # is the final model input; bridge it into the framework, run the user
             # predict, and bridge the action back. A spec-less route hands the raw
             # observation through the identical path (no adapter).
-            return bridge.encode(raw_predict(cast(ObsT, bridge.decode(observation))))
+            return bridge.encode(
+                raw_predict(cast(ObsT, self._to_device(bridge.decode(observation))))
+            )
 
         # The chunk corner, when the model defines one: identical bridging, but the
         # user returns a chunk (leading axis = chunk) the native engine splits.
@@ -483,7 +509,9 @@ class ModelBase(Generic[ObsT, ActT]):
 
             def _predict_chunk_neutral(observation: Value, horizon: int) -> Value:
                 return bridge.encode(
-                    chunk_fn(cast(ObsT, bridge.decode(observation)), horizon)
+                    chunk_fn(
+                        cast(ObsT, self._to_device(bridge.decode(observation))), horizon
+                    )
                 )
 
             predict_chunk_neutral = _predict_chunk_neutral
@@ -503,7 +531,9 @@ class ModelBase(Generic[ObsT, ActT]):
             def _predict_batch_neutral(observations: list[Value]) -> list[Value]:
                 if not observations:
                     return []
-                fused = bridge.tree_stack([bridge.decode(o) for o in observations])
+                fused = bridge.tree_stack(
+                    [self._to_device(bridge.decode(o)) for o in observations]
+                )
                 actions = batch_fn(fused)
                 parts = bridge.tree_unstack(actions, len(observations))
                 return [bridge.encode(a) for a in parts]
@@ -522,7 +552,9 @@ class ModelBase(Generic[ObsT, ActT]):
             ) -> list[Value]:
                 if not observations:
                     return []
-                fused = bridge.tree_stack([bridge.decode(o) for o in observations])
+                fused = bridge.tree_stack(
+                    [self._to_device(bridge.decode(o)) for o in observations]
+                )
                 chunks = chunk_batch_fn(fused, horizon)
                 # Split the batch axis only; each lane's chunk (horizon) axis stays.
                 parts = bridge.tree_unstack(chunks, len(observations))
@@ -597,11 +629,13 @@ class ModelBase(Generic[ObsT, ActT]):
         """
         from ._eval import Session
 
+        self._require_device_support()
         return Session(
             predict=self._raw_predict,
             predict_chunk=self._raw_predict_chunk,
             spec=self.spec,
             env=env_or_address,
+            device=self.device,
             on_episode_end=self._on_episode_end,
             on_close=self._on_close,
             trust_entrypoints=(
@@ -626,6 +660,7 @@ class ModelBase(Generic[ObsT, ActT]):
         ``resolve_adapter`` handshake delivers, then applies it around predict; a
         spec-less / ``NO_ADAPTER`` model serves its own predict directly.
         """
+        self._require_device_support()
         self._worker.serve(address, token, options)
 
     def run_local(self, env_address: str, *, token: str = "") -> None:

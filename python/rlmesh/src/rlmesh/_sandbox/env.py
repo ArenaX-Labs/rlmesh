@@ -7,12 +7,9 @@ construction and stopped on close.
 
 from __future__ import annotations
 
-import subprocess
-import time
 from typing import TypeVar
 
 from .._client import RemoteEnvBase, RemoteVectorEnvBase
-from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from .session import (
     SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
     SandboxInfo,
@@ -32,83 +29,6 @@ __all__ = [
     "SandboxOptions",
     "SandboxVectorEnvBase",
 ]
-
-# Only these are retried while the container boots (mirrors ``SandboxModel``): a
-# refused/unavailable connection or a connect timeout. The native env client dials
-# once and fails fast against a not-yet-listening port, so the wait-for-ready loop
-# lives in Python, not in the timeout handed to the native client.
-_TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
-
-
-def _container_running(container_id: str) -> bool:
-    """Whether the sandbox container is still running (best effort)."""
-    proc = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # On any inspect failure (gone / daemon error), treat as not running so the
-    # caller fails fast rather than spinning the whole timeout.
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
-
-
-def _container_logs(container_id: str, tail: int = 50) -> str:
-    proc = subprocess.run(
-        ["docker", "logs", "--tail", str(tail), container_id],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return (proc.stdout + proc.stderr).strip()
-
-
-def _attach_sandbox(
-    session: SandboxEnvBase | SandboxVectorEnvBase, connect_timeout_seconds: float
-) -> None:
-    """Attach the client to the started container, retrying while it boots.
-
-    The rlmesh server only binds its port after the env factory's ``make()`` runs in
-    the container, and the native client dials once and fails fast against a
-    not-yet-listening port -- so the wait-for-ready loop lives here (mirroring
-    ``SandboxModel._dial_with_retry``), not in the timeout handed to the native
-    client. Stops the container on any failure so it is never leaked, and surfaces
-    the container's recent logs when it exits or never becomes ready, instead of a
-    bare ``transport error``.
-    """
-    sandbox = session.sandbox
-    deadline = time.monotonic() + connect_timeout_seconds
-    try:
-        while True:
-            try:
-                session._initialize(
-                    sandbox.address, connect_timeout_seconds=connect_timeout_seconds
-                )
-                return
-            except _TRANSIENT_DIAL_ERRORS as exc:  # the container may still be starting
-                short_id = sandbox.container_id[:12]
-                # A dial error against an already-exited container is terminal: fail
-                # fast with its logs rather than retrying for the whole timeout.
-                if not _container_running(sandbox.container_id):
-                    raise RuntimeError(
-                        f"sandbox container {short_id} for {session._source!r} exited "
-                        f"before becoming ready; recent logs:\n"
-                        f"{_container_logs(sandbox.container_id)}"
-                    ) from exc
-                if time.monotonic() >= deadline:
-                    raise RuntimeError(
-                        f"sandbox container {short_id} for {session._source!r} did not "
-                        f"become ready within {connect_timeout_seconds:.0f}s; recent "
-                        f"logs:\n{_container_logs(sandbox.container_id)}"
-                    ) from exc
-                time.sleep(0.1)
-    except BaseException:
-        try:
-            _sandbox_stop_env(container_id=sandbox.container_id)
-        except BaseException:
-            pass
-        session._closed = True
-        raise
 
 
 class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
@@ -156,7 +76,7 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
         )
         # Attach this client to the started container, waiting for it to become
         # ready; stops the container on any failure so it is never leaked.
-        _attach_sandbox(self, connect_timeout_seconds)
+        self._attach(connect_timeout_seconds)
 
     def _detach(self) -> None:
         # Skip the lifecycle mixin's close() override; detach via the remote base.
@@ -206,7 +126,7 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
             vectorization_mode=vectorization_mode,
             binding=params,
         )
-        _attach_sandbox(self, connect_timeout_seconds)
+        self._attach(connect_timeout_seconds)
 
     def _detach(self) -> None:
         # Skip the lifecycle mixin's close() override; detach via the remote base.

@@ -106,13 +106,16 @@ def _predict_step(
     text_placements: tuple[TextPlacement, ...],
     env_bridge: ValueBridge | None,
     model_bridge: ValueBridge | None,
+    device: object | None,
 ) -> Any:
     """Assemble one observation into the model payload and call ``predict``.
 
     The re-plan half of the chunk-replay loop (skipped while a chunk is replaying):
     the declarative obs transform (or the raw obs for a spec-less model),
     instruction injection (one rebuilt copy, never the env's obs), then the model
-    forward.
+    forward. ``device`` (the model's, torch/jax) moves every obs tensor leaf onto it
+    before predict -- the local dual of the served worker -- so the author never
+    calls ``.to(device)``; a no-op for None or a non-device framework.
     """
     if adapter is not None:
         payload = from_value(
@@ -123,6 +126,8 @@ def _predict_step(
         )
     else:
         payload = obs
+    if device is not None and model_bridge is not None:
+        payload = model_bridge.to_device(payload, device)
     if instruction is not None:
         # Inject into every text leaf the spec declares, at its tree placement and
         # in its declared shape: ``[instruction]`` for container='list', a bare
@@ -167,6 +172,7 @@ class Session(Generic[ObsT, ActT]):
         execution_horizon: int = 1,
         model_client: PyModelClient | None = None,
         owner: Any = None,
+        device: object | None = None,
     ) -> None:
         # Two modes: a local model (``predict`` + client-side ``spec`` adapter) or a
         # served model (``model_client`` -- the server applies its adapter). ``owner``
@@ -186,6 +192,10 @@ class Session(Generic[ObsT, ActT]):
         self._token = token
         self._model_client = model_client
         self._owner = owner
+        #: Compute device for the local model's inputs (torch/jax), from the model's
+        #: ``device``; obs tensor leaves are moved onto it before predict. None / a
+        #: served model (the server worker places obs) leaves it unset.
+        self._device = device
         self._connected = False
         self._client: Any = None
         self._owns_client = False
@@ -323,6 +333,7 @@ class Session(Generic[ObsT, ActT]):
                 self._text_placements,
                 self._env_bridge,
                 model_bridge,
+                self._device,
             )
         )
         if self._adapter is not None:

@@ -131,7 +131,7 @@ def _inject(placements: tuple[Any, ...], payload: Any) -> Any:
         captured["payload"] = p
         return 0
 
-    _predict_step(predict, payload, None, "do the task", placements, None, None)
+    _predict_step(predict, payload, None, "do the task", placements, None, None, None)
     return captured["payload"]
 
 

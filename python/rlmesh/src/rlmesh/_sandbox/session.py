@@ -6,14 +6,18 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from os import PathLike, fspath
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
 from ._sources import resolve_source_kind
+
+if TYPE_CHECKING:
+    from .._client._endpoint import Transport
 
 #: Default seconds a sandbox env client waits for its container to become
 #: reachable. The server only binds its port after the env factory's ``make()``
@@ -64,6 +68,36 @@ class _SandboxStartInfo(TypedDict):
     container_id: str
 
 
+# Only these are retried while the container boots (mirrors ``SandboxModel``): a
+# refused/unavailable connection or a connect timeout. The native env client dials
+# once and fails fast against a not-yet-listening port, so the wait-for-ready loop
+# lives in Python, not in the timeout handed to the native client.
+_TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
+
+
+def _container_running(container_id: str) -> bool:
+    """Whether the sandbox container is still running (best effort)."""
+    proc = subprocess.run(
+        ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # On any inspect failure (gone / daemon error), treat as not running so the
+    # caller fails fast rather than spinning the whole timeout.
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _container_logs(container_id: str, tail: int = 50) -> str:
+    proc = subprocess.run(
+        ["docker", "logs", "--tail", str(tail), container_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (proc.stdout + proc.stderr).strip()
+
+
 class SandboxLifecycle:
     """Container-lifecycle mixin for Docker-backed env sessions.
 
@@ -78,9 +112,70 @@ class SandboxLifecycle:
     _closed: bool
     sandbox: SandboxInfo
 
+    if TYPE_CHECKING:
+        # Supplied by the ``Remote*EnvBase`` mixed in (declared here so :meth:`_attach`
+        # can dial through it); no runtime body, so the real one is not shadowed.
+        def _initialize(
+            self,
+            address: str | None = None,
+            *,
+            host: str | None = None,
+            port: int | None = None,
+            path: str | None = None,
+            transport: Transport | None = None,
+            connect_timeout_seconds: float | None,
+        ) -> None: ...
+
     def _detach(self) -> None:
         """Detach the remote client; supplied by the ``Remote*EnvBase`` mixed in."""
         raise NotImplementedError
+
+    def _attach(self, connect_timeout_seconds: float) -> None:
+        """Attach the client to the started container, retrying while it boots.
+
+        The rlmesh server only binds its port after the env factory's ``make()`` runs in
+        the container, and the native client dials once and fails fast against a
+        not-yet-listening port -- so the wait-for-ready loop lives here (mirroring
+        ``SandboxModel._dial_with_retry``), not in the timeout handed to the native
+        client. Stops the container on any failure so it is never leaked, and surfaces
+        the container's recent logs when it exits or never becomes ready, instead of a
+        bare ``transport error``.
+        """
+        sandbox = self.sandbox
+        deadline = time.monotonic() + connect_timeout_seconds
+        try:
+            while True:
+                try:
+                    self._initialize(
+                        sandbox.address, connect_timeout_seconds=connect_timeout_seconds
+                    )
+                    return
+                except (
+                    _TRANSIENT_DIAL_ERRORS
+                ) as exc:  # the container may still be starting
+                    short_id = sandbox.container_id[:12]
+                    # A dial error against an already-exited container is terminal: fail
+                    # fast with its logs rather than retrying for the whole timeout.
+                    if not _container_running(sandbox.container_id):
+                        raise RuntimeError(
+                            f"sandbox container {short_id} for {self._source!r} exited "
+                            f"before becoming ready; recent logs:\n"
+                            f"{_container_logs(sandbox.container_id)}"
+                        ) from exc
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(
+                            f"sandbox container {short_id} for {self._source!r} did not "
+                            f"become ready within {connect_timeout_seconds:.0f}s; recent "
+                            f"logs:\n{_container_logs(sandbox.container_id)}"
+                        ) from exc
+                    time.sleep(0.1)
+        except BaseException:
+            try:
+                _sandbox_stop_env(container_id=sandbox.container_id)
+            except BaseException:
+                pass
+            self._closed = True
+            raise
 
     @property
     def source(self) -> str:

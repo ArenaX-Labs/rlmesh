@@ -450,3 +450,132 @@ def test_split_chunk_treats_text_as_a_single_step_like_the_native_side() -> None
     assert split_chunk("go") == ["go"]
     assert split_chunk(b"go") == [b"go"]
     assert split_chunk(bytearray(b"go")) == [bytearray(b"go")]
+
+
+# --- model-input device placement ------------------------------------------
+# rlmesh moves every obs tensor leaf onto the model's `device` before predict,
+# so authors delete `.to(self.device)`. The dual of the env-side action
+# placement (test_env_framework.py); real-GPU round-trips are the integration
+# suite's, these are fast wiring checks.
+
+
+def test_to_device_places_torch_obs_leaves_and_passes_non_tensors() -> None:
+    torch = pytest.importorskip("torch")
+    import rlmesh.torch
+
+    class M(rlmesh.torch.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    m = M()
+    m.device = "cpu"
+    placed = cast("dict[str, Any]", m._to_device({"img": torch.zeros(2), "n": 5}))
+    assert placed["img"].device.type == "cpu"
+    assert placed["n"] == 5  # non-tensor leaf passes through unchanged
+
+
+def test_to_device_reads_device_dynamically(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The served worker is built (in __init__) BEFORE load() runs on the served
+    # path, so the corners must read `device` at predict time, not snapshot it.
+    # Mirror that: set `device` AFTER construction and confirm it is honored.
+    pytest.importorskip("torch")
+    import rlmesh.torch
+
+    class M(rlmesh.torch.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    m = M()
+    seen: list[object] = []
+    monkeypatch.setattr(
+        type(m)._bridge, "to_device", lambda value, device: seen.append(device) or value
+    )
+    m.device = "cuda:7"  # set late, as load() would
+    m._to_device({"x": 1})
+    assert seen == ["cuda:7"]  # read the post-construction value, not a snapshot
+
+
+def test_device_is_noop_and_guard_rejects_for_numpy_model() -> None:
+    import numpy as np
+    import rlmesh
+    import rlmesh.numpy
+
+    class M(rlmesh.numpy.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    m = M()
+    m.device = "cpu"
+    # numpy has no device: placement is a silent no-op (same array back)...
+    arr = np.zeros(3)
+    assert cast("dict[str, Any]", m._to_device({"x": arr}))["x"] is arr
+    # ...but the guard rejects the meaningless device at a drive entry point.
+    with pytest.raises(ValueError, match="device"):
+        m._require_device_support()
+
+
+def test_device_guard_allows_a_torch_model() -> None:
+    pytest.importorskip("torch")
+    import rlmesh.torch
+
+    class M(rlmesh.torch.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict(self, observation: Any) -> Any:
+            return observation
+
+    m = M()
+    m.device = "cpu"
+    m._require_device_support()  # does not raise
+
+
+def test_local_session_threads_device_to_predict_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Session(device=) -> _predict_step -> model_bridge.to_device(payload, device):
+    # prove the obs the local predict sees was placed on the model's device.
+    from types import SimpleNamespace
+
+    import rlmesh._models._eval as eval_mod
+    from rlmesh._value_conversion import IdentityBridge
+
+    class RecordingBridge(IdentityBridge):
+        name = "rec"
+
+        def ensure_available(self) -> None:
+            return None
+
+        def to_device(self, value: object, device: object) -> object:
+            return {"placed_on": device}
+
+    seen: dict[str, object] = {}
+
+    class Client:
+        _bridge = RecordingBridge()
+        env_contract = SimpleNamespace(num_envs=1, metadata={})
+
+        def reset(self) -> tuple[object, dict[str, object]]:
+            return "obs", {}
+
+        def step(self, action: object) -> tuple[object, float, bool, bool, dict]:
+            return "obs", 1.0, True, False, {}
+
+    def predict(payload: object) -> object:
+        seen["payload"] = payload
+        return "action"
+
+    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: None)
+    eval_mod.Session(
+        predict=predict,
+        spec=object(),
+        env=Client(),
+        bridge=RecordingBridge(),
+        device="cpu",
+    ).run(max_episodes=1)
+    assert seen["payload"] == {"placed_on": "cpu"}
