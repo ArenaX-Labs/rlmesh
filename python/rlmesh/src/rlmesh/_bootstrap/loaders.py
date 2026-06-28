@@ -322,7 +322,7 @@ def construct_authored_model(source: Any, /, **kwargs: object) -> Any:
     than silently dropped.
     """
     from rlmesh._models.base import ModelBase, suppress_autoload
-    from rlmesh.params import resolve
+    from rlmesh.params._resolve import resolve
 
     if isinstance(source, type):
         with suppress_autoload():
@@ -381,7 +381,7 @@ def construct_authored_env(
     :func:`rlmesh._bootstrap.gym_support.vectorize`) so a prebuilt EnvFactory image
     honors a ``SandboxVectorEnv`` request instead of serving a lone env.
     """
-    from rlmesh.params import resolve, to_metadata
+    from rlmesh.params._resolve import resolve, to_metadata
 
     inst = source() if isinstance(source, type) else source
     prepare = getattr(inst, "prepare", None)

@@ -25,6 +25,7 @@ from .._entrypoint import resolve_entrypoint
 from .._rlmesh import ROTATION_DIMS, adapters_resolve
 from .adapter import ActEncShim, Adapter, ObsEncShim
 from .constants import ENV_METADATA_KEY
+from .helpers import render_placement
 from .specs import (
     Action,
     Actuator,
@@ -63,23 +64,6 @@ _PROBES: dict[str, list[float]] = {
     "rot6d": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     "rot6d_rowmajor": [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
 }
-
-
-def _placement(segments: tuple[str | int, ...]) -> str:
-    """Render a tree position as the canonical native ``NodePath`` string.
-
-    Mirrors ``rlmesh_adapters::path::NodePath`` ``Display``: dot-joined keys,
-    ``[i]`` for tuple indices, and ``<root>`` for the empty path (a bare leaf).
-    """
-    if not segments:
-        return "<root>"
-    out = ""
-    for position, segment in enumerate(segments):
-        if isinstance(segment, int):
-            out += f"[{segment}]"
-        else:
-            out += ("." if position > 0 else "") + segment
-    return out
 
 
 def _is_leaf(node: object) -> bool:
@@ -179,7 +163,7 @@ def _shadow_state(
     encoding must be the sole content of a single-part :class:`State`, with no
     width-altering or assembly options.
     """
-    placement = _placement(segments)
+    placement = render_placement(segments)
     _check_native_encoding(state.encoding, f"state input {placement!r}")
     if not isinstance(state.encoding, CustomEncoding):
         return state
@@ -228,7 +212,7 @@ def _reject_concat_custom_encoding(
     segments: tuple[str | int, ...], concat: Concat
 ) -> None:
     """A CustomEncoding inside a multi-part Concat is unsupported (env offsets)."""
-    placement = _placement(segments)
+    placement = render_placement(segments)
     for part in concat.parts:
         encoding = part.encoding if isinstance(part, State) else None
         _check_native_encoding(encoding, f"state input {placement!r}")
@@ -380,12 +364,12 @@ def _model_wire(
         if isinstance(leaf, Custom):
             if leaf.transform is not None:
                 customs[segments] = leaf.transform
-                wire_transform = f"host:{_placement(segments)}"
+                wire_transform = f"host:{render_placement(segments)}"
             else:
                 entrypoint = cast(str, leaf.entrypoint)
                 if not trust_entrypoints:
                     raise AdapterResolutionError(
-                        f"custom input at {_placement(segments)!r} references "
+                        f"custom input at {render_placement(segments)!r} references "
                         f"entrypoint {entrypoint!r}; pass "
                         "resolve(..., trust_entrypoints=True) to allow importing it"
                     )

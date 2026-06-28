@@ -70,29 +70,21 @@ class ParamSpec:
       own ``**kwargs`` into a third-party constructor (the escape hatch for a
       wrapper author). Bounded by that ``**kwargs`` -- never by any downstream
       target -- so it cannot collide with a body-computed argument.
-
-    ``forward`` is an optional presentation-only hint (a concrete constructor or
-    ``"module:qualname"``) the dashboard reflects into a best-effort "Advanced"
-    tier badged *not validated*. It never binds and never validates. Point it at
-    a concrete constructor, never a string-keyed factory (``gym.make``).
     """
 
     params: tuple[Param, ...] = ()
     extra: ExtraPolicy = "forbid"
-    forward: Any = None
 
     def __init__(
         self,
         *params: Param,
         extra: ExtraPolicy = "forbid",
-        forward: Any = None,
     ) -> None:
         # Variadic ``*params`` reads at the call site like a literal list of
         # knobs; a frozen dataclass forbids normal assignment, so set via the
         # base ``__setattr__``.
         object.__setattr__(self, "params", tuple(params))
         object.__setattr__(self, "extra", extra)
-        object.__setattr__(self, "forward", forward)
 
 
 __all__ = ["Param", "ParamSpec"]

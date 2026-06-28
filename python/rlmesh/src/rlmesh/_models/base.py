@@ -294,7 +294,18 @@ class ModelBase(Generic[ObsT, ActT]):
                 "predict_batch / predict_chunk_batch)."
             )
         else:
-            from ._eval import coerce_model
+            # A Model builds its own worker; wrapping one as another model's source
+            # would double-construct. Reject it here -- the single construction
+            # gateway -- so the coercion helper stays free of a back-import to base.
+            if isinstance(source, ModelBase) or (
+                isinstance(source, type) and issubclass(source, ModelBase)
+            ):
+                raise TypeError(
+                    "Model received a Model as its source. Instantiate your Model "
+                    "subclass directly (it builds its own worker), or pass a predict "
+                    "callable."
+                )
+            from ._coerce import coerce_model
 
             coerced = coerce_model(source, spec=spec)
             raw_predict = coerced.predict
@@ -438,11 +449,7 @@ class ModelBase(Generic[ObsT, ActT]):
         it from the env's contract and the native worker applies it around the
         raw predict. A spec-less / ``NO_ADAPTER`` model serves its own predict.
         """
-        try:
-            from rlmesh._rlmesh import PyModel
-        except ImportError as e:  # pragma: no cover - import guard
-            raise ImportError("Failed to import _rlmesh native module.") from e
-
+        from .._load_native import load_native
         from ._eval import resolve_route_adapter
 
         spec = self.spec
@@ -523,7 +530,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 
-        self._worker: PyModel = PyModel(
+        self._worker: PyModel = load_native("PyModel")(
             predict_fn=predict_neutral,
             configure_fn=configure,
             on_episode_end=self._on_episode_end,

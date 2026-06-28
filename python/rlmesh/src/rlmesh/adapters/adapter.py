@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, final
 from .._value_conversion import ValueBridge, from_value, to_value
 from ..numpy import NumpyArray, ensure_available
 from ..types import Value
+from .helpers import render_placement
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:
@@ -147,26 +148,6 @@ def _tree_set(tree: Any, segments: Placement, value: Any) -> Any:
     # a missing key.
     node[head] = _tree_set(node.get(head, {}), rest, value)
     return node
-
-
-def _render_placement(segments: Placement) -> str:
-    """Render a structured placement as the canonical native ``NodePath`` string.
-
-    Mirrors ``rlmesh_adapters::path::NodePath`` ``Display``: dot-joined keys,
-    ``[i]`` for Tuple indices, and ``<root>`` for the empty path (a bare leaf).
-    Used only to key the served-route customs map against Rust, which looks each
-    host hole up by ``NodePath::to_string()``; the in-process path keys by the
-    structured tuple directly.
-    """
-    if not segments:
-        return "<root>"
-    out = ""
-    for position, segment in enumerate(segments):
-        if isinstance(segment, int):
-            out += f"[{segment}]"
-        else:
-            out += ("." if position > 0 else "") + segment
-    return out
 
 
 class AdapterBase(ABC, Generic[ActionT]):
@@ -377,7 +358,7 @@ class Adapter(AdapterBase[NumpyArray]):
     def _apply_obs_enc(self, shim: ObsEncShim, value: Any) -> NumpyArray:
         import numpy as np
 
-        placement = _render_placement(shim.segments)
+        placement = render_placement(shim.segments)
         base = cast("NumpyArray", np.asarray(value))
         if int(base.size) != shim.width:
             raise ValueError(
@@ -490,7 +471,7 @@ class Adapter(AdapterBase[NumpyArray]):
         # ``NodePath::to_string()``; render the structured placement to that
         # canonical string here (the only place the serve path needs it).
         customs = {
-            _render_placement(segments): _serve_custom(transform, bridge)
+            render_placement(segments): _serve_custom(transform, bridge)
             for segments, transform in self._customs.items()
         }
         return {
@@ -534,7 +515,7 @@ class Adapter(AdapterBase[NumpyArray]):
             return native
         lines = [native, "host-side encodings:"]
         for shim in self._obs_enc_shims:
-            placement = _render_placement(shim.segments)
+            placement = render_placement(shim.segments)
             lines.append(f"  obs    {placement!r}: {shim.base} -> {shim.name}")
         for shim in self._action_enc_shims:
             stop = shim.offset + shim.width

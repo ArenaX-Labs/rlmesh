@@ -16,7 +16,7 @@ from rlmesh._bootstrap.loaders import (
     construct_authored_model,
     looks_like_policy,
 )
-from rlmesh._models._eval import coerce_model
+from rlmesh._models._coerce import coerce_model
 
 
 class _Policy:
@@ -129,12 +129,13 @@ def test_model_subclass_spec_kwarg_overrides_class_attr() -> None:
     assert model.spec == "OVERRIDE"
 
 
-def test_coerce_model_rejects_a_model_subclass() -> None:
-    # A Model builds its own worker; wrapping it again would double-construct.
+def test_model_rejects_a_model_as_source() -> None:
+    # A Model builds its own worker; wrapping it again would double-construct. The
+    # guard lives at the construction gateway (ModelBase.__init__), not in coerce.
     with pytest.raises(TypeError, match="Instantiate your Model subclass"):
-        coerce_model(_ModelPolicy, spec=None)
+        rlmesh.Model(_ModelPolicy)
     with pytest.raises(TypeError, match="Instantiate your Model subclass"):
-        coerce_model(_ModelPolicy(), spec=None)
+        rlmesh.Model(_ModelPolicy())
 
 
 def test_model_subclass_serve_loads_then_serves(

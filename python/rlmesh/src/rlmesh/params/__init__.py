@@ -15,9 +15,6 @@ from ._resolve import (
     MissingParamError,
     ParamError,
     UnknownParamError,
-    describe,
-    resolve,
-    to_metadata,
 )
 from ._spec import Param, ParamSpec
 
@@ -28,7 +25,4 @@ __all__ = [
     "ParamError",
     "ParamSpec",
     "UnknownParamError",
-    "describe",
-    "resolve",
-    "to_metadata",
 ]

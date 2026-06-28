@@ -4,23 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from .._value_conversion import ValueBridge, encode_framework_array_batch
-from ..spaces import Space, space_from_spec
-from ..specs import EnvContract, SpaceSpec
+from .._value_conversion import encode_framework_array_batch
+from ..spaces import Space
 from ..types import Metadata
-from ._endpoint import Transport, normalize_connect_address
-from ._metadata import EMPTY_METADATA
+from ._remote_base import ActionT, RemoteClientBase, ValueT
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyVectorEnvClient, ResetInfo, StepInfo
-
-ValueT = TypeVar("ValueT")
-ActionT = TypeVar("ActionT")
+    from rlmesh._rlmesh import ResetInfo, StepInfo
 
 
-class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
+class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
     """Base class for backend-specific vector-environment remote clients.
 
     Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
@@ -35,87 +30,27 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
         transport: Explicit transport selector.
     """
 
-    _bridge: ClassVar[ValueBridge]
-    _address: str
+    _single_observation_space: Space[ValueT] | None = None
+    _single_action_space: Space[ActionT] | None = None
 
-    def __init__(
-        self,
-        address: str | None = None,
-        *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
-    ) -> None:
-        self._initialize(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-            connect_timeout_seconds=None,
+    def _make_client(self, address: str, connect_timeout_seconds: float | None) -> Any:
+        from .._load_native import load_native
+
+        return load_native("PyVectorEnvClient")(
+            address, connect_timeout_seconds=connect_timeout_seconds
         )
 
-    def _initialize(
-        self,
-        address: str | None = None,
-        *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
-        connect_timeout_seconds: float | None,
-    ) -> None:
-        try:
-            from rlmesh._rlmesh import PyVectorEnvClient
-        except ImportError as e:  # pragma: no cover - import guard
-            raise ImportError("Failed to import _rlmesh native module.") from e
+    def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
+        """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.
 
-        self._bridge.ensure_available()
-        normalized_address = normalize_connect_address(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-        )
-        self._client: PyVectorEnvClient = PyVectorEnvClient(
-            normalized_address,
-            connect_timeout_seconds=connect_timeout_seconds,
-        )
-        self._address = self._client.address()
-        self._env_contract: EnvContract = self._client.handshake()
-        self._single_observation_space: Space[ValueT] | None = None
-        self._single_action_space: Space[ActionT] | None = None
-
-    @property
-    def address(self) -> str:
-        """Endpoint address this client is connected to."""
-        return self._address
-
-    @property
-    def env_id(self) -> str:
-        """This connection's container id (UUIDv7).
-
-        A stable correlation identity, distinct from the human env name
-        (`env_contract.id`).
+        The wire codec degrades Gymnasium's ``AutoresetMode`` enum to its plain
+        string value, but Gymnasium 1.x vector consumers (for example
+        ``RecordEpisodeStatistics``) assert that ``metadata["autoreset_mode"]`` is
+        an ``AutoresetMode`` instance. We restore the enum here so a
+        Gymnasium-compliant training loop can read the server-side autoreset
+        convention.
         """
-        return self._client.env_id()
-
-    @property
-    def env_contract(self) -> EnvContract:
-        """Environment contract returned by the endpoint handshake."""
-        return self._env_contract
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for `env_contract`."""
-        return self._env_contract
-
-    @property
-    def render_mode(self) -> str | None:
-        """Configured render mode reported by the endpoint."""
-        return self._env_contract.render_mode
+        return _normalize_autoreset_mode(metadata)
 
     @property
     def num_envs(self) -> int:
@@ -146,32 +81,6 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
         """Alias for `single_action_space`."""
         return self.single_action_space
 
-    @property
-    def metadata(self) -> Metadata:
-        """Endpoint metadata reported by the environment contract.
-
-        The wire codec degrades Gymnasium's ``AutoresetMode`` enum to its plain
-        string value, but Gymnasium 1.x vector consumers (for example
-        ``RecordEpisodeStatistics``) assert that
-        ``metadata["autoreset_mode"]`` is an ``AutoresetMode`` instance. We
-        restore the enum here so a Gymnasium-compliant training loop can read
-        the server-side autoreset convention.
-        """
-        metadata = self._env_contract.metadata
-        if metadata is None:
-            return EMPTY_METADATA
-        return _normalize_autoreset_mode(cast(Mapping[str, object], metadata))
-
-    @property
-    def observation_space_spec(self) -> SpaceSpec:
-        """Native observation space spec reported by the endpoint."""
-        return self._space_spec("observation")
-
-    @property
-    def action_space_spec(self) -> SpaceSpec:
-        """Native action space spec reported by the endpoint."""
-        return self._space_spec("action")
-
     def reset(
         self,
         *,
@@ -194,7 +103,7 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
         else:
             seeds = [seed]
         obs, info = self._client.reset(seeds=seeds, options=options)
-        return cast(ValueT, self._bridge.decode(obs)), info
+        return cast("ValueT", self._bridge.decode(obs)), info
 
     def step(self, actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]:
         """Step all remote environments with a batch of actions.
@@ -209,10 +118,10 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
             self._encode_actions(actions)
         )
         return (
-            cast(ValueT, self._bridge.decode(obs)),
-            cast(ValueT, self._bridge.decode(rewards)),
-            cast(ValueT, self._bridge.decode(terminated)),
-            cast(ValueT, self._bridge.decode(truncated)),
+            cast("ValueT", self._bridge.decode(obs)),
+            cast("ValueT", self._bridge.decode(rewards)),
+            cast("ValueT", self._bridge.decode(terminated)),
+            cast("ValueT", self._bridge.decode(truncated)),
             info,
         )
 
@@ -229,34 +138,6 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
             num_envs=self.num_envs,
         )
 
-    def render(self, *, env_index: int = 0) -> ValueT | None:
-        """Render a frame from one environment in the vector.
-
-        Args:
-            env_index: Environment index to render.
-
-        Returns:
-            A decoded render frame, or ``None`` when the environment has no frame.
-        """
-        return cast(
-            ValueT | None,
-            self._bridge.decode(self._client.render(env_index=env_index)),
-        )
-
-    def close(self) -> None:
-        """Detach this client from the remote endpoint."""
-        self._client.close()
-
-    def shutdown(self, reason: str = "owner shutdown") -> bool:
-        """Request owner-level shutdown of the remote vector environment endpoint."""
-        return bool(self._client.shutdown(reason))
-
-    def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}(address={self.address!r}, "
-            f"id={self._env_contract.id!r}, num_envs={self.num_envs!r})"
-        )
-
     def __enter__(self) -> RemoteVectorEnvBase[ValueT, ActionT]:
         return self
 
@@ -268,21 +149,6 @@ class RemoteVectorEnvBase(Generic[ValueT, ActionT]):
     ) -> None:
         _ = exc_type, exc_val, exc_tb
         self.close()
-
-    def _space_spec(self, kind: Literal["observation", "action"]) -> SpaceSpec:
-        return (
-            self._env_contract.observation_space
-            if kind == "observation"
-            else self._env_contract.action_space
-        )
-
-    def _load_observation_space(self) -> Space[ValueT]:
-        spec = self._space_spec("observation")
-        return cast(Space[ValueT], space_from_spec(spec, bridge=self._bridge))
-
-    def _load_action_space(self) -> Space[ActionT]:
-        spec = self._space_spec("action")
-        return cast(Space[ActionT], space_from_spec(spec, bridge=self._bridge))
 
 
 def _normalize_autoreset_mode(metadata: Mapping[str, object]) -> Metadata:

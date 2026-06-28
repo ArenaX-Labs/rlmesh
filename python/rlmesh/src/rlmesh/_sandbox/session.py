@@ -4,25 +4,22 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
 from os import PathLike, fspath
-from typing import Literal, TypedDict, cast
+from typing import TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
+from ._sources import resolve_source_kind
 
 SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 10.0
 
 #: Port an rlmesh-serving container binds inside the container (the templated
 #: entrypoint default, ``RLMESH_ADDRESS=0.0.0.0:50051``).
 CONTAINER_SERVE_PORT = 50051
-
-SourceKind = Literal["build", "prebuilt"]
 
 
 @dataclass(frozen=True)
@@ -156,85 +153,6 @@ def start_sandbox_container(
         vectorization_mode=vectorization_mode,
         binding=binding,
     )
-
-
-def resolve_source_kind(source: str) -> tuple[SourceKind, str]:
-    """Classify a sandbox source and return ``(kind, resolved_ref)``.
-
-    * ``gym://`` / ``hf://`` / bare gym id (no tag) -> build from source.
-    * ``docker://img`` / ``image://img`` -> prebuilt (explicit).
-    * bare image-shaped (``:tag`` / ``@sha256:``), local image -> prebuilt.
-    * bare image-shaped, not local -> ``docker pull`` then prebuilt, else error.
-
-    The resolved kind is always logged -- silent autodetect is the trap. Use an
-    explicit ``gym://`` / ``docker://`` scheme to override the bare-source guess.
-    """
-    value = source.strip()
-    if not value:
-        raise ValueError("sandbox source must not be empty")
-    if value.startswith(("gym://", "hf://")):
-        return "build", value
-    for scheme in ("docker://", "image://"):
-        if value.startswith(scheme):
-            ref = value[len(scheme) :].strip()
-            if not ref:
-                raise ValueError(f"{scheme} source must include an image tag")
-            _log_resolution(source, "prebuilt", f"explicit {scheme}{ref}")
-            return "prebuilt", ref
-    if "://" in value:
-        raise ValueError(f"unsupported sandbox source scheme: {source!r}")
-    if not _is_image_shaped(value):
-        _log_resolution(source, "build", "gym id")
-        return "build", value
-    if shutil.which("docker") is None:
-        raise RuntimeError(
-            f"{source!r} looks like a Docker image but the Docker CLI is not on "
-            "PATH; install Docker, or use gym://... to build from source / "
-            "docker://... to force a prebuilt image"
-        )
-    if docker_image_exists(value):
-        _log_resolution(source, "prebuilt", "local Docker image")
-        return "prebuilt", value
-    if docker_pull(value):
-        _log_resolution(source, "prebuilt", "pulled Docker image")
-        return "prebuilt", value
-    raise ValueError(
-        f"{source!r} looks like a Docker image but was not found locally or "
-        "pullable; use gym://... to build from source or docker://... to force a "
-        "prebuilt image"
-    )
-
-
-#: Gymnasium's mandatory version suffix (``-v<int>``). A registered id ends with
-#: it, including the module-import form ``pkg:Env-v0`` and ``ALE/Pong-v5``.
-_GYM_VERSION_RE = re.compile(r"-v\d+$")
-
-
-def looks_like_gym_id(value: str) -> bool:
-    """Whether a bare source carries Gymnasium's mandatory ``-v<int>`` suffix.
-
-    The reliable signal that a colon-bearing source is a gym env id (``pkg:Env-v0``,
-    ``ALE/Pong-v5``) rather than a Docker image ref -- so it routes to the build
-    path / is rejected as a model image instead of being probed as an image.
-    """
-    return _GYM_VERSION_RE.search(value) is not None
-
-
-def _is_image_shaped(value: str) -> bool:
-    """Whether a bare source looks like a Docker image ref rather than a gym id.
-
-    An image ref carries a ``:tag`` (a colon in the final path segment) or an
-    ``@sha256:`` digest; a gym id like ``CartPole-v1`` or ``ALE/Pong-v5`` has
-    neither, so it never triggers a Docker probe. The module-import gym id form
-    ``pkg:Env-v0`` *does* carry a colon, so the gym version suffix short-circuits
-    first -- otherwise it would be misrouted to the Docker path.
-
-    ponytail: the ``-v<N>`` heuristic loses to a Docker tag literally ending in
-    ``-v0``; use an explicit ``docker://``/``gym://`` scheme for that rare clash.
-    """
-    if looks_like_gym_id(value):
-        return False
-    return "@sha256:" in value or ":" in value.rsplit("/", 1)[-1]
 
 
 def start_prebuilt_container(
@@ -376,25 +294,6 @@ def _resolve_published_port(container_id: str) -> int:
     return parse_published_port(proc.stdout, CONTAINER_SERVE_PORT)
 
 
-def docker_image_exists(image: str) -> bool:
-    """Whether a Docker image is present locally (``docker image inspect``)."""
-    proc = subprocess.run(
-        ["docker", "image", "inspect", image],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return proc.returncode == 0
-
-
-def docker_pull(image: str) -> bool:
-    """Attempt ``docker pull``; return whether it succeeded."""
-    proc = subprocess.run(
-        ["docker", "pull", image], capture_output=True, text=True, check=False
-    )
-    return proc.returncode == 0
-
-
 def reap_orphans() -> None:
     """Best-effort sweep of containers orphaned by a prior hard kill.
 
@@ -442,13 +341,6 @@ def _warn_ignored_build_options(options: SandboxOptions) -> None:
             f"{', '.join(ignored)} (the image is already built)",
             stacklevel=3,
         )
-
-
-def _log_resolution(source: str, kind: SourceKind, detail: str) -> None:
-    # Autodetect must never be silent: always announce the resolved kind.
-    print(
-        f"rlmesh: resolved {source!r} -> {kind} ({detail})", file=sys.stderr, flush=True
-    )
 
 
 def _start_build(
@@ -531,15 +423,11 @@ __all__ = [
     "SandboxInfo",
     "SandboxLifecycle",
     "SandboxOptions",
-    "docker_image_exists",
-    "docker_pull",
-    "looks_like_gym_id",
     "parse_published_port",
     "prebuilt_run_cmd",
     "reap_orphans",
     "reject_sandbox_option_params",
     "reject_single_env_vector_option",
-    "resolve_source_kind",
     "start_prebuilt_container",
     "start_sandbox_container",
     "string_sequence",

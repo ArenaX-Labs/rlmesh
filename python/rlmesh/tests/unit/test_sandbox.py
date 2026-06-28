@@ -13,6 +13,7 @@ from typing import Any, cast
 import pytest
 import rlmesh
 import rlmesh._rlmesh as native
+from rlmesh._sandbox import _sources
 from rlmesh._sandbox import env as sandbox_env
 from rlmesh._sandbox import session as sandbox
 
@@ -275,12 +276,12 @@ def test_sandbox_model_source_resolution() -> None:
 def test_gym_module_id_with_colon_routes_to_build_not_docker() -> None:
     # `pkg:Env-v0` is a valid gym module-import id (has a colon); it must build,
     # never be probed as a Docker image. Pure -- the version suffix short-circuits.
-    assert sandbox.looks_like_gym_id("my_envs:MyEnv-v0") is True
-    assert sandbox._is_image_shaped("my_envs:MyEnv-v0") is False
-    kind, ref = sandbox.resolve_source_kind("my_envs:MyEnv-v0")
+    assert _sources.looks_like_gym_id("my_envs:MyEnv-v0") is True
+    assert _sources._is_image_shaped("my_envs:MyEnv-v0") is False
+    kind, ref = _sources.resolve_source_kind("my_envs:MyEnv-v0")
     assert (kind, ref) == ("build", "my_envs:MyEnv-v0")
     # A real tagged image still resolves image-shaped.
-    assert sandbox._is_image_shaped("registry/img:v1.2") is True
+    assert _sources._is_image_shaped("registry/img:v1.2") is True
 
 
 def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:

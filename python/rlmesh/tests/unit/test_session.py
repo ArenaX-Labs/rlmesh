@@ -90,35 +90,35 @@ def _spec(input_tree: Any) -> object:
 
 def test_text_placements_covers_every_placement_and_container() -> None:
     import rlmesh.adapters as adapt
-    from rlmesh._models._eval import _text_placements, _TextPlacement
+    from rlmesh._models._eval import TextPlacement, text_placements
 
     # bare-root: the whole payload IS the text leaf (empty placement)
-    assert _text_placements(_spec(adapt.Text(role=adapt.INSTRUCTION))) == (
-        _TextPlacement((), False),
+    assert text_placements(_spec(adapt.Text(role=adapt.INSTRUCTION))) == (
+        TextPlacement((), False),
     )
     # top-level dict key, both container shapes
-    assert _text_placements(
+    assert text_placements(
         _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="str")})
-    ) == (_TextPlacement(("prompt",), False),)
-    assert _text_placements(
+    ) == (TextPlacement(("prompt",), False),)
+    assert text_placements(
         _spec({"prompt": adapt.Text(role=adapt.INSTRUCTION, container="list")})
-    ) == (_TextPlacement(("prompt",), True),)
+    ) == (TextPlacement(("prompt",), True),)
     # nested dict placement
-    assert _text_placements(
+    assert text_placements(
         _spec({"lang": {"instr": adapt.Text(role=adapt.INSTRUCTION)}})
-    ) == (_TextPlacement(("lang", "instr"), False),)
+    ) == (TextPlacement(("lang", "instr"), False),)
     # tuple placement (positional)
-    assert _text_placements(_spec((adapt.Text(role=adapt.INSTRUCTION),))) == (
-        _TextPlacement((0,), False),
+    assert text_placements(_spec((adapt.Text(role=adapt.INSTRUCTION),))) == (
+        TextPlacement((0,), False),
     )
 
 
 def test_text_placements_empty_for_specless_models() -> None:
     from rlmesh import NO_ADAPTER
-    from rlmesh._models._eval import _text_placements
+    from rlmesh._models._eval import text_placements
 
-    assert _text_placements(None) == ()
-    assert _text_placements(NO_ADAPTER) == ()
+    assert text_placements(None) == ()
+    assert text_placements(NO_ADAPTER) == ()
 
 
 def _inject(placements: tuple[Any, ...], payload: Any) -> Any:
@@ -136,29 +136,29 @@ def _inject(placements: tuple[Any, ...], payload: Any) -> Any:
 
 
 def test_instruction_injects_into_a_bare_root_text_input() -> None:
-    from rlmesh._models._eval import _TextPlacement
+    from rlmesh._models._eval import TextPlacement
 
     # The whole payload is the text leaf; the override replaces it outright.
-    assert _inject((_TextPlacement((), False),), "old") == "do the task"
+    assert _inject((TextPlacement((), False),), "old") == "do the task"
 
 
 def test_instruction_injects_into_a_nested_text_input() -> None:
-    from rlmesh._models._eval import _TextPlacement
+    from rlmesh._models._eval import TextPlacement
 
-    out = _inject((_TextPlacement(("lang", "instr"), False),), {"lang": {"instr": "x"}})
+    out = _inject((TextPlacement(("lang", "instr"), False),), {"lang": {"instr": "x"}})
     assert out == {"lang": {"instr": "do the task"}}
 
 
 def test_instruction_injects_list_for_list_container() -> None:
-    from rlmesh._models._eval import _TextPlacement
+    from rlmesh._models._eval import TextPlacement
 
-    out = _inject((_TextPlacement(("prompt",), True),), {"prompt": ["x"]})
+    out = _inject((TextPlacement(("prompt",), True),), {"prompt": ["x"]})
     assert out == {"prompt": ["do the task"]}
 
 
 def test_instruction_injection_does_not_mutate_the_source_payload() -> None:
-    from rlmesh._models._eval import _TextPlacement
+    from rlmesh._models._eval import TextPlacement
 
     source = {"lang": {"instr": "x"}}
-    _inject((_TextPlacement(("lang", "instr"), False),), source)
+    _inject((TextPlacement(("lang", "instr"), False),), source)
     assert source == {"lang": {"instr": "x"}}  # injected into a rebuilt copy

@@ -1,9 +1,14 @@
-"""The model-side eval loop and source coercion, shared by every framework ``Model``.
+"""The model-side eval loop, shared by every framework ``Model``.
 
 A model consumes the env contract rather than publishing its own: a :class:`Session`
 dials an env, pulls its contract, resolves the adapter from the env's tags and the
 model's spec, and runs a per-episode loop that returns a typed :class:`RunResult`.
-``coerce_model`` turns any model source into a :class:`CoercedModel`.
+
+The supporting machinery lives in sibling modules and is re-exported here for the
+names :class:`Session` resolves as module globals: connection/contract synthesis
+(:mod:`._connect`), role-addressed reads (:mod:`._read`), adapter resolution
+(:mod:`._resolve`), source coercion (:mod:`._coerce`), and instruction injection
+(:mod:`._instruction`).
 """
 
 from __future__ import annotations
@@ -11,25 +16,32 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, NamedTuple, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from .._value_conversion import from_value, identity_bridge
-from ._adapter_mode import NO_ADAPTER
 from ._chunk import ChunkReplay
+from ._coerce import RANDOM_SAMPLE
+from ._connect import (
+    adapter_env_bridge,
+    close_client,
+    connect_env,
+    reset_env,
+    shutdown_env,
+)
+from ._instruction import TextPlacement, text_placements, tree_set
+from ._read import Reader, resolve_read_adapter
+from ._resolve import reject_vector_env, resolve_adapter, resolve_route_adapter
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
     from .._value_conversion import ValueBridge
-    from ..adapters import Adapter
-    from ..specs import EnvContract
 
 __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
     "RunResult",
     "Session",
-    "coerce_model",
     "resolve_route_adapter",
 ]
 
@@ -38,28 +50,6 @@ _MAX_STEPS_PER_EPISODE = 100_000
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
-
-
-class _RandomSample:
-    """Sentinel policy: act by sampling the env's action space (a random baseline)."""
-
-    def __repr__(self) -> str:
-        return "RANDOM_SAMPLE"
-
-
-RANDOM_SAMPLE = _RandomSample()
-"""Pass as the model to :func:`rlmesh.session`/:func:`rlmesh.run` to sample actions."""
-
-
-class CoercedModel(NamedTuple):
-    predict: Callable[[Any], Any]
-    spec: object | None
-    # A duck-typed policy's ``reset()`` is wired here, to the episode-END edge: it
-    # is the only per-episode boundary both the local loop and the served wire path
-    # signal, so a stateful policy clears its state identically either way.
-    on_episode_end: Callable[[], None] | None
-    on_close: Callable[[], None] | None
-    policy: Any
 
 
 @dataclass(frozen=True)
@@ -113,7 +103,7 @@ def _predict_step(
     obs: Any,
     adapter: Any,
     instruction: str | None,
-    text_placements: tuple[_TextPlacement, ...],
+    text_placements: tuple[TextPlacement, ...],
     env_bridge: ValueBridge | None,
     model_bridge: ValueBridge | None,
 ) -> Any:
@@ -136,46 +126,13 @@ def _predict_step(
     if instruction is not None:
         # Inject into every text leaf the spec declares, at its tree placement and
         # in its declared shape: ``[instruction]`` for container='list', a bare
-        # ``str`` otherwise. ``_tree_set`` rebuilds the path it touches (the empty
+        # ``str`` otherwise. ``tree_set`` rebuilds the path it touches (the empty
         # path replaces the whole payload, for a bare-root text input), so the obs
         # the env returned is never mutated.
         for placement in text_placements:
             value: Any = [instruction] if placement.as_list else instruction
-            payload = _tree_set(payload, placement.segments, value)
+            payload = tree_set(payload, placement.segments, value)
     return predict(payload)
-
-
-class Reader:
-    """A resolved, role-addressed read over an env's observations (read-only).
-
-    Built by :meth:`Session.reader`. Calling it maps one raw env observation to a
-    ``{role: value}`` dict, each value in the encoding its read item declared -- a
-    bare role keeps the env's native encoding; an :class:`~rlmesh.adapters.Image` /
-    :class:`~rlmesh.adapters.State` leaf converts (``Image(IMAGE_PRIMARY,
-    layout="hwc")`` yields an HWC image whatever the env stores). It is the same
-    adapter pipeline a model uses, pointed at the consumer: resolved once, reused
-    every step, and identical in the native core. Values come back in the env's own
-    framework (numpy for a gym env, torch for a torch route).
-    """
-
-    def __init__(
-        self, adapter: Any, roles: tuple[str, ...], bridge: ValueBridge
-    ) -> None:
-        self._adapter = adapter
-        self._roles = roles
-        self._bridge = bridge
-
-    @property
-    def roles(self) -> tuple[str, ...]:
-        """The roles this reader extracts, in declaration order."""
-        return self._roles
-
-    def __call__(self, observation: object) -> dict[str, Any]:
-        """Extract ``{role: value}`` from one raw env observation (never mutated)."""
-        value = self._adapter.transform_obs_value(
-            observation, input_bridge=self._bridge, custom_bridge=self._bridge
-        )
-        return cast("dict[str, Any]", from_value(value, self._bridge))
 
 
 class Session(Generic[ObsT, ActT]):
@@ -235,7 +192,7 @@ class Session(Generic[ObsT, ActT]):
         self._adapter: Any = None
         self._contract: Any = None
         self._env_bridge: ValueBridge | None = None
-        self._text_placements: tuple[_TextPlacement, ...] = ()
+        self._text_placements: tuple[TextPlacement, ...] = ()
         self._horizon = 1
         self._replay = ChunkReplay(1)
         self._terminated = False
@@ -253,19 +210,21 @@ class Session(Generic[ObsT, ActT]):
     def _ensure_connected(self) -> None:
         if self._connected:
             return
-        client, contract, owns = _connect(self._env, self._token, self._remote_env_cls)
-        _reject_vector_env(contract)
+        client, contract, owns = connect_env(
+            self._env, self._token, self._remote_env_cls
+        )
+        reject_vector_env(contract)
         self._client = client
         self._contract = contract
         self._owns_client = owns
         # A served model resolves its adapter server-side (from the contract sent at
         # bind); only a local model resolves it here, client-side.
         if self._model_client is None:
-            self._adapter = _resolve_adapter(self._spec, contract, self._trust)
+            self._adapter = resolve_adapter(self._spec, contract, self._trust)
             self._env_bridge = (
-                _adapter_env_bridge(client) if self._adapter is not None else None
+                adapter_env_bridge(client) if self._adapter is not None else None
             )
-            self._text_placements = _text_placements(self._spec)
+            self._text_placements = text_placements(self._spec)
             # The execution horizon is a caller decision (execution_horizon), not the
             # spec. It engages only when the model exposes a predict_chunk corner;
             # without one, fall back to single-step predict.
@@ -314,7 +273,7 @@ class Session(Generic[ObsT, ActT]):
         """
         self._ensure_connected()
         self._end_episode()
-        obs, info = _reset(self._client, seed)
+        obs, info = reset_env(self._client, seed)
         if self._model_client is not None:
             self._model_client.reset()  # mark a reset boundary on the served route
         else:
@@ -418,8 +377,8 @@ class Session(Generic[ObsT, ActT]):
                 "reader() needs at least one role or model-input leaf to read"
             )
         self._ensure_connected()
-        adapter, roles = _resolve_read_adapter(self._contract, items, self._trust)
-        return Reader(adapter, roles, _adapter_env_bridge(self._client))
+        adapter, roles = resolve_read_adapter(self._contract, items, self._trust)
+        return Reader(adapter, roles, adapter_env_bridge(self._client))
 
     def read(self, observation: object, item: object) -> object:
         """One-shot read of a single role from one observation.
@@ -517,12 +476,12 @@ class Session(Generic[ObsT, ActT]):
                 if self._close_env:
                     # Explicit opt-in to stop the env: the dialed client if we opened
                     # it, else the caller-supplied env/address.
-                    _shutdown(self._client if self._owns_client else self._env)
+                    shutdown_env(self._client if self._owns_client else self._env)
             finally:
                 # Always release the dialed connection and clear state, even if the
                 # shutdown raised (the error still propagates after cleanup).
                 if self._owns_client and self._client is not None:
-                    _close(self._client)
+                    close_client(self._client)
                 self._connected = False
                 self._client = None
 
@@ -532,462 +491,3 @@ class Session(Generic[ObsT, ActT]):
     def __exit__(self, *exc: object) -> None:
         _ = exc
         self.close()
-
-
-def resolve_route_adapter(
-    spec: object | None, contract: EnvContract, trust_entrypoints: bool
-) -> Adapter | None:
-    """Resolve a served route's adapter from its configure-time env contract.
-
-    The serve-path counterpart of the run(env) resolution: a served model
-    receives the env contract once per route (the ``ConfigureRoute`` RPC), so it
-    resolves the adapter there rather than at connect. Returns ``None`` for a
-    spec-less / ``NO_ADAPTER`` model (no transform). Raises on a spec/env mismatch
-    so route configuration fails loudly instead of predicting wrongly.
-
-    Frame-stacking state is now episode-keyed in the native serving engine, so a
-    stateful (frame-stacking) adapter serves correctly against a vectorized route
-    -- the old single-lane rejection is lifted. (Model-*internal* state, which the
-    engine cannot key by episode, is gated to single-lane by a registration-time
-    probe instead.)
-    """
-    return _resolve_adapter(spec, contract, trust_entrypoints)
-
-
-def _resolve_adapter(
-    spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
-) -> Adapter | None:
-    from ..adapters import (
-        AdapterResolutionError,
-        EnvTags,
-        ModelSpec,
-        resolve_from_contract,
-    )
-
-    if spec is NO_ADAPTER:
-        return None
-    metadata = contract.metadata if contract is not None else None
-    tagged = EnvTags.from_metadata(metadata or {}) is not None
-    if spec is None:
-        if tagged:
-            raise AdapterResolutionError(
-                "the env publishes adapter tags but this model has spec=None; "
-                "pass spec=<ModelSpec> to adapt, or spec=NO_ADAPTER if the model "
-                "adapts its own observations"
-            )
-        return None
-    if not isinstance(spec, ModelSpec):
-        raise AdapterResolutionError(
-            f"a model spec must be a ModelSpec or NO_ADAPTER; got {type(spec).__name__}"
-        )
-    if contract is None:
-        raise AdapterResolutionError(
-            "resolving a spec'd adapter requires an env contract, but the env exposes none"
-        )
-    return resolve_from_contract(contract, spec, trust_entrypoints=trust_entrypoints)
-
-
-def _reject_vector_env(contract: EnvContract | None) -> None:
-    # The per-episode loop is single-env: it reads scalar reward/termination. A
-    # vector env (num_envs>1) would crash on array truthiness, so reject it up
-    # front rather than deep in the step loop.
-    num_envs = getattr(contract, "num_envs", 1) if contract is not None else 1
-    if num_envs and num_envs > 1:
-        raise ValueError(
-            f"Model.run() drives a single env, but the env reports num_envs={num_envs}; "
-            "use num_envs=1 (the per-episode loop reads scalar reward/termination)."
-        )
-
-
-def _is_model_source(source: object) -> bool:
-    """Whether ``source`` is a ``Model`` (instance or subclass) -- rejected by coerce_model.
-
-    Kept as a helper so the ``isinstance`` narrowing stays on this local ``object``
-    parameter rather than leaking onto coerce_model's ``Any`` source.
-    """
-    from .base import ModelBase
-
-    return isinstance(source, ModelBase) or (
-        isinstance(source, type) and issubclass(source, ModelBase)
-    )
-
-
-def coerce_model(
-    source: Any,
-    *,
-    spec: object | None,
-) -> CoercedModel:
-    """Resolve a model source into a :class:`CoercedModel`.
-
-    The source is either a bare predict callable or a duck-typed policy object
-    (class or instance) exposing ``predict`` plus optional ``spec``/``reset``/``close``.
-    A :class:`~rlmesh._models.base.ModelBase` is rejected: a ``Model`` builds its own
-    worker, so instantiate the subclass directly rather than wrapping it again.
-    """
-    if _is_model_source(source):
-        raise TypeError(
-            "coerce_model received a Model. Instantiate your Model subclass directly "
-            "(it builds its own worker), or pass a predict callable."
-        )
-
-    from .._bootstrap.loaders import construct_authored_model, looks_like_policy
-
-    # A policy *class* is also callable, so check the policy shape first.
-    if looks_like_policy(source):
-        inst = construct_authored_model(source)
-        return CoercedModel(
-            inst.predict,
-            spec if spec is not None else getattr(inst, "spec", None),
-            getattr(inst, "reset", None),
-            getattr(inst, "close", None),
-            inst,
-        )
-    if callable(source):
-        return CoercedModel(source, spec, None, None, None)
-    raise TypeError(
-        "Model source must be a predict callable or a policy object with predict(); "
-        f"got {type(source).__name__}"
-    )
-
-
-class _TextPlacement(NamedTuple):
-    """Where (and how) the ``instruction=`` override lands in the model payload.
-
-    ``segments`` is the text leaf's position in the model input tree (str for a
-    Dict key, int for a Tuple index; the empty tuple is a bare-root text input,
-    whose payload *is* the text leaf). ``as_list`` is True when the leaf declares
-    ``container='list'`` (inject ``[instruction]``, not a bare ``str``, to keep
-    the model's declared shape).
-    """
-
-    segments: tuple[str | int, ...]
-    as_list: bool
-
-
-def _text_placements(spec: object | None) -> tuple[_TextPlacement, ...]:
-    """Find every text leaf the ``instruction=`` override should be written into.
-
-    Walks the model spec's input tree locally (a public structure: a leaf
-    dataclass, a ``dict`` Dict node, or a ``tuple`` Tuple node), so the override
-    reaches *every* text leaf -- bare-root, top-level, and nested -- and carries
-    each leaf's ``container`` so a list-shaped leaf gets ``[instruction]``. A
-    spec-less / ``NO_ADAPTER`` model declares no text inputs, so none.
-    """
-    if spec is None or spec is NO_ADAPTER:
-        return ()
-    from ..adapters import Text
-
-    input_tree = getattr(spec, "input", None)
-    if input_tree is None:
-        return ()
-    placements: list[_TextPlacement] = []
-
-    def walk(node: Any, segments: tuple[str | int, ...]) -> None:
-        if isinstance(node, Text):
-            placements.append(_TextPlacement(segments, node.container == "list"))
-        elif isinstance(node, Mapping):
-            for key, child in cast("Mapping[str, Any]", node).items():
-                walk(child, (*segments, key))
-        elif isinstance(node, tuple):
-            for index, child in enumerate(cast("tuple[Any, ...]", node)):
-                walk(child, (*segments, index))
-
-    walk(input_tree, ())
-    return tuple(placements)
-
-
-def _tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
-    """Return ``tree`` with the value at ``segments`` replaced by ``value``.
-
-    A small structured set over the payload tree (dict for str segments, list for
-    int segments). Rebuilds only the path it touches, so the env's observation is
-    never mutated; the empty path replaces the whole payload (a bare-root leaf).
-    """
-    if not segments:
-        return value
-    head, rest = segments[0], segments[1:]
-    if isinstance(head, int):
-        items: list[Any] = list(cast("Sequence[Any]", tree))
-        items[head] = _tree_set(items[head], rest, value)
-        return items
-    node: dict[str, Any] = (
-        dict(cast("Mapping[str, Any]", tree)) if isinstance(tree, Mapping) else {}
-    )
-    # A subtree may not exist yet (e.g. injecting into a missing nested key);
-    # descend into an empty dict rather than indexing a missing key.
-    node[head] = _tree_set(node.get(head, {}), rest, value)
-    return node
-
-
-def _connect(
-    target: object, token: str, remote_env_cls: type | None
-) -> tuple[Any, Any, bool]:
-    if isinstance(target, str):
-        client = _remote_env(target, remote_env_cls)
-        return client, client.env_contract, True
-    if hasattr(target, "reset") and hasattr(target, "step"):
-        # A live env: a remote/served handle exposes a native env_contract; a local
-        # env exposes its spaces + metadata directly, so synthesize the contract from
-        # the env (tags ride in env.metadata via tag() / EnvFactory.make).
-        native = _native_contract(target)
-        contract = native if native is not None else _local_contract(target)
-        return target, contract, False
-    if hasattr(target, "make"):
-        # An EnvFactory: prepare()+make() its env (which carries the factory's tags)
-        # and drive it locally -- no serving needed to resolve a spec'd adapter.
-        env = _factory_env(target)
-        return env, _local_contract(env), False
-    address = getattr(target, "address", None)
-    if isinstance(address, str):
-        client = _remote_env(address, remote_env_cls)
-        return client, client.env_contract, True
-    raise TypeError(
-        "session()/run() expect an env object, an EnvFactory, a remote-env object, "
-        f"or an address string; got {type(target).__name__}"
-    )
-
-
-@dataclass(frozen=True)
-class _LocalEnvContract:
-    """Client-side stand-in for an env contract when driving a *local* env.
-
-    A served env publishes a native ``EnvContract`` (spaces + metadata) over the
-    handshake; a local env object exposes the same pieces directly. Bundling them
-    here lets the adapter-resolution path be identical for local and remote envs --
-    the env's tags ride in ``env.metadata`` (attached by :func:`rlmesh.adapters.tag`
-    or :meth:`rlmesh.EnvFactory.make`).
-    """
-
-    metadata: Mapping[str, Any] | None
-    observation_space: object
-    action_space: object
-    num_envs: int
-
-
-def _native_contract(env: object) -> object | None:
-    """Return a real ``env_contract`` (a remote/served handle) or ``None`` for a local env.
-
-    Reads the attribute off the type or instance ``__dict__`` rather than via
-    ``getattr``, so a gymnasium env does not trigger its deprecated
-    wrapper-attribute forwarding warning just because we probed for a contract.
-    """
-    if getattr(type(env), "env_contract", None) is not None or (
-        "env_contract" in getattr(env, "__dict__", {})
-    ):
-        try:
-            return cast("Any", env).env_contract
-        except AttributeError:
-            return None
-    return None
-
-
-def _local_contract(env: object) -> Any:
-    return _LocalEnvContract(
-        metadata=getattr(env, "metadata", None),
-        observation_space=getattr(env, "observation_space", None),
-        action_space=getattr(env, "action_space", None),
-        num_envs=_num_envs(env),
-    )
-
-
-def _num_envs(env: object) -> int:
-    # A single env has no ``num_envs``; only a vector env does. Probe the type /
-    # instance __dict__ (not a plain getattr) so a gymnasium env does not emit its
-    # deprecated wrapper-attribute forwarding warning, same as _native_contract.
-    if getattr(type(env), "num_envs", None) is not None or (
-        "num_envs" in getattr(env, "__dict__", {})
-    ):
-        try:
-            return int(cast("Any", env).num_envs or 1)
-        except (AttributeError, TypeError, ValueError):
-            return 1
-    return 1
-
-
-def _factory_env(factory: object) -> Any:
-    """Build a local env from an EnvFactory: ``prepare()`` + ``make()``.
-
-    ``EnvFactory.make`` stamps the factory's ``tags`` onto the env it returns, so a
-    spec'd model can resolve its adapter from the local env alone -- no serving.
-    """
-    from .._bootstrap.loaders import construct_authored_env
-
-    return construct_authored_env(factory)
-
-
-def _remote_env(address: str, remote_env_cls: type | None) -> Any:
-    if remote_env_cls is None:
-        from ..numpy import RemoteEnv
-
-        remote_env_cls = RemoteEnv
-    return remote_env_cls(address)
-
-
-def _adapter_env_bridge(client: Any) -> ValueBridge:
-    """The bridge for the framework the env hands its observations *in*.
-
-    The env-side encoder/decoder must match the env's own value type, never the
-    model's. A remote/served handle decodes the wire payload into its framework
-    before returning it (a torch ``RemoteEnv`` hands the loop torch tensors), so
-    its ``_bridge`` is the right re-encoder for the native plan -- and is why the
-    served cross-framework path works. A raw local env returns observations in its
-    native array type, which for a gym/gymnasium env is numpy, so default to the
-    numpy bridge: the model's framework bridge would reject numpy (the
-    cross-framework local-driving bug). A custom local env that emits another
-    framework's tensors can expose ``_bridge`` on its class to override.
-    """
-    bridge = getattr(client, "_bridge", None)
-    if bridge is not None:
-        return cast("ValueBridge", bridge)
-    from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
-
-    return _numpy_bridge
-
-
-def _obs_tag_node(node: Any, role: str) -> Any:
-    """The env obs tag node (ImageTag/StateTag/TextTag/Split) carrying ``role``.
-
-    Walks the env's published observation tags -- authoritative, so a custom or
-    prefix-less role (e.g. ``INSTRUCTION``) resolves correctly -- and returns None
-    if no leaf carries the role. Returns the node itself (not just a kind) so a
-    bare-role read can honor the env's declared image layout.
-    """
-    from ..adapters import ImageTag, Split, StateTag, TextTag
-
-    if isinstance(node, Mapping):
-        children: Any = cast("Any", node).values()
-    elif isinstance(node, tuple):
-        children = cast("Any", node)
-    else:
-        if isinstance(node, (ImageTag, StateTag, TextTag)):
-            return node if node.role == role else None
-        if isinstance(node, Split):
-            return node if any(f.role == role for f in node.fields) else None
-        return None
-    for child in children:
-        found = _obs_tag_node(child, role)
-        if found is not None:
-            return found
-    return None
-
-
-def _read_leaf(item: object, env_tags: Any) -> tuple[str, Any]:
-    """Normalize a read item to ``(role, model-input leaf)``.
-
-    A single-role model-input leaf (Image/State/Text) is taken as-is; a bare role
-    string is desugared to the env-native leaf matching the env's tag for that role.
-    """
-    from ..adapters import (
-        AdapterResolutionError,
-        Image,
-        ImageTag,
-        Split,
-        State,
-        StateTag,
-        Text,
-        TextTag,
-    )
-
-    if isinstance(item, str):
-        node = _obs_tag_node(env_tags.observation, item)
-        if isinstance(node, ImageTag):
-            # A bare image role keeps the env's native encoding -- carry the env's
-            # declared layout so the read does not transpose a chw frame to hwc.
-            return item, Image(item, layout=node.layout)
-        if isinstance(node, (StateTag, Split)):
-            return item, State(item)
-        if isinstance(node, TextTag):
-            return item, Text(item)
-        raise AdapterResolutionError(
-            f"the env declares no observation role {item!r} to read; pass an "
-            f"explicit leaf (e.g. State({item!r})) or use a role the env tags"
-        )
-    role = getattr(item, "role", None)
-    if not isinstance(role, str):
-        raise TypeError(
-            "a read item must be a role string or a single-role model-input leaf "
-            f"(Image/State/Text); got {type(item).__name__}"
-        )
-    return role, item
-
-
-def _resolve_read_adapter(
-    contract: Any, items: tuple[object, ...], trust: bool
-) -> tuple[Any, tuple[str, ...]]:
-    """Resolve a read-only adapter for ``items`` against the env contract.
-
-    Reuses the model adapter pipeline: the read items become an obs-only
-    :class:`~rlmesh.adapters.ModelSpec` input, the env's own action layout rides
-    along as a no-op output (so the obs-only intent satisfies ModelSpec without
-    inventing an action), and :func:`~rlmesh.adapters.resolve_from_contract` derives
-    the same plan a model would.
-    """
-    from ..adapters import (
-        AdapterResolutionError,
-        EnvTags,
-        ModelSpec,
-        resolve_from_contract,
-    )
-
-    if contract is None:
-        raise AdapterResolutionError(
-            "reading by role needs an env contract, but the env exposes none"
-        )
-    env_tags = EnvTags.from_metadata(getattr(contract, "metadata", None) or {})
-    if env_tags is None:
-        raise AdapterResolutionError(
-            "the env publishes no adapter tags, so there are no roles to read; "
-            "serve it with rlmesh.adapters.tag(...)"
-        )
-    pairs = [_read_leaf(item, env_tags) for item in items]
-    roles = tuple(role for role, _ in pairs)
-    if len(set(roles)) != len(roles):
-        raise AdapterResolutionError(f"a role is read more than once: {list(roles)}")
-    spec = ModelSpec(
-        input={role: leaf for role, leaf in pairs},
-        output=env_tags.action,
-    )
-    return resolve_from_contract(contract, spec, trust_entrypoints=trust), roles
-
-
-def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
-    result: Any = client.reset(seed=seed) if seed is not None else client.reset()
-    if isinstance(result, tuple):
-        pair = cast("tuple[Any, ...]", result)
-        # Only a (obs, info) pair where the second element is a Mapping is a
-        # gymnasium reset return; any other tuple is itself the observation.
-        if len(pair) == 2 and isinstance(pair[1], Mapping):
-            return pair[0], cast("Mapping[str, Any]", pair[1])
-        return pair, {}
-    return result, {}
-
-
-def _close(client: Any) -> None:
-    close = getattr(client, "close", None)
-    if callable(close):
-        close()
-
-
-def _shutdown(target: object) -> None:
-    # A sandbox session's close() stops its container; its inherited shutdown() is the
-    # remote owner-shutdown, so close() is the right teardown for an owned sandbox.
-    from .._sandbox.session import SandboxLifecycle
-
-    if isinstance(target, SandboxLifecycle):
-        target.close()
-        return
-    # decide reason-passing by binding the signature, not by try/except
-    # around the call, so a TypeError raised *inside* the callable is never swallowed.
-    import inspect
-
-    for name in ("shutdown", "close"):
-        fn = getattr(target, name, None)
-        if not callable(fn):
-            continue
-        try:
-            inspect.signature(fn).bind("model run complete")
-            accepts_reason = True
-        except (TypeError, ValueError, KeyError):  # also un-introspectable builtins
-            accepts_reason = False
-        fn("model run complete") if accepts_reason else fn()
-        return

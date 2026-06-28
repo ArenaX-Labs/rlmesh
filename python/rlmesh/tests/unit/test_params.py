@@ -14,10 +14,8 @@ from rlmesh.params import (
     MissingParamError,
     ParamError,
     UnknownParamError,
-    describe,
-    resolve,
-    to_metadata,
 )
+from rlmesh.params._resolve import describe, resolve, to_metadata
 
 
 def _make(
@@ -128,16 +126,6 @@ def test_describe_separates_declared_from_signature_tier() -> None:
     assert schema["signature_tier"] == [
         {"name": "gain", "type": "int", "default": 1, "required": False}
     ]
-
-
-def test_describe_forward_schema_is_badged_unvalidated() -> None:
-    def sink(*, lr: float = 0.1, **kwargs: object) -> None: ...
-
-    schema = describe(ParamSpec(forward=sink), _make)
-    forward = cast("dict[str, object] | None", schema["forward_schema"])
-    assert forward is not None
-    assert forward["validated"] is False
-    assert forward["accepts_kwargs"] is True
 
 
 # --- to_metadata -------------------------------------------------------------

@@ -71,12 +71,9 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         otherwise it re-plans every step.
         """
         _ = instruction, token, trust_entrypoints
-        try:
-            from rlmesh._rlmesh import PyModelClient
-        except ImportError as e:  # pragma: no cover - import guard
-            raise ImportError("Failed to import _rlmesh native module.") from e
+        from .._load_native import load_native
 
-        client = PyModelClient(
+        client = load_native("PyModelClient")(
             self._address, env_contract_of(env), self._token, execution_horizon
         )
         return remote_session(client, env, close_env=close_env)

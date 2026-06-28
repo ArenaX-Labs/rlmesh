@@ -14,10 +14,8 @@ import subprocess
 import time
 from typing import TYPE_CHECKING
 
-from .session import (
-    looks_like_gym_id,
-    start_prebuilt_container,
-)
+from ._sources import looks_like_gym_id
+from .session import start_prebuilt_container
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
@@ -199,12 +197,8 @@ class SandboxModel:
         ``connect_timeout_seconds``.
         """
         _ = instruction, token, trust_entrypoints
-        try:
-            from rlmesh._rlmesh import PyModelClient
-        except ImportError as e:  # pragma: no cover - import guard
-            raise ImportError("Failed to import _rlmesh native module.") from e
-
         from .._client._remote_model import env_contract_of, remote_session
+        from .._load_native import load_native
 
         # Only tear down on failure if THIS call started the container; a handle the
         # caller is managing (context manager / reuse) must survive a failed bind
@@ -214,7 +208,10 @@ class SandboxModel:
         try:
             contract = env_contract_of(env)
             client = self._dial_with_retry(
-                PyModelClient, contract, connect_timeout_seconds, execution_horizon
+                load_native("PyModelClient"),
+                contract,
+                connect_timeout_seconds,
+                execution_horizon,
             )
             # Hand ownership (and so container teardown on session close) only to a
             # session that actually started the container. A caller-managed handle

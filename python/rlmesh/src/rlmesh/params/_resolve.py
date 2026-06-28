@@ -148,10 +148,9 @@ def describe(
 ) -> dict[str, object]:
     """Return the schema a dashboard reads to present and sweep.
 
-    Pure, off-GPU, and importable: declared params, the free signature-derived
-    tier, and -- when ``spec.forward`` is reflectable -- a best-effort Advanced
-    tier badged *not validated*. The dependent ``variations`` axis is filled by
-    the caller from ``enumerate_params()`` (see :mod:`rlmesh.describe`).
+    Pure, off-GPU, and importable: declared params and the free signature-derived
+    tier. The dependent ``variations`` axis is filled by the caller from
+    ``enumerate_params()`` (see :mod:`rlmesh.describe`).
     """
     _, sig_params = _signature_facts(target)
     declared = {p.name for p in spec.params} if spec else set[str]()
@@ -168,9 +167,6 @@ def describe(
     return {
         "param_spec": _spec_to_dict(spec),
         "signature_tier": signature_tier,
-        "forward_schema": (
-            _forward_schema(spec.forward) if spec and spec.forward else None
-        ),
     }
 
 
@@ -335,39 +331,6 @@ def _param_to_dict(param: Param) -> dict[str, object]:
     if param.group is not None:
         out["group"] = param.group
     return out
-
-
-def _forward_schema(forward: object) -> dict[str, object] | None:
-    """Reflect a presentation-only Advanced tier from a forward target.
-
-    Best-effort: a ``"module:qualname"`` string is resolved; an unresolvable or
-    un-introspectable target yields ``None``. Always badged ``validated: False``.
-    """
-    target = forward
-    if isinstance(forward, str):
-        try:
-            from .._entrypoint import resolve_entrypoint
-
-            target = resolve_entrypoint(forward, label="forward")
-        except Exception:
-            return None
-    if not callable(target):
-        return None
-    accepts_kwargs, sig_params = _signature_facts(target)
-    return {
-        "callable": getattr(target, "__qualname__", repr(target)),
-        "validated": False,
-        "accepts_kwargs": accepts_kwargs,
-        "params": [
-            {
-                "name": name,
-                "type": _annotation_name(param.annotation, param.default),
-                "default": _json_safe(_param_default(param)),
-                "required": param.default is inspect.Parameter.empty,
-            }
-            for name, param in sig_params.items()
-        ],
-    }
 
 
 def _annotation_name(annotation: object, default: object) -> str:

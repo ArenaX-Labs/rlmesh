@@ -11,7 +11,6 @@ Emitted shape::
     {
         "param_spec": {...} | null,  # declared Params + extra policy
         "signature_tier": [...],  # free derived args (name/type/default)
-        "forward_schema": {...} | null,  # best-effort Advanced tier, if forward=
         "variations": {...},  # enumerate_params() axes, if provided
         "catalog": [...],  # enumerate_variants() sub-envs, if provided
     }
@@ -32,7 +31,7 @@ from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
 from ._variants import Variant
-from .params import describe, resolve
+from .params._resolve import describe, resolve
 
 __all__ = ["main"]
 

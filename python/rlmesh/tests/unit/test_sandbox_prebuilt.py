@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import rlmesh
 from rlmesh._sandbox import _model as model_mod
+from rlmesh._sandbox import _sources
 from rlmesh._sandbox import session as sandbox
 
 # --- resolve_source_kind -----------------------------------------------------
@@ -23,45 +24,48 @@ def test_gym_and_explicit_schemes_skip_docker_probe(
     # A gym id / gym:// / hf:// never probes Docker; explicit docker://image://
     # resolves to prebuilt without a probe either.
     monkeypatch.setattr(
-        sandbox,
+        _sources,
         "docker_image_exists",
         lambda *_a: pytest.fail("must not probe Docker"),
     )
 
-    assert sandbox.resolve_source_kind("CartPole-v1") == ("build", "CartPole-v1")
-    assert sandbox.resolve_source_kind("gym://Foo-v0") == ("build", "gym://Foo-v0")
-    assert sandbox.resolve_source_kind("ALE/Pong-v5") == ("build", "ALE/Pong-v5")
-    assert sandbox.resolve_source_kind("docker://lib:1") == ("prebuilt", "lib:1")
-    assert sandbox.resolve_source_kind("image://lib:1") == ("prebuilt", "lib:1")
+    assert _sources.resolve_source_kind("CartPole-v1") == ("build", "CartPole-v1")
+    assert _sources.resolve_source_kind("gym://Foo-v0") == ("build", "gym://Foo-v0")
+    assert _sources.resolve_source_kind("ALE/Pong-v5") == ("build", "ALE/Pong-v5")
+    assert _sources.resolve_source_kind("docker://lib:1") == ("prebuilt", "lib:1")
+    assert _sources.resolve_source_kind("image://lib:1") == ("prebuilt", "lib:1")
 
 
 def test_bare_image_tag_resolves_to_local_prebuilt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sandbox, "docker_image_exists", lambda image: True)
+    monkeypatch.setattr(_sources, "docker_image_exists", lambda image: True)
     monkeypatch.setattr(
-        sandbox, "docker_pull", lambda *_a: pytest.fail("local hit, no pull")
+        _sources, "docker_pull", lambda *_a: pytest.fail("local hit, no pull")
     )
-    assert sandbox.resolve_source_kind("libero:latest") == ("prebuilt", "libero:latest")
+    assert _sources.resolve_source_kind("libero:latest") == (
+        "prebuilt",
+        "libero:latest",
+    )
 
 
 def test_bare_image_tag_pulls_when_not_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sandbox, "docker_image_exists", lambda image: False)
+    monkeypatch.setattr(_sources, "docker_image_exists", lambda image: False)
     pulled: list[str] = []
     monkeypatch.setattr(
-        sandbox, "docker_pull", lambda image: pulled.append(image) or True
+        _sources, "docker_pull", lambda image: pulled.append(image) or True
     )
-    assert sandbox.resolve_source_kind("repo/img:tag") == ("prebuilt", "repo/img:tag")
+    assert _sources.resolve_source_kind("repo/img:tag") == ("prebuilt", "repo/img:tag")
     assert pulled == ["repo/img:tag"]
 
 
 def test_bare_image_tag_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(sandbox, "docker_image_exists", lambda image: False)
-    monkeypatch.setattr(sandbox, "docker_pull", lambda image: False)
+    monkeypatch.setattr(_sources, "docker_image_exists", lambda image: False)
+    monkeypatch.setattr(_sources, "docker_pull", lambda image: False)
     with pytest.raises(ValueError, match="not found locally or pullable"):
-        sandbox.resolve_source_kind("nope:latest")
+        _sources.resolve_source_kind("nope:latest")
 
 
 # --- prebuilt_run_cmd hardening + binding ------------------------------------

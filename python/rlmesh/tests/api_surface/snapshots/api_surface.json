@@ -235,16 +235,12 @@
             "kind": "attribute",
             "signature": "extra: ExtraPolicy"
           },
-          "forward": {
-            "kind": "attribute",
-            "signature": "forward: Any"
-          },
           "params": {
             "kind": "attribute",
             "signature": "params: tuple[Param, ...]"
           }
         },
-        "signature": "ParamSpec(*params: Param, extra: ExtraPolicy = 'forbid', forward: Any = None)",
+        "signature": "ParamSpec(*params: Param, extra: ExtraPolicy = 'forbid')",
         "stability": "Experimental"
       },
       "RANDOM_SAMPLE": {

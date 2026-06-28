@@ -2,25 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from .._value_conversion import ValueBridge
-from ..spaces import Space, space_from_spec
-from ..specs import EnvContract, SpaceSpec
-from ..types import Metadata
-from ._endpoint import Transport, normalize_connect_address
-from ._metadata import EMPTY_METADATA
+from ..spaces import Space
+from ._remote_base import ActionT, RemoteClientBase, ValueT
 
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import PyEnvClient, ResetInfo, StepInfo
-
-ValueT = TypeVar("ValueT")
-ActionT = TypeVar("ActionT")
+    from rlmesh._rlmesh import ResetInfo, StepInfo
 
 
-class RemoteEnvBase(Generic[ValueT, ActionT]):
+class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
     """Base class for backend-specific single-environment remote clients.
 
     Backend modules such as ``rlmesh.numpy`` and ``rlmesh.torch`` configure the
@@ -35,56 +27,17 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
         transport: Explicit transport selector.
     """
 
-    _bridge: ClassVar[ValueBridge]
-    _address: str
+    _observation_space: Space[ValueT] | None = None
+    _action_space: Space[ActionT] | None = None
 
-    def __init__(
-        self,
-        address: str | None = None,
-        *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
-    ) -> None:
-        self._initialize(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-            connect_timeout_seconds=None,
+    def _make_client(self, address: str, connect_timeout_seconds: float | None) -> Any:
+        from .._load_native import load_native
+
+        return load_native("PyEnvClient")(
+            address, connect_timeout_seconds=connect_timeout_seconds
         )
 
-    def _initialize(
-        self,
-        address: str | None = None,
-        *,
-        host: str | None = None,
-        port: int | None = None,
-        path: str | None = None,
-        transport: Transport | None = None,
-        connect_timeout_seconds: float | None,
-    ) -> None:
-        try:
-            from rlmesh._rlmesh import PyEnvClient
-        except ImportError as e:  # pragma: no cover - import guard
-            raise ImportError("Failed to import _rlmesh native module.") from e
-
-        self._bridge.ensure_available()
-        normalized_address = normalize_connect_address(
-            address,
-            host=host,
-            port=port,
-            path=path,
-            transport=transport,
-        )
-        self._client: PyEnvClient = PyEnvClient(
-            normalized_address,
-            connect_timeout_seconds=connect_timeout_seconds,
-        )
-        self._address = self._client.address()
-        self._env_contract: EnvContract = self._client.handshake()
+    def _post_handshake(self) -> None:
         if self._env_contract.num_envs > 1:
             num_envs = self._env_contract.num_envs
             try:
@@ -94,37 +47,6 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
                     f"Endpoint {self._address!r} serves {num_envs} environments. "
                     "Use RemoteVectorEnv instead."
                 )
-        self._observation_space: Space[ValueT] | None = None
-        self._action_space: Space[ActionT] | None = None
-
-    @property
-    def address(self) -> str:
-        """Endpoint address this client is connected to."""
-        return self._address
-
-    @property
-    def env_id(self) -> str:
-        """This connection's container id (UUIDv7).
-
-        A stable correlation identity, distinct from the human env name
-        (`env_contract.id`).
-        """
-        return self._client.env_id()
-
-    @property
-    def env_contract(self) -> EnvContract:
-        """Environment contract returned by the endpoint handshake."""
-        return self._env_contract
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for `env_contract`."""
-        return self._env_contract
-
-    @property
-    def render_mode(self) -> str | None:
-        """Configured render mode reported by the endpoint."""
-        return self._env_contract.render_mode
 
     @property
     def observation_space(self) -> Space[ValueT]:
@@ -139,24 +61,6 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
         if self._action_space is None:
             self._action_space = self._load_action_space()
         return self._action_space
-
-    @property
-    def metadata(self) -> Metadata:
-        """Endpoint metadata reported by the environment contract."""
-        metadata = self._env_contract.metadata
-        if metadata is None:
-            return EMPTY_METADATA
-        return cast(Mapping[str, object], metadata)
-
-    @property
-    def observation_space_spec(self) -> SpaceSpec:
-        """Native observation space spec reported by the endpoint."""
-        return self._space_spec("observation")
-
-    @property
-    def action_space_spec(self) -> SpaceSpec:
-        """Native action space spec reported by the endpoint."""
-        return self._space_spec("action")
 
     def reset(
         self,
@@ -175,7 +79,7 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
         """
         seeds = [seed] if seed is not None else None
         obs, info = self._client.reset(seeds=seeds, options=options)
-        return cast(ValueT, self._bridge.decode(obs)), info
+        return cast("ValueT", self._bridge.decode(obs)), info
 
     def step(self, action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]:
         """Step the remote environment with one encoded action.
@@ -190,40 +94,11 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
             self._bridge.encode(action)
         )
         return (
-            cast(ValueT, self._bridge.decode(obs)),
+            cast("ValueT", self._bridge.decode(obs)),
             reward,
             terminated,
             truncated,
             info,
-        )
-
-    def render(self, *, env_index: int = 0) -> ValueT | None:
-        """Render a frame from the remote environment.
-
-        Args:
-            env_index: Environment index to render. Single environments use
-                ``0``.
-
-        Returns:
-            A decoded render frame, or ``None`` when the environment has no frame.
-        """
-        return cast(
-            ValueT | None,
-            self._bridge.decode(self._client.render(env_index=env_index)),
-        )
-
-    def close(self) -> None:
-        """Detach this client from the remote endpoint."""
-        self._client.close()
-
-    def shutdown(self, reason: str = "owner shutdown") -> bool:
-        """Request owner-level shutdown of the remote environment endpoint."""
-        return bool(self._client.shutdown(reason))
-
-    def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}(address={self.address!r}, "
-            f"id={self._env_contract.id!r})"
         )
 
     def __enter__(self) -> RemoteEnvBase[ValueT, ActionT]:
@@ -237,21 +112,6 @@ class RemoteEnvBase(Generic[ValueT, ActionT]):
     ) -> None:
         _ = exc_type, exc_val, exc_tb
         self.close()
-
-    def _space_spec(self, kind: Literal["observation", "action"]) -> SpaceSpec:
-        return (
-            self._env_contract.observation_space
-            if kind == "observation"
-            else self._env_contract.action_space
-        )
-
-    def _load_observation_space(self) -> Space[ValueT]:
-        spec = self._space_spec("observation")
-        return cast(Space[ValueT], space_from_spec(spec, bridge=self._bridge))
-
-    def _load_action_space(self) -> Space[ActionT]:
-        spec = self._space_spec("action")
-        return cast(Space[ActionT], space_from_spec(spec, bridge=self._bridge))
 
 
 __all__ = ["ActionT", "RemoteEnvBase", "ValueT"]

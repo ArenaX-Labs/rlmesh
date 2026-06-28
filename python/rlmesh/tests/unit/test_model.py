@@ -6,7 +6,7 @@ import pytest
 
 
 def test_connect_uses_an_env_like_object_directly() -> None:
-    from rlmesh._models._eval import _connect
+    from rlmesh._models._eval import connect_env
 
     class Env:
         env_contract = "contract"
@@ -15,24 +15,24 @@ def test_connect_uses_an_env_like_object_directly() -> None:
         def step(self, action: object) -> None: ...
 
     env = Env()
-    client, contract, owns = _connect(env, "", None)
+    client, contract, owns = connect_env(env, "", None)
     assert client is env
     assert contract == "contract"
     assert owns is False  # caller-owned env objects are not closed by the loop
 
 
 def test_connect_rejects_unsupported() -> None:
-    from rlmesh._models._eval import _connect
+    from rlmesh._models._eval import connect_env
 
     with pytest.raises(TypeError, match="remote-env object, or an address string"):
-        _connect(object(), "", None)
+        connect_env(object(), "", None)
 
 
 def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> None:
     # A local env (no env_contract) yields a contract synthesized from its spaces
     # and metadata; num_envs must NOT be probed via __getattr__, so a gymnasium
     # wrapper does not emit its deprecated attribute-forwarding warning.
-    from rlmesh._models._eval import _local_contract
+    from rlmesh._models._connect import _local_contract
 
     forwarded: list[str] = []
 
@@ -58,7 +58,7 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
 
 
 def test_shutdown_passes_a_reason_when_accepted() -> None:
-    from rlmesh._models._eval import _shutdown
+    from rlmesh._models._eval import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
@@ -66,12 +66,12 @@ def test_shutdown_passes_a_reason_when_accepted() -> None:
         def shutdown(self, reason: str) -> None:
             calls.append((reason,))
 
-    _shutdown(WithReason())
+    shutdown_env(WithReason())
     assert calls == [("model run complete",)]
 
 
 def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
-    from rlmesh._models._eval import _shutdown
+    from rlmesh._models._eval import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
@@ -79,7 +79,7 @@ def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
         def shutdown(self) -> None:
             calls.append(())
 
-    _shutdown(NoReason())
+    shutdown_env(NoReason())
     assert calls == [()]
 
 
@@ -99,19 +99,19 @@ def test_backend_models_wire_their_own_remote_env() -> None:
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
     from typing import Any, cast
 
-    from rlmesh._models._eval import _reject_vector_env
+    from rlmesh._models._eval import reject_vector_env
 
     class FourEnvs:
         num_envs = 4
 
     with pytest.raises(ValueError, match="num_envs=4"):
-        _reject_vector_env(cast(Any, FourEnvs()))
+        reject_vector_env(cast(Any, FourEnvs()))
 
     class OneEnv:
         num_envs = 1
 
-    _reject_vector_env(cast(Any, OneEnv()))  # single env is fine
-    _reject_vector_env(None)  # an env with no contract is fine
+    reject_vector_env(cast(Any, OneEnv()))  # single env is fine
+    reject_vector_env(None)  # an env with no contract is fine
 
 
 def test_no_adapter_sentinel_skips_adapter_resolution_for_tagged_env() -> None:
@@ -119,25 +119,25 @@ def test_no_adapter_sentinel_skips_adapter_resolution_for_tagged_env() -> None:
 
     import rlmesh
     import rlmesh.adapters as adapt
-    from rlmesh._models._eval import _resolve_adapter
+    from rlmesh._models._eval import resolve_adapter
 
     tags = adapt.EnvTags(observation={}, action=adapt.Action())
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
-    assert _resolve_adapter(rlmesh.NO_ADAPTER, cast(Any, contract), False) is None
+    assert resolve_adapter(rlmesh.NO_ADAPTER, cast(Any, contract), False) is None
 
 
 def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
     from types import SimpleNamespace
 
     import rlmesh.adapters as adapt
-    from rlmesh._models._eval import _resolve_adapter
+    from rlmesh._models._eval import resolve_adapter
 
     tags = adapt.EnvTags(observation={}, action=adapt.Action())
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
     with pytest.raises(adapt.AdapterResolutionError, match="spec=NO_ADAPTER"):
-        _resolve_adapter(None, cast(Any, contract), False)
+        resolve_adapter(None, cast(Any, contract), False)
 
 
 def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() -> None:
@@ -171,10 +171,10 @@ def test_invalid_model_spec_mentions_no_adapter_sentinel() -> None:
     from types import SimpleNamespace
 
     import rlmesh.adapters as adapt
-    from rlmesh._models._eval import _resolve_adapter
+    from rlmesh._models._eval import resolve_adapter
 
     with pytest.raises(adapt.AdapterResolutionError, match="ModelSpec or NO_ADAPTER"):
-        _resolve_adapter(object(), cast(Any, SimpleNamespace(metadata={})), False)
+        resolve_adapter(object(), cast(Any, SimpleNamespace(metadata={})), False)
 
 
 def test_adapted_run_uses_env_bridge_for_adapter_boundary(
@@ -270,7 +270,7 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
         assert payload == {"payload": "model-obs"}
         return "model-action"
 
-    monkeypatch.setattr(eval_mod, "_resolve_adapter", lambda *_args: adapter)
+    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: adapter)
 
     result = eval_mod.Session(
         predict=predict,
@@ -342,7 +342,7 @@ def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
             seen["step_action"] = step_action
             return {"raw": "obs"}, 1.0, True, False, {}
 
-    monkeypatch.setattr(eval_mod, "_resolve_adapter", lambda *_args: Adapter())
+    monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: Adapter())
 
     result = eval_mod.Session(
         predict=lambda payload: "model-action",
