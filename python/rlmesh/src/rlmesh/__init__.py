@@ -41,6 +41,7 @@ from ._peer_info import register_python_peer_info as _register_python_peer_info
 from ._rlmesh import ServeOptions, Tensor
 from ._sandbox import SandboxOptions
 from ._server import EnvServer
+from ._variants import Variant
 from .params import Param, ParamSpec
 
 try:
@@ -76,6 +77,7 @@ __all__ = [
     "ServeOptions",
     "Session",
     "Tensor",
+    "Variant",
     "__version__",
     "adapters",
     "run",

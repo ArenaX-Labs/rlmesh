@@ -13,7 +13,13 @@ Emitted shape::
         "signature_tier": [...],  # free derived args (name/type/default)
         "forward_schema": {...} | null,  # best-effort Advanced tier, if forward=
         "variations": {...},  # enumerate_params() axes, if provided
+        "catalog": [...],  # enumerate_variants() sub-envs, if provided
     }
+
+A ``catalog`` entry is ``{"id", "params", "metadata"}`` (plus an ``"error"`` badge
+when the variant's params fail off-GPU validation). The variant's ``params`` bind
+only its identity dimensions; the consumer composes the free dials as the
+``param_spec`` names minus those keys.
 """
 
 from __future__ import annotations
@@ -21,11 +27,12 @@ from __future__ import annotations
 import argparse
 import functools
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
-from .params import describe
+from ._variants import Variant
+from .params import describe, resolve
 
 __all__ = ["main"]
 
@@ -55,20 +62,27 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _describe(obj: object, method: str) -> dict[str, object]:
-    spec, target, enumerate_fn = _resolve_target(obj, method)
+    spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
     payload = describe(spec, target)
     if enumerate_fn is not None:
         try:
             payload["variations"] = _variations(enumerate_fn())
         except Exception as exc:  # describe is best-effort and off-GPU
             payload["variations_error"] = str(exc)
+    if catalog_fn is not None:
+        try:
+            payload["catalog"] = _catalog(catalog_fn(), spec, target)
+        except Exception as exc:  # a broken catalog must not crash describe
+            payload["catalog_error"] = str(exc)
     return payload
 
 
 def _resolve_target(
     obj: object, method: str
-) -> tuple[Any, Callable[..., object], Callable[..., Any] | None]:
-    """Find the (param_spec, signature target, enumerate_params) for ``obj``.
+) -> tuple[
+    Any, Callable[..., object], Callable[..., Any] | None, Callable[..., Any] | None
+]:
+    """Find (param_spec, signature target, enumerate_params, enumerate_variants).
 
     For a factory/model *class*, the construction method is bound to a bare
     instance via ``object.__new__`` so its signature reflects without running
@@ -79,15 +93,17 @@ def _resolve_target(
         spec = getattr(obj, "params", None)
         target = _signature_target(obj, method)
         enumerate_fn = _enumerate(obj)
+        catalog_fn = _enumerate_variants(obj)
     else:
         spec = getattr(type(obj), "params", None)
         target = getattr(obj, method, None)
         enumerate_fn = _enumerate(type(obj))
+        catalog_fn = _enumerate_variants(type(obj))
 
     if not callable(target):
         # A bare make-env / predict callable: no params surface, describe as-is.
-        return None, _as_callable(obj), None
-    return spec, target, enumerate_fn
+        return None, _as_callable(obj), None, None
+    return spec, target, enumerate_fn, catalog_fn
 
 
 def _signature_target(cls: type, method: str) -> Callable[..., object] | None:
@@ -115,6 +131,61 @@ def _signature_target(cls: type, method: str) -> Callable[..., object] | None:
 def _enumerate(cls: type) -> Callable[..., Any] | None:
     fn = getattr(cls, "enumerate_params", None)
     return fn if callable(fn) else None
+
+
+def _enumerate_variants(cls: type) -> Callable[..., Any] | None:
+    fn = getattr(cls, "enumerate_variants", None)
+    return fn if callable(fn) else None
+
+
+def _catalog(
+    raw: object, spec: Any, target: Callable[..., object]
+) -> list[dict[str, object]]:
+    """Normalize ``enumerate_variants()`` to a list of catalog entries.
+
+    Each entry is nested ``{"id", "params", "metadata"}`` -- never flattened, so an
+    open metadata key cannot clobber the structural ``id``/``params`` and a future
+    top-level field stays unambiguous. ``id`` must be a unique, non-empty string: a
+    duplicate would silently collapse a by-id spawn map, so it is rejected here (the
+    caller turns the raise into ``catalog_error``, keeping describe total). Each
+    variant's ``params`` is best-effort validated against the ParamSpec + ``make``
+    signature off-GPU; an unbuildable variant gets an ``"error"`` key but keeps its
+    params verbatim, so the catalog never silently drops or rewrites an entry.
+    """
+    out: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in cast("Iterable[object]", raw):
+        if isinstance(item, Variant):
+            vid, params, meta = item.id, item.params, item.metadata
+        elif isinstance(item, Mapping):
+            entry_map = cast("Mapping[str, object]", item)
+            vid = entry_map.get("id")
+            params = entry_map.get("params", {})
+            meta = {k: v for k, v in entry_map.items() if k not in ("id", "params")}
+        else:
+            raise TypeError(
+                "enumerate_variants() must yield Variant or mapping entries; got "
+                f"{type(item).__name__}"
+            )
+        if not isinstance(vid, str) or not vid:
+            raise ValueError(f"variant id must be a non-empty str; got {vid!r}")
+        if vid in seen:
+            raise ValueError(f"duplicate variant id {vid!r}")
+        seen.add(vid)
+        entry: dict[str, object] = {
+            "id": vid,
+            "params": dict(cast("Mapping[str, object]", params)),
+            "metadata": dict(meta),
+        }
+        try:
+            # Off-GPU buildability lint: run the same gate as a real bind, but keep
+            # the author's params verbatim (resolve() fills free-dial defaults, which
+            # a variant must not advertise -- it binds only identity params).
+            resolve(spec, target, cast("Mapping[str, object]", params))
+        except Exception as exc:
+            entry["error"] = str(exc)
+        out.append(entry)
+    return out
 
 
 def _variations(raw: object) -> dict[str, list[object]]:

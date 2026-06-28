@@ -33,6 +33,15 @@ class EnvFactory(ABC):
     them, and a bad binding is rejected before construction (see
     :mod:`rlmesh.params`). ``params = None`` (default) keeps today's blind
     passthrough to ``make``.
+
+    Optionally implement an ``enumerate_variants()`` classmethod returning an
+    iterable of :class:`~rlmesh.Variant` -- the finite, named catalog of concrete
+    sub-environments this factory contains (e.g. one per benchmark task). Each
+    variant binds only its identity-defining ``params``; the remaining free dials
+    stay in ``params`` (the ``ParamSpec`` is always the full validation surface --
+    never describe the same dimension in both ``enumerate_variants`` and
+    ``enumerate_params``). Import heavy/optional deps lazily inside the method, as
+    ``make`` does, so ``describe`` stays off-GPU. See :mod:`rlmesh.describe`.
     """
 
     tags: ClassVar[EnvTags | None] = None

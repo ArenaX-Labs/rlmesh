@@ -112,6 +112,7 @@ depends = ["fix:rust", "fix:python", "fmt"]
 
 [tasks."fix:rust"]
 description = "Apply safe Rust fixes"
+env = { CARGO_TARGET_DIR = "target/clippy", CARGO_INCREMENTAL = "0" }
 run = "cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged --allow-no-vcs -- -D warnings"
 
 [tasks."fix:python"]
@@ -127,6 +128,7 @@ depends = ["lint:rust", "lint:python", "lint:proto", "lint:spelling", "lint:deps
 
 [tasks."lint:rust"]
 description = "Lint Rust code"
+env = { CARGO_TARGET_DIR = "target/clippy", CARGO_INCREMENTAL = "0" }
 run = "cargo clippy --workspace --all-targets -- -D warnings"
 
 [tasks."lint:python"]
