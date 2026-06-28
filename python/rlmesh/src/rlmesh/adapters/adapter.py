@@ -176,28 +176,14 @@ class AdapterBase(ABC, Generic[ActionT]):
     def transform_action(self, raw_action: object) -> ActionT:
         """Convert a model action output into the env action."""
 
-    def reset(self, env_index: int | None = None) -> None:
-        """Clear episode-scoped state, optionally for a single lane.
+    def reset(self) -> None:
+        """Clear episode-scoped state at an episode boundary.
 
-        ``env_index`` identifies the vector lane whose episode rolled, or
-        ``None`` for a whole-vector reset. The base adapter holds no
-        episode-scoped state; stateful custom adapters override this and wire it
-        to the model worker's per-lane reset so a single lane's autoreset never
-        wipes the other still-running lanes' state.
+        The base adapter holds no episode-scoped state; a stateful custom adapter
+        overrides this to clear its per-episode state. It is driven on the
+        single-env local loop, so there is no per-lane bookkeeping to do (the
+        served path stacks natively with episode-keyed buffers in the core).
         """
-
-    @property
-    def is_stateful(self) -> bool:
-        """Whether the adapter carries per-stream state across steps.
-
-        A stateful adapter must keep affinity to its lane (one instance per
-        ``(session, route, env_index)``) and so cannot yet be shared across
-        the lanes of a vector env. Custom adapters default to stateful (the
-        safe assumption); :class:`Adapter` derives this from its frame
-        history. The per-lane affinity manager that makes vectorized stateful
-        adapters correct is not implemented yet.
-        """
-        return True
 
     def describe(self) -> str:
         """Return a human-readable summary of the adapter."""
@@ -380,23 +366,14 @@ class Adapter(AdapterBase[NumpyArray]):
         # array or a Python list).
         return cast("NumpyArray", out.astype(np.dtype(shim.dtype)))
 
-    def reset(self, env_index: int | None = None) -> None:
-        """Clear the frame-history buffers at an episode boundary.
+    def reset(self) -> None:
+        """Clear the host-side frame-history buffers at an episode boundary.
 
-        The rolling buffers are not lane-indexed (the per-lane affinity manager
-        is unimplemented, see :attr:`is_stateful`). A stateful adapter is now
-        rejected on ``num_envs>1`` at :func:`resolve_route_adapter`, so a resolved
-        stateful adapter is always a single lane (env_index 0). Clear on a
-        whole-vector reset or lane 0's roll; ignore any other lane so a
-        mid-vector autoreset never wipes the shared buffers.
+        Used on the local per-episode loop (a single env); the served path stacks
+        natively with episode-keyed buffers in the core, so this is the
+        local-path counterpart.
         """
-        if env_index is None or env_index == 0:
-            self._buffers.clear()
-
-    @property
-    def is_stateful(self) -> bool:
-        """A resolved adapter is stateful only when it stacks frame history."""
-        return bool(self._stacks)
+        self._buffers.clear()
 
     def _apply_action_enc(self, raw_action: object) -> object:
         if not self._action_enc_shims:

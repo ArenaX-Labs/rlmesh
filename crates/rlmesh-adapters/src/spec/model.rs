@@ -14,7 +14,7 @@ use super::action::Action;
 use super::leaf_codec::leaf_codec;
 
 pub use custom::Custom;
-pub use image::Image;
+pub use image::{Image, Normalize};
 pub use state::{ConcatPart, State, StateContainer};
 pub use text::{Text, TextContainer};
 

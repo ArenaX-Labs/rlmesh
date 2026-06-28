@@ -53,4 +53,9 @@ pub struct EnvFeatures {
     /// Observation leaves of an unrecognized kind (see [`UnknownFeature`]).
     /// Empty on any spec this core fully understands.
     pub unknown: Vec<UnknownFeature>,
+    /// Non-fatal hints derived from the env declaration alone (e.g. an image
+    /// layout that looks mis-declared given its shape). Surfaced — not raised —
+    /// at both join seams: authoring (`adapt.tag`) and serve-time resolve. Empty
+    /// when nothing looks off.
+    pub advisories: Vec<String>,
 }

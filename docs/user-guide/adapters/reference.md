@@ -54,7 +54,7 @@ Other vocabularies:
 | Fit mode     | `stretch`, `crop`, `pad` | (none)                              | how to reconcile an aspect mismatch |
 | dtype        | any NumPy dtype name     | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`            |
 
-Normalization has two knobs that point at the same behavior: `normalize=True` maps 8-bit pixels into `normalize_range` (default `[0, 1]`); setting `normalize_range` alone (e.g. `(-1.0, 1.0)`) also turns normalization on. The flag is only needed to request the default range without spelling it out -- it is not an off-switch.
+Normalization is one overloaded field, `normalize`: `False` (off, the default), `True` (the conventional `[0, 1]`), or a `(low, high)` pair (e.g. `(-1.0, 1.0)`) to map into a specific range. One field, so an on/off flag can never disagree with a range, and `False` is an authoritative off-switch.
 
 ## The environment side
 
@@ -169,25 +169,24 @@ spec = adapt.ModelSpec(
 
 {class}`~rlmesh.adapters.Image` -- a camera input. Every field:
 
-| Field                   | Default         | What it does                                                                  | When to use                                                    |
-| ----------------------- | --------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `role` (1st positional) | --              | match an env image                                                            | always                                                         |
-| `size`                  | `None`          | sugar that sets `height` **and** `width`                                      | square targets (pass `size` _or_ `height`/`width`, not both)   |
-| `height`                | `None`          | target height (keep env height if `None`)                                     | non-square target                                              |
-| `width`                 | `None`          | target width                                                                  | non-square target                                              |
-| `layout`                | `"hwc"`         | axis order the model wants                                                    | the model wants `chw`                                          |
-| `channels`              | `None`          | channel count the model wants (3 RGB, 1 gray)                                 | make a channel mismatch an error instead of silent             |
-| `dtype`                 | `"uint8"`       | NumPy dtype of the result                                                     | the model wants floats                                         |
-| `normalize`             | `False`         | map 8-bit pixels into `normalize_range`                                       | scale `[0,255]` → `[0,1]`                                      |
-| `normalize_range`       | `None`          | target range (implies `normalize`)                                            | signed inputs, e.g. `(-1.0, 1.0)`                              |
-| `lead_dims`             | `0`             | leading singleton axes to add                                                 | the model wants a batch/time axis                              |
-| `upside_down`           | `False`         | the model was trained on 180°-rotated frames                                  | training-time flip                                             |
-| `resample`              | `"bilinear_aa"` | resize filter: `bilinear_aa` (PIL) or `bilinear` (OpenCV/torch)               | match the training pipeline                                    |
-| `allow_upscale`         | `False`         | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                |
-| `fit`                   | `None`          | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                             |
-| `optional`              | `False`         | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
-| `absent_fill`           | `None`          | fill value for the blank frame                                                | non-black fill                                                 |
-| `stack`                 | `1`             | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
+| Field                   | Default      | What it does                                                                  | When to use                                                    |
+| ----------------------- | ------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `role` (1st positional) | --           | match an env image                                                            | always                                                         |
+| `size`                  | `None`       | sugar that sets `height` **and** `width`                                      | square targets (pass `size` _or_ `height`/`width`, not both)   |
+| `height`                | `None`       | target height (keep env height if `None`)                                     | non-square target                                              |
+| `width`                 | `None`       | target width                                                                  | non-square target                                              |
+| `layout`                | `"hwc"`      | axis order the model wants                                                    | the model wants `chw`                                          |
+| `channels`              | `None`       | channel count the model wants (3 RGB, 1 gray)                                 | make a channel mismatch an error instead of silent             |
+| `dtype`                 | `"uint8"`    | NumPy dtype of the result                                                     | the model wants floats                                         |
+| `normalize`             | `False`      | map 8-bit pixels: `True` → `[0,1]`, or a `(low, high)` pair → that range      | scale `[0,255]`; a pair for signed inputs, e.g. `(-1.0, 1.0)`  |
+| `lead_dims`             | `0`          | leading singleton axes to add                                                 | the model wants a batch/time axis                              |
+| `upside_down`           | `False`      | the model was trained on 180°-rotated frames                                  | training-time flip                                             |
+| `resample`              | `"bilinear"` | resize filter: `bilinear` (OpenCV/torch) or `bilinear_aa` (PIL)               | match the training pipeline                                    |
+| `allow_upscale`         | `False`      | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                |
+| `fit`                   | `None`       | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                             |
+| `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
+| `absent_fill`           | `None`       | fill value for the blank frame                                                | non-black fill                                                 |
+| `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
 
@@ -275,7 +274,7 @@ Each conversion the resolver can perform falls into one of four policies. **Sile
 | -------------------------------------- | ------------- | ----------------------------------------------------------------------------------- |
 | Image resize (target ≤ env resolution) | SILENT        | a smaller `size`/`height`/`width`                                                   |
 | Layout transpose (`hwc` ↔ `chw`)       | SILENT        | model `layout` differs from the env's                                               |
-| Normalize + `normalize_range`          | SILENT        | `normalize` or `normalize_range` set                                                |
+| Normalize                              | SILENT        | `normalize` set (`True` or a `(low, high)` range)                                   |
 | dtype cast                             | SILENT        | model `dtype` differs from the env's                                                |
 | Rotation encoding conversion           | SILENT        | model encoding differs (both known)                                                 |
 | Range map (affine)                     | SILENT        | model `range` set and env range known                                               |
@@ -307,8 +306,10 @@ adapt.Image(adapt.IMAGE_PRIMARY, size=256, stack=4)
 Stacking is host-side on the local path and native in the core on the served path. Either way the environment still sends **one frame per step** -- nothing extra crosses the wire.
 
 ```{caution}
-Frame stacking is host-side state. A spec that sets `stack` round-trips through `to_json`, but
-the native resolution ignores it; stacking happens in the adapter, not the core.
+Frame stacking is episode state held outside the model: host-side on the local path, in the core
+on the served path (an episode-keyed buffer per vector lane). The spec's `stack` round-trips through
+`to_json`, the buffer clears on `reset`, and the env still sends one frame per step, so no frames
+leak across episodes or lanes and nothing extra crosses the wire.
 ```
 
 ## Match your shape

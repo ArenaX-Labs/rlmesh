@@ -548,7 +548,7 @@ pub fn adapters_resolve(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> None: ...
+def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[str]: ...
 "#
     )
 )]
@@ -557,7 +557,7 @@ pub fn adapters_join_check(
     env_tags_json: &str,
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
-) -> PyResult<()> {
+) -> PyResult<Vec<String>> {
     let tags: EnvTags = de_spec("env tags", env_tags_json)?;
     // Authoring-time check is a PUBLISH door: an env validating its own tags must
     // see a typo or unbuildable kind now, not relay it to a peer.
@@ -565,8 +565,11 @@ pub fn adapters_join_check(
         .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
     let obs_view = SpaceView::from(&crate::spaces::parse_space(observation_space)?);
     let action_view = SpaceView::from(&crate::spaces::parse_space(action_space)?);
-    join(&tags, &obs_view, &action_view).map_err(|err| PyValueError::new_err(err.to_string()))?;
-    Ok(())
+    // Hard tag/space disagreements still raise; non-fatal hints (e.g. a layout
+    // that looks mis-declared) come back so the author sees them at `tag()` time.
+    let features = join(&tags, &obs_view, &action_view)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+    Ok(features.advisories)
 }
 
 /// Validate and canonicalize a spec's JSON through the Rust serde codec.

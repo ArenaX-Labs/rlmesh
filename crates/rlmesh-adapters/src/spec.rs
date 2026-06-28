@@ -38,8 +38,8 @@ pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeatu
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
 pub use layouts::{FitMode, ImageLayout};
 pub use model::{
-    ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, State, StateContainer, Text,
-    TextContainer,
+    ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, Normalize, State, StateContainer,
+    Text, TextContainer,
 };
 pub use rotations::RotationEncoding;
 pub use strict::{

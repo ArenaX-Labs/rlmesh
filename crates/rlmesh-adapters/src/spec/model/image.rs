@@ -1,8 +1,11 @@
 //! An image input expected by a model.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::ser::SerializeSeq;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::spec::layouts::ImageLayout;
 use crate::spec::{AcceptSet, FitMode};
@@ -11,8 +14,88 @@ fn default_uint8() -> String {
     "uint8".to_owned()
 }
 
-fn default_bilinear_aa() -> String {
-    "bilinear_aa".to_owned()
+fn default_bilinear() -> String {
+    "bilinear".to_owned()
+}
+
+/// Whether (and into what range) 8-bit pixels are mapped before the dtype cast.
+///
+/// One wire field with three forms, so the range can never disagree with an
+/// on/off flag (the old `normalize` + `normalize_range` pair could):
+/// `false` (the default) is off, `true` normalizes into the conventional
+/// `[0, 1]`, and a `[min, max]` pair normalizes into that range. `false` is an
+/// authoritative off-switch — there is no second field that can force it back on.
+/// Mirrors `AcceptSet`'s scalar-or-list wire shape (here bool-or-pair).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum Normalize {
+    /// No normalization (the default); pixels pass through to the dtype cast.
+    #[default]
+    Off,
+    /// Normalize into the conventional `[0, 1]` range (wire: `true`).
+    Unit,
+    /// Normalize into an explicit `[min, max]` range (wire: `[min, max]`).
+    Range(f64, f64),
+}
+
+impl Normalize {
+    /// The `(min, max)` range to map `[0, 255]` into, or `None` when off.
+    pub fn range(&self) -> Option<(f64, f64)> {
+        match self {
+            Normalize::Off => None,
+            Normalize::Unit => Some((0.0, 1.0)),
+            Normalize::Range(low, high) => Some((*low, *high)),
+        }
+    }
+}
+
+impl Serialize for Normalize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Always emitted (like `resample`), so the resolved choice is explicit on
+        // the wire and never diverges by reader default. `false`/`true` keep byte
+        // parity with the old `normalize` bool; a range is a `[min, max]` pair.
+        match self {
+            Normalize::Off => serializer.serialize_bool(false),
+            Normalize::Unit => serializer.serialize_bool(true),
+            Normalize::Range(low, high) => {
+                let mut seq = serializer.serialize_seq(Some(2))?;
+                seq.serialize_element(low)?;
+                seq.serialize_element(high)?;
+                seq.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Normalize {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct NormalizeVisitor;
+
+        impl<'de> Visitor<'de> for NormalizeVisitor {
+            type Value = Normalize;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a bool or a normalize range [min, max]")
+            }
+
+            fn visit_bool<E: de::Error>(self, value: bool) -> Result<Normalize, E> {
+                Ok(if value {
+                    Normalize::Unit
+                } else {
+                    Normalize::Off
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Normalize, A::Error> {
+                // Reuse the shared range deserializer so a `[min, max]` here gets
+                // the same domain-friendly errors and reversed-range guard as
+                // every other range field (see `spec::num::RangeVisitor`).
+                let (low, high) = crate::spec::num::RangeVisitor.visit_seq(seq)?;
+                Ok(Normalize::Range(low, high))
+            }
+        }
+
+        deserializer.deserialize_any(NormalizeVisitor)
+    }
 }
 
 /// Upper bound on frame-stacking depth (mirrors the Python `_MAX_STACK`). A
@@ -55,30 +138,25 @@ pub struct Image {
     pub channels: Option<u32>,
     #[serde(default = "default_uint8")]
     pub dtype: String,
-    /// Map 8-bit pixels into `normalize_range` (default `[0, 1]`) before casting.
-    /// Setting `normalize_range` alone also turns normalization on, so this flag
-    /// is only needed to request the default `[0, 1]` range without spelling it
-    /// out (it is *not* an off-switch for a declared range).
+    /// Whether (and into what range) 8-bit pixels are mapped before the dtype
+    /// cast: `false` (off, the default), `true` (the conventional `[0, 1]`), or a
+    /// `[min, max]` pair for a model trained on a different range (e.g.
+    /// `[-1, 1]`). One field, so an on/off flag can never disagree with a range;
+    /// `false` is an authoritative off-switch.
     #[serde(default)]
-    pub normalize: bool,
-    /// Target value range, mapped from `[0, 255]`. Setting it implies
-    /// normalization even when `normalize` is false. Defaults to `[0, 1]` (the
-    /// conventional 8-bit normalization); set e.g. `[-1, 1]` for a model trained
-    /// on signed inputs. Additive over the pinned wire format (omitted when unset).
-    #[serde(
-        default,
-        deserialize_with = "crate::spec::num::de_opt_range",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub normalize_range: Option<(f64, f64)>,
+    pub normalize: Normalize,
     #[serde(default, deserialize_with = "crate::spec::num::de_count")]
     pub lead_dims: u32,
     #[serde(default)]
     pub upside_down: bool,
-    /// Resize algorithm the model's training pipeline used. A constrained
-    /// string (not an enum) so future additive values degrade to a typed
-    /// resolution error on older cores instead of a parse failure.
-    #[serde(default = "default_bilinear_aa")]
+    /// Resize algorithm the model's training pipeline used. Defaults to
+    /// `"bilinear"` (the plain half-pixel-center bilinear that torch/OpenCV
+    /// pipelines use, which most trained policies match); set `"bilinear_aa"` for
+    /// the antialiased PIL filter. A constrained string (not an enum) so future
+    /// additive values degrade to a typed resolution error on older cores instead
+    /// of a parse failure. Always emitted, so the resolved filter is explicit on
+    /// the wire and never diverges by reader default.
+    #[serde(default = "default_bilinear")]
     pub resample: String,
     /// Permit the resize to *upscale* (interpolate detail the env image does not
     /// have). Off by default: a model target larger than the env's native
@@ -217,24 +295,61 @@ mod tests {
     }
 
     #[test]
-    fn normalize_range_rejects_reversed_and_accepts_valid() {
-        // A reversed range silently inverts pixel polarity at serve time; the
-        // shared range deserializer rejects min > max at the wire boundary.
+    fn normalize_overloads_bool_and_range() {
+        use crate::spec::model::image::Normalize;
+
+        // Absent -> Off (the default), and Off serializes back as `false` (byte
+        // parity with the old always-emitted `normalize` bool).
+        let off = image("");
+        let ModelLeaf::Image(img) = &off else {
+            panic!("expected image")
+        };
+        assert_eq!(img.normalize, Normalize::Off);
+        assert_eq!(img.normalize.range(), None);
         assert!(
-            serde_json::from_str::<ModelLeaf>(
-                r#"{"type": "image", "role": "image/primary", "normalize_range": [1.0, 0.0]}"#
-            )
-            .is_err()
+            serde_json::to_string(&off)
+                .unwrap()
+                .contains("\"normalize\":false")
         );
-        // A normal (and a degenerate equal) range still parse.
-        let signed = image(r#", "normalize_range": [-1.0, 1.0]"#);
+
+        // `true` -> Unit -> [0, 1].
+        let unit = image(r#", "normalize": true"#);
+        let ModelLeaf::Image(img) = &unit else {
+            panic!("expected image")
+        };
+        assert_eq!(img.normalize, Normalize::Unit);
+        assert_eq!(img.normalize.range(), Some((0.0, 1.0)));
+        assert!(
+            serde_json::to_string(&unit)
+                .unwrap()
+                .contains("\"normalize\":true")
+        );
+
+        // A `[min, max]` pair -> Range, round-tripping as the pair.
+        let signed = image(r#", "normalize": [-1.0, 1.0]"#);
         let ModelLeaf::Image(img) = &signed else {
             panic!("expected image")
         };
-        assert_eq!(img.normalize_range, Some((-1.0, 1.0)));
+        assert_eq!(img.normalize, Normalize::Range(-1.0, 1.0));
+        assert_eq!(img.normalize.range(), Some((-1.0, 1.0)));
+        assert!(
+            serde_json::to_string(&signed)
+                .unwrap()
+                .contains("\"normalize\":[-1.0,1.0]")
+        );
+
+        // A reversed range silently inverts pixel polarity; the shared range
+        // deserializer rejects min > max at the wire boundary. A degenerate equal
+        // range still parses.
         assert!(
             serde_json::from_str::<ModelLeaf>(
-                r#"{"type": "image", "role": "image/primary", "normalize_range": [0.5, 0.5]}"#
+                r#"{"type": "image", "role": "image/primary", "normalize": [1.0, 0.0]}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "normalize": [0.5, 0.5]}"#
             )
             .is_ok()
         );

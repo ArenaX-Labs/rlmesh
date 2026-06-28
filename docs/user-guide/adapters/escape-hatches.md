@@ -110,7 +110,7 @@ class ChunkEnsembleAdapter(adapt.AdapterBase):
         ...  # remember the chunk, ensemble every live chunk's row for this step
         return self._inner.transform_action(ensembled)  # spec-driven conversion
 
-    def reset(self, env_index=None):
+    def reset(self):
         self._chunks.clear()  # never ensemble across episodes
 ```
 
@@ -120,7 +120,7 @@ Build it by resolving first, then wrapping:
 adapter = ChunkEnsembleAdapter(adapt.resolve(tags, env.observation_space, env.action_space, spec))
 ```
 
-A custom adapter reports `is_stateful` as `True` by default (the safe assumption). That means it must keep affinity to its stream: override `reset` to clear episode-scoped state, and wire it to the per-episode boundary (the model worker's `on_episode_end`) so a finished episode never bleeds into the next. `reset`'s `env_index` names the vector lane whose episode rolled (`None` is a whole-vector reset); the per-lane affinity manager that makes a stateful adapter safe across the lanes of a vector env is not implemented yet, so run one instance per lane for now.
+A stateful custom adapter keeps affinity to its stream: override `reset` to clear episode-scoped state. It is wired to the per-episode boundary (the model worker's `on_episode_end`) so a finished episode never bleeds into the next, and it runs on the single-env local loop, so there is no per-lane bookkeeping to do. On the served path, frame-stacking is handled natively in the core with episode-keyed buffers, so a vectorized route needs no per-adapter affinity.
 
 The full worked example (the spec, the ensemble math, and the factory that resolves then wraps) is {source}`examples/python/vla_adapters/models/act.py`.
 

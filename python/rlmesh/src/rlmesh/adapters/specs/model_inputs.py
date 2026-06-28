@@ -7,6 +7,7 @@ multi-part state leaf (a single tensor concatenated from several role parts).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
@@ -28,26 +29,33 @@ class Image:
         role: Semantic role matched against env image features.
         height: Target image height, or None to keep the env height.
         width: Target image width, or None to keep the env width.
-        layout: Axis layout the model expects.
+        layout: Axis layout the model expects (``"hwc"`` the default, or
+            ``"chw"``). This is the model author's declaration: when it differs
+            from the env's layout the adapter transposes silently to match, so a
+            model that wants ``"chw"`` must say so -- an omitted ``layout`` means
+            ``"hwc"`` and the env's frame is fed through unchanged. (``channels``
+            guards the channel *count*, not the axis order.)
         channels: Channel count the model expects (e.g. 3 for RGB, 1 for
             grayscale). When set, a resolve error if the env image differs;
             the adapter does not convert between channel counts.
         dtype: NumPy dtype name the model expects.
-        normalize: Map 8-bit pixel values into ``normalize_range`` (default
-            ``[0, 1]``) before casting. Setting ``normalize_range`` alone also
-            turns normalization on, so this flag is only needed to request the
-            default range without spelling it out (not an off-switch).
-        normalize_range: Target range, mapped from ``[0, 255]``; implies
-            normalization even when ``normalize`` is False. Defaults to
-            ``[0, 1]``; set e.g. ``(-1.0, 1.0)`` for a model trained on signed
-            inputs.
+        normalize: Whether (and into what range) to map 8-bit pixel values
+            before casting: ``False`` (off, the default), ``True`` (the
+            conventional ``[0, 1]``), or a ``(low, high)`` pair for a model
+            trained on a different range (e.g. ``(-1.0, 1.0)``). One field, so an
+            on/off flag can never disagree with a range; ``False`` is an
+            authoritative off-switch.
         lead_dims: Number of leading singleton axes to add (batch/time).
         upside_down: Whether the model was trained on images rotated 180
-            degrees relative to the canonical upright orientation.
+            degrees from the canonical upright orientation (a true rotation --
+            rows and columns reversed -- not a vertical flip). Declared on both
+            ends: the adapter rotates only when the env and model disagree, so an
+            env that already renders upside-down pairs with a model that also
+            sets ``upside_down`` and no rotation happens.
         resample: Resize algorithm the model's training pipeline used:
-            ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible)
-            or ``"bilinear"`` (4-tap half-pixel-center bilinear,
-            OpenCV/torch-compatible).
+            ``"bilinear"`` (4-tap half-pixel-center bilinear, OpenCV/torch-
+            compatible; the default, which most trained policies match) or
+            ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible).
         allow_upscale: Permit a target larger than the env's native resolution
             (interpolating detail that is not there). Off by default: an
             upscaling target is a resolve error unless this is set.
@@ -77,11 +85,10 @@ class Image:
     layout: ImageLayout = "hwc"
     channels: int | None = None
     dtype: str = "uint8"
-    normalize: bool = False
-    normalize_range: tuple[float, float] | None = None
+    normalize: bool | tuple[float, float] = False
     lead_dims: int = 0
     upside_down: bool = False
-    resample: str = "bilinear_aa"
+    resample: str = "bilinear"
     allow_upscale: bool = False
     fit: FitMode | Sequence[FitMode] | None = None
     optional: bool = False
@@ -101,6 +108,26 @@ class Image:
         # A single fit stays a string; a preference list normalizes to a tuple
         # (hashable, round-trips by value) -- mirrors the rotation accept-set.
         object.__setattr__(self, "fit", one_or_many(self.fit))
+        # normalize overloads a bool with a (low, high) range. A pair coerces to a
+        # validated float tuple (finite, low <= high), mirroring the Rust codec's
+        # range guard; a bool passes through, and False stays the off-switch.
+        norm = self.normalize
+        if norm is not True and norm is not False:
+            try:
+                low, high = norm
+            except (TypeError, ValueError):
+                raise ValueError(
+                    "Image.normalize must be a bool or a (low, high) range, "
+                    f"got {norm!r}"
+                ) from None
+            low, high = float(low), float(high)
+            if not (math.isfinite(low) and math.isfinite(high)):
+                raise ValueError("Image.normalize range must be finite")
+            if low > high:
+                raise ValueError(
+                    f"Image.normalize range min must be <= max, got ({low}, {high})"
+                )
+            object.__setattr__(self, "normalize", (low, high))
 
 
 @dataclass(frozen=True)
@@ -206,6 +233,22 @@ class Concat:
     ) -> None:
         if not parts:
             raise ValueError("Concat needs at least one part")
+        # A State used as a part contributes only its part fields; its container
+        # fields (pad_to/dtype/reshape/container) belong on the Concat. Catch a
+        # non-default one at construction rather than letting it be silently
+        # dropped (the wire codec also rejects it, but later and less obviously).
+        for part in parts:
+            if isinstance(part, State) and (
+                part.pad_to is not None
+                or part.dtype != "float32"
+                or part.reshape is not None
+                or part.container != "array"
+            ):
+                raise ValueError(
+                    f"Concat part {part.role!r}: a State used as a part must keep "
+                    "its container fields (pad_to, dtype, reshape, container) at "
+                    "their defaults; set them on the Concat instead"
+                )
         object.__setattr__(self, "parts", tuple(parts))
         object.__setattr__(self, "pad_to", pad_to)
         object.__setattr__(self, "dtype", dtype)

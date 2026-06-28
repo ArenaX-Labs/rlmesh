@@ -25,6 +25,7 @@ def test_root_namespace_is_small() -> None:
         "Session",
         "Tensor",
         "Variant",
+        "Vector",
         "__version__",
         "adapters",
         "run",

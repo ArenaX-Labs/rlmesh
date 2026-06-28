@@ -109,7 +109,11 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         "width": item.width,
         "layout": item.layout,
         "dtype": item.dtype,
-        "normalize": item.normalize,
+        # normalize overloads bool|range: a range pair emits as a [low, high]
+        # list, a bool stays a bool (byte parity with the old always-emitted flag).
+        "normalize": list(item.normalize)
+        if isinstance(item.normalize, tuple)
+        else item.normalize,
         "lead_dims": item.lead_dims,
         "upside_down": item.upside_down,
         "resample": item.resample,
@@ -126,8 +130,6 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["fit"] = item.fit
     if item.channels is not None:
         image["channels"] = item.channels
-    if item.normalize_range is not None:
-        image["normalize_range"] = list(item.normalize_range)
     if item.optional:
         image["optional"] = True
     if item.absent_fill is not None:
@@ -290,6 +292,15 @@ def _part_from_dict(item: object) -> ConcatPart:
     )
 
 
+def _decode_normalize(raw: Any) -> bool | tuple[float, float]:
+    """Decode the overloaded ``normalize`` field: a bool, or a ``[low, high]`` list."""
+    if isinstance(raw, (list, tuple)):
+        pair = to_pair(raw)
+        assert pair is not None  # a present list/tuple always yields a pair
+        return pair
+    return bool(raw)
+
+
 def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
     """Build a model input leaf from canonical (Rust-validated) dict form."""
     kind = data["type"]
@@ -301,13 +312,12 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             layout=data.get("layout", "hwc"),
             channels=data.get("channels"),
             dtype=data.get("dtype", "uint8"),
-            normalize=bool(data.get("normalize", False)),
-            normalize_range=to_pair(data.get("normalize_range")),
+            normalize=_decode_normalize(data.get("normalize", False)),
             optional=bool(data.get("optional", False)),
             absent_fill=data.get("absent_fill"),
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
-            resample=data.get("resample", "bilinear_aa"),
+            resample=data.get("resample", "bilinear"),
             allow_upscale=bool(data.get("allow_upscale", False)),
             fit=one_or_many(data.get("fit")),
             stack=int(data.get("stack", 1)),

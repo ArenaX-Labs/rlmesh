@@ -120,6 +120,13 @@ fn image_dims(tensor: &Tensor) -> Result<(usize, usize, usize), ApplyError> {
 }
 
 /// Rotate an HWC image by 180 degrees.
+///
+/// A true 180° rotation (rows AND columns reversed), intentional — NOT a
+/// vertical flip. `upside_down` is a both-ends *declaration*: the env tag and
+/// the model `Image` each state their stored orientation, and this fires only
+/// when they differ (`flip = env.upside_down != model.upside_down`, see
+/// `resolver/image.rs`). Don't "fix" this into a vertical flip — that would
+/// silently mirror every frame left-right for everyone relying on rot180.
 pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
     let (height, width, channels) = image_dims(tensor)?;
     let mut indices = Vec::with_capacity(tensor.numel());

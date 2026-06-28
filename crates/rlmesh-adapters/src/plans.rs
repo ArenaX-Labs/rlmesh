@@ -71,6 +71,13 @@ pub struct ResolvedAdapter {
     /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
     /// the per-apply data-loss notes. Empty on a fully-understood spec.
     resolve_advisories: Vec<String>,
+    /// Hints the env's own declaration raised at join (e.g. an image layout that
+    /// looks mis-declared given its shape). Carried from [`EnvFeatures`] so the
+    /// serve side surfaces the same note the author saw. Surfaced through
+    /// [`advisories`](Self::advisories) but kept out of [`describe`](Self::describe):
+    /// these are not *dropped* env modalities, so they must not land under that
+    /// header (which conformance vectors pin).
+    join_advisories: Vec<String>,
 }
 
 impl ResolvedAdapter {
@@ -83,6 +90,7 @@ impl ResolvedAdapter {
         obs_plans: Vec<ObsPlan>,
         action_plan: ActionPlan,
         resolve_advisories: Vec<String>,
+        join_advisories: Vec<String>,
     ) -> Self {
         let stacked = obs_plans
             .iter()
@@ -100,6 +108,7 @@ impl ResolvedAdapter {
             action_plan,
             stacked,
             resolve_advisories,
+            join_advisories,
         }
     }
 
@@ -129,8 +138,10 @@ impl ResolvedAdapter {
     /// failing. Empty when nothing noteworthy happened.
     pub fn advisories(&self) -> Vec<String> {
         // Resolve-time advisories (unreferenced unknown kinds) first, then the
-        // per-apply data-loss notes derived from the plans.
+        // env-declaration hints raised at join, then the per-apply data-loss
+        // notes derived from the plans.
         let mut all = self.resolve_advisories.clone();
+        all.extend(self.join_advisories.iter().cloned());
         all.extend(describe::adapter_advisories(self));
         all
     }

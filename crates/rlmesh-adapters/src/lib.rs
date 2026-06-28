@@ -53,8 +53,8 @@ pub mod v1 {
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
         Action, Actuator, ConcatPart, Custom, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags,
-        EnvText, Field, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, ObsLeaf,
-        ObsNode, RotationEncoding, SplitLayout, State, StateContainer, StateTag, Text,
+        EnvText, Field, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, Normalize,
+        ObsLeaf, ObsNode, RotationEncoding, SplitLayout, State, StateContainer, StateTag, Text,
         TextContainer, TextTag, UnknownFeature, reject_unknowns_env, reject_unknowns_model,
     };
     pub use crate::stateful::{

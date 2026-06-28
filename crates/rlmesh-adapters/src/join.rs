@@ -7,6 +7,7 @@
 //! the untrusted handshake contract). Every failure names which side
 //! disagreed — the tag or the space.
 
+use crate::fmt::quoted;
 use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
 use crate::spec::{
@@ -99,11 +100,48 @@ pub fn join(
         &mut unknown,
     )?;
     let action = resolve_action(&tags.action, action_space)?;
+    let advisories = observation
+        .iter()
+        .filter_map(|feature| match feature {
+            EnvFeature::Image(image) => image_layout_advisory(image),
+            _ => None,
+        })
+        .collect();
     Ok(EnvFeatures {
         observation,
         action,
         unknown,
+        advisories,
     })
+}
+
+/// Plausible image channel-axis length (RGBA=4, RGB=3, grayscale=1, ...). A
+/// declared channel axis above this is suspect; the heuristic below only acts on
+/// it when the *opposite* layout's channel axis is plausible — so a legitimately
+/// stacked >4-channel image stays silent.
+const PLAUSIBLE_CHANNELS: u32 = 4;
+
+/// One advisory if `image`'s declared layout looks swapped given its shape, else
+/// `None`. Layout is the one image fact a 3-D Box shape can't disambiguate (it
+/// defaults to `hwc`), so a CHW env that forgets `layout="chw"` silently derives
+/// a wrong channel count. This is a *hint*, never an error: an env may
+/// legitimately carry an unusual channel count.
+fn image_layout_advisory(image: &EnvImage) -> Option<String> {
+    // image_hwc maps the axes so that, under hwc, channels = shape[2] and the
+    // chw channel axis would be shape[0] = height; under chw it is the mirror.
+    let (declared, opposite_channels, other) = match image.layout {
+        ImageLayout::Hwc => ("hwc", image.height, "chw"),
+        ImageLayout::Chw => ("chw", image.width, "hwc"),
+    };
+    (image.channels > PLAUSIBLE_CHANNELS && (1..=PLAUSIBLE_CHANNELS).contains(&opposite_channels))
+        .then(|| {
+            format!(
+                "image {}: shape implies {} channels under layout={declared}; this looks like \
+                 {other} — declare layout=\"{other}\" if so",
+                quoted(&image.role),
+                image.channels,
+            )
+        })
 }
 
 /// Walk the observation tree in lockstep with the space, flattening each leaf
@@ -889,6 +927,62 @@ mod tests {
             result,
             Err(JoinError::ClassMismatch { key, .. }) if key == "camera"
         ));
+    }
+
+    fn image_leaf(layout: ImageLayout) -> ObsLeaf {
+        ObsLeaf::Image(ImageTag {
+            role: "image/primary".to_owned(),
+            layout,
+            upside_down: false,
+            unknown: Default::default(),
+        })
+    }
+
+    /// The joined advisories for a single camera of `shape` declared `layout`.
+    fn cam_advisories(shape: Vec<i64>, layout: ImageLayout) -> Vec<String> {
+        join_obs("camera", box_view(shape, None, None), image_leaf(layout))
+            .expect("joins")
+            .advisories
+    }
+
+    #[test]
+    fn mislabeled_hwc_layout_advises_chw() {
+        // [3,224,224] declared hwc derives channels=224 (implausible) while the
+        // chw channel axis (leading 3) is plausible -> hint chw. Join still ok.
+        let advisories = cam_advisories(vec![3, 224, 224], ImageLayout::Hwc);
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.contains("layout=hwc") && a.contains("looks like chw")),
+            "expected a chw layout hint, got: {advisories:?}"
+        );
+    }
+
+    #[test]
+    fn mislabeled_chw_layout_advises_hwc() {
+        // The mirror: [224,224,3] declared chw derives channels=224 while the
+        // hwc channel axis (trailing 3) is plausible -> hint hwc.
+        let advisories = cam_advisories(vec![224, 224, 3], ImageLayout::Chw);
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.contains("layout=chw") && a.contains("looks like hwc")),
+            "expected an hwc layout hint, got: {advisories:?}"
+        );
+    }
+
+    #[test]
+    fn correctly_labeled_image_has_no_layout_advisory() {
+        // [224,224,3] hwc -> channels=3 is plausible -> silent.
+        assert!(cam_advisories(vec![224, 224, 3], ImageLayout::Hwc).is_empty());
+    }
+
+    #[test]
+    fn legit_many_channel_image_stays_silent() {
+        // [224,224,6] hwc (e.g. two stacked RGB): channels=6 is >4 but the
+        // opposite axis (height=224) is not a plausible channel count, so the
+        // layout is not ambiguous -> no false-positive hint.
+        assert!(cam_advisories(vec![224, 224, 6], ImageLayout::Hwc).is_empty());
     }
 
     #[test]

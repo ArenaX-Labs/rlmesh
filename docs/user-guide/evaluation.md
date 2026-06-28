@@ -47,9 +47,7 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode.
 
-```{note}
-`execution_horizon` is a parameter of the bound methods `model.run(...)` and `model.session(...)`. The module-level {func}`~rlmesh.run` / {func}`~rlmesh.session` convenience does not forward it — use the method form when you need a chunk horizon.
-```
+`execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session` convenience, which forwards it through.
 
 ### The result
 

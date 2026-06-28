@@ -5,6 +5,30 @@ from typing import Any, cast
 import pytest
 
 
+def test_episode_success_reads_gymnasium_info_keys() -> None:
+    from rlmesh._models._eval import _episode_success
+
+    assert _episode_success({"is_success": True}) is True
+    assert _episode_success({"success": False}) is False
+    assert _episode_success({}) is None  # no signal -> caller falls back
+
+
+def test_success_rate_prefers_info_success_then_falls_back_to_terminated() -> None:
+    from rlmesh import RunResult
+    from rlmesh._models._eval import EpisodeResult
+
+    episodes = (
+        # terminated but the env reported NOT a success
+        EpisodeResult(0, None, 5, 1.0, terminated=True, truncated=False, success=False),
+        # truncated but the env reported success
+        EpisodeResult(1, None, 5, 1.0, terminated=False, truncated=True, success=True),
+        # no success signal -> falls back to terminated (True)
+        EpisodeResult(2, None, 5, 1.0, terminated=True, truncated=False),
+    )
+    # info-success: ep0 False, ep1 True; fallback: ep2 True -> 2 of 3.
+    assert RunResult(episodes).success_rate == pytest.approx(2 / 3)
+
+
 def test_connect_uses_an_env_like_object_directly() -> None:
     from rlmesh._models._eval import connect_env
 
@@ -222,8 +246,6 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
     seen: dict[str, object] = {}
 
     class Adapter:
-        is_stateful = False
-
         def reset(self) -> None:
             seen["reset"] = True
 
@@ -306,8 +328,6 @@ def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
     seen: dict[str, object] = {}
 
     class Adapter:
-        is_stateful = False
-
         def reset(self) -> None:
             return None
 

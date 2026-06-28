@@ -125,6 +125,23 @@ class EnvServer:
             from .adapters import tag
 
             env = tag(env, tags)
+        elif not is_vector:
+            # A prebuilt or EnvFactory-stamped env can carry tags in its metadata
+            # that were never validated against its spaces (the factory stamp uses
+            # validate=False, because a vectorized make()'s per-lane spaces differ
+            # from the served shape). For a scalar env the spaces are real, so
+            # validate the published tags now -- surfacing a bad tag at startup
+            # instead of when a model first connects. (Vector envs keep the
+            # deferred, resolve-time check.)
+            from collections.abc import Mapping
+
+            metadata = getattr(env, "metadata", None)
+            if isinstance(metadata, Mapping):
+                from .adapters import EnvTags, tag
+
+                published = EnvTags.from_metadata(cast("Mapping[str, Any]", metadata))
+                if published is not None:
+                    env = tag(env, published)  # idempotent re-stamp + validate
 
         # The framework is a value the author sets on the env side -- here, the
         # framework= kwarg (an EnvFactory passes its declared framework through it).

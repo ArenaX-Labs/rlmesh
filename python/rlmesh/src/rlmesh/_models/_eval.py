@@ -52,6 +52,18 @@ ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 
 
+def _episode_success(info: Mapping[str, Any]) -> bool | None:
+    """Read an env-reported task outcome from a step ``info`` (Gymnasium convention).
+
+    Returns the ``is_success`` / ``success`` flag when the env emits one, else
+    ``None`` -- callers then fall back to ``terminated``.
+    """
+    for key in ("is_success", "success"):
+        if key in info:
+            return bool(info[key])
+    return None
+
+
 @dataclass(frozen=True)
 class EpisodeResult:
     """The outcome of one evaluation episode."""
@@ -62,6 +74,11 @@ class EpisodeResult:
     reward: float
     terminated: bool
     truncated: bool
+    #: The env-reported task outcome from the final step's ``info``
+    #: (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the env
+    #: emits no such signal. Distinct from ``terminated`` (which only says the
+    #: episode reached a terminal state, not whether it succeeded).
+    success: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -86,10 +103,22 @@ class RunResult:
 
     @property
     def success_rate(self) -> float:
-        """Fraction of episodes that terminated rather than truncated."""
+        """Fraction of episodes that succeeded.
+
+        Prefers the env-reported task outcome (Gymnasium ``info["is_success"]`` /
+        ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
+        For an env that emits no such signal, falls back to ``terminated`` for
+        that episode -- so a time-limit env whose success *is* the truncation
+        cap should report success via ``info`` rather than rely on this.
+        """
         if not self.episodes:
             return 0.0
-        return sum(1 for e in self.episodes if e.terminated) / len(self.episodes)
+        succeeded = sum(
+            1
+            for e in self.episodes
+            if (e.terminated if e.success is None else e.success)
+        )
+        return succeeded / len(self.episodes)
 
     def __repr__(self) -> str:
         return (
@@ -432,9 +461,9 @@ class Session(Generic[ObsT, ActT]):
         try:
             for i in range(n_episodes):
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
-                obs, _info = self.reset(seed=seed)
+                obs, last_info = self.reset(seed=seed)
                 while not self.done and self._steps < _MAX_STEPS_PER_EPISODE:
-                    obs, _r, _t, _tr, _info = self.step(self.predict(obs))
+                    obs, _r, _t, _tr, last_info = self.step(self.predict(obs))
                 # Hitting the step cap is a truncation, not a silent non-outcome.
                 if not self._terminated and not self._truncated:
                     self._truncated = True
@@ -446,6 +475,7 @@ class Session(Generic[ObsT, ActT]):
                         reward=self._reward,
                         terminated=self._terminated,
                         truncated=self._truncated,
+                        success=_episode_success(last_info),
                     )
                 )
         finally:

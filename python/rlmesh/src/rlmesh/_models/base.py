@@ -711,6 +711,7 @@ def session(
     close_env: bool = False,
     token: str = "",
     trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
 ) -> Session[Any, Any]:
     """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
 
@@ -741,6 +742,7 @@ def session(
                 close_env=close_env,
                 token=token,
                 trust_entrypoints=bool(trust_entrypoints),
+                execution_horizon=execution_horizon,
             ),
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
@@ -755,6 +757,7 @@ def session(
                 close_env=close_env,
                 token=token,
                 trust_entrypoints=trust_entrypoints,
+                execution_horizon=execution_horizon,
             ),
         )
     return as_model(model).session(
@@ -763,6 +766,7 @@ def session(
         close_env=close_env,
         token=token,
         trust_entrypoints=trust_entrypoints,
+        execution_horizon=execution_horizon,
     )
 
 
@@ -776,6 +780,7 @@ def run(
     close_env: bool = False,
     token: str = "",
     trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
@@ -790,6 +795,7 @@ def run(
         close_env=close_env,
         token=token,
         trust_entrypoints=trust_entrypoints,
+        execution_horizon=execution_horizon,
     ).run(seeds=seeds, max_episodes=max_episodes)
 
 

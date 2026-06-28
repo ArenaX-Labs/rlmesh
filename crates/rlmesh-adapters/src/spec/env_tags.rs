@@ -26,6 +26,12 @@ pub struct ImageTag {
     pub role: String,
     #[serde(default)]
     pub layout: ImageLayout,
+    // `bool` is right while 180° is the only non-trivial orientation (it alone
+    // preserves H×W, so it composes with shape-derived dims). If a 2nd
+    // orientation is ever needed (e.g. a 90° mount, which swaps H/W), model it
+    // as a constrained string defaulting to "upright" — like `dtype`/`resample`
+    // — so additive values degrade to a typed resolve error on old cores, not a
+    // bool→enum wire break.
     #[serde(default)]
     pub upside_down: bool,
     /// Unrecognized additive fields, retained verbatim for round-trip and

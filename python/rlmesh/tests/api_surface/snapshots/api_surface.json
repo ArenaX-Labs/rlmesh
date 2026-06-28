@@ -21,6 +21,7 @@
       "Session",
       "Tensor",
       "Variant",
+      "Vector",
       "__version__",
       "adapters",
       "run",
@@ -113,6 +114,10 @@
             "kind": "attribute",
             "signature": "steps: int"
           },
+          "success": {
+            "kind": "attribute",
+            "signature": "success: bool | None"
+          },
           "terminated": {
             "kind": "attribute",
             "signature": "terminated: bool"
@@ -122,7 +127,7 @@
             "signature": "truncated: bool"
           }
         },
-        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool)",
+        "signature": "EpisodeResult(index: int, seed: int | None, steps: int, reward: float, terminated: bool, truncated: bool, success: bool | None = None)",
         "stability": "Stable"
       },
       "Model": {
@@ -131,6 +136,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "device": {
+            "kind": "attribute",
+            "signature": "device: object | None"
           },
           "load": {
             "kind": "function",
@@ -200,10 +209,6 @@
             "kind": "attribute",
             "signature": "choices: tuple[Any, ...] | None"
           },
-          "default": {
-            "kind": "attribute",
-            "signature": "default: Any"
-          },
           "description": {
             "kind": "attribute",
             "signature": "description: str"
@@ -216,16 +221,12 @@
             "kind": "attribute",
             "signature": "name: str"
           },
-          "required": {
-            "kind": "property",
-            "signature": "property required: bool"
-          },
           "type": {
             "kind": "attribute",
-            "signature": "type: type | str"
+            "signature": "type: type | str | Vector"
           }
         },
-        "signature": "Param(name: str, type: type | str = 'str', default: Any = _UNSET, choices: tuple[Any, ...] | None = None, description: str = '', group: str | None = None)",
+        "signature": "Param(name: str, type: type | str | Vector = 'str', choices: tuple[Any, ...] | None = None, description: str = '', group: str | None = None)",
         "stability": "Experimental"
       },
       "ParamSpec": {
@@ -508,7 +509,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Stable"
       },
       "SandboxModel": {
@@ -657,7 +658,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Stable"
       },
       "ServeOptions": {
@@ -723,7 +724,7 @@
             "signature": "step(action: ActT)"
           }
         },
-        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, predict_chunk: Callable[..., Any] | None = None, spec: object | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', execution_horizon: int = 1, model_client: PyModelClient | None = None, owner: Any = None)",
+        "signature": "Session(*, env: object, predict: Callable[[Any], Any] | None = None, predict_chunk: Callable[..., Any] | None = None, spec: object | None = None, on_episode_end: Callable[[], None] | None = None, on_close: Callable[[], None] | None = None, trust_entrypoints: bool = False, bridge: ValueBridge | None = None, remote_env_cls: type | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', execution_horizon: int = 1, model_client: PyModelClient | None = None, owner: Any = None, device: object | None = None)",
         "stability": "Stable"
       },
       "Tensor": {
@@ -804,6 +805,21 @@
         "signature": "Variant(id: str, params: Mapping[str, Any], /, **metadata: Any)",
         "stability": "Stable"
       },
+      "Vector": {
+        "kind": "class",
+        "members": {
+          "dim": {
+            "kind": "attribute",
+            "signature": "dim: int"
+          },
+          "unit": {
+            "kind": "attribute",
+            "signature": "unit: bool"
+          }
+        },
+        "signature": "Vector(dim: int, unit: bool = False)",
+        "stability": "Stable"
+      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = package_version('rlmesh')",
@@ -815,12 +831,12 @@
       },
       "run": {
         "kind": "function",
-        "signature": "run(model: object, env: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None)",
+        "signature": "run(model: object, env: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, execution_horizon: int = 1)",
         "stability": "Stable"
       },
       "session": {
         "kind": "function",
-        "signature": "session(model: object, env: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None)",
+        "signature": "session(model: object, env: object, *, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, execution_horizon: int = 1)",
         "stability": "Stable"
       },
       "spaces": {
@@ -893,6 +909,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "device": {
+            "kind": "attribute",
+            "signature": "device: object | None"
           },
           "load": {
             "kind": "function",
@@ -1183,7 +1203,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -1355,7 +1375,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "asarray": {
@@ -1435,6 +1455,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "device": {
+            "kind": "attribute",
+            "signature": "device: object | None"
           },
           "load": {
             "kind": "function",
@@ -1730,7 +1754,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -1902,7 +1926,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "asarray": {
@@ -2491,6 +2515,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "device": {
+            "kind": "attribute",
+            "signature": "device: object | None"
+          },
           "load": {
             "kind": "function",
             "signature": "load(**kwargs: Any) -> None"
@@ -2780,7 +2808,7 @@
             "signature": "step(action: ActionT) -> tuple[ValueT, float, bool, bool, StepInfo]"
           }
         },
-        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxEnv(source: str, /, *, options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "SandboxInfo": {
@@ -2952,7 +2980,7 @@
             "signature": "step(actions: ActionT) -> tuple[ValueT, ValueT, ValueT, ValueT, StepInfo]"
           }
         },
-        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, **params: object) -> None",
+        "signature": "SandboxVectorEnv(source: str, /, num_envs: int, *, vectorization_mode: str = 'sync', options: SandboxOptions | None = None, connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS, **params: object) -> None",
         "stability": "Experimental"
       },
       "TorchValue": {

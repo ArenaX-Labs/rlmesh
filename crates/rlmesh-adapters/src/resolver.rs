@@ -222,10 +222,46 @@ pub fn resolve(
             )
         })
         .collect();
-    advisories.sort();
 
     let action_plan = action::plan_action(&model_spec.output, &env_spec.action)?;
-    let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories);
+
+    // A model-declared range only fires as an affine map when the *env* side also
+    // declares a range to bridge between; against an unbounded env feature the map
+    // is skipped, so a lone model range silently does nothing (it remaps from/into
+    // an env range, it does not clamp). Surface that so the author learns it will
+    // not take effect. (State: env is the source; action: env is the destination.)
+    for obs_plan in &obs_plans {
+        if let ObsPlan::State(state) = obs_plan
+            && state.pieces.iter().any(|piece| {
+                !piece.zero_fill && piece.dst_range.is_some() && piece.src_range.is_none()
+            })
+        {
+            advisories.push(format!(
+                "model input {}: a state range is set but the env feature is \
+                     unbounded, so the range is a no-op (it remaps an env range, it \
+                     does not clamp)",
+                quoted(&state.placement.to_string()),
+            ));
+        }
+    }
+    for segment in &action_plan.segments {
+        if segment.src_range.is_some() && segment.dst_range.is_none() {
+            advisories.push(format!(
+                "model action (role {}): a range is set but the env actuator is \
+                 unbounded, so the range is a no-op (it remaps into an env range, it \
+                 does not clamp)",
+                quoted(&segment.role),
+            ));
+        }
+    }
+    advisories.sort();
+
+    let resolved = ResolvedAdapter::new(
+        obs_plans,
+        action_plan,
+        advisories,
+        env_spec.advisories.clone(),
+    );
     // The frame-stacking × action-chunk-replay guard used to live here, but the
     // execution horizon is no longer part of the spec — it is a runtime decision
     // (`execution_horizon` on ConfigureRoute). The guard moved to the engine's

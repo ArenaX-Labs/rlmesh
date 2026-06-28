@@ -153,8 +153,9 @@ A model that conditions on a short history of frames declares `stack=N` on an im
 The environment still sends one frame per step; nothing extra crosses the wire.
 
 ```{caution}
-Frame stacking is host-side state. A spec that sets `stack` round-trips through `to_json`, but
-the native resolution ignores it; stacking happens in the adapter, not the core.
+Frame stacking is episode state held outside the model: host-side on the local path, in the core
+on the served path. The spec's `stack` round-trips through `to_json`, the buffer clears on `reset`,
+and the env still sends one frame per step, so nothing extra crosses the wire.
 ```
 
 ## Known limitations

@@ -192,7 +192,7 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
     deserializer.deserialize_option(OptNumberVisitor)
 }
 
-struct RangeVisitor;
+pub(crate) struct RangeVisitor;
 
 impl<'de> Visitor<'de> for RangeVisitor {
     type Value = (f64, f64);

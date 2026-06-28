@@ -12,6 +12,7 @@ cannot express (image layout, rotation encoding, explicit ranges).
 
 from __future__ import annotations
 
+import warnings
 from types import SimpleNamespace
 from typing import Any, NamedTuple
 
@@ -729,6 +730,7 @@ def test_bilinear_aa_resize_matches_pillow_within_one_step():
                     height=height,
                     width=width,
                     allow_upscale=True,
+                    resample="bilinear_aa",  # this test pins the AA (PIL) filter
                 )
             },
             output=SMOLVLA.output,
@@ -1375,6 +1377,36 @@ def test_tag_without_validation_skips_the_check() -> None:
     assert adapt.EnvTags.from_metadata(env.metadata) == bad
 
 
+def test_tag_warns_on_mislabeled_image_layout() -> None:
+    # A CHW image [3,64,64] left at the default hwc layout derives channels=64;
+    # tag() surfaces a non-fatal hint to declare layout="chw" — not an error.
+    env = _fake_env(
+        gym.spaces.Dict(
+            {"cam": gym.spaces.Box(low=0, high=255, shape=(3, 64, 64), dtype=np.uint8)}
+        )
+    )
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},  # default hwc
+        action=LIBERO_ACTION,
+    )
+    with pytest.warns(UserWarning, match="looks like chw"):
+        adapt.tag(env, tags)
+    # The hint is advisory: the tags still publish.
+    assert adapt.EnvTags.from_metadata(env.metadata) == tags
+
+
+def test_tag_silent_on_correctly_labeled_image() -> None:
+    # A normal [64,64,3] hwc image is unambiguous -> no advisory.
+    env = _fake_env(gym.spaces.Dict({"cam": image_space()}))
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+        action=LIBERO_ACTION,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        adapt.tag(env, tags)
+
+
 def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     # Negatives are rejected by the authoritative Rust codec (u32) at
     # serialize/normalize with a field-path-annotated message. Action components
@@ -1490,15 +1522,9 @@ def test_per_lane_reset_only_clears_on_whole_vector_or_lane_zero() -> None:
         adapter.transform_obs({"rgb": f2})["img"], np.stack([f1, f1, f2])
     )
 
-    # A non-zero lane's autoreset must not wipe the shared, not-yet-lane-indexed
-    # buffers, or it would corrupt the still-running lane-0 episode.
-    adapter.reset(env_index=1)
-    np.testing.assert_array_equal(
-        adapter.transform_obs({"rgb": f2})["img"], np.stack([f1, f2, f2])
-    )
-
-    # Lane 0 (and a whole-vector reset, env_index=None) does clear.
-    adapter.reset(env_index=0)
+    # reset() clears the host-side buffer at an episode boundary, so the next
+    # frame pads from itself again.
+    adapter.reset()
     np.testing.assert_array_equal(
         adapter.transform_obs({"rgb": f2})["img"], np.stack([f2, f2, f2])
     )
@@ -1534,28 +1560,8 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Vector-env interim guard (pending the per-lane affinity manager)
+# Vector-env handling
 # ---------------------------------------------------------------------------
-
-
-def test_io_adapter_is_stateful_only_with_frame_history() -> None:
-    env = image_env(4, 4)
-    stateless = resolve(
-        env,
-        adapt.ModelSpec(
-            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY)},
-            output=SMOLVLA.output,
-        ),
-    )
-    stateful = resolve(
-        env,
-        adapt.ModelSpec(
-            input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=2)},
-            output=SMOLVLA.output,
-        ),
-    )
-    assert stateless.is_stateful is False
-    assert stateful.is_stateful is True
 
 
 def test_vector_env_rejected_by_single_env_eval_loop() -> None:
@@ -1620,17 +1626,17 @@ def test_stateful_adapter_allowed_on_vector_route() -> None:
     vector_stateful = resolve_route_adapter(
         stateful_spec, contract(2), trust_entrypoints=False
     )
-    assert vector_stateful is not None and vector_stateful.is_stateful
+    assert vector_stateful is not None
     # And still against a single lane.
     single_lane = resolve_route_adapter(
         stateful_spec, contract(1), trust_entrypoints=False
     )
-    assert single_lane is not None and single_lane.is_stateful
+    assert single_lane is not None
     # A stateless adapter on a vector route is harmless.
     stateless = resolve_route_adapter(
         stateless_spec, contract(2), trust_entrypoints=False
     )
-    assert stateless is not None and stateless.is_stateful is False
+    assert stateless is not None
     # spec=None / no tags also resolves to None without over-rejecting.
     untagged: Any = SimpleNamespace(metadata={}, num_envs=2)
     assert resolve_route_adapter(None, untagged, trust_entrypoints=False) is None
@@ -2451,8 +2457,7 @@ def test_image_normalize_range_maps_into_declared_bounds():
             "image": adapt.Image(
                 role=adapt.IMAGE_PRIMARY,
                 dtype="float32",
-                normalize=True,
-                normalize_range=(-1.0, 1.0),
+                normalize=(-1.0, 1.0),
             ),
         },
         output=SMOLVLA.output,
@@ -2467,6 +2472,25 @@ def test_image_normalize_range_maps_into_declared_bounds():
     # 0 -> -1, 255 -> 1 (instead of the default [0, 1]).
     np.testing.assert_allclose(black["image"], -1.0, atol=1e-6)
     np.testing.assert_allclose(white["image"], 1.0, atol=1e-6)
+
+
+def test_image_normalize_overloads_bool_and_range() -> None:
+    # bool passes through; False is the off default; a pair coerces to a
+    # validated float tuple; a reversed range is rejected at construction.
+    assert adapt.Image(adapt.IMAGE_PRIMARY).normalize is False
+    assert adapt.Image(adapt.IMAGE_PRIMARY, normalize=True).normalize is True
+    assert adapt.Image(adapt.IMAGE_PRIMARY, normalize=(-1, 1)).normalize == (-1.0, 1.0)
+    with pytest.raises(ValueError, match="min must be <= max"):
+        adapt.Image(adapt.IMAGE_PRIMARY, normalize=(1.0, 0.0))
+
+
+def test_concat_state_part_rejects_non_default_container_fields() -> None:
+    # A State used as a Concat part contributes only its part fields; a non-default
+    # container field (dtype/pad_to/reshape/container) is caught at construction.
+    with pytest.raises(ValueError, match="container fields"):
+        adapt.Concat(adapt.State(adapt.EEF_POS, dtype="int32"))
+    # role-only and part-field States are valid parts.
+    adapt.Concat(adapt.EEF_POS, adapt.State(adapt.EEF_ROT, encoding="rot6d"))
 
 
 def test_image_optional_camera_zero_fills_when_absent():

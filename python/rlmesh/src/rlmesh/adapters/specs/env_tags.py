@@ -39,7 +39,11 @@ class ImageTag:
         role: Semantic role used for matching, e.g. ``image/primary``.
         layout: Axis layout of the stored image.
         upside_down: Whether the image is rendered rotated 180 degrees
-            relative to the canonical upright orientation.
+            (a true rotation, not a vertical flip) relative to the canonical
+            upright orientation. Declared on both ends; the adapter flips only
+            when the env and the model disagree. (If a second orientation is
+            ever needed, this should become a constrained string like ``dtype``,
+            not a wider ``bool``.)
     """
 
     role: str

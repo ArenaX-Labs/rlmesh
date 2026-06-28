@@ -10,6 +10,7 @@ can resolve an adapter from the handshake alone
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Mapping
 from typing import Any, TypeVar, cast
 
@@ -51,9 +52,15 @@ def _validate(env: object, tags: EnvTags) -> None:
             "action_space; pass validate=False to tag without checking"
         )
     try:
-        adapters_join_check(json.dumps(tags.to_dict()), observation_space, action_space)
+        advisories = adapters_join_check(
+            json.dumps(tags.to_dict()), observation_space, action_space
+        )
     except ValueError as exc:
         raise AdapterResolutionError(str(exc)) from None
+    # Non-fatal hints (e.g. a layout that looks mis-declared): surface at tag time
+    # so the author sees their own mistake now, not via a peer's serve logs.
+    for note in advisories:
+        warnings.warn(note, stacklevel=3)
 
 
 __all__ = ["tag"]

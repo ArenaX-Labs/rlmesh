@@ -116,7 +116,7 @@ pub(super) fn plan_image(
         fit,
         resample: model_input.resample.clone(),
         dtype: model_input.dtype.clone(),
-        normalize: resolve_normalize(model_input),
+        normalize: model_input.normalize.range(),
         lead_dims: model_input.lead_dims,
         src_range: env_image.value_range,
         stack: model_input.stack,
@@ -153,24 +153,13 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         fit: FitMode::Stretch,
         resample: model_input.resample.clone(),
         dtype: model_input.dtype.clone(),
-        normalize: resolve_normalize(model_input),
+        normalize: model_input.normalize.range(),
         lead_dims: model_input.lead_dims,
         src_range: None,
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
         absent_fill: model_input.absent_fill.unwrap_or(0),
     })
-}
-
-/// The normalize range to apply to this image, or `None` for no normalization.
-///
-/// A declared `normalize_range` implies normalization even when the `normalize`
-/// flag is unset, so a range is never silently dropped (setting a range but
-/// forgetting the flag used to feed the model raw, unnormalized pixels). When
-/// normalizing without an explicit range, default to the conventional `[0, 1]`.
-fn resolve_normalize(model_input: &Image) -> Option<(f64, f64)> {
-    (model_input.normalize || model_input.normalize_range.is_some())
-        .then(|| model_input.normalize_range.unwrap_or((0.0, 1.0)))
 }
 
 /// Choose the fit mode for this env from the model's permitted modes.
@@ -288,7 +277,7 @@ mod image_resolve_tests {
     use super::plan_image;
     use crate::error::ErrorCode;
     use crate::path::NodePath;
-    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout};
+    use crate::spec::{AcceptSet, EnvImage, FitMode, Image, ImageLayout, Normalize};
 
     /// Resolve at the root placement (the common single-leaf-payload case).
     fn plan(
@@ -319,11 +308,10 @@ mod image_resolve_tests {
             layout: ImageLayout::Hwc,
             channels: None,
             dtype: "uint8".to_owned(),
-            normalize: false,
-            normalize_range: None,
+            normalize: Normalize::Off,
             lead_dims: 0,
             upside_down: false,
-            resample: "bilinear_aa".to_owned(),
+            resample: "bilinear".to_owned(),
             allow_upscale,
             fit: None,
             optional: false,
@@ -434,19 +422,26 @@ mod image_resolve_tests {
     }
 
     #[test]
-    fn normalize_range_implies_normalization() {
-        // A range set without the normalize flag must still normalize (not feed
-        // the model raw pixels).
+    fn normalize_range_overload_maps_into_the_declared_range() {
+        // A `[min, max]` normalize maps pixels into that range.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.normalize = false;
-        model.normalize_range = Some((-1.0, 1.0));
+        model.normalize = Normalize::Range(-1.0, 1.0);
         let plan = plan(&model, &images(&env)).expect("ok");
         assert_eq!(plan.normalize, Some((-1.0, 1.0)));
     }
 
     #[test]
-    fn no_normalize_and_no_range_skips_normalization() {
+    fn normalize_true_uses_the_unit_interval() {
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.normalize = Normalize::Unit;
+        let plan = plan(&model, &images(&env)).expect("ok");
+        assert_eq!(plan.normalize, Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn normalize_off_skips_normalization() {
         let env = env_image(8, 8);
         let plan = plan(&model_image(8, 8, false), &images(&env)).expect("ok");
         assert_eq!(plan.normalize, None);
