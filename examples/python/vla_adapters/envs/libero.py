@@ -21,12 +21,12 @@ import rlmesh.adapters as adapt
 
 TAGS = adapt.EnvTags(
     observation={
-        "agentview_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
-        "robot0_eye_in_hand_image": adapt.ImageTag(role=adapt.IMAGE_WRIST),
-        "robot0_eef_pos": adapt.StateTag(role=adapt.EEF_POS),
-        "robot0_eef_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-        "robot0_gripper_qpos": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "instruction": adapt.TextTag(role=adapt.INSTRUCTION),
+        "agentview_image": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+        "robot0_eye_in_hand_image": adapt.ImageTag(adapt.IMAGE_WRIST),
+        "robot0_eef_pos": adapt.StateTag(adapt.EEF_POS),
+        "robot0_eef_quat": adapt.StateTag(adapt.EEF_ROT, encoding="quat_xyzw"),
+        "robot0_gripper_qpos": adapt.StateTag(adapt.GRIPPER_POS),
+        "instruction": adapt.TextTag(adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

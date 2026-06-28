@@ -14,23 +14,15 @@ import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
     input={
-        "observation.images.image": adapt.Image(
-            role=adapt.IMAGE_PRIMARY,
-            height=224,
-            width=224,
-        ),
-        "observation.images.image2": adapt.Image(
-            role=adapt.IMAGE_WRIST,
-            height=224,
-            width=224,
-        ),
+        "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
+        "observation.images.image2": adapt.Image(adapt.IMAGE_WRIST, size=224),
         "observation.state": adapt.Concat(
             adapt.EEF_POS,
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "instruction": adapt.Text(role=adapt.INSTRUCTION),
+        "instruction": adapt.Text(adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

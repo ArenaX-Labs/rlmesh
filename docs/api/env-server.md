@@ -1,5 +1,10 @@
 # Env Server
 
+```{note}
+This is the autodoc API reference. For authoring environments (tags, params, variants, containers)
+see {doc}`../user-guide/environments`; for the serving mechanics see {doc}`../user-guide/serving-environments`.
+```
+
 `EnvServer` owns one Python environment object and exposes it as an RLMesh environment endpoint. It is self-describing: pass a vectorized environment (one exposing `num_envs` and `single_observation_space` / `single_action_space`) and it serves a vector endpoint automatically; otherwise it serves a single-environment endpoint. A model or evaluator connects with `RemoteEnv` for scalar endpoints and `RemoteVectorEnv` for vector endpoints.
 
 ## Environment Contract

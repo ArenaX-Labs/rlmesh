@@ -1,5 +1,10 @@
 # Core Exports
 
+```{note}
+This is the autodoc API reference. For authoring guides see {doc}`../user-guide/environments` and
+{doc}`../user-guide/models`.
+```
+
 The top-level `rlmesh` package re-exports the common entry points: environment serving and clients, model running, sandboxing, and the `spaces`, `types`, and `adapters` subpackages. The common imports are listed below.
 
 The top-level client and model classes are dependency-free wrappers around RLMesh-native values. For most user code, prefer the backend-specific modules when you want decoded NumPy arrays or Torch tensors.

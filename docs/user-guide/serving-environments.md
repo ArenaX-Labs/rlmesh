@@ -1,5 +1,7 @@
 # Serve an Environment
 
+This page covers the serving mechanics: addresses, readiness, and health. For authoring environments (tags, params, variants, containers) see {doc}`environments`.
+
 Use `rlmesh.EnvServer` to expose one Gymnasium-style environment over an endpoint.
 
 ```python

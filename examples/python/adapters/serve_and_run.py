@@ -78,11 +78,11 @@ class CubePickEnv:
 # The env's tags: roles plus the facts the spaces cannot carry.
 ENV_TAGS = adapt.EnvTags(
     observation={
-        "wrist_rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
-        "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
-        "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-        "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextTag(role=adapt.INSTRUCTION),
+        "wrist_rgb": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+        "ee_pos": adapt.StateTag(adapt.EEF_POS),
+        "ee_quat": adapt.StateTag(adapt.EEF_ROT, encoding="quat_xyzw"),
+        "grip": adapt.StateTag(adapt.GRIPPER_POS),
+        "goal": adapt.TextTag(adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -99,14 +99,14 @@ MODEL_SPEC = adapt.ModelSpec(
     input={
         # This checkpoint wants a 224x224 image, a list state with rot6d rotation,
         # and the instruction under its own key. Each key is a payload slot.
-        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=224, width=224),
+        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
         "proprio": adapt.Concat(
             adapt.EEF_POS,
             adapt.State(adapt.EEF_ROT, encoding="rot6d"),
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "task": adapt.Text(role=adapt.INSTRUCTION),
+        "task": adapt.Text(adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

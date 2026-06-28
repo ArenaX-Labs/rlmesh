@@ -50,13 +50,12 @@ examples
 
 ```{toctree}
 :hidden:
-:caption: User Guide
+:caption: Authoring
 :maxdepth: 2
 
-user-guide/serving-environments
-user-guide/remote-clients
-user-guide/backends
-user-guide/sandbox
+user-guide/environments
+user-guide/models
+user-guide/evaluation
 ```
 
 ```{toctree}
@@ -65,6 +64,19 @@ user-guide/sandbox
 :maxdepth: 2
 
 user-guide/adapters
+user-guide/adapters/reference
+user-guide/adapters/escape-hatches
+```
+
+```{toctree}
+:hidden:
+:caption: User Guide
+:maxdepth: 2
+
+user-guide/serving-environments
+user-guide/remote-clients
+user-guide/backends
+user-guide/sandbox
 ```
 
 ```{toctree}

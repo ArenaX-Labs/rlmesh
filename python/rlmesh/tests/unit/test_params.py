@@ -27,8 +27,8 @@ def _make(
 def _spec(extra: str = "forbid") -> ParamSpec:
     return ParamSpec(
         Param("suite", str, choices=("a", "b"), group="task"),
-        Param("task_id", "int", default=0),
-        Param("cam_width", "int", default=256),
+        Param("task_id", "int"),
+        Param("cam_width", "int"),
         extra=extra,  # type: ignore[arg-type]
     )
 
@@ -36,12 +36,10 @@ def _spec(extra: str = "forbid") -> ParamSpec:
 # --- resolve: the boundary table ---------------------------------------------
 
 
-def test_resolve_fills_declared_defaults_and_keeps_supplied() -> None:
-    assert resolve(_spec(), _make, {"suite": "a"}) == {
-        "suite": "a",
-        "task_id": 0,
-        "cam_width": 256,
-    }
+def test_resolve_keeps_supplied_and_defers_defaults_to_signature() -> None:
+    # Unsupplied optionals are left out of the binding; the constructor applies
+    # its own signature defaults (task_id=0, cam_width=256).
+    assert resolve(_spec(), _make, {"suite": "a"}) == {"suite": "a"}
 
 
 def test_resolve_coerces_integral_float_to_int() -> None:
@@ -105,7 +103,7 @@ def test_resolve_warns_on_misnamed_param() -> None:
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        resolve(ParamSpec(Param("typo", str, default="x")), target, {"suite": "a"})
+        resolve(ParamSpec(Param("typo", str)), target, {"suite": "a", "typo": "x"})
     assert any("typo" in str(w.message) for w in caught)
 
 
@@ -126,6 +124,28 @@ def test_describe_separates_declared_from_signature_tier() -> None:
     assert schema["signature_tier"] == [
         {"name": "gain", "type": "int", "default": 1, "required": False}
     ]
+
+
+def test_describe_fills_declared_default_from_signature() -> None:
+    # A declared Param with no default inherits make()'s default rather than
+    # being presented as required -- the default is declared once, in the signature.
+    def target(*, robot: str = "panda") -> None: ...
+
+    schema = describe(
+        ParamSpec(Param("robot", str, choices=("panda", "sawyer"))), target
+    )
+    assert schema["param_spec"] == {
+        "params": [
+            {
+                "name": "robot",
+                "type": "str",
+                "required": False,
+                "default": "panda",
+                "choices": ["panda", "sawyer"],
+            }
+        ],
+        "extra": "forbid",
+    }
 
 
 # --- to_metadata -------------------------------------------------------------
@@ -149,7 +169,7 @@ class _Env(rlmesh.EnvFactory):
     tags = None
     params = ParamSpec(
         Param("suite", str, choices=("a", "b")),
-        Param("task_id", "int", default=0),
+        Param("task_id", "int"),
         extra="forbid",
     )
 
@@ -193,23 +213,13 @@ def test_load_env_from_spec_factory_kind_builds_a_binding() -> None:
 def test_resolve_rejects_non_finite_float() -> None:
     # A construction param is never legitimately NaN/inf; the float coercion
     # rejects them outright.
-    spec = ParamSpec(Param("lr", "float", default=0.1))
+    spec = ParamSpec(Param("lr", "float"))
 
     def target(*, lr: float = 0.1) -> None: ...
 
     for bad in (float("nan"), float("inf")):
         with pytest.raises(ParamError, match="finite float"):
             resolve(spec, target, {"lr": bad})
-
-
-def test_resolve_validates_declared_default() -> None:
-    # A typo'd default must fail before construction, not silently reach make().
-    spec = ParamSpec(Param("mode", str, default="fastt", choices=("fast", "slow")))
-
-    def target(*, mode: str = "fast") -> None: ...
-
-    with pytest.raises(ParamError, match="choices"):
-        resolve(spec, target, {})
 
 
 def test_resolve_enum_choices_do_not_accept_bool_as_int() -> None:
@@ -221,10 +231,10 @@ def test_resolve_enum_choices_do_not_accept_bool_as_int() -> None:
         resolve(spec, target, {"level": True})
 
 
-def test_required_param_falls_back_to_signature_default() -> None:
-    # Author marks a Param required but make() supplies a default; an in-process
-    # path with no binding channel must use make()'s default, not crash.
-    spec = ParamSpec(Param("task"))  # no Param default => required
+def test_optional_param_defers_to_signature_default() -> None:
+    # A declared Param whose signature supplies a default is optional; omitting it
+    # leaves the binding empty and lets make() apply its own default.
+    spec = ParamSpec(Param("task"))
 
     def target(*, task: str = "reach") -> None: ...
 
@@ -353,17 +363,8 @@ def test_vector_choices_sweep_over_whole_vectors() -> None:
         resolve(spec, _vec_target, {"cam_quat": (0.0, 0.0, 1.0, 0.0)})
 
 
-def test_vector_validates_declared_default() -> None:
-    # A malformed default (wrong length) must fail before construction.
-    spec = ParamSpec(Param("cam_pos", type=Vector(3), default=(0.0, 0.0)))
-    with pytest.raises(ParamError, match="3-vector"):
-        resolve(spec, _vec_target, {})
-
-
 def test_describe_emits_vector_dim_and_unit() -> None:
-    spec = ParamSpec(
-        Param("cam_quat", type=Vector(4, unit=True), default=(1.0, 0.0, 0.0, 0.0))
-    )
+    spec = ParamSpec(Param("cam_quat", type=Vector(4, unit=True)))
     assert describe(spec, _vec_target)["param_spec"] == {
         "params": [
             {

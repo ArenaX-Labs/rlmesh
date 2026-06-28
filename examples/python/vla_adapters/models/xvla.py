@@ -24,8 +24,8 @@ import rlmesh.adapters as adapt
 
 SPEC = adapt.ModelSpec(
     input={
-        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=256, width=256),
-        "image2": adapt.Image(role=adapt.IMAGE_WRIST, height=256, width=256),
+        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=256),
+        "image2": adapt.Image(adapt.IMAGE_WRIST, size=256),
         "state": adapt.Concat(
             adapt.State(adapt.EEF_POS, dim=3),
             adapt.State(adapt.EEF_ROT, encoding="rot6d_rowmajor"),
@@ -36,7 +36,7 @@ SPEC = adapt.ModelSpec(
             pad_to=20,
             container="list",
         ),
-        "instruction": adapt.Text(role=adapt.INSTRUCTION),
+        "instruction": adapt.Text(adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),

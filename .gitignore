@@ -24,6 +24,7 @@ mise.local.toml
 build/
 dist/
 site/
+_build/
 *.egg
 *.egg-info/
 *.py[cdo]

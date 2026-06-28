@@ -15,10 +15,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-# Sentinel default meaning "required". Distinct from ``None``, which is a valid
-# declared default; identity (``is``) is the only correct test for it.
-_UNSET: Any = object()
-
 ExtraPolicy = Literal["forbid", "passthrough"]
 
 
@@ -53,12 +49,16 @@ class Param:
     signature-derived tier); ``Param`` enriches one with domains, choices,
     grouping, and sweepability.
 
+    The default lives in the ``make``/``load`` signature, never here: a param with
+    a signature default is optional, one without is required. A ``Param`` only
+    *enriches* that knob (choices/grouping/description/sweepability); it does not
+    restate the default.
+
     Args:
         name: The keyword name, matching the ``make``/``load`` parameter.
         type: A Python type (``int``/``float``/``str``/``bool``) or its string
             name, ``"enum"`` (domain defined entirely by ``choices``), or a
             :class:`Vector` (a fixed-length float vector).
-        default: The default value; omit for a required param.
         choices: Allowed values -- the enumeration/sweep axis; a supplied value
             outside them is rejected.
         description: Human-facing help text for the dashboard widget.
@@ -67,15 +67,9 @@ class Param:
 
     name: str
     type: type | str | Vector = "str"
-    default: Any = _UNSET
     choices: tuple[Any, ...] | None = None
     description: str = ""
     group: str | None = None
-
-    @property
-    def required(self) -> bool:
-        """Whether the param has no default and must be supplied."""
-        return self.default is _UNSET
 
 
 @dataclass(frozen=True)

@@ -111,25 +111,15 @@ def resolve(
         else:
             rest[name] = value
 
-    for name, param in declared.items():
+    for name in declared:
         if name in out:
             continue
-        if param.required:
-            # An author may mark a Param required (no Param default) while the
-            # target's own signature supplies a default; on a path with no binding
-            # channel (in-process session()/run()) honor that signature default
-            # rather than crashing on a binding that cannot be supplied there.
-            sig = sig_params.get(name)
-            if sig is not None and sig.default is not inspect.Parameter.empty:
-                continue
+        # Not supplied: the default lives in the target's signature, never on the
+        # Param. A signature default => the constructor applies it (we pass
+        # nothing); no signature default => the param is genuinely required.
+        sig = sig_params.get(name)
+        if sig is None or sig.default is inspect.Parameter.empty:
             raise MissingParamError(name)
-        # Validate the declared default like a supplied value, so a typo'd default
-        # (bad choice / out-of-range) fails before construction instead of silently
-        # reaching the constructor. None is the optional/unset sentinel: forward it
-        # verbatim (a typed param may legitimately default to None).
-        out[name] = (
-            param.default if param.default is None else _coerce(param, param.default)
-        )
 
     if rest:
         if spec.extra == "forbid":
@@ -168,7 +158,7 @@ def describe(
         if name not in declared
     ]
     return {
-        "param_spec": _spec_to_dict(spec),
+        "param_spec": _spec_to_dict(spec, sig_params),
         "signature_tier": signature_tier,
     }
 
@@ -189,7 +179,7 @@ def to_metadata(
     return {
         PARAM_METADATA_KEY: {
             "binding": {k: _json_safe(v) for k, v in resolved.items()},
-            "param_spec": _spec_to_dict(spec),
+            "param_spec": _spec_to_dict(spec, sig_params),
             "validated": {
                 name: (name in declared or name in sig_params) for name in resolved
             },
@@ -347,27 +337,37 @@ def _check_derived(name: str, annotation: object, value: object) -> object:
     return _coerce_scalar(name, kind, value)
 
 
-def _spec_to_dict(spec: ParamSpec | None) -> dict[str, object] | None:
+def _spec_to_dict(
+    spec: ParamSpec | None,
+    sig_params: Mapping[str, inspect.Parameter] | None = None,
+) -> dict[str, object] | None:
     if spec is None:
         return None
     return {
-        "params": [_param_to_dict(p) for p in spec.params],
+        "params": [_param_to_dict(p, sig_params) for p in spec.params],
         "extra": spec.extra,
     }
 
 
-def _param_to_dict(param: Param) -> dict[str, object]:
+def _param_to_dict(
+    param: Param,
+    sig_params: Mapping[str, inspect.Parameter] | None = None,
+) -> dict[str, object]:
+    # The signature is the single source of the default: a param with a signature
+    # default is optional and presents it; one without is required.
+    sig = sig_params.get(param.name) if sig_params is not None else None
+    has_default = sig is not None and sig.default is not inspect.Parameter.empty
     out: dict[str, object] = {
         "name": param.name,
         "type": _type_name(param.type),
-        "required": param.required,
+        "required": not has_default,
     }
     if isinstance(param.type, Vector):
         out["dim"] = param.type.dim
         if param.type.unit:
             out["unit"] = True
-    if not param.required:
-        out["default"] = _json_safe(param.default)
+    if sig is not None and sig.default is not inspect.Parameter.empty:
+        out["default"] = _json_safe(sig.default)
     if param.choices is not None:
         out["choices"] = [_json_safe(c) for c in param.choices]
     if param.description:

@@ -27,17 +27,13 @@ CHUNK = 8
 
 SPEC = adapt.ModelSpec(
     input={
-        "observation.images.image": adapt.Image(
-            role=adapt.IMAGE_PRIMARY,
-            height=224,
-            width=224,
-        ),
+        "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
         "observation.state": adapt.Concat(
             adapt.State(adapt.EEF_POS, dim=3),
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
             adapt.State(adapt.GRIPPER_POS, dim=1),
         ),
-        "instruction": adapt.Text(role=adapt.INSTRUCTION),
+        "instruction": adapt.Text(adapt.INSTRUCTION),
     },
     # The layout of ONE action; the chunk dimension is adapter business.
     output=adapt.Action(

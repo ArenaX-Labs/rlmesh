@@ -69,7 +69,7 @@ def test_catalog_rejects_non_variant_entry() -> None:
 
 def test_catalog_badges_unbuildable_variant() -> None:
     spec = rlmesh.ParamSpec(
-        rlmesh.Param("task", type=str, default="a", choices=("a", "b")),
+        rlmesh.Param("task", type=str, choices=("a", "b")),
     )
 
     def make(*, task: str = "a", n: int = 0) -> None: ...

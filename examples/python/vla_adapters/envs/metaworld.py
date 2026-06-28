@@ -24,8 +24,8 @@ import rlmesh.adapters as adapt
 
 TAGS = adapt.EnvTags(
     observation={
-        "corner_image": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
-        "gripper_image": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+        "corner_image": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+        "gripper_image": adapt.ImageTag(adapt.IMAGE_WRIST),
         # One flat leaf, split by index range. Field widths sum to the leaf
         # width (3 + 4 + 1 + 10 = 18); offsets are implied by order.
         "proprio": adapt.Split(
@@ -34,7 +34,7 @@ TAGS = adapt.EnvTags(
             adapt.Field(adapt.GRIPPER_POS, 1),
             adapt.Field(dim=10),  # object + goal positions: not consumed here
         ),
-        "task": adapt.TextTag(role=adapt.INSTRUCTION),
+        "task": adapt.TextTag(adapt.INSTRUCTION),
     },
     # Metaworld is position-controlled: the model's rotation output has no env
     # counterpart and is dropped, the same way unused obs features are.
