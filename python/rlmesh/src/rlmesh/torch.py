@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import warnings
-from typing import TYPE_CHECKING, ClassVar, TypeAlias, cast, final
+from abc import ABC
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._authoring import EnvFactory as _EnvFactory
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
@@ -188,6 +190,49 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
+def _stack_leaf(values: list[object]) -> object:
+    import torch
+
+    # Tensor leaves stack to [N, ...]; numeric primitives become a 1-D tensor. Text
+    # leaves stay a per-lane list. A ragged leaf cannot fuse -- raise rather than
+    # silently returning a list for this leaf while siblings stack, which hands the
+    # model a structurally inconsistent batch ({stacked leaves} + {one list leaf}).
+    if isinstance(values[0], (str, bytes)):
+        return list(values)
+    try:
+        if isinstance(values[0], torch.Tensor):
+            return torch.stack(cast("list[TorchTensor]", values))
+        return torch.as_tensor(values)
+    except (RuntimeError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"cannot fuse a ragged observation leaf across {len(values)} lanes "
+            "(per-lane shapes differ); a batched predict needs every non-text leaf "
+            "to stack into [N, ...]"
+        ) from exc
+
+
+def _unstack_leaf(value: object, n: int) -> list[object]:
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        if value.dim() >= 1 and value.shape[0] == n:
+            return list(torch.unbind(value, dim=0))
+        raise ValueError(
+            f"a batched predict corner must return leaves with leading batch axis "
+            f"{n}; got a torch tensor of shape {tuple(value.shape)}"
+        )
+    if (
+        isinstance(value, (list, tuple))
+        and len(cast("list[object] | tuple[object, ...]", value)) == n
+    ):
+        return list(cast("list[object] | tuple[object, ...]", value))
+    raise ValueError(
+        f"cannot split a batched action leaf of type "
+        f"{type(cast('object', value)).__name__} into "
+        f"{n} lanes; return one batched value (leaves [{n}, ...])"
+    )
+
+
 def _decode_owned(tensor: Tensor) -> TorchTensor:
     """Owned, writable decode for the value-bridge (predict/step) path.
 
@@ -199,11 +244,33 @@ def _decode_owned(tensor: Tensor) -> TorchTensor:
     return as_tensor(tensor, copy=True)
 
 
+def _to_device_leaf(value: object, device: object) -> object:
+    import torch
+
+    if isinstance(value, torch.Tensor):
+        return value.to(cast("torch.device | str", device))
+    return value
+
+
+def _to_host_leaf(value: object) -> object:
+    import torch
+
+    # A reward/terminated/truncated leaf: move a (possibly GPU) tensor to host as a
+    # Python scalar/list in one transfer; a plain Python scalar passes through.
+    if isinstance(value, torch.Tensor):
+        return cast("object", cast("Any", value.detach().cpu()).tolist())
+    return value
+
+
 _torch_bridge: ValueBridge = FrameworkBridge(
     name="torch",
     ensure_available=ensure_available,
     decode_leaf=_decode_owned,
     encode_leaf=_encode_leaf,
+    stack_leaf=_stack_leaf,
+    unstack_leaf=_unstack_leaf,
+    to_device_leaf=_to_device_leaf,
+    to_host_leaf=_to_host_leaf,
 )
 
 
@@ -303,7 +370,23 @@ class SandboxVectorEnv(SandboxVectorEnvBase[TorchValue, TorchValue]):
     _bridge: ClassVar[ValueBridge] = _torch_bridge
 
 
+class EnvFactory(_EnvFactory, ABC):
+    """Torch-backed :class:`~rlmesh.EnvFactory`: served envs speak torch.
+
+    The producer-side mirror of :class:`Model` (the author's own class). Subclass
+    and implement ``make`` exactly as for :class:`rlmesh.EnvFactory`; the torch
+    framework rides this class, so every serve route (``serve``, the ``python -m
+    rlmesh.serve`` CLI, a prebuilt/sandbox image) types the obs/action seam as torch
+    without a per-entrypoint flag. To serve a plain (already-built) env, hand it to
+    the neutral ``rlmesh.EnvServer(env, framework="torch")`` instead -- the server
+    stays framework-neutral; the framework is a value you set on the env side.
+    """
+
+    _bridge: ClassVar[ValueBridge | None] = _torch_bridge
+
+
 __all__ = [
+    "EnvFactory",
     "Model",
     "RemoteEnv",
     "RemoteModel",

@@ -146,6 +146,39 @@ def _predict_step(
     return predict(payload)
 
 
+class Reader:
+    """A resolved, role-addressed read over an env's observations (read-only).
+
+    Built by :meth:`Session.reader`. Calling it maps one raw env observation to a
+    ``{role: value}`` dict, each value in the encoding its read item declared -- a
+    bare role keeps the env's native encoding; an :class:`~rlmesh.adapters.Image` /
+    :class:`~rlmesh.adapters.State` leaf converts (``Image(IMAGE_PRIMARY,
+    layout="hwc")`` yields an HWC image whatever the env stores). It is the same
+    adapter pipeline a model uses, pointed at the consumer: resolved once, reused
+    every step, and identical in the native core. Values come back in the env's own
+    framework (numpy for a gym env, torch for a torch route).
+    """
+
+    def __init__(
+        self, adapter: Any, roles: tuple[str, ...], bridge: ValueBridge
+    ) -> None:
+        self._adapter = adapter
+        self._roles = roles
+        self._bridge = bridge
+
+    @property
+    def roles(self) -> tuple[str, ...]:
+        """The roles this reader extracts, in declaration order."""
+        return self._roles
+
+    def __call__(self, observation: object) -> dict[str, Any]:
+        """Extract ``{role: value}`` from one raw env observation (never mutated)."""
+        value = self._adapter.transform_obs_value(
+            observation, input_bridge=self._bridge, custom_bridge=self._bridge
+        )
+        return cast("dict[str, Any]", from_value(value, self._bridge))
+
+
 class Session(Generic[ObsT, ActT]):
     """A model bound to one env: drive it by hand, or pump whole episodes.
 
@@ -201,6 +234,7 @@ class Session(Generic[ObsT, ActT]):
         self._client: Any = None
         self._owns_client = False
         self._adapter: Any = None
+        self._contract: Any = None
         self._env_bridge: ValueBridge | None = None
         self._text_placements: tuple[_TextPlacement, ...] = ()
         self._horizon = 1
@@ -213,6 +247,9 @@ class Session(Generic[ObsT, ActT]):
         #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
         #: begins or the session closes — see `_end_episode`.
         self._episode_open = False
+        #: Resolved Readers (sess.read), cached per read item so a per-step read
+        #: does not re-resolve.
+        self._read_cache: dict[Any, Reader] = {}
 
     def _ensure_connected(self) -> None:
         if self._connected:
@@ -220,6 +257,7 @@ class Session(Generic[ObsT, ActT]):
         client, contract, owns = _connect(self._env, self._token, self._remote_env_cls)
         _reject_vector_env(contract)
         self._client = client
+        self._contract = contract
         self._owns_client = owns
         # A served model resolves its adapter server-side (from the contract sent at
         # bind); only a local model resolves it here, client-side.
@@ -351,6 +389,49 @@ class Session(Generic[ObsT, ActT]):
             bool(truncated),
             cast("Mapping[str, Any]", info),
         )
+
+    def reader(self, *items: object) -> Reader:
+        """Build a read-only, role-addressed view over this env's observations.
+
+        Each item is a role constant -- kept in the env's native encoding -- or a
+        model-input leaf declaring the encoding you want
+        (``Image(IMAGE_PRIMARY, layout="hwc")``, ``State(EEF_POS)``). The returned
+        :class:`Reader` maps a raw observation to ``{role: value}`` through the same
+        adapter pipeline a model uses, so it is encoding-agnostic across envs and
+        runs identically in the native core. Resolved once here, reused each step::
+
+            read = sess.reader(Image(IMAGE_PRIMARY, layout="hwc"), EEF_POS)
+            obs, _ = sess.reset()
+            while not sess.done:
+                screen.show(read(obs)[IMAGE_PRIMARY])
+                obs, *_ = sess.step(sess.predict(obs))
+
+        A bare role is desugared to the env-native leaf for that role (by the env's
+        own tag); pass an explicit leaf to override the encoding.
+        """
+        if not items:
+            raise TypeError(
+                "reader() needs at least one role or model-input leaf to read"
+            )
+        self._ensure_connected()
+        adapter, roles = _resolve_read_adapter(self._contract, items, self._trust)
+        return Reader(adapter, roles, _adapter_env_bridge(self._client))
+
+    def read(self, observation: object, item: object) -> object:
+        """One-shot read of a single role from one observation.
+
+        The single-value convenience for :meth:`reader` -- ``item`` is a role
+        constant or a model-input leaf. The reader is resolved once and cached per
+        item, so calling this every step does not re-resolve::
+
+            ee = sess.read(obs, EEF_POS)
+            img = sess.read(obs, Image(IMAGE_PRIMARY, layout="hwc"))
+        """
+        reader = self._read_cache.get(item)
+        if reader is None:
+            reader = self.reader(item)
+            self._read_cache[item] = reader
+        return reader(observation)[reader.roles[0]]
 
     def run(
         self,
@@ -757,6 +838,112 @@ def _adapter_env_bridge(client: Any) -> ValueBridge:
     from ..numpy import _numpy_bridge  # pyright: ignore[reportPrivateUsage]
 
     return _numpy_bridge
+
+
+def _obs_tag_node(node: Any, role: str) -> Any:
+    """The env obs tag node (ImageTag/StateTag/TextTag/Split) carrying ``role``.
+
+    Walks the env's published observation tags -- authoritative, so a custom or
+    prefix-less role (e.g. ``INSTRUCTION``) resolves correctly -- and returns None
+    if no leaf carries the role. Returns the node itself (not just a kind) so a
+    bare-role read can honor the env's declared image layout.
+    """
+    from ..adapters import ImageTag, Split, StateTag, TextTag
+
+    if isinstance(node, Mapping):
+        children: Any = cast("Any", node).values()
+    elif isinstance(node, tuple):
+        children = cast("Any", node)
+    else:
+        if isinstance(node, (ImageTag, StateTag, TextTag)):
+            return node if node.role == role else None
+        if isinstance(node, Split):
+            return node if any(f.role == role for f in node.fields) else None
+        return None
+    for child in children:
+        found = _obs_tag_node(child, role)
+        if found is not None:
+            return found
+    return None
+
+
+def _read_leaf(item: object, env_tags: Any) -> tuple[str, Any]:
+    """Normalize a read item to ``(role, model-input leaf)``.
+
+    A single-role model-input leaf (Image/State/Text) is taken as-is; a bare role
+    string is desugared to the env-native leaf matching the env's tag for that role.
+    """
+    from ..adapters import (
+        AdapterResolutionError,
+        Image,
+        ImageTag,
+        Split,
+        State,
+        StateTag,
+        Text,
+        TextTag,
+    )
+
+    if isinstance(item, str):
+        node = _obs_tag_node(env_tags.observation, item)
+        if isinstance(node, ImageTag):
+            # A bare image role keeps the env's native encoding -- carry the env's
+            # declared layout so the read does not transpose a chw frame to hwc.
+            return item, Image(item, layout=node.layout)
+        if isinstance(node, (StateTag, Split)):
+            return item, State(item)
+        if isinstance(node, TextTag):
+            return item, Text(item)
+        raise AdapterResolutionError(
+            f"the env declares no observation role {item!r} to read; pass an "
+            f"explicit leaf (e.g. State({item!r})) or use a role the env tags"
+        )
+    role = getattr(item, "role", None)
+    if not isinstance(role, str):
+        raise TypeError(
+            "a read item must be a role string or a single-role model-input leaf "
+            f"(Image/State/Text); got {type(item).__name__}"
+        )
+    return role, item
+
+
+def _resolve_read_adapter(
+    contract: Any, items: tuple[object, ...], trust: bool
+) -> tuple[Any, tuple[str, ...]]:
+    """Resolve a read-only adapter for ``items`` against the env contract.
+
+    Reuses the model adapter pipeline: the read items become an obs-only
+    :class:`~rlmesh.adapters.ModelSpec` input, the env's own action layout rides
+    along as a no-op output (so the obs-only intent satisfies ModelSpec without
+    inventing an action), and :func:`~rlmesh.adapters.resolve_from_contract` derives
+    the same plan a model would.
+    """
+    from ..adapters import (
+        AdapterResolutionError,
+        EnvTags,
+        ModelSpec,
+        resolve_from_contract,
+    )
+
+    if contract is None:
+        raise AdapterResolutionError(
+            "reading by role needs an env contract, but the env exposes none"
+        )
+    env_tags = EnvTags.from_metadata(getattr(contract, "metadata", None) or {})
+    if env_tags is None:
+        raise AdapterResolutionError(
+            "the env publishes no adapter tags, so there are no roles to read; "
+            "serve it with rlmesh.adapters.tag(...)"
+        )
+    pairs = [_read_leaf(item, env_tags) for item in items]
+    roles = tuple(role for role, _ in pairs)
+    if len(set(roles)) != len(roles):
+        raise AdapterResolutionError(f"a role is read more than once: {list(roles)}")
+    spec = ModelSpec(
+        input={role: leaf for role, leaf in pairs},
+        output=env_tags.action,
+    )
+    return resolve_from_contract(contract, spec, trust_entrypoints=trust), roles
 
 
 def _reset(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:

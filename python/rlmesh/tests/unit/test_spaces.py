@@ -150,3 +150,31 @@ def test_native_box_samples_support_extended_dtypes(dtype: str) -> None:
     assert sample.dtype == dtype
     assert sample.shape == [2]
     assert space.contains(sample)
+
+
+def test_dtype_name_maps_builtin_float_and_int() -> None:
+    from rlmesh.spaces._internals import dtype_name
+
+    # numpy-fluent dtype=float / int read as float64 / int64; the bare __name__
+    # ('float'/'int') would be rejected by the Rust DType validator. bool already
+    # resolves via __name__.
+    assert dtype_name(float) == "float64"
+    assert dtype_name(int) == "int64"
+    assert dtype_name(bool) == "bool"
+
+
+def test_box_accepts_builtin_float_dtype() -> None:
+    from rlmesh import spaces
+
+    assert spaces.Box(-1.0, 1.0, shape=[3], dtype=float).spec.dtype == "float64"
+
+
+def test_require_float_rejects_nan_keeps_inf() -> None:
+    from rlmesh.spaces._internals import require_float
+
+    # 'inf'/'-inf' are valid Box bounds; 'nan' makes every contains()/clamp compare
+    # False, so it is rejected at the boundary.
+    assert require_float("inf", "high") == float("inf")
+    assert require_float("-inf", "low") == float("-inf")
+    with pytest.raises(ValueError, match="NaN"):
+        require_float("nan", "low")

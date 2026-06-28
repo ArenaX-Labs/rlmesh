@@ -358,6 +358,27 @@ pub(crate) fn decode_i64_sequence_bytes(bytes: &[u8], dtype: DType) -> PyResult<
         .collect())
 }
 
+/// Move a device-resident tensor to host so `numpy.asarray` can read it, or return
+/// `None` when the value is not a recoverable device tensor.
+///
+/// `numpy.asarray` already reads CPU torch tensors (via `__array__`) and jax arrays
+/// directly, but raises on a non-CPU tensor (a CUDA torch obs errors with "can't
+/// convert cuda:0 device type tensor to numpy"). Only a value carrying `.cpu` is
+/// moved host-side, so an *undeclared* GPU env's observation still encodes -- the
+/// obs direction needs no framework declaration.
+///
+/// Deliberately WITHOUT `.detach()`: a `requires_grad` tensor must keep failing so
+/// its real "call numpy() on Tensor that requires grad" error surfaces (an autograd
+/// graph leaking into an observation is a bug, not something to silently paper
+/// over). A value with no `.cpu` (a ragged/object array) returns `None` so its
+/// original, accurate `asarray` error stands instead of a misleading retry error.
+fn to_host_arraylike<'py>(value: &Bound<'py, PyAny>) -> PyResult<Option<Bound<'py, PyAny>>> {
+    if value.hasattr("cpu")? {
+        return Ok(Some(value.call_method0("cpu")?));
+    }
+    Ok(None)
+}
+
 fn encode_with_numpy(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -370,7 +391,17 @@ fn encode_with_numpy(
     // finite, exactly integral, and within the target dtype's range; otherwise
     // reject rather than silently truncating or overflow-wrapping, which would
     // corrupt the value. (NumPy only warns on out-of-range integer casts.)
-    let source = numpy.getattr("asarray")?.call1((value,))?;
+    let source = match numpy.getattr("asarray")?.call1((value,)) {
+        Ok(source) => source,
+        // A device tensor (e.g. a CUDA torch obs) raises here; retry after moving it
+        // to host so an undeclared GPU env's observation still encodes. Any other
+        // failure (a requires_grad tensor, a ragged/object array) keeps its
+        // original, accurate error rather than a misleading second-asarray error.
+        Err(original) => match to_host_arraylike(value)? {
+            Some(host) => numpy.getattr("asarray")?.call1((&host,))?,
+            None => return Err(original),
+        },
+    };
     let kind = source
         .getattr("dtype")?
         .getattr("kind")?

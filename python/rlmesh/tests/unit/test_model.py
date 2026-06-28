@@ -183,9 +183,13 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
     from types import SimpleNamespace
 
     import rlmesh._models._eval as eval_mod
+    from rlmesh._value_conversion import IdentityBridge
     from rlmesh.types import Value
 
-    class EnvBridge:
+    # Inherit IdentityBridge so these doubles satisfy the full ValueBridge protocol
+    # (tree_stack/tree_unstack, device/host ops) while overriding only the encode/
+    # decode wiring this test exercises.
+    class EnvBridge(IdentityBridge):
         name = "env"
 
         def ensure_available(self) -> None:
@@ -199,7 +203,7 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
             assert value == "canonical-action"
             return "env-action"
 
-    class ModelBridge:
+    class ModelBridge(IdentityBridge):
         name = "model"
 
         def ensure_available(self) -> None:

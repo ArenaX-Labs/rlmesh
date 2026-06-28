@@ -26,8 +26,8 @@ use super::conversion::{
     normalize_reset_result, normalize_single_step_result, normalize_vector_step_result,
 };
 use crate::spaces::{
-    ValueBackend, batched_space_values_to_py_with_backend, meta_map_to_pydict,
-    py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
+    ValueBackend, batched_space_values_to_py_neutral, batched_space_values_to_py_with_backend,
+    meta_map_to_pydict, py_any_to_batched_space_values_with_backend, py_any_to_meta_map,
     py_any_to_space_value_with_backend, space_value_to_py_with_backend,
 };
 use crate::telemetry::ProfileCollector;
@@ -105,6 +105,11 @@ pub struct PyEnvironment {
     policy: ValidationPolicy,
     /// Conformance-warning dedup: `(kind, path)` already reported this session.
     warned: HashSet<(String, String)>,
+    /// Value codec backend for this env's obs/action seam. `Auto` (numpy if
+    /// present, else native) is the default; `Native` is set when a Python
+    /// framework bridge owns the conversion (see `rlmesh._server._BridgedEnv`),
+    /// so Rust hands/keeps native Tensor leaves and never touches numpy/torch.
+    value_backend: ValueBackend,
 }
 
 pub struct PySingleEnv(PyEnvironment);
@@ -138,11 +143,15 @@ impl PyEnvironment {
     /// # Arguments
     /// * `env` - Python gymnasium.Env or gymnasium.vector.VectorEnv object
     ///
+    /// # Arguments
+    /// * `native_values` - when true, use `ValueBackend::Native` so a Python
+    ///   framework bridge owns obs/action conversion; otherwise `Auto`.
+    ///
     /// # Errors
     /// Returns error if:
     /// - `env` doesn't have required methods (reset, step, close)
     /// - Space parsing fails
-    pub fn new(env: Py<PyAny>) -> PyResult<Self> {
+    pub fn new(env: Py<PyAny>, native_values: bool) -> PyResult<Self> {
         let profiler = ProfileCollector::new("env_server");
         Python::attach(|py| {
             let env_ref = env.bind(py);
@@ -223,6 +232,11 @@ impl PyEnvironment {
                 profiler,
                 policy: validation_policy_from_env(),
                 warned: HashSet::new(),
+                value_backend: if native_values {
+                    ValueBackend::Native
+                } else {
+                    ValueBackend::Auto
+                },
             })
         })
     }
@@ -279,8 +293,8 @@ impl PyEnvironment {
     }
 }
 
-pub fn build_scalar_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
-    let env = PyEnvironment::new(env)?;
+pub fn build_scalar_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<PyServerEnv> {
+    let env = PyEnvironment::new(env, native_values)?;
     if env.uses_single_env_api() {
         Ok(PyServerEnv::Single(PySingleEnv(env)))
     } else {
@@ -290,8 +304,8 @@ pub fn build_scalar_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
     }
 }
 
-pub fn build_vector_server_env(env: Py<PyAny>) -> PyResult<PyServerEnv> {
-    let env = PyEnvironment::new(env)?;
+pub fn build_vector_server_env(env: Py<PyAny>, native_values: bool) -> PyResult<PyServerEnv> {
+    let env = PyEnvironment::new(env, native_values)?;
     if env.uses_single_env_api() {
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
             "VectorEnvServer requires a vectorized environment. Use EnvServer for one environment.",
@@ -345,6 +359,7 @@ impl PyEnvironment {
         let seed = req.seed;
         let options = req.options;
         let profiler = Arc::clone(&self.profiler);
+        let value_backend = self.value_backend;
 
         let (observation, mut info) = spawn_py(
             "reset",
@@ -369,7 +384,7 @@ impl PyEnvironment {
                     py,
                     &obs,
                     &observation_space,
-                    ValueBackend::Auto,
+                    value_backend,
                 )?;
                 let _ = encode_guard.finish(native_value_size(&observation));
 
@@ -428,6 +443,7 @@ impl PyEnvironment {
         let action = req.action;
         let action_size = action.as_ref().map(native_value_size).unwrap_or(0);
         let profiler = Arc::clone(&self.profiler);
+        let value_backend = self.value_backend;
 
         let (observation, reward, terminated, truncated, mut info) = spawn_py(
             "step",
@@ -436,13 +452,10 @@ impl PyEnvironment {
 
                 let decode_guard = profiler.start("server.step.decode_action");
                 let action = match action.as_ref() {
-                    Some(action) => space_value_to_py_with_backend(
-                        py,
-                        action,
-                        &action_space,
-                        ValueBackend::Auto,
-                    )?
-                    .unbind(),
+                    Some(action) => {
+                        space_value_to_py_with_backend(py, action, &action_space, value_backend)?
+                            .unbind()
+                    }
                     None => py.None(),
                 };
                 let _ = decode_guard.finish(action_size);
@@ -459,7 +472,7 @@ impl PyEnvironment {
                     py,
                     &obs,
                     &observation_space,
-                    ValueBackend::Auto,
+                    value_backend,
                 )?;
                 let _ = encode_guard.finish(native_value_size(&observation));
 
@@ -587,6 +600,7 @@ impl PyEnvironment {
         let options = req.options;
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
+        let value_backend = self.value_backend;
 
         let (observations, mut info, obs_bytes) = spawn_py(
             "reset",
@@ -616,7 +630,7 @@ impl PyEnvironment {
                     &obs,
                     &observation_space,
                     num_envs,
-                    ValueBackend::Auto,
+                    value_backend,
                 )?;
                 let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
                 let _ = encode_guard.finish(obs_bytes);
@@ -685,6 +699,7 @@ impl PyEnvironment {
         let actions = req.actions;
         let num_envs = self.num_envs;
         let profiler = Arc::clone(&self.profiler);
+        let value_backend = self.value_backend;
 
         let (observations, rewards, terminated, truncated, mut info, action_bytes, obs_bytes) =
             spawn_py(
@@ -693,12 +708,22 @@ impl PyEnvironment {
                     let env_ref = env.bind(py);
 
                     let decode_guard = profiler.start("server.step.decode_action");
-                    let action = batched_space_values_to_py_with_backend(
-                        py,
-                        &actions,
-                        &action_space,
-                        ValueBackend::Auto,
-                    )?;
+                    // Under Native a Python framework bridge owns the conversion, so
+                    // fuse the N lanes into one `(N, *shape)` native Tensor (the path
+                    // the model's batched corner uses) instead of handing back a
+                    // Python list of N per-lane values: `bridge.decode` then yields a
+                    // single `{key: tensor[N, ...]}` batch. (Non-array leaves such as
+                    // Discrete still arrive as a list of N -- same as the model.)
+                    let action = if matches!(value_backend, ValueBackend::Native) {
+                        batched_space_values_to_py_neutral(py, &actions, &action_space)?
+                    } else {
+                        batched_space_values_to_py_with_backend(
+                            py,
+                            &actions,
+                            &action_space,
+                            value_backend,
+                        )?
+                    };
                     let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
                     let _ = decode_guard.finish(action_bytes);
 
@@ -715,7 +740,7 @@ impl PyEnvironment {
                         &obs,
                         &observation_space,
                         num_envs,
-                        ValueBackend::Auto,
+                        value_backend,
                     )?;
                     let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
                     let _ = encode_guard.finish(obs_bytes);

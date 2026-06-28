@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._authoring import EnvFactory as _EnvFactory
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
@@ -122,11 +124,88 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
+def _stack_leaf(values: list[object]) -> object:
+    import jax.numpy as jnp
+
+    # Array/numeric leaves stack to [N, ...]; text leaves stay a per-lane list. A
+    # ragged leaf cannot fuse -- raise rather than silently returning a list for this
+    # leaf while siblings stack, which hands the model a structurally inconsistent
+    # batch ({stacked leaves} + {one list leaf}).
+    if isinstance(values[0], (str, bytes)):
+        return list(values)
+    try:
+        return cast(Any, jnp).stack([cast(Any, jnp).asarray(v) for v in values])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"cannot fuse a ragged observation leaf across {len(values)} lanes "
+            "(per-lane shapes differ); a batched predict needs every non-text leaf "
+            "to stack into [N, ...]"
+        ) from exc
+
+
+def _unstack_leaf(value: object, n: int) -> list[object]:
+    import jax
+
+    if isinstance(value, jax.Array):
+        shape = cast(Any, value).shape
+        if len(shape) >= 1 and shape[0] == n:
+            return [cast(Any, value)[i] for i in range(n)]
+        raise ValueError(
+            f"a batched predict corner must return leaves with leading batch axis "
+            f"{n}; got a jax array of shape {tuple(shape)}"
+        )
+    if isinstance(value, (list, tuple)) and len(cast(Any, value)) == n:
+        return list(cast(Any, value))
+    raise ValueError(
+        f"cannot split a batched action leaf of type {type(cast(Any, value)).__name__} into "
+        f"{n} lanes; return one batched value (leaves [{n}, ...])"
+    )
+
+
+def _as_jax_device(device: object) -> object:
+    """Resolve a device string to a ``jax.Device`` (``device_put`` rejects strings).
+
+    The CLI/docstring tell users to pass a torch-style string like ``"cpu"`` or
+    ``"cuda:0"``; ``jax.device_put`` only accepts a ``jax.Device``/Sharding/None, so
+    map ``"platform[:index]"`` to ``jax.devices(platform)[index]`` (``"cuda"`` is
+    jax's ``"gpu"``). A ``jax.Device`` / ``None`` passes through untouched.
+    """
+    if not isinstance(device, str):
+        return device
+    import jax
+
+    platform, _, index = device.partition(":")
+    platform = "gpu" if platform == "cuda" else platform
+    return cast(Any, jax).devices(platform)[int(index) if index else 0]
+
+
+def _to_device_leaf(value: object, device: object) -> object:
+    import jax
+
+    if isinstance(value, jax.Array):
+        return cast(Any, jax).device_put(value, _as_jax_device(device))
+    return value
+
+
+def _to_host_leaf(value: object) -> object:
+    import jax
+
+    # A reward/terminated/truncated leaf: pull a device array back to host as a
+    # Python scalar/list; a plain Python scalar passes through.
+    if isinstance(value, jax.Array):
+        return cast(Any, jax).device_get(value).tolist()
+    return value
+
+
 _jax_bridge: ValueBridge = FrameworkBridge(
     name="jax",
     ensure_available=ensure_available,
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
+    stack_leaf=_stack_leaf,
+    unstack_leaf=_unstack_leaf,
+    to_device_leaf=_to_device_leaf,
+    to_host_leaf=_to_host_leaf,
 )
 
 
@@ -228,7 +307,21 @@ class SandboxVectorEnv(SandboxVectorEnvBase[JaxValue, JaxValue]):
     _bridge: ClassVar[ValueBridge] = _jax_bridge
 
 
+class EnvFactory(_EnvFactory, ABC):
+    """JAX-backed :class:`~rlmesh.EnvFactory`: served envs speak JAX arrays.
+
+    The producer-side mirror of :class:`Model` (the author's own class). Subclass
+    and implement ``make`` as for :class:`rlmesh.EnvFactory`; the JAX framework
+    rides this class, so every serve route types the obs/action seam as JAX without
+    a per-entrypoint flag. To serve a plain (already-built) env, hand it to the
+    neutral ``rlmesh.EnvServer(env, framework="jax")`` instead.
+    """
+
+    _bridge: ClassVar[ValueBridge | None] = _jax_bridge
+
+
 __all__ = [
+    "EnvFactory",
     "JaxValue",
     "Model",
     "RemoteEnv",

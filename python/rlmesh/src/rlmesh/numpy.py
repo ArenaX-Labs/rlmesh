@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib
+from abc import ABC
 from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
 
+from ._authoring import EnvFactory as _EnvFactory
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
@@ -115,11 +117,52 @@ def _encode_leaf(value: object) -> object:
     return UNHANDLED
 
 
+def _stack_leaf(values: list[object]) -> object:
+    import numpy as np
+
+    # Text leaves stay a per-lane list; arrays and numeric primitives stack to
+    # [N, ...]. A ragged leaf cannot fuse -- raise rather than silently returning a
+    # list for this leaf while siblings stack, which hands the model a structurally
+    # inconsistent batch ({stacked leaves} + {one list leaf}).
+    if isinstance(values[0], (str, bytes)):
+        return list(values)
+    try:
+        return np.stack([np.asarray(v) for v in values])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"cannot fuse a ragged observation leaf across {len(values)} lanes "
+            "(per-lane shapes differ); a batched predict needs every non-text leaf "
+            "to stack into [N, ...]"
+        ) from exc
+
+
+def _unstack_leaf(value: object, n: int) -> list[object]:
+    import numpy as np
+
+    if isinstance(value, np.ndarray):
+        arr = cast(Any, value)
+        if arr.ndim >= 1 and arr.shape[0] == n:
+            return list(arr)
+        raise ValueError(
+            f"a batched predict corner must return leaves with leading batch axis "
+            f"{n}; got a numpy array of shape {arr.shape}"
+        )
+    seq = cast("list[object] | tuple[object, ...]", value)
+    if isinstance(value, (list, tuple)) and len(seq) == n:
+        return list(seq)
+    raise ValueError(
+        f"cannot split a batched action leaf of type {type(cast(object, value)).__name__} into "
+        f"{n} lanes; return one batched value (leaves [{n}, ...])"
+    )
+
+
 _numpy_bridge: ValueBridge = FrameworkBridge(
     name="numpy",
     ensure_available=ensure_available,
     decode_leaf=asarray,
     encode_leaf=_encode_leaf,
+    stack_leaf=_stack_leaf,
+    unstack_leaf=_unstack_leaf,
 )
 
 
@@ -273,7 +316,20 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
 
+class EnvFactory(_EnvFactory, ABC):
+    """NumPy-backed :class:`~rlmesh.EnvFactory` -- the default, named for symmetry.
+
+    Equivalent to subclassing :class:`rlmesh.EnvFactory`; the served env's
+    obs/action seam stays on the default numpy/Auto path. Provided so ``rlmesh.numpy``
+    carries the env-author class next to :class:`Model`, matching ``rlmesh.torch`` /
+    ``rlmesh.jax``.
+    """
+
+    _bridge: ClassVar[ValueBridge | None] = _numpy_bridge
+
+
 __all__ = [
+    "EnvFactory",
     "Model",
     "NumpyValue",
     "RemoteEnv",

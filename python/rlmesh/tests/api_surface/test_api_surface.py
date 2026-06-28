@@ -99,6 +99,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
     import rlmesh.torch as rlmesh_torch
 
     assert rlmesh_numpy.__all__ == [
+        "EnvFactory",
         "Model",
         "NumpyValue",
         "RemoteEnv",
@@ -118,6 +119,7 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
     assert not hasattr(rlmesh_numpy, "NumpyAdapter")
 
     assert rlmesh_torch.__all__ == [
+        "EnvFactory",
         "Model",
         "RemoteEnv",
         "RemoteModel",

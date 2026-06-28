@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ._client import Transport, normalize_bind_address
+from ._value_conversion import resolve_bridge
 from .specs import EnvContract
 from .types import EnvLike, VectorEnvLike
 
@@ -17,9 +18,20 @@ except ImportError as e:
 if TYPE_CHECKING:
     from rlmesh._rlmesh import ServeOptions
 
+    from ._value_conversion import ValueBridge
     from .adapters import EnvTags
 
 VectorServerEnvLike = VectorEnvLike[Any, Any, Any]
+
+
+def _bridge_wraps(bridge: ValueBridge | None) -> bool:
+    """Whether ``bridge`` needs the native ``BridgedEnv`` wrapper.
+
+    numpy (and the identity ``rlmesh`` bridge) are served by the default
+    ``ValueBackend::Auto`` path, which already reads numpy/dlpack leaves -- only a
+    non-numpy framework (torch, jax) needs the Python bridge + ``Native`` backend.
+    """
+    return bridge is not None and bridge.name not in ("numpy", "rlmesh")
 
 
 def _is_vector_env(env: object) -> bool:
@@ -54,6 +66,17 @@ class EnvServer:
             They are validated against the env's spaces and merged into its
             metadata, so a model client can resolve an adapter from the
             contract alone (see :func:`rlmesh.adapters.resolve_from_contract`).
+        framework: The framework the env's ``step`` requires its *action* as --
+            ``"torch"``, ``"jax"``, ``"numpy"`` (default), or a
+            :class:`~rlmesh._value_conversion.ValueBridge`. Only needed for a
+            framework-strict env (one whose ``step`` does e.g. ``action.to(...)``);
+            a tolerant env can omit it. *Observations* need no declaration -- a
+            torch/jax obs (GPU included) is auto-detected and encoded either way.
+            The wire stays framework-neutral, so the env's action framework is
+            independent of any consuming model's framework.
+        device: Device to place the incoming action on (torch/jax only), e.g.
+            ``"cuda:0"`` or a ``torch.device``. Requires ``framework=``; rejected
+            for numpy/the default.
 
     Examples:
         >>> from rlmesh import EnvServer, spaces
@@ -89,9 +112,12 @@ class EnvServer:
         transport: Transport | None = None,
         options: ServeOptions | None = None,
         tags: EnvTags | None = None,
+        framework: str | ValueBridge | None = None,
+        device: object | None = None,
     ) -> None:
         # The env is self-describing: a vectorized env (the VectorEnvLike shape) is
         # served by the native vector server, a single env by the scalar server.
+        # Detect on the RAW env, before any wrapping.
         is_vector = _is_vector_env(env)
         if tags is not None:
             # Imported lazily so the common (un-tagged) serve path does not
@@ -99,6 +125,34 @@ class EnvServer:
             from .adapters import tag
 
             env = tag(env, tags)
+
+        # The framework is a value the author sets on the env side -- here, the
+        # framework= kwarg (an EnvFactory passes its declared framework through it).
+        # torch/jax wrap the env in a Python bridge + native value backend; numpy
+        # (and the default) keep the Auto backend unchanged. The wire stays neutral
+        # rlmesh-native either way, so the env's framework is independent of any
+        # consuming model's framework.
+        bridge = resolve_bridge(framework) if framework is not None else None
+        native_values = _bridge_wraps(bridge)
+        if device is not None and not (
+            native_values and bridge is not None and bridge.supports_device()
+        ):
+            raise ValueError(
+                "device=... requires a framework with a device (framework='torch' "
+                "or 'jax'); numpy envs and the default backend have no device."
+            )
+        if native_values:
+            # Lazy import keeps the un-bridged serve path light (mirrors tag()).
+            from ._server_bridge import BridgedEnv
+
+            assert bridge is not None
+            # BridgedEnv duck-types as the env (delegates every other attribute);
+            # cast so the static env type is preserved for the server constructors.
+            env = cast(
+                "EnvLike[Any, Any] | VectorServerEnvLike",
+                BridgedEnv(env, bridge, device),
+            )
+
         normalized_address = normalize_bind_address(
             address,
             host=host,
@@ -107,9 +161,19 @@ class EnvServer:
             transport=transport,
         )
         self._server: PyEnvServer | PyVectorEnvServer = (
-            PyVectorEnvServer(env=env, address=normalized_address, options=options)
+            PyVectorEnvServer(
+                env=env,
+                address=normalized_address,
+                options=options,
+                native_values=native_values,
+            )
             if is_vector
-            else PyEnvServer(env=env, address=normalized_address, options=options)
+            else PyEnvServer(
+                env=env,
+                address=normalized_address,
+                options=options,
+                native_values=native_values,
+            )
         )
 
     @property

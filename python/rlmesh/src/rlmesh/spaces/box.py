@@ -9,8 +9,9 @@ from .._rlmesh import box_space_spec
 from ..specs import SpaceSpec
 from ..types import Value
 from ._base import Space
-from ._internals import require_float, spec_details
+from ._internals import dtype_name, require_float, spec_details
 from ._internals import shape as normalize_shape
+from ._literals import Bound, FloatDTypeLike
 
 
 @final
@@ -31,16 +32,19 @@ class Box(Space[Value]):
 
     def __init__(
         self,
-        low: float | SpaceSpec,
-        high: float | None = None,
+        low: Bound | SpaceSpec,
+        high: Bound | None = None,
         shape: Sequence[int] | None = None,
-        dtype: str = "float32",
+        dtype: FloatDTypeLike = "float32",
     ) -> None:
         spec = (
             low
             if isinstance(low, SpaceSpec)
             else box_space_spec(
-                float(low), require_float(high, "high"), normalize_shape(shape), dtype
+                float(low),
+                require_float(high, "high"),
+                normalize_shape(shape),
+                dtype_name(dtype),
             )
         )
         super().__init__(spec)

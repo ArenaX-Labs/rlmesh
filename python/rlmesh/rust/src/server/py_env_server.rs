@@ -77,14 +77,21 @@ impl PyVectorEnvServer {
     /// * `env` - Python gymnasium.vector.VectorEnv object
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false))]
     fn new(
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
+        native_values: bool,
     ) -> PyResult<Self> {
         Ok(Self {
-            inner: construct_server(env, address, options, build_vector_server_env)?,
+            inner: construct_server(
+                env,
+                address,
+                options,
+                native_values,
+                build_vector_server_env,
+            )?,
         })
     }
 
@@ -132,12 +139,13 @@ fn construct_server(
     env: Py<PyAny>,
     address: Option<&str>,
     options: Option<PyServeOptions>,
-    build_env: fn(Py<PyAny>) -> PyResult<PyServerEnv>,
+    native_values: bool,
+    build_env: fn(Py<PyAny>, bool) -> PyResult<PyServerEnv>,
 ) -> PyResult<PyEnvServer> {
     crate::telemetry::init_tracing("env_server");
     let shutdown = ShutdownTrigger::new();
 
-    let py_env = build_env(env)?;
+    let py_env = build_env(env, native_values)?;
     let env_contract = py_env.env_contract().clone();
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| {
@@ -244,13 +252,20 @@ impl PyEnvServer {
     /// * `env` - Python gymnasium.Env object
     /// * `address` - Optional bind address shortcut
     #[new]
-    #[pyo3(signature = (env, address=None, *, options=None))]
+    #[pyo3(signature = (env, address=None, *, options=None, native_values=false))]
     fn new(
         env: Py<PyAny>,
         address: Option<&str>,
         options: Option<PyServeOptions>,
+        native_values: bool,
     ) -> PyResult<Self> {
-        construct_server(env, address, options, build_scalar_server_env)
+        construct_server(
+            env,
+            address,
+            options,
+            native_values,
+            build_scalar_server_env,
+        )
     }
 
     /// Get the server address.

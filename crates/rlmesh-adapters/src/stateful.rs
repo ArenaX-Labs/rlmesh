@@ -200,6 +200,39 @@ pub fn split_chunk(raw_action: Value) -> Result<Vec<Value>, ApplyError> {
             .map(Value::Tensor)
             .collect()),
         Value::List(actions) => Ok(actions),
+        // A Dict-space action chunk carries the horizon as each leaf's leading axis
+        // (e.g. {"arm": tensor[H, ...], "gripper": tensor[H, ...]}); split every
+        // leaf and zip into H per-step Maps. Mirrors the Python `_first_frame`
+        // Mapping recursion and the batched `_dechunk` tree_map, so a Dict action
+        // replays its whole horizon instead of being treated as one frame.
+        Value::Map(map) => {
+            let mut fields: Vec<(String, Vec<Value>)> = Vec::with_capacity(map.len());
+            let mut horizon: Option<usize> = None;
+            for (key, value) in map {
+                let frames = split_chunk(value)?;
+                match horizon {
+                    Some(h) if h != frames.len() => {
+                        return Err(ApplyError::new(format!(
+                            "action chunk fields disagree on horizon: {h} vs {}",
+                            frames.len()
+                        )));
+                    }
+                    _ => horizon = Some(frames.len()),
+                }
+                fields.push((key, frames));
+            }
+            let horizon = horizon.unwrap_or(0);
+            Ok((0..horizon)
+                .map(|i| {
+                    Value::Map(
+                        fields
+                            .iter()
+                            .map(|(key, frames)| (key.clone(), frames[i].clone()))
+                            .collect(),
+                    )
+                })
+                .collect())
+        }
         other => Ok(vec![other]),
     }
 }
@@ -609,6 +642,53 @@ mod tests {
         // (matches the run(env) path, which treats a 0-d output as a single step).
         let scalar = Tensor::from_vec(vec![9], vec![], DType::Uint8).unwrap();
         assert_eq!(split_chunk(Value::Tensor(scalar)).expect("scalar").len(), 1);
+    }
+
+    #[test]
+    fn split_chunk_unstacks_a_map_per_leaf() {
+        // A Dict-space action chunk carries the horizon inside each leaf:
+        // {"arm": [2, 2], "grip": [2, 1]} splits into 2 per-step Maps, each leaf
+        // unstacked along its leading axis (not treated as a single frame).
+        let arm = Tensor::from_vec(vec![0, 1, 2, 3], vec![2, 2], DType::Uint8).unwrap();
+        let grip = Tensor::from_vec(vec![7, 8], vec![2, 1], DType::Uint8).unwrap();
+        let chunk = Value::Map(BTreeMap::from([
+            ("arm".to_owned(), Value::Tensor(arm)),
+            ("grip".to_owned(), Value::Tensor(grip)),
+        ]));
+        let steps = split_chunk(chunk).expect("split map");
+        assert_eq!(steps.len(), 2);
+        for (i, step) in steps.iter().enumerate() {
+            let map = match step {
+                Value::Map(m) => m,
+                other => panic!("expected map, got {other:?}"),
+            };
+            match map.get("arm") {
+                Some(Value::Tensor(t)) => {
+                    assert_eq!(t.shape(), &[2]);
+                    assert_eq!(
+                        t.to_contiguous_bytes().into_owned(),
+                        vec![i as u8 * 2, i as u8 * 2 + 1]
+                    );
+                }
+                other => panic!("expected arm tensor, got {other:?}"),
+            }
+            match map.get("grip") {
+                Some(Value::Tensor(t)) => {
+                    assert_eq!(t.shape(), &[1]);
+                    assert_eq!(t.to_contiguous_bytes().into_owned(), vec![7 + i as u8]);
+                }
+                other => panic!("expected grip tensor, got {other:?}"),
+            }
+        }
+
+        // Leaves that disagree on horizon are a clear error, not a silent zip.
+        let three = Tensor::from_vec(vec![0, 1, 2], vec![3], DType::Uint8).unwrap();
+        let two = Tensor::from_vec(vec![0, 1], vec![2], DType::Uint8).unwrap();
+        let ragged = Value::Map(BTreeMap::from([
+            ("a".to_owned(), Value::Tensor(three)),
+            ("b".to_owned(), Value::Tensor(two)),
+        ]));
+        assert!(split_chunk(ragged).is_err());
     }
 
     #[test]

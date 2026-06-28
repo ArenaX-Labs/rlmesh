@@ -206,7 +206,7 @@ class PyEnvServer:
         r"""
         Alias for env_contract.
         """
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None) -> PyEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ...) -> PyEnvServer:
         r"""
         Create a new RLMesh environment server.
         # Arguments
@@ -279,7 +279,7 @@ class PyVectorEnvServer:
     def env_contract(self) -> EnvContract: ...
     @property
     def spec(self) -> EnvContract: ...
-    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None) -> PyVectorEnvServer:
+    def __new__(cls, env: typing.Any, address: typing.Optional[builtins.str] = None, *, options: typing.Optional[ServeOptions] = None, native_values: builtins.bool = ...) -> PyVectorEnvServer:
         r"""
         Create a new vectorized RLMesh environment server.
         # Arguments

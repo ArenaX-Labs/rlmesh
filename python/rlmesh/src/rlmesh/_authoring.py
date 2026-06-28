@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, final
 from rlmesh.types import EnvLike
 
 if TYPE_CHECKING:
+    from ._value_conversion import ValueBridge
     from .adapters import EnvTags
     from .params import ParamSpec
 
@@ -37,6 +38,10 @@ class EnvFactory(ABC):
     tags: ClassVar[EnvTags | None] = None
     #: Optional declared construction-parameter surface validated against ``make``.
     params: ClassVar[ParamSpec | None] = None
+    #: Framework bridge pinned by a framework-specific subclass
+    #: (``rlmesh.torch.EnvFactory`` / ``rlmesh.jax.EnvFactory``); ``serve_env``
+    #: reads it to type the served env's obs/action seam. ``None`` serves numpy.
+    _bridge: ClassVar[ValueBridge | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         # Stamp the factory's ``tags`` onto every env ``make()`` returns, so the tag

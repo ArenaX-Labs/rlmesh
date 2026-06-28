@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
-from .._value_conversion import ValueBridge
+from .._value_conversion import ValueBridge, identity_bridge, tree_map
 from ..types import Value
 
 if TYPE_CHECKING:
@@ -20,6 +20,118 @@ ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
 LifecycleCallback = Callable[[], None]
 PredictFn = Callable[[ObsT], ActT]
+Corner = Callable[..., object]
+
+#: The four predict corners, ordered general -> specific. A model overrides any
+#: subset; :func:`_synthesize_corners` derives the rest.
+_CORNERS = ("predict", "predict_chunk", "predict_batch", "predict_chunk_batch")
+
+
+def _debatch(bridge: ValueBridge, batched_fn: Corner) -> Corner:
+    """Single-lane corner from a batched one: run a batch of one and unwrap.
+
+    Wraps the lone observation into a 1-lane batch (``tree_stack``), calls the
+    batched corner, and peels lane 0 back off (``tree_unstack``). Trailing args --
+    positional or keyword -- pass straight through, so this turns ``predict_batch``
+    into ``predict`` and ``predict_chunk_batch`` into ``predict_chunk`` (whose
+    ``horizon`` the local Session passes by keyword).
+    """
+
+    def derived(observation: object, *rest: object, **rest_kw: object) -> object:
+        fused = bridge.tree_stack([observation])
+        return bridge.tree_unstack(batched_fn(fused, *rest, **rest_kw), 1)[0]
+
+    return derived
+
+
+def _first_frame(chunk: object) -> object:
+    """The first action of a single chunk, matching the engine's ``split_chunk``.
+
+    A ``Mapping`` (Dict-space action) carries the chunk axis INSIDE each leaf, so
+    recurse per value; a ``list``/``tuple`` is itself the frame axis; an array's
+    leading axis is the frame axis; a scalar/text is a single-frame chunk and stands
+    as its own action. Keeps local de-chunking byte-consistent with the served path
+    (``stateful.rs::split_chunk``).
+    """
+    if isinstance(chunk, Mapping):
+        items = cast("Mapping[Any, Any]", chunk)
+        return {k: _first_frame(v) for k, v in items.items()}
+    if isinstance(chunk, (list, tuple)):
+        seq = cast("Any", chunk)
+        if len(seq) == 0:
+            raise ValueError(
+                "predict_chunk returned an empty chunk; return at least one action"
+            )
+        return seq[0]
+    if getattr(chunk, "ndim", 0) >= 1:
+        arr = cast("Any", chunk)
+        if arr.shape[0] == 0:
+            raise ValueError(
+                "predict_chunk returned an empty chunk; return at least one action"
+            )
+        return arr[0]
+    return chunk
+
+
+def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
+    """Single-action corner from a chunk one: run horizon 1 and take the first action.
+
+    Single: take the first frame (``_first_frame``, ``split_chunk`` semantics).
+    Batched: the chunk leaves are ``[B, horizon, ...]``, so take frame 0 past the
+    batch axis (``leaf[:, 0]``), leaving non-array leaves (text) untouched.
+    """
+
+    def derived(observation: object) -> object:
+        chunk = chunk_fn(observation, 1)
+        if not batched:
+            return _first_frame(chunk)
+        return tree_map(
+            chunk,
+            lambda leaf: cast("Any", leaf)[:, 0]
+            if getattr(leaf, "ndim", 0) >= 2
+            else leaf,
+        )
+
+    return derived
+
+
+def _synthesize_corners(
+    bridge: ValueBridge,
+    predict: Corner | None,
+    predict_chunk: Corner | None,
+    predict_batch: Corner | None,
+    predict_chunk_batch: Corner | None,
+) -> tuple[Corner | None, Corner | None, Corner | None, Corner | None]:
+    """Fill missing predict corners by deriving downward from the most general one.
+
+    The corners form a 2x2 lattice over a batch axis and a chunk axis. A less
+    general corner always derives from a more general one: *debatch* drops the
+    batch axis, *de-chunk* (horizon 1, take the first action) drops the chunk axis.
+    Going *up* the chunk axis is impossible -- chunking is a model capability, not
+    glue -- and going up the batch axis is left to the engine's per-lane loop. So a
+    model that defines ``predict_chunk_batch`` gets all four for free, and
+    ``predict()`` is available unless only a chunk corner exists on the raw Value
+    bridge (de-chunk needs array leaves; surfaced as a clear error by the caller).
+
+    The ambiguous ``predict`` (derivable from either ``predict_batch`` or
+    ``predict_chunk``) prefers the un-chunked ``predict_batch`` so a single-step
+    call stays un-chunked instead of paying for a chunk decode it would discard.
+    """
+    p, pc, pb, pcb = predict, predict_chunk, predict_batch, predict_chunk_batch
+    can_dechunk = bridge.name != identity_bridge.name
+
+    if pcb is not None:
+        if pc is None:
+            pc = _debatch(bridge, pcb)
+        if pb is None and can_dechunk:
+            pb = _dechunk(pcb, batched=True)
+    if p is None:
+        if pb is not None:
+            p = _debatch(bridge, pb)
+        elif pc is not None and can_dechunk:
+            p = _dechunk(pc, batched=False)
+    return p, pc, pb, pcb
+
 
 # Suppresses the ``__init__`` auto-load on the served-construction path so the
 # bootstrap is authoritative: ``construct_authored_model`` builds the worker
@@ -109,47 +221,70 @@ class ModelBase(Generic[ObsT, ActT]):
     ) -> None:
         self._bridge.ensure_available()
 
-        if source is None and type(self).predict is not ModelBase.predict:  # pyright: ignore[reportUnknownMemberType]
-            # Subclass-authoring mode: a Model subclass that overrides predict (and
-            # optionally load/reset/close/spec). Load weights once, before the worker
-            # is built, then drive self.predict. The served-construction path
-            # suppresses this eager load and calls load(**binding) itself once the
-            # params are resolved (worker capture below doesn't need weights yet).
+        # A Model subclass overrides at least one predict corner (plus optionally
+        # load/reset/close/spec); the corners it leaves out are derived below, so
+        # overriding predict_chunk_batch alone is enough. A wrapped callable
+        # supplies a single predict.
+        def _overridden(method_name: str) -> Corner | None:
+            if getattr(type(self), method_name) is getattr(ModelBase, method_name):
+                return None
+            return cast("Corner", getattr(self, method_name))
+
+        corners = {name: _overridden(name) for name in _CORNERS}
+
+        if source is None and any(fn is not None for fn in corners.values()):
+            # Subclass-authoring mode. Load weights once, before the worker is built.
+            # The served-construction path suppresses this eager load and calls
+            # load(**binding) itself once the params are resolved.
             if not _suppress_autoload.get():
                 self.load()
-            raw_predict: Callable[..., object] = self.predict
             resolved_spec = spec if spec is not None else type(self).spec
             # A subclass's reset() is wired to the episode-END edge (on_episode_end),
             # the only per-episode boundary both local and served paths signal.
             coerced_on_episode_end: LifecycleCallback | None = self.reset
             coerced_on_close: LifecycleCallback | None = self.close
             policy: object = self
+            raw_predict: Corner | None = corners["predict"]
+            raw_predict_chunk = corners["predict_chunk"]
+            raw_predict_batch = corners["predict_batch"]
+            raw_predict_chunk_batch = corners["predict_chunk_batch"]
         elif source is None:
             raise TypeError(
-                "Model() needs a predict callable, e.g. Model(lambda obs: ...), "
-                "or subclass Model and override predict()."
+                "Model() needs a predict callable, e.g. Model(lambda obs: ...), or "
+                "subclass Model and override predict() (or predict_chunk / "
+                "predict_batch / predict_chunk_batch)."
             )
         else:
             from ._eval import coerce_model
 
             coerced = coerce_model(source, spec=spec)
             raw_predict = coerced.predict
+            raw_predict_chunk = raw_predict_batch = raw_predict_chunk_batch = None
             resolved_spec = coerced.spec
             coerced_on_episode_end = coerced.on_episode_end
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
-        # Subclass-overridden predict corners declare their capability; capture each
-        # so the worker advertises it (wrapper-mode models, which supply a single
-        # predict callable, never define them).
-        def _overridden(method_name: str) -> Callable[..., object] | None:
-            if getattr(type(self), method_name) is getattr(ModelBase, method_name):
-                return None
-            return cast("Callable[..., object]", getattr(self, method_name))
+        # Climb the corner lattice: derive the corners the model didn't define from
+        # the most general one it did, so predict_chunk_batch alone yields all four
+        # on a framework bridge. (A chunk-only model on the raw Value bridge can't
+        # de-chunk, so predict() stays unavailable and the guard below raises.)
+        raw_predict, raw_predict_chunk, raw_predict_batch, raw_predict_chunk_batch = (
+            _synthesize_corners(
+                self._bridge,
+                raw_predict,
+                raw_predict_chunk,
+                raw_predict_batch,
+                raw_predict_chunk_batch,
+            )
+        )
+        if raw_predict is None:
+            raise TypeError(
+                "could not derive predict(): define predict(), or a corner it can be "
+                "derived from (a chunk-only model on the raw Value bridge needs an "
+                "explicit predict())."
+            )
 
-        raw_predict_chunk = _overridden("predict_chunk")
-        raw_predict_batch = _overridden("predict_batch")
-        raw_predict_chunk_batch = _overridden("predict_chunk_batch")
         self._raw_predict = cast("PredictFn[ObsT, ActT]", raw_predict)
         self._raw_predict_chunk = raw_predict_chunk
         self._raw_predict_batch = raw_predict_batch
@@ -202,27 +337,37 @@ class ModelBase(Generic[ObsT, ActT]):
             "return a chunk (leading axis = chunk), or use predict() per step."
         )
 
-    def predict_batch(self, observations: list[ObsT]) -> list[ActT]:
-        """Optional: map N lane observations to N actions in one batched call.
+    def predict_batch(self, observations: ObsT) -> ActT:
+        """Optional: one batched forward over all N vectorized lanes.
 
         Override (alongside :meth:`predict`) to run a single forward pass for a
-        vectorized route instead of one call per lane. Receives a list of N
-        observations (one per sub-environment) and returns N actions in order. The
-        engine prefers this corner for a vectorized route; the default raises and the
-        route is driven per-lane through :meth:`predict`.
+        vectorized route instead of one call per lane. The runtime fuses the N
+        per-lane observations into one *batched* observation -- every leaf gains a
+        leading batch axis, so a Dict observation arrives as ``{key: array[N, ...]}``
+        (a NumPy/Torch/JAX array per leaf, stacked for this model's framework), not a
+        list of N dicts. Return the batched action the same way: one value whose
+        leaves carry the leading batch axis (e.g. ``array[N, action_dim]``); the
+        runtime splits it back per lane. The engine prefers this corner for a
+        vectorized route; the default raises and the route is driven per-lane through
+        :meth:`predict`.
+
+        (The dependency-free ``rlmesh.Model`` over raw ``Value`` trees can't fuse
+        opaque tensors, so it instead receives the per-lane ``list`` and returns one.)
         """
         raise NotImplementedError(
             "this model does not define a batched predict_batch(); it is driven "
             "one lane at a time through predict()."
         )
 
-    def predict_chunk_batch(self, observations: list[ObsT], horizon: int) -> list[ActT]:
-        """Optional: map N lane observations to N action CHUNKS in one batched call.
+    def predict_chunk_batch(self, observations: ObsT, horizon: int) -> ActT:
+        """Optional: one batched forward returning an action CHUNK per lane.
 
-        The batched counterpart of :meth:`predict_chunk` — one forward for the whole
-        vector, returning N chunks (each leading axis = chunk) in order, each up to
-        ``horizon`` actions. The engine prefers it for a vectorized chunked route.
-        The default raises.
+        The batched counterpart of :meth:`predict_chunk`: receives the fused batched
+        observation (leaves ``[N, ...]``; see :meth:`predict_batch`) and returns the
+        batched chunk -- leaves ``[N, horizon, ...]`` (batch axis first, then the
+        per-lane chunk/horizon axis), each up to ``horizon`` actions. The runtime
+        splits the batch axis back per lane and replays each lane's chunk. The engine
+        prefers it for a vectorized chunked route. The default raises.
         """
         raise NotImplementedError(
             "this model does not define a batched predict_chunk_batch(); use "
@@ -287,18 +432,24 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_chunk_neutral = _predict_chunk_neutral
 
         # The batched corners (one forward for the whole vector), when defined: the
-        # engine hands a list of N neutral lane inputs; bridge each, run the user's
-        # batched predict, then bridge each returned action/chunk back. The chunk
-        # corner additionally receives the replay horizon.
+        # engine hands a list of N neutral lane inputs. Fuse them into ONE batched
+        # value (every leaf gains a leading batch axis -- a Dict obs becomes
+        # {key: array[N, ...]}, the shape every RL/VLA runtime hands a policy), run
+        # the user's single batched forward, then split the batched action/chunk
+        # back into N per-lane values the engine replays. The native (Value) bridge
+        # can't fuse opaque tensors, so it passes the per-lane list through.
         raw_predict_batch = self._raw_predict_batch
         predict_batch_neutral: Callable[[list[Value]], list[Value]] | None = None
         if raw_predict_batch is not None:
             batch_fn = raw_predict_batch
 
             def _predict_batch_neutral(observations: list[Value]) -> list[Value]:
-                framework = [bridge.decode(o) for o in observations]
-                actions = cast("Sequence[object]", batch_fn(framework))
-                return [bridge.encode(a) for a in actions]
+                if not observations:
+                    return []
+                fused = bridge.tree_stack([bridge.decode(o) for o in observations])
+                actions = batch_fn(fused)
+                parts = bridge.tree_unstack(actions, len(observations))
+                return [bridge.encode(a) for a in parts]
 
             predict_batch_neutral = _predict_batch_neutral
 
@@ -312,9 +463,13 @@ class ModelBase(Generic[ObsT, ActT]):
             def _predict_chunk_batch_neutral(
                 observations: list[Value], horizon: int
             ) -> list[Value]:
-                framework = [bridge.decode(o) for o in observations]
-                chunks = cast("Sequence[object]", chunk_batch_fn(framework, horizon))
-                return [bridge.encode(c) for c in chunks]
+                if not observations:
+                    return []
+                fused = bridge.tree_stack([bridge.decode(o) for o in observations])
+                chunks = chunk_batch_fn(fused, horizon)
+                # Split the batch axis only; each lane's chunk (horizon) axis stays.
+                parts = bridge.tree_unstack(chunks, len(observations))
+                return [bridge.encode(c) for c in parts]
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 

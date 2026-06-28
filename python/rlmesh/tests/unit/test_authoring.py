@@ -217,7 +217,16 @@ def test_env_recipe_serve_prepares_makes_and_serves(
     seen: dict[str, object] = {}
 
     class FakeEnvServer:
-        def __init__(self, env: object, address: str, *, tags: object = None) -> None:
+        def __init__(
+            self,
+            env: object,
+            address: str,
+            *,
+            tags: object = None,
+            framework: object = None,
+            device: object = None,
+        ) -> None:
+            _ = framework, device  # accepted (neutral server), not asserted here
             seen.update(env=env, address=address, tags=tags)
 
         def serve(self) -> None:

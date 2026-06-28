@@ -26,12 +26,16 @@ def _capture_env(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         *,
         num_envs: int = 1,
         vectorization_mode: str | None = None,
+        framework: object = None,
+        device: object = None,
         **binding: object,
     ) -> None:
         captured["env"] = env
         captured["address"] = address
         captured["num_envs"] = num_envs
         captured["vectorization_mode"] = vectorization_mode
+        captured["framework"] = framework
+        captured["device"] = device
         captured["binding"] = binding
 
     monkeypatch.setattr(serve, "serve_env", fake_serve_env)
@@ -147,8 +151,17 @@ def test_serve_env_vectorizes_factory_and_skips_tags(
     captured: dict[str, Any] = {}
 
     class FakeServer:
-        def __init__(self, env: object, address: str, *, tags: object = None) -> None:
+        def __init__(
+            self,
+            env: object,
+            address: str,
+            *,
+            tags: object = None,
+            framework: object = None,
+            device: object = None,
+        ) -> None:
             captured["env"], captured["tags"] = env, tags
+            captured["framework"], captured["device"] = framework, device
 
         def serve(self) -> None: ...
 

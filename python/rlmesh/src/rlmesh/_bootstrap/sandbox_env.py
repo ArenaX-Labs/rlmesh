@@ -53,6 +53,28 @@ def main(
 
         raw_env = load_env_from_spec(spec)
         env = cast("EnvLike[Any, Any] | VectorServerEnvLike", raw_env)
+        # A spec-built env (gym/hf/factory) has no class to carry a framework here,
+        # so the obs/action seam is typed from RLMESH_FRAMEWORK / RLMESH_DEVICE
+        # (gym/hf are numpy; a prebuilt EnvFactory image is best served via
+        # `python -m rlmesh.serve --env pkg:Factory`, which reads the factory's
+        # pinned framework directly). ponytail: env-var override here; the class
+        # rail lives on the serve-CLI route.
+        framework = os.environ.get("RLMESH_FRAMEWORK") or None
+        device = os.environ.get("RLMESH_DEVICE") or None
+        # Ambient RLMESH_DEVICE is meaningful only for a device framework
+        # (torch/jax); on a numpy/gym env, forwarding a GPU node's global default
+        # would make EnvServer reject it at startup, so drop it. For a framework
+        # env, gym vectorization concatenates observations with numpy -- discarding
+        # the framework tensors and crashing on GPU tensors -- so it can't be fanned
+        # out that way; serve it scalar.
+        if framework not in ("torch", "jax"):
+            device = None
+        elif int(cast("str | int", spec.get("num_envs", 1) or 1)) > 1:
+            raise ValueError(
+                f"a {framework} env cannot be served with RLMESH_NUM_ENVS>1: gym "
+                "vectorization concatenates observations with numpy, which discards "
+                "the framework tensors. Serve scalar (RLMESH_NUM_ENVS=1)."
+            )
         # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
         # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
         # deprecated aliases read after the new names. EnvServer auto-detects the
@@ -61,14 +83,16 @@ def main(
             "RLMESH_ENV_ADDRESS"
         )
         if address:
-            server = EnvServer(env, address)
+            server = EnvServer(env, address, framework=framework, device=device)
         else:
             port = int(
                 os.environ.get("RLMESH_PORT")
                 or os.environ.get("RLMESH_ENV_PORT")
                 or "50051"
             )
-            server = EnvServer(env, host="0.0.0.0", port=port)
+            server = EnvServer(
+                env, host="0.0.0.0", port=port, framework=framework, device=device
+            )
         print(f"RLMesh sandbox serving {server.address}", flush=True)
         server.serve()
         return 0

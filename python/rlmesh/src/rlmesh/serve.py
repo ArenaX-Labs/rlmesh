@@ -19,9 +19,44 @@ from ._entrypoint import resolve_entrypoint
 
 if TYPE_CHECKING:
     from rlmesh._models.base import ModelBase
+    from rlmesh._value_conversion import ValueBridge
     from rlmesh.types import EnvLike
 
 __all__ = ["main", "serve_env", "serve_model"]
+
+# Frameworks whose obs/action seam carries device tensors. numpy and the default
+# Auto backend have no device, so a device= is meaningless (and unsupported) there.
+_DEVICE_FRAMEWORKS = ("torch", "jax")
+
+
+def _framework_name(framework: object) -> object:
+    # framework is a str, a ValueBridge (which carries .name), or None; normalize to
+    # the name string (or None) without importing the bridge at runtime.
+    return getattr(framework, "name", framework)
+
+
+def _gate_device(device: object, framework: object) -> object:
+    # --device defaults to RLMESH_DEVICE, so a GPU node's global default would reach
+    # a numpy/gym env and make EnvServer reject it at startup. The device only types
+    # the torch/jax seam; ignore it for anything else.
+    if device is None:
+        return None
+    return device if _framework_name(framework) in _DEVICE_FRAMEWORKS else None
+
+
+def _reject_vectorized_framework(vectorized: bool, framework: object) -> None:
+    # gym vectorization concatenates observations with numpy, discarding the
+    # framework tensors (and crashing on GPU tensors), so a torch/jax env can't be
+    # fanned out that way. A natively batched env returning [N, ...] tensors is
+    # still fine at num_envs=1; this only blocks the gym fan-out.
+    name = _framework_name(framework)
+    if vectorized and name in _DEVICE_FRAMEWORKS:
+        raise NotImplementedError(
+            f"serving a {name} env with num_envs>1 is not supported: gym "
+            "vectorization concatenates observations with numpy, which discards the "
+            "framework tensors. Serve scalar (num_envs=1) -- a natively batched env "
+            "returning [N, ...] tensors works there -- or use framework='numpy'."
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -33,6 +68,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
     )
     parser.add_argument("--token", default="")
+    parser.add_argument(
+        "--framework",
+        default=os.environ.get("RLMESH_FRAMEWORK") or None,
+        help=(
+            "Array framework for the env's obs/action seam: 'torch', 'jax', or "
+            "'numpy' (default). Needed only for a classless --env (a make-callable "
+            "/ gym-id / hf source); an EnvFactory pins it on the class. Defaults to "
+            "RLMESH_FRAMEWORK. Env only."
+        ),
+    )
+    parser.add_argument(
+        "--device",
+        default=os.environ.get("RLMESH_DEVICE") or None,
+        help=(
+            "Device for the incoming action (torch/jax only), e.g. 'cuda:0'. "
+            "Defaults to RLMESH_DEVICE. Env only."
+        ),
+    )
     parser.add_argument(
         "--kwargs-json",
         type=_json_object,
@@ -90,6 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.address,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
+            framework=args.framework,
+            device=args.device,
             **binding,
         )
     else:
@@ -177,6 +232,8 @@ def serve_env(
     *,
     num_envs: int = 1,
     vectorization_mode: str | None = None,
+    framework: str | None = None,
+    device: object | None = None,
     **make_kwargs: object,
 ) -> None:
     """Host an environment on ``address`` (blocking).
@@ -185,7 +242,13 @@ def serve_env(
     ``make(**make_kwargs)`` and its ``tags`` published; a bare make-env callable is
     invoked to produce the env. ``num_envs > 1`` fans the factory/callable out into
     a vector env (``EnvServer`` auto-detects and serves it via the vector server).
-    Heavy imports stay inside this call so importing the authoring base stays cheap.
+
+    ``framework`` (``"torch"``/``"jax"``/``"numpy"``) types the env's obs/action
+    seam; for an :class:`EnvFactory` it defaults to the factory's pinned framework
+    (``rlmesh.torch.EnvFactory`` etc.), so a classless make-callable / gym-id /
+    hf source is the only case that needs it passed explicitly. ``device`` places
+    the incoming action (torch/jax only). Heavy imports stay inside this call so
+    importing the authoring base stays cheap.
     """
     from rlmesh import EnvServer
 
@@ -193,6 +256,16 @@ def serve_env(
 
     vectorized = num_envs > 1
     if hasattr(env_source, "make"):  # EnvFactory class or instance
+        # The framework rides the factory class (_bridge ClassVar); an explicit
+        # framework= overrides it. Unlike tags, it survives vectorization. Resolve
+        # it before constructing so a vectorized framework env is rejected up front
+        # rather than after a pointless gym fan-out.
+        env_framework: str | ValueBridge | None = (
+            framework
+            if framework is not None
+            else cast("ValueBridge | None", getattr(env_source, "_bridge", None))
+        )
+        _reject_vectorized_framework(vectorized, env_framework)
         env = construct_authored_env(
             env_source,
             num_envs=num_envs,
@@ -203,8 +276,17 @@ def serve_env(
         # publish tags only on the scalar path -- mirroring the gym build path,
         # which serves vector envs untagged.
         tags = None if vectorized else getattr(env_source, "tags", None)
-        EnvServer(env, address, tags=tags).serve()
+        EnvServer(
+            env,
+            address,
+            tags=tags,
+            framework=env_framework,
+            device=_gate_device(device, env_framework),
+        ).serve()
     else:  # bare make-env callable
+        # A bare callable has no class to pin a framework, so honor only the
+        # explicit framework= (from --framework / RLMESH_FRAMEWORK).
+        _reject_vectorized_framework(vectorized, framework)
         make_env = cast("Callable[..., EnvLike[Any, Any]]", env_source)
         if vectorized:
             from ._bootstrap.gym_support import vectorize
@@ -219,7 +301,9 @@ def serve_env(
             )
         else:
             env = make_env(**make_kwargs)
-        EnvServer(env, address).serve()
+        EnvServer(
+            env, address, framework=framework, device=_gate_device(device, framework)
+        ).serve()
 
 
 if __name__ == "__main__":
