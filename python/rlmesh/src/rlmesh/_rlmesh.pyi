@@ -16,6 +16,8 @@ __all__ = [
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
     "AdapterPlan",
+    "DESCRIBE_METADATA_KEY",
+    "DESCRIBE_SCHEMA_VERSION",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",
@@ -49,6 +51,7 @@ __all__ = [
     "adapters_resolve",
     "adapters_spec_normalize",
     "box_space_spec",
+    "describe_envelope_normalize",
     "dict_space_spec",
     "discrete_space_spec",
     "multi_binary_space_spec",
@@ -70,6 +73,8 @@ ACTION_DELTA_ROT: builtins.str
 ACTION_DELTA_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
 ACTION_GRIPPER_2: builtins.str
+DESCRIBE_METADATA_KEY: builtins.str
+DESCRIBE_SCHEMA_VERSION: builtins.int
 EEF_POS: builtins.str
 EEF_POS_2: builtins.str
 EEF_ROT: builtins.str
@@ -408,6 +413,8 @@ def adapters_resolve(env_tags_json: str, observation_space: object, action_space
 def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool) -> str: ...
 
 def box_space_spec(low: float, high: float, shape: list[int], dtype: str | None = None) -> SpaceSpec: ...
+
+def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str | None = None) -> str: ...
 
 def dict_space_spec(entries: dict[str, object]) -> SpaceSpec: ...
 

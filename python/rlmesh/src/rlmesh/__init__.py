@@ -38,10 +38,16 @@ from ._native import (
     SandboxVectorEnv,
 )
 from ._peer_info import register_python_peer_info as _register_python_peer_info
-from ._rlmesh import ServeOptions, Tensor
+from ._rlmesh import (
+    DESCRIBE_METADATA_KEY,
+    DESCRIBE_SCHEMA_VERSION,
+    ServeOptions,
+    Tensor,
+)
 from ._sandbox import SandboxOptions
 from ._server import EnvServer
 from ._variants import Variant
+from .describe import describe, describe_json
 from .params import Param, ParamSpec, Vector
 
 try:
@@ -58,6 +64,8 @@ _register_python_peer_info()
 
 
 __all__ = [
+    "DESCRIBE_METADATA_KEY",
+    "DESCRIBE_SCHEMA_VERSION",
     "NO_ADAPTER",
     "RANDOM_SAMPLE",
     "EnvFactory",
@@ -81,6 +89,8 @@ __all__ = [
     "Vector",
     "__version__",
     "adapters",
+    "describe",
+    "describe_json",
     "run",
     "session",
     "spaces",

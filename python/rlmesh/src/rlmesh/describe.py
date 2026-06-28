@@ -1,79 +1,316 @@
-"""Print an env/model's declared construction-parameter surface as JSON.
+"""Describe an env/model as a versioned, Rust-standardized metadata envelope.
 
-``python -m rlmesh.describe --env pkg:Env`` (or ``--model pkg:Model``) emits the
-schema a managed dashboard reads to present, validate, and sweep variations --
-out-of-band and off-GPU, so it can run in a throwaway container or a local
-import. The output is forward-compatible with an OCI image label baked at build
-time.
+``rlmesh.describe(EnvOrModel)`` (or ``python -m rlmesh.describe --env pkg:Env``)
+emits the single, self-contained JSON artifact a managed service reads to present,
+validate, sweep, and list an uploaded env or model. It is generated once
+(build/generate-time -- constructing the env to read its spaces is allowed) and is
+forward-compatible with an OCI image label baked later.
 
-Emitted shape::
+Two layers:
+
+* **This Python module is a gatherer.** It does only the irreducibly-Python work:
+  resolve the target, reflect ``make``/``load``'s signature, run the author's
+  ``enumerate_*`` classmethods, and construct the env to read its obs/action
+  spaces. It assembles those raw pieces into one dict.
+* **Rust owns the format.** :func:`rlmesh._rlmesh.describe_envelope_normalize`
+  (``rlmesh-adapters``) stamps the ``schema_version``, validates the wrapper +
+  the env/model invariant, and re-serializes the whole tree through one
+  ``serde_json`` pass -- so the bytes are identical across Python versions and
+  any future native (C++/TS) producer that hands over the same pieces.
+
+Emitted shape (env)::
 
     {
-        "param_spec": {...} | null,  # declared Params + extra policy
-        "signature_tier": [...],  # free derived args (name/type/default)
-        "variations": {...},  # enumerate_params() axes, if provided
-        "catalog": [...],  # enumerate_variants() sub-envs, if provided
+        "schema_version": 1,            # Rust-stamped
+        "kind": "env",                  # or "model"
+        "target": {"entrypoint", "qualname"},
+        "generated_at": "...",          # only if the caller supplies one
+        "env_spec": {"observation_space", "action_space"[, "num_envs"]} | {"error"},
+        "env_tags": {...} | null,
+        "params": {"param_spec", "signature_tier"},
+        "variants": {"catalog", "variations"[, "*_error"]},
+        "runtime": {...},               # PeerInfo: python/framework versions, os, arch
     }
 
-A ``catalog`` entry is ``{"id", "params", "metadata"}`` (plus an ``"error"`` badge
-when the variant's params fail off-GPU validation). The variant's ``params`` bind
-only its identity dimensions; the consumer composes the free dials as the
-``param_spec`` names minus those keys.
+A model envelope drops ``env_spec``/``env_tags`` and carries
+``model_spec`` instead. Every gathered piece is best-effort: a failure to build
+the env, read a spec, or run an enumeration becomes an ``"error"`` badge, never a
+crash -- the artifact is always emitted.
 """
 
 from __future__ import annotations
 
 import argparse
-import functools
+import inspect
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
 from ._entrypoint import resolve_entrypoint
+from ._rlmesh import describe_envelope_normalize
 from ._variants import Variant
-from .params._resolve import describe, resolve
+from .params._resolve import describe as _describe_params
+from .params._resolve import resolve
 
-__all__ = ["main"]
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    """Resolve ``--env``/``--model`` and print its parameter surface as JSON."""
-    parser = argparse.ArgumentParser(prog="python -m rlmesh.describe")
-    parser.add_argument("--env", help="module:Class for an environment factory")
-    parser.add_argument("--model", help="module:Class for a model")
-    args = parser.parse_args(argv)
-
-    if bool(args.env) == bool(args.model):
-        parser.error("provide exactly one of --env or --model")
-
-    if args.env:
-        obj = resolve_entrypoint(args.env, label="env entrypoint")
-        method = "make"
-    else:
-        obj = resolve_entrypoint(args.model, label="model entrypoint")
-        method = "load"
-
-    payload = _describe(obj, method)
-    # default=repr keeps the command total: an exotic enumerate_params value
-    # renders as a string rather than crashing the schema dump.
-    print(json.dumps(payload, indent=2, sort_keys=True, default=repr))
-    return 0
+__all__ = ["describe", "describe_json", "main"]
 
 
-def _describe(obj: object, method: str) -> dict[str, object]:
+def describe(
+    obj: object, *, kind: str | None = None, generated_at: str | None = None
+) -> dict[str, Any]:
+    """Return an env/model's full metadata envelope as a dict.
+
+    ``obj`` may be an :class:`~rlmesh.EnvFactory`/:class:`~rlmesh.Model` class or
+    instance, a bare make/predict callable, or a ``"module:Class"`` entrypoint
+    string. ``kind`` (``"env"``/``"model"``) is auto-detected for a factory/model
+    and required for a bare callable. ``generated_at`` is an optional RFC-3339
+    timestamp (the Rust layer validates it); omit it for a content-addressable
+    artifact. The returned dict is parsed from the canonical string -- use
+    :func:`describe_json` when you need the exact bytes (e.g. an OCI label).
+    """
+    return cast(
+        "dict[str, Any]",
+        json.loads(describe_json(obj, kind=kind, generated_at=generated_at)),
+    )
+
+
+def describe_json(
+    obj: object, *, kind: str | None = None, generated_at: str | None = None
+) -> str:
+    """Like :func:`describe`, but return the canonical JSON string verbatim.
+
+    This is the byte-stable artifact (Rust-serialized); persist it as-is (no
+    ``json.loads`` round-trip) when baking into OCI metadata.
+    """
+    entrypoint: str | None = None
+    if isinstance(obj, str):
+        entrypoint = obj
+        obj = resolve_entrypoint(obj, label="describe entrypoint")
+    kind, method = _kind_and_method(obj, kind)
+    pieces = _gather(obj, method, kind, entrypoint)
+    # default=repr keeps describe total: an exotic catalog/param value renders as
+    # a string rather than crashing the artifact; allow_nan=False matches the Rust
+    # codec's RFC-8259 strictness (NaN/Infinity are rejected, not silently passed).
+    return describe_envelope_normalize(
+        kind, json.dumps(pieces, allow_nan=False, default=repr), generated_at
+    )
+
+
+def _gather(
+    obj: object, method: str, kind: str, entrypoint: str | None
+) -> dict[str, Any]:
+    """Assemble the per-language raw pieces; Rust owns the wrapper + serialization."""
     spec, target, enumerate_fn, catalog_fn = _resolve_target(obj, method)
-    payload = describe(spec, target)
+    pieces: dict[str, Any] = {
+        "target": _target(obj, entrypoint),
+        "params": _describe_params(spec, target),
+        "runtime": dict(_collect_peer_info()),
+    }
+    variants = _variants(enumerate_fn, catalog_fn, spec, target)
+    if variants:
+        pieces["variants"] = variants
+    if kind == "env":
+        pieces["env_tags"] = _env_tags(obj)
+        pieces["env_spec"] = _env_spec(obj, spec, target, catalog_fn)
+    else:
+        pieces["model_spec"] = _model_spec(obj)
+    return pieces
+
+
+def _kind_and_method(obj: object, kind: str | None) -> tuple[str, str]:
+    """Resolve (kind, construction-method), auto-detecting env vs model.
+
+    An explicit ``kind`` is honored (the classmethods pass it, and it is the only
+    way to classify a bare callable -- preserving the old ``--env``/``--model``
+    capability). Otherwise duck-type on the distinctive method: a model has
+    ``predict``, a factory has ``make``. Deliberately attribute-based, not
+    ``issubclass(EnvFactory/Model)`` -- importing those bases here would form an
+    ``_authoring``/``_models`` <-> ``describe`` import cycle (the classmethods
+    import this module).
+    """
+    if kind is not None:
+        if kind not in ("env", "model"):
+            raise ValueError(f"kind must be 'env' or 'model', got {kind!r}")
+        return kind, "make" if kind == "env" else "load"
+    cls = obj if isinstance(obj, type) else type(obj)
+    if hasattr(cls, "predict"):
+        return "model", "load"
+    if hasattr(cls, "make"):
+        return "env", "make"
+    raise TypeError(
+        f"cannot infer kind for {obj!r}; pass kind='env' or kind='model' "
+        "(a bare callable has no make/predict to classify it)"
+    )
+
+
+def _target(obj: object, entrypoint: str | None) -> dict[str, Any]:
+    """Self-identity so the artifact maps back to its source in a dashboard."""
+    if inspect.isclass(obj):
+        ref: Any = obj
+    elif inspect.isroutine(obj):
+        ref = obj  # a bare function/lambda carries its own module/qualname
+    else:
+        ref = type(obj)  # a factory/model instance
+    module = getattr(ref, "__module__", None) or "?"
+    name = (
+        getattr(ref, "__qualname__", None)
+        or getattr(ref, "__name__", None)
+        or repr(ref)
+    )
+    return {"entrypoint": entrypoint, "qualname": f"{module}:{name}"}
+
+
+def _variants(
+    enumerate_fn: Callable[..., Any] | None,
+    catalog_fn: Callable[..., Any] | None,
+    spec: Any,
+    target: Callable[..., object],
+) -> dict[str, Any]:
+    """Group the author's enumerate_params axes + enumerate_variants catalog.
+
+    Each is best-effort and badged on failure (running author code must not crash
+    describe), kept as distinct sub-keys -- axes are independent sweep dimensions,
+    the catalog is dependent named entries.
+    """
+    out: dict[str, Any] = {}
     if enumerate_fn is not None:
         try:
-            payload["variations"] = _variations(enumerate_fn())
-        except Exception as exc:  # describe is best-effort and off-GPU
-            payload["variations_error"] = str(exc)
+            out["variations"] = _variations(enumerate_fn())
+        except Exception as exc:
+            out["variations_error"] = str(exc)
     if catalog_fn is not None:
         try:
-            payload["catalog"] = _catalog(catalog_fn(), spec, target)
-        except Exception as exc:  # a broken catalog must not crash describe
-            payload["catalog_error"] = str(exc)
-    return payload
+            out["catalog"] = _catalog(catalog_fn(), spec, target)
+        except Exception as exc:
+            out["catalog_error"] = str(exc)
+    return out
+
+
+def _env_tags(obj: object) -> Any:
+    """Serialize the factory's ``tags`` (the obs/action contract); null/badged."""
+    cls = obj if isinstance(obj, type) else type(obj)
+    tags = getattr(cls, "tags", None)
+    if tags is None:
+        return None
+    try:
+        return tags.to_dict()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _model_spec(obj: object) -> Any:
+    """Serialize the model's ``ModelSpec``; read the instance's resolved spec.
+
+    A class-level read is ``None`` for wrapped/kwarg specs, so prefer the instance
+    attribute when given one. Non-``ModelSpec`` content (``NO_ADAPTER``/``None``)
+    serializes as null; ``to_dict`` raising on an un-publishable custom input is
+    badged, not fatal.
+    """
+    from .adapters.specs import ModelSpec  # lazy: avoid a heavy import at module load
+
+    # getattr resolves the instance's spec (set at load/__init__) or the class
+    # attribute -- both are the right read for their input.
+    spec = getattr(obj, "spec", None)
+    if not isinstance(spec, ModelSpec):
+        return None
+    try:
+        return spec.to_dict()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _env_spec(
+    obj: object,
+    spec: Any,
+    target: Callable[..., object],
+    catalog_fn: Callable[..., Any] | None,
+) -> dict[str, Any]:
+    """Construct one representative env and serialize its obs/action spaces.
+
+    Single-shape by contract: an EnvFactory has one ``env_tags``, so all variants
+    share spaces. The whole capture is best-effort -- a constructor/``make`` that
+    needs unavailable args, a missing GPU, or any failure becomes ``{"error":...}``
+    so the rest of the envelope still ships (e.g. a no-GPU OCI build).
+    """
+    try:
+        env, close = _build_env(obj, spec, target, catalog_fn)
+    except Exception as exc:
+        return {"error": str(exc)}
+    try:
+        # Vector envs expose single_* (+ num_envs), not observation_space/action_space.
+        if hasattr(env, "single_observation_space"):
+            return {
+                "observation_space": _space_dict(env.single_observation_space),
+                "action_space": _space_dict(env.single_action_space),
+                "num_envs": int(env.num_envs),
+            }
+        return {
+            "observation_space": _space_dict(env.observation_space),
+            "action_space": _space_dict(env.action_space),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+    finally:
+        close()
+
+
+def _build_env(
+    obj: object,
+    spec: Any,
+    target: Callable[..., object],
+    catalog_fn: Callable[..., Any] | None,
+) -> tuple[Any, Callable[[], object]]:
+    """Build a representative env from a class, instance, or bare make-callable."""
+    factory = obj() if isinstance(obj, type) else obj
+    prepare = getattr(factory, "prepare", None)
+    if callable(prepare):
+        prepare()
+    make = getattr(factory, "make", None)
+    builder = make if callable(make) else factory  # bare make-callable
+    env = cast("Callable[..., Any]", builder)(**_make_kwargs(spec, target, catalog_fn))
+    close = getattr(env, "close", None)
+    return env, (
+        cast("Callable[[], object]", close) if callable(close) else (lambda: None)
+    )
+
+
+def _make_kwargs(
+    spec: Any, target: Callable[..., object], catalog_fn: Callable[..., Any] | None
+) -> dict[str, Any]:
+    """Pick ``make`` kwargs: declared defaults, else the first variant's params."""
+    try:
+        return dict(resolve(spec, target, {}))
+    except Exception:
+        pass
+    if catalog_fn is not None:
+        try:
+            for item in cast("Iterable[object]", catalog_fn()):
+                if isinstance(item, Variant):
+                    params: Mapping[str, object] = item.params
+                elif isinstance(item, Mapping):
+                    entry = cast("Mapping[str, object]", item)
+                    params = cast("Mapping[str, object]", entry.get("params") or {})
+                else:
+                    continue
+                return dict(resolve(spec, target, params))
+        except Exception:
+            pass
+    return {}
+
+
+def _space_dict(space: object) -> dict[str, object]:
+    """Serialize a space via the Rust-canonical ``spec_to_dict`` codec."""
+    from .spaces import Space, from_gymnasium_space  # lazy: keep module import light
+    from .spaces._internals import spec_to_dict
+
+    spec = space.spec if isinstance(space, Space) else from_gymnasium_space(space).spec
+    return spec_to_dict(spec)
+
+
+def _collect_peer_info() -> Mapping[str, Any]:
+    from ._peer_info import collect_peer_info  # lazy
+
+    return collect_peer_info()
 
 
 def _resolve_target(
@@ -113,6 +350,8 @@ def _signature_target(cls: type, method: str) -> Callable[..., object] | None:
     or a C-extension type -- falls back to the unbound function with ``self`` bound
     off via ``partial``, so describe still emits a schema instead of crashing.
     """
+    import functools
+
     try:
         bare = cast("object", object.__new__(cls))
     except Exception:
@@ -163,7 +402,7 @@ def _catalog(
             meta = {k: v for k, v in entry_map.items() if k not in ("id", "params")}
         else:
             raise TypeError(
-                "enumerate_variants() must yield Variant or mapping entries; got "
+                "enumerate_variants() must return (or yield) Variant or mapping entries; got "
                 f"{type(item).__name__}"
             )
         if not isinstance(vid, str) or not vid:
@@ -216,6 +455,36 @@ def _as_callable(obj: object) -> Callable[..., object]:
     if not callable(obj):
         raise TypeError(f"cannot describe {obj!r}: not a factory, model, or callable")
     return obj
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Resolve ``--env``/``--model`` and print (or write) the metadata envelope."""
+    parser = argparse.ArgumentParser(prog="python -m rlmesh.describe")
+    parser.add_argument("--env", help="module:Class for an environment factory")
+    parser.add_argument("--model", help="module:Class for a model")
+    parser.add_argument(
+        "--out", help="write the envelope to this file instead of stdout"
+    )
+    parser.add_argument(
+        "--generated-at",
+        dest="generated_at",
+        help="optional RFC-3339 timestamp to stamp (omit for a reproducible artifact)",
+    )
+    args = parser.parse_args(argv)
+
+    if bool(args.env) == bool(args.model):
+        parser.error("provide exactly one of --env or --model")
+
+    target = args.env or args.model
+    kind = "env" if args.env else "model"
+    payload = describe_json(target, kind=kind, generated_at=args.generated_at)
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+    else:
+        print(payload)
+    return 0
 
 
 if __name__ == "__main__":

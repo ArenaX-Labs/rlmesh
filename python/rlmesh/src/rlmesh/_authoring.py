@@ -34,9 +34,10 @@ class EnvFactory(ABC):
     :mod:`rlmesh.params`). ``params = None`` (default) keeps today's blind
     passthrough to ``make``.
 
-    Optionally implement an ``enumerate_variants()`` classmethod returning an
-    iterable of :class:`~rlmesh.Variant` -- the finite, named catalog of concrete
-    sub-environments this factory contains (e.g. one per benchmark task). Each
+    Optionally implement an ``enumerate_variants()`` classmethod that returns a
+    list of :class:`~rlmesh.Variant` (or ``yield`` them lazily) -- the finite,
+    named catalog of concrete sub-environments this factory contains (e.g. one per
+    benchmark task). Each
     variant binds only its identity-defining ``params``; the remaining free dials
     stay in ``params`` (the ``ParamSpec`` is always the full validation surface --
     never describe the same dimension in both ``enumerate_variants`` and
@@ -81,6 +82,13 @@ class EnvFactory(ABC):
 
     def prepare(self) -> None:  # noqa: B027  optional no-op hook, not abstract
         """Optional: one-time setup before ``make()``."""
+
+    @classmethod
+    def describe(cls) -> dict[str, Any]:
+        """Return this factory's full metadata envelope (see :func:`rlmesh.describe`)."""
+        from .describe import describe  # lazy: avoid an import cycle at module load
+
+        return describe(cls, kind="env")
 
     @abstractmethod
     def make(self, **kwargs: Any) -> EnvLike[Any, Any]:

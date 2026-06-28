@@ -22,6 +22,7 @@
 
 mod apply;
 mod describe;
+mod envelope;
 mod error;
 mod fmt;
 mod join;
@@ -41,9 +42,12 @@ pub mod v1 {
     pub use crate::apply::{
         ApplyError, CustomTransform, NoCustoms, SkipCustoms, Value, convert_rotation,
     };
+    pub use crate::envelope::{EnvelopeError, Kind, build_describe_envelope};
     pub use crate::error::{AdapterResolutionError, ErrorCode};
     pub use crate::join::{JoinError, join};
-    pub use crate::keys::{ENV_METADATA_KEY, MODEL_METADATA_KEY};
+    pub use crate::keys::{
+        DESCRIBE_METADATA_KEY, DESCRIBE_SCHEMA_VERSION, ENV_METADATA_KEY, MODEL_METADATA_KEY,
+    };
     pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
         ActionPlan, ActionSegment, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter, StatePiece,

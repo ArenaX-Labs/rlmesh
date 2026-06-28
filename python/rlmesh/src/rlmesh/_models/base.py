@@ -255,6 +255,13 @@ class ModelBase(Generic[ObsT, ActT]):
     #: raw-Value model (no device concept).
     device: object | None = None
 
+    @classmethod
+    def describe(cls) -> dict[str, Any]:
+        """Return this model's full metadata envelope (see :func:`rlmesh.describe`)."""
+        from ..describe import describe  # lazy: avoid an import cycle at module load
+
+        return describe(cls, kind="model")
+
     def __init__(
         self,
         source: Callable[..., object] | object | None = None,

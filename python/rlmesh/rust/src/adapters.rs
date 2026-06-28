@@ -24,8 +24,8 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
-    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value, join,
-    reject_unknowns_env, reject_unknowns_model, resolve, roles,
+    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value,
+    build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -102,6 +102,10 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
         "MODEL_METADATA_KEY",
         rlmesh_adapters::v1::MODEL_METADATA_KEY,
     ),
+    (
+        "DESCRIBE_METADATA_KEY",
+        rlmesh_adapters::v1::DESCRIBE_METADATA_KEY,
+    ),
     ("IMAGE_PRIMARY", roles::core::IMAGE_PRIMARY),
     ("IMAGE_SECONDARY", roles::core::IMAGE_SECONDARY),
     ("INSTRUCTION", roles::core::INSTRUCTION),
@@ -137,6 +141,8 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
 mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ENV_METADATA_KEY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "MODEL_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_METADATA_KEY", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "DESCRIBE_SCHEMA_VERSION", u32);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_PRIMARY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_SECONDARY", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "INSTRUCTION", String);
@@ -178,6 +184,12 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
         .map(|layout| layout.as_str())
         .collect();
     m.add("IMAGE_LAYOUTS", layouts)?;
+    // The describe-envelope schema version is a u32, not a string, so it can't
+    // ride WIRE_CONSTANTS; add it directly. Rust is the sole writer of this.
+    m.add(
+        "DESCRIBE_SCHEMA_VERSION",
+        rlmesh_adapters::v1::DESCRIBE_SCHEMA_VERSION,
+    )?;
     Ok(())
 }
 
@@ -631,4 +643,34 @@ pub fn adapters_spec_normalize(
             "unknown spec side {other:?}; expected \"env\" or \"model\""
         ))),
     }
+}
+
+/// Build the canonical describe-envelope JSON string from gathered pieces.
+///
+/// `kind` is `"env"` or `"model"`. `pieces_json` is the producer-gathered
+/// sub-pieces (target/env_spec/env_tags/model_spec/params/variants/runtime) as
+/// one JSON object. `generated_at`, if given, must be RFC-3339 (caller-supplied,
+/// never wall-clock here -- a build pins a reproducible value or omits it). The
+/// Rust core stamps `schema_version`, enforces the env/model invariant, and
+/// re-serializes the whole tree so the bytes are identical across producer
+/// languages. The returned string should be kept verbatim (no `json.loads`
+/// round-trip) when persisting to OCI metadata.
+#[cfg_attr(
+    feature = "stub-gen",
+    gen_stub_pyfunction(
+        module = "rlmesh._rlmesh",
+        python = r#"
+def describe_envelope_normalize(kind: str, pieces_json: str, generated_at: str | None = None) -> str: ...
+"#
+    )
+)]
+#[pyfunction]
+#[pyo3(signature = (kind, pieces_json, generated_at=None))]
+pub fn describe_envelope_normalize(
+    kind: &str,
+    pieces_json: &str,
+    generated_at: Option<&str>,
+) -> PyResult<String> {
+    build_describe_envelope(kind, pieces_json, generated_at)
+        .map_err(|err| PyValueError::new_err(format!("invalid describe envelope: {err}")))
 }

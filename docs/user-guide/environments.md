@@ -130,15 +130,21 @@ class Libero(rlmesh.EnvFactory):
         from libero.libero import benchmark  # lazy, like make()
 
         suite = benchmark.get_benchmark_dict()["libero_10"]()
+        variants = []
         for task_id in range(suite.n_tasks):
             task = suite.get_task(task_id)
-            yield rlmesh.Variant(
-                f"libero_10/{task.name}",
-                {"suite": "libero_10", "task_id": task_id},
-                name=task.name,
-                instruction=task.language,
+            variants.append(
+                rlmesh.Variant(
+                    f"libero_10/{task.name}",
+                    {"suite": "libero_10", "task_id": task_id},
+                    name=task.name,
+                    instruction=task.language,
+                )
             )
+        return variants
 ```
+
+Return a list (or `yield` lazily for a very large catalog — both work).
 
 {class}`~rlmesh.Variant` takes `id`, a `params` mapping, and free-form `**metadata`:
 
@@ -153,6 +159,29 @@ Identity params go in `Variant.params`; free dials stay in `ParamSpec`. Never de
 dimension in both. Above, `suite` and `task_id` define the variant's identity, while `camera_size`
 remains a free dial the consumer composes — the variant's free dials are the `ParamSpec` names minus
 the variant's `params` keys.
+```
+
+## Describe
+
+`rlmesh.describe(MyEnv)` returns a single versioned JSON envelope describing the factory — its
+`params`, `variants`, `env_tags`, the constructed env's obs/action `env_spec`, and the `runtime` it
+was generated under. It's the in-process equivalent of the CLI:
+
+```python
+schema = rlmesh.describe(MyEnv)        # or MyEnv.describe(); same for a Model
+```
+
+```bash
+python -m rlmesh.describe --env mypkg.envs:Libero            # prints the envelope
+python -m rlmesh.describe --env mypkg.envs:Libero --out describe.json
+```
+
+The format (version, shape, serialization) is owned by the Rust layer, so the bytes are identical
+across Python versions and future language SDKs — see [the contract](../specs/describe.v1.md). The
+artifact is self-contained JSON, ready to bake into an image at build time:
+
+```dockerfile
+RUN python -m rlmesh.describe --env mypkg.envs:Libero --out /etc/rlmesh/describe.json
 ```
 
 ## Framework bridge
