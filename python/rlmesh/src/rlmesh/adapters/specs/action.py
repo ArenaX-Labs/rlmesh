@@ -74,8 +74,8 @@ class Action:
         components: Action actuators in vector order.
         clip: Optional ``(low, high)`` clip applied to the final vector.
 
-    Action chunking is no longer a spec knob: the replay horizon is chosen by the
-    runtime (``action_horizon`` on ``ConfigureRoute``), and a chunked policy
+    Action chunking is no longer a spec knob: the execution horizon is chosen by the
+    runtime (``execution_horizon`` on ``ConfigureRoute``), and a chunked policy
     declares a ``predict_chunk`` corner rather than an ``execute_horizon``.
     """
 

@@ -545,11 +545,11 @@ async fn handle_resolve_adapter(
     // resolution, so the client never predicts against an unresolved adapter.
     // This runs off the predict-serialization lock (see `ModelRouteSetup`), so
     // resolving one env's adapter never blocks on an in-flight predict on another.
-    // Runtime-chosen replay horizon pinned on this env (1 = no chunking).
-    let action_horizon = request.action_horizon;
+    // Runtime-chosen execution horizon pinned on this env (1 = no chunking).
+    let execution_horizon = request.execution_horizon;
     if let Some(route_setup) = route_setup
         && let Err(error) = route_setup
-            .resolve_adapter(&route_key, &env_contract, action_horizon)
+            .resolve_adapter(&route_key, &env_contract, execution_horizon)
             .await
     {
         return Some(model_error_from_error(&error));

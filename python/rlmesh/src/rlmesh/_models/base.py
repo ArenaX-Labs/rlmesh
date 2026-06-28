@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import inspect
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
@@ -93,6 +94,44 @@ def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
         )
 
     return derived
+
+
+def _accepts_horizon(fn: Corner) -> bool:
+    """Whether a chunk corner declared a second param to receive the execution horizon.
+
+    A policy returns its *native* chunk and usually ignores the horizon -- its length
+    is fixed by the trained weights. An autoregressive decoder that can stop early
+    declares an optional second parameter (``execution_horizon``); detecting that once
+    here keeps the common corner a clean ``predict_chunk(obs)`` while the rare one is
+    handed how many actions the runtime will execute. ponytail: supports the two real
+    shapes -- ``(obs)`` and ``(obs, execution_horizon)``; an exotic keyword-only /
+    positional-only second param is not honored (document "second positional").
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):  # un-introspectable builtin -- assume no horizon
+        return False
+    positional = sum(
+        p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params
+    )
+    return positional >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params)
+
+
+def _normalize_chunk(fn: Corner | None) -> Corner | None:
+    """Adapt a chunk corner to the internal ``(obs, horizon)`` contract.
+
+    Every internal caller -- :func:`_synthesize_corners`, :func:`_dechunk`, the native
+    neutral wrappers, the local replay -- passes ``(obs, horizon)`` positionally. A
+    corner that didn't ask for the horizon is wrapped to swallow it, so the rest of the
+    pipeline is uniform and the author writes whichever signature their model needs.
+    """
+    if fn is None or _accepts_horizon(fn):
+        return fn
+
+    def absorbing(observation: object, _execution_horizon: object) -> object:
+        return fn(observation)
+
+    return absorbing
 
 
 def _synthesize_corners(
@@ -265,6 +304,13 @@ class ModelBase(Generic[ObsT, ActT]):
             coerced_on_close = coerced.on_close
             policy = coerced.policy
 
+        # Normalize the chunk corners to the internal (obs, horizon) contract before
+        # synthesis: a corner that declared no execution_horizon param is wrapped to
+        # swallow it, so the author writes predict_chunk(obs) while an autoregressive
+        # decoder may add `execution_horizon: int = 1` to decode exactly that many.
+        raw_predict_chunk = _normalize_chunk(raw_predict_chunk)
+        raw_predict_chunk_batch = _normalize_chunk(raw_predict_chunk_batch)
+
         # Climb the corner lattice: derive the corners the model didn't define from
         # the most general one it did, so predict_chunk_batch alone yields all four
         # on a framework bridge. (A chunk-only model on the raw Value bridge can't
@@ -316,21 +362,23 @@ class ModelBase(Generic[ObsT, ActT]):
             "wrapping a predict callable, e.g. Model(lambda obs: ...)."
         )
 
-    def predict_chunk(self, observation: ObsT, horizon: int) -> ActT:
+    def predict_chunk(self, observation: ObsT) -> ActT:
         """Optional: map one observation to a CHUNK of actions (leading axis = chunk).
 
         Override this alongside :meth:`predict` when the policy emits an action
-        chunk in one forward pass (ACT, diffusion, flow, VLA action heads). The
-        runtime owns the replay: it replays the chunk one action per step without
-        re-calling the model. Defining this method *is* the chunk capability — a
-        single-action model leaves it unimplemented and the runtime re-plans every
-        step.
+        chunk in one forward pass (ACT, diffusion, flow, VLA action heads). Return
+        your model's **native** chunk; the runtime owns the replay -- it executes the
+        first ``execution_horizon`` actions one per step without re-calling the model,
+        then re-plans. Defining this method *is* the chunk capability: a single-action
+        model leaves it unimplemented and the runtime re-plans every step.
 
-        ``horizon`` is the runtime-chosen replay horizon: return **up to**
-        ``horizon`` actions (the runtime replays them before re-planning). An
-        autoregressive head should decode exactly ``horizon`` actions so it does not
-        waste decode on a longer natural chunk; a fixed-size head may return more and
-        the runtime caps to ``horizon``. The default raises.
+        Most policies ignore the execution horizon -- their chunk length is fixed by
+        the trained weights, and the runtime simply uses a prefix of the native chunk.
+        An autoregressive decoder that can stop early may add an optional second
+        parameter ``execution_horizon: int = 1`` (keep the default, so it stays a
+        compatible override of this one-arg base); the runtime fills it with how many
+        actions it will execute, so the head can decode exactly that many instead of
+        its full natural length. The default raises.
         """
         raise NotImplementedError(
             "this model does not emit action chunks; override predict_chunk() to "
@@ -359,15 +407,17 @@ class ModelBase(Generic[ObsT, ActT]):
             "one lane at a time through predict()."
         )
 
-    def predict_chunk_batch(self, observations: ObsT, horizon: int) -> ActT:
+    def predict_chunk_batch(self, observations: ObsT) -> ActT:
         """Optional: one batched forward returning an action CHUNK per lane.
 
         The batched counterpart of :meth:`predict_chunk`: receives the fused batched
         observation (leaves ``[N, ...]``; see :meth:`predict_batch`) and returns the
-        batched chunk -- leaves ``[N, horizon, ...]`` (batch axis first, then the
-        per-lane chunk/horizon axis), each up to ``horizon`` actions. The runtime
-        splits the batch axis back per lane and replays each lane's chunk. The engine
-        prefers it for a vectorized chunked route. The default raises.
+        batched native chunk -- leaves ``[N, chunk, ...]`` (batch axis first, then the
+        per-lane chunk axis). The runtime splits the batch axis back per lane, executes
+        a prefix (``execution_horizon``) of each, then re-plans. The engine prefers it
+        for a vectorized chunked route. Like :meth:`predict_chunk`, an autoregressive
+        decoder may add an optional ``execution_horizon: int = 1`` second parameter to
+        decode exactly that many. The default raises.
         """
         raise NotImplementedError(
             "this model does not define a batched predict_chunk_batch(); use "
@@ -492,7 +542,7 @@ class ModelBase(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         token: str = "",
-        action_horizon: int = 1,
+        execution_horizon: int = 1,
     ) -> RunResult:
         """Drive this model against an env and return a :class:`RunResult`.
 
@@ -507,16 +557,16 @@ class ModelBase(Generic[ObsT, ActT]):
         :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
         object with an ``address``, or a bare address string the loop dials.
 
-        ``action_horizon`` (> 1) replays an action chunk one step per env step,
-        re-planning every ``action_horizon`` steps — only when this model defines
-        :meth:`predict_chunk`; otherwise it runs un-chunked.
+        ``execution_horizon`` (> 1) executes that many actions of each predicted
+        chunk one per env step, re-planning every ``execution_horizon`` steps — only
+        when this model defines :meth:`predict_chunk`; otherwise it runs un-chunked.
         """
         return self.session(
             env_or_address,
             instruction=instruction,
             close_env=close_env,
             token=token,
-            action_horizon=action_horizon,
+            execution_horizon=execution_horizon,
         ).run(seeds=seeds, max_episodes=max_episodes)
 
     def session(
@@ -527,7 +577,7 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         token: str = "",
         trust_entrypoints: bool | None = None,
-        action_horizon: int = 1,
+        execution_horizon: int = 1,
     ) -> Session[ObsT, ActT]:
         """Bind this model to an env and return a :class:`Session` to drive by hand.
 
@@ -535,8 +585,8 @@ class ModelBase(Generic[ObsT, ActT]):
         yourself, or call :meth:`Session.run` to pump whole episodes. ``env_or_address``
         is an env object, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an
         address string (see :meth:`run`).
-        ``action_horizon`` (> 1) replays an action chunk one step per env step when
-        this model defines :meth:`predict_chunk` (see :meth:`run`).
+        ``execution_horizon`` (> 1) executes that many actions per predicted chunk, one
+        per env step, when this model defines :meth:`predict_chunk` (see :meth:`run`).
         """
         from ._eval import Session
 
@@ -557,7 +607,7 @@ class ModelBase(Generic[ObsT, ActT]):
             instruction=instruction,
             close_env=close_env,
             token=token,
-            action_horizon=action_horizon,
+            execution_horizon=execution_horizon,
         )
 
     def serve(

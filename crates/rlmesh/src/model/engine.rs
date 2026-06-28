@@ -91,10 +91,10 @@ fn obs_keys(config: &RouteConfig) -> BTreeSet<String> {
 /// the frame buffers mutate in place.
 ///
 /// Emits each lane's action chunk as [`PredictFrames`]: frame 0 per lane plus the
-/// future-step frames the runtime driver replays. With horizon 1 every lane
-/// yields a single frame and `replay` is empty — the unchanged single-action
-/// path. The engine no longer replays internally; it returns the whole chunk and
-/// re-plans on every call (the runtime decides when to call it).
+/// future-step frames the runtime driver replays. With execution horizon 1 every
+/// lane yields a single frame and `replay` is empty — the unchanged single-action
+/// path. The engine no longer replays internally; it returns the executed prefix of
+/// the model's native chunk and re-plans on every call (the runtime decides when).
 fn predict_route(
     entry: &Arc<Mutex<RouteEntry>>,
     predict: &Arc<dyn PredictFn>,
@@ -112,8 +112,8 @@ fn predict_route(
     let mut guard = entry.lock().expect("route entry poisoned");
     let RouteEntry { config, buffers } = &mut *guard;
     let referenced = obs_keys(config);
-    // Runtime-chosen replay horizon (pinned on ConfigureRoute), not the model spec.
-    let horizon = config.action_horizon;
+    // Runtime-chosen execution horizon (pinned on ConfigureRoute), not the model spec.
+    let horizon = config.execution_horizon;
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
     let has_chunk = predict.has_chunk();
@@ -398,7 +398,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         &self,
         env_id: &str,
         env_contract: &EnvContract,
-        action_horizon: u32,
+        execution_horizon: u32,
     ) -> Result<()> {
         let Some(mut config) = self.resolver.resolve(env_id, env_contract).await? else {
             return Ok(());
@@ -413,15 +413,15 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         for note in config.adapter.advisories() {
             tracing::warn!(env_id = %env_id, "adapter advisory: {note}");
         }
-        // Stamp the runtime-chosen replay horizon onto the resolved config (1 = no
+        // Stamp the runtime-chosen execution horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
         // has no chunk corner: the route still runs, re-planning every step.
-        config.action_horizon = action_horizon.max(1);
-        if config.action_horizon > 1 && !self.predict.has_chunk() {
+        config.execution_horizon = execution_horizon.max(1);
+        if config.execution_horizon > 1 && !self.predict.has_chunk() {
             tracing::warn!(
                 env_id = %env_id,
-                action_horizon = config.action_horizon,
-                "runtime pinned action_horizon > 1 but the model defines no chunk corner \
+                execution_horizon = config.execution_horizon,
+                "runtime pinned execution_horizon > 1 but the model defines no chunk corner \
                  (predict_chunk); chunking is inactive — the model re-plans every step",
             );
         }
@@ -430,15 +430,15 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // consecutive history a stacked policy expects. Reject the combination
         // rather than feed temporally-aliased frames. This was a resolve-time check,
         // relocated here now that the horizon is a runtime decision.
-        if config.action_horizon > 1
+        if config.execution_horizon > 1
             && let Some((key, depth)) = config.adapter.stacks().into_iter().next()
         {
             return Err(Error::model(format!(
                 "frame-stacking (input '{key}' stack={depth}) cannot be combined with action \
-                 chunking (action_horizon={}): the engine assembles observations once per chunk, \
+                 chunking (execution_horizon={}): the engine assembles observations once per chunk, \
                  so the frame window would hold only decision-point frames. Use stack=1 or \
-                 action_horizon=1.",
-                config.action_horizon,
+                 execution_horizon=1.",
+                config.execution_horizon,
             )));
         }
         // A vectorized route runs ONE shared model object across lanes, so a model

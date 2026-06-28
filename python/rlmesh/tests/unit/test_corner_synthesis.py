@@ -126,8 +126,8 @@ def test_subclass_with_no_corner_still_errors() -> None:
 
 
 def test_synthesized_chunk_corner_accepts_keyword_horizon() -> None:
-    # The local Session drives chunking via predict_chunk(obs, horizon=N) -- a
-    # keyword (rlmesh/_models/_eval.py). A synthesized corner must accept it.
+    # Production now calls chunk corners positionally (obs, horizon); a synthesized
+    # corner forwards *args/**kwargs, so it stays tolerant of a keyword horizon too.
     _, pc, _, _ = _synthesize_corners(bridge, None, None, None, _pcb)
     assert cast("Any", pc)(SINGLE, horizon=4).shape == (4, 2)
 
@@ -141,6 +141,53 @@ def test_constructed_model_chunk_corner_keyword_path() -> None:
 
     m = M()
     assert cast("Any", m._raw_predict_chunk)(SINGLE, horizon=3).shape == (3, 2)
+
+
+def test_accepts_horizon_detects_optional_second_param() -> None:
+    from rlmesh._models.base import _accepts_horizon
+
+    assert not _accepts_horizon(lambda obs: obs)
+    assert _accepts_horizon(lambda obs, h: obs)
+    assert _accepts_horizon(lambda obs, execution_horizon=1: obs)
+    assert _accepts_horizon(lambda obs, *args: obs)
+
+
+def test_predict_chunk_without_horizon_constructs_and_swallows_horizon() -> None:
+    # The common case: a fixed-chunk policy writes predict_chunk(obs) with no horizon.
+    # Construction normalizes it to the internal (obs, horizon) contract, so the
+    # runtime still calls it positionally with a horizon the corner swallows, and the
+    # model returns its NATIVE chunk length regardless.
+    ran: list[int] = []
+
+    class M(rlmesh.numpy.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict_chunk(self, observation):
+            ran.append(1)
+            return np.stack([[0, frame] for frame in range(4)])  # native length 4
+
+    m = M()
+    chunk = cast("Any", m._raw_predict_chunk)(SINGLE, 2)  # runtime passes a horizon
+    assert chunk.shape == (4, 2)  # native length, the horizon=2 is ignored
+    assert ran  # the no-horizon corner ran
+
+
+def test_predict_chunk_with_execution_horizon_receives_runtime_value() -> None:
+    # An autoregressive decoder opts in with an optional second param; the runtime
+    # hands it how many actions it will execute, so it can decode exactly that many.
+    seen: list[int] = []
+
+    class M(rlmesh.numpy.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict_chunk(self, observation, execution_horizon: int = 1):
+            seen.append(execution_horizon)
+            return np.stack([[0, frame] for frame in range(execution_horizon)])
+
+    m = M()
+    chunk = cast("Any", m._raw_predict_chunk)(SINGLE, 3)
+    assert chunk.shape == (3, 2)  # decoded exactly execution_horizon actions
+    assert seen == [3]
 
 
 def _pc_list(observations, horizon):  # Discrete-style: the chunk is a Python list

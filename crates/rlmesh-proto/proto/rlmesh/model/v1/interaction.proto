@@ -51,15 +51,18 @@ message ResolveAdapterRequest {
   // Highest mutual workflow edition across env, model, and runtime (the floor).
   string selected_workflow_edition = 4;
 
-  // Replay horizon h, chosen by the runtime and pinned here (runtime-local
-  // scheduling, exactly like selected_workflow_edition above). When h > 1 AND the
-  // model defines a chunk corner (predict_chunk / predict_chunk_batch), a Predict
-  // emits min(K, h) per-step frames in PredictResponse.actions: actions[0] is
-  // THIS step, actions[1..] the open-loop replay frames the runtime buffers and
-  // replays without re-calling the model. 0 or 1 (the default) = no chunking
-  // (predict every step), byte/behaviour-identical to a model with no chunk
-  // corner. The runtime bounds it to MAX_HORIZON.
-  uint32 action_horizon = 7;
+  // Execution horizon h: how many actions of each predicted chunk the runtime
+  // executes before re-planning, chosen by the runtime and pinned here (runtime-
+  // local scheduling, exactly like selected_workflow_edition above). The model
+  // returns its NATIVE chunk; when h > 1 AND the model defines a chunk corner
+  // (predict_chunk / predict_chunk_batch), a Predict emits min(K, h) per-step
+  // frames in PredictResponse.actions: actions[0] is THIS step, actions[1..] the
+  // open-loop replay frames the runtime buffers and replays without re-calling the
+  // model. The engine caps the chunk to h (a fixed-size head over-produces and is
+  // truncated; an autoregressive head may read h to decode exactly that many). 0 or
+  // 1 (the default) = no chunking (predict every step), byte/behaviour-identical to
+  // a model with no chunk corner. The runtime bounds it to MAX_HORIZON.
+  uint32 execution_horizon = 7;
 }
 
 message ResolveAdapterResponse {}

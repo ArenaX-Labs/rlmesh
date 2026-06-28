@@ -47,13 +47,13 @@ pub struct RemoteModel {
     request_counter: u64,
     configured: bool,
     episode_id: Option<String>,
-    /// Runtime-chosen replay horizon `h`, sent on `ResolveAdapter`. When `> 1` and
+    /// Runtime-chosen execution horizon `h`, sent on `ResolveAdapter`. When `> 1` and
     /// the served model defines a chunk corner, each real `predict` returns up to
     /// `h` ordered frames in `PredictResponse.actions`; this client buffers and
     /// replays the frames open-loop (skipping the RPC after frame 0), so a
     /// `RemoteModel` is a single-lane replay mini-driver. `1` (the default) = no
     /// chunking.
-    action_horizon: u32,
+    execution_horizon: u32,
     /// Decoded chunk frames awaiting replay (the whole `PredictResponse.actions`
     /// list — frame 0 plus frames 1..). Drained one per `predict`; the next real
     /// RPC fires only once it empties. Flushed on `reset` — the only episode
@@ -185,21 +185,21 @@ impl RemoteModel {
             request_counter: 0,
             configured: false,
             episode_id: None,
-            action_horizon: 1,
+            execution_horizon: 1,
             replay_buffer: std::collections::VecDeque::new(),
             selected_workflow_edition,
         })
     }
 
-    /// Set the replay horizon `h` this client requests from the served model.
+    /// Set the execution horizon `h` this client requests from the served model.
     ///
     /// `h > 1` opts a chunk-capable served model into action chunking: each real
     /// `predict` returns the chunk's future frames, which this client replays
     /// open-loop. Must be set **before the first `predict`** (the route is
     /// configured lazily there and the horizon is pinned on `ConfigureRoute`);
     /// `1` (the default) leaves chunking off.
-    pub fn set_action_horizon(&mut self, action_horizon: u32) {
-        self.action_horizon = action_horizon;
+    pub fn set_execution_horizon(&mut self, execution_horizon: u32) {
+        self.execution_horizon = execution_horizon;
     }
 
     /// The workflow edition this session runs at (the floor across env, model, and runtime).
@@ -348,9 +348,9 @@ impl RemoteModel {
                 // Pin the model to the runtime-selected env edition: authoritative
                 // over the model's own (pairwise) handshake result.
                 selected_workflow_edition: self.selected_workflow_edition.clone(),
-                // Runtime-chosen replay horizon, pinned on the env (see
-                // [`set_action_horizon`](Self::set_action_horizon)). 1 = no chunking.
-                action_horizon: self.action_horizon,
+                // Runtime-chosen execution horizon, pinned on the env (see
+                // [`set_execution_horizon`](Self::set_execution_horizon)). 1 = no chunking.
+                execution_horizon: self.execution_horizon,
             })
             .await
             .map_err(Error::from)

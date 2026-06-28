@@ -47,7 +47,7 @@ struct PyPredict {
     /// Optional chunk corner (the model's `predict_chunk`): one assembled input ->
     /// a chunk of actions (leading axis = chunk). Absent for a single-action model;
     /// its presence is what [`has_chunk`](PredictFn::has_chunk) reports so the
-    /// runtime can pin a replay horizon > 1.
+    /// runtime can pin a execution horizon > 1.
     predict_chunk_fn: Option<Py<PyAny>>,
     /// Optional batched corner (`predict_batch`): a list of N assembled lane inputs
     /// -> N actions, in one call (one forward for the vector).
@@ -199,7 +199,7 @@ impl PredictFn for PyPredict {
 /// receives a list of N neutral input dicts and returns a sequence of N actions
 /// (one per lane, in order); the model owns how it batches the forward pass. When
 /// `horizon` is `Some(h)` (the chunk-batch corner) it is passed as a second
-/// argument, so the model can size each chunk to the replay horizon.
+/// argument, so the model can size each chunk to the execution horizon.
 fn call_batched(
     fn_obj: &Py<PyAny>,
     inputs: Vec<Value>,
@@ -496,7 +496,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, token: str = "", action_horizon: int = 1) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, token: str = "", execution_horizon: int = 1) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def observation_space(self) -> Space: ...
@@ -530,13 +530,13 @@ pub struct PyModelClient {
 #[pymethods]
 impl PyModelClient {
     #[new]
-    #[pyo3(signature = (address, env_contract, token="", action_horizon=1))]
+    #[pyo3(signature = (address, env_contract, token="", execution_horizon=1))]
     fn new(
         py: Python<'_>,
         address: &str,
         env_contract: &Bound<'_, PyAny>,
         token: &str,
-        action_horizon: u32,
+        execution_horizon: u32,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -556,7 +556,7 @@ impl PyModelClient {
             .map_err(to_py_err)?;
         // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
         // replayed open-loop by RemoteModel. 1 = no chunking.
-        inner.set_action_horizon(action_horizon);
+        inner.set_execution_horizon(execution_horizon);
         let address = inner.address().to_string();
         Ok(Self {
             inner,

@@ -54,7 +54,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         token: str | None = None,
         trust_entrypoints: bool | None = None,
-        action_horizon: int = 1,
+        execution_horizon: int = 1,
     ) -> Session[Any, Any]:
         """Bind this served policy to ``env`` and return a :class:`rlmesh.Session`.
 
@@ -64,11 +64,11 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         ``token`` and ``trust_entrypoints`` apply to local models and are ignored here
         (the served model owns its adapter and auth).
 
-        ``action_horizon`` (> 1) opts a chunk-capable served model into action
-        chunking: the model emits its chunk, and this client replays it one action
-        per step open-loop (skipping the RPC), re-planning every ``action_horizon``
-        steps. The model must define ``predict_chunk``; otherwise it re-plans every
-        step.
+        ``execution_horizon`` (> 1) opts a chunk-capable served model into action
+        chunking: the model emits its native chunk, and this client replays a prefix
+        of it one action per step open-loop (skipping the RPC), re-planning every
+        ``execution_horizon`` steps. The model must define ``predict_chunk``;
+        otherwise it re-plans every step.
         """
         _ = instruction, token, trust_entrypoints
         try:
@@ -77,7 +77,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
             raise ImportError("Failed to import _rlmesh native module.") from e
 
         client = PyModelClient(
-            self._address, env_contract_of(env), self._token, action_horizon
+            self._address, env_contract_of(env), self._token, execution_horizon
         )
         return remote_session(client, env, close_env=close_env)
 

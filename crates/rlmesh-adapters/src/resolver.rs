@@ -227,8 +227,8 @@ pub fn resolve(
     let action_plan = action::plan_action(&model_spec.output, &env_spec.action)?;
     let resolved = ResolvedAdapter::new(obs_plans, action_plan, advisories);
     // The frame-stacking × action-chunk-replay guard used to live here, but the
-    // replay horizon is no longer part of the spec — it is a runtime decision
-    // (`action_horizon` on ConfigureRoute). The guard moved to the engine's
+    // execution horizon is no longer part of the spec — it is a runtime decision
+    // (`execution_horizon` on ConfigureRoute). The guard moved to the engine's
     // configure_route, where the resolved stacks and the runtime horizon are both
     // known; see `AdaptedRouteSetup::configure_route`.
     Ok(resolved)

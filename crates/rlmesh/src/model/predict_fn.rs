@@ -38,12 +38,13 @@ pub trait PredictFn: Send + Sync {
     /// [`predict`](Self::predict). A model that authors a separate chunk policy
     /// (e.g. a Python `predict_chunk`) returns `Some(chunk)`.
     ///
-    /// `horizon` is the runtime-chosen replay horizon `h`: the model should return
-    /// up to `h` actions (the runtime replays them before re-planning). Emitting
-    /// exactly `h` lets an autoregressive head decode only what is used instead of
-    /// its full natural chunk; a fixed-size head may return more and the engine
-    /// caps to `h`.
-    fn predict_chunk(&self, _model_input: Value, _horizon: u32) -> Result<Option<Value>> {
+    /// `execution_horizon` is how many actions the runtime will execute before
+    /// re-planning (pinned at `ConfigureRoute`). The model returns its *native*
+    /// chunk; the engine executes a prefix of it (`split_chunk(...).take(h)`) and
+    /// discards the rest, so a fixed-size head ignores the value and is correct
+    /// either way. An autoregressive head may decode exactly `execution_horizon`
+    /// actions to avoid wasting decode on a longer natural chunk.
+    fn predict_chunk(&self, _model_input: Value, _execution_horizon: u32) -> Result<Option<Value>> {
         Ok(None)
     }
 
@@ -68,12 +69,17 @@ pub trait PredictFn: Send + Sync {
         false
     }
 
-    /// Batched chunk corner: N assembled lane inputs → N action *chunks* (leading
-    /// axis = chunk) in a single call. Preferred for a vectorized chunked route when
-    /// [`has_chunk_batch`](Self::has_chunk_batch) is true. `horizon` is the replay horizon `h` (see
+    /// Batched chunk corner: N assembled lane inputs → N native action *chunks*
+    /// (leading axis = chunk) in a single call. Preferred for a vectorized chunked
+    /// route when [`has_chunk_batch`](Self::has_chunk_batch) is true.
+    /// `execution_horizon` is the runtime's execution prefix (see
     /// [`predict_chunk`](Self::predict_chunk)). Default unimplemented (gated by the
     /// flag).
-    fn predict_chunk_batch(&self, _inputs: Vec<Value>, _horizon: u32) -> Result<Vec<Value>> {
+    fn predict_chunk_batch(
+        &self,
+        _inputs: Vec<Value>,
+        _execution_horizon: u32,
+    ) -> Result<Vec<Value>> {
         Err(crate::Error::model(
             "predict_chunk_batch is not implemented",
         ))
@@ -122,11 +128,12 @@ pub struct RouteConfig {
     pub(crate) action_space: SpaceSpec,
     pub(crate) customs: Box<dyn CustomTransform + Send>,
     pub(crate) encodings: Box<dyn EncodingTransform + Send>,
-    /// Runtime-chosen replay horizon, set by the engine from the `ConfigureRoute`
-    /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the
-    /// resolver builds the spec-derived config and the engine stamps the horizon
-    /// on top, since it is a runtime decision, not part of the model spec.
-    pub(crate) action_horizon: u32,
+    /// Runtime-chosen execution horizon: how many actions of each predicted chunk the
+    /// runtime executes before re-planning, set by the engine from the `ConfigureRoute`
+    /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the resolver
+    /// builds the spec-derived config and the engine stamps the horizon on top, since
+    /// it is a runtime decision, not part of the model spec.
+    pub(crate) execution_horizon: u32,
 }
 
 impl RouteConfig {
@@ -149,8 +156,8 @@ impl RouteConfig {
             customs,
             encodings,
             // Spec-derived default; the engine overwrites it with the route's
-            // runtime-pinned action_horizon at ConfigureRoute.
-            action_horizon: 1,
+            // runtime-pinned execution_horizon at ConfigureRoute.
+            execution_horizon: 1,
         }
     }
 }

@@ -8,7 +8,6 @@ model's spec, and runs a per-episode loop that returns a typed :class:`RunResult
 
 from __future__ import annotations
 
-import functools
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -208,7 +207,7 @@ class Session(Generic[ObsT, ActT]):
         instruction: str | None = None,
         close_env: bool = False,
         token: str = "",
-        action_horizon: int = 1,
+        execution_horizon: int = 1,
         model_client: PyModelClient | None = None,
         owner: Any = None,
     ) -> None:
@@ -217,7 +216,7 @@ class Session(Generic[ObsT, ActT]):
         # is a managed source (e.g. a SandboxModel container) to shut down on close.
         self._predict = predict
         self._predict_chunk = predict_chunk
-        self._action_horizon = action_horizon
+        self._execution_horizon = execution_horizon
         self._spec = spec
         self._env = env
         self._on_episode_end = on_episode_end
@@ -267,17 +266,17 @@ class Session(Generic[ObsT, ActT]):
                 _adapter_env_bridge(client) if self._adapter is not None else None
             )
             self._text_placements = _text_placements(self._spec)
-            # The replay horizon is a caller decision (action_horizon), not the
+            # The execution horizon is a caller decision (execution_horizon), not the
             # spec. It engages only when the model exposes a predict_chunk corner;
             # without one, fall back to single-step predict.
-            if self._action_horizon > 1 and self._predict_chunk is None:
+            if self._execution_horizon > 1 and self._predict_chunk is None:
                 warnings.warn(
-                    f"action_horizon={self._action_horizon} was requested but the "
-                    "model defines no predict_chunk(); running un-chunked.",
+                    f"execution_horizon={self._execution_horizon} was requested but "
+                    "the model defines no predict_chunk(); running un-chunked.",
                     stacklevel=2,
                 )
             self._horizon = (
-                self._action_horizon if self._predict_chunk is not None else 1
+                self._execution_horizon if self._predict_chunk is not None else 1
             )
             # Seed the replay with the resolved horizon so a hand-driven predict()
             # before the first reset() already replays the right chunk length.
@@ -344,11 +343,16 @@ class Session(Generic[ObsT, ActT]):
         # one). When chunking (horizon > 1) the replay re-plans through
         # predict_chunk(payload, horizon) -- which returns a chunk the queue splits
         # and replays one step at a time -- otherwise through single-step predict.
+        # The horizon goes in positionally: the corner was normalized to the internal
+        # (obs, horizon) contract, so a model that ignores it still binds cleanly.
         if self._horizon > 1 and self._predict_chunk is not None:
-            replay_fn = cast(
-                "Callable[[Any], Any]",
-                functools.partial(self._predict_chunk, horizon=self._horizon),
-            )
+            chunk_fn = self._predict_chunk
+            horizon = self._horizon
+
+            def _replay(obs: Any) -> Any:
+                return chunk_fn(obs, horizon)
+
+            replay_fn = cast("Callable[[Any], Any]", _replay)
         else:
             replay_fn = cast("Callable[[Any], Any]", self._predict)
         raw_action = self._replay.next_action(

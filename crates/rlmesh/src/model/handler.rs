@@ -22,14 +22,16 @@ pub trait ModelRouteSetup: Send + Sync {
     /// Returning an error fails adapter resolution, so the client never predicts
     /// against an unresolved adapter. Idempotent upsert: a later call updates it.
     ///
-    /// `action_horizon` is the runtime-chosen replay horizon pinned on
-    /// `ResolveAdapter` (1 = no chunking). The setup caches it so predict knows how
-    /// many actions to emit per chunk; the runtime owns the replay.
+    /// `execution_horizon` is how many actions of each predicted chunk the runtime
+    /// executes before re-planning, pinned on `ResolveAdapter` (1 = no chunking). The
+    /// setup caches it: the model returns its native chunk and the runtime executes a
+    /// prefix of it, so an autoregressive head can read the value to decode exactly
+    /// that many.
     async fn resolve_adapter(
         &self,
         env_id: &str,
         env_contract: &spaces::EnvContract,
-        action_horizon: u32,
+        execution_horizon: u32,
     ) -> Result<()>;
 
     /// Tear down the adapter cached for `env_id` at `ReleaseAdapter`, so a

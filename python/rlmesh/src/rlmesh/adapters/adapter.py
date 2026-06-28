@@ -231,8 +231,8 @@ class AdapterBase(ABC, Generic[ActionT]):
         bare array/leaf for a flat (non-Dict) env -- and returns an env-ready
         action, suitable for :class:`rlmesh.numpy.Model`.
 
-        Action chunking is no longer driven here: the replay horizon is a runtime
-        decision (``action_horizon`` on ``ConfigureRoute``, owned by the runtime
+        Action chunking is no longer driven here: the execution horizon is a runtime
+        decision (``execution_horizon`` on ``ConfigureRoute``, owned by the runtime
         driver) and the served engine emits the chunk. This direct wrapper applies
         one action per step; in-process chunk replay lives in
         :class:`rlmesh._models._chunk.ChunkReplay`, driven by ``run`` with a

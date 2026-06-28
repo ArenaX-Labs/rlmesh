@@ -592,7 +592,7 @@ impl ModelRouteSetup for ReleaseRecordingSetup {
         &self,
         _env_id: &str,
         _env_contract: &spaces::EnvContract,
-        _action_horizon: u32,
+        _execution_horizon: u32,
     ) -> Result<()> {
         Ok(())
     }

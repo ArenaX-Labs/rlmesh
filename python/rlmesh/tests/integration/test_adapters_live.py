@@ -496,11 +496,12 @@ def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
 
 
 def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
-    """In-process run(env, action_horizon=2): a predict_chunk model emits a 2-row
+    """In-process run(env, execution_horizon=2): a predict_chunk model emits a 2-row
     chunk and the loop replays it one step per env step, re-planning every 2 steps.
 
     The runtime-owned chunking story for the local path: predict_chunk is the chunk
-    corner and action_horizon is a caller (not spec) decision.
+    corner and execution_horizon is a caller (not spec) decision. This model opts into
+    the horizon (an optional second param), so it can also assert the value reaches it.
     """
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
@@ -517,9 +518,9 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
             calls["predict"] += 1
             return single
 
-        def predict_chunk(self, obs: object, horizon: int) -> Any:
+        def predict_chunk(self, obs: object, execution_horizon: int = 1) -> Any:
             calls["predict_chunk"] += 1
-            calls["horizon"] = horizon
+            calls["horizon"] = execution_horizon
             return chunk
 
     env_obj = TinyArmEnv()
@@ -527,7 +528,7 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
     server.start()
     try:
         client = RemoteEnv(server.address)
-        ChunkModel().run(client, max_episodes=1, action_horizon=2)
+        ChunkModel().run(client, max_episodes=1, execution_horizon=2)
         client.close()
     finally:
         server.shutdown()
@@ -541,7 +542,7 @@ def test_run_env_chunks_a_predict_chunk_model_in_process() -> None:
 
 
 def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
-    """action_horizon > 1 on a model with no predict_chunk warns and runs per-step."""
+    """execution_horizon > 1 on a model with no predict_chunk warns and runs per-step."""
     pytest.importorskip("numpy")
     pytest.importorskip("gymnasium")
     import warnings
@@ -565,7 +566,7 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
         client = RemoteEnv(server.address)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            PlainModel().run(client, max_episodes=1, action_horizon=2)
+            PlainModel().run(client, max_episodes=1, execution_horizon=2)
         client.close()
     finally:
         server.shutdown()
@@ -578,7 +579,7 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
 
 
 def test_served_model_chunks_via_remote_model_mini_driver() -> None:
-    """A served spec'd model with predict_chunk + RemoteModel.session(action_horizon=2):
+    """A served spec'd model with predict_chunk + RemoteModel.session(execution_horizon=2):
     the served engine emits the chunk; RemoteModel pins the horizon on ConfigureRoute,
     buffers the chunk's future frames, and replays them open-loop (a predict RPC only
     every 2 steps). The end-to-end served-OSS chunking path."""
@@ -597,9 +598,9 @@ def test_served_model_chunks_via_remote_model_mini_driver() -> None:
             calls["predict"] += 1
             return single
 
-        def predict_chunk(self, payload: object, horizon: int) -> Any:
+        def predict_chunk(self, payload: object, execution_horizon: int = 1) -> Any:
             calls["predict_chunk"] += 1
-            calls["horizon"] = horizon
+            calls["horizon"] = execution_horizon
             return chunk
 
     env_obj = TinyArmEnv()
@@ -621,7 +622,7 @@ def test_served_model_chunks_via_remote_model_mini_driver() -> None:
         last_error: BaseException | None = None
         while time.monotonic() < deadline:
             try:
-                sess = RemoteModel(model_address).session(env, action_horizon=2)
+                sess = RemoteModel(model_address).session(env, execution_horizon=2)
                 break
             except Exception as exc:
                 last_error = exc
