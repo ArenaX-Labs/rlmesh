@@ -1,6 +1,7 @@
 [package]
 name = "rlmesh-viewer"
-description = "Built-in live debug viewer (HTTP) for RLMesh evaluations."
+description = "Built-in live debug viewer (terminal and HTTP) for RLMesh evaluations."
+readme = "README.md"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true

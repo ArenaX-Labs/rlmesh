@@ -374,6 +374,7 @@ run = [
   "cargo package -p rlmesh-proto --allow-dirty",
   "cargo package -p rlmesh-spaces --allow-dirty",
   "cargo package -p rlmesh-cli --allow-dirty",
+  "cargo package -p rlmesh-viewer --allow-dirty",
   "cargo package --workspace --allow-dirty --no-verify",
 ]
 

@@ -18,7 +18,7 @@ python scripts/release.py X.Y.Z --publish   # crates.io + PyPI + GitHub Release
 
 ## Prerequisites
 
-- crates.io publish access to the eight `rlmesh*` crates and PyPI access to `rlmesh`.
+- crates.io publish access to the nine `rlmesh*` crates and PyPI access to `rlmesh`.
 - `gh` authenticated for the GitHub Release.
 - Publish tokens available (for example via `fnox`): `CARGO_REGISTRY_TOKEN`, `PYPI_TOKEN`.
 - A build host that can produce uploadable wheels (see Wheels).
@@ -58,7 +58,7 @@ RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are 
 
 ## Publish order
 
-`release.py --publish` publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then uploads the wheels with `maturin`, then cuts the GitHub Release. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+`release.py --publish` publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-viewer`, `rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then uploads the wheels with `maturin`, then cuts the GitHub Release. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 
