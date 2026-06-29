@@ -162,3 +162,69 @@ def test_bare_image_role_keeps_env_chw_layout() -> None:
 
     native = sess.read(obs, adapt.IMAGE_PRIMARY)  # bare role -> env-native layout
     assert native.shape == (3, 8, 8)  # kept CHW, not transposed to (8, 8, 3)
+
+
+def _clip_tags() -> adapt.EnvTags:
+    """Tags that declare env-side-only ``clip`` clamps: a per-actuator ``clip=True``
+    AND a global ``Action.clip``. Mirrors the real envs (libero/metaworld/aloha/
+    robocasa clamp the whole vector; simpler_env clamps per actuator)."""
+    return adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3, range=(-1.0, 1.0), clip=True),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+            clip=(-1.0, 1.0),
+        ),
+    )
+
+
+class _ClipEnv(_ArmEnv):
+    """A tagged env whose action declares env-side clip clamps (4-dim action)."""
+
+    def __init__(self) -> None:
+        import gymnasium as gym
+        import numpy as np
+
+        super().__init__()
+        self.observation_space = gym.spaces.Dict(
+            {"cam": gym.spaces.Box(0, 255, (8, 8, 3), np.uint8)}
+        )
+        self.action_space = gym.spaces.Box(-1.0, 1.0, (4,), np.float32)
+
+    def _obs(self) -> dict[str, Any]:
+        import numpy as np
+
+        return {"cam": np.arange(8 * 8 * 3, dtype=np.uint8).reshape(8, 8, 3)}
+
+
+def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps() -> None:
+    # Regression: a read rides the env's own action along as a *no-op* output. ``clip``
+    # is env-side only (the resolver forbids a model action from setting it), so
+    # echoing it verbatim made every read against a clip-declaring env raise
+    # "clip is an env-side actuator clamp; the model action declaration must leave it
+    # unset" -- silently blanking the live viewer and `record`, which both read by
+    # role. The read must strip the env-side clamps and resolve normally.
+    sess = _session(adapt.tag(_ClipEnv(), _clip_tags()))
+    obs, _ = sess.reset()
+
+    img = sess.read(obs, adapt.Image(adapt.IMAGE_PRIMARY, layout="hwc"))
+    assert img.shape == (8, 8, 3)
+
+
+def test_read_only_action_drops_env_side_clip_clamps() -> None:
+    # The strip helper underneath: global and per-actuator clip go, while the actuator
+    # layout the read needs (roles, dims) stays.
+    from rlmesh._models._read import _read_only_action
+
+    stripped = _read_only_action(_clip_tags().action)
+
+    assert stripped.clip is None  # global clamp dropped
+    assert [c.clip for c in stripped.components] == [
+        False,
+        False,
+    ]  # per-actuator dropped
+    assert [c.role for c in stripped.components] == [
+        adapt.ACTION_DELTA_POS,
+        adapt.ACTION_GRIPPER,
+    ]
+    assert [c.dim for c in stripped.components] == [3, 1]  # layout preserved

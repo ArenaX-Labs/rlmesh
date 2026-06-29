@@ -9,12 +9,14 @@ read-adapter resolution that reuse the model adapter pipeline.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from .._value_conversion import from_value
 
 if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
+    from ..adapters import Action
 
 # Cross-module surface for ``_eval.Session`` (see note in ``_connect``).
 __all__ = ["Reader", "env_image_roles", "resolve_read_adapter"]
@@ -150,6 +152,24 @@ def env_image_roles(contract: Any) -> list[str]:
     return roles
 
 
+def _read_only_action(action: Action) -> Action:
+    """The env action with its env-side-only clamps dropped, fit to ride a read along.
+
+    A read reuses the model adapter pipeline with the env's own action as a *no-op*
+    output (a read emits no action). But ``clip`` -- the global :attr:`Action.clip`
+    and a per-:class:`~rlmesh.adapters.Actuator` ``clip`` alike -- stays env-side
+    only: the resolver forbids a *model* action declaration from setting it. Echoing
+    the env action verbatim therefore makes resolution reject *every* read against a
+    clip-declaring env (the live viewer and ``record`` both read by role, so both go
+    blank). Dropping the clamps is sound -- no action is written on a read -- and
+    leaves the actuator layout the read genuinely needs untouched.
+    """
+    components = tuple(
+        replace(c, clip=False) if c.clip else c for c in action.components
+    )
+    return type(action)(*components, clip=None)
+
+
 def resolve_read_adapter(
     contract: Any, items: tuple[object, ...], trust: bool
 ) -> tuple[Any, tuple[str, ...]]:
@@ -158,7 +178,8 @@ def resolve_read_adapter(
     Reuses the model adapter pipeline: the read items become an obs-only
     :class:`~rlmesh.adapters.ModelSpec` input, the env's own action layout rides
     along as a no-op output (so the obs-only intent satisfies ModelSpec without
-    inventing an action), and :func:`~rlmesh.adapters.resolve_from_contract` derives
+    inventing an action -- see :func:`_read_only_action` for why its env-side clamps
+    are stripped first), and :func:`~rlmesh.adapters.resolve_from_contract` derives
     the same plan a model would.
     """
     from ..adapters import (
@@ -184,6 +205,6 @@ def resolve_read_adapter(
         raise AdapterResolutionError(f"a role is read more than once: {list(roles)}")
     spec = ModelSpec(
         input={role: leaf for role, leaf in pairs},
-        output=env_tags.action,
+        output=_read_only_action(env_tags.action),
     )
     return resolve_from_contract(contract, spec, trust_entrypoints=trust), roles
