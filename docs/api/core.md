@@ -7,7 +7,7 @@ This is the autodoc API reference. For authoring guides see {doc}`../user-guide/
 
 The top-level `rlmesh` package re-exports the common entry points: environment serving and clients, model running, sandboxing, and the `spaces`, `types`, and `adapters` subpackages.
 
-The top-level client and model classes are dependency-free wrappers around RLMesh-native values. Reach for them when you want native values and no framework dependency; reach for a backend module ({doc}`numpy`, {doc}`torch`, {doc}`jax`) when you want tensor leaves decoded to NumPy arrays or Torch tensors.
+The top-level client and model classes are dependency-free wrappers around RLMesh-native values. Reach for them when you want native values and no framework dependency; reach for a backend module ({doc}`backends`) when you want tensor leaves decoded to NumPy arrays or Torch tensors.
 
 | Import                    | Description                                                           |
 | ------------------------- | --------------------------------------------------------------------- |
@@ -27,7 +27,17 @@ The top-level client and model classes are dependency-free wrappers around RLMes
 
 The detailed pages below describe the shared behavior:
 
-- {doc}`env-server`
-- {doc}`remote-envs`
+- {doc}`serving`
+- {doc}`serving`
 - {doc}`models`
 - {doc}`contracts`
+
+## Types
+
+The `rlmesh.types` module defines the structural protocols that {py:class}`~rlmesh.EnvServer` accepts and the shared value aliases used by dependency-free clients. The protocols are structural, so any object with the right methods satisfies them; you do not subclass anything. Reach for them to type-annotate an environment or a value, or to check what `EnvServer` expects. For authoring an environment against these protocols see {doc}`../user-guide/environments`.
+
+```{eval-rst}
+.. automodule:: rlmesh.types
+   :members:
+   :show-inheritance:
+```

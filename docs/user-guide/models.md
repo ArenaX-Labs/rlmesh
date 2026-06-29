@@ -24,7 +24,7 @@ Pick the backend by the array type your policy speaks. The backend only changes 
 | `rlmesh.torch.Model` | `pip install rlmesh[torch]` | Torch tensors (device-aware) | Torch tensors        |
 | `rlmesh.jax.Model`   | `pip install rlmesh[jax]`   | JAX arrays                   | JAX arrays           |
 
-See {doc}`/api/numpy`, {doc}`/api/torch`, and {doc}`/api/jax` for the backend helpers, and {doc}`backends` for choosing one.
+See {doc}`/api/backends` for the backend helpers, and {doc}`backends` for choosing one.
 
 ## The minimal model
 
@@ -205,7 +205,7 @@ print(result.mean_reward, result.success_rate)
 
 `run` returns a {class}`~rlmesh.RunResult` with `.episodes`, `.mean_reward`, and `.success_rate`. `env` may be a local env, an {class}`~rlmesh.EnvFactory`, a `RemoteEnv`, or a bare address string the loop dials. The module-level `rlmesh.run(model, env, ...)` and `rlmesh.session(model, env, ...)` accept a bare predict callable, a `Model` subclass or instance, or a served handle.
 
-The full `run` / `session` / `read` story — seeds, instruction injection, the execution horizon end to end, and reading canonical roles off an observation — is in {doc}`evaluation`.
+The full `run` / `session` / `read` story (seeds, instruction injection, the execution horizon end to end, and reading canonical roles off an observation) is in {doc}`evaluation`.
 
 ## Build into a container
 
@@ -256,7 +256,7 @@ Both handles plug into `rlmesh.run` / `rlmesh.session` like a local model. The s
 
 ## Where next
 
-- {doc}`models/reference` — every predict corner with its synthesis rules, the batching and chunk-replay semantics, the device and framework handling, the model-quirk recipes, and the serve-and-connect surface.
-- {doc}`evaluation` — `run` / `session` / `read`, seeds and instruction injection, and the execution horizon end to end.
-- {doc}`adapters` — how the model spec and the environment tags match by role.
-- {doc}`/api/models` — the autodoc signatures for every symbol above.
+- {doc}`models/reference`: every predict corner with its synthesis rules, the batching and chunk-replay semantics, the device and framework handling, the model-quirk recipes, and the serve-and-connect surface.
+- {doc}`evaluation`: `run` / `session` / `read`, seeds and instruction injection, and the execution horizon end to end.
+- {doc}`adapters`: how the model spec and the environment tags match by role.
+- {doc}`/api/models`: the autodoc signatures for every symbol above.

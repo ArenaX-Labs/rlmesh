@@ -1,8 +1,8 @@
-# Environment reference
+# Environment Reference
 
 The complete field-by-field reference for authoring an environment factory. Use it to match your environment to a feature, then look up the exact behavior of every hook, parameter, and variant rule.
 
-For the concepts (the two sides of an eval and how they meet), start with {doc}`/user-guide/environments`. For the obs/action contract a factory's `tags` declare, see {doc}`/user-guide/adapters` and {doc}`/user-guide/adapters/reference`. For the other side of the boundary, see {doc}`/user-guide/models`; for the serving mechanics, {doc}`/user-guide/serving-environments`. Exact signatures live in {doc}`/api/env-server` and {doc}`/api/core`. Runnable examples are at {source}`examples/python/byo_container`.
+For the concepts (the two sides of an eval and how they meet), start with {doc}`/user-guide/environments`. For the obs/action contract a factory's `tags` declare, see {doc}`/user-guide/adapters` and {doc}`/user-guide/adapters/reference`. For the other side of the boundary, see {doc}`/user-guide/models`; for the serving mechanics, {doc}`/user-guide/serving-environments`. Exact signatures live in {doc}`/api/serving` and {doc}`/api/core`. Runnable examples are at {source}`examples/python/byo_container`.
 
 ## EnvFactory
 
@@ -68,8 +68,8 @@ Declaring a `Param` is the act of marking a knob primary. A managed dashboard pr
 class Libero(rlmesh.EnvFactory):
     params = rlmesh.ParamSpec(
         rlmesh.Param("suite", str, choices=("libero_10", "libero_90", "libero_spatial"), group="task"),
-        rlmesh.Param("task_id", "int", default=0, description="task index within the suite"),
-        rlmesh.Param("camera_size", "int", default=256),
+        rlmesh.Param("task_id", "int", description="task index within the suite"),
+        rlmesh.Param("camera_size", "int"),
     )
 
     def make(self, *, suite: str, task_id: int = 0, camera_size: int = 256):
@@ -111,9 +111,9 @@ A declared `Param` that is not a keyword of `make()` and is not covered by `**kw
 
 The resolve step runs in the container, before construction, so a bad binding fails before GPU cost. It raises subclasses of `rlmesh.params.ParamError` (a `ValueError`):
 
-- `rlmesh.params.ParamError` — a supplied parameter failed type, choices, or range validation.
-- `rlmesh.params.MissingParamError` — a required declared parameter was not supplied.
-- `rlmesh.params.UnknownParamError` — a key was neither declared nor a `make()` keyword, under `extra="forbid"` (or under `extra="passthrough"` with no `**kwargs`).
+- `rlmesh.params.ParamError`: a supplied parameter failed type, choices, or range validation.
+- `rlmesh.params.MissingParamError`: a required declared parameter was not supplied.
+- `rlmesh.params.UnknownParamError`: a key was neither declared nor a `make()` keyword, under `extra="forbid"` (or under `extra="passthrough"` with no `**kwargs`).
 
 ## Variants
 
@@ -306,7 +306,7 @@ For a complete, runnable container (both the entrypoint-script form and the lazy
 
 ## Where next
 
-- {doc}`/user-guide/environments` — the concept tour these fields back: the factory, tagging, params, variants, and serving in brief.
-- {doc}`/user-guide/adapters/reference` — the role registry, every leaf field, and the conversion policy your `tags` resolve under.
-- {doc}`/user-guide/models` — authoring and running the model that resolves against this env.
-- {doc}`/user-guide/serving-environments` — addresses, readiness, and health for a served endpoint.
+- {doc}`/user-guide/environments`: the concept tour these fields back: the factory, tagging, params, variants, and serving in brief.
+- {doc}`/user-guide/adapters/reference`: the role registry, every leaf field, and the conversion policy your `tags` resolve under.
+- {doc}`/user-guide/models`: authoring and running the model that resolves against this env.
+- {doc}`/user-guide/serving-environments`: addresses, readiness, and health for a served endpoint.

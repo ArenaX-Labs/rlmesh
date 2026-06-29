@@ -10,7 +10,7 @@ Every snippet uses `import rlmesh.adapters as adapt`.
 
 A role is the string that matches an environment feature to a model input. Roles are an **open vocabulary**: any string works as long as the env tag and the model spec agree on it verbatim. The constants below are the well-known conventions RLMesh ships; reach for them so independently authored envs and models line up, and invent your own string for anything they do not cover.
 
-Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action/`), not a domain prefix -- two domains sharing `proprio/joint_pos` is intentional.
+Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action/`), not a domain prefix (two domains sharing `proprio/joint_pos` is intentional).
 
 | Constant           | Wire string            | Domain       | Kind       | Typical width / encoding            |
 | ------------------ | ---------------------- | ------------ | ---------- | ----------------------------------- |
@@ -27,9 +27,9 @@ Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action
 | `ACTION_DELTA_ROT` | `action/delta_eef_rot` | manipulation | `action/`  | width follows the rotation encoding |
 | `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                   |
 
-You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error) -- it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
+You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error); it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
 
-**Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role -- any other `<kind>/<name>` string -- still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="forbid"`). When a role is _intentionally_ non-standard -- a self-contained env/model pair you own, or a not-yet-blessed domain -- mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
+**Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role (any other `<kind>/<name>` string) still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="forbid"`). When a role is _intentionally_ non-standard (a self-contained env/model pair you own, or a not-yet-blessed domain), mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
 
 ### Bimanual roles
 
@@ -89,11 +89,11 @@ tags = adapt.EnvTags(
 | Python `tuple`     | `Tuple`             | `(ImageTag(...), StateTag(...))`                  |
 | bare leaf          | a single space leaf | `Split(...)` or one `StateTag(...)`               |
 
-Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"eef_pos": StateTag(...)}}`) -- there are no dotted keys. A single-leaf observation is the bare leaf with no dict wrapper.
+Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"eef_pos": StateTag(...)}}`); there are no dotted keys. A single-leaf observation is the bare leaf with no dict wrapper.
 
 ### ImageTag
 
-{class}`~rlmesh.adapters.ImageTag` -- one camera image leaf.
+{class}`~rlmesh.adapters.ImageTag`: one camera image leaf.
 
 | Field                   | Default | What it declares                             | When to use           |
 | ----------------------- | ------- | -------------------------------------------- | --------------------- |
@@ -103,7 +103,7 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 
 ### StateTag
 
-{class}`~rlmesh.adapters.StateTag` -- one numeric proprioception leaf.
+{class}`~rlmesh.adapters.StateTag`: one numeric proprioception leaf.
 
 | Field                   | Default | What it declares                                                  | When to use                          |
 | ----------------------- | ------- | ----------------------------------------------------------------- | ------------------------------------ |
@@ -115,11 +115,11 @@ Nesting is real `dict` nesting that mirrors a nested `Dict` space (`{"agent": {"
 
 ### TextTag
 
-{class}`~rlmesh.adapters.TextTag` -- a text leaf (typically the instruction). Single field: `role` (1st positional). Use it when the observation carries a string the model conditions on.
+{class}`~rlmesh.adapters.TextTag`: a text leaf (typically the instruction). Single field: `role` (1st positional). Use it when the observation carries a string the model conditions on.
 
 ### Split + Field
 
-Some environments expose one flat numeric `Box` with fixed index ranges instead of a key per quantity (Metaworld is the common case). {class}`~rlmesh.adapters.Split` tags that single vector -- it is a **leaf**, not a container, and the observation-side mirror of {class}`~rlmesh.adapters.Action`.
+Some environments expose one flat numeric `Box` with fixed index ranges instead of a key per quantity (Metaworld is the common case). {class}`~rlmesh.adapters.Split` tags that single vector: it is a **leaf**, not a container, and the observation-side mirror of {class}`~rlmesh.adapters.Action`.
 
 ```python
 adapt.EnvTags(
@@ -142,7 +142,7 @@ adapt.EnvTags(
 | `encoding`              | `None`             | rotation encoding (single or preference sequence) | the slice is a rotation             |
 | `range`                 | `None`             | `(low, high)` where the space is unbounded        | the slice is unbounded in the space |
 
-A `role=None` field advances the offset without producing a feature -- use it to step over indices the model never reads. A skip carries no encoding or range.
+A `role=None` field advances the offset without producing a feature; use it to step over indices the model never reads. A skip carries no encoding or range.
 
 ## The model side
 
@@ -169,7 +169,7 @@ spec = adapt.ModelSpec(
 
 ### Image
 
-{class}`~rlmesh.adapters.Image` -- a camera input. Every field:
+{class}`~rlmesh.adapters.Image`: a camera input. Every field:
 
 | Field                   | Default      | What it does                                                                  | When to use                                                    |
 | ----------------------- | ------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -194,7 +194,7 @@ spec = adapt.ModelSpec(
 
 ### State
 
-{class}`~rlmesh.adapters.State` -- the single-part numeric input. Every field:
+{class}`~rlmesh.adapters.State`: the single-part numeric input. Every field:
 
 | Field                   | Default     | What it does                                                        | When to use                      |
 | ----------------------- | ----------- | ------------------------------------------------------------------- | -------------------------------- |
@@ -209,13 +209,13 @@ spec = adapt.ModelSpec(
 | `reshape`               | `None`      | target shape for the result                                         | the model wants a specific shape |
 | `container`             | `"array"`   | emit a NumPy array or a plain `list`                                | the model wants a list           |
 
-`dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, or `encoding`. `range` is a no-op when the env has no source range to map from -- it does not clamp on its own.
+`dim` and `index` are mutually exclusive (`dim` keeps the leading N, `index` selects one). When `optional` is set the fill width must be known without an env feature, so set one of `index`, `dim`, or `encoding`. `range` is a no-op when the env has no source range to map from; it does not clamp on its own.
 
 A `State` is also a valid `Concat` part: its part fields (`role`, `encoding`, `dim`, `index`, `optional`, `range`) are taken, and its container fields (`pad_to`, `dtype`, `reshape`, `container`) must stay default when used as a part.
 
 ### Concat
 
-{class}`~rlmesh.adapters.Concat` -- the **multi-part** state leaf: several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array")` needs at least one part. A part is a bare role string (sugar for a role-only `State`) or a `State` carrying part fields:
+{class}`~rlmesh.adapters.Concat`: the **multi-part** state leaf, several roles packed into one tensor. `Concat(*parts, pad_to=None, dtype="float32", reshape=None, container="array")` needs at least one part. A part is a bare role string (sugar for a role-only `State`) or a `State` carrying part fields:
 
 ```python
 adapt.Concat(
@@ -229,7 +229,7 @@ Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, 
 
 ### Text
 
-{class}`~rlmesh.adapters.Text` -- a text input.
+{class}`~rlmesh.adapters.Text`: a text input.
 
 | Field                   | Default | What it does                                                 | When to use                   |
 | ----------------------- | ------- | ------------------------------------------------------------ | ----------------------------- |
@@ -237,17 +237,17 @@ Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, 
 | `container`             | `"str"` | emit a plain string or a single-element list                 | the model wants a list        |
 | `default`               | `None`  | value when the obs omits the feature; `None` omits the input | supply a fallback instruction |
 
-Tokenization stays in the model -- `Text` delivers the raw string.
+Tokenization stays in the model; `Text` delivers the raw string.
 
 ### Custom
 
-{class}`~rlmesh.adapters.Custom` -- a payload slot computed by host-language code. Set **exactly one** of `transform=` (an in-process callable, local only) or `entrypoint=` (a `"module:callable"` string, imported only under `resolve(..., trust_entrypoints=True)`). The rest of the spec stays declarative. See {doc}`/user-guide/adapters/escape-hatches` for the full pattern and the trust model.
+{class}`~rlmesh.adapters.Custom`: a payload slot computed by host-language code. Set **exactly one** of `transform=` (an in-process callable, local only) or `entrypoint=` (a `"module:callable"` string, imported only under `resolve(..., trust_entrypoints=True)`). The rest of the spec stays declarative. See {doc}`/user-guide/adapters/escape-hatches` for the full pattern and the trust model.
 
 ## The action side
 
 {class}`~rlmesh.adapters.Action` is shared by env tags and model specs. `Action(*Actuator, clip=None)` takes its actuators positionally and exposes a `.dim` property (the sum of component dims). `clip` is an optional `(low, high)` applied to the final vector.
 
-{class}`~rlmesh.adapters.Actuator` -- one contiguous slice of the action vector:
+{class}`~rlmesh.adapters.Actuator`: one contiguous slice of the action vector:
 
 | Field                   | Default       | What it does                                              | When to use                            |
 | ----------------------- | ------------- | --------------------------------------------------------- | -------------------------------------- |
@@ -262,7 +262,7 @@ Tokenization stays in the model -- `Text` delivers the raw string.
 | `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)      | per-dim safety on a mixed-range action |
 | `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
 
-`scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged -- **model-side first** (the model's own output convention), then **env-side** (the env's):
+`scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged, **model-side first** (the model's own output convention), then **env-side** (the env's):
 
 ```{mermaid}
 flowchart LR
@@ -272,11 +272,11 @@ flowchart LR
   d --> e["clip"]
 ```
 
-So an env declares its quirk once and every model inherits it; _and_ a model whose own output differs from a **shared** env it cannot edit declares the bridge on its own actuator -- e.g. a sign-flipped gripper as `Actuator(ACTION_GRIPPER, dim=1, invert=True)`, or a sigmoid-probability gripper as `binary=True, threshold=0.5` -- instead of hardcoding the env's convention in `predict()`. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
+So an env declares its quirk once and every model inherits it; _and_ a model whose own output differs from a **shared** env it cannot edit declares the bridge on its own actuator, e.g. a sign-flipped gripper as `Actuator(ACTION_GRIPPER, dim=1, invert=True)`, or a sigmoid-probability gripper as `binary=True, threshold=0.5`, instead of hardcoding the env's convention in `predict()`. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
 
-`clip` is the exception -- it stays **env-side only**: it clamps to the env actuator's `range` (a final safety bound, not a convention), so declaring it on a model actuator is a resolve error.
+`clip` is the exception; it stays **env-side only**: it clamps to the env actuator's `range` (a final safety bound, not a convention), so declaring it on a model actuator is a resolve error.
 
-A **role-less actuator** -- `Actuator(dim=N, fill=...)` with no `role` -- is _opaque_: it occupies `N` dims of the env action with the constant `fill`, matched by no model output (the action-side mirror of a role-less `Field`). Use it for dims the env requires but no model produces, such as a control-mode selector or base padding. A registered `role` with a fixed canonical dim (e.g. `eef_pos` is 3-D) also validates the declared `dim` -- a mismatch is a resolve error.
+A **role-less actuator** (`Actuator(dim=N, fill=...)` with no `role`) is _opaque_: it occupies `N` dims of the env action with the constant `fill`, matched by no model output (the action-side mirror of a role-less `Field`). Use it for dims the env requires but no model produces, such as a control-mode selector or base padding. A registered `role` with a fixed canonical dim (e.g. `eef_pos` is 3-D) also validates the declared `dim`; a mismatch is a resolve error.
 
 ## Conversion semantics and policy
 
@@ -315,7 +315,7 @@ A model that conditions on a short history sets `stack=N` on an `Image`. The ada
 adapt.Image(adapt.IMAGE_PRIMARY, size=256, stack=4)
 ```
 
-Stacking is host-side on the local path and native in the core on the served path. Either way the environment still sends **one frame per step** -- nothing extra crosses the wire.
+Stacking is host-side on the local path and native in the core on the served path. Either way the environment still sends **one frame per step**, nothing extra crosses the wire.
 
 ```{caution}
 Frame stacking is episode state held outside the model: host-side on the local path, in the core

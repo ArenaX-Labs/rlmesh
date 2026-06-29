@@ -28,4 +28,4 @@ Concrete backend model classes inherit `ModelBase` and only change value convers
 | Torch model  | `rlmesh.torch.Model` | Torch tensors, primitives, and containers | Torch tensors and primitives |
 | JAX model    | `rlmesh.jax.Model`   | JAX arrays, primitives, and containers    | JAX arrays and primitives    |
 
-See {doc}`numpy`, {doc}`torch`, and {doc}`jax` for backend helpers.
+See {doc}`backends` for backend helpers.

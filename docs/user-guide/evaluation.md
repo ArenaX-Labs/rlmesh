@@ -23,7 +23,7 @@ flowchart LR
     resolve --> read["read() / reader()<br/>inspect by role"]
 ```
 
-## `run()` — the automated rollout
+## `run()`: the automated rollout
 
 `run()` pumps full episodes to completion and returns a {class}`~rlmesh.RunResult`. Lead with the bound method on a model:
 
@@ -83,7 +83,7 @@ for ep in result.episodes:
 `success_rate` prefers the env's own task outcome: Gymnasium's `info["is_success"]` or `info["success"]`, captured per episode as the `success` field on {class}`~rlmesh.EpisodeResult`. When the env emits no such flag it falls back to `terminated` for that episode. A time-limit env whose success *is* the truncation cap should report it through `info`, because a plain terminal state is not read as success.
 ```
 
-## `session()` — manual, step-by-step control
+## `session()`: manual, step-by-step control
 
 `session()` hands back a {class}`~rlmesh.Session` you drive yourself. Use it as a context manager so the env connection (and any managed model) closes on exit:
 
@@ -131,7 +131,7 @@ The context-manager form above is the idiomatic one; the explicit `try/finally` 
 
 `on_episode_end` fires at every episode boundary (the next `reset()`, or `close()` for the last episode), so a stateful model clears its per-episode state identically whether you drive by hand or call `run()`. {meth}`Session.run <rlmesh.Session.run>` pumps whole episodes through these same primitives and is exactly what `model.run(...)` calls under the hood.
 
-## `read` and `reader` — inspect observations by role
+## `read` and `reader`: inspect observations by role
 
 `reader` and `read` give a **read-only**, role-addressed view of a raw observation. They reuse the model adapter pipeline pointed at the consumer ({func}`~rlmesh.adapters.resolve_from_contract` plus the obs transform with a no-op action), so they are encoding-agnostic across envs and never mutate the observation.
 
@@ -171,7 +171,7 @@ Three things this is for:
 
 ## Execution horizon, end to end
 
-A policy that emits an action _chunk_ (ACT, diffusion, flow, VLA action heads) defines a `predict_chunk` or `predict_chunk_batch` corner — see the four corners in {doc}`models`. `execution_horizon` tells the rollout how many actions of each predicted chunk to apply before re-planning:
+A policy that emits an action _chunk_ (ACT, diffusion, flow, VLA action heads) defines a `predict_chunk` or `predict_chunk_batch` corner (see the four corners in {doc}`models`). `execution_horizon` tells the rollout how many actions of each predicted chunk to apply before re-planning:
 
 ```python
 result = model.run(env, seeds=range(50), execution_horizon=8)
@@ -192,7 +192,7 @@ One action is applied per step regardless. The model returns its native chunk an
 
 ## Where next
 
-- {doc}`models` — the four predict corners, the lifecycle seams, and the batched-observation fusion this loop drives.
-- {doc}`adapters` — how environment tags and a model spec resolve into the adapter every entry point applies.
-- {doc}`serving-environments` — addresses, readiness, and health for the remote envs `run()` and `session()` dial.
-- {doc}`../api/core` — the autodoc signatures for the top-level `run` / `session` entry points and the result types.
+- {doc}`models`: the four predict corners, the lifecycle seams, and the batched-observation fusion this loop drives.
+- {doc}`adapters`: how environment tags and a model spec resolve into the adapter every entry point applies.
+- {doc}`serving-environments`: addresses, readiness, and health for the remote envs `run()` and `session()` dial.
+- {doc}`../api/core`: the autodoc signatures for the top-level `run` / `session` entry points and the result types.

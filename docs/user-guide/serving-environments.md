@@ -28,7 +28,7 @@ server.wait()
 
 - `observation_space`
 - `action_space`
-- `reset(seed=None, options=None) -> (obs, info)`
+- `reset(*, seed=None, options=None) -> (obs, info)`
 - `step(action) -> (obs, reward, terminated, truncated, info)`
 - `close()`
 
@@ -146,9 +146,9 @@ Python embedders can call `rlmesh._cli.serve_env.write_ready_fd` directly.
 
 ## Where next
 
-- {doc}`remote-clients` — connect to the endpoint you just served.
-- {doc}`backends` — pick the value backend the client decodes into (NumPy, Torch, JAX, or plain Python).
-- {doc}`sandbox` — let RLMesh own the environment's process and dependencies in a container.
-- {doc}`adapters` — publish `tags=` so a model resolves its IO from the contract alone.
-- {doc}`evaluation` — drive a model against the served environment.
-- {doc}`../api/env-server` — the autodoc for `EnvServer` and its options.
+- {doc}`remote-clients`: connect to the endpoint you just served.
+- {doc}`backends`: pick the value backend the client decodes into (NumPy, Torch, JAX, or plain Python).
+- {doc}`sandbox`: let RLMesh own the environment's process and dependencies in a container.
+- {doc}`adapters`: publish `tags=` so a model resolves its IO from the contract alone.
+- {doc}`evaluation`: drive a model against the served environment.
+- {doc}`../api/serving`: the autodoc for `EnvServer` and its options.

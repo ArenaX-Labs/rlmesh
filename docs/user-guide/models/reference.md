@@ -1,4 +1,4 @@
-# Model reference
+# Model Reference
 
 The complete reference for the `Model` class: every predict corner and how the runtime derives the ones you leave out, the batching and chunk-replay semantics, the device and framework handling, the model-quirk recipes, and the serve-and-connect surface.
 
@@ -53,7 +53,7 @@ in-process or over the wire.
 
 | Form                                      | Behavior                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return the native chunk; the runtime executes a prefix of it. Most policies use this — a trained chunk length is fixed by the weights.                                                                       |
+| `predict_chunk(obs)`                      | The horizon is swallowed before the call. Return the native chunk; the runtime executes a prefix of it. Most policies use this; a trained chunk length is fixed by the weights.                                                                        |
 | `predict_chunk(obs, execution_horizon=1)` | The runtime fills `execution_horizon` with how many actions it will execute before re-planning. An autoregressive decoder that can stop early decodes exactly that many. Keep the `=1` default so the override stays compatible with the one-arg base. |
 
 ```python
@@ -72,7 +72,7 @@ The chunk split treats a string, a bytes value, a mapping (a Dict-space action w
 
 ## Batched observation fusion
 
-The batch corners do not receive a list of `N` observations. The runtime fuses the per-lane observations into one batched observation: every leaf gains a leading batch axis, so a Dict observation arrives as `{key: array[N, ...]}` — the shape every RL/VLA runtime hands a policy. You return the batched action the same way, and the runtime splits the batch axis back per lane.
+The batch corners do not receive a list of `N` observations. The runtime fuses the per-lane observations into one batched observation: every leaf gains a leading batch axis, so a Dict observation arrives as `{key: array[N, ...]}`, the shape every RL/VLA runtime hands a policy. You return the batched action the same way, and the runtime splits the batch axis back per lane.
 
 ```python
 def predict_batch(self, observations):
@@ -108,9 +108,9 @@ def load(self):
 | Obs placement | RLMesh moves every framework tensor leaf of an observation onto `self.device` before `predict`. Non-tensor leaves pass through. You never call `.to(device)` yourself. |
 | Read time     | `device` is read at predict time, so a value set in `load()` is honored even though `load()` runs after the served worker is built.                                    |
 | Default       | `None` leaves observations as decoded.                                                                                                                                 |
-| Wrong backend | Setting `device` on a numpy or native model raises a `ValueError` — those frameworks have no device concept.                                                           |
+| Wrong backend | Setting `device` on a numpy or native model raises a `ValueError` (those frameworks have no device concept).                                                           |
 
-The backend itself only changes value conversion at the predict seam. The four corners and the lifecycle are identical across native, numpy, torch, and jax. See {doc}`/user-guide/backends` for choosing one and {doc}`/api/torch` for the torch helpers.
+The backend itself only changes value conversion at the predict seam. The four corners and the lifecycle are identical across native, numpy, torch, and jax. See {doc}`/user-guide/backends` for choosing one and {doc}`/api/backends` for the backend helpers.
 
 ## Model quirks
 
@@ -179,17 +179,17 @@ python -m rlmesh.serve my_pkg:MyPolicy
 
 The serve env vars match the environment serve CLI:
 
-| Env var              | Meaning                                                           |
-| -------------------- | ----------------------------------------------------------------- |
-| `RLMESH_ADDRESS`     | Bind address (e.g. `0.0.0.0:50051`).                              |
-| `RLMESH_MAKE_KWARGS` | JSON object bound to `load(**binding)` once the worker is built.  |
-| `RLMESH_FRAMEWORK`   | `torch` / `jax` / `numpy`.                                        |
-| `RLMESH_DEVICE`      | Device for incoming observations (torch/jax only), e.g. `cuda:0`. |
+| Env var              | Meaning                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| `RLMESH_ADDRESS`     | Bind address (e.g. `0.0.0.0:50051`).                                                         |
+| `RLMESH_MAKE_KWARGS` | JSON object bound to `load(**binding)` once the worker is built.                             |
+| `RLMESH_FRAMEWORK`   | `torch` / `jax` / `numpy`.                                                                   |
+| `RLMESH_DEVICE`      | Device for the incoming action of a torch/jax env (env-side, torch/jax only), e.g. `cuda:0`. |
 
 Connect to a served model in one of two ways:
 
-- `rlmesh.RemoteModel(address)` — un-managed; you started the server yourself.
-- `rlmesh.SandboxModel("image://my-model:latest")` — managed; RLMesh runs the prebuilt image. `docker push` the tag to a registry it can reach first.
+- `rlmesh.RemoteModel(address)`: un-managed; you started the server yourself.
+- `rlmesh.SandboxModel("image://my-model:latest")`: managed; RLMesh runs the prebuilt image. `docker push` the tag to a registry it can reach first.
 
 ```python
 sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)
@@ -213,19 +213,19 @@ Find the row that matches your policy, then build it.
 
 ### Common pitfalls
 
-| Symptom                                       | Cause                                      | Fix                                                     |
-| --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------- |
-| `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend    |
-| `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`      |
-| Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion           |
-| `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`               |
-| Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()` — the one source of truth |
-| Stateful policy leaks across episodes         | per-episode state never cleared            | implement `reset()` (wired to the episode boundary)     |
+| Symptom                                       | Cause                                      | Fix                                                    |
+| --------------------------------------------- | ------------------------------------------ | ------------------------------------------------------ |
+| `TypeError` on construction for a chunk model | chunk-only on the native `rlmesh.Model`    | define `predict()`, or use a numpy/torch/jax backend   |
+| `execution_horizon` seems ignored             | the model has no chunk corner              | implement `predict_chunk` or `predict_chunk_batch`     |
+| Batch corner gets a list, not a fused obs     | the model is the native `rlmesh.Model`     | use a numpy/torch/jax backend for true fusion          |
+| `ValueError` on `device=`                     | `device` set on a numpy/native model       | use a torch/jax `Model`, or drop `device`              |
+| Obs not on the GPU                            | `device` set somewhere other than `load()` | set `self.device` in `load()`, the one source of truth |
+| Stateful policy leaks across episodes         | per-episode state never cleared            | implement `reset()` (wired to the episode boundary)    |
 
 ## Where next
 
-- {doc}`/user-guide/models` — the concept tour: construction styles, the spec, the lifecycle, and the worked SmolVLA model.
-- {doc}`/user-guide/evaluation` — `run` / `session` / `read`, seeds and instruction injection, and the execution horizon end to end.
-- {doc}`/user-guide/adapters` and {doc}`/user-guide/adapters/reference` — how the model spec matches an environment by role.
-- {doc}`/user-guide/environments` — the environment side of the contract.
-- {doc}`/api/models` — the autodoc signatures for every symbol above.
+- {doc}`/user-guide/models`: the concept tour: construction styles, the spec, the lifecycle, and the worked SmolVLA model.
+- {doc}`/user-guide/evaluation`: `run` / `session` / `read`, seeds and instruction injection, and the execution horizon end to end.
+- {doc}`/user-guide/adapters` and {doc}`/user-guide/adapters/reference`: how the model spec matches an environment by role.
+- {doc}`/user-guide/environments`: the environment side of the contract.
+- {doc}`/api/models`: the autodoc signatures for every symbol above.

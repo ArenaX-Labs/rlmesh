@@ -1,4 +1,4 @@
-# Describe Envelope — `rlmesh.describe.v1`
+# Describe Envelope: `rlmesh.describe.v1`
 
 The **describe envelope** is the single, self-contained JSON artifact that fully
 describes an environment factory or a model: its parameters, variants, IO
@@ -26,7 +26,7 @@ implementing this contract exactly.
   `serde_json` pass, and object keys sort (`BTreeMap`), so the bytes do not
   depend on the producer's language or JSON formatting.
 
-## Layers — who produces what
+## Layers: who produces what
 
 | Concern                                                 | Owner                             | Notes                                                                                                                                                                        |
 | ------------------------------------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

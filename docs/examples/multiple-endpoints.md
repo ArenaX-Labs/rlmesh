@@ -82,6 +82,6 @@ One evaluator now runs across multiple environment runtimes, locally, with the s
 
 ## Where next
 
-- {doc}`custom-work` — the single-endpoint serve-and-evaluate loop these build on.
-- {doc}`../user-guide/remote-clients` — `RemoteEnv` connection details.
-- {doc}`../user-guide/serving-environments` — addresses, readiness, and health.
+- {doc}`custom-work`: the single-endpoint serve-and-evaluate loop these build on.
+- {doc}`../user-guide/remote-clients`: `RemoteEnv` connection details.
+- {doc}`../user-guide/serving-environments`: addresses, readiness, and health.

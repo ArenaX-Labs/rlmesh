@@ -96,8 +96,8 @@ The full hook contract and `serve()` sequence are in {doc}`environments/referenc
 class Libero(rlmesh.EnvFactory):
     params = rlmesh.ParamSpec(
         rlmesh.Param("suite", str, choices=("libero_10", "libero_90", "libero_spatial"), group="task"),
-        rlmesh.Param("task_id", "int", default=0, description="task index within the suite"),
-        rlmesh.Param("camera_size", "int", default=256),
+        rlmesh.Param("task_id", "int", description="task index within the suite"),
+        rlmesh.Param("camera_size", "int"),
     )
 
     def make(self, *, suite: str, task_id: int = 0, camera_size: int = 256):
@@ -164,7 +164,7 @@ class MyTorchEnv(rlmesh.torch.EnvFactory):
 rlmesh.EnvServer(env, "127.0.0.1:5555", framework="torch", device="cuda:0")
 ```
 
-`rlmesh.torch.EnvFactory` and `rlmesh.jax.EnvFactory` subclass {class}`~rlmesh.EnvFactory` and are written exactly the same way. `rlmesh.numpy.EnvFactory` (the default) needs no bridge. For a plain env, {class}`~rlmesh.EnvServer` takes `framework="torch"`/`"jax"`/`"numpy"` and an optional `device` (torch/jax only). See {doc}`backends` for the framework backends and {doc}`../api/torch` for signatures.
+`rlmesh.torch.EnvFactory` and `rlmesh.jax.EnvFactory` subclass {class}`~rlmesh.EnvFactory` and are written exactly the same way. `rlmesh.numpy.EnvFactory` (the default) needs no bridge. For a plain env, {class}`~rlmesh.EnvServer` takes `framework="torch"`/`"jax"`/`"numpy"` and an optional `device` (torch/jax only). See {doc}`backends` for the framework backends and {doc}`../api/backends` for signatures.
 
 ```{note}
 A torch/jax env cannot be gym-vectorized (`num_envs > 1`): gym vectorization concatenates
@@ -215,7 +215,7 @@ A spec'd model resolves its adapter from the published tags and runs with no glu
 
 ## Where next
 
-- {doc}`environments/reference` — every `Param` and `ParamSpec` option, the `Variant` rules, the lifecycle hook contract, the raw-env wrapper recipe, the describe envelope, the serve CLI, and the authoritative container build pattern.
-- {doc}`adapters` — how the `tags` you declare here meet a model spec, and {doc}`adapters/reference` for the role registry and every leaf field.
-- {doc}`models` — the other side of the boundary: authoring and running a model against your env.
-- {doc}`serving-environments` — addresses, readiness, and health for a served endpoint.
+- {doc}`environments/reference`: every `Param` and `ParamSpec` option, the `Variant` rules, the lifecycle hook contract, the raw-env wrapper recipe, the describe envelope, the serve CLI, and the authoritative container build pattern.
+- {doc}`adapters`: how the `tags` you declare here meet a model spec, and {doc}`adapters/reference` for the role registry and every leaf field.
+- {doc}`models`: the other side of the boundary, authoring and running a model against your env.
+- {doc}`serving-environments`: addresses, readiness, and health for a served endpoint.

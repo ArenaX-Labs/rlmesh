@@ -68,14 +68,6 @@ user-guide/environments
 user-guide/environments/reference
 user-guide/models
 user-guide/models/reference
-user-guide/evaluation
-```
-
-```{toctree}
-:hidden:
-:caption: Adapters
-:maxdepth: 2
-
 user-guide/adapters
 user-guide/adapters/reference
 user-guide/adapters/escape-hatches
@@ -83,24 +75,23 @@ user-guide/adapters/escape-hatches
 
 ```{toctree}
 :hidden:
-:caption: User Guide
+:caption: Run & Evaluate
 :maxdepth: 2
 
 user-guide/serving-environments
 user-guide/remote-clients
+user-guide/evaluation
 user-guide/backends
 user-guide/sandbox
 ```
 
 ```{toctree}
 :hidden:
-:caption: Operations
+:caption: Operate
 :maxdepth: 2
 
-user-guide/error-handling
-user-guide/debugging
+user-guide/troubleshooting
 user-guide/performance
-user-guide/streaming
 ```
 
 ```{toctree}

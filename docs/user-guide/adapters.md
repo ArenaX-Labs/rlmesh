@@ -101,7 +101,7 @@ spec = adapt.ModelSpec(
 )
 ```
 
-The `input` is a tree whose container _is_ the payload the prediction function receives: a `dict` (each key a payload slot), a `tuple`, or a bare single leaf. A leaf carries no key — its position in the tree is the payload position, and a role may be reused across leaves. {class}`~rlmesh.adapters.Concat` is the multi-part state leaf: each part is a bare role string (sugar for a role-only `State`) or a `State`, concatenated in order. Every leaf and its options are enumerated in {doc}`adapters/reference`.
+The `input` is a tree whose container _is_ the payload the prediction function receives: a `dict` (each key a payload slot), a `tuple`, or a bare single leaf. A leaf carries no key: its position in the tree is the payload position, and a role may be reused across leaves. {class}`~rlmesh.adapters.Concat` is the multi-part state leaf: each part is a bare role string (sugar for a role-only `State`) or a `State`, concatenated in order. Every leaf and its options are enumerated in {doc}`adapters/reference`.
 
 ## Resolve and apply
 
@@ -171,6 +171,6 @@ The system targets the manipulation/VLA case: RGB cameras, proprioception, and a
 
 ## Where next
 
-- {doc}`adapters/reference` — the full role registry (including the bimanual `_2` variants), every field on every leaf, the rotation/layout/fit vocabularies, the conversion policy (silent / advisory / opt-in / error), and how to match your model's shape.
-- {doc}`adapters/escape-hatches` — {class}`~rlmesh.adapters.Custom` inputs, {class}`~rlmesh.adapters.AdapterBase` subclasses, pair overrides, and {class}`~rlmesh.adapters.CustomEncoding`.
-- {doc}`../api/adapters` — the autodoc signatures for every symbol above.
+- {doc}`adapters/reference`: the full role registry (including the bimanual `_2` variants), every field on every leaf, the rotation/layout/fit vocabularies, the conversion policy (silent / advisory / opt-in / error), and how to match your model's shape.
+- {doc}`adapters/escape-hatches`: {class}`~rlmesh.adapters.Custom` inputs, {class}`~rlmesh.adapters.AdapterBase` subclasses, pair overrides, and {class}`~rlmesh.adapters.CustomEncoding`.
+- {doc}`../api/adapters`: the autodoc signatures for every symbol above.

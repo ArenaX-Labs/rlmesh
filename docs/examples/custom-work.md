@@ -85,7 +85,7 @@ That is the separation: the environment serves observations, and the model worke
 
 ## Where next
 
-- {doc}`../user-guide/environments` — authoring environments: tags, params, and variants.
-- {doc}`../user-guide/models` — wrapping a predict callable or subclassing a backend `Model`.
-- {doc}`../user-guide/remote-clients` — connecting a `RemoteEnv` from another process.
-- {doc}`multiple-endpoints` — running one evaluator across several endpoints.
+- {doc}`../user-guide/environments`: authoring environments: tags, params, and variants.
+- {doc}`../user-guide/models`: wrapping a predict callable or subclassing a backend `Model`.
+- {doc}`../user-guide/remote-clients`: connecting a `RemoteEnv` from another process.
+- {doc}`multiple-endpoints`: running one evaluator across several endpoints.

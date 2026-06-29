@@ -1,6 +1,6 @@
 # Versioning
 
-RLMesh follows [Semantic Versioning](https://semver.org). The project is pre-1.0, so the SemVer pre-release rule applies: a minor release (`0.x`) may contain breaking changes. We treat that seriously. Every breaking change to a stable surface is called out in the {doc}`changelog` under a Breaking heading, with a migration note.
+RLMesh follows [Semantic Versioning](https://semver.org). The project is pre-1.0, so the SemVer pre-release rule applies: a minor release (`0.x`) may contain breaking changes. Every breaking change to a stable surface is called out in the {doc}`changelog` under a Breaking heading, with a migration note.
 
 ## What a version bump means
 

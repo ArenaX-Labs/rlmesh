@@ -76,6 +76,6 @@ The runnable file is {source}`examples/python/sandbox/hf_sandbox.py <examples/py
 
 ## Where next
 
-- {doc}`../user-guide/sandbox` — the sandbox helpers in depth.
-- {doc}`byo-container` — build and run your own env and model images.
-- {doc}`/compatibility` — pinning a source to a commit SHA.
+- {doc}`../user-guide/sandbox`: the sandbox helpers in depth.
+- {doc}`byo-container`: build and run your own env and model images.
+- {doc}`/compatibility`: pinning a source to a commit SHA.

@@ -141,7 +141,7 @@ def build_adapter(model_name, env_name, env):
 `metaworld` is the flat-observation case: its proprioception is a single `Box` vector split by a `Split`, so the same specs that pair with the Dict envs resolve against it unchanged.
 
 ```python
-# envs/metaworld.py — one flat leaf split by index range
+# envs/metaworld.py: one flat leaf split by index range
 "proprio": adapt.Split(
     adapt.Field(adapt.EEF_POS, 3),
     adapt.Field(adapt.EEF_ROT, 4, encoding="quat_xyzw"),

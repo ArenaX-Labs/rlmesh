@@ -2,7 +2,7 @@
 
 A backend decides what RLMesh decodes values into at the Python boundary. The wire stays framework-neutral, so the backend is a client-side choice: it changes the type you receive from `reset` and `step`, not the protocol or the server. The same served environment can feed a NumPy client, a Torch client, and a JAX client at once.
 
-Every backend exposes the same surface (`RemoteEnv`, `RemoteVectorEnv`, `Model`, and the sandbox sessions) under its own import path. Pick the one whose import matches the values your code already speaks.
+Every backend exposes the same surface (`RemoteEnv`, `RemoteVectorEnv`, `Model`, `RemoteModel`, and the sandbox sessions) under its own import path. Pick the one whose import matches the values your code already speaks.
 
 ```python
 import rlmesh                       # plain Python and RLMesh-native values
@@ -78,7 +78,7 @@ env = RemoteEnv("127.0.0.1:5555")
 pip install "rlmesh[jax]"
 ```
 
-For conversion semantics and the supported JAX floor, see {doc}`../api/jax`.
+For conversion semantics and the supported JAX floor, see {doc}`../api/backends`.
 
 ## What "experimental" means here
 
@@ -105,8 +105,8 @@ model.run("127.0.0.1:5555", max_episodes=1)
 
 ## Where next
 
-- {doc}`remote-clients` — connect a client in the backend you chose.
-- {doc}`serving-environments` — declare an env's action framework with `framework=` and `device=`.
-- {doc}`evaluation` — run a model, whose `predict` receives backend-typed values.
-- {doc}`adapters` — resolve a model's IO; adapter calls use the NumPy backend.
-- {doc}`../api/numpy`, {doc}`../api/torch`, {doc}`../api/jax` — the per-backend autodoc.
+- {doc}`remote-clients`: connect a client in the backend you chose.
+- {doc}`serving-environments`: declare an env's action framework with `framework=` and `device=`.
+- {doc}`evaluation`: run a model, whose `predict` receives backend-typed values.
+- {doc}`adapters`: resolve a model's IO; adapter calls use the NumPy backend.
+- {doc}`../api/backends`: the per-backend autodoc.

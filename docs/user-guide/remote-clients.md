@@ -118,13 +118,13 @@ transport error on the next call; rebuild the client to reconnect. The
 timeout internally because they retry while their container boots.
 ```
 
-For the broader error model, see {doc}`error-handling`.
+For the broader error model, see {doc}`troubleshooting`.
 
 ## Where next
 
-- {doc}`serving-environments` — start the endpoint a client connects to.
-- {doc}`backends` — choose what `step` and `reset` decode into.
-- {doc}`sandbox` — get a remote client that also owns the server's container.
-- {doc}`evaluation` — drive a model against a remote environment.
-- {doc}`adapters` — let a model resolve its IO from the env contract.
-- {doc}`../api/remote-envs` — the autodoc for the client classes.
+- {doc}`serving-environments`: start the endpoint a client connects to.
+- {doc}`backends`: choose what `step` and `reset` decode into.
+- {doc}`sandbox`: get a remote client that also owns the server's container.
+- {doc}`evaluation`: drive a model against a remote environment.
+- {doc}`adapters`: let a model resolve its IO from the env contract.
+- {doc}`../api/serving`: the autodoc for the client classes.

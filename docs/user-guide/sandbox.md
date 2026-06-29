@@ -122,9 +122,9 @@ should be pinned and reviewed before it is run.
 
 ## Where next
 
-- {doc}`serving-environments` — serve an environment yourself instead of letting the sandbox own it.
-- {doc}`remote-clients` — the client surface a sandbox session inherits.
-- {doc}`backends` — choose the value backend the sandbox client decodes into.
-- {doc}`evaluation` — run a model against a sandboxed environment.
-- {doc}`environments` — author the `EnvFactory` a prebuilt image serves.
-- {doc}`../api/sandbox` — the autodoc for the sandbox classes.
+- {doc}`serving-environments`: serve an environment yourself instead of letting the sandbox own it.
+- {doc}`remote-clients`: the client surface a sandbox session inherits.
+- {doc}`backends`: choose the value backend the sandbox client decodes into.
+- {doc}`evaluation`: run a model against a sandboxed environment.
+- {doc}`environments`: author the `EnvFactory` a prebuilt image serves.
+- {doc}`../api/sandbox`: the autodoc for the sandbox classes.

@@ -66,5 +66,5 @@ For the smallest custom environment object, use `examples/python/quickstart/serv
 
 ## Next
 
-- {doc}`gymnasium` — the Gymnasium spaces RLMesh supports.
-- {doc}`examples` — swap environments, run sandboxed stacks, and fan one evaluator out to multiple endpoints.
+- {doc}`gymnasium`: the Gymnasium spaces RLMesh supports.
+- {doc}`examples`: swap environments, run sandboxed stacks, and fan one evaluator out to multiple endpoints.

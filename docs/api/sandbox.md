@@ -46,4 +46,4 @@ Concrete sandbox classes inherit the base session behavior and only choose the r
 | `rlmesh.torch.SandboxEnv`       | `rlmesh.torch.RemoteEnv`       | Torch tensors and primitives |
 | `rlmesh.torch.SandboxVectorEnv` | `rlmesh.torch.RemoteVectorEnv` | Torch tensors and primitives |
 
-See {doc}`numpy` and {doc}`torch` for backend-specific class entries and helper functions.
+See {doc}`backends` for backend-specific class entries and helper functions.

@@ -115,7 +115,7 @@ The protocol handshake pins the workflow edition and fails closed. Until the bar
 
 ## Where next
 
-- {doc}`sandboxes` — let RLMesh build and own the environment container.
-- {doc}`../user-guide/sandbox` — the sandbox helpers in depth.
-- {doc}`../user-guide/serving-environments` — addresses, readiness, and health.
-- {doc}`/compatibility` — version and edition pinning rules.
+- {doc}`sandboxes`: let RLMesh build and own the environment container.
+- {doc}`../user-guide/sandbox`: the sandbox helpers in depth.
+- {doc}`../user-guide/serving-environments`: addresses, readiness, and health.
+- {doc}`/compatibility`: version and edition pinning rules.
