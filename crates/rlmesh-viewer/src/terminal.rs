@@ -1,29 +1,33 @@
-//! Terminal backend: draws frames in place via ANSI half-blocks, with a key
-//! thread for live source switching.
+//! Terminal backend: takes over the terminal (alt-screen, raw mode), runs the key
+//! thread for live source switching + quitting, and orchestrates per-frame drawing.
 //!
-//! Zero image-codec deps — `crossterm` handles the alt-screen takeover, raw-mode
-//! key input, and terminal size; the half-block encoder is hand-rolled (one cell
-//! = two vertical pixels, fg = top, bg = bottom, truecolor). The alt-screen makes
-//! the takeover reversible: on drop the prior scrollback returns intact.
+//! Frame rendering itself — the native inline-image protocols and the truecolor
+//! half-block fallback — lives in [`crate::graphics`]. This module owns the terminal
+//! lifecycle, key input, the HUD footer, and resize reflow. `crossterm` handles the
+//! alt-screen takeover (reversible: scrollback returns on drop), raw-mode key input,
+//! and terminal size.
 
 use std::fmt::Write as _;
 use std::io::{self, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, event, execute, terminal};
 use image::RgbImage;
-use image::imageops::FilterType;
 
-const UPPER_HALF: char = '\u{2580}'; // ▀
+use crate::graphics::{self, Graphics};
 
 /// Owns the terminal takeover and the key thread; restores everything on drop.
 pub struct Terminal {
     running: Arc<AtomicBool>,
     keys: Option<JoinHandle<()>>,
+    graphics: Graphics,
+    /// Last frame drawn, cached so the key thread can reflow it on a terminal resize
+    /// — the draw loop is fed by the eval, so a paused eval wouldn't reflow otherwise.
+    last: Arc<Mutex<Option<RgbImage>>>,
 }
 
 impl Terminal {
@@ -36,31 +40,22 @@ impl Terminal {
             return None;
         }
         let running = Arc::new(AtomicBool::new(true));
-        let keys = spawn_keys(Arc::clone(&running), shared);
+        let graphics = graphics::detect();
+        let last: Arc<Mutex<Option<RgbImage>>> = Arc::new(Mutex::new(None));
+        let keys = spawn_keys(Arc::clone(&running), shared, graphics, Arc::clone(&last));
         Some(Self {
             running,
             keys: Some(keys),
+            graphics,
+            last,
         })
     }
 
-    /// Draw one frame in place, with a source-selector + HUD footer.
+    /// Draw one frame in place. Caches it so a resize can reflow it from the key
+    /// thread even while the eval is paused.
     pub fn draw(&self, img: &RgbImage, shared: &super::http::HttpShared) {
-        let (cols, rows) = terminal::size().unwrap_or((80, 24));
-        let max_w = u32::from(cols.max(1));
-        // Reserve two rows for the footer; each char row is two vertical pixels.
-        let max_h = u32::from(rows.saturating_sub(2).max(1)) * 2;
-        let (nw, nh) = fit(img.width(), img.height(), max_w, max_h);
-        let small = image::imageops::resize(img, nw, (nh.max(2)) & !1, FilterType::Triangle);
-
-        let mut out = String::with_capacity(small.len() * 8);
-        out.push_str("\x1b[H"); // cursor home
-        half_blocks(&small, &mut out);
-        out.push_str("\x1b[J");
-        footer(shared, rows, &mut out);
-
-        let mut stdout = io::stdout().lock();
-        let _ = stdout.write_all(out.as_bytes());
-        let _ = stdout.flush();
+        *super::http::lock(&self.last) = Some(img.clone());
+        render(self.graphics, img, shared);
     }
 }
 
@@ -75,10 +70,33 @@ impl Drop for Terminal {
     }
 }
 
+/// Render one frame at the current terminal size: the image (via [`crate::graphics`])
+/// plus the source-selector / HUD footer, in a single flush. Shared by the draw path
+/// and the key thread's resize reflow; each call writes a whole frame, so concurrent
+/// calls never interleave mid-escape.
+fn render(g: Graphics, img: &RgbImage, shared: &super::http::HttpShared) {
+    let (cols, rows) = terminal::size().unwrap_or((80, 24));
+    let img_rows = rows.saturating_sub(2).max(1);
+
+    let mut out = String::new();
+    out.push_str("\x1b[H");
+    graphics::render_image(g, img, cols, img_rows, &mut out);
+    footer(shared, rows, &mut out);
+
+    let mut stdout = io::stdout().lock();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
+}
+
 /// Poll keys on a dedicated thread (only `crossterm::event`, never a second stdin
-/// reader) and cycle the shared `selected` index. Polls so it notices `running`
-/// flipping without needing a keypress.
-fn spawn_keys(running: Arc<AtomicBool>, shared: Arc<super::http::HttpShared>) -> JoinHandle<()> {
+/// reader): cycle the selected source, set the quit flag, and reflow the cached frame
+/// on resize. Polls so it notices `running` flipping without needing a keypress.
+fn spawn_keys(
+    running: Arc<AtomicBool>,
+    shared: Arc<super::http::HttpShared>,
+    graphics: Graphics,
+    last: Arc<Mutex<Option<RgbImage>>>,
+) -> JoinHandle<()> {
     thread::Builder::new()
         .name("rlmesh-viewer-keys".to_string())
         .spawn(move || {
@@ -87,8 +105,15 @@ fn spawn_keys(running: Arc<AtomicBool>, shared: Arc<super::http::HttpShared>) ->
                 if !matches!(event::poll(Duration::from_millis(100)), Ok(true)) {
                     continue;
                 }
-                let Ok(Event::Key(key)) = event::read() else {
-                    continue;
+                let key = match event::read() {
+                    Ok(Event::Key(key)) => key,
+                    Ok(Event::Resize(_, _)) => {
+                        if let Some(img) = super::http::lock(&last).clone() {
+                            render(graphics, &img, &shared);
+                        }
+                        continue;
+                    }
+                    _ => continue,
                 };
                 if is_quit(&key) {
                     shared.quit.store(true, Ordering::Relaxed);
@@ -114,52 +139,14 @@ fn spawn_keys(running: Arc<AtomicBool>, shared: Arc<super::http::HttpShared>) ->
         .expect("spawn rlmesh-viewer key thread")
 }
 
-/// Quit keys: `q` / Esc, or Ctrl-C / Ctrl-D — the raw-mode-safe replacements for
-/// the SIGINT the kernel no longer delivers.
+/// Quit keys: `q` / Esc, or Ctrl-C / Ctrl-D — the raw-mode-safe replacements for the
+/// SIGINT the kernel no longer delivers.
 fn is_quit(key: &event::KeyEvent) -> bool {
     use event::{KeyCode, KeyModifiers};
     match key.code {
         KeyCode::Esc | KeyCode::Char('q' | 'Q') => true,
         KeyCode::Char('c' | 'd') => key.modifiers.contains(KeyModifiers::CONTROL),
         _ => false,
-    }
-}
-
-/// Fit `w x h` pixels into `max_w x max_h`, preserving aspect.
-fn fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    let w = w.max(1);
-    let h = h.max(1);
-    let nw = w.min(max_w).max(1);
-    let nh = ((u64::from(nw) * u64::from(h)) / u64::from(w)) as u32;
-    if nh > max_h {
-        let nh = max_h.max(1);
-        let nw = ((u64::from(nh) * u64::from(w)) / u64::from(h)) as u32;
-        (nw.max(1), nh)
-    } else {
-        (nw, nh.max(1))
-    }
-}
-
-/// Encode an (even-height) RGB image as ANSI half-blocks, diffing color runs.
-fn half_blocks(img: &RgbImage, out: &mut String) {
-    let (w, h) = (img.width(), img.height());
-    for ry in 0..h / 2 {
-        let (top_y, bot_y) = (ry * 2, ry * 2 + 1);
-        let mut prev: Option<([u8; 3], [u8; 3])> = None;
-        for x in 0..w {
-            let t = img.get_pixel(x, top_y).0;
-            let b = img.get_pixel(x, bot_y).0;
-            if prev != Some((t, b)) {
-                let _ = write!(
-                    out,
-                    "\x1b[38;2;{};{};{};48;2;{};{};{}m",
-                    t[0], t[1], t[2], b[0], b[1], b[2]
-                );
-                prev = Some((t, b));
-            }
-            out.push(UPPER_HALF);
-        }
-        out.push_str("\x1b[0m\r\n");
     }
 }
 
@@ -190,27 +177,4 @@ fn footer(shared: &super::http::HttpShared, rows: u16, out: &mut String) {
         hud.reward,
         outcome
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_preserves_aspect_within_bounds() {
-        // Width-bound: 100x50 into 40x100 -> 40x20.
-        assert_eq!(fit(100, 50, 40, 100), (40, 20));
-        // Height-bound: 50x100 into 100x20 -> 10x20.
-        assert_eq!(fit(50, 100, 100, 20), (10, 20));
-    }
-
-    #[test]
-    fn half_blocks_one_cell_per_column_then_reset() {
-        // 2x2 -> one char row, two cells, terminated by reset + CRLF.
-        let img = RgbImage::from_raw(2, 2, vec![0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]).expect("img");
-        let mut out = String::new();
-        half_blocks(&img, &mut out);
-        assert_eq!(out.matches(UPPER_HALF).count(), 2);
-        assert!(out.ends_with("\x1b[0m\r\n"));
-    }
 }

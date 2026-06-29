@@ -9,6 +9,7 @@
 //! [`Viewer`].
 
 mod frame;
+mod graphics;
 mod http;
 mod terminal;
 mod viewer;

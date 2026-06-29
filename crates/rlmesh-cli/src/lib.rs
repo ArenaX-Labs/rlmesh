@@ -1,4 +1,5 @@
 mod cli;
+mod viewtest;
 
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Write};
@@ -37,6 +38,7 @@ async fn run_cli_with_writers(
 
     match cli.command {
         Command::Version => version(stdout),
+        Command::Viewtest(args) => viewtest::run(&args, stderr),
     }
 }
 
