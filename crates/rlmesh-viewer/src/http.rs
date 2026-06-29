@@ -18,6 +18,7 @@ pub struct Hud {
     pub step: i64,
     pub reward: f64,
     pub outcome: String,
+    pub fps: f64,
 }
 
 /// State shared between the viewer (writer) and the terminal / HTTP backends.
@@ -96,7 +97,7 @@ fn route(url: &str, shared: &HttpShared) -> Response<Cursor<Vec<u8>>> {
         "/hud.json" => {
             let hud = lock(&shared.hud).clone();
             let body = serde_json::json!({
-                "step": hud.step, "reward": hud.reward, "outcome": hud.outcome,
+                "step": hud.step, "reward": hud.reward, "outcome": hud.outcome, "fps": hud.fps,
             })
             .to_string();
             with_ct(Response::from_string(body), "application/json")
@@ -145,6 +146,7 @@ async function sources(){let r=null;try{r=await(await fetch('/sources.json')).js
   b.onclick=()=>fetch('/select?i='+i).then(sources);bar.appendChild(b);});}
 async function hudtick(){let h=null;try{h=await(await fetch('/hud.json')).json();}catch(e){}
  if(!h)return;hud.textContent=(h.step!=null?'step '+h.step:'')
+  +(h.fps?'   '+Math.round(h.fps)+' fps':'')
   +(h.reward!=null?'   R '+Number(h.reward).toFixed(2):'')+(h.outcome?'   '+h.outcome:'');}
 sources();setInterval(sources,2000);setInterval(hudtick,250);
 setInterval(()=>{f.src='/frame?t='+Date.now();},1000/fps);

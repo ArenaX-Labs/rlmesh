@@ -7,6 +7,7 @@
 //! the terminal sends nothing back either.
 
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use image::RgbImage;
 use image::imageops::FilterType;
@@ -15,6 +16,10 @@ use crate::frame::{self, FrameFormat};
 
 /// Upper half block (▀): one cell renders two vertically-stacked pixels.
 const UPPER_HALF: char = '\u{2580}';
+
+/// Ping-pong counter for the two Kitty image ids. A process-global is fine: only
+/// one terminal viewer (one alt-screen takeover) can exist at a time.
+static KITTY_FRAME: AtomicU64 = AtomicU64::new(0);
 
 /// Cap the longest side fed to the PNG encoder on the graphics path, to bound
 /// per-frame encode + transmission cost; the terminal scales it into the cells.
@@ -155,10 +160,17 @@ fn half_block_cells(img: &RgbImage, out: &mut String) {
 }
 
 /// Emit a PNG frame via the Kitty graphics protocol, scaled into `cols`×`rows`
-/// cells. Deletes the previously placed image first (no accumulation), and
-/// transmits with `q=2` so the terminal sends no acknowledgement back to stdin.
+/// cells. Double-buffers across two image ids: the new frame is drawn (with a
+/// strictly increasing `z` so it sits above the previous one — kitty breaks equal-z
+/// ties by image id, which would otherwise put the lower-id frame underneath) and
+/// only *then* is the previous image freed. No delete-then-redraw gap, so live
+/// updates don't flicker, even if a redraw lands mid-stream over SSH. `C=1` keeps the
+/// cursor put; `q=2` means the terminal never replies on stdin.
 fn kitty_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
-    out.push_str("\x1b_Ga=d,d=A,q=2\x1b\\");
+    let n = KITTY_FRAME.fetch_add(1, Ordering::Relaxed);
+    let id = (n % 2) + 1;
+    let prev = (id % 2) + 1;
+    let z = (n & 0x7fff_ffff) as i32;
     let total = b64.len();
     let mut start = 0;
     let mut first = true;
@@ -168,7 +180,7 @@ fn kitty_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
         if first {
             let _ = write!(
                 out,
-                "\x1b_Gf=100,a=T,q=2,c={cols},r={rows},m={more};{}\x1b\\",
+                "\x1b_Gf=100,a=T,i={id},q=2,c={cols},r={rows},z={z},C=1,m={more};{}\x1b\\",
                 &b64[start..end]
             );
             first = false;
@@ -177,6 +189,7 @@ fn kitty_emit(b64: &str, cols: u16, rows: u16, out: &mut String) {
         }
         start = end;
     }
+    let _ = write!(out, "\x1b_Ga=d,d=I,i={prev},q=2\x1b\\");
 }
 
 /// Emit a PNG frame via the iTerm2 inline-images protocol, scaled into `cols`×`rows`

@@ -30,6 +30,8 @@ pub struct Viewer {
     format: FrameFormat,
     frame_interval: Duration,
     last_render: Mutex<Option<Instant>>,
+    /// Smoothed actual draw rate (frames per second), shown on the HUD.
+    fps: Mutex<f64>,
     terminal: Option<Terminal>,
     server: Option<Arc<Server>>,
     warnings: Vec<String>,
@@ -65,6 +67,7 @@ impl Viewer {
             format,
             frame_interval: Duration::from_secs_f64(1.0 / f64::from(fps.max(1))),
             last_render: Mutex::new(None),
+            fps: Mutex::new(0.0),
             terminal,
             server,
             warnings,
@@ -109,10 +112,24 @@ impl Viewer {
     pub fn feed_frame(&self, buf: &[u8], width: u32, height: u32, channels: u32) {
         {
             let mut last = http::lock(&self.last_render);
-            if last.is_some_and(|t| t.elapsed() < self.frame_interval) {
-                return;
+            let now = Instant::now();
+            if let Some(prev) = *last {
+                let dt = now.duration_since(prev);
+                if dt < self.frame_interval {
+                    return;
+                }
+                let secs = dt.as_secs_f64();
+                if secs > 0.0 {
+                    let inst = 1.0 / secs;
+                    let mut fps = http::lock(&self.fps);
+                    *fps = if *fps <= 0.0 {
+                        inst
+                    } else {
+                        0.85 * *fps + 0.15 * inst
+                    };
+                }
             }
-            *last = Some(Instant::now());
+            *last = Some(now);
         }
         let Some(img) = frame::rgb_from_hwc(buf, width, height, channels) else {
             return;
@@ -135,6 +152,7 @@ impl Viewer {
             step,
             reward,
             outcome: outcome.to_string(),
+            fps: *http::lock(&self.fps),
         };
     }
 }

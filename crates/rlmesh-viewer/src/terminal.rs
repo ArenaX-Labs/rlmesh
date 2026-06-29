@@ -171,9 +171,10 @@ fn footer(shared: &super::http::HttpShared, rows: u16, out: &mut String) {
     };
     let _ = write!(
         out,
-        "\x1b[{};1H\x1b[2K\x1b[2mstep {}   R {:+.2}{}\x1b[0m",
+        "\x1b[{};1H\x1b[2K\x1b[2mstep {}   {:.0} fps   R {:+.2}{}\x1b[0m",
         rows.max(1),
         hud.step,
+        hud.fps,
         hud.reward,
         outcome
     );
