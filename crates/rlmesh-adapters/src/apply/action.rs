@@ -15,6 +15,34 @@ fn binary_snap(value: f32) -> f32 {
     if value >= 0.0 { 1.0 } else { -1.0 }
 }
 
+/// Apply one side's scalar corrections in place, in the order scale, invert,
+/// threshold. Both the model side and the env side run this (model first), so a
+/// model can declare its own output convention instead of hardcoding the env's.
+fn apply_scalar_corrections(
+    piece: &mut [f32],
+    scale: Option<f64>,
+    invert: bool,
+    threshold: Option<f64>,
+) {
+    if let Some(scale) = scale {
+        let scale = scale as f32;
+        for entry in piece.iter_mut() {
+            *entry *= scale;
+        }
+    }
+    if invert {
+        for entry in piece.iter_mut() {
+            *entry = -*entry;
+        }
+    }
+    if let Some(threshold) = threshold {
+        let threshold = threshold as f32;
+        for entry in piece.iter_mut() {
+            *entry -= threshold;
+        }
+    }
+}
+
 /// Convert a model action vector into the env action vector (float32).
 pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor, ApplyError> {
     let action = numeric_vector(raw_action)?;
@@ -42,25 +70,16 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
         if let (Some(src_range), Some(dst_range)) = (segment.src_range, segment.dst_range) {
             map_range(&mut piece, src_range, dst_range)?;
         }
-        // Env-side scalar corrections, after the declared formats are bridged
-        // and before the binary snap, in the order scale, invert, threshold.
-        if let Some(scale) = segment.scale {
-            let scale = scale as f32;
-            for entry in &mut piece {
-                *entry *= scale;
-            }
-        }
-        if segment.invert {
-            for entry in &mut piece {
-                *entry = -*entry;
-            }
-        }
-        if let Some(threshold) = segment.threshold {
-            let threshold = threshold as f32;
-            for entry in &mut piece {
-                *entry -= threshold;
-            }
-        }
+        // Scalar corrections after the declared formats are bridged: model-side
+        // first (the model's own output convention), then env-side, each in the
+        // order scale, invert, threshold; the binary snap follows.
+        apply_scalar_corrections(
+            &mut piece,
+            segment.model_scale,
+            segment.model_invert,
+            segment.model_threshold,
+        );
+        apply_scalar_corrections(&mut piece, segment.scale, segment.invert, segment.threshold);
         if segment.binarize {
             for entry in &mut piece {
                 // TODO: verify intended binary-gripper behavior at raw 0.0.
@@ -114,6 +133,9 @@ mod tests {
                 dst_encoding: None,
                 src_range: None,
                 dst_range: None,
+                model_scale: None,
+                model_invert: false,
+                model_threshold: None,
                 scale,
                 invert,
                 threshold,
@@ -140,6 +162,9 @@ mod tests {
                     dst_encoding: None,
                     src_range: None,
                     dst_range: None,
+                    model_scale: None,
+                    model_invert: false,
+                    model_threshold: None,
                     scale: None,
                     invert: false,
                     threshold: None,
@@ -155,6 +180,9 @@ mod tests {
                     dst_encoding: None,
                     src_range: None,
                     dst_range: None,
+                    model_scale: None,
+                    model_invert: false,
+                    model_threshold: None,
                     scale: None,
                     invert: false,
                     threshold: None,
@@ -190,6 +218,9 @@ mod tests {
                     dst_encoding: None,
                     src_range: None,
                     dst_range: None,
+                    model_scale: None,
+                    model_invert: false,
+                    model_threshold: None,
                     scale: None,
                     invert: false,
                     threshold: None,
@@ -205,6 +236,9 @@ mod tests {
                     dst_encoding: None,
                     src_range: None,
                     dst_range: None,
+                    model_scale: None,
+                    model_invert: false,
+                    model_threshold: None,
                     scale: None,
                     invert: false,
                     threshold: None,
@@ -219,6 +253,36 @@ mod tests {
         let out = transform_action(&plan, &Value::List(vec![Value::Number(0.7)])).unwrap();
         let got = to_f32_vec(&out);
         assert_eq!(got, vec![0.7, 0.5, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn model_side_corrections_apply_before_env_side() {
+        // model: scale 2 then invert; env: invert. Order is model(scale, invert)
+        // then env(invert): 0.3 -> *2 = 0.6 -> -0.6 (model) -> 0.6 (env).
+        let plan = ActionPlan {
+            segments: vec![ActionSegment {
+                role: Some("action/gripper".to_owned()),
+                start: 0,
+                stop: 1,
+                src_encoding: None,
+                dst_encoding: None,
+                src_range: None,
+                dst_range: None,
+                model_scale: Some(2.0),
+                model_invert: true,
+                model_threshold: None,
+                scale: None,
+                invert: true,
+                threshold: None,
+                binarize: false,
+                clip: None,
+                fill: None,
+            }],
+            clip: None,
+            in_dim: 1,
+        };
+        let out = transform_action(&plan, &Value::List(vec![Value::Number(0.3)])).unwrap();
+        assert!((to_f32_vec(&out)[0] - 0.6).abs() < 1e-6);
     }
 
     fn apply_one(plan: &ActionPlan, value: f32) -> f32 {

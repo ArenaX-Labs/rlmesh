@@ -87,6 +87,7 @@ user-guide/sandbox
 api/index
 compatibility
 editions/index
+specs/describe.v1
 ```
 
 ```{toctree}

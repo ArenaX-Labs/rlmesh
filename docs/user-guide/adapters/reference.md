@@ -260,15 +260,15 @@ Tokenization stays in the model -- `Text` delivers the raw string.
 | `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)      | per-dim safety on a mixed-range action |
 | `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
 
-`scale`, `invert`, `threshold`, and `clip` are **env-side corrections**: they declare the env actuator's convention and are applied to the incoming model value **after** the declared formats (rotation, range) are bridged, in this order:
+`scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged -- **model-side first** (the model's own output convention), then **env-side** (the env's):
 
 ```
-rotation/range bridged  →  scale  →  invert  →  threshold  →  binary  →  clip
+rotation/range bridged  →  model(scale → invert → threshold)  →  env(scale → invert → threshold)  →  binary  →  clip
 ```
 
-Declared once on the env, every model evaluated against it inherits the correction. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
+So an env declares its quirk once and every model inherits it; _and_ a model whose own output differs from a **shared** env it cannot edit declares the bridge on its own actuator -- e.g. a sign-flipped gripper as `Actuator(ACTION_GRIPPER, dim=1, invert=True)`, or a sigmoid-probability gripper as `binary=True, threshold=0.5` -- instead of hardcoding the env's convention in `predict()`. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
 
-These corrections are **env-side only**: declaring `scale`/`invert`/`threshold`/`clip` on a _model_ actuator is a resolve error. When a model's own output convention (e.g. a sigmoid-probability gripper) differs from a _shared_ env it cannot edit, convert it imperatively in `predict()`/`_obs()` -- that is the blessed home for a model-specific convention, since the conversion is a property of the model, not the env. (`binary` _is_ honored on a model actuator; only the `scale`/`invert`/`threshold` _values_ must be env-side.)
+`clip` is the exception -- it stays **env-side only**: it clamps to the env actuator's `range` (a final safety bound, not a convention), so declaring it on a model actuator is a resolve error.
 
 A **role-less actuator** -- `Actuator(dim=N, fill=...)` with no `role` -- is _opaque_: it occupies `N` dims of the env action with the constant `fill`, matched by no model output (the action-side mirror of a role-less `Field`). Use it for dims the env requires but no model produces, such as a control-mode selector or base padding. A registered `role` with a fixed canonical dim (e.g. `eef_pos` is 3-D) also validates the declared `dim` -- a mismatch is a resolve error.
 

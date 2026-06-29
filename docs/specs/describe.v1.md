@@ -42,7 +42,7 @@ _format_ is shared.
 
 ### Environment (`kind: "env"`)
 
-```json
+```text
 {
   "schema_version": 1,
   "kind": "env",
@@ -82,7 +82,7 @@ _format_ is shared.
 
 Same wrapper; drops `env_spec`/`env_tags`, adds `model_spec`:
 
-```json
+```text
 {
   "schema_version": 1,
   "kind": "model",

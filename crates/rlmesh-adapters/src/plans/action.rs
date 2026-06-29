@@ -13,8 +13,14 @@ pub struct ActionSegment {
     pub dst_encoding: Option<RotationEncoding>,
     pub src_range: Option<(f64, f64)>,
     pub dst_range: Option<(f64, f64)>,
-    /// Env-side scalar corrections, applied after rotation/range bridging in the
-    /// order scale, invert, threshold, `binarize`, then `clip`.
+    /// Model-side scalar corrections (the model's own output convention), applied
+    /// after the format bridge and *before* the env-side corrections, in the order
+    /// scale, invert, threshold. Unset for a model that emits the env's convention.
+    pub model_scale: Option<f64>,
+    pub model_invert: bool,
+    pub model_threshold: Option<f64>,
+    /// Env-side scalar corrections, applied after the model-side ones in the order
+    /// scale, invert, threshold, `binarize`, then `clip`.
     pub scale: Option<f64>,
     pub invert: bool,
     pub threshold: Option<f64>,

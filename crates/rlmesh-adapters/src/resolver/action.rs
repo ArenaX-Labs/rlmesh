@@ -129,6 +129,9 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
                 dst_encoding: None,
                 src_range: None,
                 dst_range: None,
+                model_scale: None,
+                model_invert: false,
+                model_threshold: None,
                 scale: None,
                 invert: false,
                 threshold: None,
@@ -159,30 +162,21 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             ));
         };
         check_action_dims(model_component, env_component, role)?;
-        // Corrections (scale/invert/threshold) describe the env's actuator
-        // convention; the model declares none. They are read only from the env
-        // component below, so a model-side correction would be silently dropped --
-        // reject it instead.
-        if model_component.scale.is_some()
-            || model_component.invert
-            || model_component.threshold.is_some()
-            || model_component.clip
-        {
+        // clip is an env-side clamp to the env actuator's range; it has no meaning
+        // on the model output (whose range is a mapping source, not a final bound).
+        if model_component.clip {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
-                    "action role {}: scale/invert/threshold/clip belong on the env component, \
-                     not the model; declare them on the env actuator, or -- when the env is \
-                     shared and cannot carry your model's output convention -- apply the \
-                     conversion imperatively in predict()/_obs()",
+                    "action role {}: clip is an env-side clamp; declare it on the env actuator",
                     quoted(role)
                 ),
             ));
         }
         let binarize = env_component.binary || model_component.binary;
-        // threshold is a binary decision boundary; without a binary snap it would
-        // silently become a constant offset on a continuous action.
-        if env_component.threshold.is_some() && !binarize {
+        // threshold is a binary decision boundary on either side; without a binary
+        // snap it would silently become a constant offset on a continuous action.
+        if (env_component.threshold.is_some() || model_component.threshold.is_some()) && !binarize {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
@@ -224,8 +218,13 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             } else {
                 env_component.range
             },
-            // The env owns its actuator convention, so its corrections drive the
-            // segment; a model that ships against many envs declares none.
+            // Corrections compose as literal transforms after the format bridge:
+            // model-side first (bridge the model's output convention toward the
+            // env), then env-side. A model that emits the env's convention leaves
+            // its side unset; a shared env declares its quirk once on its side.
+            model_scale: model_component.scale,
+            model_invert: model_component.invert,
+            model_threshold: model_component.threshold,
             scale: env_component.scale,
             invert: env_component.invert,
             threshold: env_component.threshold,
@@ -308,14 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_corrections_declared_on_the_model_component() {
+    fn model_side_corrections_resolve_onto_the_segment() {
+        // A model declares its own output convention (e.g. a gripper polarity
+        // flip): it resolves onto the segment's model-side fields rather than
+        // being rejected, so no imperative bridge is needed in predict().
         let mut model_gripper = component("action/gripper");
         model_gripper.scale = Some(2.0);
+        model_gripper.invert = true;
         let model = layout(vec![model_gripper]);
         let env = layout(vec![component("action/gripper")]);
-        let error = plan_action(&model, &env).unwrap_err();
-        assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("belong on the env component"));
+        let plan = plan_action(&model, &env).unwrap();
+        assert_eq!(plan.segments[0].model_scale, Some(2.0));
+        assert!(plan.segments[0].model_invert);
+        // The env declared no corrections, so its side stays unset.
+        assert_eq!(plan.segments[0].scale, None);
+        assert!(!plan.segments[0].invert);
     }
 
     #[test]
@@ -346,13 +352,18 @@ mod tests {
 
     #[test]
     fn rejects_clip_declared_on_the_model_component() {
+        // clip stays env-side only (it clamps to the env actuator's range).
         let mut model_x = component("action/x");
         model_x.clip = true;
         let model = layout(vec![model_x]);
         let env = layout(vec![component("action/x")]);
         let error = plan_action(&model, &env).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
-        assert!(error.message.contains("belong on the env component"));
+        assert!(
+            error.message.contains("env-side clamp"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]
