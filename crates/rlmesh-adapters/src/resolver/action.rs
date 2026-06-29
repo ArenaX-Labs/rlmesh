@@ -152,6 +152,32 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             ));
         }
         let Some(&(start, model_component)) = offsets.get(role) else {
+            // An optional roled actuator the model does not output falls back to
+            // its constant `fill` -- the action-side mirror of a model input's
+            // `optional` zero-fill, reusing the opaque branch's fill segment. The
+            // role is kept on the segment so `describe` can flag the fabrication;
+            // apply ignores it once `fill` is set.
+            if env_component.optional {
+                segments.push(ActionSegment {
+                    role: Some(role.clone()),
+                    start: 0,
+                    stop: 0,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    model_scale: None,
+                    model_invert: false,
+                    model_threshold: None,
+                    scale: None,
+                    invert: false,
+                    threshold: None,
+                    binarize: false,
+                    clip: None,
+                    fill: Some((env_component.dim, env_component.fill)),
+                });
+                continue;
+            }
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
@@ -258,6 +284,7 @@ mod tests {
             threshold: None,
             clip: false,
             fill: 0.0,
+            optional: false,
             unknown: Default::default(),
         }
     }
@@ -274,6 +301,7 @@ mod tests {
             threshold: None,
             clip: false,
             fill,
+            optional: false,
             unknown: Default::default(),
         }
     }
@@ -395,5 +423,49 @@ mod tests {
         assert!(plan.segments[0].role.is_some());
         assert_eq!(plan.segments[1].role, None);
         assert_eq!(plan.segments[1].fill, Some((2, 0.25)));
+    }
+
+    #[test]
+    fn optional_roled_actuator_with_no_model_output_resolves_to_a_fill_segment() {
+        // An optional role the model omits falls back to its fill instead of a
+        // MissingRole error -- the action-side mirror of an optional model input.
+        // The role is kept on the segment (for `describe`); apply ignores it.
+        let model = layout(vec![component("action/gripper")]);
+        let mut base = component("x/base_motion");
+        base.dim = 4;
+        base.optional = true;
+        base.fill = 0.0;
+        let env = layout(vec![component("action/gripper"), base]);
+        let plan = plan_action(&model, &env).unwrap();
+        assert_eq!(plan.in_dim, 1); // the model still only outputs the gripper dim
+        assert_eq!(plan.segments.len(), 2);
+        assert_eq!(plan.segments[1].role.as_deref(), Some("x/base_motion"));
+        assert_eq!(plan.segments[1].fill, Some((4, 0.0)));
+    }
+
+    #[test]
+    fn optional_role_the_model_does_output_is_driven_normally() {
+        // optional only changes the missing case: a model that outputs the role
+        // maps it like any other actuator (no fill).
+        let model = layout(vec![component("action/gripper")]);
+        let mut env_gripper = component("action/gripper");
+        env_gripper.optional = true;
+        let env = layout(vec![env_gripper]);
+        let plan = plan_action(&model, &env).unwrap();
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(plan.segments[0].fill, None);
+        assert_eq!(plan.in_dim, 1);
+    }
+
+    #[test]
+    fn non_optional_unmatched_role_still_errors() {
+        let model = layout(vec![component("action/gripper")]);
+        let env = layout(vec![
+            component("action/gripper"),
+            component("x/base_motion"),
+        ]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::MissingRole);
+        assert!(error.message.contains("env action needs role"));
     }
 }

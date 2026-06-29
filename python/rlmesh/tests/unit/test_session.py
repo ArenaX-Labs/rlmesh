@@ -7,10 +7,11 @@ full adapter/remote loop is exercised in the integration suite.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import rlmesh
+from rlmesh._models._view import ViewerDriver
 
 
 class _TinyEnv:
@@ -56,6 +57,57 @@ def test_session_manual_drive() -> None:
 def test_session_run_matches_top_level_run() -> None:
     result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(seeds=[0])
     assert result.num_episodes == 1
+
+
+class _ForeverEnv:
+    """A local env that never terminates on its own (only a cap/skip can end it)."""
+
+    def reset(
+        self, *, seed: object = None, options: object = None
+    ) -> tuple[int, dict[str, object]]:
+        return 0, {}
+
+    def step(self, action: object) -> tuple[int, float, bool, bool, dict[str, object]]:
+        return 0, 0.0, False, False, {}
+
+    def close(self) -> None:
+        pass
+
+
+class _SkipDriver:
+    """A stand-in ViewerDriver that asks to end each episode after its first step."""
+
+    def __init__(self) -> None:
+        self._steps = 0
+
+    def feed(self, *, steps: int, **_: Any) -> None:
+        self._steps = steps
+
+    def consume_skip(self) -> bool:
+        return self._steps >= 1
+
+    def close(self) -> None:
+        pass
+
+
+def test_viewer_skip_truncates_episode_without_failing() -> None:
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), _ForeverEnv())
+    sess._view_driver = cast(ViewerDriver, _SkipDriver())
+    obs, _info = sess.reset(seed=0)
+    _obs, _reward, terminated, truncated, _info = sess.step(sess.predict(obs))
+    assert truncated is True
+    assert terminated is False
+    assert sess.done is True
+    sess.close()
+
+
+def test_viewer_skip_advances_run_through_all_seeds() -> None:
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), _ForeverEnv())
+    sess._view_driver = cast(ViewerDriver, _SkipDriver())
+    result = sess.run(seeds=[0, 1, 2])
+    assert result.num_episodes == 3
+    assert all(e.truncated and not e.terminated for e in result.episodes)
+    assert all(e.steps == 1 for e in result.episodes)
 
 
 def test_session_is_a_context_manager() -> None:

@@ -86,6 +86,13 @@ impl Viewer {
         self.shared.quit.load(Ordering::Relaxed)
     }
 
+    /// Take (and clear) a pending "end this episode early" request from the `n` key or
+    /// the `/skip` route. Consume-once: returns true at most once per keypress so a
+    /// single press skips a single episode, not every step until the next frame.
+    pub fn take_skip(&self) -> bool {
+        self.shared.skip.swap(false, Ordering::Relaxed)
+    }
+
     /// Declare the selectable sources and the initially-selected index.
     pub fn set_sources(&self, sources: Vec<String>, default: usize) {
         let clamped = default.min(sources.len().saturating_sub(1));
@@ -144,16 +151,13 @@ impl Viewer {
         }
     }
 
-    /// Update the HUD (step / cumulative reward / outcome label). The outcome is
-    /// computed by the caller from the env-reported task result, not inferred from
-    /// `terminated` here (a terminal state is not necessarily a success).
-    pub fn feed_hud(&self, step: i64, reward: f64, outcome: &str) {
-        *http::lock(&self.shared.hud) = Hud {
-            step,
-            reward,
-            outcome: outcome.to_string(),
-            fps: *http::lock(&self.fps),
-        };
+    /// Update the HUD with a caller-built [`Hud`]; the viewer fills in its own draw
+    /// `fps` (the one field it measures, not the caller). The outcome and timings are
+    /// computed by the caller — the outcome from the env-reported task result, not
+    /// inferred from `terminated` here (a terminal state is not necessarily a success).
+    pub fn feed_hud(&self, mut hud: Hud) {
+        hud.fps = *http::lock(&self.fps);
+        *http::lock(&self.shared.hud) = hud;
     }
 }
 

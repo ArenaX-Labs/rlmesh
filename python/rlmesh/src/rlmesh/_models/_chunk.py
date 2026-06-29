@@ -59,6 +59,15 @@ class ChunkReplay:
         """Drop any un-replayed actions at an episode boundary."""
         self._queue.clear()
 
+    @property
+    def pending(self) -> int:
+        """Actions still queued for replay before the model re-plans.
+
+        ``0`` on a step that re-planned (the model just ran); the debug viewer uses
+        this to show the action-chunk replay position without reaching into internals.
+        """
+        return len(self._queue)
+
     def next_action(self, predict: Callable[[], Any]) -> Any:
         """Return the next raw model action.
 

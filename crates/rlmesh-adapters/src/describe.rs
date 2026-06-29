@@ -78,7 +78,16 @@ pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
 /// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
     if let Some((width, value)) = segment.fill {
-        return format!("(opaque {width}d) <- fill {value}");
+        // A roled fill segment is an *optional* role the model did not output:
+        // surface it as a fabrication (like a zero-filled camera) rather than a
+        // plain opaque dim. A role-less fill is the opaque control-dim case.
+        return match &segment.role {
+            Some(role) => format!(
+                "{} <- fill {value} ({width}d; model did not output this optional role)",
+                quoted(role)
+            ),
+            None => format!("(opaque {width}d) <- fill {value}"),
+        };
     }
     let role = segment.role.as_deref().unwrap_or("?");
     let mut note = format!(

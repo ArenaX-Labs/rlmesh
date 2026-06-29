@@ -101,6 +101,10 @@ class ViewerDriver:
         self._render_label = _RENDER
         self._render_call: Callable[[], object] | None = None
         self._disabled = False
+        #: Last drawn frame size, cached so the HUD can show the source resolution on
+        #: throttled steps that fetch no new frame. 0 until the first frame is drawn.
+        self._frame_w = 0
+        self._frame_h = 0
 
     def _ensure(self, contract: Any, client: Any) -> None:
         if self._pv is not None or self._disabled:
@@ -170,6 +174,15 @@ class ViewerDriver:
         steps: int,
         reward: float,
         outcome: str,
+        model_ms: float = 0.0,
+        env_ms: float = 0.0,
+        sps: float = 0.0,
+        elapsed_s: float = 0.0,
+        episode: int = 0,
+        episodes: int = 0,
+        seed: int | None = None,
+        chunk_pos: int = 0,
+        chunk_len: int = 0,
     ) -> None:
         self._ensure(contract, client)
         if self._pv is None:
@@ -181,8 +194,24 @@ class ViewerDriver:
                     converted = _to_hwc_u8(frame)
                     if converted is not None:
                         data, height, width, channels = converted
+                        self._frame_w, self._frame_h = width, height
                         self._pv.feed_frame(data, width, height, channels)
-            self._pv.feed_hud(steps, reward, outcome)
+            self._pv.feed_hud(
+                steps,
+                reward,
+                outcome,
+                model_ms=model_ms,
+                env_ms=env_ms,
+                sps=sps,
+                elapsed_s=elapsed_s,
+                episode=episode,
+                episodes=episodes,
+                seed=seed if seed is not None else -1,
+                width=self._frame_w,
+                height=self._frame_h,
+                chunk_pos=chunk_pos,
+                chunk_len=chunk_len,
+            )
         except Exception:
             pass
         if self._pv.should_quit():
@@ -203,6 +232,19 @@ class ViewerDriver:
                 return None
         item = self._items.get(selected)
         return read(obs, item) if item is not None else None
+
+    def consume_skip(self) -> bool:
+        """Whether the viewer asked to end the current episode early (one-shot).
+
+        Best-effort like the rest of the driver: any failure (or no viewer) reads as
+        "no skip" and never disturbs the eval.
+        """
+        if self._pv is None:
+            return False
+        try:
+            return bool(self._pv.take_skip())
+        except Exception:
+            return False
 
     def close(self) -> None:
         self._disabled = True

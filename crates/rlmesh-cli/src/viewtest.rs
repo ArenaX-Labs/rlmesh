@@ -11,7 +11,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::Result;
-use rlmesh_viewer::{Backend, FrameFormat, Viewer};
+use rlmesh_viewer::{Backend, FrameFormat, Hud, Viewer};
 
 use crate::cli::ViewtestArgs;
 
@@ -122,7 +122,26 @@ pub fn run(args: &ViewtestArgs, stderr: &mut impl Write) -> Result<i32> {
             viewer.feed_frame(&buf, W, H, 3);
         }
         reward += 0.1 * (f64::from(t) * 0.1).sin();
-        viewer.feed_hud(i64::from(t), reward, "running");
+        // Synthetic-but-plausible metrics so the HUD's every field is exercised: a
+        // ~70ms "model", a ~15ms "env", a horizon-8 chunk cycling 1..=8, and a clock.
+        let tf = f64::from(t);
+        viewer.feed_hud(Hud {
+            step: i64::from(t),
+            reward,
+            outcome: "running".to_string(),
+            model_ms: 60.0 + 25.0 * (tf * 0.10).sin().abs(),
+            env_ms: 12.0 + 6.0 * (tf * 0.07).cos().abs(),
+            sps: f64::from(args.fps.max(1)),
+            elapsed_s: tf / f64::from(args.fps.max(1)),
+            episode: 1,
+            episodes: 1,
+            seed: 0,
+            width: W,
+            height: H,
+            chunk_pos: i64::from(t % 8) + 1,
+            chunk_len: 8,
+            ..Default::default()
+        });
 
         if viewer.should_quit() {
             break;

@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_viewer::{Backend, FrameFormat, Viewer};
+use rlmesh_viewer::{Backend, FrameFormat, Hud, Viewer};
 
 /// Native debug viewer, built by the Python `Session` when `view=` is set and fed
 /// one decoded HWC uint8 frame (the selected camera) per step.
@@ -67,10 +67,52 @@ impl PyViewer {
         }
     }
 
-    /// Update the HUD (step / cumulative reward / outcome label computed by the caller).
-    fn feed_hud(&self, step: i64, reward: f64, outcome: &str) {
+    /// Update the HUD: step / cumulative reward / outcome (all computed by the caller)
+    /// plus the optional debug metrics the Session measures — model & env step timing,
+    /// eval throughput, episode elapsed, episode index/seed, action-chunk replay
+    /// position, and the selected source's frame size. The viewer fills in its own draw
+    /// fps; every metric defaults to a "not applicable" sentinel so old callers still work.
+    #[pyo3(signature = (
+        step, reward, outcome, *,
+        model_ms=0.0, env_ms=0.0, sps=0.0, elapsed_s=0.0,
+        episode=0, episodes=0, seed=-1, width=0, height=0, chunk_pos=0, chunk_len=0
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn feed_hud(
+        &self,
+        step: i64,
+        reward: f64,
+        outcome: &str,
+        model_ms: f64,
+        env_ms: f64,
+        sps: f64,
+        elapsed_s: f64,
+        episode: i64,
+        episodes: i64,
+        seed: i64,
+        width: u32,
+        height: u32,
+        chunk_pos: i64,
+        chunk_len: i64,
+    ) {
         if let Some(viewer) = self.lock().as_ref() {
-            viewer.feed_hud(step, reward, outcome);
+            viewer.feed_hud(Hud {
+                step,
+                reward,
+                outcome: outcome.to_string(),
+                model_ms,
+                env_ms,
+                sps,
+                elapsed_s,
+                episode,
+                episodes,
+                seed,
+                width,
+                height,
+                chunk_pos,
+                chunk_len,
+                ..Default::default()
+            });
         }
     }
 
@@ -78,6 +120,13 @@ impl PyViewer {
     /// polls this each step and stops, since raw mode swallows the real SIGINT.
     fn should_quit(&self) -> bool {
         self.lock().as_ref().is_some_and(Viewer::should_quit)
+    }
+
+    /// Take (and clear) a pending "end this episode early" request (the `n` key or the
+    /// `/skip` route). The eval polls this each step and truncates the episode -- a
+    /// soft, non-failure advance, distinct from `should_quit` stopping the whole run.
+    fn take_skip(&self) -> bool {
+        self.lock().as_ref().is_some_and(Viewer::take_skip)
     }
 
     /// Setup warnings (a backend that failed to come up), surfaced once by Python.

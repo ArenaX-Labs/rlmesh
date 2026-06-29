@@ -325,14 +325,24 @@ class PyViewer:
         r"""
         Feed one contiguous HWC uint8 frame for the selected source.
         """
-    def feed_hud(self, step: builtins.int, reward: builtins.float, outcome: builtins.str) -> None:
+    def feed_hud(self, step: builtins.int, reward: builtins.float, outcome: builtins.str, *, model_ms: builtins.float = ..., env_ms: builtins.float = ..., sps: builtins.float = ..., elapsed_s: builtins.float = ..., episode: builtins.int = ..., episodes: builtins.int = ..., seed: builtins.int = ..., width: builtins.int = ..., height: builtins.int = ..., chunk_pos: builtins.int = ..., chunk_len: builtins.int = ...) -> None:
         r"""
-        Update the HUD (step / cumulative reward / outcome label computed by the caller).
+        Update the HUD: step / cumulative reward / outcome (all computed by the caller)
+        plus the optional debug metrics the Session measures — model & env step timing,
+        eval throughput, episode elapsed, episode index/seed, action-chunk replay
+        position, and the selected source's frame size. The viewer fills in its own draw
+        fps; every metric defaults to a "not applicable" sentinel so old callers still work.
         """
     def should_quit(self) -> builtins.bool:
         r"""
         Whether the user asked to quit via the terminal (q / Esc / Ctrl-C). The eval
         polls this each step and stops, since raw mode swallows the real SIGINT.
+        """
+    def take_skip(self) -> builtins.bool:
+        r"""
+        Take (and clear) a pending "end this episode early" request (the `n` key or the
+        `/skip` route). The eval polls this each step and truncates the episode -- a
+        soft, non-failure advance, distinct from `should_quit` stopping the whole run.
         """
     def warnings(self) -> builtins.list[builtins.str]:
         r"""

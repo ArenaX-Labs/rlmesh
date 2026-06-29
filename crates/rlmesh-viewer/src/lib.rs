@@ -15,4 +15,5 @@ mod terminal;
 mod viewer;
 
 pub use frame::FrameFormat;
+pub use http::Hud;
 pub use viewer::{Backend, Viewer};

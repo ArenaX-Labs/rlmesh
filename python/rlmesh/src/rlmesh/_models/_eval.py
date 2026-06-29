@@ -13,6 +13,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -51,6 +52,15 @@ _MAX_STEPS_PER_EPISODE = 100_000
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
+
+
+def _ema(prev: float, sample: float) -> float:
+    """Smooth a per-step timing sample, matching the viewer's fps smoothing (0.85/0.15).
+
+    Seeds on the first real sample (``prev <= 0``) so the displayed value isn't dragged
+    up from a cold zero.
+    """
+    return sample if prev <= 0.0 else 0.85 * prev + 0.15 * sample
 
 
 def _episode_success(info: Mapping[str, Any]) -> bool | None:
@@ -244,6 +254,21 @@ class Session(Generic[ObsT, ActT]):
         self._steps = 0
         self._reward = 0.0
         self._last_info: Mapping[str, Any] = {}
+        #: Debug-viewer telemetry (smoothed), fed to the HUD each step. ``model_ms``
+        #: tracks the forward cost only when the model actually runs (so chunk-replay
+        #: steps don't read as 0ms); ``env_ms`` the simulator ``step``; ``sps`` the
+        #: realized throughput. Episode index/total/seed are set by ``run``; chunk
+        #: pos/len mirror the local replay queue. All inert when no viewer is attached.
+        self._model_ms = 0.0
+        self._env_ms = 0.0
+        self._sps = 0.0
+        self._ep_start: float | None = None
+        self._last_step_t: float | None = None
+        self._ep_index = 0
+        self._ep_total = 0
+        self._seed: int | None = None
+        self._chunk_pos = 0
+        self._chunk_len = 0
         #: Whether an episode has been reset and not yet ended. The local episode
         #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
         #: begins or the session closes -- see `_end_episode`.
@@ -299,6 +324,11 @@ class Session(Generic[ObsT, ActT]):
     def _feed_view(self, obs: object) -> None:
         """Push the current obs + HUD to the debug viewer, if one is attached."""
         if self._view_driver is not None:
+            elapsed = (
+                time.perf_counter() - self._ep_start
+                if self._ep_start is not None
+                else 0.0
+            )
             self._view_driver.feed(
                 contract=self._contract,
                 client=self._client,
@@ -307,6 +337,15 @@ class Session(Generic[ObsT, ActT]):
                 steps=self._steps,
                 reward=self._reward,
                 outcome=self._view_outcome(),
+                model_ms=self._model_ms,
+                env_ms=self._env_ms,
+                sps=self._sps,
+                elapsed_s=elapsed,
+                episode=self._ep_index,
+                episodes=self._ep_total,
+                seed=self._seed,
+                chunk_pos=self._chunk_pos,
+                chunk_len=self._chunk_len,
             )
 
     def _view_outcome(self) -> str:
@@ -364,6 +403,11 @@ class Session(Generic[ObsT, ActT]):
         self._reward = 0.0
         self._last_info = info
         self._episode_open = True
+        # Viewer telemetry: start the episode clock, drop the inter-step timer (so the
+        # first step's sps isn't computed off the reset gap), and record the seed.
+        self._ep_start = time.perf_counter()
+        self._last_step_t = None
+        self._seed = seed
         self._feed_view(obs)
         return cast("ObsT", obs), info
 
@@ -371,12 +415,18 @@ class Session(Generic[ObsT, ActT]):
         """Map one env observation to an env-ready action (the model's adapter applied)."""
         self._ensure_connected()
         if self._predict is RANDOM_SAMPLE:
-            return cast("ActT", self._client.action_space.sample())
+            t0 = time.perf_counter()
+            action = self._client.action_space.sample()
+            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
+            return cast("ActT", action)
         if self._model_client is not None:
             # Served model: the server applies the adapter (and any chunk replay);
-            # we only bridge the obs out and the env-ready action back.
+            # we only bridge the obs out and the env-ready action back. The timed span
+            # is the whole served round-trip -- the meaningful "model" cost host-side.
             bridge = self._bridge if self._bridge is not None else identity_bridge
+            t0 = time.perf_counter()
             action = self._model_client.predict(bridge.encode(observation))
+            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
             return cast("ActT", bridge.decode(action))
         model_bridge = self._bridge if self._bridge is not None else self._env_bridge
         # Local mode always has a predict (only the served-model branch above lacks
@@ -395,8 +445,13 @@ class Session(Generic[ObsT, ActT]):
             replay_fn = cast("Callable[[Any], Any]", _replay)
         else:
             replay_fn = cast("Callable[[Any], Any]", self._predict)
-        raw_action = self._replay.next_action(
-            lambda: _predict_step(
+
+        # Time the forward inside the replay thunk so model_ms records only on steps
+        # that re-plan (the thunk is skipped while a chunk replays), keeping it a true
+        # forward cost rather than a near-zero queue pop.
+        def _forward() -> Any:
+            t0 = time.perf_counter()
+            out = _predict_step(
                 replay_fn,
                 observation,
                 self._adapter,
@@ -406,7 +461,16 @@ class Session(Generic[ObsT, ActT]):
                 model_bridge,
                 self._device,
             )
-        )
+            self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
+            return out
+
+        raw_action = self._replay.next_action(_forward)
+        # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not chunking).
+        if self._horizon > 1:
+            self._chunk_len = self._horizon
+            self._chunk_pos = self._horizon - self._replay.pending
+        else:
+            self._chunk_len = self._chunk_pos = 0
         if self._adapter is not None:
             return cast(
                 "ActT",
@@ -422,13 +486,32 @@ class Session(Generic[ObsT, ActT]):
     def step(self, action: ActT) -> tuple[ObsT, float, bool, bool, Mapping[str, Any]]:
         """Apply one action to the env; record reward and termination."""
         self._ensure_connected()
+        t0 = time.perf_counter()
         obs, reward, terminated, truncated, info = self._client.step(action)
+        now = time.perf_counter()
+        # env_ms = the simulator step alone; sps = realized throughput from the gap
+        # between consecutive steps (model + env + overhead), skipping the first step
+        # of an episode (no prior timestamp).
+        self._env_ms = _ema(self._env_ms, (now - t0) * 1000.0)
+        if self._last_step_t is not None:
+            dt = now - self._last_step_t
+            if dt > 0.0:
+                self._sps = _ema(self._sps, 1.0 / dt)
+        self._last_step_t = now
         self._reward += float(reward)
         self._steps += 1
         self._terminated = bool(terminated)
         self._truncated = bool(truncated)
         self._last_info = info
         self._feed_view(obs)
+        # Viewer "skip episode" (the `n` key / `/skip` button): a soft, non-failure end
+        # -- like a time-limit truncation -- that advances to the next episode, distinct
+        # from quit (which stops the whole run via KeyboardInterrupt). Forcing the
+        # returned `truncated` true ends the episode in any loop that reads this tuple
+        # (the catalog's record.run) as well as ones reading `self.done` (Session.run).
+        if self._view_driver is not None and self._view_driver.consume_skip():
+            truncated = True
+            self._truncated = True
         return (
             cast("ObsT", obs),
             float(reward),
@@ -502,8 +585,10 @@ class Session(Generic[ObsT, ActT]):
             n_episodes = 1
         episodes: list[EpisodeResult] = []
         on_close_error: BaseException | None = None
+        self._ep_total = n_episodes
         try:
             for i in range(n_episodes):
+                self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
                 obs, last_info = self.reset(seed=seed)
                 while not self.done and self._steps < _MAX_STEPS_PER_EPISODE:

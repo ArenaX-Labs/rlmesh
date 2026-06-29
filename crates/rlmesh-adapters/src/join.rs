@@ -667,6 +667,7 @@ mod tests {
             binary: false,
             clip: false,
             fill: 0.0,
+            optional: false,
             unknown: Default::default(),
         }
     }

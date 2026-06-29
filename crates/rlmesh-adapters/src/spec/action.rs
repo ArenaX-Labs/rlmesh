@@ -59,6 +59,15 @@ pub struct Actuator {
     /// (must stay 0.0; `reject` enforces this). Omitted when 0.0.
     #[serde(default, skip_serializing_if = "is_default_fill")]
     pub fill: f64,
+    /// On a *roled* actuator: the role is optional. If no model output declares
+    /// it, the resolver fills the actuator's `dim` dims with `fill` instead of
+    /// failing resolution -- the action-side mirror of a model input's `optional`
+    /// zero-fill. A model that *does* output the role drives it normally. This is
+    /// what lets `fill` be non-zero on a roled actuator (the fallback constant).
+    /// Meaningless on a role-less actuator (already always filled); `reject`
+    /// enforces that. Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -111,10 +120,15 @@ impl TryFrom<ActionWire> for Action {
                             "an action layout declares role {role:?} more than once"
                         ));
                     }
-                    if component.fill != 0.0 {
+                    // fill is the opaque constant; a roled actuator normally takes
+                    // its values from the model. The exception is an `optional`
+                    // role: a model that omits it falls back to `fill`, so a
+                    // non-zero fill is meaningful there.
+                    if component.fill != 0.0 && !component.optional {
                         return Err(format!(
                             "actuator {role:?}: fill applies only to a role-less (opaque) \
-                             actuator; a roled actuator takes its values from the model"
+                             or optional actuator; a roled, non-optional actuator takes \
+                             its values from the model"
                         ));
                     }
                 }
@@ -129,9 +143,11 @@ impl TryFrom<ActionWire> for Action {
                         || component.threshold.is_some()
                         || component.binary
                         || component.clip
+                        || component.optional
                     {
                         return Err("a role-less (opaque) actuator carries only dim and \
-                             fill; drop encoding/range/scale/invert/threshold/binary/clip"
+                             fill; drop encoding/range/scale/invert/threshold/binary/clip/\
+                             optional (an opaque actuator is already always filled)"
                             .to_owned());
                     }
                 }
@@ -247,6 +263,29 @@ mod opaque_actuator_contract {
         )
         .unwrap_err();
         assert!(err.to_string().contains("fill applies only"), "{err}");
+    }
+
+    #[test]
+    fn fill_on_an_optional_roled_actuator_is_accepted() {
+        // An `optional` role is the exception to the roled-fill rule: a model that
+        // omits the role falls back to `fill`, so a non-zero fill is meaningful.
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "g", "dim": 1, "optional": true, "fill": 0.5}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ok.components[0].role.as_deref(), Some("g"));
+        assert!(ok.components[0].optional);
+        assert_eq!(ok.components[0].fill, 0.5);
+    }
+
+    #[test]
+    fn optional_on_a_role_less_actuator_is_rejected() {
+        // A role-less actuator is already always filled, so `optional` is
+        // meaningless there and rejected (mirrors the other opaque-only guards).
+        let err =
+            serde_json::from_str::<Action>(r#"{"components": [{"dim": 1, "optional": true}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("role-less"), "{err}");
     }
 
     #[test]

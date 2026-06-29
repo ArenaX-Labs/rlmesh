@@ -53,6 +53,8 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
         out["clip"] = True
     if component.fill != 0.0:
         out["fill"] = component.fill
+    if component.optional:
+        out["optional"] = True
     return out
 
 

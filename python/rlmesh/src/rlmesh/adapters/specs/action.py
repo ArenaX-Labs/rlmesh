@@ -20,8 +20,15 @@ class Actuator:
             it for dims the env requires but no model produces (e.g. a control-mode
             selector). An opaque actuator carries only ``dim`` and ``fill``.
         dim: Number of action dimensions occupied by this component.
-        fill: Constant emitted for each dim of an opaque (role-less) actuator.
-            Defaults to ``0.0``; inert (must stay ``0.0``) on a roled actuator.
+        fill: Constant emitted for each dim of an opaque (role-less) actuator,
+            and the fallback for an ``optional`` roled actuator. Defaults to
+            ``0.0``; inert (must stay ``0.0``) on a roled, non-optional actuator.
+        optional: On a roled actuator, make the role optional -- if no model
+            output declares it, fill the actuator's ``dim`` dims with ``fill``
+            instead of failing resolution (the action-side mirror of a model
+            input's ``optional`` zero-fill). A model that does output the role
+            drives it normally. Meaningless on a role-less actuator (already
+            always filled).
         encoding: Rotation encoding when the component is a rotation.
         range: Optional ``(low, high)`` range of the component values.
         scale: Optional multiplier applied to the model value for this role.
@@ -62,6 +69,7 @@ class Actuator:
     threshold: float | None = None
     clip: bool = False
     fill: float = 0.0
+    optional: bool = False
 
     def __post_init__(self) -> None:
         if self.dim == 0:
@@ -75,16 +83,18 @@ class Actuator:
                 or self.invert
                 or self.threshold is not None
                 or self.clip
+                or self.optional
             ):
                 raise ValueError(
                     "a role-less (opaque) Actuator carries only dim and fill; drop "
-                    "encoding/range/scale/invert/threshold/binary/clip"
+                    "encoding/range/scale/invert/threshold/binary/clip/optional"
                 )
             return
-        if self.fill != 0.0:
+        if self.fill != 0.0 and not self.optional:
             raise ValueError(
                 f"Actuator {self.role!r}: fill applies only to a role-less (opaque) "
-                "actuator; a roled actuator takes its values from the model"
+                "or optional actuator; a roled, non-optional actuator takes its "
+                "values from the model"
             )
         if self.clip and self.range is None:
             raise ValueError(
