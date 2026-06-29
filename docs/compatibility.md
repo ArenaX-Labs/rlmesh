@@ -89,7 +89,7 @@ Today, peers must run the same release. Forward-compatibility guarantees become 
 
 ## Value conformance
 
-The `2026.06` edition defines how observation and action values are checked against their declared spaces (full contract: {doc}`editions/index`). Two points matter in practice:
+The `2026.06` edition defines how observation and action values are checked against their declared spaces (full contract: {doc}`editions/2026.06`). Two points matter in practice:
 
 - **Out-of-bounds values warn; they do not fail.** A `Box` value outside its bounds, or a `Text` value outside its charset or length, is delivered and reported once in the `reset`/`step` info map under the `rlmesh.conformance.warning` key. This keeps the many Gymnasium environments whose values drift past their declared bounds usable out of the box. Set `RLMESH_VALIDATION_POLICY=strict` to reject such values instead, or `off` to skip the checks. Structural problems (wrong shape, dtype, arity, or domain, a missing key) and `NaN` are always rejected, regardless of the policy.
 - **Dtypes are coerced, not passed through.** A value is always converted to its declared dtype before transport, so a peer reading the negotiated space never sees a per-message dtype. This is a deliberate difference from Gymnasium, which warns but forwards the mismatched dtype (see {doc}`gymnasium`). A float supplied for an integer dtype is rejected unless every element is exactly integral.
