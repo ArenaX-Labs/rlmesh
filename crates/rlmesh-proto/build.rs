@@ -15,8 +15,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let git_dir = repo_root.join(".git");
     if git_dir.exists() {
         println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-        println!("cargo:rerun-if-changed={}", git_dir.join("index").display());
-        emit_git_rerun_paths(repo_root);
     }
 
     let base = workflow_edition_base(repo_root);
@@ -179,27 +177,6 @@ fn dirty_fingerprint(repo_root: &Path) -> u64 {
         hash.write(&output.stdout);
     }
     hash.finish()
-}
-
-fn emit_git_rerun_paths(repo_root: &Path) {
-    let Ok(output) = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo_root)
-        .output()
-    else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        if let Ok(rel) = std::str::from_utf8(raw) {
-            println!("cargo:rerun-if-changed={}", repo_root.join(rel).display());
-        }
-    }
 }
 
 struct Fnv1a64(u64);

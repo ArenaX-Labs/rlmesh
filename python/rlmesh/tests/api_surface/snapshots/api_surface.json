@@ -1,6 +1,8 @@
 {
   "rlmesh": {
     "exports": [
+      "DESCRIBE_METADATA_KEY",
+      "DESCRIBE_SCHEMA_VERSION",
       "NO_ADAPTER",
       "RANDOM_SAMPLE",
       "EnvFactory",
@@ -24,18 +26,34 @@
       "Vector",
       "__version__",
       "adapters",
+      "describe",
+      "describe_json",
       "run",
       "session",
       "spaces",
       "types"
     ],
     "objects": {
+      "DESCRIBE_METADATA_KEY": {
+        "kind": "type alias",
+        "signature": "DESCRIBE_METADATA_KEY = str",
+        "stability": "Stable"
+      },
+      "DESCRIBE_SCHEMA_VERSION": {
+        "kind": "type alias",
+        "signature": "DESCRIBE_SCHEMA_VERSION = int",
+        "stability": "Stable"
+      },
       "EnvFactory": {
         "kind": "class",
         "members": {
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
           },
           "make": {
             "kind": "function",
@@ -136,6 +154,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
           },
           "device": {
             "kind": "attribute",
@@ -829,6 +851,15 @@
         "kind": "module",
         "stability": "Stable"
       },
+      "describe": {
+        "kind": "module",
+        "stability": "Stable"
+      },
+      "describe_json": {
+        "kind": "function",
+        "signature": "describe_json(obj: object, *, kind: str | None = None, generated_at: str | None = None) -> str",
+        "stability": "Stable"
+      },
       "run": {
         "kind": "function",
         "signature": "run(model: object, env: object, *, seeds: Sequence[int] | None = None, max_episodes: int | None = None, instruction: str | None = None, close_env: bool = False, token: str = '', trust_entrypoints: bool | None = None, execution_horizon: int = 1)",
@@ -875,6 +906,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
+          },
           "make": {
             "kind": "function",
             "signature": "make(**kwargs: Any) -> EnvLike[Any, Any]"
@@ -909,6 +944,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
           },
           "device": {
             "kind": "attribute",
@@ -1426,6 +1465,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
+          },
           "make": {
             "kind": "function",
             "signature": "make(**kwargs: Any) -> EnvLike[Any, Any]"
@@ -1455,6 +1498,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
           },
           "device": {
             "kind": "attribute",
@@ -2387,7 +2434,10 @@
     }
   },
   "rlmesh.specs": {
-    "exports": ["EnvContract", "SpaceSpec"],
+    "exports": [
+      "EnvContract",
+      "SpaceSpec"
+    ],
     "objects": {
       "EnvContract": {
         "kind": "class",
@@ -2485,6 +2535,10 @@
             "kind": "function",
             "signature": "close() -> None"
           },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
+          },
           "make": {
             "kind": "function",
             "signature": "make(**kwargs: Any) -> EnvLike[Any, Any]"
@@ -2514,6 +2568,10 @@
           "close": {
             "kind": "function",
             "signature": "close() -> None"
+          },
+          "describe": {
+            "kind": "function",
+            "signature": "describe() -> dict[str, Any]"
           },
           "device": {
             "kind": "attribute",

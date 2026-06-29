@@ -160,6 +160,12 @@
     "rlmesh.Tensor": {
       "description": "Native tensor value used by RLMesh value encoding."
     },
+    "rlmesh.DESCRIBE_METADATA_KEY": {
+      "description": "Metadata/OCI-label key under which the versioned describe envelope is stored (rlmesh.describe.v1)."
+    },
+    "rlmesh.DESCRIBE_SCHEMA_VERSION": {
+      "description": "Schema version stamped into the envelope emitted by describe/describe_json."
+    },
     "rlmesh.__version__": {
       "description": "Installed RLMesh package version."
     },

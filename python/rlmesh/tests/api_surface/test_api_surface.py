@@ -5,6 +5,8 @@ def test_root_namespace_is_small() -> None:
     import rlmesh
 
     assert rlmesh.__all__ == [
+        "DESCRIBE_METADATA_KEY",
+        "DESCRIBE_SCHEMA_VERSION",
         "NO_ADAPTER",
         "RANDOM_SAMPLE",
         "EnvFactory",
@@ -28,6 +30,8 @@ def test_root_namespace_is_small() -> None:
         "Vector",
         "__version__",
         "adapters",
+        "describe",
+        "describe_json",
         "run",
         "session",
         "spaces",
