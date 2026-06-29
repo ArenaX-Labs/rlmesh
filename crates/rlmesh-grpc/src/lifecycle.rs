@@ -1,3 +1,12 @@
+//! Server lifecycle: serve options, idle/drain/close timeouts, the shutdown
+//! trigger, and the in-flight activity tracking that drives idle shutdown.
+//!
+//! The env and model servers share this machinery. Each request is bracketed by
+//! an [`IdleActivity::Started`] and an [`ActivityFinishedGuard`] that emits the
+//! matching `Finished` on drop, so the in-flight count returns to zero even when
+//! a handler panics; idle shutdown then fires once the count stays at zero for
+//! `idle_timeout`.
+
 use std::future::Future;
 use std::sync::{
     Arc, Mutex,
@@ -8,11 +17,19 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Transport lifecycle policy shared by the env and model servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOptions {
+    /// Honor a client `shutdown` RPC. When `false`, remote shutdown is rejected
+    /// and the server stops only via its own idle/drain policy.
     pub allow_remote_shutdown: bool,
+    /// Shut down after this much inactivity. `None` never times out.
     pub idle_timeout: Option<Duration>,
+    /// Maximum time to drain in-flight requests on shutdown. `None` waits
+    /// indefinitely.
     pub drain_timeout: Option<Duration>,
+    /// Maximum time the env/handler close hook may take. `None` waits
+    /// indefinitely.
     pub close_timeout: Option<Duration>,
     /// Optional bearer token required on the `authorization` gRPC metadata
     /// header for every request. `None` (the default) disables authentication.

@@ -263,7 +263,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[JaxValue, JaxValue]):
 class Model(ModelBase[JaxValue, JaxValue]):
     """Experimental JAX-backed model: ``predict`` works in JAX values.
 
-    The JAX-typed :class:`~rlmesh.model.ModelBase`; see it for the
+    The JAX-typed :class:`~rlmesh._models.base.ModelBase`; see it for the
     wrap-a-callable / subclass-and-override-``predict`` construction and
     ``run(env, seeds=[...]) -> RunResult`` eval.
     """

@@ -27,11 +27,18 @@ Most development never touches the edition:
 
 An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names such as `2026.06-0.1.0-rc.1`, and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
 
+```{mermaid}
+stateDiagram-v2
+    [*] --> Provisional: prerelease / local cohort
+    Provisional --> Sealed: first stable release seals the bare YYYY.MM name
+    Sealed --> Sealed: spec immutable, valid indefinitely
+```
+
 `2026.06` uses provisional cohorts through the 0.1 beta and release-candidate series and seals at v0.1.0. After sealing it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule.
 
 ## Support Window
 
-Sealing freezes an edition's spec by checksum. The intended support window — every later release keeps offering and accepting a sealed edition, including betas for a later edition, and sealed editions are never pruned — is a forward-compatibility guarantee on the roadmap (see {doc}`../compatibility`); it becomes binding at 1.0, not today. A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides implement and advertise a sealed fallback.
+Sealing freezes an edition's spec by checksum. The support window is a forward-compatibility guarantee on the roadmap (see {doc}`../compatibility`), binding at 1.0, not today: every later release keeps offering and accepting a sealed edition, including betas for a later edition, and sealed editions are never pruned. A provisional cohort, which no stable release has sealed, may change or be dropped and interoperates only with the same cohort unless both sides implement and advertise a sealed fallback.
 
 ## Enforcement
 

@@ -1,3 +1,5 @@
+//! The [`RuntimeHooks`] observer trait and its no-op default.
+
 use async_trait::async_trait;
 use prost::bytes::Bytes;
 
@@ -7,6 +9,7 @@ use super::{
     SessionStartedEvent, StepCompletedEvent, TelemetrySnapshotEvent,
 };
 
+/// Error returned by a [`RuntimeHooks`] callback.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum HookError {
@@ -14,16 +17,24 @@ pub enum HookError {
     Message(String),
 }
 
+/// A [`RuntimeHooks`] that ignores every event — the default when a session
+/// installs no observer.
 #[derive(Debug, Default)]
 pub struct NoopRuntimeHooks;
 
 #[async_trait]
 impl RuntimeHooks for NoopRuntimeHooks {}
 
+/// Callbacks the driver fans out around the `reset -> predict -> step` loop.
+///
+/// Lifecycle, progress, and log hooks are best-effort: the driver logs a failure
+/// and keeps the route moving. The two transform hooks
+/// ([`Self::transform_action`], [`Self::transform_observation`]) are fatal — a
+/// failed transform leaves the next wire payload undefined, so the route fails
+/// and shuts down. One shared instance serves every concurrent route, so each
+/// event carries its route/session identity inline.
 #[async_trait]
 pub trait RuntimeHooks: Send + Sync {
-    // Lifecycle/progress/log hooks are best-effort. The runtime logs
-    // failures from these hooks and keeps the route moving.
     async fn env_connected(&self, _event: EnvConnectedEvent) -> Result<(), HookError> {
         Ok(())
     }
@@ -48,8 +59,8 @@ pub trait RuntimeHooks: Send + Sync {
         Ok(())
     }
 
-    // Transform hooks are fatal. A failed transform means the runtime cannot
-    // safely define the next wire payload, so the route fails and shuts down.
+    /// Fatal hook: a failed transform leaves the next action payload undefined,
+    /// so the route fails rather than send something undefined to the env.
     async fn transform_action(
         &self,
         event: ActionReceivedEvent,
@@ -65,7 +76,7 @@ pub trait RuntimeHooks: Send + Sync {
         Ok(())
     }
 
-    // See transform_action: transform failures are fatal by design.
+    /// Fatal hook; see [`Self::transform_action`].
     async fn transform_observation(
         &self,
         event: ObservationEmittedEvent,
@@ -77,15 +88,13 @@ pub trait RuntimeHooks: Send + Sync {
         Ok(())
     }
 
-    // Live telemetry push, best-effort. A background ticker streams a Window
-    // snapshot (the live tier, cleared each `RuntimeLimits::telemetry_window`)
-    // while the session runs; one final cumulative Session snapshot is delivered
-    // at session end (the durable tier — also returned on
-    // `RuntimeReport.telemetry`). The event carries route/session identity inline
-    // (one shared hooks instance serves all concurrent routes); branch on
-    // `event.snapshot.horizon` for window vs session. NOTE: dispatched from a
-    // separate task, so this may be called CONCURRENTLY with the other hooks —
-    // do not assume serialized delivery (the `Sync` bound already permits it).
+    /// Live telemetry push, best-effort. A background ticker streams a `Window`
+    /// snapshot (the live tier, cleared each `RuntimeLimits::telemetry_window`)
+    /// while the session runs; one final cumulative `Session` snapshot is
+    /// delivered at session end (the durable tier, also returned on
+    /// `RuntimeReport.telemetry`). Branch on `event.snapshot.horizon` for window
+    /// vs session. Dispatched from a separate task, so this may run concurrently
+    /// with the other hooks — do not assume serialized delivery.
     async fn on_telemetry(&self, _event: TelemetrySnapshotEvent) -> Result<(), HookError> {
         Ok(())
     }

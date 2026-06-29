@@ -37,7 +37,7 @@ pub enum Error {
 }
 
 impl Error {
-    /// Check if this error is recoverable (can retry).
+    /// Whether this error is recoverable (the operation may be retried).
     pub fn is_recoverable(&self) -> bool {
         match self {
             Self::Timeout(_) => true,

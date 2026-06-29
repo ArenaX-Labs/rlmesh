@@ -1,5 +1,10 @@
 # NumPy
 
+```{note}
+This is the autodoc API reference. For how backends decode values at the Python boundary see
+{doc}`../user-guide/backends`.
+```
+
 Use the NumPy backend for examples, notebooks, and model code that already works with arrays.
 
 ## What This Backend Changes

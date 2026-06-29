@@ -1,3 +1,18 @@
+//! Docker-backed packaging for RLMesh environments.
+//!
+//! [`start_env`] resolves an [`EnvironmentSourceRef`] (a gymnasium env id or an
+//! `hf://` HuggingFace repo), builds a sandbox image around it, and starts a
+//! container that serves the env over gRPC. The image bundles a pinned `rlmesh`
+//! wheel (selected for the base image's Python version and libc) alongside the
+//! env's own dependencies. Runtime-only options (`gym.make` kwargs, env count,
+//! vectorization mode) ride in a run-time bootstrap payload rather than the
+//! image, so changing them never triggers a rebuild.
+//!
+//! Image identity is a content hash of the build inputs, so an unchanged spec
+//! reuses its cached image. `hf://` sources execute remote code and are gated by
+//! default behind explicit `trust_remote_code` and full-SHA revision pinning.
+//! [`reap_orphaned_containers`] removes containers whose owner process is gone.
+
 mod docker;
 mod error;
 mod hf;
@@ -123,8 +138,8 @@ impl SandboxOptions {
 ///
 /// Dropping this without recording `container_id` leaks a running container, so
 /// it is `#[must_use]`. It is `#[non_exhaustive]` so future fields (extra
-/// container metadata and ports can be added without breaking callers that
-/// read fields by name.
+/// container metadata, ports) can be added without breaking callers that read
+/// fields by name.
 #[derive(Debug, Clone)]
 #[must_use = "dropping a RunResult without its container_id leaks the started container"]
 #[non_exhaustive]

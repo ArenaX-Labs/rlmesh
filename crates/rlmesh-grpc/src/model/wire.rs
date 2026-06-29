@@ -1,3 +1,6 @@
+//! Model wire helpers: proto->native error mapping and request-kind labels for
+//! tracing.
+
 use rlmesh_proto::model::v1::{
     ModelError as ProtoModelError, ModelErrorCode as ProtoModelErrorCode, join_request,
 };

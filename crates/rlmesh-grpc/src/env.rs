@@ -1,3 +1,7 @@
+//! EnvService transport: the [`Environment`] trait, the [`EnvClient`] that
+//! drives a remote env over the Join stream, and the [`GrpcEnvServer`] that hosts
+//! an [`Environment`] behind that service.
+
 pub mod client;
 mod environment;
 mod episode;

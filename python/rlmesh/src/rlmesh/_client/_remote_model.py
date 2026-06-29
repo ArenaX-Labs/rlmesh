@@ -44,6 +44,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
 
     @property
     def address(self) -> str:
+        """Model endpoint address this handle dials."""
         return self._address
 
     def session(
@@ -85,6 +86,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
 
 
 def env_contract_of(env: object) -> EnvContract:
+    """The env's published ``env_contract``, or a TypeError if it exposes none."""
     contract = getattr(env, "env_contract", None)
     if contract is None:
         raise TypeError(

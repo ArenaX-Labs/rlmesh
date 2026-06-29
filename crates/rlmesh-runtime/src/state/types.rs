@@ -1,3 +1,6 @@
+//! Plain state records shared across the route-state module: per-slot state, a
+//! point-in-time snapshot, and the started-episode handoff.
+
 use crate::episodes::EpisodeRecord;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

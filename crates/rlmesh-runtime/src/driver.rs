@@ -1,3 +1,10 @@
+//! The single-route run loop.
+//!
+//! Drives one ready model/env session: reset, then predict/step until a step or
+//! episode limit, cancellation, or failure. Records per-op telemetry and fans
+//! every state change out to the session's
+//! [`RuntimeHooks`](crate::hooks::RuntimeHooks).
+
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -40,6 +47,7 @@ macro_rules! fan_out_event {
     };
 }
 
+/// The env's reset reply plus the endpoint-local op duration the peer stamped.
 pub struct RuntimeEnvReset {
     pub response: ResetResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`
@@ -47,31 +55,42 @@ pub struct RuntimeEnvReset {
     pub endpoint_total_ns: Option<u64>,
 }
 
+/// The env's step reply plus the endpoint-local op duration the peer stamped.
 pub struct RuntimeEnvStep {
     pub response: StepResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
 }
 
+/// The model's predict reply plus the endpoint-local op duration the peer stamped.
 pub struct RuntimeModelPrediction {
     pub response: PredictResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
 }
 
+/// The environment side of a route: reset and step over the wire, plus close.
 #[async_trait]
 pub trait RuntimeEnv: Send {
+    /// Reset the requested lanes and return their initial observation.
     async fn reset(&mut self, request: ResetRequest) -> Result<RuntimeEnvReset, RuntimeError>;
 
+    /// Advance the lanes one step under `request.action`.
     async fn step(&mut self, request: StepRequest) -> Result<RuntimeEnvStep, RuntimeError>;
 
+    /// Release the env endpoint within `timeout`. Default no-op for an endpoint
+    /// the run does not own.
     async fn close(&mut self, _timeout: Duration) -> Result<(), String> {
         Ok(())
     }
 }
 
+/// The model side of a route: predict, plus the per-episode adapter-state
+/// lifecycle (evict on episode end, release at session end).
 #[async_trait]
 pub trait RuntimeModel: Send {
+    /// Predict the ordered action frames for the batched observation (frame 0 is
+    /// this step; any further frames replay open-loop before the next call).
     async fn predict(
         &mut self,
         request: PredictRequest,
@@ -86,6 +105,7 @@ pub trait RuntimeModel: Send {
         Ok(())
     }
 
+    /// Release the model endpoint within `timeout`. Default no-op.
     async fn release_adapter(
         &mut self,
         _request: ReleaseAdapterRequest,
@@ -115,6 +135,8 @@ const SRC_RESET: Source = Source {
     component: "env",
 };
 
+/// Drives one ready model/env session through its `reset -> predict -> step`
+/// loop. Inert until a `run*` method is awaited.
 #[must_use = "a RuntimeDriver does nothing until one of its run methods is awaited"]
 pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
@@ -261,10 +283,10 @@ where
         result
     }
 
-    // Session/route-level span (enabling-only): lets a closed-side OTel
-    // subscriber attach to `rlmesh.route` later; inert under the default
-    // subscriber. Created once per session, not per step; `skip_all` records only
-    // the cheap ids. Any future per-step span MUST be trace-level + target-gated.
+    /// Session/route-level span (enabling-only): lets a closed-side OTel
+    /// subscriber attach to `rlmesh.route` later; inert under the default
+    /// subscriber. Created once per session, not per step; `skip_all` records only
+    /// the cheap ids. Any future per-step span MUST be trace-level + target-gated.
     #[tracing::instrument(
         name = "rlmesh.route",
         level = "info",
@@ -937,10 +959,10 @@ where
     }
 }
 
-// The per-lane reset seed is derived purely from reproducible inputs: the
-// user's base_seed, the session id, the reset generation, and the lane index.
-// The container env_id is deliberately NOT mixed in — it is a per-attach random
-// UUIDv7, so including it would make a base_seed non-reproducible across runs.
+/// The per-lane reset seed, derived purely from reproducible inputs: the user's
+/// base_seed, the session id, the reset generation, and the lane index. The
+/// container env_id is deliberately NOT mixed in — it is a per-attach random
+/// UUIDv7, so including it would make a base_seed non-reproducible across runs.
 fn deterministic_reset_seed(
     base_seed: i64,
     session_id: &str,
@@ -1046,9 +1068,9 @@ fn episode_ids_with_roll(
     ids
 }
 
-// The relay is content-blind: it carries the peer's leaf vector through
-// unchanged (structure/dtype live in the route spec, never inline). Kept
-// `Result` so the existing `?` call sites are untouched.
+/// The relay is content-blind: it carries the peer's leaf vector through
+/// unchanged (structure/dtype live in the route spec, never inline). Kept
+/// returning `Result` so the existing `?` call sites are untouched.
 fn value_leaves(payload: Option<&SpaceValue>) -> Result<Option<Vec<Bytes>>, RuntimeError> {
     Ok(payload.map(|payload| payload.leaves.clone()))
 }

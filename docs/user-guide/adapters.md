@@ -10,13 +10,14 @@ This page is the concept tour. Reach for {doc}`adapters/reference` when you need
 
 The two sides of an eval are declared independently and never import each other. An environment publishes tags, a model declares a spec, and `resolve` bridges them by matching semantic roles.
 
-```text
-env tags ──┐                              ┌── model spec
-(roles +   │   resolve() matches by role  │   (full payload +
- a few     ├───────────────► Adapter ◄────┤    action layout)
- facts)    │   widths/dtypes from spaces  │
-obs/action │                              │
-  spaces ──┘                              └── transform_obs / transform_action
+```{mermaid}
+flowchart LR
+  tags["Env tags<br/>(roles + a few facts)"] -- matches by role --> R{{"resolve()"}}
+  spaces["obs / action spaces"] -- widths / dtypes --> R
+  spec["Model spec<br/>(full payload + action layout)"] -- matches by role --> R
+  R --> A(["Adapter"])
+  A --> obs["transform_obs"]
+  A --> act["transform_action"]
 ```
 
 The asymmetry between the two sides is deliberate.

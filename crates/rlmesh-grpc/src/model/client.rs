@@ -60,6 +60,8 @@ pub struct ModelClient {
 }
 
 impl ModelClient {
+    /// Connect to a ModelService server, sending `token` on the `authorization`
+    /// metadata header of every request (an empty token disables auth).
     pub async fn connect(address: &str, token: &str) -> Result<Self, GrpcError> {
         let address = normalize_tcp_session_address(address)?;
         let endpoint = crate::configure_endpoint(
@@ -100,6 +102,7 @@ impl ModelClient {
         crate::connect::retry_connect(options, || Self::connect(address, token)).await
     }
 
+    /// The address this client is connected to.
     pub fn address(&self) -> &str {
         &self.address
     }
@@ -132,6 +135,8 @@ impl ModelClient {
         }
     }
 
+    /// Perform the handshake and open the Join stream, leaving the client ready
+    /// to resolve routes and predict.
     pub async fn handshake(&mut self) -> Result<(), GrpcError> {
         if self.state != ClientState::Connected {
             return Err(crate::error::ClientError::NotConnected.into());
@@ -171,6 +176,8 @@ impl ModelClient {
         Ok(())
     }
 
+    /// Resolve (configure) the route's adapter from its env spec, pinning the
+    /// session edition and execution horizon carried in `request`.
     pub async fn resolve_adapter(
         &mut self,
         request: ResolveAdapterRequest,
@@ -201,6 +208,8 @@ impl ModelClient {
         }
     }
 
+    /// Send one predict and await its response. For overlapping predicts on one
+    /// connection, use [`predict_concurrent`](Self::predict_concurrent).
     pub async fn predict(&mut self, request: PredictRequest) -> Result<PredictResponse, GrpcError> {
         self.ensure_ready()?;
         validate_predict_route(&request)?;
@@ -224,6 +233,8 @@ impl ModelClient {
         }
     }
 
+    /// Evict per-episode adapter state for the route's named episodes (empty
+    /// `episode_ids` evicts all of the route's episode state).
     pub async fn reset_adapter(&mut self, request: ResetAdapterRequest) -> Result<(), GrpcError> {
         self.ensure_ready()?;
         validate_route(
@@ -251,6 +262,8 @@ impl ModelClient {
         }
     }
 
+    /// Tear down the route's adapter entirely (implies eviction of all its
+    /// episode state).
     pub async fn release_adapter(
         &mut self,
         request: ReleaseAdapterRequest,
@@ -281,11 +294,14 @@ impl ModelClient {
         }
     }
 
+    /// Close this client's session (drains its routes), with a 5-second default
+    /// round-trip timeout.
     pub async fn close(&mut self, reason: impl Into<String>) -> Result<(), GrpcError> {
         self.close_with_timeout(reason, Duration::from_secs(5))
             .await
     }
 
+    /// Close this client's session, bounding the close round-trip by `timeout`.
     pub async fn close_with_timeout(
         &mut self,
         reason: impl Into<String>,
@@ -320,6 +336,7 @@ impl ModelClient {
         }
     }
 
+    /// Request owner-level shutdown of the remote model endpoint.
     pub async fn shutdown(
         &mut self,
         reason: impl Into<String>,

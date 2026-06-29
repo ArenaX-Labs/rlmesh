@@ -1,3 +1,5 @@
+//! Per-route mutable state: lane slots, episode lifecycle, and request building.
+
 mod route;
 #[cfg(test)]
 mod tests;

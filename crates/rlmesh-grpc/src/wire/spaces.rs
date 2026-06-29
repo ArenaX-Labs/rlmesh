@@ -1,3 +1,10 @@
+//! Conversions between native space/contract types and their proto form.
+//!
+//! Env contracts, space specs (with Box bounds), and metadata maps cross the
+//! wire here. The native types stay flat; the nesting lives in this codec. A
+//! peer-supplied space spec is validated at decode (handshake time) so a
+//! malformed space fails fast rather than at first use.
+
 use std::collections::BTreeMap;
 
 use rlmesh_proto::core::v1 as core_proto;

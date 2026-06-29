@@ -70,6 +70,7 @@ class BridgedEnv:
         self._warned_foreign: set[str] = set()
 
     def reset(self, **kwargs: Any) -> object:
+        """Reset the wrapped env and encode only its observation (info stays raw)."""
         # Encode only the observation, never the info dict. info is freeform
         # metadata that the native metadata path reads via numpy's .tolist(); a
         # native Tensor there has no such conversion, so encoding an array leaf
@@ -85,6 +86,7 @@ class BridgedEnv:
         return self._bridge.encode(result)
 
     def step(self, action: Any) -> object:
+        """Decode the action onto the env's framework, step, and encode the observation."""
         decoded = self._bridge.decode(action)
         if self._device is not None:
             decoded = self._bridge.to_device(decoded, self._device)

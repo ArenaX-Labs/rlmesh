@@ -1,3 +1,7 @@
+//! Response demux for the model Join stream: a `request_id`-keyed pending map and
+//! the pump that routes each response to its waiter, so predicts can overlap on
+//! one connection.
+
 use std::collections::HashMap;
 use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};

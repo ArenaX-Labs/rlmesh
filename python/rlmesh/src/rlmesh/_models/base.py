@@ -603,7 +603,7 @@ class ModelBase(Generic[ObsT, ActT]):
         object with an ``address``, or a bare address string the loop dials.
 
         ``execution_horizon`` (> 1) executes that many actions of each predicted
-        chunk one per env step, re-planning every ``execution_horizon`` steps — only
+        chunk one per env step, re-planning every ``execution_horizon`` steps -- only
         when this model defines :meth:`predict_chunk`; otherwise it runs un-chunked.
         """
         return self.session(

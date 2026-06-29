@@ -26,11 +26,18 @@ use crate::states::ClientState;
 use super::stream::spawn_response_pump;
 use super::wire::{join_request_kind_name, proto_error_to_env_error};
 
+/// The result of an env handshake: the env contract plus the negotiated edition
+/// and the env's advertised window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnvHandshake {
+    /// The env contract (spaces, id, render mode, metadata) the server returned.
     pub env_contract: EnvContract,
+    /// Number of sub-environments the server steps in lockstep (at least 1).
     pub num_envs: usize,
+    /// The workflow edition this (co-located) client selected with the env — the
+    /// highest edition both support.
     pub workflow_edition: String,
+    /// The editions the env advertised, for the three-way session floor.
     pub supported_workflow_editions: Vec<String>,
     /// Optional features the server advertised (advisory; query with
     /// [`rlmesh_proto::has_capability`]).

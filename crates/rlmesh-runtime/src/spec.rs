@@ -1,3 +1,5 @@
+//! The runtime session spec, its limits, and the report a finished run returns.
+
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -10,6 +12,9 @@ use serde::{Deserialize, Serialize};
 /// `debug_assert!`s). Lets those accessors stay panic-free and lint-clean.
 static EMPTY_SPACE_SPEC: LazyLock<SpaceSpec> = LazyLock::new(SpaceSpec::default);
 
+/// Everything one route needs to run: its identity, the negotiated env
+/// contract, and the per-op limits. [`validate`](Self::validate) gates a spec
+/// before the driver runs it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeSessionSpec {
     /// Correlation label only; OSS does not key on it (the managed layer owns
@@ -169,6 +174,8 @@ impl RuntimeSessionSpec {
     }
 }
 
+/// What a finished or aborted session returns: totals plus the durable
+/// telemetry aggregate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeReport {
     pub session_id: String,
@@ -180,6 +187,8 @@ pub struct RuntimeReport {
     pub telemetry: crate::telemetry::Snapshot,
 }
 
+/// Per-op timeouts and the telemetry window for one session. Serialized with
+/// explicit millisecond field names (`*Ms`); legacy unsuffixed fields are rejected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeLimits {

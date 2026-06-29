@@ -1,3 +1,5 @@
+//! Runtime hook events and the observer trait the driver fans them out to.
+
 mod events;
 mod traits;
 

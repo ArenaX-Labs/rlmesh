@@ -1,6 +1,11 @@
 # Contracts and Specs
 
-Contracts and specs describe what a remote endpoint serves.
+```{note}
+This is the API reference. The contract is built for you when you serve or connect: for the serving
+side see {doc}`../user-guide/serving-environments`, for the client side {doc}`../user-guide/remote-clients`.
+```
+
+A contract is the handshake an endpoint hands a client: the env id, spaces, render mode, metadata, and instance count. You read one off a server or a remote client; you rarely build one by hand. `SpaceSpec` is the wire-safe description of a single space, and `ServeOptions` controls the server's lifecycle.
 
 ## EnvContract
 
@@ -33,6 +38,13 @@ The server builds the contract when it wraps the Python environment. For Gymnasi
 | `action_space`      | `SpaceSpec`                 | Native spec for one action.                                        |
 
 `to_dict()` returns a serializable dictionary containing the same fields, with nested space specs converted to dictionaries.
+
+```python
+contract = env.env_contract              # from a server or a remote client
+print(contract.id, contract.num_envs)
+print(contract.observation_space.kind)
+payload = contract.to_dict()             # JSON-serializable, nested specs included
+```
 
 ## SpaceSpec
 
@@ -68,8 +80,17 @@ Native options controlling endpoint lifecycle behavior.
 | `idle_timeout_seconds`  | `float \| None` | Optional idle timeout before the server exits.            |
 | `drain_timeout_seconds` | `float \| None` | Optional grace period for in-flight work during shutdown. |
 | `close_timeout_seconds` | `float \| None` | Optional timeout for closing the wrapped environment.     |
+| `token`                 | `str \| None`   | Optional auth token for the served endpoint.              |
 
-Pass options to `EnvServer(..., options=options)` or model-serving APIs that accept serve options.
+The constructor is keyword-only. Pass the result to `EnvServer(..., options=options)` or to a model-serving API that accepts serve options.
+
+```python
+options = rlmesh.ServeOptions(
+    allow_remote_shutdown=True,
+    idle_timeout_seconds=300.0,
+)
+server = rlmesh.EnvServer(env, "127.0.0.1:5555", options=options)
+```
 
 ## Tensor
 

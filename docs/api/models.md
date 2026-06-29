@@ -1,8 +1,13 @@
 # Models
 
-Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint. The framework backend controls how observations are decoded before `predict_fn` runs and how returned actions are encoded. See {doc}`../user-guide/models` for the authoring guide; this page is the API reference.
+```{note}
+This is the autodoc API reference. For the authoring guide see {doc}`../user-guide/models`, and
+{doc}`../user-guide/models/reference` for the full prediction-corner contract.
+```
 
-Authors implement `load()` plus exactly one of the four prediction corners — `predict`, `predict_chunk`, `predict_batch`, or `predict_chunk_batch` — and the runtime dispatches to whichever is defined.
+Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint. The framework backend controls how observations are decoded before `predict_fn` runs and how returned actions are encoded.
+
+Reach for a concrete `Model` class below in the value type your prediction function wants. Authors implement `load()` plus exactly one of the four prediction corners (`predict`, `predict_chunk`, `predict_batch`, or `predict_chunk_batch`); the runtime dispatches to whichever is defined.
 
 ## Base Model
 

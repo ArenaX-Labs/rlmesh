@@ -1,3 +1,6 @@
+//! Response pump for the env Join stream: forwards each server response (or a
+//! terminal error status) onto a channel the client awaits.
+
 use std::error::Error as StdError;
 
 use rlmesh_proto::env::v1::JoinResponse;

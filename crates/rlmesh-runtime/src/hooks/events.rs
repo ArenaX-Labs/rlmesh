@@ -1,3 +1,7 @@
+//! Event payloads the driver hands to each [`RuntimeHooks`](super::RuntimeHooks)
+//! callback. Each carries its route/session identity inline, since one hooks
+//! instance serves every concurrent route.
+
 use std::sync::Arc;
 
 use prost::bytes::Bytes;

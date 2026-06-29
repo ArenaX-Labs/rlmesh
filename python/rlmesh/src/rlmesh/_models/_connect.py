@@ -31,6 +31,12 @@ __all__ = [
 def connect_env(
     target: object, token: str, remote_env_cls: type | None
 ) -> tuple[Any, Any, bool]:
+    """Resolve a session target to ``(client, contract, owns_client)``.
+
+    ``target`` is an address string, a live env (local object or remote handle), an
+    :class:`~rlmesh.EnvFactory`, or an object exposing an ``address``. ``owns_client``
+    is True when this dialed the connection, so the session knows to close it.
+    """
     if isinstance(target, str):
         client = _remote_env(target, remote_env_cls)
         return client, client.env_contract, True
@@ -154,6 +160,11 @@ def adapter_env_bridge(client: Any) -> ValueBridge:
 
 
 def reset_env(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
+    """Reset an env and normalize its return to ``(obs, info)``.
+
+    Accepts a gymnasium ``(obs, info)`` pair (the second element a Mapping) or a bare
+    observation; the latter pairs with an empty info dict.
+    """
     result: Any = client.reset(seed=seed) if seed is not None else client.reset()
     if isinstance(result, tuple):
         pair = cast("tuple[Any, ...]", result)
@@ -166,12 +177,19 @@ def reset_env(client: Any, seed: int | None) -> tuple[Any, Mapping[str, Any]]:
 
 
 def close_client(client: Any) -> None:
+    """Release a dialed connection by calling its ``close``, if it has one."""
     close = getattr(client, "close", None)
     if callable(close):
         close()
 
 
 def shutdown_env(target: object) -> None:
+    """Stop an env: a sandbox container via ``close``, else a remote owner.
+
+    Passes a teardown reason to whichever of ``shutdown``/``close`` accepts one,
+    decided by binding the signature rather than catching ``TypeError`` -- so a
+    ``TypeError`` raised inside the callable is never swallowed.
+    """
     # A sandbox session's close() stops its container; its inherited shutdown() is the
     # remote owner-shutdown, so close() is the right teardown for an owned sandbox.
     from .._sandbox.session import SandboxLifecycle
@@ -179,8 +197,6 @@ def shutdown_env(target: object) -> None:
     if isinstance(target, SandboxLifecycle):
         target.close()
         return
-    # decide reason-passing by binding the signature, not by try/except
-    # around the call, so a TypeError raised *inside* the callable is never swallowed.
     import inspect
 
     for name in ("shutdown", "close"):

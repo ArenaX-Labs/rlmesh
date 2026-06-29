@@ -2,9 +2,10 @@
 
 Shared by the in-process run(env) loop (:mod:`rlmesh._models._eval`) and the
 explicit ``adapter.wrap_predict`` path so the two stay byte-for-byte identical,
-and aligned with the native ``split_chunk`` the served Rust engine uses. A model
-that declares ``execute_horizon > 1`` returns a *chunk* of actions; the queue
-replays them one per step, predicting again only when it drains.
+and aligned with the native ``split_chunk`` the served Rust engine uses. A
+chunk-capable model (one defining ``predict_chunk``) returns a *chunk* of actions
+when the replay horizon is > 1; the queue replays them one per step, predicting
+again only when it drains.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ def split_chunk(raw_action: Any) -> list[Any]:
     bridged identically to the non-chunked path and the serve path. A string/bytes
     leaf, a non-iterable (scalar), or a structured (mapping) output is a degenerate
     single-step "chunk", matching the native ``split_chunk`` (which treats a
-    text / scalar / map leaf as one step). Called only when ``execute_horizon > 1``;
+    text / scalar / map leaf as one step). Called only when the replay ``horizon > 1``;
     a mis-shaped output fails the action conversion downstream rather than being
     silently mis-sliced (except a flat dim-1 action, the inference blind spot the
     native ``split_chunk`` shares).

@@ -1,6 +1,11 @@
 # JAX
 
-The JAX backend is experimental.
+```{note}
+This is the autodoc API reference. For how backends decode values at the Python boundary see
+{doc}`../user-guide/backends`.
+```
+
+The JAX backend is experimental. Use it for model code that already works with JAX arrays; decoded arrays are immutable, so there is no mutation hazard.
 
 ## What This Backend Changes
 

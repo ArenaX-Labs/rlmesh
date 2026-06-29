@@ -2,6 +2,8 @@
 
 RLMesh spaces are Python wrappers around native `SpaceSpec` values. They provide the familiar `sample`, `contains`, and `seed` methods while keeping the spec available for transport and conversion.
 
+You rarely build one directly: a client or {doc}`contract <contracts>` hands you the wrapper through `observation_space` and `action_space`. Reach for the conversion helpers below when you need to bridge to or from a Gymnasium space, and see {doc}`/gymnasium` for the per-space mapping.
+
 ## Base Types
 
 ```{eval-rst}

@@ -24,6 +24,8 @@ RANDOM_SAMPLE = _RandomSample()
 
 
 class CoercedModel(NamedTuple):
+    """A model source normalized to its predict callable, spec, and lifecycle hooks."""
+
     predict: Callable[[Any], Any]
     spec: object | None
     # A duck-typed policy's ``reset()`` is wired here, to the episode-END edge: it

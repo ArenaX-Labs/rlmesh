@@ -44,6 +44,14 @@ def resolve_route_adapter(
 def resolve_adapter(
     spec: object | None, contract: EnvContract | None, trust_entrypoints: bool
 ) -> Adapter | None:
+    """Resolve the adapter from a model ``spec`` and an env contract.
+
+    The shared core of both the served path and the local
+    :class:`rlmesh._models._eval.Session`. Returns ``None`` for a ``NO_ADAPTER`` or
+    spec-less model on an untagged env (no transform). Raises on a spec/env
+    mismatch, a non-:class:`~rlmesh.adapters.ModelSpec` spec, or a tagged env paired
+    with ``spec=None``.
+    """
     from ..adapters import (
         AdapterResolutionError,
         EnvTags,
@@ -75,9 +83,11 @@ def resolve_adapter(
 
 
 def reject_vector_env(contract: EnvContract | None) -> None:
-    # The per-episode loop is single-env: it reads scalar reward/termination. A
-    # vector env (num_envs>1) would crash on array truthiness, so reject it up
-    # front rather than deep in the step loop.
+    """Reject a vectorized env before the single-env per-episode loop runs.
+
+    The loop reads scalar reward/termination, so a vector env (``num_envs > 1``)
+    would crash on array truthiness. Fail up front rather than deep in the step loop.
+    """
     num_envs = getattr(contract, "num_envs", 1) if contract is not None else 1
     if num_envs and num_envs > 1:
         raise ValueError(

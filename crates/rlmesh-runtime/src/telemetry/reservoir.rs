@@ -1,3 +1,6 @@
+//! Fixed-capacity sample reservoir (Vitter's Algorithm R) backing each metric
+//! series, bounding memory while keeping the subsample representative.
+
 /// Default reservoir capacity for session-lifetime samples.
 ///
 /// Sessions can run unbounded (`max_episodes: None`), so the cumulative sample

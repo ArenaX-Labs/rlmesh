@@ -170,6 +170,7 @@ extensions = [
     "sphinx.ext.linkcode",
     "sphinx.ext.napoleon",
     "sphinx_copybutton",
+    "sphinxcontrib.mermaid",
 ]
 
 source_suffix = {

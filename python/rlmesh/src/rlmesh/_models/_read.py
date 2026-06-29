@@ -125,11 +125,11 @@ def _read_leaf(item: object, env_tags: Any) -> tuple[str, Any]:
 def env_image_roles(contract: Any) -> list[str]:
     """The image roles an env declares, in observation-tag declaration order.
 
-    First-class camera discovery: reads the env's published adapter tags (the same
-    :class:`~rlmesh.adapters.EnvTags` the reader resolves against) and walks the
-    observation tree for every :class:`~rlmesh.adapters.ImageTag`. Returns ``[]``
-    when the env publishes no tags. Unlike probing a fixed role list, this finds
-    custom image roles too, and only the ones this env actually declares.
+    Reads the env's published adapter tags (the same :class:`~rlmesh.adapters.EnvTags`
+    the reader resolves against) and walks the observation tree for every
+    :class:`~rlmesh.adapters.ImageTag`. Returns ``[]`` when the env publishes no tags.
+    Unlike probing a fixed role list, this finds custom image roles too, and only the
+    ones this env actually declares.
     """
     from ..adapters import EnvTags, ImageTag
 

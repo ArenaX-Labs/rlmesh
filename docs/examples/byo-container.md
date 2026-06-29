@@ -4,7 +4,7 @@ A bring-your-own container is a Docker image you build yourself: you write the D
 
 The runnable files live in `examples/python/byo_container`. There are two images: `env/` serves a Gymnasium environment, and `model/` serves a policy. Both serve on `RLMESH_ADDRESS` (default `0.0.0.0:50051`).
 
-## Environment Container
+## Environment container
 
 The env image installs `rlmesh` and the environment's dependencies, then runs an entrypoint that serves a Gymnasium environment with `EnvServer`:
 
@@ -39,7 +39,7 @@ obs, info = env.reset(seed=0)
 
 The Dockerfile is {source}`examples/python/byo_container/env/Dockerfile <examples/python/byo_container/env/Dockerfile>` and the entrypoint is {source}`examples/python/byo_container/env/entrypoint.py <examples/python/byo_container/env/entrypoint.py>`.
 
-## Model Container
+## Model container
 
 The model image serves a policy. Its entrypoint wraps a `predict` function in `Model` and serves it on the same address:
 
@@ -81,11 +81,11 @@ while not done:
     done = terminated or truncated
 ```
 
-The same loop drives a model that is already running: swap the construction line for `rlmesh.RemoteModel("127.0.0.1:50052").against(env)` (a distinct port, since the environment already holds `50051`). A prebuilt `image://` tag runs from its own baked configuration, so `SandboxModel` does not inject a bootstrap payload.
+The same loop drives a model that is already running: swap the construction line for `rlmesh.RemoteModel("127.0.0.1:50052").against(env)`, on a distinct port since the environment already holds `50051`. A prebuilt `image://` tag runs from its own baked configuration, so `SandboxModel` does not inject a bootstrap payload.
 
 The Dockerfile is {source}`examples/python/byo_container/model/Dockerfile <examples/python/byo_container/model/Dockerfile>` and the entrypoint is {source}`examples/python/byo_container/model/entrypoint.py <examples/python/byo_container/model/entrypoint.py>`.
 
-## Both Sides in a Sandbox
+## Both sides in a sandbox
 
 The same drive loop runs when RLMesh owns both containers. A `SandboxEnv` builds the environment container from a Gymnasium or Hugging Face source, and a `SandboxModel` runs your prebuilt `image://` tag. A `try`/`finally` stops both owned containers when the run ends:
 
@@ -109,6 +109,13 @@ finally:
 
 A sandboxed environment is built from a source, so it takes a Gymnasium id or `gym://`/`hf://` reference rather than an `image://` tag; the bring-your-own `image://` path is for the model. See {doc}`sandboxes` for the environment side.
 
-## Version Pinning
+## Version pinning
 
 The protocol handshake pins the workflow edition and fails closed. Until the bare `2026.06` edition seals at the final 0.1.0, prerelease builds use exact release cohorts such as `2026.06-0.1.0-rc.2`, and source builds use exact `dev.<git>` cohorts. Pin the same `rlmesh` version in your Dockerfile as the host that drives it. To run on the hosted platform, `docker push` the tag to a registry the platform can reach; it runs the identical image.
+
+## Where next
+
+- {doc}`sandboxes` — let RLMesh build and own the environment container.
+- {doc}`../user-guide/sandbox` — the sandbox helpers in depth.
+- {doc}`../user-guide/serving-environments` — addresses, readiness, and health.
+- {doc}`/compatibility` — version and edition pinning rules.

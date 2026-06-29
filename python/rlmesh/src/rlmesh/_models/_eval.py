@@ -90,14 +90,17 @@ class RunResult:
 
     @property
     def num_episodes(self) -> int:
+        """Number of episodes in this result."""
         return len(self.episodes)
 
     @property
     def total_steps(self) -> int:
+        """Total env steps across all episodes."""
         return sum(e.steps for e in self.episodes)
 
     @property
     def mean_reward(self) -> float:
+        """Mean total reward per episode (``0.0`` when empty)."""
         if not self.episodes:
             return 0.0
         return sum(e.reward for e in self.episodes) / len(self.episodes)
@@ -176,8 +179,8 @@ class Session(Generic[ObsT, ActT]):
     The neutral pair-driver returned by :func:`rlmesh.session`. ``reset`` / ``predict`` /
     ``step`` drive one step at a time -- ``predict`` applies the model's adapter (resolved
     from the env's published contract) around the model's own predict, replaying an action
-    chunk one action per step when the spec declares an execute horizon > 1. ``run`` pumps
-    whole episodes and returns a typed :class:`RunResult`.
+    chunk one action per step when ``execution_horizon`` > 1 and the model defines
+    ``predict_chunk``. ``run`` pumps whole episodes and returns a typed :class:`RunResult`.
 
     The env connection is opened lazily on first ``reset`` (manual driving); ``run`` drives
     whole episodes through the same primitives. Use it as a context manager to close a
@@ -243,7 +246,7 @@ class Session(Generic[ObsT, ActT]):
         self._last_info: Mapping[str, Any] = {}
         #: Whether an episode has been reset and not yet ended. The local episode
         #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
-        #: begins or the session closes — see `_end_episode`.
+        #: begins or the session closes -- see `_end_episode`.
         self._episode_open = False
         #: Resolved Readers (sess.read), cached per read item so a per-step read
         #: does not re-resolve.
@@ -521,7 +524,7 @@ class Session(Generic[ObsT, ActT]):
                 )
         finally:
             # End the final episode (earlier ones end at the next reset()), then the
-            # close hook — `["episode_end", ..., "close"]`.
+            # close hook -- `["episode_end", ..., "close"]`.
             self._end_episode()
             if self._on_close is not None:
                 try:

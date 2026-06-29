@@ -1,3 +1,5 @@
+//! Summary statistics — average and nearest-rank percentiles — over a sample set.
+
 /// Aggregated statistics over a sample set, all in the sample's unit.
 pub(super) struct Summary {
     pub avg: f64,

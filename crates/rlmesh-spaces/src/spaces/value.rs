@@ -1,6 +1,8 @@
-//! Space value types and validation.
+//! Space values and conformance.
 //!
-//! Runtime values and validation for RLMesh spaces.
+//! [`SpaceValue`] is the runtime value carried by a space. [`conform`] checks it
+//! against a [`SpaceSpec`] in one pass, separating structural deviations (always
+//! rejected) from range deviations the serving [`ValidationPolicy`] governs.
 
 use std::collections::BTreeMap;
 

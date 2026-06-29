@@ -26,7 +26,18 @@ Start with the shortest local loop:
 
 ## Model-Environment Boundary
 
-Start with the boundary between the model and environment. A model or evaluator connects through the familiar `reset`, `step`, `render`, and `close` calls, even when the environment lives in a separate process with separate dependencies.
+A model and an environment meet at one boundary. A model or evaluator connects through the familiar `reset`, `step`, `render`, and `close` calls, even when the environment runs in a separate process with its own dependencies.
+
+```{mermaid}
+flowchart LR
+    subgraph eval["Evaluator process"]
+        M["Model / evaluator"]
+    end
+    subgraph env["Environment process"]
+        E["Gymnasium environment"]
+    end
+    M <-->|"reset · step · render · close"| E
+```
 
 Use that boundary to:
 
@@ -54,7 +65,9 @@ examples
 :maxdepth: 2
 
 user-guide/environments
+user-guide/environments/reference
 user-guide/models
+user-guide/models/reference
 user-guide/evaluation
 ```
 
@@ -77,6 +90,17 @@ user-guide/serving-environments
 user-guide/remote-clients
 user-guide/backends
 user-guide/sandbox
+```
+
+```{toctree}
+:hidden:
+:caption: Operations
+:maxdepth: 2
+
+user-guide/error-handling
+user-guide/debugging
+user-guide/performance
+user-guide/streaming
 ```
 
 ```{toctree}

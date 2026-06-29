@@ -23,7 +23,7 @@ RLMesh supports these Gymnasium spaces. The Stability column matches the API sur
 | `MultiDiscrete` | `MultiDiscrete` | Experimental | One- and two-dimensional `nvec` are supported.                            |
 | `Text`          | `Text`          | Experimental | Custom charsets are preserved; default charsets are treated as unbounded. |
 
-For `Text`, RLMesh still preserves `min_length` and `max_length`. Only the default Gymnasium charset is treated as unrestricted, so punctuation and whitespace are not rejected just because the source space used Gymnasium's default alphanumeric charset.
+For `Text`, RLMesh still preserves `min_length` and `max_length`. Only Gymnasium's default alphanumeric charset is treated as unrestricted, so punctuation and whitespace are not rejected just because the source space kept that default.
 
 ### Composite Spaces
 

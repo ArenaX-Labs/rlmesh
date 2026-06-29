@@ -1,3 +1,5 @@
+//! The driver's error type, [`RuntimeError`].
+
 use std::time::Duration;
 
 use crate::hooks::HookError;

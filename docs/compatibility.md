@@ -1,26 +1,26 @@
 # Compatibility
 
-RLMesh documents compatibility at the workflow level rather than treating every internal type as frozen. The project is released and pre-1.0: stability labels describe the support level today, and the surface still evolves with care until 1.0. See {doc}`versioning` for the version contract.
+RLMesh documents compatibility at the workflow level rather than freezing every internal type. The project is released and pre-1.0: the stability labels below describe the support level today. See {doc}`versioning` for the version contract.
 
 ```{note}
 **This documents 0.1.0-rc.2, a release candidate.** The active workflow cohort is
-`2026.06-0.1.0-rc.2`; the stable cutover — sealing the bare `2026.06` edition and
-the `Production/Stable` trove status — lands at the final 0.1.0. The stability
-descriptions below describe that release. Install the candidate with
+`2026.06-0.1.0-rc.2`; the stable cutover (sealing the bare `2026.06` edition and
+the `Production/Stable` trove status) lands at the final 0.1.0. The labels below
+describe that release. Install the candidate with
 `pip install rlmesh==0.1.0rc2`.
 ```
 
 ```{note}
-RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the {doc}`changelog` — not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
+RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the {doc}`changelog`, not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
 ```
 
 ## Stable
 
-Stable workflows include documented public APIs, supported CLI flows, and supported remote environment/model interactions. Stable means the surface we intend to keep and will change carefully, with migration notes — not a frozen API.
+Stable workflows include documented public APIs, supported CLI flows, and supported remote environment/model interactions.
 
 - Imports, signatures, and documented behavior follow the version contract: a breaking change to a stable symbol ships in a minor release with a migration note in the {doc}`changelog`.
 - Peers must currently run the same release. Cross-version acceptance, where newer runtimes keep accepting older stable clients and packages, is on the roadmap below, not a guarantee today.
-- New features may require newer packages or capabilities, but older stable workflows should fail clearly or keep working.
+- New features may require newer packages or capabilities, but older stable workflows either keep working or fail clearly.
 
 ## Preview and Experimental
 
@@ -47,7 +47,7 @@ so mismatched moving builds fail loudly instead of guessing they are compatible.
 
 ## Rust crates
 
-Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The `rlmesh` facade crate and the CLI commands are the exceptions — the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. See {doc}`versioning`.
+Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. See {doc}`versioning`.
 
 ## Framework Version Floors
 
@@ -78,20 +78,20 @@ Workflow semantics are governed by a negotiated workflow edition. Each base edit
 
 ## Versioning and forward-compatibility roadmap
 
-RLMesh commits to forward-compatibility guarantees only once the code enforces them and a cross-version path is proven. The items below are planned, not promises; each is announced here as it ships.
+Today, peers must run the same release. Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. The planned work, with target windows:
 
 - **v0.1.0 (upcoming).** First stable release. It seals the `2026.06` workflow edition, freezing its spec checksum. The 0.1.0-rc.2 candidate ships first as the exact `2026.06-0.1.0-rc.2` cohort.
-- **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This unlocks edition-driven behavior and a cross-version path once a second edition exists.
+- **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This enables edition-driven behavior and a cross-version path once a second edition exists.
 - **Forward tolerance, around late July 2026.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
 - **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation against a real semantic change.
-- **Rust facade API, near term.** The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we intend to stabilize once they settle; the other crates stay internal with no stability promise. The commitment is announced here when it lands.
-- **v1.0, date not set.** Forward-compatibility guarantees — newer runtimes accept older stable clients, and sealed editions are never pruned — become binding, gated on the hardening above and a proven cross-version path.
+- **Rust facade API, near term.** Stabilize the `rlmesh` facade crate and the CLI commands once they settle; the other crates stay internal with no stability promise.
+- **v1.0, date not set.** Forward-compatibility guarantees become binding: newer runtimes accept older stable clients, and sealed editions are never pruned. Gated on the hardening above and a proven cross-version path.
 
 ## Value conformance
 
 The `2026.06` edition defines how observation and action values are checked against their declared spaces (full contract: {doc}`editions/2026.06`). Two points matter in practice:
 
-- **Out-of-bounds values warn; they do not fail.** A `Box` value outside its bounds, or a `Text` value outside its charset or length, is delivered and reported once in the `reset`/`step` info map under the `rlmesh.conformance.warning` key. This keeps the many Gymnasium environments whose values drift past their declared bounds usable out of the box. Set `RLMESH_VALIDATION_POLICY=strict` to reject such values instead, or `off` to skip the checks. Structural problems — wrong shape, dtype, arity, or domain, a missing key — and `NaN` are always rejected, regardless of the policy.
+- **Out-of-bounds values warn; they do not fail.** A `Box` value outside its bounds, or a `Text` value outside its charset or length, is delivered and reported once in the `reset`/`step` info map under the `rlmesh.conformance.warning` key. This keeps the many Gymnasium environments whose values drift past their declared bounds usable out of the box. Set `RLMESH_VALIDATION_POLICY=strict` to reject such values instead, or `off` to skip the checks. Structural problems (wrong shape, dtype, arity, or domain, a missing key) and `NaN` are always rejected, regardless of the policy.
 - **Dtypes are coerced, not passed through.** A value is always converted to its declared dtype before transport, so a peer reading the negotiated space never sees a per-message dtype. This is a deliberate difference from Gymnasium, which warns but forwards the mismatched dtype (see {doc}`gymnasium`). A float supplied for an integer dtype is rejected unless every element is exactly integral.
 
 ## Artifact Versions

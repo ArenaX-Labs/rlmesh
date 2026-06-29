@@ -1,3 +1,6 @@
+//! [`RouteState`]: the per-route bookkeeping the driver advances each step, and
+//! the request messages it builds from that state.
+
 use prost::bytes::Bytes;
 use rlmesh_proto::model::v1::{
     AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,

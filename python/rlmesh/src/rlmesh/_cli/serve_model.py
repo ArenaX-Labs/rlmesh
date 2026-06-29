@@ -21,6 +21,8 @@ __all__ = [
 
 @dataclass
 class ServeModelArgs:
+    """Parsed arguments for the model serve command."""
+
     model: str
     address: str
     token: str
@@ -28,6 +30,7 @@ class ServeModelArgs:
 
 
 def create_parser() -> argparse.ArgumentParser:
+    """Build the standalone parser used by the Rust CLI bridge."""
     parser = argparse.ArgumentParser(
         prog="python -m rlmesh._cli.serve_model",
         description="Serve a Python model callable as an RLMesh model endpoint",
@@ -46,6 +49,7 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Serve a model callable using the Python RLMesh bindings."""
     parser = create_parser()
     ns = parser.parse_args(argv)
     # The parser pins every field's type (--model/--address/--token are plain
@@ -61,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def serve_from_args(args: ServeModelArgs) -> int:
+    """Wrap the model entrypoint in a numpy ``Model`` and serve it (blocking)."""
     try:
         from rlmesh.numpy import Model
 

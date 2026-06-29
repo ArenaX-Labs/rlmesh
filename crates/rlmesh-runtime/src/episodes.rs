@@ -1,5 +1,8 @@
+//! Episode bookkeeping: a stable, session-global record id per episode id.
+
 use std::collections::BTreeMap;
 
+/// One episode's session-global identity (`ep-NNNNNN` + index) and origin lane.
 #[derive(Debug, Clone)]
 pub(crate) struct EpisodeRecord {
     pub(crate) record_id: String,
@@ -8,6 +11,9 @@ pub(crate) struct EpisodeRecord {
     pub(crate) started_from_auto_reset: bool,
 }
 
+/// Assigns each distinct episode id a stable record id, session-global and
+/// independent of which lane the episode ran in. A repeated id resolves to its
+/// existing record (idempotent), so re-observing a slot never re-counts it.
 #[derive(Debug, Default)]
 pub(crate) struct EpisodeRecordRegistry {
     next_index: i64,

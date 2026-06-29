@@ -6,7 +6,7 @@ The examples are small on purpose. Each one shows one part of the model-environm
 - {doc}`examples/sandboxes`: start an owned Docker-backed environment process.
 - {doc}`examples/byo-container`: build your own env and model images and run them anywhere.
 - {doc}`examples/multiple-endpoints`: run one evaluator across multiple environment endpoints.
-- {doc}`examples/adapters`: pair any model with any environment through declarative IO adapters.
+- {doc}`examples/adapters`: pair a model with an environment through declarative IO adapters, matched by role.
 
 ```{toctree}
 :hidden:

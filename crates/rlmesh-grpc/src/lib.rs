@@ -1,3 +1,21 @@
+//! Tonic gRPC transport for the RLMesh runtime contract.
+//!
+//! This crate carries env and model traffic over gRPC. It provides the
+//! [`EnvClient`] and [`ModelClient`] clients, the [`mod@env`] server behind
+//! EnvService (the ModelService server lives in the `rlmesh` facade, which
+//! parameterizes it over the public model-handler family), the [`wire`] codec
+//! that converts native space values and env contracts to and from their proto
+//! form, and the [`lifecycle`] plumbing the servers run under (idle/drain/close
+//! timeouts, shutdown triggers, and in-flight activity tracking).
+//!
+//! Most users reach this through the higher-level `rlmesh` facade. Depend on it
+//! directly to embed a client or server, to reuse the [`wire`] helpers, or to
+//! reconcile the three-way session floor across env, model, and runtime with
+//! [`env_floor`].
+//!
+//! [`connect`] centralizes the deadline/backoff/cancellation retry policy, and
+//! [`health`] wires the standard `grpc.health.v1` service.
+
 pub mod connect;
 pub mod env;
 pub mod error;

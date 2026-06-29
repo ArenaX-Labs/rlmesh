@@ -1,3 +1,7 @@
+//! Transport-agnostic helpers shared by the clients and servers: [`address`]
+//! parsing/normalization for connect and bind targets, and [`auth`] bearer-token
+//! comparison.
+
 pub mod address;
 pub mod auth;
 

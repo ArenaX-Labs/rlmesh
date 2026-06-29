@@ -1,3 +1,7 @@
+//! Client-side validation of model route and predict requests before they hit
+//! the wire: a non-empty env/request id, and an ordered, non-empty,
+//! duplicate-free episode-id vector on a predict.
+
 use std::collections::HashSet;
 
 use rlmesh_proto::model::v1::{AdapterContext, PredictRequest};

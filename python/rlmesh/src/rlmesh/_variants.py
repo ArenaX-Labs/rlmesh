@@ -13,11 +13,12 @@ class Variant:
 
     Return a list of these from an optional ``enumerate_variants()`` classmethod
     (or ``yield`` them lazily for a large catalog) to enumerate the finite, named
-    environments a factory contains -- e.g. one per benchmark task. This is distinct from ``enumerate_params()``, which declares independent
-    *sweep axes*: a catalog is a flat list of named, already-bound sub-envs, the
-    right shape when the dimensions are dependent (a task index whose range depends
-    on the suite) and each entry has a human identity. ``python -m rlmesh.describe``
-    emits the catalog off-GPU for a managed dashboard / env hub to list and spawn.
+    environments a factory contains -- e.g. one per benchmark task. Distinct from
+    ``enumerate_params()``, which declares independent *sweep axes*: a catalog is a
+    flat list of named, already-bound sub-envs, the right shape when the dimensions
+    are dependent (a task index whose range depends on the suite) and each entry has
+    a human identity. ``python -m rlmesh.describe`` emits the catalog off-GPU for a
+    managed dashboard / env hub to list and spawn.
 
     Args:
         id: Author-explicit, non-empty, **factory-unique** handle (e.g.

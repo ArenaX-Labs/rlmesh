@@ -54,7 +54,7 @@ class SpaceLike(Protocol[SpaceT]):
 
 
 class EnvLike(Protocol[EnvObsT, EnvActT]):
-    """Structural protocol for single environment."""
+    """Structural protocol for a single environment."""
 
     @property
     def observation_space(self) -> SpaceLike[EnvObsT]:

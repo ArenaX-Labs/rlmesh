@@ -1,3 +1,11 @@
+//! The `rlmesh` command-line binary.
+//!
+//! [`run_cli`] parses argv with clap and dispatches the available subcommands.
+//! Today that is just `version`, which reports this build's version and the
+//! distribution it shipped in (read from the `RLMESH_CLI_DISTRIBUTION`
+//! environment variable, defaulting to `standalone`) so a wheel- or
+//! container-bundled CLI can identify how it was packaged.
+
 mod cli;
 mod viewtest;
 

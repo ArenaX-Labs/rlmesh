@@ -1,3 +1,6 @@
+//! Env wire helpers: proto<->native error mapping and request-kind labels for
+//! tracing.
+
 use rlmesh_proto::env::v1::{
     EnvError as ProtoEnvError, EnvErrorCode as ProtoEnvErrorCode, JoinRequest, join_request,
 };

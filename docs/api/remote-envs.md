@@ -1,6 +1,10 @@
 # Remote Environments
 
-Remote clients connect to an environment endpoint and expose the same core calls as a local Gymnasium environment: `reset`, `step`, `render`, and `close`.
+```{note}
+This is the autodoc API reference. For the guided walkthrough see {doc}`../user-guide/remote-clients`.
+```
+
+Remote clients connect to an environment endpoint and expose the same core calls as a local Gymnasium environment: `reset`, `step`, `render`, and `close`. Reach for one when the environment runs in another process; the contract from the handshake supplies the spaces, so the client needs no local copy of the env.
 
 Use the concrete backend modules in application code:
 

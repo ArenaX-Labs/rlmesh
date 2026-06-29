@@ -1,6 +1,11 @@
 # Torch
 
-The Torch backend is experimental.
+```{note}
+This is the autodoc API reference. For how backends decode values at the Python boundary see
+{doc}`../user-guide/backends`.
+```
+
+The Torch backend is experimental. Use it for model code that already works with Torch tensors, especially when you want a zero-copy view over the wire buffer.
 
 ## What This Backend Changes
 

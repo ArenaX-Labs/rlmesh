@@ -6,8 +6,8 @@ contract, obs/action spaces, and the runtime it was generated under. It is
 generated once (build/generate-time), uploaded to a managed service, listed in a
 dashboard, and is forward-compatible with being baked into an OCI image label.
 
-This document is the **cross-language contract**. The format — the field set,
-versioning, ordering, and serialization — is owned by the Rust crate
+This document is the **cross-language contract**. The format (the field set,
+versioning, ordering, and serialization) is owned by the Rust crate
 `rlmesh-adapters` (`build_describe_envelope`). Any producer (the Python SDK
 today; a future C++ or TypeScript SDK) emits a byte-identical envelope for the
 same logical input by handing its gathered pieces to that one builder, or by
@@ -15,7 +15,7 @@ implementing this contract exactly.
 
 ## Versioning
 
-- `schema_version` is an integer, **stamped by the builder** — a producer never
+- `schema_version` is an integer, **stamped by the builder**: a producer never
   sets it. It is `1` today.
 - The wire discriminant is the metadata key **`rlmesh.describe.v1`** (the
   `DESCRIBE_METADATA_KEY` constant). Within `v1` the format evolves **additively
@@ -23,7 +23,7 @@ implementing this contract exactly.
   new key (`rlmesh.describe.v2`) and bumps `schema_version`; a v2 reader keeps
   reading v1.
 - Serialization is canonical: the builder serializes the whole tree through one
-  `serde_json` pass, and object keys sort (`BTreeMap`) — so the bytes do not
+  `serde_json` pass, and object keys sort (`BTreeMap`), so the bytes do not
   depend on the producer's language or JSON formatting.
 
 ## Layers — who produces what
@@ -100,7 +100,7 @@ Any gathered piece that fails (an env that needs a GPU to build, a `make()` that
 needs unavailable args, a model spec that can't be published, a broken
 `enumerate_*`) is replaced by an `{"error": "<message>"}` badge in place of that
 field (`env_spec`, `model_spec`) or as a sibling `*_error` key (`catalog_error`,
-`variations_error`). The envelope is **always** emitted — a no-GPU build still
+`variations_error`). The envelope is **always** emitted: a no-GPU build still
 produces a useful artifact with `env_spec: {"error": ...}`.
 
 ## Invariants enforced by the builder

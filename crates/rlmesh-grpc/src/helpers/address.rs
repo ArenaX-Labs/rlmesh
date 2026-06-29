@@ -1,3 +1,10 @@
+//! Address parsing and normalization for connect and bind targets.
+//!
+//! Accepts the `host:port`, `tcp://host:port`, `http://host:port`, and (on Unix)
+//! `unix:///path` forms, rejecting `https://` (reserved for control-plane URLs)
+//! and other schemes. A connect target carries both the dial endpoint and a
+//! normalized display address; a bind target carries the host/port or socket path.
+
 #[cfg(not(unix))]
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -5,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, TransportError};
 
+/// A parsed connect target: the gRPC dial endpoint plus a normalized display
+/// address, and the socket path for a Unix target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvConnectTarget {
     endpoint: String,
@@ -21,6 +30,8 @@ enum EnvConnectTargetKind {
     },
 }
 
+/// A parsed bind target: a TCP host/port (port `0` requests an OS-assigned
+/// port) or a Unix socket path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BindTarget {
     Tcp { host: String, port: u16 },
@@ -28,14 +39,18 @@ pub enum BindTarget {
 }
 
 impl EnvConnectTarget {
+    /// The normalized display address (`tcp://...` or `unix://...`).
     pub fn display_address(&self) -> &str {
         &self.address
     }
 
+    /// The `http://...` endpoint to dial (a placeholder authority for a Unix
+    /// target, which connects through a custom connector).
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
+    /// The socket path for a Unix target, or `None` for TCP.
     pub fn unix_path(&self) -> Option<&PathBuf> {
         match &self.kind {
             EnvConnectTargetKind::Tcp => None,
@@ -45,6 +60,8 @@ impl EnvConnectTarget {
     }
 }
 
+/// Parse a connect address into an [`EnvConnectTarget`], rejecting `https://`
+/// and unsupported schemes.
 pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
     let addr = addr.trim();
     if addr.is_empty() {
@@ -101,6 +118,8 @@ pub fn parse_env_connect_target(addr: &str) -> Result<EnvConnectTarget, Error> {
     })
 }
 
+/// Parse a bind address into a [`BindTarget`]. A bare port or `host:port`
+/// defaults the host to `127.0.0.1`; a missing host is normalized likewise.
 pub fn parse_bind_target(addr: &str) -> Result<BindTarget, Error> {
     let addr = addr.trim();
     if addr.is_empty() {
@@ -142,10 +161,12 @@ pub fn parse_bind_target(addr: &str) -> Result<BindTarget, Error> {
     })
 }
 
+/// Validate a tcp/http authority and re-emit it as an `http://...` dial endpoint.
 pub fn normalize_endpoint(addr: &str) -> Result<String, Error> {
     normalize_tcp_to_scheme(addr, "http://")
 }
 
+/// Validate a tcp/http authority and re-emit it as a `tcp://...` session address.
 pub fn normalize_tcp_session_address(addr: &str) -> Result<String, Error> {
     normalize_tcp_to_scheme(addr, "tcp://")
 }

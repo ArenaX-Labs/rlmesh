@@ -1,10 +1,8 @@
 # Sandbox Examples
 
-Sandbox helpers are experimental. Use them when an environment needs an owned Docker-backed process instead of a separate server terminal.
+Sandbox helpers are experimental. Reach for one when an environment needs an owned Docker-backed process instead of a separate server terminal. The client shape matches `RemoteEnv`, so the run loop is the one you already write. The runnable files live in `examples/python/sandbox`. For the full helper surface and version pinning see {doc}`../user-guide/sandbox`.
 
-The runnable files live in `examples/python/sandbox`.
-
-## Gymnasium Sandbox
+## Gymnasium sandbox
 
 Start with the Gymnasium example:
 
@@ -24,7 +22,7 @@ env = SandboxEnv(
 )
 ```
 
-`packages` are installed in the sandbox image and `imports` are checked at startup. The client shape is the same as `RemoteEnv`, so a `try`/`finally` keeps the owned container from leaking:
+`packages` are installed in the sandbox image and `imports` are checked at startup. Because the client shape matches `RemoteEnv`, a `try`/`finally` keeps the owned container from leaking:
 
 ```python
 MAX_STEPS = 45
@@ -44,9 +42,9 @@ finally:
 
 The runnable file is {source}`examples/python/sandbox/gym_sandbox.py <examples/python/sandbox/gym_sandbox.py>`.
 
-## Hugging Face Sandbox
+## Hugging Face sandbox
 
-`hf_sandbox.py` shows the same single-env loop against a Hugging Face EnvHub source:
+`hf_sandbox.py` runs the same single-env loop against a Hugging Face EnvHub source:
 
 ```bash
 uv run python examples/python/sandbox/hf_sandbox.py
@@ -64,7 +62,7 @@ env = SandboxEnv(
 )
 ```
 
-The selector chooses suite `cartpole_suite`, task `0`. The example uses `SandboxEnv` because it requests one environment. Use `SandboxVectorEnv` when serving more than one:
+The selector chooses suite `cartpole_suite`, task `0`. This example uses `SandboxEnv` because it requests one environment. Use `SandboxVectorEnv` when serving more than one:
 
 ```python
 from rlmesh.numpy import SandboxVectorEnv
@@ -72,6 +70,12 @@ from rlmesh.numpy import SandboxVectorEnv
 envs = SandboxVectorEnv("CartPole-v1", num_envs=2)
 ```
 
-The demo is intentionally unpinned; for real evaluations, pin the repository to a full commit SHA and keep `trust_remote_code=False` unless you have reviewed the source.
+The demo is intentionally unpinned. For real evaluations, pin the repository to a full commit SHA and keep `trust_remote_code=False` unless you have reviewed the source.
 
 The runnable file is {source}`examples/python/sandbox/hf_sandbox.py <examples/python/sandbox/hf_sandbox.py>`.
+
+## Where next
+
+- {doc}`../user-guide/sandbox` — the sandbox helpers in depth.
+- {doc}`byo-container` — build and run your own env and model images.
+- {doc}`/compatibility` — pinning a source to a commit SHA.

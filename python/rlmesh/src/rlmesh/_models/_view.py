@@ -25,6 +25,16 @@ class View:
 
     The common cases are the string shorthands ``"terminal"`` / ``"http"`` /
     ``"http:9000"`` / ``"both"``; construct a ``View`` directly only to tune.
+
+    Attributes:
+        backend: Where to draw -- ``"terminal"`` (in-place half-blocks),
+            ``"http"`` (a local web page), or ``"both"``.
+        port: HTTP port for the ``"http"`` / ``"both"`` backends.
+        fps: Target frame rate; frames produced faster are dropped.
+        source: Which source to show first by label (a render label or an image
+            role); ``None`` shows the first available.
+        format: Encoding for HTTP frames, ``"jpeg"`` or ``"png"``.
+        quality: JPEG quality 1..100 (ignored for PNG).
     """
 
     backend: str = "terminal"

@@ -8,6 +8,8 @@ Serve a Gymnasium environment in one process. Connect to it from another process
 pip install "rlmesh[gymnasium,numpy]"
 ```
 
+See {doc}`installation` for the optional extras.
+
 ## Server
 
 Run this in the first process:
@@ -61,3 +63,8 @@ uv run python examples/python/quickstart/serve_gymnasium.py --env-id Acrobot-v1
 ```
 
 For the smallest custom environment object, use `examples/python/quickstart/serve.py`. It implements a tiny Gymnasium-style `CounterEnv` without installing Gymnasium.
+
+## Next
+
+- {doc}`gymnasium` — the Gymnasium spaces RLMesh supports.
+- {doc}`examples` — swap environments, run sandboxed stacks, and fan one evaluator out to multiple endpoints.

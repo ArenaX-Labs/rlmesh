@@ -1,6 +1,7 @@
 # API Reference
 
-Use this when you need exact imports, methods, and backend behavior.
+The exact imports, method signatures, and backend behavior. Reach for these pages when you already
+know what you want to call and need the precise surface; the user-guide pages cover when and why.
 
 ## Behavior
 

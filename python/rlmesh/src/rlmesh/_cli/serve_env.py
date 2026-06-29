@@ -39,6 +39,8 @@ __all__ = [
 
 @dataclass
 class ServeArgs:
+    """Parsed arguments for the ``env serve`` command."""
+
     env: str | None
     entrypoint: str | None
     transport: str

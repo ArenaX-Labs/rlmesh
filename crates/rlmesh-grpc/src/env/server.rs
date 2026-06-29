@@ -173,6 +173,8 @@ impl<E: Environment> GrpcEnvServer<E> {
     }
 }
 
+/// Build a tonic `EnvServiceServer` hosting `env`, with the RLMesh message-size
+/// limits applied.
 pub fn env_service<E: Environment + 'static>(
     env: E,
 ) -> rlmesh_proto::env::v1::env_service_server::EnvServiceServer<GrpcEnvServer<E>> {

@@ -264,8 +264,12 @@ Tokenization stays in the model -- `Text` delivers the raw string.
 
 `scale`, `invert`, and `threshold` declare a side's actuator convention. They can be set on **either side** and compose as literal transforms applied **after** the declared formats (rotation, range) are bridged -- **model-side first** (the model's own output convention), then **env-side** (the env's):
 
-```
-rotation/range bridged  →  model(scale → invert → threshold)  →  env(scale → invert → threshold)  →  binary  →  clip
+```{mermaid}
+flowchart LR
+  a["rotation / range bridged"] --> b["model: scale → invert → threshold"]
+  b --> c["env: scale → invert → threshold"]
+  c --> d["binary"]
+  d --> e["clip"]
 ```
 
 So an env declares its quirk once and every model inherits it; _and_ a model whose own output differs from a **shared** env it cannot edit declares the bridge on its own actuator -- e.g. a sign-flipped gripper as `Actuator(ACTION_GRIPPER, dim=1, invert=True)`, or a sigmoid-probability gripper as `binary=True, threshold=0.5` -- instead of hardcoding the env's convention in `predict()`. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
