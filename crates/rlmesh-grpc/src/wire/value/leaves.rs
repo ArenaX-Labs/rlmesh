@@ -10,10 +10,6 @@
 //! just the per-lane bytes concatenated (lane-contiguous); Text carries an
 //! explicit `[u64 count][u64 byte_len…]` header. **N is an authoritative input
 //! on decode, never recovered by division.**
-//!
-//! ponytail: the slab is built by concatenating per-lane leaf bytes rather than
-//! `Tensor::stack` — byte-identical for row-major `(N,*shape)`, and it works
-//! uniformly for the non-Box leaves stack can't carry.
 
 use prost::bytes::Bytes;
 use rlmesh_spaces as native;

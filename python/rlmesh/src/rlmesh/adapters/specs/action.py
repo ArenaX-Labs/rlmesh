@@ -39,26 +39,24 @@ class Actuator:
             mixed-range action: a global clip applies one bound to every dim, so
             it is wrong when dims have different ranges (e.g. delta-pos in
             ``[-1, 1]`` but rotation in ``[-pi/2, pi/2]``). ``clip=True`` requires
-            ``range``. (ponytail: a bool clamps to ``range``; widen to a
-            ``(low, high)`` overload, like ``Image.normalize``, only if an
-            asymmetric clamp is ever needed.)
+            ``range``.
 
-    ``scale``, ``invert``, ``threshold``, and ``clip`` are env-side corrections:
-    they declare the env actuator's convention and are applied to the incoming
-    model value after the declared formats (rotation, range) are bridged, in the
-    order scale, invert, threshold, ``binary``, then ``clip``. Declared once on
-    the env, every model evaluated against it inherits the correction.
+    ``scale``, ``invert``, and ``threshold`` declare a side's actuator convention.
+    They can be set on either side and compose as literal transforms applied after
+    the declared formats (rotation, range) are bridged -- model-side first (the
+    model's own output convention), then env-side -- each in the order scale,
+    invert, threshold, then ``binary``. So an env declares its quirk once for every
+    model to inherit, and a model whose output differs from a shared env it cannot
+    edit declares the bridge on its own actuator (e.g. a gripper-sign flip as
+    ``invert=True``). ``clip`` is the exception: it stays env-side only, clamping to
+    the env actuator's ``range``.
     """
 
-    # `role` is optional (None => opaque); `dim` then needs a default for field
-    # ordering, like Field. dim=0 is never valid and is rejected below.
     role: str | None = None
     dim: int = 0
     encoding: RotationEncoding | CustomEncoding | None = None
     range: tuple[float, float] | None = None
     binary: bool = False
-    # Appended after binary so the existing positional layout (..., range, binary)
-    # is unchanged; these are keyword-only in practice.
     scale: float | None = None
     invert: bool = False
     threshold: float | None = None
@@ -66,14 +64,9 @@ class Actuator:
     fill: float = 0.0
 
     def __post_init__(self) -> None:
-        # dim defaults to 0 only to satisfy field ordering (the optional role
-        # precedes it); 0 means it was omitted. A negative dim is left to the Rust
-        # codec, which rejects it with a field-path-annotated message.
         if self.dim == 0:
             raise ValueError(f"Actuator {self.role!r}: dim is required (>= 1)")
         if self.role is None:
-            # Opaque: emits a constant, so the model-mapping fields are meaningless
-            # (mirrors a role-less Field's skip rule). Only dim + fill are allowed.
             if (
                 self.encoding is not None
                 or self.range is not None
@@ -93,15 +86,11 @@ class Actuator:
                 f"Actuator {self.role!r}: fill applies only to a role-less (opaque) "
                 "actuator; a roled actuator takes its values from the model"
             )
-        # clip-to-range needs a range to clamp to; catch the contradiction at
-        # authoring rather than at resolve (the resolver enforces it too).
         if self.clip and self.range is None:
             raise ValueError(
                 f"Actuator {self.role!r}: clip=True clamps to range, so range "
                 "must be set"
             )
-        # The CustomEncoding width law is host-only: CustomEncoding never crosses
-        # the wire, so Rust cannot own it -- it stays here as construction sugar.
         if (
             isinstance(self.encoding, CustomEncoding)
             and self.dim != self.encoding.width

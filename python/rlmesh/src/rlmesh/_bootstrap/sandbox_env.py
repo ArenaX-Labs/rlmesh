@@ -57,8 +57,7 @@ def main(
         # so the obs/action seam is typed from RLMESH_FRAMEWORK / RLMESH_DEVICE
         # (gym/hf are numpy; a prebuilt EnvFactory image is best served via
         # `python -m rlmesh.serve --env pkg:Factory`, which reads the factory's
-        # pinned framework directly). ponytail: env-var override here; the class
-        # rail lives on the serve-CLI route.
+        # pinned framework directly).
         framework = os.environ.get("RLMESH_FRAMEWORK") or None
         device = os.environ.get("RLMESH_DEVICE") or None
         # Ambient RLMESH_DEVICE is meaningful only for a device framework

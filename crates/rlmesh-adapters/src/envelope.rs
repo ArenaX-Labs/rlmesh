@@ -201,10 +201,6 @@ pub fn build_describe_envelope(
 
 /// Lightweight RFC-3339 shape check: `YYYY-MM-DDThh:mm:ss` then a zone
 /// (`Z`/`+hh:mm`/`-hh:mm`) with an optional fractional second.
-///
-// ponytail: structural check, not a calendar validator (no date dep). It rejects
-// obvious garbage and pins the cross-language format; if true calendar validation
-// is ever needed, swap in `time`/`jiff` here -- the one call site.
 fn is_rfc3339(s: &str) -> bool {
     let b = s.as_bytes();
     // Minimum "1970-01-01T00:00:00Z" is 20 bytes.

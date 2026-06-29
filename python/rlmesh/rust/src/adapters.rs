@@ -24,8 +24,9 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
     ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
-    NodePath, ObsPlan, PathSeg, ResolvedAdapter, SkipCustoms, SpaceView, Value,
-    build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model, resolve, roles,
+    NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, Value,
+    build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model,
+    reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
 
@@ -35,9 +36,6 @@ use serde::de::DeserializeOwned;
 /// amplifier. 4 MiB is absurdly generous for any real spec yet caps a hostile
 /// contract; JSON nesting depth is separately bounded by serde_json's default
 /// 128-deep recursion limit, and per-dimension size by `num::MAX_DIM`.
-// ponytail: total-byte cap only. Per-unknown count/size sub-caps are subsumed by
-// this (an unknown blob cannot exceed the whole-spec cap); add them if a tighter
-// budget per retained blob is ever needed.
 const MAX_SPEC_BYTES: usize = 4 << 20;
 
 /// Deserialize a spec JSON string with a field-path-annotated error.
@@ -602,16 +600,28 @@ pub fn adapters_join_check(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool) -> str: ...
+def adapters_spec_normalize(side: str, spec_json: str, allow_custom: bool, role_policy: str = "passthrough") -> str: ...
 "#
     )
 )]
 #[pyfunction]
+#[pyo3(signature = (side, spec_json, allow_custom, role_policy = "passthrough"))]
 pub fn adapters_spec_normalize(
     side: &str,
     spec_json: &str,
     allow_custom: bool,
+    role_policy: &str,
 ) -> PyResult<String> {
+    let role_gate = match role_policy {
+        "passthrough" => None,
+        "strict" => Some(RolePolicy::Strict),
+        "forbid" => Some(RolePolicy::Forbid),
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown role_policy {other:?}; expected \"passthrough\", \"strict\", or \"forbid\""
+            )));
+        }
+    };
     match side {
         "env" => {
             let tags: EnvTags = de_spec("env tags", spec_json)?;
@@ -620,6 +630,11 @@ pub fn adapters_spec_normalize(
             // reaching a peer. The READ door (`adapters_resolve`) skips this.
             reject_unknowns_env(&tags)
                 .map_err(|message| PyValueError::new_err(format!("invalid env tags: {message}")))?;
+            if let Some(policy) = role_gate {
+                reject_unsanctioned_roles_env(&tags, policy).map_err(|message| {
+                    PyValueError::new_err(format!("invalid env tags: {message}"))
+                })?;
+            }
             serde_json::to_string(&tags).map_err(|err| {
                 PyValueError::new_err(format!("could not serialize env tags: {err}"))
             })
@@ -630,6 +645,11 @@ pub fn adapters_spec_normalize(
             reject_unknowns_model(&spec).map_err(|message| {
                 PyValueError::new_err(format!("invalid model spec: {message}"))
             })?;
+            if let Some(policy) = role_gate {
+                reject_unsanctioned_roles_model(&spec, policy).map_err(|message| {
+                    PyValueError::new_err(format!("invalid model spec: {message}"))
+                })?;
+            }
             // Defense-in-depth at the publish boundary. Today the live gate is
             // Python's model_input_to_dict, which raises on any custom before a
             // spec ever reaches here, so every Python caller passes

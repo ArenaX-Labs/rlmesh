@@ -35,10 +35,6 @@ fn collect_specs<'a>(spec: &'a SpaceSpec, out: &mut Vec<&'a SpaceSpec>) {
 /// Leaf values of `value` in canonical order, driven by `spec`'s declared
 /// structure. Errors on a structural mismatch (missing Dict key, wrong Tuple
 /// arity, composite spec over a non-composite value).
-///
-/// ponytail: assumes each fundamental leaf already conforms to its spec — a leaf
-/// kind mismatch (e.g. Box spec, Discrete value) is the per-leaf encoder's error,
-/// not re-checked here. Run `conform` first if the value is untrusted.
 pub fn flatten_leaves<'v>(
     spec: &SpaceSpec,
     value: &'v SpaceValue,

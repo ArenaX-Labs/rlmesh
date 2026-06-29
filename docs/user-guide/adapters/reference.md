@@ -27,7 +27,9 @@ Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action
 | `ACTION_DELTA_ROT` | `action/delta_eef_rot` | manipulation | `action/`  | width follows the rotation encoding |
 | `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                   |
 
-Roles do not imply widths mechanically -- specs pin widths explicitly where they matter (`dim`/`index` on a part, `dim` on an actuator). Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
+You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error) -- it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
+
+**Registered vs. ad-hoc roles.** A registered role (the table above) is a shared contract: independently authored envs and models line up on it without prior agreement, and the fixed-width ones validate their `dim`. An _ad-hoc_ role -- any other `<kind>/<name>` string -- still resolves on verbatim agreement, but it draws a non-fatal authoring nudge, and at the managed-service publish boundary a curated tier may reject it (`role_policy="forbid"`). When a role is _intentionally_ non-standard -- a self-contained env/model pair you own, or a not-yet-blessed domain -- mark it with the reserved **`x/` prefix**: an `x/...` role is never nudged and always passes the publish gate, declaring "I know this isn't standard." For an action dim no model reads, prefer a role-less (opaque) actuator over an ad-hoc role.
 
 ### Bimanual roles
 

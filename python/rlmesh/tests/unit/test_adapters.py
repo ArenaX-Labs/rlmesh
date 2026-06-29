@@ -1475,6 +1475,42 @@ def test_tag_silent_on_correctly_labeled_image() -> None:
         adapt.tag(env, tags)
 
 
+def test_unregistered_role_nudges_at_tag_but_escape_does_not() -> None:
+    env = _fake_env(gym.spaces.Dict({"thing": box(3)}))
+    adhoc = adapt.EnvTags(
+        observation={"thing": adapt.StateTag(role="proprio/made_up")},
+        action=LIBERO_ACTION,
+    )
+    with pytest.warns(UserWarning, match="role registry"):
+        adapt.tag(env, adhoc)
+    clean = adapt.EnvTags(
+        observation={"thing": adapt.StateTag(role="x/custom")},
+        action=LIBERO_ACTION,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        adapt.tag(env, clean)
+
+
+def test_role_policy_levels() -> None:
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    adhoc = '{"observation": {}, "action": {"components": [{"role": "action/wiggle", "dim": 1}]}}'
+    escape = '{"observation": {}, "action": {"components": [{"role": "x/custom", "dim": 1}]}}'
+    registered = '{"observation": {}, "action": {"components": [{"role": "action/gripper", "dim": 1}]}}'
+
+    adapters_spec_normalize("env", adhoc, False)
+
+    with pytest.raises(ValueError, match="unregistered"):
+        adapters_spec_normalize("env", adhoc, False, "strict")
+    adapters_spec_normalize("env", escape, False, "strict")
+    adapters_spec_normalize("env", registered, False, "strict")
+
+    with pytest.raises(ValueError, match="including the `x/`"):
+        adapters_spec_normalize("env", escape, False, "forbid")
+    adapters_spec_normalize("env", registered, False, "forbid")
+
+
 def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     # Negatives are rejected by the authoritative Rust codec (u32) at
     # serialize/normalize with a field-path-annotated message. Action components

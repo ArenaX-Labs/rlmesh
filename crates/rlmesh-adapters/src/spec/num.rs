@@ -14,14 +14,6 @@ use serde::de::{self, Deserializer, Visitor};
 /// Shared upper bound on every count/dim field on the wire (`dim`, `index`,
 /// `pad_to`, `lead_dims`, image `height`/`width`; `stack` layers a tighter
 /// `1..=64` on top via [`de_stack`](crate::spec::model::image)).
-///
-/// ponytail: `1 << 24` is absurdly generous for any real spec (no image is 16M
-/// px on a side, no state vector is 16M wide) yet stops an untrusted contract
-/// from declaring a multi-GB dimension (e.g. `pad_to: 4_000_000_000` → a 16 GB
-/// resize) or a product that integer-overflows `usize` in the apply path. It
-/// bounds a single dimension, NOT a product: a spec within `MAX_DIM` can still
-/// request a large allocation — a per-apply allocation budget is the upgrade
-/// path if that ever bites.
 pub(crate) const MAX_DIM: u32 = 1 << 24;
 
 struct CountVisitor;

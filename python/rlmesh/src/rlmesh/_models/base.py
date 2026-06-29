@@ -103,9 +103,7 @@ def _accepts_horizon(fn: Corner) -> bool:
     is fixed by the trained weights. An autoregressive decoder that can stop early
     declares an optional second parameter (``execution_horizon``); detecting that once
     here keeps the common corner a clean ``predict_chunk(obs)`` while the rare one is
-    handed how many actions the runtime will execute. ponytail: supports the two real
-    shapes -- ``(obs)`` and ``(obs, execution_horizon)``; an exotic keyword-only /
-    positional-only second param is not honored (document "second positional").
+    handed how many actions the runtime will execute.
     """
     try:
         params = inspect.signature(fn).parameters.values()

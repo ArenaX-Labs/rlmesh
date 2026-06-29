@@ -57,6 +57,124 @@ pub fn reject_bare_fields_model(spec: &ModelSpec) -> Result<(), String> {
     reject_action(&spec.output)
 }
 
+/// The publish-gate policy for ad-hoc (unregistered) roles, from most to least
+/// permissive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RolePolicy {
+    /// Every role passes -- the open vocabulary (an authoring nudge only). The
+    /// local/OSS default.
+    Passthrough,
+    /// Ad-hoc roles are rejected, but the `x/` escape is allowed: registered roles
+    /// or explicit escapes, no *accidental* ad-hoc. The curated managed default.
+    Strict,
+    /// Every unregistered role is rejected, even the `x/` escape: a registered-only
+    /// lockdown, the absolute tier.
+    Forbid,
+}
+
+impl RolePolicy {
+    /// Whether `role` is allowed under this policy.
+    fn allows(self, role: &str) -> bool {
+        match self {
+            RolePolicy::Passthrough => true,
+            RolePolicy::Strict => crate::roles::registry::is_sanctioned_role(role),
+            RolePolicy::Forbid => crate::roles::registry::is_known_role(role),
+        }
+    }
+}
+
+/// Reject one role that `policy` disallows.
+fn reject_role(role: &str, locus: &str, policy: RolePolicy) -> Result<(), String> {
+    if policy.allows(role) {
+        return Ok(());
+    }
+    let hint = if policy == RolePolicy::Forbid {
+        "use a blessed role (this gate forbids every unregistered role, including the `x/` escape)"
+    } else {
+        "use a blessed role, or the `x/` escape namespace for an intentionally non-standard one"
+    };
+    Err(format!(
+        "{locus} declares unregistered role {role:?}; {hint}"
+    ))
+}
+
+/// Reject any role an env spec declares that `policy` disallows. A separate pass
+/// from the field/kind gate, run only when the policy is not `Passthrough`.
+pub fn reject_unsanctioned_roles_env(tags: &EnvTags, policy: RolePolicy) -> Result<(), String> {
+    walk_obs_roles(&tags.observation, &NodePath::root(), policy)?;
+    reject_action_roles(&tags.action, policy)
+}
+
+/// Reject any role a model spec declares that `policy` disallows.
+pub fn reject_unsanctioned_roles_model(spec: &ModelSpec, policy: RolePolicy) -> Result<(), String> {
+    walk_input_roles(&spec.input, &NodePath::root(), policy)?;
+    reject_action_roles(&spec.output, policy)
+}
+
+fn walk_obs_roles(node: &ObsNode, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
+    match node {
+        ObsNode::Leaf(leaf) => obs_leaf_roles(leaf, path, policy),
+        ObsNode::Dict(map) => map.iter().try_for_each(|(key, child)| {
+            walk_obs_roles(child, &path.push_key(key.clone()), policy)
+        }),
+        ObsNode::Tuple(items) => items
+            .iter()
+            .enumerate()
+            .try_for_each(|(index, child)| walk_obs_roles(child, &path.push_index(index), policy)),
+    }
+}
+
+fn obs_leaf_roles(leaf: &ObsLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
+    let locus = format!("observation {:?}", path.to_string());
+    match leaf {
+        ObsLeaf::Image(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::State(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::Text(tag) => reject_role(&tag.role, &locus, policy),
+        ObsLeaf::Split(layout) => layout
+            .fields
+            .iter()
+            .try_for_each(|field| match &field.role {
+                Some(role) => reject_role(role, &locus, policy),
+                None => Ok(()),
+            }),
+        ObsLeaf::Unknown { .. } => Ok(()),
+    }
+}
+
+fn walk_input_roles(node: &InputNode, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
+    match node {
+        InputNode::Leaf(leaf) => model_leaf_roles(leaf, path, policy),
+        InputNode::Dict(map) => map.iter().try_for_each(|(key, child)| {
+            walk_input_roles(child, &path.push_key(key.clone()), policy)
+        }),
+        InputNode::Tuple(items) => items.iter().enumerate().try_for_each(|(index, child)| {
+            walk_input_roles(child, &path.push_index(index), policy)
+        }),
+    }
+}
+
+fn model_leaf_roles(leaf: &ModelLeaf, path: &NodePath, policy: RolePolicy) -> Result<(), String> {
+    let locus = format!("model input {:?}", path.to_string());
+    match leaf {
+        ModelLeaf::Image(input) => reject_role(&input.role, &locus, policy),
+        ModelLeaf::State(input) => input
+            .components
+            .iter()
+            .try_for_each(|part| reject_role(&part.role, &locus, policy)),
+        ModelLeaf::Text(input) => reject_role(&input.role, &locus, policy),
+        ModelLeaf::Custom(_) | ModelLeaf::Unknown { .. } => Ok(()),
+    }
+}
+
+fn reject_action_roles(action: &Action, policy: RolePolicy) -> Result<(), String> {
+    for (index, actuator) in action.components.iter().enumerate() {
+        if let Some(role) = &actuator.role {
+            reject_role(role, &format!("action component[{index}]"), policy)?;
+        }
+    }
+    Ok(())
+}
+
 /// A field name in the reserved experimental/vendor namespace is "safe to
 /// ignore" — the producer, who knows its semantics, marked it cosmetic. Bare
 /// (unprefixed) fields are must-understand and fail closed.
@@ -238,5 +356,43 @@ mod tests {
         .unwrap();
         let err = reject_unknowns_model(&dirty).unwrap_err();
         assert!(err.contains("wobble"), "got: {err}");
+    }
+
+    #[test]
+    fn strict_allows_escape_and_opaque_but_forbid_rejects_escape() {
+        use super::{RolePolicy, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model};
+
+        let with_escape: EnvTags = serde_json::from_str(
+            r#"{"observation": {"cam": {"type": "image", "role": "image/primary"},
+                "ext": {"type": "state", "role": "x/custom"}},
+                "action": {"components": [{"role": "action/gripper", "dim": 1}, {"dim": 2}]}}"#,
+        )
+        .unwrap();
+        assert!(reject_unsanctioned_roles_env(&with_escape, RolePolicy::Strict).is_ok());
+
+        let err = reject_unsanctioned_roles_env(&with_escape, RolePolicy::Forbid).unwrap_err();
+        assert!(
+            err.contains("x/custom") && err.contains("including the `x/`"),
+            "{err}"
+        );
+
+        let bad: EnvTags = serde_json::from_str(
+            r#"{"observation": {"cam": {"type": "image", "role": "image/primary"}},
+                "action": {"components": [{"role": "action/wiggle", "dim": 1}]}}"#,
+        )
+        .unwrap();
+        let err = reject_unsanctioned_roles_env(&bad, RolePolicy::Strict).unwrap_err();
+        assert!(
+            err.contains("action/wiggle") && err.contains("unregistered"),
+            "{err}"
+        );
+
+        let bad_model: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "state", "components": ["proprio/eef_pos", "proprio/made_up"]},
+                "output": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unsanctioned_roles_model(&bad_model, RolePolicy::Strict).unwrap_err();
+        assert!(err.contains("proprio/made_up"), "{err}");
     }
 }

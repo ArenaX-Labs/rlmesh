@@ -43,5 +43,6 @@ pub use model::{
 };
 pub use rotations::RotationEncoding;
 pub use strict::{
-    reject_bare_fields_env, reject_bare_fields_model, reject_unknowns_env, reject_unknowns_model,
+    RolePolicy, reject_bare_fields_env, reject_bare_fields_model, reject_unknowns_env,
+    reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
 };

@@ -77,9 +77,6 @@ class BridgedEnv:
         # ``(obs, info)`` return (info is always a Mapping) keeps info raw, while a
         # bare obs (including a Tuple-space obs tuple) encodes whole. kwargs forward
         # verbatim (only what the server set -- seed and/or options).
-        # ponytail: a 2-element Tuple-space obs whose 2nd element is itself a
-        # Mapping, returned WITHOUT info, would misparse -- but gym always returns
-        # info, so that shape is unreachable for the gym-style envs this wraps.
         result = self._env.reset(**kwargs)
         split = _obs_info_split(result)
         if split is not None:
@@ -111,7 +108,7 @@ class BridgedEnv:
         # after encode, the framework's own tensors are native Tensors, so a leaf
         # that is still a foreign array slipped through unbridged. Checked on step
         # only -- the reset obs shares the same structure, so the first step covers
-        # it. ponytail: one cheap tree walk per step over a normal-size obs tree.
+        # it.
         self._warn_foreign_leaves(encoded_obs)
         return (
             encoded_obs,

@@ -59,6 +59,22 @@ pub fn is_known_role(name: &str) -> bool {
     role_def(name).is_some()
 }
 
+/// Whether `name` is in the reserved `x/` escape namespace. A role under `x/` is
+/// *intentionally* outside the registry -- the pressure valve so the closed
+/// vocabulary is never a hard gate for a not-yet-blessed domain or local
+/// experimentation. Escape roles are never nudged (no advisory) and never
+/// rejected at the publish gate; they just declare "I know this isn't standard."
+pub fn is_escape_role(name: &str) -> bool {
+    name.starts_with("x/")
+}
+
+/// Whether `name` needs no blessing: either a registered role or an `x/` escape.
+/// An unsanctioned role is ad-hoc -- it resolves only on exact-string agreement,
+/// so it earns the authoring nudge and the publish-gate `Forbid` rejection.
+pub fn is_sanctioned_role(name: &str) -> bool {
+    is_escape_role(name) || is_known_role(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DimLaw, is_known_role, role_def};

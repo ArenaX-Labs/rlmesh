@@ -86,9 +86,6 @@ def _is_image_shaped(value: str) -> bool:
     neither, so it never triggers a Docker probe. The module-import gym id form
     ``pkg:Env-v0`` *does* carry a colon, so the gym version suffix short-circuits
     first -- otherwise it would be misrouted to the Docker path.
-
-    ponytail: the ``-v<N>`` heuristic loses to a Docker tag literally ending in
-    ``-v0``; use an explicit ``docker://``/``gym://`` scheme for that rare clash.
     """
     if looks_like_gym_id(value):
         return False

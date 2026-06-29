@@ -57,8 +57,6 @@ pub mod metrics {
 }
 
 /// Who produced a sample: an `operation` on a `component`.
-// ponytail: &'static str — the serial single-route driver has a fixed small set
-// of (op, component) pairs. Widen to Cow<'static, str> if component_id goes dynamic.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Source {
     pub op: &'static str,

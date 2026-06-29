@@ -128,19 +128,51 @@ pub fn join(
         &mut unknown,
     )?;
     let action = resolve_action(&tags.action, action_space)?;
-    let advisories = observation
+    let mut advisories: Vec<String> = observation
         .iter()
         .filter_map(|feature| match feature {
             EnvFeature::Image(image) => image_layout_advisory(image),
             _ => None,
         })
         .collect();
+    for feature in &observation {
+        let role = match feature {
+            EnvFeature::Image(image) => &image.role,
+            EnvFeature::State(state) => &state.role,
+            EnvFeature::Text(text) => &text.role,
+        };
+        if let Some(note) = role_registry_advisory(role) {
+            advisories.push(note);
+        }
+    }
+    for component in &action.components {
+        if let Some(role) = &component.role
+            && let Some(note) = role_registry_advisory(role)
+        {
+            advisories.push(note);
+        }
+    }
     Ok(EnvFeatures {
         observation,
         action,
         unknown,
         advisories,
     })
+}
+
+/// One advisory if `role` is neither registered nor an `x/` escape -- an ad-hoc
+/// role resolves only on exact-string agreement, so nudge the author toward a
+/// blessed role, the `x/` escape, or (for dims no model reads) an opaque actuator.
+fn role_registry_advisory(role: &str) -> Option<String> {
+    if crate::roles::registry::is_sanctioned_role(role) {
+        return None;
+    }
+    Some(format!(
+        "role {role:?} is not in the role registry; it resolves only when the env and \
+         model agree on its exact string. Prefer a blessed role, mark it intentionally \
+         non-standard with an `x/` prefix, or -- for dims no model reads -- use a \
+         role-less (opaque) actuator"
+    ))
 }
 
 /// Plausible image channel-axis length (RGBA=4, RGB=3, grayscale=1, ...). A
@@ -744,6 +776,36 @@ mod tests {
         // An ad-hoc (unregistered) role has no dim law: any width resolves.
         let adhoc = action_layout(vec![component("action/custom_thing", 4, None)]);
         assert!(resolve_action(&adhoc, &box_view(vec![4], None, None)).is_ok());
+    }
+
+    #[test]
+    fn join_nudges_ad_hoc_roles_but_not_registered_or_escape() {
+        let obs = dict_view(vec![("instruction", text_view())]);
+        let action_space = box_view(vec![3], None, None);
+        let mut observation = BTreeMap::new();
+        observation.insert(
+            "instruction".to_owned(),
+            ObsNode::Leaf(ObsLeaf::Text(TextTag {
+                role: "text/instruction".to_owned(),
+                unknown: Default::default(),
+            })),
+        );
+        let tags = EnvTags {
+            observation: ObsNode::Dict(observation),
+            action: action_layout(vec![
+                component("action/gripper", 1, None),
+                component("action/wiggle", 1, None),
+                component("x/custom", 1, None),
+            ]),
+        };
+        let features = join(&tags, &obs, &action_space).expect("join");
+        let nudges: Vec<&String> = features
+            .advisories
+            .iter()
+            .filter(|note| note.contains("role registry"))
+            .collect();
+        assert_eq!(nudges.len(), 1, "{:?}", features.advisories);
+        assert!(nudges[0].contains("action/wiggle"), "{}", nudges[0]);
     }
 
     #[test]
