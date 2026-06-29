@@ -105,6 +105,23 @@ def test_native_tensor_like_samples_use_canonical_tensor_values() -> None:
     assert space.contains(sample)
 
 
+def test_native_tensor_supports_numpy_array_protocol_zero_copy() -> None:
+    np = pytest.importorskip("numpy")
+    from rlmesh import spaces
+
+    sample = spaces.Box(-1.0, 1.0, shape=[2, 3], dtype="float32").sample()
+
+    array = np.asarray(sample)
+    assert isinstance(array, np.ndarray)
+    assert array.shape == (2, 3)
+    assert array.dtype == np.dtype("float32")
+    # Shares the tensor's buffer rather than copying through tobytes().
+    assert array.base is not None
+    # dtype/copy follow the array protocol.
+    assert np.asarray(sample, dtype=np.float64).dtype == np.dtype("float64")
+    assert np.array(sample, copy=True).flags.writeable
+
+
 def test_numpy_space_from_spec_samples_and_contains_numpy_values() -> None:
     np = pytest.importorskip("numpy")
     from rlmesh import numpy as rlmesh_numpy

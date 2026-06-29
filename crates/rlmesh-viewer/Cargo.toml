@@ -1,0 +1,22 @@
+[package]
+name = "rlmesh-viewer"
+description = "Built-in live debug viewer (HTTP) for RLMesh evaluations."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+categories.workspace = true
+keywords.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+tracing = { workspace = true }
+image = { workspace = true, features = ["png", "jpeg"] }
+tiny_http = "0.12"
+crossterm = "0.29"
+
+[lints]
+workspace = true

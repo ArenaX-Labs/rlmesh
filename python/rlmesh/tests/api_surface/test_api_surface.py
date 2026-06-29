@@ -29,6 +29,7 @@ def test_root_namespace_is_small() -> None:
         "Tensor",
         "Variant",
         "Vector",
+        "View",
         "__version__",
         "adapters",
         "describe",

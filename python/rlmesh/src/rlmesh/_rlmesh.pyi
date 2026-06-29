@@ -43,6 +43,7 @@ __all__ = [
     "PyModelClient",
     "PyVectorEnvClient",
     "PyVectorEnvServer",
+    "PyViewer",
     "ROTATION_DIMS",
     "ServeOptions",
     "Space",
@@ -300,6 +301,47 @@ class PyVectorEnvServer:
     def start(self) -> None: ...
     def wait(self, timeout: typing.Optional[builtins.float] = None) -> builtins.bool: ...
     def shutdown(self) -> None: ...
+
+@typing.final
+class PyViewer:
+    r"""
+    Native debug viewer, built by the Python `Session` when `view=` is set and fed
+    one decoded HWC uint8 frame (the selected camera) per step.
+    """
+    def __new__(cls, terminal: builtins.bool = ..., http_port: typing.Optional[builtins.int] = None, fps: builtins.int = ..., format: typing.Optional[builtins.str] = None, quality: builtins.int = ...) -> PyViewer: ...
+    def set_sources(self, sources: typing.Sequence[builtins.str], default: builtins.int) -> None:
+        r"""
+        Declare the selectable camera labels and the initial selection index.
+        """
+    def selected_source(self) -> typing.Optional[builtins.str]:
+        r"""
+        The currently-selected source label (key thread or browser), or `None`.
+        """
+    def wants_frame(self) -> builtins.bool:
+        r"""
+        Whether the throttle would draw now — gate an expensive frame fetch on this.
+        """
+    def feed_frame(self, buf: typing.Sequence[builtins.int], width: builtins.int, height: builtins.int, channels: builtins.int) -> None:
+        r"""
+        Feed one contiguous HWC uint8 frame for the selected source.
+        """
+    def feed_hud(self, step: builtins.int, reward: builtins.float, outcome: builtins.str) -> None:
+        r"""
+        Update the HUD (step / cumulative reward / outcome label computed by the caller).
+        """
+    def should_quit(self) -> builtins.bool:
+        r"""
+        Whether the user asked to quit via the terminal (q / Esc / Ctrl-C). The eval
+        polls this each step and stops, since raw mode swallows the real SIGINT.
+        """
+    def warnings(self) -> builtins.list[builtins.str]:
+        r"""
+        Setup warnings (a backend that failed to come up), surfaced once by Python.
+        """
+    def close(self) -> None:
+        r"""
+        Tear down the viewer (restores the terminal / stops the HTTP server).
+        """
 
 @typing.final
 class ServeOptions:

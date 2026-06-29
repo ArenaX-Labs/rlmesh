@@ -4,7 +4,7 @@
 #![allow(unsafe_code)]
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyMemoryView};
+use pyo3::types::{PyBytes, PyDict, PyMemoryView};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use rlmesh_spaces::{DType, Tensor, TensorError, dtype_size};
@@ -250,6 +250,37 @@ impl PyTensor {
 
     fn tobytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner.to_contiguous_bytes())
+    }
+
+    /// Expose the tensor to NumPy through the read-only buffer protocol so
+    /// `numpy.asarray(tensor)` is zero-copy and gym-style callers never need
+    /// an explicit conversion. Routes through a `memoryview` (not `self`
+    /// directly) to avoid recursing back into `__array__`. `dtype`/`copy`
+    /// follow the NumPy array protocol: a differing dtype or `copy=True`
+    /// yields a fresh array; `copy=False` raises if a copy would be required.
+    #[gen_stub(skip)]
+    #[pyo3(signature = (dtype=None, copy=None))]
+    fn __array__<'py>(
+        slf: Bound<'py, Self>,
+        dtype: Option<Bound<'py, PyAny>>,
+        copy: Option<bool>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let numpy = py.import("numpy")?;
+        let view = PyMemoryView::from(&slf.into_any())?.into_any();
+        let kwargs = PyDict::new(py);
+        if let Some(dtype) = dtype {
+            kwargs.set_item("dtype", dtype)?;
+        }
+        match copy {
+            // The `copy` keyword reaches `__array__` only from NumPy >= 2.0,
+            // where `numpy.array(copy=False)` is the strict "never copy" form.
+            Some(copy) => {
+                kwargs.set_item("copy", copy)?;
+                numpy.call_method("array", (view,), Some(&kwargs))
+            }
+            None => numpy.call_method("asarray", (view,), Some(&kwargs)),
+        }
     }
 
     #[gen_stub(skip)]

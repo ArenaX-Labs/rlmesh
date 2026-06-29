@@ -31,6 +31,7 @@ from ._connect import (
 from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
 from ._resolve import reject_vector_env, resolve_adapter, resolve_route_adapter
+from ._view import ViewerDriver, resolve_view
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
@@ -202,6 +203,7 @@ class Session(Generic[ObsT, ActT]):
         model_client: PyModelClient | None = None,
         owner: Any = None,
         device: object | None = None,
+        view: object = None,
     ) -> None:
         # Two modes: a local model (``predict`` + client-side ``spec`` adapter) or a
         # served model (``model_client`` -- the server applies its adapter). ``owner``
@@ -238,6 +240,7 @@ class Session(Generic[ObsT, ActT]):
         self._truncated = False
         self._steps = 0
         self._reward = 0.0
+        self._last_info: Mapping[str, Any] = {}
         #: Whether an episode has been reset and not yet ended. The local episode
         #: boundary (a stateful model's `on_episode_end`) fires when the next reset()
         #: begins or the session closes — see `_end_episode`.
@@ -245,6 +248,10 @@ class Session(Generic[ObsT, ActT]):
         #: Resolved Readers (sess.read), cached per read item so a per-step read
         #: does not re-resolve.
         self._read_cache: dict[Any, Reader] = {}
+        #: Optional built-in debug viewer (``view=`` on run/session). Lazily builds
+        #: a native ``PyViewer`` on the first fed frame; best-effort, never fatal.
+        _view = resolve_view(view)
+        self._view_driver = ViewerDriver(_view) if _view is not None else None
 
     def _ensure_connected(self) -> None:
         if self._connected:
@@ -286,6 +293,36 @@ class Session(Generic[ObsT, ActT]):
         """Whether the current episode has terminated or truncated."""
         return self._terminated or self._truncated
 
+    def _feed_view(self, obs: object) -> None:
+        """Push the current obs + HUD to the debug viewer, if one is attached."""
+        if self._view_driver is not None:
+            self._view_driver.feed(
+                contract=self._contract,
+                client=self._client,
+                obs=obs,
+                read=self.read,
+                steps=self._steps,
+                reward=self._reward,
+                outcome=self._view_outcome(),
+            )
+
+    def _view_outcome(self) -> str:
+        """The viewer HUD's outcome label for the current step.
+
+        Prefers the env-reported task result (:func:`_episode_success` over the last
+        step's ``info``); only when the env emits no such signal does it fall back to
+        ``terminated`` -- matching :attr:`RunResult.success_rate`, and never reading a
+        plain terminal state as a success.
+        """
+        if not (self._terminated or self._truncated):
+            return ""
+        success = _episode_success(self._last_info)
+        if success is None:
+            success = self._terminated
+        if success:
+            return "success"
+        return "failure" if self._terminated else "timeout"
+
     def _end_episode(self) -> None:
         """Fire the local model's `on_episode_end` once for the currently-open episode.
 
@@ -322,7 +359,9 @@ class Session(Generic[ObsT, ActT]):
         self._terminated = self._truncated = False
         self._steps = 0
         self._reward = 0.0
+        self._last_info = info
         self._episode_open = True
+        self._feed_view(obs)
         return cast("ObsT", obs), info
 
     def predict(self, observation: ObsT) -> ActT:
@@ -385,6 +424,8 @@ class Session(Generic[ObsT, ActT]):
         self._steps += 1
         self._terminated = bool(terminated)
         self._truncated = bool(truncated)
+        self._last_info = info
+        self._feed_view(obs)
         return (
             cast("ObsT", obs),
             float(reward),
@@ -501,6 +542,8 @@ class Session(Generic[ObsT, ActT]):
         """
         # End an episode left open by a hand-driven loop, so a stateful model's
         # `on_episode_end` fires for the last episode even without a following reset().
+        if self._view_driver is not None:
+            self._view_driver.close()
         self._end_episode()
         model_client = self._model_client
         if model_client is not None:

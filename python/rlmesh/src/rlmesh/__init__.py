@@ -25,6 +25,7 @@ from ._models import (
     EpisodeResult,
     RunResult,
     Session,
+    View,
     run,
     session,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "Tensor",
     "Variant",
     "Vector",
+    "View",
     "__version__",
     "adapters",
     "describe",

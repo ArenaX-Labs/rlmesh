@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .._value_conversion import ValueBridge
 
 # Cross-module surface for ``_eval.Session`` (see note in ``_connect``).
-__all__ = ["Reader", "resolve_read_adapter"]
+__all__ = ["Reader", "env_image_roles", "resolve_read_adapter"]
 
 
 class Reader:
@@ -118,6 +118,36 @@ def _read_leaf(item: object, env_tags: Any) -> tuple[str, Any]:
             f"(Image/State/Text); got {type(item).__name__}"
         )
     return role, item
+
+
+def env_image_roles(contract: Any) -> list[str]:
+    """The image roles an env declares, in observation-tag declaration order.
+
+    First-class camera discovery: reads the env's published adapter tags (the same
+    :class:`~rlmesh.adapters.EnvTags` the reader resolves against) and walks the
+    observation tree for every :class:`~rlmesh.adapters.ImageTag`. Returns ``[]``
+    when the env publishes no tags. Unlike probing a fixed role list, this finds
+    custom image roles too, and only the ones this env actually declares.
+    """
+    from ..adapters import EnvTags, ImageTag
+
+    env_tags = EnvTags.from_metadata(getattr(contract, "metadata", None) or {})
+    if env_tags is None:
+        return []
+    roles: list[str] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, Mapping):
+            for child in cast("Any", node).values():
+                walk(child)
+        elif isinstance(node, tuple):
+            for child in cast("Any", node):
+                walk(child)
+        elif isinstance(node, ImageTag):
+            roles.append(node.role)
+
+    walk(env_tags.observation)
+    return roles
 
 
 def resolve_read_adapter(

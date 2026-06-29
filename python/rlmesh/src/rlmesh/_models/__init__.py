@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ._adapter_mode import NO_ADAPTER
 from ._eval import RANDOM_SAMPLE, EpisodeResult, RunResult, Session
+from ._view import View
 from .base import run, session
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "EpisodeResult",
     "RunResult",
     "Session",
+    "View",
     "run",
     "session",
 ]

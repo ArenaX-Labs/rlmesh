@@ -8,6 +8,7 @@ default-members = [
   "crates/rlmesh-runtime",
   "crates/rlmesh-sandbox",
   "crates/rlmesh-spaces",
+  "crates/rlmesh-viewer",
   "python/rlmesh/rust",
 ]
 members = ["crates/*", "python/rlmesh/rust"]
@@ -35,6 +36,7 @@ rlmesh-proto = { version = "=0.1.0-rc.2", path = "crates/rlmesh-proto" }
 rlmesh-runtime = { version = "=0.1.0-rc.2", path = "crates/rlmesh-runtime" }
 rlmesh-sandbox = { version = "=0.1.0-rc.2", path = "crates/rlmesh-sandbox" }
 rlmesh-spaces = { version = "=0.1.0-rc.2", path = "crates/rlmesh-spaces" }
+rlmesh-viewer = { version = "=0.1.0-rc.2", path = "crates/rlmesh-viewer" }
 
 # Protocol / Transport
 prost = "0.14"

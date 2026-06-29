@@ -55,6 +55,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         token: str | None = None,
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
+        view: object = None,
     ) -> Session[Any, Any]:
         """Bind this served policy to ``env`` and return a :class:`rlmesh.Session`.
 
@@ -62,7 +63,8 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         ``env_contract``; that contract -- including the env's adapter tags -- is sent
         to the model server, which resolves its adapter for this env. ``instruction``,
         ``token`` and ``trust_entrypoints`` apply to local models and are ignored here
-        (the served model owns its adapter and auth).
+        (the served model owns its adapter and auth). ``view`` opts into the built-in
+        live viewer over this client's own env loop (see :func:`rlmesh.run`).
 
         ``execution_horizon`` (> 1) opts a chunk-capable served model into action
         chunking: the model emits its native chunk, and this client replays a prefix
@@ -76,7 +78,7 @@ class RemoteModelBase(Generic[ObsT, ActT]):
         client = load_native("PyModelClient")(
             self._address, env_contract_of(env), self._token, execution_horizon
         )
-        return remote_session(client, env, close_env=close_env)
+        return remote_session(client, env, close_env=close_env, view=view)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(address={self._address!r})"
@@ -93,7 +95,12 @@ def env_contract_of(env: object) -> EnvContract:
 
 
 def remote_session(
-    client: PyModelClient, env: object, *, owner: Any = None, close_env: bool = False
+    client: PyModelClient,
+    env: object,
+    *,
+    owner: Any = None,
+    close_env: bool = False,
+    view: object = None,
 ) -> Session[Any, Any]:
     """Build a neutral :class:`Session` over a pre-built served-model ``client``.
 
@@ -107,7 +114,12 @@ def remote_session(
 
     bridge = getattr(env, "_bridge", identity_bridge)
     return Session(
-        env=env, model_client=client, bridge=bridge, owner=owner, close_env=close_env
+        env=env,
+        model_client=client,
+        bridge=bridge,
+        owner=owner,
+        close_env=close_env,
+        view=view,
     )
 
 

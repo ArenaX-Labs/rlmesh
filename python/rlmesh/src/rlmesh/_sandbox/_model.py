@@ -166,6 +166,7 @@ class SandboxModel:
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
         connect_timeout_seconds: float = 30.0,
+        view: object = None,
     ) -> Session[object, object]:
         """Serve this model and bind it to ``env``, returning a neutral :class:`rlmesh.Session`.
 
@@ -182,7 +183,8 @@ class SandboxModel:
                     obs, reward, terminated, truncated, _ = sess.step(sess.predict(obs))
 
         Closing the session stops the container it started. ``instruction`` / ``token`` /
-        ``trust_entrypoints`` apply to local models and are ignored here. ``execution_horizon``
+        ``trust_entrypoints`` apply to local models and are ignored here. ``view`` opts into
+        the built-in live viewer over this session's env loop (see :func:`rlmesh.run`). ``execution_horizon``
         requests open-loop action chunking: the runtime executes that many actions of each
         predicted chunk before re-planning (1 = re-plan every step; only engages if the served
         policy defines a chunk corner). Retries the connection while the container starts, up to
@@ -209,7 +211,11 @@ class SandboxModel:
             # session that actually started the container. A caller-managed handle
             # (serve()/context manager) must survive its sessions closing.
             return remote_session(
-                client, env, owner=self if started_here else None, close_env=close_env
+                client,
+                env,
+                owner=self if started_here else None,
+                close_env=close_env,
+                view=view,
             )
         except BaseException:
             if started_here:

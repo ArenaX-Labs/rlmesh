@@ -587,6 +587,7 @@ class ModelBase(Generic[ObsT, ActT]):
         close_env: bool = False,
         token: str = "",
         execution_horizon: int = 1,
+        view: object = None,
     ) -> RunResult:
         """Drive this model against an env and return a :class:`RunResult`.
 
@@ -611,6 +612,7 @@ class ModelBase(Generic[ObsT, ActT]):
             close_env=close_env,
             token=token,
             execution_horizon=execution_horizon,
+            view=view,
         ).run(seeds=seeds, max_episodes=max_episodes)
 
     def session(
@@ -622,6 +624,7 @@ class ModelBase(Generic[ObsT, ActT]):
         token: str = "",
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
+        view: object = None,
     ) -> Session[ObsT, ActT]:
         """Bind this model to an env and return a :class:`Session` to drive by hand.
 
@@ -654,6 +657,7 @@ class ModelBase(Generic[ObsT, ActT]):
             close_env=close_env,
             token=token,
             execution_horizon=execution_horizon,
+            view=view,
         )
 
     def serve(
@@ -717,6 +721,7 @@ def session(
     token: str = "",
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
+    view: object = None,
 ) -> Session[Any, Any]:
     """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
 
@@ -748,6 +753,7 @@ def session(
                 token=token,
                 trust_entrypoints=bool(trust_entrypoints),
                 execution_horizon=execution_horizon,
+                view=view,
             ),
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
@@ -763,6 +769,7 @@ def session(
                 token=token,
                 trust_entrypoints=trust_entrypoints,
                 execution_horizon=execution_horizon,
+                view=view,
             ),
         )
     return as_model(model).session(
@@ -772,6 +779,7 @@ def session(
         token=token,
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
+        view=view,
     )
 
 
@@ -786,6 +794,7 @@ def run(
     token: str = "",
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
+    view: object = None,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
@@ -801,6 +810,7 @@ def run(
         token=token,
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
+        view=view,
     ).run(seeds=seeds, max_episodes=max_episodes)
 
 

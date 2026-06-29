@@ -8,6 +8,7 @@ mod server;
 mod spaces;
 mod telemetry;
 mod types;
+mod viewer;
 
 #[cfg(feature = "cli")]
 use std::ffi::OsString;
@@ -73,6 +74,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<model::PyModelClient>()?;
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
+    m.add_class::<viewer::PyViewer>()?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;
