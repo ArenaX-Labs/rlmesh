@@ -1,16 +1,17 @@
 [package]
 name = "rlmesh-viewer"
-description = "Built-in live debug viewer (terminal and HTTP) for RLMesh evaluations."
+description = "Internal RLMesh crate (unstable Rust API): live debug viewer."
+version = { workspace = true }
+authors = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+documentation = { workspace = true }
 readme = "README.md"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-categories.workspace = true
-keywords.workspace = true
-publish.workspace = true
+license = { workspace = true }
+categories = { workspace = true }
+keywords = { workspace = true }
+publish = { workspace = true }
 
 [dependencies]
 serde_json = { workspace = true }
