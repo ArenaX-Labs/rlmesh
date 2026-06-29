@@ -31,15 +31,30 @@ SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS = 30.0
 CONTAINER_SERVE_PORT = 50051
 
 
-@dataclass(frozen=True)
-class SandboxOptions:
-    """Build/run infrastructure for a sandbox container -- the single reserved knob.
+def normalize_gpus(gpus: str | int | None) -> str | None:
+    """Normalize the ``gpus`` knob into a docker ``--gpus`` value, or None.
 
-    Everything here configures how the container is *built or run*, never the
-    environment/model itself: env/model construction params are the sandbox's
-    ``**params`` (the binding forwarded to ``make``/``load``). For a prebuilt
-    image (run, not built) the build-only fields are meaningless and ignored with
-    a warning.
+    Passes straight through to ``docker run --gpus``: ``"all"``, a count
+    (``2`` / ``"2"``), or a device selector (``"device=0,1"``). Shared by the
+    model and env prebuilt paths so the two never drift.
+    """
+    if gpus is None:
+        return None
+    value = str(gpus).strip()
+    if not value:
+        raise ValueError("gpus= must be non-empty, e.g. 'all', 1, or 'device=0,1'")
+    return value
+
+
+@dataclass(frozen=True)
+class SandboxBuild:
+    """Build-from-source infrastructure for a sandbox image.
+
+    Configures how the image is *built* from a ``gym://``/``hf://`` source (base
+    image, extra packages, the rlmesh pin, ...). Meaningless for a prebuilt image
+    (run, not built) -- those fields are ignored with a warning. Pair with
+    :class:`SandboxRuntime` for ``docker run`` settings. Env/model construction
+    params stay in the sandbox's ``**params`` (the ``make``/``load`` binding).
     """
 
     base_image: str | None = None
@@ -49,6 +64,31 @@ class SandboxOptions:
     trust_remote_code: bool = False
     allow_unpinned_hf: bool = False
     build_memory: str | None = None
+
+
+@dataclass(frozen=True)
+class SandboxRuntime:
+    """Container run-time settings for a sandbox -- ``docker run`` flags.
+
+    Applies whenever the container is *run* (prebuilt images and build-then-run),
+    unlike :class:`SandboxBuild` which only configures the from-source build. The
+    host-resource knobs sim envs/models need:
+
+    - ``gpus``: ``docker run --gpus`` (``"all"`` / a count / ``"device=0,1"``) --
+      legacy GPU injection (CUDA compute only). NOTE: this does *not* inject the
+      graphics/Vulkan driver; for SAPIEN/Vulkan use ``devices`` with a CDI ref.
+    - ``devices``: ``docker run --device`` entries, e.g. ``["nvidia.com/gpu=all"]``
+      (a CDI device ref -- the full graphics+compute driver) or a ``/dev`` node.
+    - ``volumes``: ``docker run -v`` mounts, e.g.
+      ``["/host/assets:/ctr/assets", "/host/ro:/ctr/ro:ro"]``.
+
+    Build-from-source attaches none of these (it has no ``docker run`` step); set
+    them only for a prebuilt image source.
+    """
+
+    gpus: str | int | None = None
+    devices: Sequence[str] | None = None
+    volumes: Sequence[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -222,7 +262,8 @@ class SandboxLifecycle:
 def start_sandbox_container(
     source: str,
     *,
-    options: SandboxOptions | None,
+    build: SandboxBuild | None,
+    runtime: SandboxRuntime | None,
     num_envs: int,
     vectorization_mode: str | None,
     binding: Mapping[str, object],
@@ -234,21 +275,39 @@ def start_sandbox_container(
     builder; a ``docker://``/``image://`` or bare image-shaped source is run
     directly as a prebuilt rlmesh-serving image, with the binding injected as
     ``RLMESH_MAKE_KWARGS`` (no build, no rlmesh pin).
+
+    :class:`SandboxBuild` configures the from-source build; :class:`SandboxRuntime`
+    (``gpus`` / ``devices`` / ``volumes``) configures ``docker run`` and applies to
+    the prebuilt path only -- the native build-from-source path has no ``docker run``
+    step and rejects a set runtime flag.
     """
-    opts = options or SandboxOptions()
+    build = build or SandboxBuild()
+    run = runtime or SandboxRuntime()
+    gpus = normalize_gpus(run.gpus)
+    devices = string_sequence("devices", run.devices)
+    volumes = string_sequence("volumes", run.volumes)
     kind, resolved = resolve_source_kind(source)
     if kind == "prebuilt":
-        _warn_ignored_build_options(opts)
+        _warn_ignored_build_options(build)
         return start_prebuilt_container(
             resolved,
             requested_source=source,
             binding=binding,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
+            gpus=gpus,
+            devices=devices,
+            volumes=volumes,
+        )
+    if gpus is not None or devices or volumes:
+        raise ValueError(
+            "SandboxRuntime (gpus/devices/volumes) is only supported for a prebuilt "
+            f"sandbox image; building an env from source ({source!r}) has no docker-run "
+            "step -- pass a prebuilt image (docker://img / bare img:tag) instead"
         )
     return _start_build(
         source,
-        options=opts,
+        build=build,
         num_envs=num_envs,
         vectorization_mode=vectorization_mode,
         binding=binding,
@@ -263,6 +322,8 @@ def start_prebuilt_container(
     num_envs: int | None = None,
     vectorization_mode: str | None = None,
     gpus: str | None = None,
+    devices: Sequence[str] | None = None,
+    volumes: Sequence[str] | None = None,
 ) -> SandboxInfo:
     """Run a prebuilt rlmesh-serving image and return its connection info.
 
@@ -294,6 +355,8 @@ def start_prebuilt_container(
         image,
         env_vars=env_vars,
         gpus=gpus,
+        devices=devices,
+        volumes=volumes,
         container_port=CONTAINER_SERVE_PORT,
         owner_pid=os.getpid(),
         owner_pid_ns=pid_namespace_id(),
@@ -330,6 +393,8 @@ def prebuilt_run_cmd(
     container_port: int,
     owner_pid: int,
     owner_pid_ns: str | None,
+    devices: Sequence[str] | None = None,
+    volumes: Sequence[str] | None = None,
 ) -> list[str]:
     """Build the ``docker run`` argv for a prebuilt sandbox container (pure).
 
@@ -337,6 +402,8 @@ def prebuilt_run_cmd(
     ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
     by the env and model prebuilt paths so the flags never drift apart. The image
     is always last and env vars precede it, so callers/tests can rely on argv shape.
+    ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``) and
+    ``volumes`` -> ``-v`` mounts, both before the env vars.
     """
     cmd = [
         "docker",
@@ -357,6 +424,10 @@ def prebuilt_run_cmd(
         cmd += ["--label", f"rlmesh.sandbox.owner-pid-ns={owner_pid_ns}"]
     if gpus is not None:
         cmd += ["--gpus", gpus]
+    for device in devices or []:
+        cmd += ["--device", device]
+    for volume in volumes or []:
+        cmd += ["-v", volume]
     for key, value in env_vars.items():
         cmd += ["-e", f"{key}={value}"]
     cmd.append(image)
@@ -420,7 +491,7 @@ def pid_namespace_id() -> str | None:
         return None
 
 
-def _warn_ignored_build_options(options: SandboxOptions) -> None:
+def _warn_ignored_build_options(options: SandboxBuild) -> None:
     """Warn when build-only options are set on a run-prebuilt (not built) source."""
     ignored = [
         name
@@ -446,29 +517,29 @@ def _warn_ignored_build_options(options: SandboxOptions) -> None:
 def _start_build(
     source: str,
     *,
-    options: SandboxOptions,
+    build: SandboxBuild,
     num_envs: int,
     vectorization_mode: str | None,
     binding: Mapping[str, object],
 ) -> SandboxInfo:
     rlmesh_package = (
-        fspath(options.rlmesh_package) if options.rlmesh_package is not None else None
+        fspath(build.rlmesh_package) if build.rlmesh_package is not None else None
     )
     kwargs_json = json.dumps(dict(binding)) if binding else None
     started = cast(
         _SandboxStartInfo,
         _sandbox_start_env(
             source,
-            base_image=options.base_image,
+            base_image=build.base_image,
             rlmesh_package=rlmesh_package,
-            packages=string_sequence("packages", options.packages),
-            imports=string_sequence("imports", options.imports),
+            packages=string_sequence("packages", build.packages),
+            imports=string_sequence("imports", build.imports),
             kwargs_json=kwargs_json,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
-            trust_remote_code=options.trust_remote_code,
-            allow_unpinned_hf=options.allow_unpinned_hf,
-            build_memory=options.build_memory,
+            trust_remote_code=build.trust_remote_code,
+            allow_unpinned_hf=build.allow_unpinned_hf,
+            build_memory=build.build_memory,
         ),
     )
     return SandboxInfo(**started)
@@ -500,29 +571,34 @@ def reject_single_env_vector_option(params: Mapping[str, object]) -> None:
 
 
 def reject_sandbox_option_params(params: Mapping[str, object]) -> None:
-    """Reject construction params that collide with a :class:`SandboxOptions` field.
+    """Reject construction params that collide with a sandbox build/runtime field.
 
-    These names (``trust_remote_code``, ``base_image``, ``packages``, ...) configure
-    how the container is built/run, not the env/model. Letting them fall into
-    ``**params`` (the make/load binding) would silently drop a security flag or a
-    build setting and forward it as a bogus construction kwarg, so fail loud and
-    point at ``options=``. Derived from the dataclass so the two never drift.
+    These names (``base_image``, ``packages``, ``gpus``, ``devices``, ``volumes``,
+    ...) configure how the container is built or run, not the env/model. Letting
+    them fall into ``**params`` (the make/load binding) would silently drop a
+    setting and forward it as a bogus construction kwarg, so fail loud and point at
+    ``build=``/``runtime=``. Derived from the dataclasses so the two never drift.
     """
-    collisions = sorted({f.name for f in fields(SandboxOptions)} & set(params))
+    reserved = {f.name for f in fields(SandboxBuild)} | {
+        f.name for f in fields(SandboxRuntime)
+    }
+    collisions = sorted(reserved & set(params))
     if collisions:
         raise TypeError(
-            f"{', '.join(collisions)} configure the sandbox container build/run, "
-            "not the env/model construction params; pass them via "
-            f"options=SandboxOptions({collisions[0]}=...)"
+            f"{', '.join(collisions)} configure the sandbox container build/run, not "
+            "the env/model construction params; pass them via build=SandboxBuild(...) "
+            "or runtime=SandboxRuntime(...)"
         )
 
 
 __all__ = [
     "CONTAINER_SERVE_PORT",
     "SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS",
+    "SandboxBuild",
     "SandboxInfo",
     "SandboxLifecycle",
-    "SandboxOptions",
+    "SandboxRuntime",
+    "normalize_gpus",
     "parse_published_port",
     "prebuilt_run_cmd",
     "reap_orphans",

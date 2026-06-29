@@ -79,11 +79,16 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
         container_port=50051,
         owner_pid=123,
         owner_pid_ns=None,
+        devices=["nvidia.com/gpu=all"],
+        volumes=["/h/a:/c/a", "/h/b:/c/b:ro"],
     )
     assert cmd[:3] == ["docker", "run", "-d"]
     assert "--cap-drop" in cmd and "ALL" in cmd
     assert "no-new-privileges" in cmd
     assert cmd[cmd.index("--gpus") + 1] == "2"
+    assert cmd[cmd.index("--device") + 1] == "nvidia.com/gpu=all"
+    v_idxs = [i for i, a in enumerate(cmd) if a == "-v"]
+    assert [cmd[i + 1] for i in v_idxs] == ["/h/a:/c/a", "/h/b:/c/b:ro"]
     assert cmd[cmd.index("-e") + 1] == 'RLMESH_MAKE_KWARGS={"suite": "a"}'
     assert cmd[-1] == "img:1"  # image always last
 
@@ -174,6 +179,16 @@ def test_sandbox_model_params_inject_make_kwargs(
     }
 
 
-def test_sandbox_model_warns_on_options(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.warns(UserWarning, match="prebuilt image"):
-        rlmesh.SandboxModel("m:latest", options=rlmesh.SandboxOptions(base_image="x"))
+def test_sandbox_model_runtime_and_rejects_build_runtime_params() -> None:
+    # A model is always a prebuilt image (no build config). Runtime flags ride in
+    # runtime=SandboxRuntime(...); construction is inert (no container started).
+    m = rlmesh.SandboxModel(
+        "m:latest",
+        runtime=rlmesh.SandboxRuntime(gpus="all", devices=["nvidia.com/gpu=all"]),
+    )
+    assert m._gpus == "all"
+    assert m._devices == ["nvidia.com/gpu=all"]
+    # A colliding build/runtime field in **params fails loud, not silently bound.
+    for name in ("gpus", "volumes", "base_image", "packages"):
+        with pytest.raises(TypeError, match="build=SandboxBuild"):
+            rlmesh.SandboxModel("m:latest", **{name: "x"})  # type: ignore[arg-type]

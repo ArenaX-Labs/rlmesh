@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from .env import (
+    SandboxBuild,
     SandboxEnvBase,
     SandboxInfo,
-    SandboxOptions,
+    SandboxRuntime,
     SandboxVectorEnvBase,
 )
 
 __all__ = [
+    "SandboxBuild",
     "SandboxEnvBase",
     "SandboxInfo",
-    "SandboxOptions",
+    "SandboxRuntime",
     "SandboxVectorEnvBase",
 ]

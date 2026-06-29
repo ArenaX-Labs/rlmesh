@@ -11,9 +11,10 @@ from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import (
+    SandboxBuild,
     SandboxEnvBase,
     SandboxInfo,
-    SandboxOptions,
+    SandboxRuntime,
     SandboxVectorEnvBase,
 )
 from ._sandbox._model import SandboxModel
@@ -272,15 +273,17 @@ class SandboxEnv(SandboxEnvBase[NumpyValue, NumpyValue]):
     Args:
         source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
-        options: Optional :class:`SandboxOptions` build/run infrastructure (base
-            image, packages, rlmesh pin, ...); the single reserved keyword.
+        build: Optional :class:`SandboxBuild` -- build-from-source infrastructure
+            (base image, packages, rlmesh pin, ...); ignored for a prebuilt image.
+        runtime: Optional :class:`SandboxRuntime` -- ``docker run`` settings
+            (``gpus`` / ``devices`` / ``volumes``); prebuilt-image source only.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated in the container before construction).
 
     Examples:
-        >>> from rlmesh.numpy import SandboxEnv, SandboxOptions
+        >>> from rlmesh.numpy import SandboxEnv, SandboxBuild
         >>> env = SandboxEnv(
-        ...     "CartPole-v1", options=SandboxOptions(packages=["gymnasium==1.3.0"])
+        ...     "CartPole-v1", build=SandboxBuild(packages=["gymnasium==1.3.0"])
         ... )
         >>> observation, info = env.reset(seed=42)
         >>> env.close()
@@ -301,8 +304,10 @@ class SandboxVectorEnv(SandboxVectorEnvBase[NumpyValue, NumpyValue]):
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested inside the sandbox.
-        options: Optional :class:`SandboxOptions` build/run infrastructure; the
-            single reserved keyword.
+        build: Optional :class:`SandboxBuild` -- build-from-source infrastructure;
+            ignored for a prebuilt image.
+        runtime: Optional :class:`SandboxRuntime` -- ``docker run`` settings
+            (``gpus`` / ``devices`` / ``volumes``); prebuilt-image source only.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated in the container before construction).
 
@@ -335,10 +340,11 @@ __all__ = [
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
+    "SandboxBuild",
     "SandboxEnv",
     "SandboxInfo",
     "SandboxModel",
-    "SandboxOptions",
+    "SandboxRuntime",
     "SandboxVectorEnv",
     "asarray",
     "ensure_available",

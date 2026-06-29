@@ -125,10 +125,10 @@ def test_sandbox_options_set_rlmesh_package_and_params_are_the_binding(
     _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
-    # Build infra rides in options=; everything else is the make-binding (**params).
+    # Build infra rides in build=; everything else is the make-binding (**params).
     with rlmesh.SandboxEnv(
         "CartPole-v1",
-        options=rlmesh.SandboxOptions(rlmesh_package="local"),
+        build=rlmesh.SandboxBuild(rlmesh_package="local"),
         render_mode="rgb_array",
     ):
         pass
@@ -179,8 +179,8 @@ def test_sandbox_options_reject_bare_str_packages_imports(
     )
 
     with pytest.raises(TypeError, match=rf"{field}= expects a sequence of strings"):
-        options = rlmesh.SandboxOptions(**{field: "ale-py"})  # type: ignore[arg-type]
-        rlmesh.SandboxEnv("CartPole-v1", options=options)
+        build = rlmesh.SandboxBuild(**{field: "ale-py"})  # type: ignore[arg-type]
+        rlmesh.SandboxEnv("CartPole-v1", build=build)
 
 
 @pytest.mark.parametrize("field", ["packages", "imports"])
@@ -195,8 +195,8 @@ def test_sandbox_options_accept_string_sequence(
     _patch_stop(monkeypatch, lambda *, container_id: stopped.append(container_id))
     monkeypatch.setattr(native, "PyEnvClient", _OkClient)
 
-    options = rlmesh.SandboxOptions(**{field: ["ale-py"]})  # type: ignore[arg-type]
-    with rlmesh.SandboxEnv("CartPole-v1", options=options):
+    build = rlmesh.SandboxBuild(**{field: ["ale-py"]})  # type: ignore[arg-type]
+    with rlmesh.SandboxEnv("CartPole-v1", build=build):
         pass
 
     assert captured[field] == ["ale-py"]
@@ -216,7 +216,8 @@ def test_start_sandbox_gym_path_forwards_imports(
 
     sandbox.start_sandbox_container(
         "CartPole-v1",
-        options=rlmesh.SandboxOptions(imports=["ale_py"]),
+        build=rlmesh.SandboxBuild(imports=["ale_py"]),
+        runtime=None,
         num_envs=1,
         vectorization_mode=None,
         binding={},
@@ -284,8 +285,14 @@ def test_gym_module_id_with_colon_routes_to_build_not_docker() -> None:
 
 
 def test_top_level_sandbox_option_is_rejected_not_swallowed() -> None:
-    # Security/build flags moved to options=; passing them top-level must fail loud
-    # rather than vanish into the make-binding (a silent security downgrade).
-    for name in ("trust_remote_code", "allow_unpinned_hf", "packages"):
-        with pytest.raises(TypeError, match="options=SandboxOptions"):
+    # Build/runtime flags live in build=/runtime=; passing them top-level must fail
+    # loud rather than vanish into the make-binding (a silent security/config drop).
+    for name in (
+        "trust_remote_code",
+        "allow_unpinned_hf",
+        "packages",
+        "gpus",
+        "volumes",
+    ):
+        with pytest.raises(TypeError, match="build=SandboxBuild"):
             sandbox.reject_sandbox_option_params({name: True})

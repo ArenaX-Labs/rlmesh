@@ -12,9 +12,10 @@ from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
 from ._rlmesh import Tensor
 from ._sandbox import (
+    SandboxBuild,
     SandboxEnvBase,
     SandboxInfo,
-    SandboxOptions,
+    SandboxRuntime,
     SandboxVectorEnvBase,
 )
 from ._sandbox._model import SandboxModel
@@ -343,8 +344,10 @@ class SandboxEnv(SandboxEnvBase[TorchValue, TorchValue]):
     Args:
         source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
-        options: Optional :class:`SandboxOptions` build/run infrastructure; the
-            single reserved keyword.
+        build: Optional :class:`SandboxBuild` -- build-from-source infrastructure;
+            ignored for a prebuilt image.
+        runtime: Optional :class:`SandboxRuntime` -- ``docker run`` settings
+            (``gpus`` / ``devices`` / ``volumes``); prebuilt-image source only.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated in the container before construction).
     """
@@ -361,8 +364,10 @@ class SandboxVectorEnv(SandboxVectorEnvBase[TorchValue, TorchValue]):
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create.
         vectorization_mode: Vectorization mode requested inside the sandbox.
-        options: Optional :class:`SandboxOptions` build/run infrastructure; the
-            single reserved keyword.
+        build: Optional :class:`SandboxBuild` -- build-from-source infrastructure;
+            ignored for a prebuilt image.
+        runtime: Optional :class:`SandboxRuntime` -- ``docker run`` settings
+            (``gpus`` / ``devices`` / ``volumes``); prebuilt-image source only.
         **params: Environment construction params -- the binding forwarded to the
             factory's ``make`` (validated in the container before construction).
     """
@@ -391,10 +396,11 @@ __all__ = [
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
+    "SandboxBuild",
     "SandboxEnv",
     "SandboxInfo",
     "SandboxModel",
-    "SandboxOptions",
+    "SandboxRuntime",
     "SandboxVectorEnv",
     "TorchValue",
     "as_tensor",

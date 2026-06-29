@@ -44,7 +44,7 @@ from ._rlmesh import (
     ServeOptions,
     Tensor,
 )
-from ._sandbox import SandboxOptions
+from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
 from ._variants import Variant
 from .describe import describe, describe_json
@@ -78,9 +78,10 @@ __all__ = [
     "RemoteModel",
     "RemoteVectorEnv",
     "RunResult",
+    "SandboxBuild",
     "SandboxEnv",
     "SandboxModel",
-    "SandboxOptions",
+    "SandboxRuntime",
     "SandboxVectorEnv",
     "ServeOptions",
     "Session",

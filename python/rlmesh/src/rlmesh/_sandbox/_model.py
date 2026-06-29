@@ -15,14 +15,19 @@ import time
 from typing import TYPE_CHECKING
 
 from ._sources import looks_like_gym_id
-from .session import start_prebuilt_container
+from .session import (
+    SandboxRuntime,
+    normalize_gpus,
+    reject_sandbox_option_params,
+    start_prebuilt_container,
+    string_sequence,
+)
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
     from .._models._eval import Session
     from ..specs import EnvContract
-    from .session import SandboxOptions
 
 __all__ = ["SandboxModel"]
 
@@ -76,20 +81,6 @@ def _resolve_model_source(source: object) -> str:
     return tag
 
 
-def _normalize_gpus(gpus: str | int | None) -> str | None:
-    """Normalize the ``gpus`` knob into a docker ``--gpus`` value, or None.
-
-    Passes straight through to ``docker run --gpus``: ``"all"``, a count
-    (``2`` / ``"2"``), or a device selector (``"device=0,1"``).
-    """
-    if gpus is None:
-        return None
-    value = str(gpus).strip()
-    if not value:
-        raise ValueError("gpus= must be non-empty, e.g. 'all', 1, or 'device=0,1'")
-    return value
-
-
 class SandboxModel:
     """A model served from an isolated container.
 
@@ -99,6 +90,12 @@ class SandboxModel:
     model's construction params -- forwarded into the container as the
     ``load(**binding)`` binding (``RLMESH_MAKE_KWARGS``), validated against the
     model's declared ``params`` before weights load.
+
+    A :class:`~rlmesh._sandbox.session.SandboxRuntime` (``runtime=``) sets ``docker
+    run`` flags -- ``gpus`` for CUDA compute, or ``devices=["nvidia.com/gpu=all"]``
+    (a CDI ref, full graphics+compute) and ``volumes=[...]`` for large local
+    checkpoints/assets. A model is always a prebuilt image, so there is no build
+    config (no ``SandboxBuild``).
     """
 
     def __init__(
@@ -106,23 +103,16 @@ class SandboxModel:
         source: object,
         /,
         *,
-        gpus: str | int | None = None,
-        options: SandboxOptions | None = None,
+        runtime: SandboxRuntime | None = None,
         **params: object,
     ) -> None:
         self._image = _resolve_model_source(source)
-        self._gpus = _normalize_gpus(gpus)
+        reject_sandbox_option_params(params)
+        run = runtime or SandboxRuntime()
+        self._gpus = normalize_gpus(run.gpus)
+        self._devices = string_sequence("devices", run.devices)
+        self._volumes = string_sequence("volumes", run.volumes)
         self._binding = dict(params)
-        if options is not None:
-            import warnings
-
-            # A model is always a prebuilt image (run, not built), so build infra
-            # has nothing to act on.
-            warnings.warn(
-                "SandboxModel runs a prebuilt image; SandboxOptions build "
-                "settings are ignored",
-                stacklevel=2,
-            )
         self._address: str | None = None
         self._container_id: str | None = None
         self._closed = False
@@ -146,6 +136,8 @@ class SandboxModel:
             requested_source=self._image,
             binding=self._binding,
             gpus=self._gpus,
+            devices=self._devices,
+            volumes=self._volumes,
         )
         self._container_id = info.container_id
         self._address = info.address

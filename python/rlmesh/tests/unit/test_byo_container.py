@@ -82,7 +82,9 @@ def test_gpus_requests_the_device_on_serve(
     monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch(captured))
 
     # serve, with an int count normalized to a string
-    model_mod.SandboxModel("image://m:latest", gpus=2).serve()
+    model_mod.SandboxModel(
+        "image://m:latest", runtime=rlmesh.SandboxRuntime(gpus=2)
+    ).serve()
     serve_cmd = captured["run"]
     assert serve_cmd[serve_cmd.index("--gpus") + 1] == "2"
 
@@ -96,7 +98,9 @@ def test_no_gpus_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_gpus_rejects_empty() -> None:
     with pytest.raises(ValueError, match="gpus="):
-        rlmesh.SandboxModel("image://m:latest", gpus="  ")
+        rlmesh.SandboxModel(
+            "image://m:latest", runtime=rlmesh.SandboxRuntime(gpus="  ")
+        )
 
 
 def test_session_serves_then_binds_to_the_env(

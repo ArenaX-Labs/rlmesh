@@ -12,9 +12,10 @@ from typing import TypeVar
 from .._client import RemoteEnvBase, RemoteVectorEnvBase
 from .session import (
     SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
+    SandboxBuild,
     SandboxInfo,
     SandboxLifecycle,
-    SandboxOptions,
+    SandboxRuntime,
     reject_sandbox_option_params,
     reject_single_env_vector_option,
     start_sandbox_container,
@@ -24,9 +25,10 @@ ValueT = TypeVar("ValueT")
 ActionT = TypeVar("ActionT")
 
 __all__ = [
+    "SandboxBuild",
     "SandboxEnvBase",
     "SandboxInfo",
-    "SandboxOptions",
+    "SandboxRuntime",
     "SandboxVectorEnvBase",
 ]
 
@@ -41,9 +43,15 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
         source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``) run
             directly (see :func:`rlmesh._sandbox.session.resolve_source_kind`).
-        options: Optional :class:`~rlmesh._sandbox.session.SandboxOptions` carrying
-            build/run infrastructure (base image, packages, rlmesh pin, ...); the
-            single reserved keyword, ignored for a prebuilt image.
+        build: Optional :class:`~rlmesh._sandbox.session.SandboxBuild` -- build-from-
+            source infrastructure (base image, packages, rlmesh pin, ...); ignored
+            for a prebuilt image.
+        runtime: Optional :class:`~rlmesh._sandbox.session.SandboxRuntime` -- ``docker
+            run`` settings (``gpus`` / ``devices`` / ``volumes``). Needed by sim envs
+            that render through a GPU: ``gpus="all"`` (CUDA compute) or, for
+            SAPIEN/Vulkan, ``devices=["nvidia.com/gpu=all"]`` (a CDI ref). Also
+            ``volumes=[...]`` for bind-mounting large assets. Prebuilt-image source
+            only; rejected when building from a ``gym://``/``hf://`` source.
         connect_timeout_seconds: Seconds to wait for the container to start serving
             before giving up (default 30s). The server only binds its port after the
             env factory's ``make()`` runs, so an env that loads large sims/assets
@@ -59,7 +67,8 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
         source: str,
         /,
         *,
-        options: SandboxOptions | None = None,
+        build: SandboxBuild | None = None,
+        runtime: SandboxRuntime | None = None,
         connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
         **params: object,
     ) -> None:
@@ -69,7 +78,8 @@ class SandboxEnvBase(SandboxLifecycle, RemoteEnvBase[ValueT, ActionT]):
         self._closed = False
         self.sandbox = start_sandbox_container(
             source,
-            options=options,
+            build=build,
+            runtime=runtime,
             num_envs=1,
             vectorization_mode=None,
             binding=params,
@@ -95,8 +105,12 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create (must be >= 2).
         vectorization_mode: Vectorization mode requested in the sandbox.
-        options: Optional :class:`~rlmesh._sandbox.session.SandboxOptions` carrying
-            build/run infrastructure; the single reserved keyword.
+        build: Optional :class:`~rlmesh._sandbox.session.SandboxBuild` -- build-from-
+            source infrastructure; ignored for a prebuilt image.
+        runtime: Optional :class:`~rlmesh._sandbox.session.SandboxRuntime` -- ``docker
+            run`` settings (``gpus`` / ``devices`` / ``volumes``). Needed by sim envs
+            that render through a GPU. Prebuilt-image source only; rejected when
+            building from a ``gym://``/``hf://`` source.
         connect_timeout_seconds: Seconds to wait for the container to start serving
             before giving up (default 30s); raise it for envs with slow ``make()``.
         **params: Environment construction params -- the binding forwarded to the
@@ -110,7 +124,8 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         num_envs: int,
         *,
         vectorization_mode: str = "sync",
-        options: SandboxOptions | None = None,
+        build: SandboxBuild | None = None,
+        runtime: SandboxRuntime | None = None,
         connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
         **params: object,
     ) -> None:
@@ -121,7 +136,8 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         self._closed = False
         self.sandbox = start_sandbox_container(
             source,
-            options=options,
+            build=build,
+            runtime=runtime,
             num_envs=num_envs,
             vectorization_mode=vectorization_mode,
             binding=params,
