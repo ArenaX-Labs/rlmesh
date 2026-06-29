@@ -27,6 +27,12 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
     }
     let mut pieces: Vec<f32> = Vec::new();
     for segment in &plan.segments {
+        if let Some((width, value)) = segment.fill {
+            // Opaque (role-less) actuator: emit the constant for each dim and
+            // read nothing from the model.
+            pieces.extend(std::iter::repeat_n(value as f32, width as usize));
+            continue;
+        }
         let mut piece: Vec<f32> = action[segment.start as usize..segment.stop as usize].to_vec();
         if let (Some(src), Some(dst)) = (segment.src_encoding, segment.dst_encoding)
             && src != dst
@@ -64,6 +70,14 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
                 }
             }
         }
+        // Per-actuator safety clamp, last: bound this component to its declared
+        // range so a mixed-range action keeps a clamp the one global clip cannot.
+        if let Some((low, high)) = segment.clip {
+            let (low, high) = (low as f32, high as f32);
+            for entry in &mut piece {
+                *entry = entry.clamp(low, high);
+            }
+        }
         pieces.extend(piece);
     }
     if let Some((low, high)) = plan.clip {
@@ -78,6 +92,8 @@ pub fn transform_action(plan: &ActionPlan, raw_action: &Value) -> Result<Tensor,
 
 #[cfg(test)]
 mod tests {
+    use std::f64;
+
     use super::super::super::plans::{ActionPlan, ActionSegment};
     use super::super::value::{Value, to_f32_vec};
     use super::transform_action;
@@ -91,7 +107,7 @@ mod tests {
     ) -> ActionPlan {
         ActionPlan {
             segments: vec![ActionSegment {
-                role: "action/gripper".to_owned(),
+                role: Some("action/gripper".to_owned()),
                 start: 0,
                 stop: 1,
                 src_encoding: None,
@@ -102,10 +118,107 @@ mod tests {
                 invert,
                 threshold,
                 binarize,
+                clip: None,
+                fill: None,
             }],
             clip: None,
             in_dim: 1,
         }
+    }
+
+    #[test]
+    fn per_actuator_clip_clamps_to_its_range() {
+        // Two 1-D segments with different clamp ranges: a single global clip
+        // could not bound both correctly. The per-actuator clip does.
+        let plan = ActionPlan {
+            segments: vec![
+                ActionSegment {
+                    role: Some("action/a".to_owned()),
+                    start: 0,
+                    stop: 1,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    scale: None,
+                    invert: false,
+                    threshold: None,
+                    binarize: false,
+                    clip: Some((-1.0, 1.0)),
+                    fill: None,
+                },
+                ActionSegment {
+                    role: Some("action/b".to_owned()),
+                    start: 1,
+                    stop: 2,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    scale: None,
+                    invert: false,
+                    threshold: None,
+                    binarize: false,
+                    clip: Some((-f64::consts::FRAC_PI_2, f64::consts::FRAC_PI_2)),
+                    fill: None,
+                },
+            ],
+            clip: None,
+            in_dim: 2,
+        };
+        let out = transform_action(
+            &plan,
+            &Value::List(vec![Value::Number(5.0), Value::Number(5.0)]),
+        )
+        .unwrap();
+        let got = to_f32_vec(&out);
+        assert_eq!(got[0], 1.0); // clamped to a's range
+        assert!((got[1] - (f64::consts::FRAC_PI_2 as f32)).abs() < 1e-6); // clamped to b's wider range
+    }
+
+    #[test]
+    fn opaque_fill_segment_emits_the_constant() {
+        // model[0]=0.7 maps to the roled segment; the role-less segment emits
+        // (3 × 0.5) reading nothing from the model.
+        let plan = ActionPlan {
+            segments: vec![
+                ActionSegment {
+                    role: Some("action/x".to_owned()),
+                    start: 0,
+                    stop: 1,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    scale: None,
+                    invert: false,
+                    threshold: None,
+                    binarize: false,
+                    clip: None,
+                    fill: None,
+                },
+                ActionSegment {
+                    role: None,
+                    start: 0,
+                    stop: 0,
+                    src_encoding: None,
+                    dst_encoding: None,
+                    src_range: None,
+                    dst_range: None,
+                    scale: None,
+                    invert: false,
+                    threshold: None,
+                    binarize: false,
+                    clip: None,
+                    fill: Some((3, 0.5)),
+                },
+            ],
+            clip: None,
+            in_dim: 1,
+        };
+        let out = transform_action(&plan, &Value::List(vec![Value::Number(0.7)])).unwrap();
+        let got = to_f32_vec(&out);
+        assert_eq!(got, vec![0.7, 0.5, 0.5, 0.5]);
     }
 
     fn apply_one(plan: &ActionPlan, value: f32) -> f32 {

@@ -111,6 +111,8 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
     ("INSTRUCTION", roles::core::INSTRUCTION),
     ("JOINT_POS", roles::core::JOINT_POS),
     ("JOINT_VEL", roles::core::JOINT_VEL),
+    ("ACTION_JOINT_POS", roles::core::ACTION_JOINT_POS),
+    ("ACTION_JOINT_VEL", roles::core::ACTION_JOINT_VEL),
     ("IMAGE_WRIST", roles::manipulation::IMAGE_WRIST),
     ("EEF_POS", roles::manipulation::EEF_POS),
     ("EEF_ROT", roles::manipulation::EEF_ROT),
@@ -148,6 +150,8 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "INSTRUCTION", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "JOINT_VEL", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_JOINT_VEL", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "IMAGE_WRIST", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_POS", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "EEF_ROT", String);

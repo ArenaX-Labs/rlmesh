@@ -185,8 +185,10 @@ fn cases() -> Vec<(&'static str, String)> {
         // see the `spec::strict` tests. There is no field-level parse error to
         // surface here anymore.)
         (
+            // `role` is optional (a role-less component is an opaque actuator);
+            // `dim` is the required field, so omitting it is the missing-field case.
             "missing field",
-            model_err(r#"{"input":{},"output":{"components":[{"dim":1}]}}"#),
+            model_err(r#"{"input":{},"output":{"components":[{"role":"g"}]}}"#),
         ),
         (
             "string wrong-type",

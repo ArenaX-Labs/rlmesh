@@ -288,6 +288,72 @@ def test_env_gripper_invert_and_binary_flips_model_sign():
     np.testing.assert_allclose(result, [-1.0], rtol=1e-6)
 
 
+def test_env_per_actuator_clip_clamps_mixed_ranges() -> None:
+    # A mixed-range action: x in [-1, 1] but rot in [-2, 2]. The single global
+    # Action.clip applies one (low, high) to the whole vector, so it cannot bound
+    # both dims; a per-actuator clip clamps each to its own declared range.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag(role=adapt.INSTRUCTION)},
+            action=adapt.Action(
+                adapt.Actuator("action/x", dim=1, range=(-1.0, 1.0), clip=True),
+                adapt.Actuator("action/rot", dim=1, range=(-2.0, 2.0), clip=True),
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(2),
+    )
+    model = adapt.ModelSpec(
+        input={"instruction": adapt.Text(role=adapt.INSTRUCTION)},
+        output=adapt.Action(
+            adapt.Actuator("action/x", dim=1),
+            adapt.Actuator("action/rot", dim=1),
+        ),
+    )
+    adapter = resolve(env, model)
+    result = adapter.transform_action(np.array([5.0, 5.0], dtype=np.float32))
+    # No single global (low, high) could map [5, 5] to [1, 2]: both overshoot the
+    # high bound to *different* clamped values. Only per-dim clipping does this.
+    np.testing.assert_allclose(result, [1.0, 2.0], rtol=1e-6)
+
+
+def test_opaque_env_actuator_fills_unmatched_dims() -> None:
+    # The env action has dims no model produces (e.g. a control-mode selector);
+    # a role-less Actuator(dim=, fill=) occupies them with a constant.
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"instruction": adapt.TextTag(role=adapt.INSTRUCTION)},
+            action=adapt.Action(
+                adapt.Actuator(adapt.ACTION_GRIPPER, dim=1),
+                adapt.Actuator(dim=2, fill=0.25),  # opaque: no role
+            ),
+        ),
+        obs_space=gym.spaces.Dict({"instruction": text_space()}),
+        action_space=box(3),
+    )
+    model = adapt.ModelSpec(
+        input={"instruction": adapt.Text(role=adapt.INSTRUCTION)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = resolve(env, model)
+    result = adapter.transform_action(np.array([0.8], dtype=np.float32))
+    np.testing.assert_allclose(result, [0.8, 0.25, 0.25], rtol=1e-6)
+
+
+def test_opaque_actuator_rejects_corrections_and_roled_fill() -> None:
+    with pytest.raises(ValueError, match="opaque"):
+        adapt.Actuator(dim=2, range=(-1.0, 1.0))  # role-less cannot carry range
+    with pytest.raises(ValueError, match="fill applies"):
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, fill=0.5)  # roled cannot fill
+
+
+def test_actuator_clip_requires_range() -> None:
+    # clip clamps to range, so declaring clip without a range is a contradiction
+    # caught at construction (the resolver enforces it too).
+    with pytest.raises(ValueError, match="clip"):
+        adapt.Actuator("action/x", dim=1, clip=True)
+
+
 def test_action_component_positional_binary_is_unchanged() -> None:
     # scale/invert/threshold are appended after binary, so the old positional
     # layout (role, dim, encoding, range, binary) keeps its meaning.
@@ -852,11 +918,13 @@ def test_single_env_image_fallback_match():
 # ---------------------------------------------------------------------------
 
 
-def single_state_env(key: str, obs_space: gym.spaces.Space[Any]) -> Env:
-    """An env with one EEF_POS state under ``key`` and the given obs space."""
+def single_state_env(
+    key: str, obs_space: gym.spaces.Space[Any], role: str = adapt.EEF_POS
+) -> Env:
+    """An env with one state (``EEF_POS`` by default) under ``key``."""
     return Env(
         tags=adapt.EnvTags(
-            observation={key: adapt.StateTag(role=adapt.EEF_POS)},
+            observation={key: adapt.StateTag(role=role)},
             action=LIBERO_ACTION,
         ),
         obs_space=obs_space,
@@ -2082,10 +2150,12 @@ def test_encoding_free_spec_still_serializes_unchanged():
 
 
 def test_scalar_reshape_survives_serialization_and_resolve():
-    # reshape=() targets a 0-D scalar; it must not be dropped as falsy.
-    env = single_state_env("g", gym.spaces.Dict({"g": box(1)}))
+    # reshape=() targets a 0-D scalar; it must not be dropped as falsy. Use a
+    # 1-D gripper state (Variable dim law) -- eef_pos would correctly fail the
+    # 3-D law over this width-1 space.
+    env = single_state_env("g", gym.spaces.Dict({"g": box(1)}), role=adapt.GRIPPER_POS)
     spec = adapt.ModelSpec(
-        input={"state": adapt.Concat(adapt.EEF_POS, reshape=())},
+        input={"state": adapt.Concat(adapt.GRIPPER_POS, reshape=())},
         output=SMOLVLA.output,
     )
     restored = adapt.ModelSpec.from_dict(spec.to_dict())

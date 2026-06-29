@@ -250,7 +250,7 @@ pub fn resolve(
                 "model action (role {}): a range is set but the env actuator is \
                  unbounded, so the range is a no-op (it remaps into an env range, it \
                  does not clamp)",
-                quoted(&segment.role),
+                quoted(segment.role.as_deref().unwrap_or("?")),
             ));
         }
     }

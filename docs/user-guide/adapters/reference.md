@@ -247,24 +247,30 @@ Tokenization stays in the model -- `Text` delivers the raw string.
 
 {class}`~rlmesh.adapters.Actuator` -- one contiguous slice of the action vector:
 
-| Field                   | Default       | What it does                                              | When to use                     |
-| ----------------------- | ------------- | --------------------------------------------------------- | ------------------------------- |
-| `role` (1st positional) | --            | match the actuator across sides                           | always                          |
-| `dim`                   | -- (required) | dimensions this component occupies                        | always                          |
-| `encoding`              | `None`        | rotation encoding (or a `CustomEncoding`)                 | the component is a rotation     |
-| `range`                 | `None`        | `(low, high)` of the component values                     | declare/convert the value range |
-| `binary`                | `False`       | the component is a binary decision (snap after range map) | a gripper open/close            |
-| `scale`                 | `None`        | multiply the model value                                  | env actuator is scaled          |
-| `invert`                | `False`       | negate the model value (explicit `scale=-1`)              | gripper sign correction         |
-| `threshold`             | `None`        | subtract to recenter the decision boundary                | shift a `binary` split off zero |
+| Field                   | Default       | What it does                                              | When to use                            |
+| ----------------------- | ------------- | --------------------------------------------------------- | -------------------------------------- |
+| `role` (1st positional) | `None`        | match the actuator across sides; `None` = opaque (below)  | usually                                |
+| `dim`                   | -- (required) | dimensions this component occupies                        | always                                 |
+| `encoding`              | `None`        | rotation encoding (or a `CustomEncoding`)                 | the component is a rotation            |
+| `range`                 | `None`        | `(low, high)` of the component values                     | declare/convert the value range        |
+| `binary`                | `False`       | the component is a binary decision (snap after range map) | a gripper open/close                   |
+| `scale`                 | `None`        | multiply the model value                                  | env actuator is scaled                 |
+| `invert`                | `False`       | negate the model value (explicit `scale=-1`)              | gripper sign correction                |
+| `threshold`             | `None`        | subtract to recenter the decision boundary                | shift a `binary` split off zero        |
+| `clip`                  | `False`       | clamp the mapped value to `range` (requires `range`)      | per-dim safety on a mixed-range action |
+| `fill`                  | `0.0`         | constant per dim of an opaque (role-less) actuator        | env-required dims no model reads       |
 
-`scale`, `invert`, and `threshold` are **env-side corrections**: they declare the env actuator's convention and are applied to the incoming model value **after** the declared formats (rotation, range) are bridged, in this order:
+`scale`, `invert`, `threshold`, and `clip` are **env-side corrections**: they declare the env actuator's convention and are applied to the incoming model value **after** the declared formats (rotation, range) are bridged, in this order:
 
 ```
-rotation/range bridged  →  scale  →  invert  →  threshold  →  binary
+rotation/range bridged  →  scale  →  invert  →  threshold  →  binary  →  clip
 ```
 
 Declared once on the env, every model evaluated against it inherits the correction. `binary` snaps to a definite side after range mapping: `>= 0` opens (`+1`), below closes (`-1`); a value exactly on the boundary opens rather than emitting an undefined `0`.
+
+These corrections are **env-side only**: declaring `scale`/`invert`/`threshold`/`clip` on a _model_ actuator is a resolve error. When a model's own output convention (e.g. a sigmoid-probability gripper) differs from a _shared_ env it cannot edit, convert it imperatively in `predict()`/`_obs()` -- that is the blessed home for a model-specific convention, since the conversion is a property of the model, not the env. (`binary` _is_ honored on a model actuator; only the `scale`/`invert`/`threshold` _values_ must be env-side.)
+
+A **role-less actuator** -- `Actuator(dim=N, fill=...)` with no `role` -- is _opaque_: it occupies `N` dims of the env action with the constant `fill`, matched by no model output (the action-side mirror of a role-less `Field`). Use it for dims the env requires but no model produces, such as a control-mode selector or base padding. A registered `role` with a fixed canonical dim (e.g. `eef_pos` is 3-D) also validates the declared `dim` -- a mismatch is a resolve error.
 
 ## Conversion semantics and policy
 

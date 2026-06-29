@@ -15,6 +15,8 @@ __all__ = [
     "ACTION_DELTA_ROT_2",
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
+    "ACTION_JOINT_POS",
+    "ACTION_JOINT_VEL",
     "AdapterPlan",
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
@@ -73,6 +75,8 @@ ACTION_DELTA_ROT: builtins.str
 ACTION_DELTA_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
 ACTION_GRIPPER_2: builtins.str
+ACTION_JOINT_POS: builtins.str
+ACTION_JOINT_VEL: builtins.str
 DESCRIBE_METADATA_KEY: builtins.str
 DESCRIBE_SCHEMA_VERSION: builtins.int
 EEF_POS: builtins.str

@@ -32,30 +32,6 @@
       ]
     },
     "observation": {
-      "cam": {
-        "layout": "hwc",
-        "role": "image/primary",
-        "type": "image",
-        "upside_down": false
-      },
-      "eef_pos": {
-        "encoding": null,
-        "range": null,
-        "role": "proprio/eef_pos",
-        "type": "state"
-      },
-      "eef_quat": {
-        "encoding": "quat_xyzw",
-        "range": null,
-        "role": "proprio/eef_rot",
-        "type": "state"
-      },
-      "gripper": {
-        "encoding": null,
-        "range": null,
-        "role": "proprio/gripper",
-        "type": "state"
-      },
       "instruction": {
         "role": "text/instruction",
         "type": "text"
@@ -63,7 +39,7 @@
     }
   },
   "expect": {
-    "error_contains": "model outputs 2 dims"
+    "error_contains": "3-D by convention"
   },
   "kind": "resolve",
   "model_spec": {
@@ -78,7 +54,7 @@
       "components": [
         {
           "binary": false,
-          "dim": 3,
+          "dim": 2,
           "encoding": null,
           "range": null,
           "role": "action/delta_eef_pos"
@@ -92,7 +68,7 @@
         },
         {
           "binary": false,
-          "dim": 2,
+          "dim": 1,
           "encoding": null,
           "range": null,
           "role": "action/gripper"
@@ -103,32 +79,12 @@
   "observation_space": {
     "children": [
       {
-        "dtype": "uint8",
-        "kind": "box",
-        "shape": [8, 8, 3]
-      },
-      {
-        "dtype": "float32",
-        "kind": "box",
-        "shape": [3]
-      },
-      {
-        "dtype": "float32",
-        "kind": "box",
-        "shape": [4]
-      },
-      {
-        "dtype": "float32",
-        "kind": "box",
-        "shape": [2]
-      },
-      {
         "dtype": "unspecified",
         "kind": "text"
       }
     ],
     "dtype": "unspecified",
-    "keys": ["cam", "eef_pos", "eef_quat", "gripper", "instruction"],
+    "keys": ["instruction"],
     "kind": "dict"
   }
 }

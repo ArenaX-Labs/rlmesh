@@ -77,9 +77,13 @@ pub(crate) fn describe_adapter(adapter: &ResolvedAdapter) -> String {
 
 /// Summarize how one env action component is derived from the model output.
 fn describe_segment(segment: &ActionSegment) -> String {
+    if let Some((width, value)) = segment.fill {
+        return format!("(opaque {width}d) <- fill {value}");
+    }
+    let role = segment.role.as_deref().unwrap_or("?");
     let mut note = format!(
         "{} <- model[{}:{}]",
-        quoted(&segment.role),
+        quoted(role),
         segment.start,
         segment.stop
     );

@@ -14,7 +14,6 @@ import pytest
 import rlmesh
 import rlmesh._rlmesh as native
 from rlmesh._sandbox import _sources
-from rlmesh._sandbox import env as sandbox_env
 from rlmesh._sandbox import session as sandbox
 
 
@@ -63,9 +62,9 @@ def _patch_start(
 
 
 def _patch_stop(monkeypatch: pytest.MonkeyPatch, stop: Any) -> None:
-    # _stop() uses the session-module alias; the __init__ failure path uses env's.
+    # Both _stop() and the __init__-failure cleanup (session._attach) call the
+    # session-module alias, so one patch covers both paths.
     monkeypatch.setattr(sandbox, "_sandbox_stop_env", stop)
-    monkeypatch.setattr(sandbox_env, "_sandbox_stop_env", stop)
 
 
 def test_sandbox_cleanup_runs_on_keyboard_interrupt(

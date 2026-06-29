@@ -9,7 +9,12 @@ use super::rotations::RotationEncoding;
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Actuator {
-    pub role: String,
+    /// A role-less actuator is *opaque*: it occupies `dim` dims of the action
+    /// vector with the constant `fill`, matched by no model role -- the
+    /// action-side mirror of a role-less `Field`. An absent role on the wire is
+    /// the opaque case; a present role is the normal model-mapped case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     // `dim` is required (no `default`): an absent `dim` is a missing-field error
     // at the codec boundary, not a silent 0 that surfaces later as a confusing
     // width-sum mismatch. Mirrors StateFieldWire, which also omits `default`.
@@ -43,10 +48,27 @@ pub struct Actuator {
         deserialize_with = "crate::spec::num::de_opt_number"
     )]
     pub threshold: Option<f64>,
+    /// Env-side per-actuator safety clamp: clamp this component's mapped value to
+    /// its declared `range` (the global `Action.clip` cannot, since it applies one
+    /// bound to a whole mixed-range vector). Resolve enforces that `clip` implies
+    /// `range`. Omitted when unset for byte-parity with layouts that do not use it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clip: bool,
+    /// Constant emitted for each dim of a role-less (opaque) actuator -- the env
+    /// requires these dims but no model produces them. Inert on a roled actuator
+    /// (must stay 0.0; `reject` enforces this). Omitted when 0.0.
+    #[serde(default, skip_serializing_if = "is_default_fill")]
+    pub fill: f64,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,
+}
+
+/// A fill of 0.0 is the default (a roled actuator's inert value), omitted on the
+/// wire so layouts that do not use an opaque actuator are byte-identical.
+fn is_default_fill(fill: &f64) -> bool {
+    *fill == 0.0
 }
 
 /// Ordered action components plus optional clipping bounds.
@@ -79,11 +101,40 @@ impl TryFrom<ActionWire> for Action {
     fn try_from(wire: ActionWire) -> Result<Self, Self::Error> {
         let mut seen = std::collections::BTreeSet::new();
         for component in &wire.components {
-            if !seen.insert(component.role.as_str()) {
-                return Err(format!(
-                    "an action layout declares role {:?} more than once",
-                    component.role
-                ));
+            if !component.fill.is_finite() {
+                return Err(format!("actuator {:?} fill must be finite", component.role));
+            }
+            match &component.role {
+                Some(role) => {
+                    if !seen.insert(role.as_str()) {
+                        return Err(format!(
+                            "an action layout declares role {role:?} more than once"
+                        ));
+                    }
+                    if component.fill != 0.0 {
+                        return Err(format!(
+                            "actuator {role:?}: fill applies only to a role-less (opaque) \
+                             actuator; a roled actuator takes its values from the model"
+                        ));
+                    }
+                }
+                // A role-less (opaque) actuator emits a constant, so the
+                // model-mapping fields are meaningless -- it carries only dim and
+                // fill (the action-side mirror of a role-less Field's skip rule).
+                None => {
+                    if component.encoding.is_some()
+                        || component.range.is_some()
+                        || component.scale.is_some()
+                        || component.invert
+                        || component.threshold.is_some()
+                        || component.binary
+                        || component.clip
+                    {
+                        return Err("a role-less (opaque) actuator carries only dim and \
+                             fill; drop encoding/range/scale/invert/threshold/binary/clip"
+                            .to_owned());
+                    }
+                }
             }
         }
         Ok(Action {
@@ -165,6 +216,46 @@ mod tolerant_field_contract {
         let err =
             serde_json::from_str::<Action>(r#"{"components": [], "clipp": null}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"), "got: {err}");
+    }
+}
+
+#[cfg(test)]
+mod opaque_actuator_contract {
+    use super::Action;
+
+    #[test]
+    fn role_less_actuator_carries_only_dim_and_fill() {
+        // A role-less (opaque) actuator: only dim + fill. Absent role => opaque.
+        let ok: Action =
+            serde_json::from_str(r#"{"components": [{"dim": 2, "fill": 0.25}]}"#).unwrap();
+        assert_eq!(ok.components[0].role, None);
+        assert_eq!(ok.components[0].fill, 0.25);
+
+        // A model-mapping field on a role-less actuator is rejected.
+        let err =
+            serde_json::from_str::<Action>(r#"{"components": [{"dim": 2, "range": [-1.0, 1.0]}]}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("role-less"), "{err}");
+    }
+
+    #[test]
+    fn fill_on_a_roled_actuator_is_rejected() {
+        // fill is the opaque constant; a roled actuator takes its values from the
+        // model, so a non-zero fill there is a contradiction.
+        let err = serde_json::from_str::<Action>(
+            r#"{"components": [{"role": "g", "dim": 1, "fill": 0.5}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("fill applies only"), "{err}");
+    }
+
+    #[test]
+    fn role_less_actuators_do_not_collide_on_the_dup_check() {
+        // Two opaque actuators are fine (no role to repeat), mirroring role-less
+        // Fields in a Split.
+        let ok: Action =
+            serde_json::from_str(r#"{"components": [{"dim": 1}, {"dim": 2}]}"#).unwrap();
+        assert_eq!(ok.components.len(), 2);
     }
 }
 

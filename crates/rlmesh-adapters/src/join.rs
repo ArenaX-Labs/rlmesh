@@ -80,6 +80,34 @@ pub enum JoinError {
         dims: u32,
         dim: u32,
     },
+    #[error(
+        "{key:?} declares role {role:?}, which is {expected}-D by convention, but its width is {actual}"
+    )]
+    RoleDimMismatch {
+        key: String,
+        role: String,
+        expected: u32,
+        actual: u32,
+    },
+}
+
+/// Enforce a registered role's `Fixed` dim law: the author always declares the
+/// width, and a role with a fixed canonical dim (e.g. `eef_pos` is 3-D) must
+/// match it. An ad-hoc (unregistered) role, a `Variable` role, or a `ByEncoding`
+/// role (validated by the encoding check) is left to its declared width.
+fn check_role_dim_law(role: &str, actual: u32, key: &str) -> Result<()> {
+    if let Some(def) = crate::roles::registry::role_def(role)
+        && let crate::roles::registry::DimLaw::Fixed(expected) = def.dim
+        && actual != expected
+    {
+        return Err(JoinError::RoleDimMismatch {
+            key: key.to_owned(),
+            role: role.to_owned(),
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 type Result<T> = std::result::Result<T, JoinError>;
@@ -264,6 +292,7 @@ fn join_feature(
                     width,
                 });
             }
+            check_role_dim_law(&state.role, width, &path)?;
             let range = reconcile_range(uniform_finite_range(leaf), state.range, &path)?;
             Ok(vec![EnvFeature::State(EnvState {
                 source: source.clone(),
@@ -338,6 +367,7 @@ fn join_split(
                     width: field.dim,
                 });
             }
+            check_role_dim_law(role, field.dim, &path)?;
             if seen_roles.contains(&role.as_str()) {
                 return Err(JoinError::DuplicateLayoutRole {
                     key: path,
@@ -467,18 +497,27 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
     let mut components = Vec::with_capacity(action.components.len());
     let mut offset: u32 = 0;
     for component in &action.components {
+        let Some(role) = &component.role else {
+            // Opaque (role-less) actuator: occupies its dims with a constant
+            // fill, matched by nothing. No encoding/range/dim-law (the codec
+            // rejects those on a role-less actuator); it carries through verbatim.
+            components.push(component.clone());
+            offset += component.dim;
+            continue;
+        };
         if let Some(encoding) = component.encoding
             && component.dim != encoding.dims()
         {
             return Err(JoinError::ActionEncodingMismatch {
-                role: component.role.clone(),
+                role: role.clone(),
                 encoding: encoding.as_str(),
                 dims: encoding.dims(),
                 dim: component.dim,
             });
         }
+        check_role_dim_law(role, component.dim, role)?;
         let space_range = slice_uniform_finite_range(action_space, offset, component.dim);
-        let range = reconcile_range(space_range, component.range, &component.role)?;
+        let range = reconcile_range(space_range, component.range, role)?;
         components.push(Actuator {
             range,
             ..component.clone()
@@ -586,7 +625,7 @@ mod tests {
 
     fn component(role: &str, dim: u32, encoding: Option<RotationEncoding>) -> Actuator {
         Actuator {
-            role: role.to_owned(),
+            role: Some(role.to_owned()),
             dim,
             encoding,
             range: None,
@@ -594,6 +633,8 @@ mod tests {
             invert: false,
             threshold: None,
             binary: false,
+            clip: false,
+            fill: 0.0,
             unknown: Default::default(),
         }
     }
@@ -680,6 +721,29 @@ mod tests {
         assert_eq!(state.dim, Some(3));
         assert_eq!(state.range, Some((-1.0, 1.0)));
         assert_eq!(state.source.to_string(), "eef_pos");
+    }
+
+    #[test]
+    fn action_role_dim_law_rejects_a_fixed_role_with_the_wrong_dim() {
+        // delta_eef_pos is 3-D Cartesian by convention; declaring it 4-D is a
+        // hard error even though the dims still sum to the action width.
+        let action = action_layout(vec![component("action/delta_eef_pos", 4, None)]);
+        let err = resolve_action(&action, &box_view(vec![4], None, None)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                JoinError::RoleDimMismatch {
+                    expected: 3,
+                    actual: 4,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+
+        // An ad-hoc (unregistered) role has no dim law: any width resolves.
+        let adhoc = action_layout(vec![component("action/custom_thing", 4, None)]);
+        assert!(resolve_action(&adhoc, &box_view(vec![4], None, None)).is_ok());
     }
 
     #[test]

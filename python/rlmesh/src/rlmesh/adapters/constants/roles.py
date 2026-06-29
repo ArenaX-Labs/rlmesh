@@ -16,9 +16,11 @@ must never be renamed once released. Strings carry feature-kind prefixes
 domains sharing a role (e.g. ``proprio/joint_pos`` in both manipulation and
 locomotion) is intentional.
 
-Width conventions: roles do not imply dims mechanically -- specs pin widths
-explicitly where they matter. Rotation widths follow the declared encoding
-(see ``ROTATION_DIMS``); other widths vary by embodiment, which is what
+Width conventions: the author always pins ``dim`` explicitly; a registered role
+with a fixed canonical width (e.g. ``eef_pos``/``delta_eef_pos`` are 3-D
+Cartesian) now *validates* that declared dim and rejects a mismatch, but never
+supplies it. Rotation widths follow the declared encoding (see
+``ROTATION_DIMS``); other widths vary by embodiment, which is what
 ``dim``/``index`` selection on components is for.
 
 Bimanual convention: the first (or only) arm uses the unsuffixed roles; the
@@ -39,6 +41,8 @@ from ..._rlmesh import (
     ACTION_DELTA_ROT_2,
     ACTION_GRIPPER,
     ACTION_GRIPPER_2,
+    ACTION_JOINT_POS,
+    ACTION_JOINT_VEL,
     EEF_POS,
     EEF_POS_2,
     EEF_ROT,
@@ -60,6 +64,8 @@ __all__ = [
     "ACTION_DELTA_ROT_2",
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
+    "ACTION_JOINT_POS",
+    "ACTION_JOINT_VEL",
     "EEF_POS",
     "EEF_POS_2",
     "EEF_ROT",

@@ -138,7 +138,7 @@ fn reject_action(action: &Action) -> Result<(), String> {
             return Err(format!(
                 "action component[{index}] (role {:?}) declares unrecognized field {field:?}; \
                  upgrade the runtime or drop the field (or prefix it `x-` to mark it ignorable)",
-                actuator.role
+                actuator.role.as_deref().unwrap_or("opaque")
             ));
         }
     }

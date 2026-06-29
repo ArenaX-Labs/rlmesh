@@ -8,8 +8,28 @@ use crate::fmt::{quoted, quoted_encoding, quoted_keys};
 use crate::plans::{ActionPlan, ActionSegment};
 use crate::spec::{Action, Actuator};
 
-/// Validate that a model/env action component pairing is convertible.
-fn check_action_dims(model: &Actuator, env: &Actuator) -> Result<()> {
+/// Enforce a registered role's `Fixed` dim law on a model actuator (the env side
+/// is checked at `join`). An ad-hoc/`Variable`/`ByEncoding` role is left alone.
+fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
+    if let Some(def) = crate::roles::registry::role_def(role)
+        && let crate::roles::registry::DimLaw::Fixed(expected) = def.dim
+        && dim != expected
+    {
+        return Err(err(
+            ErrorCode::DimMismatch,
+            format!(
+                "action role {}: model declares {dim} dims but the role is {expected}-D by convention",
+                quoted(role)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that a model/env action component pairing is convertible. `role` is
+/// the matched (always present) role both sides share.
+fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()> {
+    check_role_dim_law(role, model.dim)?;
     let converting = match (model.encoding, env.encoding) {
         (Some(model_encoding), Some(env_encoding)) => model_encoding != env_encoding,
         _ => false,
@@ -22,7 +42,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator) -> Result<()> {
                 ErrorCode::DimMismatch,
                 format!(
                     "action role {}: dims {}->{} do not match encodings {}->{}",
-                    quoted(&model.role),
+                    quoted(role),
                     model.dim,
                     env.dim,
                     quoted_encoding(model.encoding),
@@ -38,7 +58,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator) -> Result<()> {
             format!(
                 "action role {}: cannot convert encoding {} to {}; both sides must \
              declare a rotation encoding",
-                quoted(&model.role),
+                quoted(role),
                 quoted_encoding(model.encoding),
                 quoted_encoding(env.encoding)
             ),
@@ -49,7 +69,7 @@ fn check_action_dims(model: &Actuator, env: &Actuator) -> Result<()> {
             ErrorCode::DimMismatch,
             format!(
                 "action role {}: model outputs {} dims but the env expects {}",
-                quoted(&model.role),
+                quoted(role),
                 model.dim,
                 env.dim
             ),
@@ -73,13 +93,18 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
     let mut offsets: BTreeMap<String, (u32, &Actuator)> = BTreeMap::new();
     let mut cursor: u32 = 0;
     for component in &model.components {
-        if offsets.contains_key(&component.role) {
-            return Err(err(
-                ErrorCode::Duplicate,
-                format!("duplicate model action role {}", quoted(&component.role)),
-            ));
+        // A role-less (opaque) model actuator emits dims the env ignores: it
+        // advances the cursor but is matched by nothing, so only roled components
+        // join the offset map.
+        if let Some(role) = &component.role {
+            if offsets.contains_key(role) {
+                return Err(err(
+                    ErrorCode::Duplicate,
+                    format!("duplicate model action role {}", quoted(role)),
+                ));
+            }
+            offsets.insert(role.clone(), (cursor, component));
         }
-        offsets.insert(component.role.clone(), (cursor, component));
         cursor = cursor.checked_add(component.dim).ok_or_else(|| {
             err(
                 ErrorCode::DimMismatch,
@@ -92,30 +117,48 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
     let mut segments: Vec<ActionSegment> = Vec::with_capacity(env.components.len());
     let mut seen_env_roles: BTreeMap<&str, ()> = BTreeMap::new();
     for env_component in &env.components {
-        if seen_env_roles
-            .insert(env_component.role.as_str(), ())
-            .is_some()
-        {
+        // A role-less (opaque) env actuator occupies its dims with a constant
+        // fill, matched by no model output (the action-side mirror of a role-less
+        // Field). It reads nothing from the model.
+        let Some(role) = &env_component.role else {
+            segments.push(ActionSegment {
+                role: None,
+                start: 0,
+                stop: 0,
+                src_encoding: None,
+                dst_encoding: None,
+                src_range: None,
+                dst_range: None,
+                scale: None,
+                invert: false,
+                threshold: None,
+                binarize: false,
+                clip: None,
+                fill: Some((env_component.dim, env_component.fill)),
+            });
+            continue;
+        };
+        if seen_env_roles.insert(role.as_str(), ()).is_some() {
             // Mirror the model-side dedup above (and the env-side StateLayout
             // role check): a role repeated in the env layout would resolve
             // every copy against the same model slice, building the env action
             // by repetition instead of a real mapping.
             return Err(err(
                 ErrorCode::Duplicate,
-                format!("duplicate env action role {}", quoted(&env_component.role)),
+                format!("duplicate env action role {}", quoted(role)),
             ));
         }
-        let Some(&(start, model_component)) = offsets.get(&env_component.role) else {
+        let Some(&(start, model_component)) = offsets.get(role) else {
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
                     "env action needs role {} but the model only outputs {}",
-                    quoted(&env_component.role),
+                    quoted(role),
                     quoted_keys(&offsets)
                 ),
             ));
         };
-        check_action_dims(model_component, env_component)?;
+        check_action_dims(model_component, env_component, role)?;
         // Corrections (scale/invert/threshold) describe the env's actuator
         // convention; the model declares none. They are read only from the env
         // component below, so a model-side correction would be silently dropped --
@@ -123,12 +166,16 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
         if model_component.scale.is_some()
             || model_component.invert
             || model_component.threshold.is_some()
+            || model_component.clip
         {
             return Err(err(
                 ErrorCode::Unsupported,
                 format!(
-                    "action role {}: scale/invert/threshold belong on the env component, not the model",
-                    quoted(&env_component.role)
+                    "action role {}: scale/invert/threshold/clip belong on the env component, \
+                     not the model; declare them on the env actuator, or -- when the env is \
+                     shared and cannot carry your model's output convention -- apply the \
+                     conversion imperatively in predict()/_obs()",
+                    quoted(role)
                 ),
             ));
         }
@@ -140,13 +187,29 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
                 ErrorCode::Unsupported,
                 format!(
                     "action role {}: threshold requires a binary component (set binary=true)",
-                    quoted(&env_component.role)
+                    quoted(role)
                 ),
             ));
         }
+        // clip-to-range needs a range to clamp to; a clip without one is an
+        // authoring contradiction (Python __post_init__ catches it too).
+        let clip = if env_component.clip {
+            let Some(range) = env_component.range else {
+                return Err(err(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "action role {}: clip=true clamps to range, but no range is declared",
+                        quoted(role)
+                    ),
+                ));
+            };
+            Some(range)
+        } else {
+            None
+        };
         let same_range = model_component.range == env_component.range;
         segments.push(ActionSegment {
-            role: env_component.role.clone(),
+            role: Some(role.clone()),
             start,
             stop: start + model_component.dim,
             src_encoding: model_component.encoding,
@@ -167,6 +230,8 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             invert: env_component.invert,
             threshold: env_component.threshold,
             binarize,
+            clip,
+            fill: None,
         });
     }
     Ok(ActionPlan {
@@ -184,7 +249,7 @@ mod tests {
 
     fn component(role: &str) -> Actuator {
         Actuator {
-            role: role.to_owned(),
+            role: Some(role.to_owned()),
             dim: 1,
             encoding: None,
             range: None,
@@ -192,6 +257,24 @@ mod tests {
             scale: None,
             invert: false,
             threshold: None,
+            clip: false,
+            fill: 0.0,
+            unknown: Default::default(),
+        }
+    }
+
+    fn opaque(dim: u32, fill: f64) -> Actuator {
+        Actuator {
+            role: None,
+            dim,
+            encoding: None,
+            range: None,
+            binary: false,
+            scale: None,
+            invert: false,
+            threshold: None,
+            clip: false,
+            fill,
             unknown: Default::default(),
         }
     }
@@ -236,6 +319,43 @@ mod tests {
     }
 
     #[test]
+    fn clip_resolves_to_the_env_actuator_range() {
+        let model = layout(vec![component("action/x")]);
+        let mut env_x = component("action/x");
+        env_x.range = Some((-1.5, 1.5));
+        env_x.clip = true;
+        let env = layout(vec![env_x]);
+        let plan = plan_action(&model, &env).unwrap();
+        assert_eq!(plan.segments[0].clip, Some((-1.5, 1.5)));
+    }
+
+    #[test]
+    fn rejects_clip_without_a_range() {
+        let model = layout(vec![component("action/x")]);
+        let mut env_x = component("action/x");
+        env_x.clip = true; // no range declared
+        let env = layout(vec![env_x]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("clamps to range"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn rejects_clip_declared_on_the_model_component() {
+        let mut model_x = component("action/x");
+        model_x.clip = true;
+        let model = layout(vec![model_x]);
+        let env = layout(vec![component("action/x")]);
+        let error = plan_action(&model, &env).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("belong on the env component"));
+    }
+
+    #[test]
     fn rejects_clip_declared_on_the_model_action() {
         // clip is an env-side clamp applied to the assembled vector; a clip on
         // the model layout is read from the env side only, so reject it loudly
@@ -250,5 +370,19 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    #[test]
+    fn opaque_env_actuator_resolves_to_a_fill_segment() {
+        // The env requires a dim no model produces (e.g. a control-mode selector);
+        // a role-less actuator resolves to an opaque fill, not a MissingRole error.
+        let model = layout(vec![component("action/gripper")]);
+        let env = layout(vec![component("action/gripper"), opaque(2, 0.25)]);
+        let plan = plan_action(&model, &env).unwrap();
+        assert_eq!(plan.in_dim, 1); // the model only outputs the gripper dim
+        assert_eq!(plan.segments.len(), 2);
+        assert!(plan.segments[0].role.is_some());
+        assert_eq!(plan.segments[1].role, None);
+        assert_eq!(plan.segments[1].fill, Some((2, 0.25)));
     }
 }
