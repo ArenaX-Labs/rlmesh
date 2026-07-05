@@ -84,7 +84,7 @@ def test_model_binding_is_forwarded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(serve, "resolve_entrypoint", lambda *a, **k: object())
 
     def fake_serve_model(
-        model: object, address: str, *, token: str = "", binding: object = None
+        model: object, address: str, *, binding: object = None
     ) -> None:
         captured["binding"] = binding
 
@@ -110,6 +110,7 @@ def test_serve_env_binding_named_address_does_not_collide(
     class FakeServer:
         def __init__(self, env: object, address: str, **_: object) -> None:
             captured["env"], captured["address"] = env, address
+            self.address = address
 
         def serve(self) -> None: ...
 
@@ -162,6 +163,7 @@ def test_serve_env_vectorizes_factory_and_skips_tags(
         ) -> None:
             captured["env"], captured["tags"] = env, tags
             captured["framework"], captured["device"] = framework, device
+            self.address = address
 
         def serve(self) -> None: ...
 
@@ -193,6 +195,54 @@ def test_serve_env_vectorizes_factory_and_skips_tags(
     serve.serve_env(_Factory, "0.0.0.0:1", num_envs=2)
     assert getattr(captured["env"], "num_envs", None) == 2
     assert captured["tags"] is None  # vector env serves untagged (adapters per-lane)
+
+
+def test_cli_rejects_framework_and_device_for_model_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --framework / --device only type the env obs/action seam; a model serve
+    # cannot honor them, so they hard-error instead of vanishing.
+    monkeypatch.delenv("RLMESH_FRAMEWORK", raising=False)
+    monkeypatch.delenv("RLMESH_DEVICE", raising=False)
+    with pytest.raises(SystemExit):
+        serve.main(["pkg:Model", "--framework", "torch"])
+    with pytest.raises(SystemExit):
+        serve.main(["pkg:Model", "--device", "cuda:0"])
+
+
+def test_cli_rejects_serve_controls_in_binding() -> None:
+    # framework/device joined num_envs/vectorization_mode in the binding
+    # collision guard: they are serve controls, not make() kwargs.
+    with pytest.raises(SystemExit):
+        serve.main(["--env", "pkg:Env", "--kwargs-json", '{"framework": "torch"}'])
+    with pytest.raises(SystemExit):
+        serve.main(["--env", "pkg:Env", "--kwargs-json", '{"device": "cuda:0"}'])
+
+
+def test_resolve_entrypoint_accepts_env_factory_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # serve_env supports an EnvFactory INSTANCE (hasattr .make), so the CLI's
+    # entrypoint resolution must not reject the non-callable instance form.
+    import sys
+    import types
+
+    from rlmesh._entrypoint import resolve_entrypoint
+
+    class _FactoryInstance:
+        def make(self) -> object:
+            return object()
+
+    module = types.ModuleType("fake_factory_mod")
+    module.factory = _FactoryInstance()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_factory_mod", module)
+
+    resolved = resolve_entrypoint("fake_factory_mod:factory", label="env entrypoint")
+    assert hasattr(resolved, "make")
+
+    module.not_serveable = object()  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="callable or an object"):
+        resolve_entrypoint("fake_factory_mod:not_serveable", label="env entrypoint")
 
 
 def test_resolve_model_enforces_required_param_with_empty_binding() -> None:

@@ -204,7 +204,6 @@ options = rlmesh.ServeOptions(
     drain_timeout_seconds=30,      # bound draining in-flight requests on shutdown
     close_timeout_seconds=10,      # bound the env close hook on shutdown
     allow_remote_shutdown=False,   # ignore a client shutdown RPC
-    token="s3cret",                # require this bearer token on every request
 )
 rlmesh.EnvServer(env, "0.0.0.0:5555", options=options).serve()
 ```
@@ -215,9 +214,8 @@ Each field controls one part of the lifecycle:
 - `drain_timeout_seconds` bounds how long shutdown waits for in-flight requests to finish. `None` waits indefinitely.
 - `close_timeout_seconds` bounds how long the env's close hook may take on shutdown. `None` waits indefinitely.
 - `allow_remote_shutdown` decides whether a client `shutdown` RPC is honored. Off by default, so a connected peer cannot stop your server.
-- `token` requires a bearer token on every request. `None` or an empty string disables authentication.
 
-The defaults are conservative: no idle shutdown, unbounded drain and close, remote shutdown off, no token. Set them when a server outlives a single run.
+The defaults are conservative: no idle shutdown, unbounded drain and close, remote shutdown off. Set them when a server outlives a single run.
 
 ## Where next
 

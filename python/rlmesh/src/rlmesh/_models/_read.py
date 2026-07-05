@@ -126,30 +126,17 @@ def env_image_roles(contract: Any) -> list[str]:
     """The image roles an env declares, in observation-tag declaration order.
 
     Reads the env's published adapter tags (the same :class:`~rlmesh.adapters.EnvTags`
-    the reader resolves against) and walks the observation tree for every
-    :class:`~rlmesh.adapters.ImageTag`. Returns ``[]`` when the env publishes no tags.
-    Unlike probing a fixed role list, this finds custom image roles too, and only the
-    ones this env actually declares.
+    the reader resolves against) and returns the ``images`` group of the public
+    :attr:`~rlmesh.adapters.EnvTags.observation_roles` walk. Returns ``[]`` when the
+    env publishes no tags. Unlike probing a fixed role list, this finds custom image
+    roles too, and only the ones this env actually declares.
     """
-    from ..adapters import EnvTags, ImageTag
+    from ..adapters import EnvTags
 
     env_tags = EnvTags.from_metadata(getattr(contract, "metadata", None) or {})
     if env_tags is None:
         return []
-    roles: list[str] = []
-
-    def walk(node: Any) -> None:
-        if isinstance(node, Mapping):
-            for child in cast("Any", node).values():
-                walk(child)
-        elif isinstance(node, tuple):
-            for child in cast("Any", node):
-                walk(child)
-        elif isinstance(node, ImageTag):
-            roles.append(node.role)
-
-    walk(env_tags.observation)
-    return roles
+    return list(env_tags.observation_roles.images)
 
 
 def _read_only_action(action: Action) -> Action:

@@ -211,6 +211,39 @@ def test_read_by_role_resolves_against_an_env_that_declares_clip_clamps() -> Non
     assert img.shape == (8, 8, 3)
 
 
+def test_session_observation_roles_groups_declared_roles() -> None:
+    sess = _session()
+    roles = sess.observation_roles()
+    assert roles == adapt.ObservationRoles(
+        images=(adapt.IMAGE_PRIMARY,),
+        states=(adapt.EEF_POS,),
+        texts=(adapt.INSTRUCTION,),
+    )
+    sess.close()
+
+
+def test_session_observation_roles_is_empty_for_an_untagged_env() -> None:
+    class _UntaggedEnv:
+        def reset(
+            self, *, seed: object = None, options: object = None
+        ) -> tuple[int, dict[str, object]]:
+            return 0, {}
+
+        def step(
+            self, action: object
+        ) -> tuple[int, float, bool, bool, dict[str, object]]:
+            return 0, 1.0, True, False, {}
+
+        def close(self) -> None:
+            return None
+
+    from typing import cast
+
+    sess = rlmesh.session(rlmesh.Model(lambda obs: 0), cast("Any", _UntaggedEnv()))
+    assert sess.observation_roles() == adapt.ObservationRoles()
+    sess.close()
+
+
 def test_read_only_action_drops_env_side_clip_clamps() -> None:
     # The strip helper underneath: global and per-actuator clip go, while the actuator
     # layout the read needs (roles, dims) stays.

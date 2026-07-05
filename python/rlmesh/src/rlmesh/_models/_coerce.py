@@ -24,16 +24,24 @@ RANDOM_SAMPLE = _RandomSample()
 
 
 class CoercedModel(NamedTuple):
-    """A model source normalized to its predict callable, spec, and lifecycle hooks."""
+    """A model source normalized to its predict corners, spec, and lifecycle hooks.
+
+    ``on_episode_end`` carries a duck-typed policy's ``reset()``, wired to the
+    episode-END edge: the only per-episode boundary both the local loop and the
+    served wire path signal, so a stateful policy clears its state identically
+    either way. The three optional corners (``predict_chunk`` / ``predict_batch``
+    / ``predict_chunk_batch``) are picked up from a duck-typed policy when it
+    defines them, so they feed the same corner synthesis a ``Model`` subclass's do.
+    """
 
     predict: Callable[[Any], Any]
     spec: object | None
-    # A duck-typed policy's ``reset()`` is wired here, to the episode-END edge: it
-    # is the only per-episode boundary both the local loop and the served wire path
-    # signal, so a stateful policy clears its state identically either way.
     on_episode_end: Callable[[], None] | None
     on_close: Callable[[], None] | None
     policy: Any
+    predict_chunk: Callable[..., Any] | None = None
+    predict_batch: Callable[..., Any] | None = None
+    predict_chunk_batch: Callable[..., Any] | None = None
 
 
 def coerce_model(
@@ -60,6 +68,9 @@ def coerce_model(
             getattr(inst, "reset", None),
             getattr(inst, "close", None),
             inst,
+            predict_chunk=getattr(inst, "predict_chunk", None),
+            predict_batch=getattr(inst, "predict_batch", None),
+            predict_chunk_batch=getattr(inst, "predict_chunk_batch", None),
         )
     if callable(source):
         return CoercedModel(source, spec, None, None, None)

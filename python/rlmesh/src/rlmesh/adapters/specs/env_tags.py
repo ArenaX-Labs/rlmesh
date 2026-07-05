@@ -24,7 +24,13 @@ from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
 
 from ..constants import ENV_METADATA_KEY
-from ._codec import normalize_spec, one_or_many, to_pair
+from ._codec import (
+    check_accept_set,
+    hashable_node,
+    normalize_spec,
+    one_or_many,
+    to_pair,
+)
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
 from .model_serialization import COMMON_LEAF_TYPES, decode_node, encode_node
@@ -72,6 +78,7 @@ class StateTag:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
+        check_accept_set("StateTag", self.role, self.encoding)
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,7 @@ class Field:
         if self.dim < 1:
             raise ValueError(f"Field {self.role!r}: dim must be >= 1, got {self.dim}")
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
+        check_accept_set("Field", self.role, self.encoding)
 
 
 @dataclass(frozen=True, init=False)
@@ -133,6 +141,12 @@ class Split:
     whose fixed index ranges carry distinct semantics (e.g. Metaworld)::
 
         Split(Field(EEF_POS, 3), Field(GRIPPER, 1))
+
+    Construction rejects a role declared by more than one field. The
+    authoritative Rust codec enforces the same rule at the wire door;
+    duplicating it here is deliberate (the fail-fast-at-construction exception,
+    like ``Field``'s ``dim >= 1`` check), so the author's own mistake surfaces
+    at the authoring line instead of at serialize/resolve.
 
     Attributes:
         fields: State fields in vector order.
@@ -258,6 +272,57 @@ def obs_node_from_dict(node: object) -> ObsNode:
 
 
 @dataclass(frozen=True)
+class ObservationRoles:
+    """The observation roles an environment declares, grouped by kind.
+
+    Returned by :attr:`EnvTags.observation_roles` and
+    :meth:`rlmesh.Session.observation_roles`. Each group lists role strings in
+    declaration order; an env that declares no tags yields empty groups.
+
+    Attributes:
+        images: Roles of :class:`ImageTag` leaves.
+        states: Roles of :class:`StateTag` leaves and of non-skip
+            :class:`Field` slices inside a :class:`Split`.
+        texts: Roles of :class:`TextTag` leaves.
+    """
+
+    images: tuple[str, ...] = ()
+    states: tuple[str, ...] = ()
+    texts: tuple[str, ...] = ()
+
+
+def _walk_observation_roles(
+    node: object, images: list[str], states: list[str], texts: list[str]
+) -> None:
+    """Collect declared roles from an observation tag tree, in declaration order.
+
+    Handles the three node shapes of ``ObsNode``: a Dict node (mapping), a Tuple
+    node, and a bare leaf. A role-less (skip) :class:`Field` produces nothing.
+    Any other node (e.g. a ``list`` container) raises the same ``TypeError`` the
+    wire encoder raises for that tree, so the walker cannot silently accept a
+    tree ``to_dict`` rejects.
+    """
+    if isinstance(node, Mapping):
+        for child in cast("Mapping[str, Any]", node).values():
+            _walk_observation_roles(child, images, states, texts)
+    elif isinstance(node, tuple):
+        for child in cast("tuple[Any, ...]", node):
+            _walk_observation_roles(child, images, states, texts)
+    elif isinstance(node, ImageTag):
+        images.append(node.role)
+    elif isinstance(node, StateTag):
+        states.append(node.role)
+    elif isinstance(node, Split):
+        states.extend(f.role for f in node.fields if f.role is not None)
+    elif isinstance(node, TextTag):
+        texts.append(node.role)
+    else:
+        raise TypeError(
+            f"observation node must be a leaf, a dict, or a tuple, got {node!r}"
+        )
+
+
+@dataclass(frozen=True)
 class EnvTags:
     """Declarative tags of an environment's observation and action.
 
@@ -274,6 +339,56 @@ class EnvTags:
 
     observation: ObsNode
     action: Action
+
+    def __post_init__(self) -> None:
+        """Fail fast on a duplicate observation role at construction.
+
+        Every consumer's resolve indexes env features by role per kind and
+        rejects a duplicate, so tags that declare one can never resolve; catch
+        it here (width-independently -- a vector env skips space-width checks
+        but a duplicate role is invalid regardless), extending the same
+        fail-fast-at-construction pattern as ``Split``'s duplicate-field check.
+        """
+        images: list[str] = []
+        states: list[str] = []
+        texts: list[str] = []
+        _walk_observation_roles(self.observation, images, states, texts)
+        for kind, roles in (("image", images), ("state", states), ("text", texts)):
+            seen: set[str] = set()
+            for role in roles:
+                if role in seen:
+                    raise ValueError(
+                        f"env tags declare {kind} role {role!r} more than once"
+                    )
+                seen.add(role)
+
+    def __hash__(self) -> int:
+        """Hash consistently with the generated order-insensitive ``__eq__``.
+
+        ``observation`` can be a Dict node (an unhashable Python ``dict``), so
+        the dataclass-default field hash would fail even though the tags are
+        frozen and compare by value -- and ``__eq__`` compares Dict nodes
+        without regard to key order, so the hash must not depend on it either.
+        Hash a key-order-canonical rendering (see :func:`hashable_node`).
+        """
+        return hash((hashable_node(self.observation), self.action))
+
+    @property
+    def observation_roles(self) -> ObservationRoles:
+        """The declared observation roles, grouped by kind in declaration order.
+
+        Walks the observation tag tree (dict/tuple containers and bare leaves):
+        :class:`ImageTag` roles land in ``images``; :class:`StateTag` roles and
+        non-skip :class:`Field` roles inside a :class:`Split` land in ``states``;
+        :class:`TextTag` roles land in ``texts``.
+        """
+        images: list[str] = []
+        states: list[str] = []
+        texts: list[str] = []
+        _walk_observation_roles(self.observation, images, states, texts)
+        return ObservationRoles(
+            images=tuple(images), states=tuple(states), texts=tuple(texts)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of these tags.
@@ -335,7 +450,11 @@ class EnvTags:
         if payload is None:
             return None
         if not isinstance(payload, Mapping):
-            raise TypeError(f"metadata key {ENV_METADATA_KEY!r} must hold a mapping")
+            from ..resolver import AdapterResolutionError
+
+            raise AdapterResolutionError(
+                f"metadata key {ENV_METADATA_KEY!r} must hold a mapping"
+            )
         return cls.from_dict(cast(Mapping[str, Any], payload))
 
 
@@ -345,6 +464,7 @@ __all__ = [
     "ImageTag",
     "ObsLeaf",
     "ObsNode",
+    "ObservationRoles",
     "Split",
     "StateTag",
     "TextTag",

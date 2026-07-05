@@ -20,10 +20,13 @@ RotationEncoding: TypeAlias = Literal[
 # checking. No native FIT_MODES export yet (unlike IMAGE_LAYOUTS/ROTATION_DIMS).
 FitMode: TypeAlias = Literal["stretch", "crop", "pad"]
 
+Resample: TypeAlias = Literal["bilinear", "bilinear_aa"]
+
 __all__ = [
     "IMAGE_LAYOUTS",
     "ROTATION_DIMS",
     "FitMode",
     "ImageLayout",
+    "Resample",
     "RotationEncoding",
 ]

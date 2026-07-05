@@ -90,10 +90,13 @@ Three groups of configuration sit on a sandbox session, and they apply at differ
 | `gpus`    | `docker run --gpus`: `"all"`, a count, or a selector like `"device=0,1"` (CUDA compute only)    |
 | `devices` | `docker run --device` entries, such as `["nvidia.com/gpu=all"]` for SAPIEN/Vulkan via a CDI ref |
 | `volumes` | `docker run -v` mounts for bind-mounting large assets                                           |
+| `user`    | `docker run --user`: an int uid or a `"uid[:gid]"` string                                       |
+
+For a writable mount, set `user=` to the uid that owns the host directory (typically `os.getuid()`). The container runs with `--cap-drop ALL`, so even a root process inside it obeys the mount's permission bits; without a matching uid, writes into a bind-mounted volume fail with permission errors.
 
 ### The rlmesh package in the image
 
-When building from source, `rlmesh_package="local"` installs a wheel from `python/rlmesh/dist` in your checkout, which is what you want while developing against an unreleased build. You can also pass an exact wheel path or a pip specifier such as `rlmesh==0.1.0rc2`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
+When building from source, `rlmesh_package="local"` installs a wheel from `python/rlmesh/dist` in your checkout, which is what you want while developing against an unreleased build. You can also pass an exact wheel path or a pip specifier such as `rlmesh==0.1.0`. For process-wide configuration, set `RLMESH_SANDBOX_RLMESH_PACKAGE`.
 
 ```{warning}
 The container and your host must currently run the same rlmesh release: the protocol generation

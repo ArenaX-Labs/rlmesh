@@ -415,15 +415,15 @@ def test_env_server_exposes_env_contract_before_and_after_lifecycle() -> None:
 
     try:
         assert isinstance(server.env_contract, EnvContract)
-        assert isinstance(server.spec, EnvContract)
+        assert isinstance(server.env_contract, EnvContract)
         assert server.env_contract.id == "TinySpecEnv-v0"
-        assert server.spec.id == "TinySpecEnv-v0"
+        assert server.env_contract.id == "TinySpecEnv-v0"
 
         server.start()
         server.shutdown()
 
         assert server.env_contract.id == "TinySpecEnv-v0"
-        assert server.spec.id == "TinySpecEnv-v0"
+        assert server.env_contract.id == "TinySpecEnv-v0"
     finally:
         server.shutdown()
 
@@ -446,9 +446,9 @@ def test_env_server_vector_contract_reports_num_envs() -> None:
     env = TinySpecVectorEnv()
     server = env_server(env)
     try:
-        assert server.spec.id == "TinySpecVectorEnv-v0"
+        assert server.env_contract.id == "TinySpecVectorEnv-v0"
         assert server.env_contract.num_envs == 2
-        assert server.spec.num_envs == 2
+        assert server.env_contract.num_envs == 2
     finally:
         server.shutdown()
 
@@ -900,7 +900,7 @@ def test_model_run_close_env_requests_shutdown(monkeypatch: pytest.MonkeyPatch) 
     finally:
         server.shutdown()
 
-    assert shutdown_reasons == ["model run complete"]
+    assert shutdown_reasons == ["owner shutdown"]
 
 
 def test_model_lifecycle_callbacks_are_zero_argument() -> None:

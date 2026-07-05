@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import itertools
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -38,6 +39,10 @@ if TYPE_CHECKING:
 
     ServedEnv = EnvLike[Any, Any] | VectorServerEnvLike
 
+#: Distinct sys.modules name per hf env.py load (two hf envs in one process
+#: must never clobber each other's module entry).
+_HF_ENV_MODULE_COUNTER = itertools.count()
+
 
 def load_environment(
     env_id: str,
@@ -46,8 +51,15 @@ def load_environment(
     vectorization_mode: str | None = None,
     kwargs: Mapping[str, object] | None = None,
 ) -> ServedEnv:
-    """Load a Gymnasium/Gym environment for the interactive CLI."""
+    """Load a Gymnasium/Gym environment for the interactive CLI.
+
+    When every imported gym module rejects the id, the failure chains and quotes
+    the last lookup error -- gymnasium's ``NameNotFound`` carries the "Did you
+    mean ...?" suggestion -- instead of blaming a missing ``gym`` module. Missing
+    modules are only mentioned when no gym module imported at all.
+    """
     import_errors: list[str] = []
+    lookup_errors: list[tuple[str, Exception]] = []
     imports = list(package_names)
     import_packages(imports)
 
@@ -71,15 +83,20 @@ def load_environment(
             )
         except Exception as exc:
             if is_env_lookup_error(exc):
+                lookup_errors.append((module_name, exc))
                 continue
             raise
 
     msg = f"Unable to load '{env_id}'."
-    if import_errors:
+    if lookup_errors:
+        details = "; ".join(f"{name}: {exc}" for name, exc in lookup_errors)
+        msg = f"{msg} {details}"
+    if not lookup_errors and import_errors:
         msg = f"{msg} Missing modules: {', '.join(import_errors)}."
     if not imports:
         msg = f"{msg} If the env is registered by another package, pass --package."
-    raise ImportError(msg)
+    last_lookup_error = lookup_errors[-1][1] if lookup_errors else None
+    raise ImportError(msg) from last_lookup_error
 
 
 def load_env_from_spec(spec: Mapping[str, object]) -> object:
@@ -153,7 +170,13 @@ def load_env_entrypoint(
 
 
 def load_gym_env(spec: Mapping[str, object]) -> object:
-    """Load a Gymnasium/Gym environment from a sandbox bootstrap spec."""
+    """Load a Gymnasium/Gym environment from a sandbox bootstrap spec.
+
+    Only a genuine lookup miss (the id is not registered) falls through to the
+    next gym module, mirroring :func:`load_environment`: a construction error is
+    raised as-is rather than re-running side-effecting construction against
+    ``gym`` and blaming both modules.
+    """
     import_packages(expect_str_list(spec.get("imports"), "bootstrap imports"))
 
     env_id = expect_str(spec.get("env_id"), "bootstrap spec.env_id")
@@ -174,7 +197,10 @@ def load_gym_env(spec: Mapping[str, object]) -> object:
                 vectorization_mode=vectorization_mode,
             )
         except Exception as exc:
-            errors.append((gym_module.__name__, exc))
+            if is_env_lookup_error(exc):
+                errors.append((gym_module.__name__, exc))
+                continue
+            raise
 
     if errors:
         names = ", ".join(name for name, _ in errors)
@@ -187,7 +213,16 @@ def load_gym_env(spec: Mapping[str, object]) -> object:
 
 
 def load_hf_env(spec: Mapping[str, object]) -> object:
-    """Load an HF-materialized environment from a sandbox bootstrap spec."""
+    """Load an HF-materialized environment from a sandbox bootstrap spec.
+
+    ``source_subdir`` is normally relative to the container's ``/opt/rlmesh``
+    materialization root; an absolute ``source_subdir`` is accepted and used
+    as-is (``Path.__truediv__`` discards the base for an absolute right-hand
+    side), which host-side tests rely on to load from a temp directory.
+
+    Each load imports ``env.py`` under a fresh module name so loading two hf
+    envs in one process never clobbers the other's ``sys.modules`` entry.
+    """
     import_packages(expect_str_list(spec.get("imports"), "bootstrap imports"))
 
     source_subdir = expect_str(
@@ -202,7 +237,9 @@ def load_hf_env(spec: Mapping[str, object]) -> object:
     if source_root_str not in sys.path:
         sys.path.insert(0, source_root_str)
 
-    module = load_module_from_path("rlmesh_hf_env", env_py)
+    module = load_module_from_path(
+        f"rlmesh_hf_env_{next(_HF_ENV_MODULE_COUNTER)}", env_py
+    )
     make_env = load_callable(module, "make_env")
 
     kwargs = mapping_to_kwargs(spec.get("kwargs"), "bootstrap spec.kwargs")
@@ -227,9 +264,9 @@ def import_packages(package_names: Sequence[str]) -> None:
     for module_name in package_names:
         try:
             _ = importlib.import_module(module_name)
-        except ImportError:
-            msg = f"Unable to import package '{module_name}'."
-            raise ImportError(msg) from None
+        except ImportError as exc:
+            msg = f"Unable to import package '{module_name}': {exc}."
+            raise ImportError(msg) from exc
 
 
 def is_env_lookup_error(exc: Exception) -> bool:

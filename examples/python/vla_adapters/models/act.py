@@ -89,7 +89,7 @@ class ChunkEnsembleAdapter(adapt.AdapterBase[Any]):
     def describe(self) -> str:
         return (
             f"temporal ensemble over {self._horizon}-step action chunks, then:\n"
-            + self._inner.describe()
+            + self._inner.explain()
         )
 
 

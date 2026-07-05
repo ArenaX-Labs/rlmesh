@@ -42,7 +42,7 @@ class EnvFactory(ABC):
     stay in ``params`` (the ``ParamSpec`` is always the full validation surface --
     never describe the same dimension in both ``enumerate_variants`` and
     ``enumerate_params``). Import heavy/optional deps lazily inside the method, as
-    ``make`` does, so ``describe`` stays off-GPU. See :mod:`rlmesh.describe`.
+    ``make`` does, so ``describe`` stays off-GPU. See :func:`rlmesh.describe`.
     """
 
     tags: ClassVar[EnvTags | None] = None
@@ -86,7 +86,7 @@ class EnvFactory(ABC):
     @classmethod
     def describe(cls) -> dict[str, Any]:
         """Return this factory's full metadata envelope (see :func:`rlmesh.describe`)."""
-        from .describe import describe  # lazy: avoid an import cycle at module load
+        from ._describe import describe  # lazy: avoid an import cycle at module load
 
         return describe(cls, kind="env")
 
@@ -106,8 +106,33 @@ class EnvFactory(ABC):
         """Optional: release resources."""
 
     @final
-    def serve(self, address: str, **kwargs: Any) -> None:
-        """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**kwargs)``, publish ``tags``."""
+    def serve(
+        self,
+        address: str,
+        *,
+        num_envs: int = 1,
+        vectorization_mode: str | None = None,
+        framework: str | None = None,
+        device: object | None = None,
+        **make_kwargs: Any,
+    ) -> None:
+        """Host this env on ``address`` (blocking): ``prepare()`` + ``make(**make_kwargs)``, publish ``tags``.
+
+        The named keywords are *serving* options, forwarded to
+        :func:`rlmesh.serve.serve_env` (``num_envs > 1`` fans ``make`` out into a
+        vector env; ``framework``/``device`` type and place the served obs/action
+        seam); every other keyword goes to ``make``. Naming them here keeps a make
+        kwarg from silently binding to a serving option -- a ``make`` parameter that
+        shares a serving option's name cannot ride through ``serve``.
+        """
         from .serve import serve_env
 
-        serve_env(self, address, **kwargs)
+        serve_env(
+            self,
+            address,
+            num_envs=num_envs,
+            vectorization_mode=vectorization_mode,
+            framework=framework,
+            device=device,
+            **make_kwargs,
+        )

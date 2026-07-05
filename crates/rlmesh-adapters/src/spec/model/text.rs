@@ -21,8 +21,11 @@ pub struct Text {
     pub role: String,
     #[serde(default)]
     pub container: TextContainer,
+    /// Fallback value used when the observation omits the feature; `None` omits
+    /// the input from the payload instead. Named `fill` to match `Actuator.fill`
+    /// (the one fallback-fill vocabulary word).
     #[serde(default)]
-    pub default: Option<String>,
+    pub fill: Option<String>,
     /// Unrecognized additive fields, retained for round-trip (see the strict-v1 publish gate).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, serde_json::Value>,

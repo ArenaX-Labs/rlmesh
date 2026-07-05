@@ -95,6 +95,18 @@ class ParamSpec:
         *params: Param,
         extra: ExtraPolicy = "forbid",
     ) -> None:
+        """Build the spec, rejecting a parameter declared more than once.
+
+        A duplicate ``Param`` name would silently last-win at resolve time, so
+        the second declaration -- always an authoring mistake -- fails here.
+        """
+        seen: set[str] = set()
+        for param in params:
+            if param.name in seen:
+                raise ValueError(
+                    f"ParamSpec declares parameter {param.name!r} more than once"
+                )
+            seen.add(param.name)
         # Variadic ``*params`` reads at the call site like a literal list of
         # knobs; a frozen dataclass forbids normal assignment, so set via the
         # base ``__setattr__``.

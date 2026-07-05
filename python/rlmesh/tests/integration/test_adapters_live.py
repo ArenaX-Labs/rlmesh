@@ -340,7 +340,7 @@ def test_resolve_from_contract_describes_the_pairing() -> None:
     try:
         client = RemoteEnv(server.address)
         adapter = adapt.resolve_from_contract(client.env_contract, spec)
-        text = adapter.describe()
+        text = adapter.explain()
         assert 'image "cam"' in text
         assert "quat_xyzw->axis_angle" in text
         client.close()
@@ -580,7 +580,7 @@ def test_run_env_without_predict_chunk_warns_and_runs_unchunked() -> None:
 
 def test_served_model_chunks_via_remote_model_mini_driver() -> None:
     """A served spec'd model with predict_chunk + RemoteModel.session(execution_horizon=2):
-    the served engine emits the chunk; RemoteModel pins the horizon on ConfigureRoute,
+    the served engine emits the chunk; RemoteModel pins the horizon on ResolveAdapter,
     buffers the chunk's future frames, and replays them open-loop (a predict RPC only
     every 2 steps). The end-to-end served-OSS chunking path."""
     pytest.importorskip("numpy")

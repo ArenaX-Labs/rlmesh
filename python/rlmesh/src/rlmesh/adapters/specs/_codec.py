@@ -38,16 +38,58 @@ def one_or_many(value: Any) -> Any:
     A single value (a ``str`` rotation name, a ``CustomEncoding``, or ``None``)
     passes through unchanged; a sequence of rotation names — an *accept-set*, in
     model-preference order — becomes a ``tuple`` so a frozen spec stays hashable
-    and round-trips by value. The Rust codec serializes a one-element accept-set
-    as a bare string, so the single and sequence forms are wire-compatible.
+    and round-trips by value. A one-element sequence unwraps to its bare
+    element: the Rust codec canonicalizes a one-element accept-set to the bare
+    string on the wire, so unwrapping at construction keeps
+    ``from_json(to_json(spec)) == spec``.
     """
     if value is None or isinstance(value, str):
         return value
     if isinstance(value, (list, tuple)):
-        # Accept-set entries are rotation-name strings (a CustomEncoding is a
-        # single object, handled by the pass-through below).
-        return tuple(cast("list[str] | tuple[str, ...]", value))
-    return value  # a CustomEncoding (or other single object) passes through
+        items = tuple(cast("list[Any] | tuple[Any, ...]", value))
+        if len(items) == 1:
+            return items[0]
+        return items
+    return value
+
+
+def check_accept_set(what: str, role: str | None, encoding: Any) -> None:
+    """Reject a non-string accept-set member at construction.
+
+    An accept-set is a sequence of rotation-name strings; a ``CustomEncoding``
+    is a single host-side packing, never an accept-set member. Caught at the
+    authoring site (naming the role) instead of surfacing later as a raw
+    ``TypeError`` when the spec is JSON-serialized for resolve.
+    """
+    if not isinstance(encoding, tuple):
+        return
+    for member in cast("tuple[Any, ...]", encoding):
+        if not isinstance(member, str):
+            raise ValueError(
+                f"{what} {role!r}: an encoding accept-set must contain only "
+                f"rotation-name strings, got {type(member).__name__}; a "
+                "CustomEncoding is a single encoding, not an accept-set member"
+            )
+
+
+def hashable_node(node: Any) -> Any:
+    """Return a hashable, key-order-canonical rendering of a spec tree node.
+
+    A Dict node is a plain ``dict``: unhashable, and the dataclass-generated
+    ``__eq__`` compares it order-insensitively, so a hash must not depend on
+    key order. Render it as a key-sorted tuple of ``(key, child)`` pairs;
+    tuples recurse; frozen leaf dataclasses already hash by value. Applies no
+    serialization, so a spec carrying a Custom input (an in-process callable)
+    stays hashable.
+    """
+    if isinstance(node, Mapping):
+        items = cast("Mapping[str, Any]", node)
+        return tuple(
+            (key, hashable_node(child)) for key, child in sorted(items.items())
+        )
+    if isinstance(node, tuple):
+        return tuple(hashable_node(child) for child in cast("tuple[Any, ...]", node))
+    return node
 
 
 def to_pair(value: Any) -> tuple[float, float] | None:

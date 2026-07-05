@@ -16,15 +16,15 @@ pub(super) fn plan_image(
     unknown_roles: &BTreeMap<String, String>,
 ) -> Result<ImagePlan> {
     let at = quoted(&placement.to_string());
-    // `absent_fill` only colors the zero-filled frame an `optional` camera
+    // `fill` only colors the zero-filled frame an `optional` camera
     // produces when the env lacks it; without `optional` it can never take
     // effect, so a set-but-inert fill is a spec error, not a silent no-op.
-    if model_input.absent_fill.is_some() && !model_input.optional {
+    if model_input.fill.is_some() && !model_input.optional {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: absent_fill only applies to an optional camera; \
-                 set optional or drop absent_fill"
+                "model input {at}: fill only applies to an optional camera; \
+                 set optional or drop fill"
             ),
         ));
     }
@@ -35,12 +35,18 @@ pub(super) fn plan_image(
         // over it. A role the env genuinely lacks passes through to the fallbacks.
         super::reject_referenced_unknown(&model_input.role, &placement, unknown_roles)?;
     }
-    // The lone-camera fallback papers over role-name mismatches when the env
-    // offers exactly one camera. An `optional` input, though, has explicitly
-    // opted into zero-filling when its role is absent -- that contract wins, so
-    // don't let the fallback bind it to an unrelated camera.
-    if env_image.is_none() && !model_input.optional && images_by_role.len() == 1 {
+    // The lone-camera fallback binds a role-mismatched input to the env's
+    // single camera -- but only for a sanctioned (registered or `x/`) role, so
+    // a typo'd role name fails loudly instead of silently feeding the camera.
+    // An `optional` input has opted into zero-filling instead; that wins.
+    let mut role_rebound = None;
+    if env_image.is_none()
+        && !model_input.optional
+        && images_by_role.len() == 1
+        && crate::roles::registry::is_sanctioned_role(&model_input.role)
+    {
         env_image = images_by_role.values().next().copied();
+        role_rebound = env_image.map(|env| (model_input.role.clone(), env.role.clone()));
     }
     let Some(env_image) = env_image else {
         // An optional camera the env does not provide is zero-filled (a black
@@ -121,7 +127,8 @@ pub(super) fn plan_image(
         src_range: env_image.value_range,
         stack: model_input.stack,
         zero_fill: None,
-        absent_fill: model_input.absent_fill.unwrap_or(0),
+        fill: model_input.fill.unwrap_or(0),
+        role_rebound,
     })
 }
 
@@ -158,7 +165,8 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         src_range: None,
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
-        absent_fill: model_input.absent_fill.unwrap_or(0),
+        fill: model_input.fill.unwrap_or(0),
+        role_rebound: None,
     })
 }
 
@@ -315,7 +323,7 @@ mod image_resolve_tests {
             allow_upscale,
             fit: None,
             optional: false,
-            absent_fill: None,
+            fill: None,
             stack: 1,
             unknown: Default::default(),
         }
@@ -516,19 +524,57 @@ mod image_resolve_tests {
     }
 
     #[test]
-    fn absent_fill_without_optional_is_a_resolve_error() {
+    fn fill_without_optional_is_a_resolve_error() {
         // A fill level set without `optional` can never take effect; reject it
         // rather than silently ignoring the configured value.
         let env = env_image(8, 8);
         let mut model = model_image(8, 8, false);
-        model.absent_fill = Some(128);
+        model.fill = Some(128);
         let error = plan(&model, &images(&env)).expect_err("err");
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(
-            error.message.contains("absent_fill only applies"),
+            error.message.contains("fill only applies"),
             "got: {}",
             error.message
         );
+    }
+
+    #[test]
+    fn typo_role_with_one_camera_is_a_resolve_error() {
+        // A role outside the registry (and not an `x/` escape) never rides the
+        // lone-camera fallback: a typo fails loudly instead of feeding the camera.
+        let env = env_image(8, 8); // role "image/primary"
+        let mut model = model_image(8, 8, false);
+        model.role = "image/priamry".to_owned();
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn sanctioned_role_with_one_camera_binds_and_records_the_rebind() {
+        let env = env_image(8, 8); // role "image/primary"
+        let mut model = model_image(8, 8, false);
+        model.role = "image/wrist".to_owned();
+        let plan = plan(&model, &images(&env)).expect("ok");
+        assert_eq!(
+            plan.role_rebound,
+            Some(("image/wrist".to_owned(), "image/primary".to_owned()))
+        );
+    }
+
+    #[test]
+    fn role_mismatch_with_two_cameras_is_a_resolve_error() {
+        let primary = env_image(8, 8);
+        let mut wrist = env_image(8, 8);
+        wrist.role = "image/wrist".to_owned();
+        let images = BTreeMap::from([
+            (primary.role.clone(), &primary),
+            (wrist.role.clone(), &wrist),
+        ]);
+        let mut model = model_image(8, 8, false);
+        model.role = "image/overhead".to_owned();
+        let error = plan(&model, &images).expect_err("err");
+        assert_eq!(error.code, ErrorCode::MissingRole);
     }
 
     #[test]

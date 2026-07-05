@@ -126,7 +126,7 @@
       },
       "instruction": {
         "container": "str",
-        "default": null,
+        "fill": null,
         "role": "text/instruction",
         "type": "text"
       },

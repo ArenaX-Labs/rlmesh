@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 import rlmesh
-from rlmesh.describe import _catalog, _gather, _variations
+from rlmesh._describe import _catalog, _gather, _variations
 
 # --- pure helpers: variations + catalog --------------------------------------
 
@@ -75,6 +75,22 @@ def test_variant_defensively_copies_params() -> None:
     variant = rlmesh.Variant("s/0", src)
     src["task_id"] = 99
     assert variant.params == {"task_id": 0}
+
+
+def test_variant_rejects_non_mapping_params() -> None:
+    # dict() would silently accept a list of pairs; params must be a real mapping.
+    with pytest.raises(ValueError, match="mapping"):
+        rlmesh.Variant("s/0", cast("Any", [("a", 1)]))
+
+
+def test_variant_eq_and_repr() -> None:
+    a = rlmesh.Variant("s/0", {"a": 1}, name="Zero")
+    assert a == rlmesh.Variant("s/0", {"a": 1}, name="Zero")
+    assert a != rlmesh.Variant("s/1", {"a": 1}, name="Zero")
+    assert a != rlmesh.Variant("s/0", {"a": 2}, name="Zero")
+    assert a != rlmesh.Variant("s/0", {"a": 1}, name="One")
+    assert (a == object()) is False
+    assert repr(a) == "Variant(id='s/0', params={'a': 1}, metadata={'name': 'Zero'})"
 
 
 # --- gatherer: grouped params / variants -------------------------------------
@@ -237,3 +253,27 @@ def test_describe_json_is_byte_stable() -> None:
 def test_describe_json_rejects_bad_timestamp() -> None:
     with pytest.raises(ValueError, match="RFC-3339"):
         rlmesh.describe_json(_CamArmFactory, generated_at="June 28")
+
+
+def test_cli_out_file_is_byte_identical_to_stdout(
+    tmp_path: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --out and stdout must emit the same bytes (both trailing-newline terminated).
+    from rlmesh._describe import main
+
+    target = f"{__name__}:_CamArmFactory"
+    out = tmp_path / "envelope.json"
+    assert main(["--env", target, "--out", str(out)]) == 0
+    assert main(["--env", target]) == 0
+    assert out.read_text(encoding="utf-8") == capsys.readouterr().out
+
+
+def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> None:
+    # The old rlmesh/describe.py shim rebound the rlmesh.describe FUNCTION to a
+    # module process-wide on import; the shim is gone (the CLI lives at
+    # `python -m rlmesh._describe`), so the function always wins.
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("rlmesh.describe")
+    assert callable(rlmesh.describe)

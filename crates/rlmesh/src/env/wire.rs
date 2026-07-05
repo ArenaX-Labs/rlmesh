@@ -375,7 +375,7 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         let result = self
             .inner
             .render(RenderRequest {
-                env_index: render_env_index(&req.mask)?,
+                env_index: render_env_index(&req.env_indices)?,
                 // Proto timeout_ms is uint64; native is i64.
                 timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
             })
@@ -428,8 +428,6 @@ fn public_episode_metadata_to_proto(
         truncated: value.truncated,
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
-        // Native duration_ms is i64 (>=0); proto field is uint64.
-        duration_ms: value.duration_ms.max(0) as u64,
         final_info: value.final_info.as_ref().map(meta_map_to_proto),
     })
 }
@@ -452,8 +450,7 @@ pub(super) fn proto_episode_metadata_to_public(
         truncated: value.truncated,
         start_timestamp_ns: value.start_timestamp_ns,
         end_timestamp_ns: value.end_timestamp_ns,
-        // Proto duration_ms is uint64; native field is i64.
-        duration_ms: i64::try_from(value.duration_ms).unwrap_or(i64::MAX),
+        duration_ms: (value.end_timestamp_ns - value.start_timestamp_ns).max(0) / 1_000_000,
         final_info: value.final_info.map(meta_map_from_proto),
     })
 }
@@ -468,18 +465,12 @@ fn proto_env_indices_to_native(env_indices: Vec<u32>) -> Vec<i32> {
         .collect()
 }
 
-fn render_env_index(mask: &[u8]) -> std::result::Result<Option<usize>, EnvError> {
-    let indices = mask
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| (*value != 0).then_some(index))
-        .collect::<Vec<_>>();
-
-    match indices.as_slice() {
+fn render_env_index(env_indices: &[u32]) -> std::result::Result<Option<usize>, EnvError> {
+    match env_indices {
         [] => Ok(None),
-        [index] => Ok(Some(*index)),
+        [index] => Ok(Some(*index as usize)),
         _ => Err(EnvError::new(
-            EnvErrorCode::InvalidAction,
+            EnvErrorCode::Unsupported,
             "render requests support at most one env_index".to_string(),
         )),
     }
@@ -764,13 +755,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wire_adapter_maps_render_mask_to_env_index() {
+    async fn wire_adapter_maps_render_env_indices_to_env_index() {
         let mut env = WireEnvAdapter::new(DummyEnv::new());
 
         let result = Environment::render(
             &mut env,
             ProtoRenderRequest {
-                mask: vec![0, 1],
+                env_indices: vec![1],
                 timeout_ms: 0,
             },
         )

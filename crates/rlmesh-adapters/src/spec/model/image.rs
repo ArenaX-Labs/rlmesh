@@ -184,9 +184,10 @@ pub struct Image {
     /// Raw 8-bit fill level for an absent `optional` camera: `0` = black (the
     /// default), `255` = white, `128` ~ mid-gray. Applied before the
     /// normalize/dtype steps, so it lands wherever that level maps in the model's
-    /// range. Additive over the pinned wire format (omitted when unset).
+    /// range. Additive over the pinned wire format (omitted when unset). Named
+    /// `fill` to match `Actuator.fill` (the one fallback-fill vocabulary word).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub absent_fill: Option<u8>,
+    pub fill: Option<u8>,
     /// Number of consecutive observations the model stacks on a new leading
     /// axis (frame history); `1` = no stacking. Stacking is applied natively in
     /// the core, episode-keyed (the env still sends one frame per step; the
@@ -256,39 +257,35 @@ mod tests {
     }
 
     #[test]
-    fn absent_fill_defaults_to_none_and_is_omitted_from_wire() {
+    fn fill_defaults_to_none_and_is_omitted_from_wire() {
         let input = image("");
         let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
-        assert_eq!(img.absent_fill, None);
-        assert!(
-            !serde_json::to_string(&input)
-                .unwrap()
-                .contains("absent_fill")
-        );
+        assert_eq!(img.fill, None);
+        assert!(!serde_json::to_string(&input).unwrap().contains("fill"));
     }
 
     #[test]
-    fn absent_fill_roundtrips_when_set() {
-        let input = image(r#", "absent_fill": 128"#);
+    fn fill_roundtrips_when_set() {
+        let input = image(r#", "fill": 128"#);
         let ModelLeaf::Image(img) = &input else {
             panic!("expected image")
         };
-        assert_eq!(img.absent_fill, Some(128));
+        assert_eq!(img.fill, Some(128));
         assert!(
             serde_json::to_string(&input)
                 .unwrap()
-                .contains("\"absent_fill\":128")
+                .contains("\"fill\":128")
         );
     }
 
     #[test]
-    fn absent_fill_rejects_out_of_range() {
+    fn fill_rejects_out_of_range() {
         // A `u8` gives free 0..=255 validation at the codec door.
         assert!(
             serde_json::from_str::<ModelLeaf>(
-                r#"{"type": "image", "role": "image/primary", "absent_fill": 300}"#
+                r#"{"type": "image", "role": "image/primary", "fill": 300}"#
             )
             .is_err()
         );

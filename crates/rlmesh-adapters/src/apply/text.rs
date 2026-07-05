@@ -1,4 +1,4 @@
-//! Produce one model text input value, honoring the plan's default.
+//! Produce one model text input value, honoring the plan's fill.
 
 use std::collections::BTreeMap;
 
@@ -8,11 +8,11 @@ use crate::error::ApplyError;
 use crate::plans::TextPlan;
 use crate::spec::TextContainer;
 
-/// Produce one model text input value, honoring the plan's default.
+/// Produce one model text input value, honoring the plan's fill.
 ///
-/// Returns `Ok(None)` when there is no env source value and no default — the
+/// Returns `Ok(None)` when there is no env source value and no fill — the
 /// caller then omits the placement entirely (a text input the env never
-/// provided and the model did not default).
+/// provided and the model declared no fill).
 pub(super) fn apply_text(
     plan: &TextPlan,
     raw_obs: &BTreeMap<String, Value>,
@@ -34,7 +34,7 @@ pub(super) fn apply_text(
             }
         });
     }
-    let Some(value) = value.or_else(|| plan.default.clone()) else {
+    let Some(value) = value.or_else(|| plan.fill.clone()) else {
         return Ok(None);
     };
     let entry = if plan.container == TextContainer::List {

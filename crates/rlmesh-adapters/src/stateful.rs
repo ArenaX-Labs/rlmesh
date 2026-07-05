@@ -799,7 +799,8 @@ mod tests {
                 src_range: Some((0.0, 255.0)),
                 stack: 2,
                 zero_fill: None,
-                absent_fill: 0,
+                fill: 0,
+                role_rebound: None,
             })],
             ActionPlan {
                 segments: vec![],

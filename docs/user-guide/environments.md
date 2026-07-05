@@ -10,12 +10,12 @@ This page is the concept tour. Reach for {doc}`environments/reference` when you 
 
 There are two ways to serve a Gymnasium-style environment with RLMesh.
 
-| Path                                 | Reach for it when                                                                                                                                                                                    |
+| Path                                 | Use it when                                                                                                                                                                                          |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | {class}`~rlmesh.EnvServer` directly  | An ad-hoc env you already have in hand. `rlmesh.EnvServer(gym.make("CartPole-v1"), "127.0.0.1:5555").serve()` and you are done. See {doc}`serving-environments`.                                     |
 | {class}`~rlmesh.EnvFactory` subclass | Anything you ship, serve, sweep, or want a model to auto-adapt to. The factory owns the construction surface (`make` + declared `params`), the catalog of concrete variants, and the adapter `tags`. |
 
-The dividing line is reuse. `EnvServer` serves one object once. `EnvFactory` is the thing you put in a container, hand to a managed dashboard, or sweep across tasks, so it carries the metadata those paths need before anything is built.
+The dividing line is reuse. `EnvServer` serves one object once. `EnvFactory` is the thing you put in a container, hand to the managed platform, or sweep across tasks, so it carries the metadata those paths need before anything is built.
 
 ## The minimal factory
 
@@ -81,7 +81,7 @@ flowchart LR
 
 ```{caution}
 Import heavy or optional dependencies **inside** `make()` and `enumerate_variants()`, not at module
-top level. `python -m rlmesh.describe` reflects a factory's schema and catalog without running
+top level. `python -m rlmesh._describe` reflects a factory's schema and catalog without running
 `make()`, so a dashboard can list it off-GPU. A simulator or framework imported at module scope
 defeats that and pulls the GPU stack into a describe-only call.
 ```
@@ -90,7 +90,7 @@ The full hook contract and `serve()` sequence are in {doc}`environments/referenc
 
 ## Parameters
 
-`make()`'s keyword arguments are its construction surface. Every keyword is already presented and type-checked from the signature. Declaring a {class}`~rlmesh.ParamSpec` enriches one of those knobs with a domain, choices, grouping, and sweepability, so a managed dashboard presents it as a widget and rejects a bad binding before paying GPU cost: a typo (`task_idd=`) or an out-of-range choice fails pre-construction instead of mid-startup.
+`make()`'s keyword arguments are its construction surface. Every keyword is already presented and type-checked from the signature. Declaring a {class}`~rlmesh.ParamSpec` enriches one of those knobs with a domain, choices, grouping, and sweepability, so the managed platform presents it as a widget and rejects a bad binding before paying GPU cost: a typo (`task_idd=`) or an out-of-range choice fails pre-construction instead of mid-startup.
 
 ```python
 class Libero(rlmesh.EnvFactory):
@@ -142,7 +142,7 @@ schema = rlmesh.describe(MyEnv)        # or MyEnv.describe(); same for a Model
 ```
 
 ```bash
-python -m rlmesh.describe --env mypkg.envs:Libero            # prints the envelope
+python -m rlmesh._describe --env mypkg.envs:Libero            # prints the envelope
 ```
 
 The format is owned by the Rust layer, so the bytes are identical across Python versions and future language SDKs. The envelope shape, the `--out` flag, and baking the artifact into an image are in {doc}`environments/reference`.
@@ -176,7 +176,7 @@ batched env that returns `[N, ...]` tensors works, or use `framework="numpy"`.
 
 Most authoring effort is matching the environment's actual shape to a tag. Each row links into {doc}`adapters/reference`.
 
-| Quirk                                                            | Reach for                                                                                                                             |
+| Quirk                                                            | Tag it with                                                                                                                           |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | One flat `Box` observation with fixed index ranges (Metaworld)   | {class}`~rlmesh.adapters.Split` of {class}`~rlmesh.adapters.Field` slices; a role-less `Field` skips indices the model does not read. |
 | Upside-down simulator camera (robosuite / LIBERO render flipped) | `adapt.ImageTag(adapt.IMAGE_PRIMARY, upside_down=True)`.                                                                              |

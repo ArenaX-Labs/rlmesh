@@ -28,17 +28,36 @@ class RemoteVectorEnvBase(RemoteClientBase[ValueT, ActionT]):
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
         transport: Explicit transport selector.
+        connect_timeout_seconds: Optional dial timeout in seconds.
+        request_timeout_seconds: Optional per-request timeout in seconds.
     """
 
     _single_observation_space: Space[ValueT] | None = None
     _single_action_space: Space[ActionT] | None = None
 
-    def _make_client(self, address: str, connect_timeout_seconds: float | None) -> Any:
+    def _make_client(
+        self,
+        address: str,
+        connect_timeout_seconds: float | None,
+        request_timeout_seconds: float | None,
+    ) -> Any:
         from .._load_native import load_native
 
         return load_native("PyVectorEnvClient")(
-            address, connect_timeout_seconds=connect_timeout_seconds
+            address,
+            connect_timeout_seconds=connect_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
         )
+
+    def _post_handshake(self) -> None:
+        if self._env_contract.num_envs < 2:
+            try:
+                self._client.close()
+            finally:
+                raise ValueError(
+                    f"Endpoint {self._address!r} serves a single environment. "
+                    "Use RemoteEnv instead."
+                )
 
     def _adapt_metadata(self, metadata: Mapping[str, object]) -> Metadata:
         """Restore the Gymnasium ``AutoresetMode`` enum on the endpoint metadata.

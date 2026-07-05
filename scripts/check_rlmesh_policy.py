@@ -383,8 +383,14 @@ def _validate_protocol_and_workflow(repo_root: Path, protocol: dict[str, Any]) -
     buf_config = repo_root / "buf.yaml"
     if not buf_config.exists():
         errors.append("buf.yaml is required for proto lint and breaking-change policy")
-    elif "breaking:" not in buf_config.read_text(encoding="utf-8"):
-        errors.append("buf.yaml must include a breaking-change policy")
+    else:
+        buf_lines = buf_config.read_text(encoding="utf-8").splitlines()
+        if not any(
+            line.split("#", 1)[0].strip() == "breaking:" for line in buf_lines
+        ):
+            errors.append(
+                "buf.yaml must include an active (uncommented) breaking-change policy"
+            )
 
     return errors
 

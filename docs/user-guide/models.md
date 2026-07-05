@@ -10,7 +10,7 @@ This page is the concept tour. Reach for {doc}`models/reference` when you need t
 
 There are two ways to build a model, and the choice is about reuse.
 
-| Style                          | What you write                                                             | Reach for it when               |
+| Style                          | What you write                                                             | Use it when                     |
 | ------------------------------ | -------------------------------------------------------------------------- | ------------------------------- |
 | **Wrap** a predict callable    | `rlmesh.numpy.Model(lambda obs: ...)`                                      | a baseline or a one-file script |
 | **Subclass** a backend `Model` | set the `spec` class attribute, implement `load()` plus one predict corner | the form you serve and ship     |
@@ -182,15 +182,7 @@ The runtime chooses the horizon at the call site (`run(..., execution_horizon=N)
 
 ## Batched observations
 
-The batch corners do not receive a list of `N` observations. The runtime **fuses** the per-lane observations into one batched observation: every leaf gains a leading batch axis, so a Dict observation arrives as `{key: array[N, ...]}`. You return the batched action the same way, leaves carrying the leading batch axis, and the runtime splits it back per lane.
-
-```python
-def predict_batch(self, observations):
-    # observations["image"] is array[N, H, W, C]; one forward over the batch.
-    return self.net(observations["image"])          # return array[N, action_dim]
-```
-
-Text leaves stay per-lane lists rather than stacked arrays, and lanes must share an observation space so the leaves align. The fusion rules, the `tree_stack` / `tree_unstack` machinery, and the native-backend fallback are in {doc}`models/reference`.
+The batch corners do not receive a list of `N` observations: the runtime **fuses** the per-lane observations into one batched observation (every leaf gains a leading batch axis, so a Dict observation arrives as `{key: array[N, ...]}`), and it splits your returned batched action back per lane. The fusion rules, text-leaf handling, and the native-backend fallback are in {doc}`models/reference`.
 
 ## Run it
 

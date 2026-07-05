@@ -15,9 +15,11 @@ def test_root_namespace_is_small() -> None:
         "Model",
         "Param",
         "ParamSpec",
+        "Reader",
         "RemoteEnv",
         "RemoteModel",
         "RemoteVectorEnv",
+        "RunHooks",
         "RunResult",
         "SandboxBuild",
         "SandboxEnv",
@@ -26,6 +28,7 @@ def test_root_namespace_is_small() -> None:
         "SandboxVectorEnv",
         "ServeOptions",
         "Session",
+        "StepEvent",
         "Tensor",
         "Variant",
         "Vector",
@@ -34,9 +37,12 @@ def test_root_namespace_is_small() -> None:
         "adapters",
         "describe",
         "describe_json",
+        "params",
         "run",
+        "sanitize_metadata",
         "session",
         "spaces",
+        "specs",
         "types",
     ]
 
@@ -92,12 +98,20 @@ def test_types_namespace_contains_typing_contracts_only() -> None:
 
     assert types.__all__ == [
         "EnvLike",
+        "EnvTarget",
+        "HasAddress",
+        "HasEnvContract",
         "InfoDict",
+        "LocalEnvTarget",
         "Metadata",
         "PrimitiveValue",
         "SpaceLike",
+        "SpecArg",
+        "SupportsMake",
+        "SupportsResetStep",
         "Value",
         "VectorEnvLike",
+        "ViewArg",
     ]
     assert not hasattr(types, "Tensor")
 

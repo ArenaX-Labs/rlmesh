@@ -32,3 +32,14 @@ def test_asarray_copy_is_independent_of_tensor() -> None:
 
     # Mutating the decoded array must not corrupt the tensor buffer.
     np.testing.assert_array_equal(asarray(tensor), source)
+
+
+def test_asarray_accepts_scalar_primitives() -> None:
+    # Converter symmetry: torch's as_tensor accepts bool/int/float primitives,
+    # so numpy's asarray does too (0-d arrays, always fresh).
+    np = pytest.importorskip("numpy")
+    from rlmesh.numpy import asarray
+
+    assert asarray(1.5).item() == 1.5
+    assert asarray(True).dtype == np.dtype(bool)
+    assert asarray(3).shape == ()

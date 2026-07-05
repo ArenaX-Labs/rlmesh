@@ -112,7 +112,7 @@ fn predict_route(
     let mut guard = entry.lock().expect("route entry poisoned");
     let RouteEntry { config, buffers } = &mut *guard;
     let referenced = obs_keys(config);
-    // Runtime-chosen execution horizon (pinned on ConfigureRoute), not the model spec.
+    // Runtime-chosen execution horizon (pinned on ResolveAdapter), not the model spec.
     let horizon = config.execution_horizon;
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 
 def _types_module_path() -> Path:
@@ -17,7 +18,7 @@ def test_types_module_imports_without_compiled_extension() -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.InfoDict == dict[str, object]
+    assert module.InfoDict == dict[str, Any]
     assert hasattr(module, "Value")
     assert hasattr(module, "EnvLike")
     assert hasattr(module, "VectorEnvLike")

@@ -13,16 +13,15 @@ uv run python examples/python/sandbox/gym_sandbox.py
 It starts `CartPole-v1` inside a sandbox image and connects with `rlmesh.numpy.SandboxEnv`:
 
 ```python
-from rlmesh.numpy import SandboxEnv
+from rlmesh.numpy import SandboxBuild, SandboxEnv
 
 env = SandboxEnv(
     "CartPole-v1",
-    packages=["gymnasium==1.3.0"],
-    imports=["gymnasium"],
+    build=SandboxBuild(packages=["gymnasium==1.3.0"], imports=["gymnasium"]),
 )
 ```
 
-`packages` are installed in the sandbox image and `imports` are checked at startup. Because the client shape matches `RemoteEnv`, a `try`/`finally` keeps the owned container from leaking:
+`build=SandboxBuild(...)` groups the image-build settings: `packages` are installed in the sandbox image and `imports` are checked at startup. Because the client shape matches `RemoteEnv`, a `try`/`finally` keeps the owned container from leaking:
 
 ```python
 MAX_STEPS = 45
@@ -53,12 +52,11 @@ uv run python examples/python/sandbox/hf_sandbox.py
 Only the constructor changes; the source is an `hf://` reference instead of a Gymnasium id:
 
 ```python
-from rlmesh.numpy import SandboxEnv
+from rlmesh.numpy import SandboxBuild, SandboxEnv
 
 env = SandboxEnv(
     "hf://lerobot/cartpole-env:cartpole_suite/0",
-    trust_remote_code=True,
-    allow_unpinned_hf=True,
+    build=SandboxBuild(trust_remote_code=True, allow_unpinned_hf=True),
 )
 ```
 

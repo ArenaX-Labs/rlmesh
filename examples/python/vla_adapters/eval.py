@@ -118,13 +118,13 @@ def run_remote(address: str, model_name: str, env_name: str, episodes: int) -> N
             print(
                 adapt.resolve_from_contract(
                     env.env_contract, model_entry.spec
-                ).describe()
+                ).explain()
             )
             model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
             model.run(env, max_episodes=episodes)
         else:
             adapter = build_adapter(model_name, env_name, ENVS[env_name])
-            print(adapter.describe())
+            print(adapter.explain())
             model = Model(
                 adapter.wrap_predict(model_entry.load_predict_fn()),
                 on_episode_end=adapter.reset,
@@ -149,7 +149,7 @@ def main() -> None:
             model_entry = MODELS[model_name]
             env_entry = ENVS[env_name]
             adapter = build_adapter(model_name, env_name, env_entry)
-            print(adapter.describe())
+            print(adapter.explain())
             print()
             dry_run(adapter, env_entry, model_entry.load_predict_fn())
             print()

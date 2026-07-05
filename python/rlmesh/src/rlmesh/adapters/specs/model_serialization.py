@@ -132,8 +132,8 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
         image["channels"] = item.channels
     if item.optional:
         image["optional"] = True
-    if item.absent_fill is not None:
-        image["absent_fill"] = item.absent_fill
+    if item.fill is not None:
+        image["fill"] = item.fill
     return image
 
 
@@ -174,45 +174,12 @@ def _state_parts(item: State | Concat) -> tuple[State, ...]:
 
     A bare ``State`` leaf is its own single part; its container fields belong to
     the leaf and are emitted at the leaf level by :func:`_state_to_dict`. A
-    ``Concat`` part may only carry part fields: a part's container fields cannot
-    be represented in the Rust ``ConcatPart`` and would be silently dropped, so a
-    non-default one is rejected here (an honest authoring-time error).
+    ``Concat`` part carries only part fields; a part with non-default container
+    fields never reaches here (``Concat.__init__`` rejects it at construction).
     """
     if isinstance(item, State):
         return (item,)
-    parts: list[State] = []
-    for part in item.parts:
-        if isinstance(part, State):
-            _check_part_container_default(part)
-        parts.append(State(part) if isinstance(part, str) else part)
-    return tuple(parts)
-
-
-def _check_part_container_default(part: State) -> None:
-    """Reject a Concat part that carries non-default container fields.
-
-    A part contributes only part fields (role/encoding/dim/index/optional/range);
-    its assembly options (``pad_to``/``dtype``/``reshape``/``container``) live on
-    the enclosing :class:`Concat`, not the part, and the Rust ``ConcatPart`` has
-    no slot for them. Serializing would silently drop them, so raise instead.
-    """
-    offenders = [
-        name
-        for name, value, default in (
-            ("pad_to", part.pad_to, None),
-            ("dtype", part.dtype, "float32"),
-            ("reshape", part.reshape, None),
-            ("container", part.container, "array"),
-        )
-        if value != default
-    ]
-    if offenders:
-        raise ValueError(
-            f"State part {part.role!r} sets {', '.join(offenders)}, but a Concat "
-            "part carries only part fields (role/encoding/dim/index/optional/"
-            "range); set the assembly options (pad_to/dtype/reshape/container) on "
-            "the enclosing Concat instead"
-        )
+    return tuple(State(part) if isinstance(part, str) else part for part in item.parts)
 
 
 def _state_to_dict(item: State | Concat) -> dict[str, Any]:
@@ -238,7 +205,7 @@ def model_leaf_to_dict(item: ModelLeaf) -> dict[str, Any]:
             "type": "text",
             "role": item.role,
             "container": item.container,
-            "default": item.default,
+            "fill": item.fill,
         }
     # The only remaining ModelLeaf variant is Custom; a custom input can never
     # be serialized into v1 contract metadata, so both branches below reject.
@@ -314,7 +281,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             dtype=data.get("dtype", "uint8"),
             normalize=_decode_normalize(data.get("normalize", False)),
             optional=bool(data.get("optional", False)),
-            absent_fill=data.get("absent_fill"),
+            fill=data.get("fill"),
             lead_dims=int(data.get("lead_dims", 0)),
             upside_down=bool(data.get("upside_down", False)),
             resample=data.get("resample", "bilinear"),
@@ -363,7 +330,7 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
         return Text(
             role=data["role"],
             container=data.get("container", "str"),
-            default=data.get("default"),
+            fill=data.get("fill"),
         )
     if kind == "custom":
         # The resolver's internal `transform: "host:<key>"` placeholder (see

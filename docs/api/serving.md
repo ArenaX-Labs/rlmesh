@@ -50,7 +50,7 @@ pinning; signatures may still change before the stable release.
 
 `rlmesh._serving` exposes a small surface for constructing an environment to serve through {py:class}`~rlmesh.EnvServer`. It promotes the loaders previously hidden in `rlmesh._cli.serve_env` so that scripts and downstream runners can build an environment by Gymnasium id or by `module:callable` entrypoint.
 
-Reach for it when a script or runner has to build the environment itself before serving. If you already hold an env object, pass it straight to {py:class}`~rlmesh.EnvServer`.
+Use it when a script or runner has to build the environment itself before serving. If you already hold an env object, pass it straight to {py:class}`~rlmesh.EnvServer`.
 
 ```python
 import rlmesh

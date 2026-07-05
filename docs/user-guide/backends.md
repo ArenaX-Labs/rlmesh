@@ -94,7 +94,7 @@ The wire is framework-neutral regardless of backend, so a client's framework is 
 
 ## Models
 
-Backends apply to model workers the same way. A `Model` from any backend hands `predict` values in that backend's types:
+Backends apply to models the same way. A `Model` from any backend hands `predict` values in that backend's types:
 
 ```python
 from rlmesh.numpy import Model

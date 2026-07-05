@@ -109,6 +109,10 @@ pub struct ActionReceivedEvent {
     /// rather than deep-copying the action space spec on every step.
     pub action_space: Arc<SpaceSpec>,
     /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
+    ///
+    /// To persist as a single artifact, use `rlmesh-grpc`'s
+    /// `wire::leaves_to_blob` — plain concatenation loses the leaf
+    /// boundaries, which cannot be recovered for variable-length leaves.
     pub action: Option<Vec<Bytes>>,
 }
 
@@ -139,6 +143,10 @@ pub struct ObservationEmittedEvent {
     /// rather than deep-copying the observation space spec on every step.
     pub observation_space: Arc<SpaceSpec>,
     /// Opaque per-leaf wire bytes; the relay is content-blind (§13).
+    ///
+    /// To persist as a single artifact, use `rlmesh-grpc`'s
+    /// `wire::leaves_to_blob` — plain concatenation loses the leaf
+    /// boundaries, which cannot be recovered for variable-length leaves.
     pub observation: Option<Vec<Bytes>>,
 }
 

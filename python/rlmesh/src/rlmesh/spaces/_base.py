@@ -85,6 +85,11 @@ class Space(Generic[OutputT]):
         return repr(self._spec)
 
     def __getattr__(self, name: str) -> object:
+        # An underscore name gets a plain AttributeError: dunder probes
+        # (copy/pickle/inspect) must read as a clean miss, not earn the
+        # Gymnasium-conversion hint (mirrors BridgedEnv.__getattr__).
+        if name.startswith("_"):
+            raise AttributeError(name)
         raise AttributeError(
             f"{self.__class__.__name__!s} has no attribute {name!r}. "
             + "For Gymnasium compatibility, convert this space with "

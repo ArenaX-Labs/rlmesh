@@ -77,7 +77,10 @@ pub fn step_result_from_proto(
 
 pub fn render_request_to_proto(request: &native::RenderRequest) -> RenderRequest {
     RenderRequest {
-        mask: request.env_index.map(render_mask).unwrap_or_default(),
+        env_indices: request
+            .env_index
+            .map(|i| vec![i as u32])
+            .unwrap_or_default(),
         // Native timeout_ms is i64 (>=0 by construction); proto field is uint64.
         timeout_ms: request.timeout_ms.max(0) as u64,
     }
@@ -101,14 +104,6 @@ pub fn render_result_from_proto(
             .filter(|_| understood)
             .map(|frame| native::RenderFrame { frame }),
     })
-}
-
-fn render_mask(env_index: usize) -> Vec<u8> {
-    let mut mask = vec![0_u8; env_index + 1];
-    if let Some(byte) = mask.get_mut(env_index) {
-        *byte = 1;
-    }
-    mask
 }
 
 pub fn reset_result_to_proto(

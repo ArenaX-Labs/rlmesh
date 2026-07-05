@@ -248,3 +248,162 @@ def test_reject_vectorized_framework_env() -> None:
         _reject_vectorized_framework(True, "jax")
     _reject_vectorized_framework(True, "numpy")
     _reject_vectorized_framework(False, "torch")
+
+
+def test_serve_env_normalizes_framework_for_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # resolve_bridge strips/lowercases the framework name; the device and
+    # vectorization guards must see the same canonical value, or an ambient
+    # RLMESH_FRAMEWORK=JAX would silently drop --device and bypass the
+    # vectorized-framework rejection.
+    import rlmesh
+    from rlmesh import serve
+
+    captured: dict[str, Any] = {}
+
+    class FakeServer:
+        def __init__(
+            self,
+            env: object,
+            address: str,
+            *,
+            tags: object = None,
+            framework: object = None,
+            device: object = None,
+        ) -> None:
+            captured["framework"], captured["device"] = framework, device
+            self.address = address
+
+        def serve(self) -> None: ...
+
+    monkeypatch.setattr(rlmesh, "EnvServer", FakeServer)
+
+    with pytest.raises(NotImplementedError, match="num_envs>1"):
+        serve.serve_env(lambda: object(), "0.0.0.0:1", num_envs=2, framework=" JAX ")
+
+    serve.serve_env(lambda: object(), "0.0.0.0:1", framework="NumPy", device="cuda:0")
+    assert captured["framework"] == "numpy"
+    assert captured["device"] is None
+
+
+def test_envserver_vector_tags_skip_space_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Explicit tags on a vector env describe one lane while the served spaces
+    # are batched, so EnvServer must defer per-lane validation (validate=False)
+    # instead of crashing on valid tags; the scalar path still validates.
+    from types import SimpleNamespace
+
+    import rlmesh
+
+    captured: dict[str, Any] = {}
+
+    class _StopError(Exception):
+        pass
+
+    def fake_tag(env: object, tags: object, *, validate: bool = True) -> object:
+        captured["validate"] = validate
+        raise _StopError
+
+    monkeypatch.setattr("rlmesh.adapters.tag", fake_tag)
+
+    with pytest.raises(_StopError):
+        rlmesh.EnvServer(
+            cast("Any", SimpleNamespace(num_envs=2)),
+            "127.0.0.1:0",
+            tags=cast("Any", object()),
+        )
+    assert captured["validate"] is False
+
+    with pytest.raises(_StopError):
+        rlmesh.EnvServer(
+            cast("Any", SimpleNamespace()), "127.0.0.1:0", tags=cast("Any", object())
+        )
+    assert captured["validate"] is True
+
+
+def test_from_tensor_rejects_bfloat16() -> None:
+    from rlmesh.torch import from_tensor
+
+    with pytest.raises(ValueError, match="bfloat16 is not supported on the wire"):
+        from_tensor(torch.zeros(2, dtype=torch.bfloat16))
+
+
+def test_warns_on_zero_dim_foreign_scalar_leaf() -> None:
+    from rlmesh._server_bridge import BridgedEnv
+
+    # A 0-d foreign scalar (np.float32) flows unencoded just like an array
+    # leaf, so it must not escape the foreign-leaf warning via an ndim guard.
+    obs = {"a": torch.ones(2), "s": np.float32(3.0)}
+    wrapped = BridgedEnv(_RecordingEnv(obs), _bridge())
+
+    with pytest.warns(UserWarning, match="non-torch array leaf"):
+        wrapped.step(_native_action([0.0]))
+
+
+def test_foreign_scan_retires_after_settled_step() -> None:
+    import warnings
+
+    from rlmesh._server_bridge import BridgedEnv
+
+    # Once a step's walk discovers no new foreign leaf type the scan retires,
+    # so a foreign leaf appearing later (an unstable obs) is no longer walked.
+    class _MutableObsEnv:
+        def __init__(self) -> None:
+            self.obs: Any = {"a": torch.ones(2)}
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return self.obs, {}
+
+        def step(self, action: object) -> object:
+            return self.obs, 0.0, False, False, {}
+
+        def close(self) -> None:
+            pass
+
+    env = _MutableObsEnv()
+    wrapped = BridgedEnv(env, _bridge())
+    wrapped.step(_native_action([0.0]))
+
+    env.obs = {"a": torch.ones(2), "b": np.ones(2, np.float32)}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        wrapped.step(_native_action([0.0]))
+    assert [w for w in caught if "array leaf" in str(w.message)] == []
+
+
+def test_reset_encodes_legacy_tuple_dict_obs_whole() -> None:
+    from types import SimpleNamespace
+
+    from rlmesh._server_bridge import BridgedEnv
+
+    # A legacy bare Tuple(x, Dict) obs is shaped exactly like (obs, info); with
+    # a declared 2-entry tuple observation space the whole tuple must encode
+    # (the dict half is observation, not info).
+    class _LegacyTupleObsEnv(_RecordingEnv):
+        observation_space = SimpleNamespace(spaces=[object(), object()])
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return self._obs
+
+    env = _LegacyTupleObsEnv((torch.ones(2), {"aux": torch.zeros(2)}))
+    wrapped = BridgedEnv(env, _bridge())
+    result = cast("tuple[Any, Any]", wrapped.reset())
+    assert isinstance(result[0], Tensor)
+    assert isinstance(result[1]["aux"], Tensor)  # encoded as obs, not raw info
+
+    # The modern (obs, info) shape with the same space still splits: the first
+    # element carries the space's arity, and info stays raw.
+    class _ModernTupleObsEnv(_RecordingEnv):
+        observation_space = SimpleNamespace(spaces=[object(), object()])
+
+        def reset(self, *, seed: object = None, options: object = None) -> object:
+            return self._obs, {"seed_used": np.int64(7)}
+
+    env2 = _ModernTupleObsEnv((torch.ones(2), {"aux": torch.zeros(2)}))
+    wrapped2 = BridgedEnv(env2, _bridge())
+    obs, info = cast("tuple[Any, Any]", wrapped2.reset())
+    assert isinstance(obs[0], Tensor)
+    assert isinstance(obs[1]["aux"], Tensor)
+    assert type(info["seed_used"]) is np.int64  # info untouched

@@ -80,7 +80,6 @@ Native options controlling endpoint lifecycle behavior.
 | `idle_timeout_seconds`  | `float \| None` | Optional idle timeout before the server exits.            |
 | `drain_timeout_seconds` | `float \| None` | Optional grace period for in-flight work during shutdown. |
 | `close_timeout_seconds` | `float \| None` | Optional timeout for closing the wrapped environment.     |
-| `token`                 | `str \| None`   | Optional auth token for the served endpoint.              |
 
 The constructor is keyword-only. Pass the result to `EnvServer(..., options=options)` or to a model-serving API that accepts serve options.
 

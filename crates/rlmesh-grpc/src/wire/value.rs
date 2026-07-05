@@ -25,6 +25,6 @@ pub use interaction::{
 };
 pub use leaves::{decode_leaf_slab, decode_leaves, encode_leaf_slab, encode_leaves};
 pub use payload::{
-    binary_to_bytes, bytes_to_binary, decode_value, encode_value, leaves_value,
-    optional_bytes_to_binary, value_leaves,
+    binary_to_bytes, bytes_to_binary, decode_value, encode_value, leaves_from_blob, leaves_to_blob,
+    leaves_value, optional_bytes_to_binary, value_leaves,
 };

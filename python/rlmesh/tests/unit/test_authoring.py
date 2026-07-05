@@ -93,6 +93,52 @@ def test_coerce_model_bare_callable_is_unchanged() -> None:
     assert coerced.predict is fn
     assert coerced.policy is None
     assert coerced.on_episode_end is None
+    assert coerced.predict_chunk is None
+    assert coerced.predict_batch is None
+    assert coerced.predict_chunk_batch is None
+
+
+def test_duck_policy_predict_chunk_is_picked_up_and_actually_chunks() -> None:
+    # A duck-typed policy's chunk corner must survive coercion: with
+    # execution_horizon=3 the replay calls predict_chunk once per 3 steps
+    # instead of silently dropping the corner and re-planning every step.
+    calls = {"chunk": 0, "predict": 0}
+
+    class _ChunkPolicy:
+        def predict(self, observation: object) -> int:
+            calls["predict"] += 1
+            return 0
+
+        def predict_chunk(self, observation: object) -> list[int]:
+            calls["chunk"] += 1
+            return [0, 1, 2]
+
+    class _SixStepEnv:
+        def __init__(self) -> None:
+            self._steps = 0
+
+        def reset(
+            self, *, seed: object = None, options: object = None
+        ) -> tuple[int, dict[str, object]]:
+            self._steps = 0
+            return 0, {}
+
+        def step(
+            self, action: object
+        ) -> tuple[int, float, bool, bool, dict[str, object]]:
+            self._steps += 1
+            return 0, 0.0, self._steps >= 6, False, {}
+
+        def close(self) -> None:
+            pass
+
+    coerced = coerce_model(_ChunkPolicy, spec=None)
+    assert coerced.predict_chunk is not None
+
+    result = rlmesh.run(_ChunkPolicy(), _SixStepEnv(), execution_horizon=3)
+    assert result.total_steps == 6
+    assert calls["chunk"] == 2  # re-planned every 3 steps
+    assert calls["predict"] == 0  # the chunk corner drove the whole episode
 
 
 def test_coerce_model_rejects_non_callable_non_policy() -> None:
@@ -147,17 +193,14 @@ def test_model_subclass_serve_loads_then_serves(
 
     seen: dict[str, object] = {}
 
-    def fake_serve(
-        self: object, address: str, *, token: str = "", options=None
-    ) -> None:
+    def fake_serve(self: object, address: str, *, options=None) -> None:
         seen["address"] = address
-        seen["token"] = token
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)
     model = _ModelPolicy()
-    model.serve("127.0.0.1:5555", token="tk")
+    model.serve("127.0.0.1:5555")
     assert model.loaded is True  # load() fired during construction
-    assert seen == {"address": "127.0.0.1:5555", "token": "tk"}
+    assert seen == {"address": "127.0.0.1:5555"}
 
 
 # --- serve dispatch: resolve a model source without double-construction ---
@@ -173,9 +216,7 @@ def test_serve_model_dispatch_avoids_double_construction(
 
     served: list[object] = []
 
-    def fake_serve(
-        self: object, address: str, *, token: str = "", options=None
-    ) -> None:
+    def fake_serve(self: object, address: str, *, options=None) -> None:
         served.append(self)
 
     monkeypatch.setattr(ModelBase, "serve", fake_serve)
@@ -228,6 +269,7 @@ def test_env_recipe_serve_prepares_makes_and_serves(
             device: object = None,
         ) -> None:
             _ = framework, device  # accepted (neutral server), not asserted here
+            self.address = address
             seen.update(env=env, address=address, tags=tags)
 
         def serve(self) -> None:
@@ -242,6 +284,31 @@ def test_env_recipe_serve_prepares_makes_and_serves(
         "address": "127.0.0.1:5555",
         "tags": None,
         "served": True,
+    }
+
+
+def test_env_factory_serve_separates_serving_options_from_make_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The serving options are named in EnvFactory.serve's signature, so they can
+    # never silently mix with make kwargs on the way into serve_env.
+    from rlmesh import serve as serve_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_serve_env(env_source: object, address: str, /, **kwargs: object) -> None:
+        seen["address"] = address
+        seen.update(kwargs)
+
+    monkeypatch.setattr(serve_mod, "serve_env", fake_serve_env)
+    _Env().serve("127.0.0.1:5555", num_envs=2, framework="numpy", task_id=7)
+    assert seen == {
+        "address": "127.0.0.1:5555",
+        "num_envs": 2,
+        "vectorization_mode": None,
+        "framework": "numpy",
+        "device": None,
+        "task_id": 7,
     }
 
 

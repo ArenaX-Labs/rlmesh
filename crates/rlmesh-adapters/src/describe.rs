@@ -228,9 +228,9 @@ fn describe_state(plan: &StatePlan) -> String {
 fn describe_text(plan: &TextPlan) -> String {
     let source = match &plan.source {
         None => format!(
-            "default {}",
-            match &plan.default {
-                Some(default) => quoted(default),
+            "fill {}",
+            match &plan.fill {
+                Some(fill) => quoted(fill),
                 None => "None".to_owned(),
             }
         ),

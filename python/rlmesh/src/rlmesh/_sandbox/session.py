@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -14,7 +13,12 @@ from typing import TYPE_CHECKING, TypedDict, cast
 
 from .._rlmesh import sandbox_start_env as _sandbox_start_env
 from .._rlmesh import sandbox_stop_env as _sandbox_stop_env
-from ._sources import resolve_source_kind
+from ._sources import (
+    docker_image_exists,
+    docker_pull,
+    resolve_source_kind,
+    run_docker,
+)
 
 if TYPE_CHECKING:
     from .._client._endpoint import Transport
@@ -43,6 +47,25 @@ def normalize_gpus(gpus: str | int | None) -> str | None:
     value = str(gpus).strip()
     if not value:
         raise ValueError("gpus= must be non-empty, e.g. 'all', 1, or 'device=0,1'")
+    return value
+
+
+def normalize_user(user: str | int | None) -> str | None:
+    """Normalize the ``user`` knob into a docker ``--user`` value, or None.
+
+    Passes straight through to ``docker run --user``: an int uid (``1000``) or a
+    ``"uid[:gid]"`` string (``"1000:1000"``). Shared by the model and env
+    prebuilt paths so the two never drift.
+    """
+    if user is None:
+        return None
+    if isinstance(user, int):
+        if user < 0:
+            raise ValueError(f"user= must be a uid >= 0, got {user}")
+        return str(user)
+    value = user.strip()
+    if not value:
+        raise ValueError("user= must be non-empty, e.g. 1000 or '1000:1000'")
     return value
 
 
@@ -81,6 +104,10 @@ class SandboxRuntime:
       (a CDI device ref -- the full graphics+compute driver) or a ``/dev`` node.
     - ``volumes``: ``docker run -v`` mounts, e.g.
       ``["/host/assets:/ctr/assets", "/host/ro:/ctr/ro:ro"]``.
+    - ``user``: ``docker run --user`` passthrough -- an int uid or a
+      ``"uid[:gid]"`` string. Set it to the owner of writable volume mounts
+      (typically ``os.getuid()``); the container runs ``--cap-drop ALL``, so
+      even root inside it obeys the mount's permission bits.
 
     Build-from-source attaches none of these (it has no ``docker run`` step); set
     them only for a prebuilt image source.
@@ -89,6 +116,7 @@ class SandboxRuntime:
     gpus: str | int | None = None
     devices: Sequence[str] | None = None
     volumes: Sequence[str] | None = None
+    user: str | int | None = None
 
 
 @dataclass(frozen=True)
@@ -115,26 +143,31 @@ class _SandboxStartInfo(TypedDict):
 _TRANSIENT_DIAL_ERRORS = (ConnectionError, TimeoutError, OSError)
 
 
-def _container_running(container_id: str) -> bool:
-    """Whether the sandbox container is still running (best effort)."""
-    proc = subprocess.run(
-        ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # On any inspect failure (gone / daemon error), treat as not running so the
-    # caller fails fast rather than spinning the whole timeout.
-    return proc.returncode == 0 and proc.stdout.strip() == "true"
+def _container_running(container_id: str) -> bool | None:
+    """Whether the sandbox container is still running, or None if unknowable.
+
+    ``True``/``False`` report the container's actual state; ``None`` means the
+    inspect itself failed (daemon busy/erroring), which callers must surface as
+    "could not inspect" rather than misreporting the container as exited. Any
+    outcome returns promptly, so callers fail fast instead of spinning the
+    whole connect timeout.
+    """
+    proc = run_docker(["docker", "inspect", "-f", "{{.State.Running}}", container_id])
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() == "true"
 
 
 def _container_logs(container_id: str, tail: int = 50) -> str:
-    proc = subprocess.run(
-        ["docker", "logs", "--tail", str(tail), container_id],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Recent container logs for error messages, degrading instead of raising.
+
+    Only ever called while building a failure message, so a stalled daemon
+    yields a placeholder rather than masking the original error.
+    """
+    try:
+        proc = run_docker(["docker", "logs", "--tail", str(tail), container_id])
+    except RuntimeError as exc:
+        return f"<no logs: {exc}>"
     return (proc.stdout + proc.stderr).strip()
 
 
@@ -164,6 +197,7 @@ class SandboxLifecycle:
             path: str | None = None,
             transport: Transport | None = None,
             connect_timeout_seconds: float | None,
+            request_timeout_seconds: float | None = None,
         ) -> None: ...
 
     def _detach(self) -> None:
@@ -177,26 +211,35 @@ class SandboxLifecycle:
         the container, and the native client dials once and fails fast against a
         not-yet-listening port -- so the wait-for-ready loop lives here (mirroring
         ``SandboxModel._dial_with_retry``), not in the timeout handed to the native
-        client. Stops the container on any failure so it is never leaked, and surfaces
-        the container's recent logs when it exits or never becomes ready, instead of a
-        bare ``transport error``.
+        client. Each retry's native timeout is capped at the remaining deadline so the
+        total wait never exceeds ``connect_timeout_seconds``. A dial error against an
+        already-exited container is terminal: it fails fast with the container's recent
+        logs rather than retrying for the whole timeout, and an inspect failure is
+        reported as such instead of being misread as an exit. Stops the container on
+        any failure so it is never leaked; ``_closed`` is only set once that stop
+        succeeds, so ``close()``/``__del__`` can retry a failed stop instead of leaking
+        the container for the process lifetime (mirroring :meth:`_stop`).
         """
         sandbox = self.sandbox
         deadline = time.monotonic() + connect_timeout_seconds
+        attempt_timeout = connect_timeout_seconds
         try:
             while True:
                 try:
                     self._initialize(
-                        sandbox.address, connect_timeout_seconds=connect_timeout_seconds
+                        sandbox.address, connect_timeout_seconds=attempt_timeout
                     )
                     return
-                except (
-                    _TRANSIENT_DIAL_ERRORS
-                ) as exc:  # the container may still be starting
+                except _TRANSIENT_DIAL_ERRORS as exc:
                     short_id = sandbox.container_id[:12]
-                    # A dial error against an already-exited container is terminal: fail
-                    # fast with its logs rather than retrying for the whole timeout.
-                    if not _container_running(sandbox.container_id):
+                    running = _container_running(sandbox.container_id)
+                    if running is None:
+                        raise RuntimeError(
+                            f"could not inspect sandbox container {short_id} for "
+                            f"{self._source!r} (docker daemon busy?); last dial "
+                            f"error: {exc}"
+                        ) from exc
+                    if not running:
                         raise RuntimeError(
                             f"sandbox container {short_id} for {self._source!r} exited "
                             f"before becoming ready; recent logs:\n"
@@ -209,12 +252,14 @@ class SandboxLifecycle:
                             f"logs:\n{_container_logs(sandbox.container_id)}"
                         ) from exc
                     time.sleep(0.1)
+                    attempt_timeout = max(deadline - time.monotonic(), 0.1)
         except BaseException:
             try:
                 _sandbox_stop_env(container_id=sandbox.container_id)
             except BaseException:
                 pass
-            self._closed = True
+            else:
+                self._closed = True
             raise
 
     @property
@@ -286,6 +331,7 @@ def start_sandbox_container(
     gpus = normalize_gpus(run.gpus)
     devices = string_sequence("devices", run.devices)
     volumes = string_sequence("volumes", run.volumes)
+    user = normalize_user(run.user)
     kind, resolved = resolve_source_kind(source)
     if kind == "prebuilt":
         _warn_ignored_build_options(build)
@@ -298,12 +344,14 @@ def start_sandbox_container(
             gpus=gpus,
             devices=devices,
             volumes=volumes,
+            user=user,
         )
-    if gpus is not None or devices or volumes:
+    if gpus is not None or devices or volumes or user is not None:
         raise ValueError(
-            "SandboxRuntime (gpus/devices/volumes) is only supported for a prebuilt "
-            f"sandbox image; building an env from source ({source!r}) has no docker-run "
-            "step -- pass a prebuilt image (docker://img / bare img:tag) instead"
+            "SandboxRuntime (gpus/devices/volumes/user) is only supported for a "
+            f"prebuilt sandbox image; building an env from source ({source!r}) has no "
+            "docker-run step -- pass a prebuilt image (docker://img / bare img:tag) "
+            "instead"
         )
     return _start_build(
         source,
@@ -324,6 +372,7 @@ def start_prebuilt_container(
     gpus: str | None = None,
     devices: Sequence[str] | None = None,
     volumes: Sequence[str] | None = None,
+    user: str | None = None,
 ) -> SandboxInfo:
     """Run a prebuilt rlmesh-serving image and return its connection info.
 
@@ -336,6 +385,12 @@ def start_prebuilt_container(
     left ``None`` (the model path -- a model is never vectorized) the corresponding
     ``RLMESH_NUM_ENVS`` / ``RLMESH_VECTORIZATION_MODE`` env vars are not injected, so
     the container serves in its default (single, model) mode.
+
+    A missing image is pulled here, announced on stderr, rather than invisibly
+    inside ``docker run`` -- a multi-GB pull with no progress line reads as a
+    hang. Port discovery failure stops the started container before re-raising
+    (never leaked) and, when the container crashed at startup, replaces the
+    opaque "published no host port" with its recent logs.
     """
     if shutil.which("docker") is None:
         raise RuntimeError(
@@ -343,9 +398,14 @@ def start_prebuilt_container(
             "sandbox image, or use gym://... to build from source"
         )
     reap_orphans()
+    if not docker_image_exists(image):
+        pulled, pull_stderr = docker_pull(image)
+        if not pulled:
+            detail = f":\n{pull_stderr}" if pull_stderr else ""
+            raise RuntimeError(f"could not pull prebuilt image {image!r}{detail}")
     env_vars: dict[str, str] = {}
     if binding:
-        env_vars["RLMESH_MAKE_KWARGS"] = json.dumps(dict(binding), sort_keys=True)
+        env_vars["RLMESH_MAKE_KWARGS"] = binding_json(binding)
     if num_envs and num_envs != 1:
         env_vars["RLMESH_NUM_ENVS"] = str(num_envs)
     if vectorization_mode:
@@ -357,11 +417,12 @@ def start_prebuilt_container(
         gpus=gpus,
         devices=devices,
         volumes=volumes,
+        user=user,
         container_port=CONTAINER_SERVE_PORT,
         owner_pid=os.getpid(),
         owner_pid_ns=pid_namespace_id(),
     )
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = run_docker(cmd)
     if proc.returncode != 0:
         raise RuntimeError(
             f"failed to start prebuilt container ({proc.returncode}):\n{proc.stderr}"
@@ -369,13 +430,19 @@ def start_prebuilt_container(
     container_id = proc.stdout.strip()
     try:
         port = _resolve_published_port(container_id)
-    except BaseException:
-        # Port discovery failed after the container started: stop it before
-        # re-raising so the container is not leaked.
+    except BaseException as exc:
+        running = _container_running(container_id)
+        logs = _container_logs(container_id) if running is False else ""
         try:
             _sandbox_stop_env(container_id=container_id)
         except Exception:
             pass
+        if running is False:
+            raise RuntimeError(
+                f"prebuilt container {container_id[:12]} for image {image!r} "
+                f"exited during startup before publishing a port ({exc}); "
+                f"recent logs:\n{logs}"
+            ) from exc
         raise
     return SandboxInfo(
         requested_source=requested_source,
@@ -395,6 +462,7 @@ def prebuilt_run_cmd(
     owner_pid_ns: str | None,
     devices: Sequence[str] | None = None,
     volumes: Sequence[str] | None = None,
+    user: str | None = None,
 ) -> list[str]:
     """Build the ``docker run`` argv for a prebuilt sandbox container (pure).
 
@@ -402,8 +470,9 @@ def prebuilt_run_cmd(
     ``--security-opt no-new-privileges``, owner labels for orphan reaping), shared
     by the env and model prebuilt paths so the flags never drift apart. The image
     is always last and env vars precede it, so callers/tests can rely on argv shape.
-    ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``) and
-    ``volumes`` -> ``-v`` mounts, both before the env vars.
+    ``devices`` -> ``--device`` (incl. CDI refs like ``nvidia.com/gpu=all``),
+    ``volumes`` -> ``-v`` mounts, and ``user`` -> ``--user``, all before the env
+    vars.
     """
     cmd = [
         "docker",
@@ -424,6 +493,8 @@ def prebuilt_run_cmd(
         cmd += ["--label", f"rlmesh.sandbox.owner-pid-ns={owner_pid_ns}"]
     if gpus is not None:
         cmd += ["--gpus", gpus]
+    if user is not None:
+        cmd += ["--user", user]
     for device in devices or []:
         cmd += ["--device", device]
     for volume in volumes or []:
@@ -451,12 +522,7 @@ def parse_published_port(stdout: str, container_port: int) -> int:
 
 
 def _resolve_published_port(container_id: str) -> int:
-    proc = subprocess.run(
-        ["docker", "port", container_id, str(CONTAINER_SERVE_PORT)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = run_docker(["docker", "port", container_id, str(CONTAINER_SERVE_PORT)])
     if proc.returncode != 0:
         raise RuntimeError(
             f"failed to read published port for container "
@@ -468,18 +534,13 @@ def _resolve_published_port(container_id: str) -> int:
 def reap_orphans() -> None:
     """Best-effort sweep of containers orphaned by a prior hard kill.
 
-    Delegates to the native ``sandbox_reap_orphans`` reaper. The getattr guard
-    degrades to a no-op against a version-skewed native extension that predates
-    the reaper; failures are swallowed -- reaping is hygiene, never a reason to
-    fail a start.
+    Delegates to the native ``sandbox_reap_orphans`` reaper; failures are
+    swallowed -- reaping is hygiene, never a reason to fail a start.
     """
-    import rlmesh._rlmesh as _rlmesh
+    from .._rlmesh import sandbox_reap_orphans
 
-    reap = getattr(_rlmesh, "sandbox_reap_orphans", None)
-    if reap is None:
-        return
     try:
-        reap()
+        sandbox_reap_orphans()
     except Exception:
         pass
 
@@ -492,7 +553,25 @@ def pid_namespace_id() -> str | None:
 
 
 def _warn_ignored_build_options(options: SandboxBuild) -> None:
-    """Warn when build-only options are set on a run-prebuilt (not built) source."""
+    """Reject or warn on build-only options set on a run-prebuilt (not built) source.
+
+    ``trust_remote_code`` / ``allow_unpinned_hf`` are security grants: silently
+    ignoring one would leave the caller believing a trust decision took effect,
+    so setting either on a prebuilt source is a hard error. The remaining build
+    knobs merely cannot apply (the image is already built) and keep their
+    documented warning behavior.
+    """
+    granted = [
+        name
+        for name in ("trust_remote_code", "allow_unpinned_hf")
+        if getattr(options, name)
+    ]
+    if granted:
+        raise ValueError(
+            f"{', '.join(granted)} configure the from-source build and have no "
+            "effect on a prebuilt image source (the image is already built); "
+            "remove them, or build from a gym://.../hf://... source"
+        )
     ignored = [
         name
         for name in (
@@ -525,7 +604,7 @@ def _start_build(
     rlmesh_package = (
         fspath(build.rlmesh_package) if build.rlmesh_package is not None else None
     )
-    kwargs_json = json.dumps(dict(binding)) if binding else None
+    kwargs_json = binding_json(binding) if binding else None
     started = cast(
         _SandboxStartInfo,
         _sandbox_start_env(
@@ -543,6 +622,28 @@ def _start_build(
         ),
     )
     return SandboxInfo(**started)
+
+
+def binding_json(binding: Mapping[str, object]) -> str:
+    """Serialize the construction-param binding to canonical JSON, or raise.
+
+    The one encoder for ``RLMESH_MAKE_KWARGS`` (prebuilt) and the native build's
+    ``kwargs_json``, so both emit identical, key-sorted JSON. A value JSON cannot
+    represent is named by its param -- a raw ``TypeError`` from ``json.dumps``
+    points at nothing the caller typed.
+    """
+    try:
+        return json.dumps(dict(binding), sort_keys=True)
+    except TypeError:
+        for key, value in binding.items():
+            try:
+                _ = json.dumps(value)
+            except TypeError as exc:
+                raise TypeError(
+                    f"construction param {key!r} is not JSON-serializable "
+                    f"({type(value).__name__}); pass JSON-encodable values"
+                ) from exc
+        raise
 
 
 def string_sequence(name: str, value: Sequence[str] | None) -> list[str]:
@@ -598,7 +699,9 @@ __all__ = [
     "SandboxInfo",
     "SandboxLifecycle",
     "SandboxRuntime",
+    "binding_json",
     "normalize_gpus",
+    "normalize_user",
     "parse_published_port",
     "prebuilt_run_cmd",
     "reap_orphans",

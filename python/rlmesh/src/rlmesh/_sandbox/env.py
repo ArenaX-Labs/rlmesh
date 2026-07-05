@@ -104,7 +104,9 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         source: A gym id / ``gym://`` / ``hf://`` source built from source, or a
             prebuilt rlmesh-serving image (``docker://img`` / bare ``img:tag``).
         num_envs: Number of environment instances to create (must be >= 2).
-        vectorization_mode: Vectorization mode requested in the sandbox.
+        vectorization_mode: ``"sync"`` or ``"async"``; ``None`` (the default)
+            lets the container choose (gymnasium's auto mode), matching the
+            serve-CLI surface so both vectorize the same env identically.
         build: Optional :class:`~rlmesh._sandbox.session.SandboxBuild` -- build-from-
             source infrastructure; ignored for a prebuilt image.
         runtime: Optional :class:`~rlmesh._sandbox.session.SandboxRuntime` -- ``docker
@@ -123,7 +125,7 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
         /,
         num_envs: int,
         *,
-        vectorization_mode: str = "sync",
+        vectorization_mode: str | None = None,
         build: SandboxBuild | None = None,
         runtime: SandboxRuntime | None = None,
         connect_timeout_seconds: float = SANDBOX_REMOTE_CONNECT_TIMEOUT_SECONDS,
@@ -131,6 +133,11 @@ class SandboxVectorEnvBase(SandboxLifecycle, RemoteVectorEnvBase[ValueT, ActionT
     ) -> None:
         if num_envs < 2:
             raise ValueError("SandboxVectorEnv requires num_envs >= 2")
+        if vectorization_mode not in (None, "sync", "async"):
+            raise ValueError(
+                "vectorization_mode must be 'sync' or 'async' (or None to let "
+                f"the container choose); got {vectorization_mode!r}"
+            )
         reject_sandbox_option_params(params)
         self._source = source
         self._closed = False

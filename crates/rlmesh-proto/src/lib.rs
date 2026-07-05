@@ -134,7 +134,7 @@ impl SessionOffer {
     }
 }
 
-/// The reconciled route edition produced by [`negotiate_session_floor`].
+/// The reconciled workflow edition produced by [`negotiate_session_floor`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFloor {
     /// The edition the session runs at: the highest edition env, model, AND this
@@ -248,7 +248,7 @@ pub fn generation_mismatch_message(client_protocol_generation: &str) -> String {
 
 /// Whether this build can drive the given workflow edition (it is in
 /// [`SUPPORTED_WORKFLOW_EDITIONS`]). This is the authority for enforcing a
-/// runtime-pinned route edition — `selected` is always a member of the negotiating
+/// runtime-pinned workflow edition — `selected` is always a member of the negotiating
 /// sets, so enforcement must check membership, NOT equality with the single
 /// [`CURRENT_WORKFLOW_EDITION`], or it would reject a legitimate older-edition route
 /// once the support window grows. Whitespace is trimmed.

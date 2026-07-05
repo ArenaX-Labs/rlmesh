@@ -123,17 +123,17 @@ Using `session()` as a context manager (or `run()`, which closes for you) guaran
 
 When a model trained against one environment underperforms against another, the cause is usually a misaligned adapter: an image that came through channels-first, a rotation in the wrong packing, a proprio vector scaled differently than the policy expects. This resolves cleanly, so it shows up as a bad success rate rather than an exception. RLMesh gives you three ways to see what the adapter actually does before and during a run.
 
-The three tools run from static to live: `adapter.describe()` prints the exact transforms the resolver chose; the `read` / `reader` API extracts any role from a raw observation in whatever encoding you ask for; and join advisories warn you, at authoring time, about a tag that looks mis-declared. Start with `describe()`, reach for `read` when you need to see the values, and lean on advisories to catch mistakes before a peer ever connects.
+The three tools run from static to live: `adapter.explain()` prints the exact transforms the resolver chose; the `read` / `reader` API extracts any role from a raw observation in whatever encoding you ask for; and join advisories warn you, at authoring time, about a tag that looks mis-declared. Start with `explain()`, reach for `read` when you need to see the values, and lean on advisories to catch mistakes before a peer ever connects.
 
 ### Read what the resolver chose
 
-{func}`~rlmesh.adapters.resolve` returns an {class}`~rlmesh.adapters.Adapter`, and `adapter.describe()` prints every transform it derived: each resize, layout transpose, encoding conversion, range map, key remap, slice, and clip. Call it once, before you run a step.
+{func}`~rlmesh.adapters.resolve` returns an {class}`~rlmesh.adapters.Adapter`, and `adapter.explain()` prints every transform it derived: each resize, layout transpose, encoding conversion, range map, key remap, slice, and clip. Call it once, before you run a step.
 
 ```python
 import rlmesh.adapters as adapt
 
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
-print(adapter.describe())
+print(adapter.explain())
 ```
 
 For the manipulation pair in {doc}`adapters`, the output shows the primary image resized, the rotation going `quat_xyzw -> rot6d`, the instruction key remapped (`goal -> task`), and the model's 6-D action rotation converted back to the env's 3-D `axis_angle` and clipped. If a transform you expected is missing, or one you did not intend is present, the spec and the tags disagree about that leaf. When the spec uses a {class}`~rlmesh.adapters.CustomEncoding`, `describe()` also lists the host-side repack arms under a `host-side encodings:` section.

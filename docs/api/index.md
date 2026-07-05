@@ -8,7 +8,7 @@ know what you want to call and need the precise surface; the user-guide pages co
 - {doc}`core`: top-level package exports, structural protocols, and shared value aliases.
 - {doc}`contracts`: environment contracts, space specs, tensors, and serve options.
 - {doc}`spaces`: RLMesh space wrappers and conversion helpers.
-- {doc}`models`: model worker wrappers.
+- {doc}`models`: model wrappers.
 - {doc}`adapters`: declarative model-to-environment IO layer for mapping a model's observations and actions to an environment's spaces.
 - {doc}`serving`: the env server, the serving helpers, and the remote client classes.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.

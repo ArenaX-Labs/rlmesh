@@ -12,26 +12,26 @@ use super::{
 use crate::error::ProtocolError;
 
 #[test]
-fn render_request_without_env_index_uses_empty_mask() {
+fn render_request_without_env_index_sends_no_indices() {
     let request = RenderRequest {
         env_index: None,
         timeout_ms: 17,
     };
 
     let proto = render_request_to_proto(&request);
-    assert_eq!(proto.mask, Vec::<u8>::new());
+    assert_eq!(proto.env_indices, Vec::<u32>::new());
     assert_eq!(proto.timeout_ms, 17);
 }
 
 #[test]
-fn render_request_with_env_index_maps_to_single_bit_mask() {
+fn render_request_with_env_index_maps_to_single_index() {
     let request = RenderRequest {
         env_index: Some(2),
         timeout_ms: 0,
     };
 
     let proto = render_request_to_proto(&request);
-    assert_eq!(proto.mask, vec![0, 0, 1]);
+    assert_eq!(proto.env_indices, vec![2]);
 }
 
 #[test]
@@ -377,7 +377,7 @@ fn wire_decode_rejects_malformed_specs() {
     // the leaf byte count disagree with the raw batch stride; reject at decode.
     let wide_multibinary = proto::SpaceSpec {
         shape: vec![3],
-        dtype: proto::DType::Int32 as i32,
+        dtype: proto::DataType::Int32 as i32,
         spec: Some(proto::space_spec::Spec::MultiBinary(
             proto::MultiBinarySpec {},
         )),
@@ -387,7 +387,7 @@ fn wire_decode_rejects_malformed_specs() {
     // A MultiDiscrete spec with a float dtype would lose index precision.
     let float_multidiscrete = proto::SpaceSpec {
         shape: vec![2],
-        dtype: proto::DType::Float32 as i32,
+        dtype: proto::DataType::Float32 as i32,
         spec: Some(proto::space_spec::Spec::MultiDiscrete(
             proto::MultiDiscreteSpec { nvec: vec![3, 4] },
         )),
@@ -397,7 +397,7 @@ fn wire_decode_rejects_malformed_specs() {
     // A well-formed uint8 MultiBinary still decodes.
     let ok = proto::SpaceSpec {
         shape: vec![3],
-        dtype: proto::DType::Uint8 as i32,
+        dtype: proto::DataType::Uint8 as i32,
         spec: Some(proto::space_spec::Spec::MultiBinary(
             proto::MultiBinarySpec {},
         )),

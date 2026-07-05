@@ -619,7 +619,10 @@ fn connect_remote_env(
     }
 }
 
-fn optional_timeout(value: Option<f64>, field: &'static str) -> PyResult<Option<Duration>> {
+pub(crate) fn optional_timeout(
+    value: Option<f64>,
+    field: &'static str,
+) -> PyResult<Option<Duration>> {
     match value {
         // Treat 0 (and None) as "no timeout" to mirror the wire contract.
         None | Some(0.0) => Ok(None),

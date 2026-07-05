@@ -2,7 +2,7 @@
 
 A declarative spec resolves at runtime with no code (see {doc}`/user-guide/adapters`). That covers the manipulation/VLA case (cameras, proprioception, an instruction, a per-step action), but some pairings need host-language logic the spec language cannot carry. Four escape hatches add exactly that, and no more.
 
-They are ordered most-local first: each later hatch takes over more of the pipeline, so reach for the earliest one that fits. The first three keep the rest of the IO spec-driven; only the last replaces the adapter outright.
+They are ordered most-local first: each later hatch takes over more of the pipeline, so pick the earliest one that fits. The first three keep the rest of the IO spec-driven; only the last replaces the adapter outright.
 
 | Hatch                                          | Scope                         | Reach for it when                                                          |
 | ---------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------- |
@@ -18,7 +18,7 @@ the entrypoint forms below: a {class}`~rlmesh.adapters.Custom` built with `entry
 named code, and only when you pass `resolve(..., trust_entrypoints=True)`.
 ```
 
-## Custom input -- one payload slot
+## Custom input: one payload slot
 
 A {class}`~rlmesh.adapters.Custom` leaf fills one slot of the model payload from the raw observation with host code. Everything else in the `input` tree stays spec-driven. Use it for a modality RLMesh does not model first-class (depth, lidar, point clouds) or any value that needs bespoke assembly.
 
@@ -43,7 +43,7 @@ spec = adapt.ModelSpec(
 )
 ```
 
-`transform=` is local only -- a callable cannot be serialized, so a spec carrying one cannot be published in contract metadata and resolves only in the process that defined it. To ship the spec to a remote client, give an `entrypoint` instead, a `"module:callable"` string that travels on the wire:
+`transform=` is local only: a callable cannot be serialized, so a spec carrying one cannot be published in contract metadata and resolves only in the process that defined it. To ship the spec to a remote client, give an `entrypoint` instead, a `"module:callable"` string that travels on the wire:
 
 ```python
 adapt.Custom(entrypoint="my_pkg.adapters:encode_depth")
@@ -52,12 +52,12 @@ adapt.Custom(entrypoint="my_pkg.adapters:encode_depth")
 The entrypoint is imported only under {func}`~rlmesh.adapters.resolve` with `trust_entrypoints=True`; otherwise resolution refuses to import it. Set exactly one of `transform=` or `entrypoint=`.
 
 ```{note}
-A `Custom` input only touches the observation side -- it computes a payload slot. It cannot
+A `Custom` input only touches the observation side, where it computes a payload slot. It cannot
 post-process actions. For action-side logic, use a {class}`~rlmesh.adapters.CustomEncoding`
 (one rotation field) or an {class}`~rlmesh.adapters.AdapterBase` subclass (the whole action).
 ```
 
-## Custom encoding -- a host-side rotation packing
+## Custom encoding: a host-side rotation packing
 
 Rotation encodings are a closed vocabulary so a spec can resolve on a remote client with no code. When a model expects a packing outside that set, a {class}`~rlmesh.adapters.CustomEncoding` layers a host-side repack on top of the nearest built-in **base** encoding, keeping the rest of the rotation pipeline declarative.
 
@@ -85,12 +85,12 @@ The field resolves **natively as its base**: role matching, range mapping, and t
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Width-preserving  | the packing must keep the base width (`ROTATION_DIMS[base]`); it repacks, it does not resize                                       |
 | Arm per side      | `from_base` is needed only when the encoding tags an observation state; `to_base` only when it tags an action; supply at least one |
-| Arms agree        | both in-process callables, or both `"module:callable"` entrypoint strings -- not a mix                                             |
+| Arms agree        | both in-process callables, or both `"module:callable"` entrypoint strings; never a mix                                             |
 | Entrypoints gated | string arms are serializable but import only under `resolve(..., trust_entrypoints=True)`                                          |
 
-Reach for a `CustomEncoding` for a one-off or proprietary packing. When the convention is general, stable, and published (a checkpoint's documented rotation format), upstream it to the first-party `RotationEncoding` enum instead: it then serializes into the contract, is matched by role with no host code, and is conformance-tested.
+Use a `CustomEncoding` for a one-off or proprietary packing. When the convention is general, stable, and published (a checkpoint's documented rotation format), upstream it to the first-party `RotationEncoding` enum instead: it then serializes into the contract, is matched by role with no host code, and is conformance-tested.
 
-## AdapterBase subclass -- stateful behavior
+## AdapterBase subclass: stateful behavior
 
 A declarative adapter is stateless step to step. When a model needs memory across steps (ACT-style temporal ensembling is the canonical case), subclass {class}`~rlmesh.adapters.AdapterBase` and wrap a resolved adapter, adding only the stateful part. Observation handling and per-step action conversion (encodings, ranges, clipping) stay spec-driven; the custom code is the state alone.
 
@@ -120,11 +120,11 @@ Build it by resolving first, then wrapping:
 adapter = ChunkEnsembleAdapter(adapt.resolve(tags, env.observation_space, env.action_space, spec))
 ```
 
-A stateful custom adapter keeps affinity to its stream: override `reset` to clear episode-scoped state. It is wired to the per-episode boundary (the model worker's `on_episode_end`) so a finished episode never bleeds into the next, and it runs on the single-env local loop, so there is no per-lane bookkeeping to do. On the served path, frame-stacking is handled natively in the core with episode-keyed buffers, so a vectorized route needs no per-adapter affinity.
+A stateful custom adapter keeps affinity to its stream: override `reset` to clear episode-scoped state. It is wired to the per-episode boundary (the model's `on_episode_end`) so a finished episode never bleeds into the next, and it runs on the single-env local loop, so there is no per-lane bookkeeping to do. On the served path, frame-stacking is handled natively in the core with episode-keyed buffers, so a vectorized route needs no per-adapter affinity.
 
 The full worked example (the spec, the ensemble math, and the factory that resolves then wraps) is {source}`examples/python/vla_adapters/models/act.py`.
 
-## Pair override -- replace the adapter for one pairing
+## Pair override: replace the adapter for one pairing
 
 When a single `(model, env)` pairing is special enough that none of the above fit, replace its adapter outright. This needs no RLMesh machinery: keep a registry keyed by the pair and consult it before {func}`~rlmesh.adapters.resolve`.
 
@@ -141,11 +141,11 @@ def build_adapter(model_name, env_name, env, spec):
     return adapt.resolve(env.tags, env.observation_space, env.action_space, spec)
 ```
 
-Because both the resolved adapter and any override are {class}`~rlmesh.adapters.AdapterBase` instances, the rest of the eval loop (`wrap_predict`, the served path via {func}`~rlmesh.adapters.resolve_from_contract`) is identical either way. Reach for an override only when the special-casing is pairing-wide; a per-slot or per-field need belongs in one of the earlier hatches.
+Because both the resolved adapter and any override are {class}`~rlmesh.adapters.AdapterBase` instances, the rest of the eval loop (`wrap_predict`, the served path via {func}`~rlmesh.adapters.resolve_from_contract`) is identical either way. An override is only for pairing-wide special-casing; a per-slot or per-field need belongs in one of the earlier hatches.
 
 ## See also
 
-- {source}`examples/python/vla_adapters` -- a runnable registry of models and envs exercising all four hatches.
-- {doc}`/user-guide/adapters/reference` -- every leaf, field, and conversion-policy rung in one place.
-- {doc}`/user-guide/adapters` -- the declarative pipeline these hatches extend.
-- {doc}`/api/adapters` -- exact signatures for `Custom`, `CustomEncoding`, `AdapterBase`, and `resolve`.
+- {source}`examples/python/vla_adapters`: a runnable registry of models and envs exercising all four hatches.
+- {doc}`/user-guide/adapters/reference`: every leaf, field, and conversion-policy rung in one place.
+- {doc}`/user-guide/adapters`: the declarative pipeline these hatches extend.
+- {doc}`/api/adapters`: exact signatures for `Custom`, `CustomEncoding`, `AdapterBase`, and `resolve`.

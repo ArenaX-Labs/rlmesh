@@ -89,11 +89,13 @@ def resolve(
     accepts_kwargs, sig_params = _signature_facts(target)
     declared = {p.name: p for p in spec.params}
 
-    # Junk-drawer-drift guard: a declared Param the target cannot receive would
-    # silently fall through to passthrough, so the validation it promised never
-    # runs. Warn rather than fail -- the author's mistake, not the operator's.
+    # Junk-drawer-drift guard: a declared Param the target cannot receive can
+    # never do the validation it promised. Merely declared (no value supplied)
+    # warns -- the author's mistake, not the operator's; a *supplied* value for
+    # it hard-errors below instead of crashing the constructor with a bare
+    # TypeError.
     for name in declared:
-        if name not in sig_params and not accepts_kwargs:
+        if name not in sig_params and not accepts_kwargs and name not in kwargs:
             warnings.warn(
                 f"Param {name!r} is not a parameter of "
                 f"{_target_name(target)} and is not covered by **kwargs; it "
@@ -105,6 +107,14 @@ def resolve(
     rest: dict[str, object] = {}
     for name, value in kwargs.items():
         if name in declared:
+            if name not in sig_params and not accepts_kwargs:
+                raise ParamError(
+                    f"{name!r} is declared as a Param but is not a parameter of "
+                    f"{_target_name(target)} and is not covered by **kwargs, so "
+                    "the supplied value cannot reach the constructor (accepted "
+                    f"keyword args: {', '.join(sorted(sig_params)) or 'none'}); "
+                    "fix the Param name or the constructor signature"
+                )
             out[name] = _coerce(declared[name], value)
         elif name in sig_params:
             out[name] = _check_derived(name, sig_params[name].annotation, value)
@@ -143,7 +153,7 @@ def describe(
 
     Pure, off-GPU, and importable: declared params and the free signature-derived
     tier. The dependent ``variations`` axis is filled by the caller from
-    ``enumerate_params()`` (see :mod:`rlmesh.describe`).
+    ``enumerate_params()`` (see :func:`rlmesh.describe`).
     """
     _, sig_params = _signature_facts(target)
     declared = {p.name for p in spec.params} if spec else set[str]()
@@ -228,15 +238,26 @@ def _type_name(declared: type | str | Vector) -> str:
 
 
 def _coerce(param: Param, value: object) -> object:
-    """Validate and lightly coerce ``value`` against ``param``."""
+    """Validate and lightly coerce ``value`` against ``param``.
+
+    Choice entries are normalized through the same coercion as the value before
+    the membership test, so a ``Vector`` choice authored as a ``list`` matches
+    the tuple the value canonicalizes to (a malformed choice entry raises like
+    a malformed value -- an authoring error surfaced loudly).
+    """
     if isinstance(param.type, Vector):
-        coerced = _coerce_vector(param.name, param.type, value)
+        vector = param.type
+        coerced = _coerce_vector(param.name, vector, value)
+        choices = (
+            None
+            if param.choices is None
+            else tuple(_coerce_vector(param.name, vector, c) for c in param.choices)
+        )
     else:
         coerced = _coerce_scalar(param.name, _type_name(param.type), value)
-    if param.choices is not None and not _in_choices(coerced, param.choices):
-        raise ParamError(
-            f"{param.name}: {coerced!r} not in choices {list(param.choices)}"
-        )
+        choices = param.choices
+    if choices is not None and not _in_choices(coerced, choices):
+        raise ParamError(f"{param.name}: {coerced!r} not in choices {list(choices)}")
     return coerced
 
 

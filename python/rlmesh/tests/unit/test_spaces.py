@@ -186,6 +186,21 @@ def test_box_accepts_builtin_float_dtype() -> None:
     assert spaces.Box(-1.0, 1.0, shape=[3], dtype=float).spec.dtype == "float64"
 
 
+def test_space_underscore_getattr_is_plain_miss() -> None:
+    from rlmesh import spaces
+
+    space = spaces.Discrete(3)
+
+    # Dunder/underscore probes (copy/pickle/inspect) get a clean AttributeError
+    # without the Gymnasium-conversion hint; public misses keep the hint.
+    with pytest.raises(AttributeError) as private_miss:
+        _ = space._not_a_real_attr  # pyright: ignore[reportAttributeAccessIssue]
+    assert "Gymnasium" not in str(private_miss.value)
+
+    with pytest.raises(AttributeError, match="to_gymnasium_space"):
+        _ = space.nvec  # pyright: ignore[reportAttributeAccessIssue]
+
+
 def test_require_float_rejects_nan_keeps_inf() -> None:
     from rlmesh.spaces._internals import require_float
 

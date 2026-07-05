@@ -46,6 +46,14 @@ An environment publishes {class}`~rlmesh.adapters.EnvTags` in its contract metad
    :exclude-members: __init__, __new__
 ```
 
+{attr}`EnvTags.observation_roles <rlmesh.adapters.EnvTags.observation_roles>` (and `Session.observation_roles` on a live session) groups the declared roles by kind:
+
+```{eval-rst}
+.. autoclass:: rlmesh.adapters.ObservationRoles
+   :class-doc-from: class
+   :exclude-members: __init__, __new__
+```
+
 ```{eval-rst}
 .. autoclass:: rlmesh.adapters.ImageTag
    :class-doc-from: class
@@ -162,7 +170,7 @@ When the constraints do not fit (a width-changing repack, a rotation interior to
 
 ### Custom adapters
 
-Subclass {class}`~rlmesh.adapters.AdapterBase` for stateful behavior a spec cannot describe (for example temporal ensembling across action chunks, or a width-changing rotation repack interior to a multi-field state). The usual shape wraps a resolved adapter and overrides only the stateful part. Override {meth}`~rlmesh.adapters.AdapterBase.reset` to clear episode state and wire it to the model worker's `on_episode_end`.
+Subclass {class}`~rlmesh.adapters.AdapterBase` for stateful behavior a spec cannot describe (for example temporal ensembling across action chunks, or a width-changing rotation repack interior to a multi-field state). The usual shape wraps a resolved adapter and overrides only the stateful part. Override {meth}`~rlmesh.adapters.AdapterBase.reset` to clear episode state and wire it to the model's `on_episode_end`.
 
 A pair override replaces the adapter for one specific (model, environment) pairing entirely, for cases like control-space conversion against a robot's kinematic model. There is no special machinery: keep a registry keyed by the pair and consult it before resolving.
 

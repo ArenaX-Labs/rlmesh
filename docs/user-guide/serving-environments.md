@@ -128,7 +128,7 @@ until that lands, use the ready file descriptor below for the Python CLI path.
 
 ### Ready file descriptor (CLI)
 
-The env-serve CLI (`python -m rlmesh._cli.serve_env`) takes `--ready-fd <int>`. After the listener binds, RLMesh writes one line with the resolved bind address, for example `tcp://127.0.0.1:54321`, then closes the descriptor. Because the line carries the resolved address, this works even when you bind port `0`, and the close gives the reader a clean end-of-file.
+The env-serve CLI (`python -m rlmesh._cli.serve_env`) takes `--ready-fd <int>`. It is the lower-level sibling of the public `python -m rlmesh.serve` entrypoint: use `rlmesh.serve` to run a factory or model in a container, and `rlmesh._cli.serve_env` when a supervisor needs the `--ready-fd` readiness signal, which `rlmesh.serve` does not take. After the listener binds, RLMesh writes one line with the resolved bind address, for example `tcp://127.0.0.1:54321`, then closes the descriptor. Because the line carries the resolved address, this works even when you bind port `0`, and the close gives the reader a clean end-of-file.
 
 ```sh
 # Open fd 3 onto a file, point --ready-fd at it, then read the address back.

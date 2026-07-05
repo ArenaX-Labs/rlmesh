@@ -1,6 +1,6 @@
 # Bring-Your-Own Container
 
-A bring-your-own container is a Docker image you build yourself: you write the Dockerfile and a small entrypoint, and RLMesh runs the image. The same image works locally and on the hosted platform. Sandbox helpers like `SandboxModel` are experimental.
+A bring-your-own container is a Docker image you build yourself: you write the Dockerfile and a small entrypoint, and RLMesh runs the image. The same image works locally and on the managed platform. Sandbox helpers like `SandboxModel` are experimental.
 
 The runnable files live in `examples/python/byo_container`. There are two images: `env/` serves a Gymnasium environment, and `model/` serves a policy. Both serve on `RLMESH_ADDRESS` (default `0.0.0.0:50051`).
 
@@ -70,40 +70,36 @@ docker build -t my-model:latest examples/python/byo_container/model
 import rlmesh
 
 env = rlmesh.RemoteEnv("127.0.0.1:50051")
-model = rlmesh.SandboxModel("image://my-model:latest").against(env)
+sess = rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env)
 
-obs, _ = env.reset()
-model.reset()
-done = False
-while not done:
-    action = model.predict(obs)
-    obs, reward, terminated, truncated, _ = env.step(action)
-    done = terminated or truncated
+obs, _ = sess.reset()
+while not sess.done:
+    action = sess.predict(obs)
+    obs, reward, terminated, truncated, _ = sess.step(action)
 ```
 
-The same loop drives a model that is already running: swap the construction line for `rlmesh.RemoteModel("127.0.0.1:50052").against(env)`, on a distinct port since the environment already holds `50051`. A prebuilt `image://` tag runs from its own baked configuration, so `SandboxModel` does not inject a bootstrap payload.
+`rlmesh.session(rlmesh.SandboxModel("image://<tag>"), env)` starts the model container, opens a route configured from the environment's contract, and returns a {class}`~rlmesh.Session` you drive with `reset` / `predict` / `step`. The identical loop drives a model that is already running: swap the construction for `rlmesh.session(rlmesh.RemoteModel("127.0.0.1:50052"), env)`, on a distinct port since the environment already holds `50051`. A prebuilt `image://` tag runs from its own baked configuration, so `SandboxModel` does not inject a bootstrap payload.
 
 The Dockerfile is {source}`examples/python/byo_container/model/Dockerfile <examples/python/byo_container/model/Dockerfile>` and the entrypoint is {source}`examples/python/byo_container/model/entrypoint.py <examples/python/byo_container/model/entrypoint.py>`.
 
 ## Both sides in a sandbox
 
-The same drive loop runs when RLMesh owns both containers. A `SandboxEnv` builds the environment container from a Gymnasium or Hugging Face source, and a `SandboxModel` runs your prebuilt `image://` tag. A `try`/`finally` stops both owned containers when the run ends:
+The same drive loop runs when RLMesh owns both containers. A `SandboxEnv` builds the environment container from a Gymnasium or Hugging Face source, and a `SandboxModel` runs your prebuilt `image://` tag. Closing the session stops the model container it started; closing the env stops the environment container:
 
 ```python
 import rlmesh
 
-env = rlmesh.SandboxEnv("CartPole-v1", packages=["gymnasium==1.3.0"], imports=["gymnasium"])
-model = rlmesh.SandboxModel("image://my-model:latest").against(env)
+env = rlmesh.SandboxEnv(
+    "CartPole-v1",
+    build=rlmesh.SandboxBuild(packages=["gymnasium==1.3.0"], imports=["gymnasium"]),
+)
 try:
-    obs, _ = env.reset()
-    model.reset()
-    done = False
-    while not done:
-        action = model.predict(obs)
-        obs, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
+    with rlmesh.session(rlmesh.SandboxModel("image://my-model:latest"), env) as sess:
+        obs, _ = sess.reset()
+        while not sess.done:
+            action = sess.predict(obs)
+            obs, reward, terminated, truncated, _ = sess.step(action)
 finally:
-    model.close()
     env.close()
 ```
 
@@ -111,7 +107,7 @@ A sandboxed environment is built from a source, so it takes a Gymnasium id or `g
 
 ## Version pinning
 
-The protocol handshake pins the workflow edition and fails closed. Until the bare `2026.06` edition seals at the final 0.1.0, prerelease builds use exact release cohorts such as `2026.06-0.1.0-rc.2`, and source builds use exact `dev.<git>` cohorts. Pin the same `rlmesh` version in your Dockerfile as the host that drives it. To run on the hosted platform, `docker push` the tag to a registry the platform can reach; it runs the identical image.
+The protocol handshake pins the workflow edition and fails closed. Released builds advertise the sealed `2026.06` edition; source builds use exact `dev.<git>` cohorts that only interoperate with the same build. Pin the same `rlmesh` version in your Dockerfile as the host that drives it. To run on the managed platform, `docker push` the tag to a registry the platform can reach; it runs the identical image.
 
 ## Where next
 

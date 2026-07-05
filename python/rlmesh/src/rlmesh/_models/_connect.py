@@ -28,9 +28,7 @@ __all__ = [
 ]
 
 
-def connect_env(
-    target: object, token: str, remote_env_cls: type | None
-) -> tuple[Any, Any, bool]:
+def connect_env(target: object, remote_env_cls: type | None) -> tuple[Any, Any, bool]:
     """Resolve a session target to ``(client, contract, owns_client)``.
 
     ``target`` is an address string, a live env (local object or remote handle), an
@@ -57,8 +55,10 @@ def connect_env(
         client = _remote_env(address, remote_env_cls)
         return client, client.env_contract, True
     raise TypeError(
-        "session()/run() expect an env object, an EnvFactory, a remote-env object, "
-        f"or an address string; got {type(target).__name__}"
+        "session()/run() expect a live env exposing reset() and step(), an "
+        "EnvFactory exposing make(), an object exposing a dialable address, or "
+        f"an address string; got {type(target).__name__} (an object exposing "
+        "only env_contract cannot be stepped)"
     )
 
 
@@ -186,9 +186,8 @@ def close_client(client: Any) -> None:
 def shutdown_env(target: object) -> None:
     """Stop an env: a sandbox container via ``close``, else a remote owner.
 
-    Passes a teardown reason to whichever of ``shutdown``/``close`` accepts one,
-    decided by binding the signature rather than catching ``TypeError`` -- so a
-    ``TypeError`` raised inside the callable is never swallowed.
+    Calls the first of ``shutdown``/``close`` the target exposes, with no
+    arguments (a remote owner's ``shutdown(reason=...)`` keeps its default).
     """
     # A sandbox session's close() stops its container; its inherited shutdown() is the
     # remote owner-shutdown, so close() is the right teardown for an owned sandbox.
@@ -197,16 +196,8 @@ def shutdown_env(target: object) -> None:
     if isinstance(target, SandboxLifecycle):
         target.close()
         return
-    import inspect
-
     for name in ("shutdown", "close"):
         fn = getattr(target, name, None)
-        if not callable(fn):
-            continue
-        try:
-            inspect.signature(fn).bind("model run complete")
-            accepts_reason = True
-        except (TypeError, ValueError, KeyError):  # also un-introspectable builtins
-            accepts_reason = False
-        fn("model run complete") if accepts_reason else fn()
-        return
+        if callable(fn):
+            fn()
+            return

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 __all__ = ["Variant"]
 
@@ -17,7 +17,7 @@ class Variant:
     ``enumerate_params()``, which declares independent *sweep axes*: a catalog is a
     flat list of named, already-bound sub-envs, the right shape when the dimensions
     are dependent (a task index whose range depends on the suite) and each entry has
-    a human identity. ``python -m rlmesh.describe`` emits the catalog off-GPU for a
+    a human identity. ``python -m rlmesh._describe`` emits the catalog off-GPU for a
     managed dashboard / env hub to list and spawn.
 
     Args:
@@ -39,6 +39,26 @@ class Variant:
     __slots__ = ("id", "metadata", "params")
 
     def __init__(self, id: str, params: Mapping[str, Any], /, **metadata: Any) -> None:
+        if not isinstance(cast("object", params), Mapping):
+            raise ValueError(
+                f"Variant params must be a mapping of make() kwargs; got "
+                f"{type(params).__name__}"
+            )
         self.id = id
-        self.params = dict(params)  # defensive copy; also rejects a non-mapping
+        self.params = dict(params)
         self.metadata = metadata
+
+    def __repr__(self) -> str:
+        return (
+            f"Variant(id={self.id!r}, params={self.params!r}, "
+            f"metadata={self.metadata!r})"
+        )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Variant):
+            return NotImplemented
+        return (
+            self.id == other.id
+            and self.params == other.params
+            and self.metadata == other.metadata
+        )

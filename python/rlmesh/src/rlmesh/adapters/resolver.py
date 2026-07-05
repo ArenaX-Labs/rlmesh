@@ -114,15 +114,16 @@ def _iter_leaves(
 
     ``segments`` seeds the walk's path prefix (default: the root).
     """
-    leaves: list[tuple[tuple[str | int, ...], object]] = []
-    _walk_tree(
-        node,
-        on_leaf=lambda path, leaf: leaves.append((path, leaf)),
-        on_dict=lambda _children: None,
-        on_tuple=lambda _children: None,
-        segments=segments,
-    )
-    return iter(leaves)
+    if _is_leaf(node):
+        yield segments, node
+    elif isinstance(node, Mapping):
+        for key, child in node.items():
+            yield from _iter_leaves(child, (*segments, key))
+    elif isinstance(node, tuple):
+        for index, child in enumerate(node):
+            yield from _iter_leaves(child, (*segments, index))
+    else:
+        raise TypeError(f"unexpected input tree node {type(node).__name__}")
 
 
 def _map_leaves(node: InputNode, transform: Any) -> InputNode:
@@ -282,10 +283,12 @@ def _custom_encodings(model_spec: ModelSpec) -> Iterator[CustomEncoding]:
 def _check_inverses(model_spec: ModelSpec) -> None:
     """Round-trip each two-armed inline CustomEncoding on a probe.
 
-    Catches a mispaired encode/decode (silent train/serve skew).
+    Catches a mispaired encode/decode (silent train/serve skew). NumPy is an
+    optional extra, so it is imported only when a checkable CustomEncoding is
+    actually present -- a fully declarative spec resolves on a numpy-less
+    install.
     """
-    import numpy as np
-
+    checkable: list[CustomEncoding] = []
     seen: set[int] = set()
     for encoding in _custom_encodings(model_spec):
         if id(encoding) in seen:
@@ -297,9 +300,15 @@ def _check_inverses(model_spec: ModelSpec) -> None:
             or encoding.to_base is None
         ):
             continue
-        probe = _PROBES.get(encoding.base)
-        if probe is None:
+        if _PROBES.get(encoding.base) is None:
             continue
+        checkable.append(encoding)
+    if not checkable:
+        return
+    import numpy as np
+
+    for encoding in checkable:
+        probe = _PROBES[encoding.base]
         from_base = cast("RotationTransform", encoding.from_base)
         to_base = cast("RotationTransform", encoding.to_base)
         base = np.asarray(probe, dtype=np.float64)

@@ -11,6 +11,7 @@ from .env_tags import (
     EnvTags,
     Field,
     ImageTag,
+    ObservationRoles,
     ObsLeaf,
     ObsNode,
     Split,
@@ -29,7 +30,13 @@ from .model_inputs import (
     State,
     Text,
 )
-from .vocabularies import ROTATION_DIMS, FitMode, ImageLayout, RotationEncoding
+from .vocabularies import (
+    ROTATION_DIMS,
+    FitMode,
+    ImageLayout,
+    Resample,
+    RotationEncoding,
+)
 
 __all__ = [
     "ROTATION_DIMS",
@@ -51,6 +58,8 @@ __all__ = [
     "ObsLeaf",
     "ObsNode",
     "ObsTransform",
+    "ObservationRoles",
+    "Resample",
     "RotationEncoding",
     "RotationTransform",
     "Split",

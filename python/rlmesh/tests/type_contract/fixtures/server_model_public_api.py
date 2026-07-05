@@ -34,7 +34,6 @@ server = rlmesh.EnvServer(
 )
 assert_type(server.address, str)
 assert_type(server.env_contract, EnvContract)
-assert_type(server.spec, EnvContract)
 assert_type(server.wait(0), bool)
 assert_type(server.wait(timeout=0), bool)
 

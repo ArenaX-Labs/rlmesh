@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, final
+from typing import TYPE_CHECKING, ClassVar, TypeVar, final
 
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
 from ._models.base import ModelBase
@@ -10,6 +10,15 @@ from ._sandbox import SandboxEnvBase, SandboxVectorEnvBase
 from ._sandbox._model import SandboxModel
 from ._value_conversion import ValueBridge, identity_bridge
 from .types import Value
+
+if TYPE_CHECKING:
+    from typing_extensions import TypeVar as _DefaultTypeVar
+
+    _ObsT = _DefaultTypeVar("_ObsT", default=Value)
+    _ActT = _DefaultTypeVar("_ActT", default=Value)
+else:
+    _ObsT = TypeVar("_ObsT")
+    _ActT = TypeVar("_ActT")
 
 
 @final
@@ -27,7 +36,7 @@ class RemoteVectorEnv(RemoteVectorEnvBase[Value, Value]):
     _bridge: ClassVar[ValueBridge] = identity_bridge
 
 
-class Model(ModelBase[Value, Value]):
+class Model(ModelBase[_ObsT, _ActT]):
     _bridge: ClassVar[ValueBridge] = identity_bridge
     # Without this, run(address) falls back to the numpy RemoteEnv (forcing the
     # optional numpy dep and decoding observations as ndarrays instead of Values).

@@ -508,7 +508,7 @@ async fn handle_env_request<E: Environment>(
                 tracing::error!("StepRequest.env_indices set but subset stepping is unsupported");
                 Some(join_response::Kind::Error(env_error_to_proto(
                     EnvError::new(
-                        crate::error::EnvErrorCode::InvalidAction,
+                        crate::error::EnvErrorCode::Unsupported,
                         "subset stepping (StepRequest.env_indices) is not supported",
                     ),
                 )))
@@ -654,7 +654,7 @@ async fn handle_env_request<E: Environment>(
             }))
         }
         Some(join_request::Kind::Configure(configure_req)) => {
-            // Pin the env to the runtime-selected route edition (the standard bind
+            // Pin the env to the runtime-selected workflow edition (the standard bind
             // step, sent first). Reject one this build cannot drive (membership in
             // the support window), mirroring the model's enforce_route_floor; honor
             // it as a no-op while a single edition exists (the floor is always
@@ -677,9 +677,11 @@ async fn handle_env_request<E: Environment>(
             }
         }
         None => Some(join_response::Kind::Error(ProtoEnvError {
-            code: ProtoEnvErrorCode::Internal as i32,
-            message: "empty request".to_string(),
-            is_recoverable: false,
+            code: ProtoEnvErrorCode::Unsupported as i32,
+            message: "empty or unrecognized Join request (a newer-edition arm this build does \
+                      not implement?)"
+                .to_string(),
+            is_recoverable: true,
             debug_info: String::new(),
             interrupted_episodes: vec![],
         })),

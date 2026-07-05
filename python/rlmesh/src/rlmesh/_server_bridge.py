@@ -16,7 +16,7 @@ that the native codec splits per lane.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from ._rlmesh import Tensor
@@ -32,21 +32,53 @@ if TYPE_CHECKING:
 _PRIMITIVE_LEAF = (bool, int, float, str, bytes)
 
 
-def _obs_info_split(result: object) -> tuple[Any, Any] | None:
+def _tuple_subspaces(space: object) -> Sequence[object] | None:
+    """The ordered subspaces of a tuple-kind observation space, else ``None``.
+
+    Matches both the rlmesh ``spaces.Tuple`` wrapper and gymnasium's ``Tuple``
+    (whose ``spaces`` is a list/tuple); a ``Dict`` space's ``spaces`` mapping is
+    excluded by the sequence check.
+    """
+    inner = getattr(space, "spaces", None)
+    if isinstance(inner, (list, tuple)):
+        return cast("Sequence[object]", inner)
+    return None
+
+
+def _obs_info_split(
+    result: object, observation_space: object = None
+) -> tuple[Any, Any] | None:
     """Split a gym ``(obs, info)`` reset (info is always a Mapping) from a bare obs.
 
     Returns ``None`` for a bare obs -- including a Tuple-space obs tuple -- so it
     encodes whole; only the (obs, info) shape splits, keeping info raw metadata.
+
+    A legacy bare ``Tuple(x, Dict)`` obs is shaped exactly like ``(obs, info)``,
+    so when the env declares a 2-entry tuple observation space the modern shape
+    is recognized by its first element carrying the space's arity (a 2-tuple);
+    a bare obs (first element not a 2-tuple) encodes whole.
     """
     if isinstance(result, tuple):
         items = cast("tuple[Any, ...]", result)
         if len(items) == 2 and isinstance(items[1], Mapping):
+            subspaces = _tuple_subspaces(observation_space)
+            head: object = items[0]
+            head_is_pair = (
+                isinstance(head, tuple) and len(cast("tuple[object, ...]", head)) == 2
+            )
+            if subspaces is not None and len(subspaces) == 2 and not head_is_pair:
+                return None
             return items[0], cast("Any", items[1])
     return None
 
 
 class BridgedEnv:
     """Wrap an env so its obs/action seam speaks one array framework.
+
+    Only ``reset``/``step`` are bridged. ``render()`` (like every other
+    attribute) delegates raw to the wrapped env, and the native layer imports
+    CPU arrays only -- so a framework env should return numpy/CPU frames from
+    ``render()``.
 
     Args:
         env: The wrapped env (scalar or vector). All attributes other than
@@ -68,6 +100,7 @@ class BridgedEnv:
         self._bridge = bridge
         self._device = device
         self._warned_foreign: set[str] = set()
+        self._foreign_scan_settled = False
 
     def reset(self, **kwargs: Any) -> object:
         """Reset the wrapped env and encode only its observation (info stays raw)."""
@@ -79,7 +112,7 @@ class BridgedEnv:
         # bare obs (including a Tuple-space obs tuple) encodes whole. kwargs forward
         # verbatim (only what the server set -- seed and/or options).
         result = self._env.reset(**kwargs)
-        split = _obs_info_split(result)
+        split = _obs_info_split(result, getattr(self._env, "observation_space", None))
         if split is not None:
             obs, info = split
             return (self._bridge.encode(obs), info)
@@ -121,12 +154,23 @@ class BridgedEnv:
         )
 
     def _warn_foreign_leaves(self, encoded_obs: object) -> None:
+        """Warn once per foreign obs leaf type, then retire the per-step walk.
+
+        The obs structure is stable for a served env, so the first step whose
+        full walk discovers no new foreign leaf type settles the scan and every
+        later step skips the tree walk entirely (keeping the hot path free of
+        it). Foreign 0-d array scalars (e.g. ``np.float32``) count: they carry
+        ``ndim`` like any array leaf and flow unencoded just the same.
+        """
+        if self._foreign_scan_settled:
+            return
+
         def check(leaf: object) -> object:
             if (
                 not isinstance(leaf, Tensor)
                 and not isinstance(leaf, _PRIMITIVE_LEAF)
                 and leaf is not None
-                and getattr(leaf, "ndim", 0) >= 1  # an array, not a scalar
+                and hasattr(leaf, "ndim")
             ):
                 key = f"{type(leaf).__module__}.{type(leaf).__qualname__}"
                 if key not in self._warned_foreign:
@@ -141,7 +185,10 @@ class BridgedEnv:
                     )
             return leaf
 
+        known_before = len(self._warned_foreign)
         tree_map(encoded_obs, check)
+        if len(self._warned_foreign) == known_before:
+            self._foreign_scan_settled = True
 
     def __getattr__(self, name: str) -> Any:
         # Delegate public attributes (observation_space/action_space/single_*/

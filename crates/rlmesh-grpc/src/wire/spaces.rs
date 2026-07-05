@@ -58,9 +58,6 @@ pub fn env_contract_to_proto(spec: &native::EnvContract) -> core_proto::EnvContr
         num_envs: spec.num_envs,
         render_mode: spec.render_mode.clone(),
         autoreset_mode: i32::from(spec.autoreset_mode),
-        // Native `EnvContract` has no tags channel yet; leave the optional proto
-        // field unset until a native source exists.
-        tags: None,
     }
 }
 
@@ -447,56 +444,56 @@ pub(crate) fn meta_value_from_proto(value: proto::MetaValue) -> native::MetaValu
 // fails the build the instant they drift. `rlmesh-spaces` stays proto-free, so
 // the assert lives here, where both enums are in scope.
 const _: () = {
-    assert!(native::DType::Unspecified as i32 == proto::DType::Unspecified as i32);
-    assert!(native::DType::Bool as i32 == proto::DType::Bool as i32);
-    assert!(native::DType::Uint8 as i32 == proto::DType::Uint8 as i32);
-    assert!(native::DType::Uint16 as i32 == proto::DType::Uint16 as i32);
-    assert!(native::DType::Uint32 as i32 == proto::DType::Uint32 as i32);
-    assert!(native::DType::Uint64 as i32 == proto::DType::Uint64 as i32);
-    assert!(native::DType::Int8 as i32 == proto::DType::Int8 as i32);
-    assert!(native::DType::Int16 as i32 == proto::DType::Int16 as i32);
-    assert!(native::DType::Int32 as i32 == proto::DType::Int32 as i32);
-    assert!(native::DType::Int64 as i32 == proto::DType::Int64 as i32);
-    assert!(native::DType::Float16 as i32 == proto::DType::Float16 as i32);
-    assert!(native::DType::Float32 as i32 == proto::DType::Float32 as i32);
-    assert!(native::DType::Float64 as i32 == proto::DType::Float64 as i32);
+    assert!(native::DType::Unspecified as i32 == proto::DataType::Unspecified as i32);
+    assert!(native::DType::Bool as i32 == proto::DataType::Bool as i32);
+    assert!(native::DType::Uint8 as i32 == proto::DataType::Uint8 as i32);
+    assert!(native::DType::Uint16 as i32 == proto::DataType::Uint16 as i32);
+    assert!(native::DType::Uint32 as i32 == proto::DataType::Uint32 as i32);
+    assert!(native::DType::Uint64 as i32 == proto::DataType::Uint64 as i32);
+    assert!(native::DType::Int8 as i32 == proto::DataType::Int8 as i32);
+    assert!(native::DType::Int16 as i32 == proto::DataType::Int16 as i32);
+    assert!(native::DType::Int32 as i32 == proto::DataType::Int32 as i32);
+    assert!(native::DType::Int64 as i32 == proto::DataType::Int64 as i32);
+    assert!(native::DType::Float16 as i32 == proto::DataType::Float16 as i32);
+    assert!(native::DType::Float32 as i32 == proto::DataType::Float32 as i32);
+    assert!(native::DType::Float64 as i32 == proto::DataType::Float64 as i32);
 };
 
-fn proto_dtype_from_native(dtype: native::DType) -> proto::DType {
+fn proto_dtype_from_native(dtype: native::DType) -> proto::DataType {
     match dtype {
-        native::DType::Unspecified => proto::DType::Unspecified,
-        native::DType::Bool => proto::DType::Bool,
-        native::DType::Uint8 => proto::DType::Uint8,
-        native::DType::Int32 => proto::DType::Int32,
-        native::DType::Int64 => proto::DType::Int64,
-        native::DType::Float16 => proto::DType::Float16,
-        native::DType::Float32 => proto::DType::Float32,
-        native::DType::Float64 => proto::DType::Float64,
-        native::DType::Int8 => proto::DType::Int8,
-        native::DType::Int16 => proto::DType::Int16,
-        native::DType::Uint16 => proto::DType::Uint16,
-        native::DType::Uint32 => proto::DType::Uint32,
-        native::DType::Uint64 => proto::DType::Uint64,
+        native::DType::Unspecified => proto::DataType::Unspecified,
+        native::DType::Bool => proto::DataType::Bool,
+        native::DType::Uint8 => proto::DataType::Uint8,
+        native::DType::Int32 => proto::DataType::Int32,
+        native::DType::Int64 => proto::DataType::Int64,
+        native::DType::Float16 => proto::DataType::Float16,
+        native::DType::Float32 => proto::DataType::Float32,
+        native::DType::Float64 => proto::DataType::Float64,
+        native::DType::Int8 => proto::DataType::Int8,
+        native::DType::Int16 => proto::DataType::Int16,
+        native::DType::Uint16 => proto::DataType::Uint16,
+        native::DType::Uint32 => proto::DataType::Uint32,
+        native::DType::Uint64 => proto::DataType::Uint64,
     }
 }
 
 fn native_dtype_from_proto(dtype: i32) -> Result<native::DType, ProtocolError> {
-    let dtype = proto::DType::try_from(dtype)
+    let dtype = proto::DataType::try_from(dtype)
         .map_err(|_| ProtocolError::DecodeError(format!("unknown proto dtype value: {dtype}")))?;
     Ok(match dtype {
-        proto::DType::Unspecified => native::DType::Unspecified,
-        proto::DType::Bool => native::DType::Bool,
-        proto::DType::Uint8 => native::DType::Uint8,
-        proto::DType::Int32 => native::DType::Int32,
-        proto::DType::Int64 => native::DType::Int64,
-        proto::DType::Float16 => native::DType::Float16,
-        proto::DType::Float32 => native::DType::Float32,
-        proto::DType::Float64 => native::DType::Float64,
-        proto::DType::Int8 => native::DType::Int8,
-        proto::DType::Int16 => native::DType::Int16,
-        proto::DType::Uint16 => native::DType::Uint16,
-        proto::DType::Uint32 => native::DType::Uint32,
-        proto::DType::Uint64 => native::DType::Uint64,
+        proto::DataType::Unspecified => native::DType::Unspecified,
+        proto::DataType::Bool => native::DType::Bool,
+        proto::DataType::Uint8 => native::DType::Uint8,
+        proto::DataType::Int32 => native::DType::Int32,
+        proto::DataType::Int64 => native::DType::Int64,
+        proto::DataType::Float16 => native::DType::Float16,
+        proto::DataType::Float32 => native::DType::Float32,
+        proto::DataType::Float64 => native::DType::Float64,
+        proto::DataType::Int8 => native::DType::Int8,
+        proto::DataType::Int16 => native::DType::Int16,
+        proto::DataType::Uint16 => native::DType::Uint16,
+        proto::DataType::Uint32 => native::DType::Uint32,
+        proto::DataType::Uint64 => native::DType::Uint64,
     })
 }
 

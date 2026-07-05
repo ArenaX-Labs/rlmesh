@@ -51,8 +51,15 @@ def vectorize(
     an :class:`~rlmesh.EnvFactory`'s ``make`` -- into a self-describing vector env
     (``num_envs`` + ``single_*`` spaces) the native vector server serves. The
     sub-envs must be gym-compatible (the gym vector wrappers build the batched
-    space from each sub-env's spaces).
+    space from each sub-env's spaces). ``vectorization_mode=None`` is auto and
+    resolves to the sync fan-out here (there is no registry entry to consult);
+    any other unknown mode is an error rather than a silent collapse to sync.
     """
+    if vectorization_mode not in (None, "sync", "async"):
+        raise ValueError(
+            "vectorization_mode must be 'sync' or 'async' (or None for auto); "
+            f"got {vectorization_mode!r}"
+        )
     modules = [gym_module] if gym_module is not None else import_gym_modules()
     cls_name = "AsyncVectorEnv" if vectorization_mode == "async" else "SyncVectorEnv"
     for module in modules:
@@ -82,13 +89,22 @@ def call_hf_make_env(
     kwargs: dict[str, object],
     *,
     num_envs: int,
-    vectorization_mode: str,
+    vectorization_mode: str | None,
 ) -> object:
+    """Call an HF ``make_env`` with the eval shape mapped onto its signature.
+
+    ``n_envs``/``use_async_envs`` are injected into a signature that names them;
+    a bare ``**kwargs`` signature only receives them when vectorization is
+    actually requested (``num_envs != 1`` or async mode), so the default
+    single-env case never crashes a natural passthrough ``make_env(**kwargs)``
+    that forwards to a constructor without those names.
+    """
     call_kwargs = dict(kwargs)
     accepts_kwargs, keyword_names = _callable_keyword_parameters(make_env)
+    vector_requested = num_envs != 1 or vectorization_mode == "async"
 
     if "n_envs" not in call_kwargs:
-        if accepts_kwargs or "n_envs" in keyword_names:
+        if "n_envs" in keyword_names or (accepts_kwargs and vector_requested):
             call_kwargs["n_envs"] = num_envs
         elif num_envs != 1:
             raise TypeError(
@@ -97,7 +113,7 @@ def call_hf_make_env(
             )
 
     if "use_async_envs" not in call_kwargs:
-        if accepts_kwargs or "use_async_envs" in keyword_names:
+        if "use_async_envs" in keyword_names or (accepts_kwargs and vector_requested):
             call_kwargs["use_async_envs"] = vectorization_mode == "async"
         elif vectorization_mode == "async":
             raise TypeError(

@@ -17,11 +17,11 @@ import rlmesh.adapters as adapt
 
 ENV_TAGS = adapt.EnvTags(
     observation={
-        "wrist_rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
-        "ee_pos": adapt.StateTag(role=adapt.EEF_POS),
-        "ee_quat": adapt.StateTag(role=adapt.EEF_ROT, encoding="quat_xyzw"),
-        "grip": adapt.StateTag(role=adapt.GRIPPER_POS),
-        "goal": adapt.TextTag(role=adapt.INSTRUCTION),
+        "wrist_rgb": adapt.ImageTag(adapt.IMAGE_PRIMARY),
+        "ee_pos": adapt.StateTag(adapt.EEF_POS),
+        "ee_quat": adapt.StateTag(adapt.EEF_ROT, encoding="quat_xyzw"),
+        "grip": adapt.StateTag(adapt.GRIPPER_POS),
+        "goal": adapt.TextTag(adapt.INSTRUCTION),
     },
     action=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -37,14 +37,14 @@ The model declares its own format, written without any knowledge of an environme
 ```python
 MODEL_SPEC = adapt.ModelSpec(
     input={
-        "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=224, width=224),
+        "image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
         "proprio": adapt.Concat(
             adapt.EEF_POS,
             adapt.State(adapt.EEF_ROT, encoding="rot6d"),
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "task": adapt.Text(role=adapt.INSTRUCTION),
+        "task": adapt.Text(adapt.INSTRUCTION),
     },
     output=adapt.Action(
         adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -99,23 +99,20 @@ vla_adapters/
 
 Each model is one spec module plus a loader; the registry is one line per checkpoint. The same goes for envs, so adding an environment pairs it with every model without touching model code.
 
+`models/smolvla.py` is one such spec module:
+
 ```python
-# models/smolvla.py
 SPEC = adapt.ModelSpec(
     input={
-        "observation.images.image": adapt.Image(
-            role=adapt.IMAGE_PRIMARY, height=224, width=224
-        ),
-        "observation.images.image2": adapt.Image(
-            role=adapt.IMAGE_WRIST, height=224, width=224
-        ),
+        "observation.images.image": adapt.Image(adapt.IMAGE_PRIMARY, size=224),
+        "observation.images.image2": adapt.Image(adapt.IMAGE_WRIST, size=224),
         "observation.state": adapt.Concat(
             adapt.EEF_POS,
             adapt.State(adapt.EEF_ROT, encoding="axis_angle"),
             adapt.GRIPPER_POS,
             container="list",
         ),
-        "instruction": adapt.Text(role=adapt.INSTRUCTION),
+        "instruction": adapt.Text(adapt.INSTRUCTION),
     },
     output=adapt.Action(...),
 )

@@ -1,6 +1,6 @@
-# Custom Work
+# First Model and Eval Loop
 
-RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. This walks the quickstart end to end: serve one custom environment over gRPC, connect one model worker, then drive the loop by hand. Everything here uses the NumPy backend. For the full authoring surface see {doc}`../user-guide/environments` and {doc}`../user-guide/models`.
+RLMesh works with Gymnasium registrations and Gymnasium-style Python objects. This walks the quickstart end to end: serve one custom environment over gRPC, connect one model, then drive the loop by hand. Everything here uses the NumPy backend. For the full authoring surface see {doc}`../user-guide/environments` and {doc}`../user-guide/models`.
 
 ## Serve a custom environment
 
@@ -44,7 +44,7 @@ uv run python examples/python/quickstart/serve.py
 
 ## Serve a custom model
 
-{source}`examples/python/quickstart/model.py <examples/python/quickstart/model.py>` wraps a prediction function as a model worker. `predict` takes an observation and returns an action; `Model` runs episodes against the served endpoint.
+{source}`examples/python/quickstart/model.py <examples/python/quickstart/model.py>` wraps a prediction function as a model. `predict` takes an observation and returns an action; `Model` runs episodes against the served endpoint.
 
 ```python
 from rlmesh.numpy import Model
@@ -81,7 +81,7 @@ for step in range(1, 65):
 env.close()
 ```
 
-That is the separation: the environment serves observations, and the model worker (or your own loop) returns actions.
+That is the separation: the environment serves observations, and the model (or your own loop) returns actions.
 
 ## Where next
 

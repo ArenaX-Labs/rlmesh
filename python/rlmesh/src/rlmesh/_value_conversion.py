@@ -57,7 +57,16 @@ class IdentityBridge:
         return list(trees)
 
     def tree_unstack(self, value: object, n: int) -> list[object]:
-        return list(cast("Iterable[object]", value))
+        if isinstance(value, (list, tuple)):
+            seq = cast("Sequence[object]", value)
+            if len(seq) == n:
+                return list(seq)
+        raise ValueError(
+            f"cannot split a batched action leaf of type "
+            f"{type(cast(object, value)).__name__} into "
+            f"{n} lanes; return one batched value (leaves [{n}, ...]) or a "
+            f"per-lane list of {n} actions"
+        )
 
     def supports_device(self) -> bool:
         return False
@@ -128,15 +137,30 @@ def tree_stack(
     if isinstance(first, dict):
         maps = [cast("Mapping[str, object]", t) for t in trees]
         first_map = cast("Mapping[str, object]", first)
-        return {
-            key: tree_stack([m[key] for m in maps], stack_leaf) for key in first_map
-        }
+        try:
+            return {
+                key: tree_stack([m[key] for m in maps], stack_leaf) for key in first_map
+            }
+        except KeyError as exc:
+            raise ValueError(
+                f"cannot fuse observations with ragged keys across {len(trees)} "
+                f"lanes (a lane is missing key {exc.args[0]!r}); a batched predict "
+                "needs every lane to share one observation structure"
+            ) from exc
     if isinstance(first, (list, tuple)):
         seqs = [cast("Sequence[object]", t) for t in trees]
         first_seq = cast("Sequence[object]", first)
-        fused: list[object] = [
-            tree_stack([s[i] for s in seqs], stack_leaf) for i in range(len(first_seq))
-        ]
+        try:
+            fused: list[object] = [
+                tree_stack([s[i] for s in seqs], stack_leaf)
+                for i in range(len(first_seq))
+            ]
+        except IndexError as exc:
+            raise ValueError(
+                f"cannot fuse observations with ragged container lengths across "
+                f"{len(trees)} lanes; a batched predict needs every lane to share "
+                "one observation structure"
+            ) from exc
         return tuple(fused) if isinstance(first, tuple) else fused
     return stack_leaf(list(trees))
 
@@ -252,7 +276,8 @@ class FrameworkBridge:
     Implements the internal ``ValueBridge`` protocol. Tensor leaves decode
     through ``decode_leaf``; arbitrary leaves encode through ``encode_leaf``,
     which returns ``UNHANDLED`` to pass a value through unchanged.
-    Availability is checked once per ``decode``/``encode`` call.
+    Availability is checked on first use and the success is cached, keeping
+    repeated ``decode``/``encode``/``stack`` calls off the check.
     """
 
     def __init__(
@@ -269,6 +294,7 @@ class FrameworkBridge:
     ) -> None:
         self.name = name
         self._ensure_available = ensure_available
+        self._available = False
         self._decode_leaf = decode_leaf
         self._encode_leaf = encode_leaf
         self._stack_leaf = stack_leaf
@@ -280,22 +306,26 @@ class FrameworkBridge:
         self._to_host_leaf = to_host_leaf
 
     def ensure_available(self) -> None:
+        """Run the framework availability check, caching the first success."""
+        if self._available:
+            return
         self._ensure_available()
+        self._available = True
 
     def decode(self, value: Value | None) -> object:
-        self._ensure_available()
+        self.ensure_available()
         return decode_tree(value, self._decode_leaf)
 
     def encode(self, value: object) -> Value:
-        self._ensure_available()
+        self.ensure_available()
         return encode_tree(value, self._encode_leaf)
 
     def tree_stack(self, trees: Sequence[object]) -> object:
-        self._ensure_available()
+        self.ensure_available()
         return tree_stack(trees, self._stack_leaf)
 
     def tree_unstack(self, value: object, n: int) -> list[object]:
-        self._ensure_available()
+        self.ensure_available()
         return tree_unstack(value, n, self._unstack_leaf)
 
     def supports_device(self) -> bool:

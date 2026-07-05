@@ -161,7 +161,7 @@ def test_vector(path: Path) -> None:
                 resolve_case(case)
             assert expect["error_contains"] in str(excinfo.value)
         else:
-            assert resolve_case(case).describe() == expect["describe"]
+            assert resolve_case(case).explain() == expect["describe"]
         return
 
     assert case["kind"] == "apply"

@@ -25,16 +25,25 @@ class RemoteEnvBase(RemoteClientBase[ValueT, ActionT]):
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
         transport: Explicit transport selector.
+        connect_timeout_seconds: Optional dial timeout in seconds.
+        request_timeout_seconds: Optional per-request timeout in seconds.
     """
 
     _observation_space: Space[ValueT] | None = None
     _action_space: Space[ActionT] | None = None
 
-    def _make_client(self, address: str, connect_timeout_seconds: float | None) -> Any:
+    def _make_client(
+        self,
+        address: str,
+        connect_timeout_seconds: float | None,
+        request_timeout_seconds: float | None,
+    ) -> Any:
         from .._load_native import load_native
 
         return load_native("PyEnvClient")(
-            address, connect_timeout_seconds=connect_timeout_seconds
+            address,
+            connect_timeout_seconds=connect_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
         )
 
     def _post_handshake(self) -> None:

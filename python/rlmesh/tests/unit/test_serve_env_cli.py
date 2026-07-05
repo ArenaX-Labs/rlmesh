@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -229,7 +229,94 @@ def _server_factory(
         def serve(self) -> None:
             captured["served"] = True
 
+        def shutdown(self) -> None:
+            captured["shutdown"] = True
+
     return FakeServer
+
+
+def test_serve_env_parser_rejects_non_positive_num_envs() -> None:
+    from rlmesh._cli import serve_env
+
+    parser = serve_env.create_parser()
+
+    for bad in ("0", "-3"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--env", "CartPole-v1", "--num-envs", bad])
+
+    namespace = parser.parse_args(["--env", "CartPole-v1", "--num-envs", "2"])
+    assert namespace.num_envs == 2
+
+
+def test_serve_from_args_shuts_down_server_even_when_serve_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every exit path must run server.shutdown() so the env's close() runs."""
+    import rlmesh
+    from rlmesh._cli import serve_env
+
+    captured: dict[str, object] = {}
+
+    class ExplodingServer:
+        def __init__(self, env: object, *args: object, **kwargs: object) -> None:
+            pass
+
+        @property
+        def address(self) -> str:
+            return "tcp://127.0.0.1:50051"
+
+        def serve(self) -> None:
+            raise RuntimeError("client hung up hard")
+
+        def shutdown(self) -> None:
+            captured["shutdown"] = True
+
+    monkeypatch.setattr(serve_env, "load_environment", lambda *a, **k: object())
+    monkeypatch.setattr(rlmesh, "EnvServer", ExplodingServer)
+
+    code = serve_env.serve_from_args(
+        serve_env.ServeArgs(
+            env="CartPole-v1",
+            entrypoint=None,
+            transport="tcp",
+            address=None,
+            num_envs=1,
+            vectorization_mode=None,
+            package=[],
+            verbose=False,
+        )
+    )
+
+    assert code == 1
+    assert captured["shutdown"] is True
+
+
+def test_serve_from_args_shuts_down_server_after_clean_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rlmesh
+    from rlmesh._cli import serve_env
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(serve_env, "load_environment", lambda *a, **k: object())
+    monkeypatch.setattr(rlmesh, "EnvServer", _server_factory(captured))
+
+    code = serve_env.serve_from_args(
+        serve_env.ServeArgs(
+            env="CartPole-v1",
+            entrypoint=None,
+            transport="tcp",
+            address=None,
+            num_envs=1,
+            vectorization_mode=None,
+            package=[],
+            verbose=False,
+        )
+    )
+
+    assert code == 0
+    assert captured["served"] is True
+    assert captured["shutdown"] is True
 
 
 def test_write_ready_fd_writes_address_line_and_closes() -> None:
@@ -277,6 +364,9 @@ def test_serve_from_args_writes_ready_fd(monkeypatch: pytest.MonkeyPatch) -> Non
             return "tcp://127.0.0.1:50051"
 
         def serve(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
             return None
 
     monkeypatch.setattr(serve_env, "load_environment", load_environment)
@@ -345,3 +435,33 @@ def test_default_unix_socket_path_avoids_shared_tmp(
     assert parent != "/tmp"
     mode = stat.S_IMODE(os.stat(parent).st_mode)
     assert mode == 0o700
+
+
+def test_default_unix_socket_fallback_dir_is_cleaned_at_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mkdtemp fallback registers an atexit rmtree so invocations do not
+    leak one temp directory each."""
+    import atexit
+    import os
+
+    from rlmesh._cli import serve_env
+
+    registered: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def fake_register(func: object, *args: object, **kwargs: object) -> object:
+        registered.append((func, args, kwargs))
+        return func
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(atexit, "register", fake_register)
+
+    path = serve_env._default_unix_socket_path("CartPole-v1")
+
+    parent = os.path.dirname(path)
+    assert len(registered) == 1
+    func, args, kwargs = registered[0]
+    assert args == (parent,)
+    assert kwargs == {"ignore_errors": True}
+    cast("Any", func)(*args, **kwargs)
+    assert not os.path.isdir(parent)

@@ -411,7 +411,7 @@ fn discrete_action_contract() -> spaces::EnvContract {
         observation_space: None,
         action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
             shape: vec![],
-            dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+            dtype: rlmesh_proto::spaces::v1::DataType::Int64 as i32,
             spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
                 rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
             )),
@@ -1099,7 +1099,7 @@ async fn remote_model_connects_resets_and_predicts() {
     assert_eq!(predicts.load(Ordering::SeqCst), 2);
 
     model.close().await.unwrap();
-    // close() now ends only this route (CloseRoute), leaving the bidi stream
+    // close() now ends only this route (ReleaseAdapter), leaving the bidi stream
     // open; dropping the model closes it so the server can drain on shutdown.
     drop(model);
 
@@ -1477,7 +1477,7 @@ fn resolve_adapter_request(env_id: &str, request_id: &str) -> JoinRequest {
                 // action space; OrderingHandler returns Discrete.
                 action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
                     shape: vec![],
-                    dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+                    dtype: rlmesh_proto::spaces::v1::DataType::Int64 as i32,
                     spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
                         rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
                     )),
@@ -1737,7 +1737,7 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
                 // action space; OrderingHandler returns Discrete.
                 action_space: Some(rlmesh_proto::spaces::v1::SpaceSpec {
                     shape: vec![],
-                    dtype: rlmesh_proto::spaces::v1::DType::Int64 as i32,
+                    dtype: rlmesh_proto::spaces::v1::DataType::Int64 as i32,
                     spec: Some(rlmesh_proto::spaces::v1::space_spec::Spec::Discrete(
                         rlmesh_proto::spaces::v1::DiscreteSpec { n: 1000, start: 0 },
                     )),

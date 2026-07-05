@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 import rlmesh
-from rlmesh._sandbox import _model as model_mod
 from rlmesh._sandbox import _sources
 from rlmesh._sandbox import session as sandbox
 
@@ -55,17 +54,26 @@ def test_bare_image_tag_pulls_when_not_local(
     monkeypatch.setattr(_sources, "docker_image_exists", lambda image: False)
     pulled: list[str] = []
     monkeypatch.setattr(
-        _sources, "docker_pull", lambda image: pulled.append(image) or True
+        _sources, "docker_pull", lambda image: pulled.append(image) or (True, "")
     )
     assert _sources.resolve_source_kind("repo/img:tag") == ("prebuilt", "repo/img:tag")
     assert pulled == ["repo/img:tag"]
 
 
-def test_bare_image_tag_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bare_image_tag_not_found_raises_with_pull_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pull's stderr tail is surfaced so an auth failure never reads as
+    a plain "not found"."""
     monkeypatch.setattr(_sources, "docker_image_exists", lambda image: False)
-    monkeypatch.setattr(_sources, "docker_pull", lambda image: False)
-    with pytest.raises(ValueError, match="not found locally or pullable"):
+    monkeypatch.setattr(
+        _sources,
+        "docker_pull",
+        lambda image: (False, "unauthorized: authentication required"),
+    )
+    with pytest.raises(ValueError, match="not found locally or pullable") as excinfo:
         _sources.resolve_source_kind("nope:latest")
+    assert "unauthorized: authentication required" in str(excinfo.value)
 
 
 # --- prebuilt_run_cmd hardening + binding ------------------------------------
@@ -98,6 +106,14 @@ def test_prebuilt_run_cmd_is_hardened_with_image_last() -> None:
 
 def _docker_dispatch(captured: dict[str, list[str]]) -> Any:
     def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        if cmd[:3] == ["docker", "image", "inspect"]:
+
+            class _I:
+                returncode = 0
+                stdout = "[]\n"
+                stderr = ""
+
+            return _I()
         if cmd[:3] == ["docker", "run", "-d"]:
             captured["run"] = cmd
 
@@ -125,7 +141,7 @@ def test_start_prebuilt_container_injects_binding_and_reads_port(
 ) -> None:
     captured: dict[str, list[str]] = {}
     monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
-    monkeypatch.setattr(sandbox.subprocess, "run", _docker_dispatch(captured))
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch(captured))
 
     info = sandbox.start_prebuilt_container(
         "libero:latest",
@@ -159,7 +175,7 @@ def test_sandbox_model_params_inject_make_kwargs(
 ) -> None:
     captured: dict[str, list[str]] = {}
     monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
-    monkeypatch.setattr(model_mod.subprocess, "run", _docker_dispatch(captured))
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch(captured))
 
     model = rlmesh.SandboxModel(
         "smolvla:latest", checkpoint="lerobot/smolvla_base", dtype="bfloat16"
@@ -179,6 +195,94 @@ def test_sandbox_model_params_inject_make_kwargs(
     }
 
 
+def test_prebuilt_run_cmd_emits_user_before_image() -> None:
+    cmd = sandbox.prebuilt_run_cmd(
+        "img:1",
+        env_vars={},
+        gpus=None,
+        container_port=50051,
+        owner_pid=123,
+        owner_pid_ns=None,
+        user="1000",
+    )
+    user_index = cmd.index("--user")
+    assert cmd[user_index + 1] == "1000"
+    assert user_index < cmd.index("img:1")
+
+
+def test_prebuilt_run_cmd_default_emits_no_user_flag() -> None:
+    cmd = sandbox.prebuilt_run_cmd(
+        "img:1",
+        env_vars={},
+        gpus=None,
+        container_port=50051,
+        owner_pid=123,
+        owner_pid_ns=None,
+    )
+    assert "--user" not in cmd
+
+
+def test_normalize_user_accepts_uid_forms_and_rejects_blank() -> None:
+    assert sandbox.normalize_user(None) is None
+    assert sandbox.normalize_user(1000) == "1000"
+    assert sandbox.normalize_user("1000:1000") == "1000:1000"
+    for bad in ("", "  "):
+        with pytest.raises(ValueError, match="user="):
+            sandbox.normalize_user(bad)
+    with pytest.raises(ValueError, match="user="):
+        sandbox.normalize_user(-1)
+
+
+def test_start_prebuilt_container_forwards_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch(captured))
+
+    sandbox.start_prebuilt_container(
+        "libero:latest",
+        requested_source="libero:latest",
+        binding={},
+        user="1000:1000",
+    )
+
+    run_cmd = captured["run"]
+    assert run_cmd[run_cmd.index("--user") + 1] == "1000:1000"
+
+
+def test_source_build_rejects_runtime_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_start_env",
+        lambda *_args, **_kwargs: pytest.fail("sandbox should not start"),
+    )
+    with pytest.raises(ValueError, match="prebuilt"):
+        sandbox.start_sandbox_container(
+            "CartPole-v1",
+            build=None,
+            runtime=rlmesh.SandboxRuntime(user=1000),
+            num_envs=1,
+            vectorization_mode=None,
+            binding={},
+        )
+
+
+def test_sandbox_model_forwards_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch(captured))
+
+    model = rlmesh.SandboxModel(
+        "smolvla:latest", runtime=rlmesh.SandboxRuntime(user=1000)
+    )
+    assert model._user == "1000"
+    model.serve()
+
+    run_cmd = captured["run"]
+    assert run_cmd[run_cmd.index("--user") + 1] == "1000"
+
+
 def test_sandbox_model_runtime_and_rejects_build_runtime_params() -> None:
     # A model is always a prebuilt image (no build config). Runtime flags ride in
     # runtime=SandboxRuntime(...); construction is inert (no container started).
@@ -192,3 +296,125 @@ def test_sandbox_model_runtime_and_rejects_build_runtime_params() -> None:
     for name in ("gpus", "volumes", "base_image", "packages"):
         with pytest.raises(TypeError, match="build=SandboxBuild"):
             rlmesh.SandboxModel("m:latest", **{name: "x"})  # type: ignore[arg-type]
+
+
+# --- Docker hang guard, pre-pull, and port-failure diagnostics ----------------
+
+
+def test_run_docker_converts_timeout_into_daemon_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A wedged Docker daemon surfaces as a directive error, never a hang."""
+    import subprocess
+
+    def hang(*_a: Any, **_k: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd=["docker", "inspect"], timeout=60.0)
+
+    monkeypatch.setattr(_sources.subprocess, "run", hang)
+    with pytest.raises(RuntimeError, match="Docker daemon not responding"):
+        _sources.run_docker(["docker", "inspect", "x"])
+
+
+def test_start_prebuilt_container_pre_pulls_missing_image(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A missing prebuilt image is pulled up front (announced on stderr), not
+    invisibly inside docker run."""
+    pulls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        if cmd[:3] == ["docker", "image", "inspect"]:
+
+            class _Missing:
+                returncode = 1
+                stdout = ""
+                stderr = "No such image\n"
+
+            return _Missing()
+        if cmd[:2] == ["docker", "pull"]:
+            pulls.append(cmd)
+
+            class _Pulled:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _Pulled()
+        return _docker_dispatch({})(cmd)
+
+    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
+    monkeypatch.setattr(_sources.subprocess, "run", fake_run)
+
+    info = sandbox.start_prebuilt_container(
+        "img:9", requested_source="img:9", binding={}
+    )
+
+    assert pulls == [["docker", "pull", "img:9"]]
+    assert info.container_id == "container-9"
+    assert "pulling image 'img:9'" in capsys.readouterr().err
+
+
+def test_port_failure_on_crashed_container_appends_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An instantly-crashing container loses the docker-port race; the error
+    must say it exited and include its recent logs, not just "no host port"."""
+
+    def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        if cmd[:3] == ["docker", "image", "inspect"]:
+
+            class _I:
+                returncode = 0
+                stdout = "[]\n"
+                stderr = ""
+
+            return _I()
+        if cmd[:3] == ["docker", "run", "-d"]:
+
+            class _P:
+                returncode = 0
+                stdout = "container-9\n"
+                stderr = ""
+
+            return _P()
+        if cmd[:2] == ["docker", "port"]:
+
+            class _NoPort:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _NoPort()
+        if cmd[:2] == ["docker", "inspect"]:
+
+            class _Exited:
+                returncode = 0
+                stdout = "false\n"
+                stderr = ""
+
+            return _Exited()
+        if cmd[:2] == ["docker", "logs"]:
+
+            class _Logs:
+                returncode = 0
+                stdout = "traceback: kaboom\n"
+                stderr = ""
+
+            return _Logs()
+        raise AssertionError(f"unexpected docker call: {cmd}")
+
+    stopped: list[str] = []
+    monkeypatch.setattr(sandbox, "reap_orphans", lambda: None)
+    monkeypatch.setattr(
+        sandbox,
+        "_sandbox_stop_env",
+        lambda *, container_id: stopped.append(container_id),
+    )
+    monkeypatch.setattr(_sources.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="exited during startup") as excinfo:
+        sandbox.start_prebuilt_container("img:1", requested_source="img:1", binding={})
+
+    assert "traceback: kaboom" in str(excinfo.value)
+    assert stopped == ["container-9"]

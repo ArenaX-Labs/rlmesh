@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package rlmesh.env.v1;
+
+import "rlmesh/core/v1/env_contract.proto";
+import "rlmesh/core/v1/handshake.proto";
+import "rlmesh/env/v1/interaction.proto";
+
+message HandshakeRequest {
+  rlmesh.core.v1.HandshakeRequest base = 1;
+}
+
+message HandshakeResponse {
+  rlmesh.core.v1.HandshakeResponse base = 1;
+  rlmesh.core.v1.EnvContract env_contract = 2;
+}
+
+message ShutdownRequest {
+  rlmesh.core.v1.ShutdownRequest base = 1;
+}
+
+message ShutdownResponse {
+  rlmesh.core.v1.ShutdownResponse base = 1;
+}
+
+service EnvService {
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
+  rpc Join(stream JoinRequest) returns (stream JoinResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+}

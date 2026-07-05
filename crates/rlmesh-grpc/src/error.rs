@@ -185,6 +185,8 @@ pub enum EnvErrorCode {
     NotReady,
     /// Environment busy with another operation
     Busy,
+    /// Well-formed request for a feature this peer does not support yet
+    Unsupported,
     /// Internal error
     Internal,
     /// Environment crashed
@@ -204,6 +206,7 @@ impl EnvError {
                 | EnvErrorCode::InvalidAction
                 | EnvErrorCode::NotReady
                 | EnvErrorCode::Busy
+                | EnvErrorCode::Unsupported
         );
         Self {
             code,
@@ -223,6 +226,7 @@ impl From<rlmesh_proto::env::v1::EnvErrorCode> for EnvErrorCode {
             ProtoCode::InvalidAction => EnvErrorCode::InvalidAction,
             ProtoCode::NotReady => EnvErrorCode::NotReady,
             ProtoCode::Busy => EnvErrorCode::Busy,
+            ProtoCode::Unsupported => EnvErrorCode::Unsupported,
             ProtoCode::Internal => EnvErrorCode::Internal,
             ProtoCode::Crashed => EnvErrorCode::Crashed,
             ProtoCode::Cancelled => EnvErrorCode::Cancelled,
@@ -240,6 +244,7 @@ impl From<EnvErrorCode> for rlmesh_proto::env::v1::EnvErrorCode {
             EnvErrorCode::InvalidAction => ProtoCode::InvalidAction,
             EnvErrorCode::NotReady => ProtoCode::NotReady,
             EnvErrorCode::Busy => ProtoCode::Busy,
+            EnvErrorCode::Unsupported => ProtoCode::Unsupported,
             EnvErrorCode::Internal => ProtoCode::Internal,
             EnvErrorCode::Crashed => ProtoCode::Crashed,
             EnvErrorCode::Cancelled => ProtoCode::Cancelled,
@@ -278,6 +283,8 @@ pub enum ModelErrorCode {
     NotConfigured,
     /// The model is busy with another operation
     Busy,
+    /// Well-formed request for a feature this peer does not support yet
+    Unsupported,
     /// Internal error
     Internal,
     /// Operation was cancelled
@@ -294,6 +301,7 @@ impl From<rlmesh_proto::model::v1::ModelErrorCode> for ModelErrorCode {
             ProtoCode::InvalidRequest => ModelErrorCode::InvalidRequest,
             ProtoCode::NotConfigured => ModelErrorCode::NotConfigured,
             ProtoCode::Busy => ModelErrorCode::Busy,
+            ProtoCode::Unsupported => ModelErrorCode::Unsupported,
             ProtoCode::Internal => ModelErrorCode::Internal,
             ProtoCode::Cancelled => ModelErrorCode::Cancelled,
             ProtoCode::Closed => ModelErrorCode::Closed,

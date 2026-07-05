@@ -230,7 +230,7 @@ where
     /// `reason`.
     ///
     /// The reason is carried into [`RuntimeError::RouteCancelled`], the
-    /// `session_failed` hook event, and the `CloseRoute` reason, so callers
+    /// `session_failed` hook event, and the `ReleaseAdapter` reason, so callers
     /// (e.g. an owner that cancels for Ctrl+C, a deadline, or a sibling-route
     /// failure) can supply an accurate cause instead of a hardcoded one.
     pub async fn run_with_cancellation_reason(
@@ -860,7 +860,7 @@ where
                 .as_ref()
                 .map(|record| record.record_id.clone())
                 .unwrap_or_default();
-            // Proto env_index/duration_ms are uint32/uint64; events are i32/i64.
+            // Proto env_index is uint32; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
             fan_out_event!(
                 self,
@@ -876,7 +876,8 @@ where
                     cumulative_reward: completed.cumulative_reward,
                     terminated: completed.terminated,
                     truncated: completed.truncated,
-                    duration_ms: i64::try_from(completed.duration_ms).unwrap_or(i64::MAX),
+                    duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
+                        / 1_000_000,
                     final_info: completed.final_info.clone(),
                 }
             );

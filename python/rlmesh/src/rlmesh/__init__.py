@@ -11,20 +11,27 @@ if _sys.byteorder != "little":
         "little-endian, so a big-endian host would silently byteswap tensors."
     )
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as package_version
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 from . import _rlmesh as _rlmesh
 from . import adapters as adapters
+from . import params as params
 from . import spaces as spaces
+from . import specs as specs
 from . import types as types
 from ._authoring import EnvFactory
+from ._describe import describe, describe_json
+from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
     RANDOM_SAMPLE,
     EpisodeResult,
+    Reader,
+    RunHooks,
     RunResult,
     Session,
+    StepEvent,
     View,
     run,
     session,
@@ -48,12 +55,11 @@ from ._rlmesh import (
 from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
 from ._variants import Variant
-from .describe import describe, describe_json
 from .params import Param, ParamSpec, Vector
 
 try:
-    __version__ = package_version("rlmesh")
-except PackageNotFoundError:
+    __version__ = _package_version("rlmesh")
+except _PackageNotFoundError:
     __version__ = str(getattr(_rlmesh, "__version__", "0+unknown"))
 
 __doc__ = _rlmesh.__doc__
@@ -75,9 +81,11 @@ __all__ = [
     "Model",
     "Param",
     "ParamSpec",
+    "Reader",
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
+    "RunHooks",
     "RunResult",
     "SandboxBuild",
     "SandboxEnv",
@@ -86,6 +94,7 @@ __all__ = [
     "SandboxVectorEnv",
     "ServeOptions",
     "Session",
+    "StepEvent",
     "Tensor",
     "Variant",
     "Vector",
@@ -94,8 +103,11 @@ __all__ = [
     "adapters",
     "describe",
     "describe_json",
+    "params",
     "run",
+    "sanitize_metadata",
     "session",
     "spaces",
+    "specs",
     "types",
 ]

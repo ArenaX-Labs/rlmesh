@@ -29,6 +29,14 @@ def predict(observation: rlmesh_jax.JaxValue) -> rlmesh_jax.JaxValue:
 model = rlmesh_jax.Model(predict)
 assert_type(model, rlmesh_jax.Model)
 
+
+def typed_predict(observation: dict[str, jax.Array]) -> jax.Array:
+    return observation["state"]
+
+
+typed_model = rlmesh_jax.Model(typed_predict)
+assert_type(typed_model, rlmesh_jax.Model[dict[str, jax.Array], jax.Array])
+
 space = rlmesh_jax.space_from_spec(spaces.Box(-1.0, 1.0, shape=[2]).spec)
 assert_type(space.sample(), rlmesh_jax.JaxValue)
 

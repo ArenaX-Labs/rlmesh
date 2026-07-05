@@ -1,6 +1,6 @@
 """Describe an env/model as a versioned, Rust-standardized metadata envelope.
 
-``rlmesh.describe(EnvOrModel)`` (or ``python -m rlmesh.describe --env pkg:Env``)
+``rlmesh.describe(EnvOrModel)`` (or ``python -m rlmesh._describe --env pkg:Env``)
 emits the single, self-contained JSON artifact a managed service reads to present,
 validate, sweep, and list an uploaded env or model. It is generated once
 (build/generate-time -- constructing the env to read its spaces is allowed) and is
@@ -238,7 +238,7 @@ def _env_spec(
         return {"error": str(exc)}
     try:
         # Vector envs expose single_* (+ num_envs), not observation_space/action_space.
-        if hasattr(env, "single_observation_space"):
+        if _is_vector_env(env):
             return {
                 "observation_space": _space_dict(env.single_observation_space),
                 "action_space": _space_dict(env.single_action_space),
@@ -252,6 +252,19 @@ def _env_spec(
         return {"error": str(exc)}
     finally:
         close()
+
+
+def _is_vector_env(env: object) -> bool:
+    """Whether an env exposes the vector shape (``single_observation_space``).
+
+    Probes the type and the instance ``__dict__`` rather than a plain ``hasattr``,
+    so a gymnasium env does not trigger its deprecated wrapper-attribute
+    forwarding warning just because we probed (mirrors
+    :func:`rlmesh._models._connect._native_contract`).
+    """
+    return getattr(type(env), "single_observation_space", None) is not None or (
+        "single_observation_space" in getattr(env, "__dict__", {})
+    )
 
 
 def _build_env(
@@ -459,7 +472,7 @@ def _as_callable(obj: object) -> Callable[..., object]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Resolve ``--env``/``--model`` and print (or write) the metadata envelope."""
-    parser = argparse.ArgumentParser(prog="python -m rlmesh.describe")
+    parser = argparse.ArgumentParser(prog="python -m rlmesh._describe")
     parser.add_argument("--env", help="module:Class for an environment factory")
     parser.add_argument("--model", help="module:Class for a model")
     parser.add_argument(
@@ -481,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as handle:
-            handle.write(payload)
+            handle.write(payload + "\n")
     else:
         print(payload)
     return 0

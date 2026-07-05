@@ -109,7 +109,7 @@ The `input` is a tree whose container _is_ the payload the prediction function r
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
-print(adapter.describe())               # the exact transforms chosen
+print(adapter.explain())               # the exact transforms chosen
 payload = adapter.transform_obs(obs)    # env observation -> model input
 action = adapter.transform_action(out)  # model output    -> env action
 ```

@@ -14,10 +14,10 @@ use rlmesh_grpc::lifecycle::{
 use rlmesh_grpc::wire::env_spec_from_proto;
 use rlmesh_proto::model::v1::{
     CloseParticipantResponse, GroupedPredictRequest, GroupedPredictResponse, GroupedPredictResult,
-    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, PredictRequest,
-    PredictResponse, ReleaseAdapterResponse, ResetAdapterResponse, ResolveAdapterRequest,
-    ResolveAdapterResponse, ShutdownRequest, ShutdownResponse, grouped_predict_result,
-    join_request, join_response,
+    HandshakeRequest, HandshakeResponse, JoinRequest, JoinResponse, ModelError, ModelErrorCode,
+    PredictRequest, PredictResponse, ReleaseAdapterResponse, ResetAdapterResponse,
+    ResolveAdapterRequest, ResolveAdapterResponse, ShutdownRequest, ShutdownResponse,
+    grouped_predict_result, join_request, join_response,
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
@@ -81,7 +81,7 @@ where
     H: ModelHandler + 'static,
 {
     let handler = Arc::new(Mutex::new(handler));
-    // Obtain the route setup once, before serving: ConfigureRoute then resolves
+    // Obtain the route setup once, before serving: ResolveAdapter then resolves
     // routes through it without taking the per-request handler lock, so
     // configuring one route never blocks on an in-flight predict on another.
     let route_setup = handler.lock().await.route_setup();
@@ -213,9 +213,6 @@ where
                 ]),
                 supported_workflow_editions: supported_workflow_editions(),
             }),
-            // No model contract advertised yet; the field exists for a future
-            // model-side spec but has no native source today.
-            model_contract: None,
         }))
     }
 
@@ -265,8 +262,8 @@ where
 
                 // Compute the gate this request must wait on before entering its
                 // handler critical section, and the signal it fires on completion.
-                // `CloseRoute` is keyed like any other request: it replaces its
-                // route's tail so a later `ConfigureRoute` reopening the same key
+                // `ReleaseAdapter` is keyed like any other request: it replaces its
+                // route's tail so a later `ResolveAdapter` reopening the same key
                 // chains after it, and its fired tail is later reaped, keeping the
                 // map bounded for long-lived streams.
                 let (gate, dones): (RequestGate, Vec<tokio::sync::oneshot::Sender<()>>) =
@@ -278,7 +275,7 @@ where
                         // single route's chain: gate it on every route it references
                         // (and register a tail on each so a later same-route request
                         // orders after it). Without this it would run ungated and
-                        // could race a route's `ConfigureRoute`/`CloseRoute`.
+                        // could race a route's `ResolveAdapter`/`ReleaseAdapter`.
                         route_tails.next_multi_keyed_gate(&keys)
                     } else {
                         // Chain this request after the previous one on its route (if
@@ -460,7 +457,14 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             route_configs.lock().await.clear();
             Some(join_response::Kind::Close(CloseParticipantResponse {}))
         }
-        None => Some(model_error("empty model request")),
+        None => Some(join_response::Kind::Error(ModelError {
+            code: ModelErrorCode::Unsupported as i32,
+            message: "empty or unrecognized Join request (a newer-edition arm this build does \
+                      not implement?)"
+                .to_string(),
+            is_recoverable: true,
+            debug_info: String::new(),
+        })),
     };
 
     JoinResponse {
@@ -566,7 +570,7 @@ async fn handle_resolve_adapter(
     ))
 }
 
-/// Honor the runtime-pinned route edition: the runtime selects it (the floor —
+/// Honor the runtime-pinned workflow edition: the runtime selects it (the floor —
 /// highest mutual across env, model, and runtime) and it is authoritative, so an
 /// edition this model build cannot drive is a hard configuration error, not a
 /// silently-downgraded run. Generation is not checked here — it was already gated
@@ -825,10 +829,10 @@ fn grouped_predict_result(outcome: Result<PredictResponse>) -> GroupedPredictRes
 ///
 /// # Bounded growth
 ///
-/// A keyed request (`ConfigureRoute` / `Predict` / `CloseRoute`) always replaces
+/// A keyed request (`ResolveAdapter` / `Predict` / `ReleaseAdapter`) always replaces
 /// its route's tail so the next request on that route, including a
-/// `ConfigureRoute` that *reopens* a key after `CloseRoute`, chains correctly
-/// after the in-flight predecessor. A `CloseRoute` is the typical last request
+/// `ResolveAdapter` that *reopens* a key after `ReleaseAdapter`, chains correctly
+/// after the in-flight predecessor. A `ReleaseAdapter` is the typical last request
 /// on a route, so without pruning its fired tail would linger forever and a
 /// long-lived stream cycling fresh `session_id:route_id` keys per episode would
 /// leak one entry per closed route, growing unboundedly over days. To bound the
@@ -868,7 +872,7 @@ impl RouteTails {
     /// Compute the gate a grouped predict must await: it references several routes
     /// at once, so wait on the latest outstanding request of EACH referenced route
     /// and register a fresh tail on each so a later same-route request (e.g. a
-    /// `CloseRoute`) chains after it. `keys` must be deduplicated. Mirrors
+    /// `ReleaseAdapter`) chains after it. `keys` must be deduplicated. Mirrors
     /// `next_keyed_gate` but fans the single completion out to every route.
     fn next_multi_keyed_gate(
         &mut self,
@@ -949,7 +953,7 @@ impl RequestGate {
 
 /// Route key for ordering a Join request on its per-route chain.
 ///
-/// `ConfigureRoute` / `Predict` / `CloseRoute` are keyed by their
+/// `ResolveAdapter` / `Predict` / `ReleaseAdapter` are keyed by their
 /// `session_id:route_id`; whole-session `Close` and malformed requests (missing
 /// context or ids) return `None`. `Close` is handled as an all-routes barrier
 /// by the caller, and ungated malformed requests still produce an in-band error.
@@ -1152,7 +1156,7 @@ mod tests {
     #[tokio::test]
     async fn route_tails_reaps_closed_routes_so_the_map_stays_bounded() {
         // A long-lived Join stream cycling fresh `session_id:route_id` keys
-        // (ConfigureRoute → Predict → CloseRoute per episode) must not leak one
+        // (ResolveAdapter → Predict → ReleaseAdapter per episode) must not leak one
         // tail entry per closed route. After each episode's requests complete,
         // the next episode's first request reaps the prior fired tails.
         let mut tails = RouteTails::new();
@@ -1160,13 +1164,13 @@ mod tests {
         for episode in 0..1_000 {
             let key = format!("session:{episode}");
 
-            // ConfigureRoute: no predecessor on a fresh key, installs a tail.
+            // ResolveAdapter: no predecessor on a fresh key, installs a tail.
             let (gate, configure_done) = tails.next_keyed_gate(Some(&key));
             assert!(matches!(gate, RequestGate::Prev(None)));
-            // Predict: gated on ConfigureRoute, replaces the tail.
+            // Predict: gated on ResolveAdapter, replaces the tail.
             let (gate, predict_done) = tails.next_keyed_gate(Some(&key));
             assert!(matches!(gate, RequestGate::Prev(Some(_))));
-            // CloseRoute: gated on Predict, replaces the tail once more.
+            // ReleaseAdapter: gated on Predict, replaces the tail once more.
             let (gate, close_done) = tails.next_keyed_gate(Some(&key));
             assert!(matches!(gate, RequestGate::Prev(Some(_))));
 
@@ -1175,7 +1179,7 @@ mod tests {
             fire(predict_done);
             fire(close_done);
 
-            // The CloseRoute's fired tail still lingers until the next call reaps
+            // The ReleaseAdapter's fired tail still lingers until the next call reaps
             // it; the map never holds more than this single episode's tail.
             assert!(
                 tails.len() <= 1,
@@ -1184,7 +1188,7 @@ mod tests {
             );
         }
 
-        // After the final episode's CloseRoute fired, one more keyed request on a
+        // After the final episode's ReleaseAdapter fired, one more keyed request on a
         // brand-new route reaps the leftover tail, leaving only the new one.
         let (_gate, _done) = tails.next_keyed_gate(Some("session:final"));
         assert_eq!(
@@ -1196,8 +1200,8 @@ mod tests {
 
     #[tokio::test]
     async fn route_tails_reopen_after_close_still_sequences() {
-        // Reopening a route key after CloseRoute must gate the new ConfigureRoute
-        // on the still-in-flight CloseRoute, never overtake it.
+        // Reopening a route key after ReleaseAdapter must gate the new ResolveAdapter
+        // on the still-in-flight ReleaseAdapter, never overtake it.
         let mut tails = RouteTails::new();
         let key = "session:route";
 
@@ -1205,30 +1209,30 @@ mod tests {
         let (_g, close_done) = tails.next_keyed_gate(Some(key));
         fire(configure_done);
 
-        // CloseRoute is still in flight (close_done not fired): a reopening
-        // ConfigureRoute on the same key must chain after it.
+        // ReleaseAdapter is still in flight (close_done not fired): a reopening
+        // ResolveAdapter on the same key must chain after it.
         let (reopen_gate, _reopen_done) = tails.next_keyed_gate(Some(key));
         let mut reopen_prev = match reopen_gate {
             RequestGate::Prev(Some(rx)) => rx,
             RequestGate::Prev(None) => {
-                panic!("reopen must gate on the in-flight CloseRoute, got an ungated request")
+                panic!("reopen must gate on the in-flight ReleaseAdapter, got an ungated request")
             }
             RequestGate::All(_) => panic!("a keyed request must never produce an All gate"),
         };
 
-        // The reopen gate is unresolved until CloseRoute completes.
+        // The reopen gate is unresolved until ReleaseAdapter completes.
         assert!(matches!(
             reopen_prev.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
-        // Once CloseRoute fires, the reopen gate resolves and the reopen proceeds.
+        // Once ReleaseAdapter fires, the reopen gate resolves and the reopen proceeds.
         fire(close_done);
         assert!(reopen_prev.try_recv().is_ok());
     }
 
     #[tokio::test]
     async fn route_tails_reopen_after_reaped_close_is_ungated() {
-        // If the CloseRoute already completed *and* was reaped, a reopen on the
+        // If the ReleaseAdapter already completed *and* was reaped, a reopen on the
         // same key has nothing to wait on; ordering is still correct because the
         // predecessor genuinely finished.
         let mut tails = RouteTails::new();
@@ -1283,19 +1287,19 @@ mod tests {
             RequestGate::Prev(_) => panic!("a grouped predict must produce an All gate"),
         }
 
-        // A CloseRoute on route a arriving after the grouped predict must chain
+        // A ReleaseAdapter on route a arriving after the grouped predict must chain
         // behind it (the grouped predict replaced a's tail), not overtake it.
         let (close_gate, _close_done) = tails.next_keyed_gate(Some("s:a"));
         let mut close_prev = match close_gate {
             RequestGate::Prev(Some(rx)) => rx,
-            _ => panic!("CloseRoute after a grouped predict must gate on it, not run ungated"),
+            _ => panic!("ReleaseAdapter after a grouped predict must gate on it, not run ungated"),
         };
         assert!(matches!(
             close_prev.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
         // Completing the grouped predict fires its tail on every referenced route,
-        // releasing the CloseRoute.
+        // releasing the ReleaseAdapter.
         fire(grouped_done);
         assert!(close_prev.try_recv().is_ok());
     }
@@ -1332,7 +1336,7 @@ mod tests {
     async fn close_tears_down_every_route_config() {
         // Whole-session Close drains all episodes globally, so it must also
         // clear every route's config rather than leaking it for the server's
-        // lifetime (a CloseRoute only tears down its own route).
+        // lifetime (a ReleaseAdapter only tears down its own route).
         let server = test_server();
         {
             let mut configs = server.route_configs.lock().await;

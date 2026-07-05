@@ -51,6 +51,14 @@ class View:
             )
         if not 0 < self.port < 65536:
             raise ValueError(f"View.port must be in 1..65535; got {self.port}")
+        if self.fps < 1:
+            raise ValueError(f"View.fps must be >= 1; got {self.fps}")
+        if self.format not in ("jpeg", "png"):
+            raise ValueError(
+                f"View.format must be 'jpeg' or 'png'; got {self.format!r}"
+            )
+        if not 1 <= self.quality <= 100:
+            raise ValueError(f"View.quality must be in 1..100; got {self.quality}")
 
 
 def resolve_view(view: object) -> View | None:
@@ -101,6 +109,7 @@ class ViewerDriver:
         self._render_label = _RENDER
         self._render_call: Callable[[], object] | None = None
         self._disabled = False
+        self._quit = False
         #: Last drawn frame size, cached so the HUD can show the source resolution on
         #: throttled steps that fetch no new frame. 0 until the first frame is drawn.
         self._frame_w = 0
@@ -212,10 +221,28 @@ class ViewerDriver:
                 chunk_pos=chunk_pos,
                 chunk_len=chunk_len,
             )
-        except Exception:
-            pass
-        if self._pv.should_quit():
-            raise KeyboardInterrupt("rlmesh viewer: quit requested (q / Esc / Ctrl-C)")
+            if self._pv.should_quit():
+                self._quit = True
+        except Exception as exc:
+            warnings.warn(
+                f"rlmesh view: disabled after feed error: {exc}", stacklevel=2
+            )
+            self._disabled = True
+            pv, self._pv = self._pv, None
+            if pv is not None:
+                try:
+                    pv.close()
+                except Exception:
+                    pass
+
+    def quit_requested(self) -> bool:
+        """Whether the viewer asked to stop the run (``q`` / ``Esc``; sticky).
+
+        The session treats it as stop-early: the current episode is truncated and
+        the eval loop returns the partial :class:`~rlmesh.RunResult` -- a real
+        Ctrl-C outside the viewer still raises ``KeyboardInterrupt``.
+        """
+        return self._quit
 
     def _frame_for(
         self,

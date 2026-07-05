@@ -68,3 +68,35 @@ def test_ragged_leaf_raises_instead_of_silent_list() -> None:
     # inconsistent batch the model's single forward can't consume).
     with pytest.raises(ValueError, match="ragged"):
         bridge.tree_stack([{"x": np.zeros(2)}, {"x": np.zeros(3)}])
+
+
+def test_none_leaf_raises_instead_of_object_array() -> None:
+    # A None leaf would silently fuse into an object-dtype array; reject it with
+    # a directive error instead (identical across the numpy/torch/jax bridges).
+    with pytest.raises(ValueError, match="None observation leaf"):
+        bridge.tree_stack([{"x": None}, {"x": None}])
+
+
+def test_ragged_keys_raise_curated_error() -> None:
+    # Lanes with different KEYS used to die with a bare KeyError; they get the
+    # same "cannot fuse ... across N lanes" framing as ragged leaf shapes.
+    with pytest.raises(ValueError, match="ragged keys across 2 lanes"):
+        bridge.tree_stack([{"x": np.zeros(2)}, {"y": np.zeros(2)}])
+
+
+def test_ragged_container_lengths_raise_curated_error() -> None:
+    with pytest.raises(ValueError, match="ragged container lengths across 2 lanes"):
+        bridge.tree_stack([[np.zeros(2), np.zeros(2)], [np.zeros(2)]])
+
+
+def test_identity_bridge_unstack_requires_per_lane_list() -> None:
+    # The dependency-free identity bridge must not list() an arbitrary iterable
+    # (a dict action would "unstack" to its keys); it takes only a list/tuple of
+    # exactly n lanes and raises the shared split error otherwise.
+    from rlmesh._value_conversion import identity_bridge
+
+    assert identity_bridge.tree_unstack(["a0", "a1"], 2) == ["a0", "a1"]
+    with pytest.raises(ValueError, match="cannot split a batched action leaf"):
+        identity_bridge.tree_unstack({"move": [0, 1]}, 2)
+    with pytest.raises(ValueError, match="cannot split a batched action leaf"):
+        identity_bridge.tree_unstack(["a0", "a1", "a2"], 2)

@@ -89,7 +89,8 @@ fn py_any_to_meta_value(value: &Bound<'_, PyAny>) -> PyResult<MetaValue> {
     }
 
     Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "value of type '{}' is not supported in RLMesh metadata",
+        "value of type '{}' is not supported in RLMesh metadata; pass the dict \
+         through rlmesh.sanitize_metadata(...) to stringify unsupported values",
         normalized.get_type().name()?
     )))
 }

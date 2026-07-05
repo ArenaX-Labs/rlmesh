@@ -10,10 +10,6 @@ import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from rlmesh._bootstrap.loaders import (
-    import_packages,
-    is_env_lookup_error,
-)
 from rlmesh._serving import load_env as _serving_load_env
 from rlmesh._serving import load_env_entrypoint as _serving_load_env_entrypoint
 
@@ -26,8 +22,6 @@ __all__ = [
     "ServeArgs",
     "add_arguments",
     "create_parser",
-    "import_packages",
-    "is_env_lookup_error",
     "load_env_entrypoint",
     "load_environment",
     "main",
@@ -93,9 +87,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     _ = parser.add_argument(
         "--num-envs",
-        type=int,
+        type=_env_count,
         default=1,
-        help="Number of vectorized Gym/Gymnasium environments for --env",
+        help="Number of vectorized Gym/Gymnasium environments for --env (>= 1)",
     )
     _ = parser.add_argument(
         "--vectorization-mode",
@@ -143,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def serve_from_args(args: ServeArgs) -> int:
-    """Handle `env serve` command arguments."""
+    """Handle `env serve` command arguments.
+
+    The server is always shut down on the way out (including Ctrl+C and serve
+    errors) so the served env's ``close()`` runs instead of being skipped.
+    """
     try:
         from rlmesh import EnvServer
 
@@ -195,10 +193,13 @@ def serve_from_args(args: ServeArgs) -> int:
         print("Waiting for client connection...")
         print("Press Ctrl+C to stop", flush=True)
 
-        if args.ready_fd is not None:
-            write_ready_fd(args.ready_fd, server.address)
+        try:
+            if args.ready_fd is not None:
+                write_ready_fd(args.ready_fd, server.address)
 
-        server.serve()
+            server.serve()
+        finally:
+            server.shutdown()
         print("\nClient disconnected")
         return 0
 
@@ -276,6 +277,20 @@ def serve_args_from_namespace(args: argparse.Namespace) -> ServeArgs:
     )
 
 
+def _env_count(value: str) -> int:
+    """Parse ``--num-envs``: an int >= 1, rejected in the parser otherwise.
+
+    Without this, 0 or a negative slips through and silently serves one env.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"--num-envs must be >= 1, got {parsed}")
+    return parsed
+
+
 def _json_object(value: str) -> dict[str, Any]:
     try:
         parsed = json.loads(value)
@@ -296,8 +311,12 @@ def _default_unix_socket_path(source_name: str) -> str:
     A predictable world-readable name in shared ``/tmp`` lets another local
     user squat the socket or pre-bind it. Prefer ``$XDG_RUNTIME_DIR`` (already
     per-user and 0700) and otherwise create a private ``0700`` temp directory,
-    so the default socket is not reachable or hijackable by other users.
+    so the default socket is not reachable or hijackable by other users. The
+    fallback directory is removed at interpreter exit so repeated invocations
+    do not accumulate temp directories.
     """
+    import atexit
+    import shutil
     import tempfile
 
     filename = f"rlmesh-{_socket_label(source_name)}.sock"
@@ -312,6 +331,7 @@ def _default_unix_socket_path(source_name: str) -> str:
             pass
 
     private_dir = tempfile.mkdtemp(prefix="rlmesh-")
+    _ = atexit.register(shutil.rmtree, private_dir, ignore_errors=True)
     return os.path.join(private_dir, filename)
 
 

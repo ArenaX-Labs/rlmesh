@@ -1,7 +1,7 @@
 //! Episode tracking for evaluation.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rlmesh_proto::env::v1::EpisodeMetadata;
 use rlmesh_proto::spaces::v1::MetaMap;
@@ -24,13 +24,11 @@ struct Episode {
     env_index: i32,
     step_count: i64,
     cumulative_reward: f64,
-    start_time: Instant,
     start_timestamp_ns: i64,
 }
 
 impl Episode {
     fn new(env_index: i32, seed: Option<i64>, id: String) -> Self {
-        let start_time = Instant::now();
         let start_timestamp_ns = unix_nanos_now();
 
         Self {
@@ -39,7 +37,6 @@ impl Episode {
             env_index,
             step_count: 0,
             cumulative_reward: 0.0,
-            start_time,
             start_timestamp_ns,
         }
     }
@@ -57,13 +54,6 @@ impl Episode {
     ) -> EpisodeMetadata {
         let end_timestamp_ns = unix_nanos_now();
 
-        // Proto duration_ms is uint64; clamp the u128 elapsed millis into it.
-        let duration_ms = self
-            .start_time
-            .elapsed()
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-
         EpisodeMetadata {
             episode_id: self.id,
             seed: self.seed,
@@ -75,7 +65,6 @@ impl Episode {
             truncated,
             start_timestamp_ns: self.start_timestamp_ns,
             end_timestamp_ns,
-            duration_ms,
             final_info,
         }
     }

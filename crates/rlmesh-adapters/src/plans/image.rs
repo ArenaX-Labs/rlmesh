@@ -41,5 +41,9 @@ pub struct ImagePlan {
     pub zero_fill: Option<(u32, u32, u32)>,
     /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
     /// default). Only meaningful when `zero_fill` is `Some`.
-    pub absent_fill: u8,
+    pub fill: u8,
+    /// `Some((requested, bound))` when the lone-camera fallback bound this input
+    /// to the env's single camera under a different role than the model asked
+    /// for. Surfaced as a resolve advisory; `None` for an exact role match.
+    pub role_rebound: Option<(String, String)>,
 }

@@ -98,13 +98,28 @@ def test_resolve_none_spec_is_blind_passthrough() -> None:
     }
 
 
-def test_resolve_warns_on_misnamed_param() -> None:
+def test_resolve_warns_on_misnamed_param_without_a_value() -> None:
+    """Merely declared (no value supplied): the authoring-time warning fires;
+    the param is then reported missing because it has no signature default."""
+
     def target(*, suite: str) -> None: ...
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        resolve(ParamSpec(Param("typo", str)), target, {"suite": "a", "typo": "x"})
+        with pytest.raises(MissingParamError, match="typo"):
+            resolve(ParamSpec(Param("typo", str)), target, {"suite": "a"})
     assert any("typo" in str(w.message) for w in caught)
+
+
+def test_resolve_rejects_supplied_value_for_unreachable_param() -> None:
+    """A supplied value targeting a Param the constructor cannot receive used
+    to crash the constructor with a bare TypeError; it now fails at resolve,
+    naming the param and the accepted keyword args."""
+
+    def target(*, suite: str) -> None: ...
+
+    with pytest.raises(ParamError, match=r"typo.*accepted keyword args: suite"):
+        resolve(ParamSpec(Param("typo", str)), target, {"suite": "a", "typo": "x"})
 
 
 # --- describe ----------------------------------------------------------------
@@ -361,6 +376,20 @@ def test_vector_choices_sweep_over_whole_vectors() -> None:
     )
     with pytest.raises(ParamError, match="not in choices"):
         resolve(spec, _vec_target, {"cam_quat": (0.0, 0.0, 1.0, 0.0)})
+
+
+def test_vector_choices_authored_as_lists_match() -> None:
+    """Choice entries go through the same coercion as the value, so a
+    JSON-shaped (list) choice matches the canonicalized tuple value."""
+    presets = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    spec = ParamSpec(Param("cam_pos", type=Vector(3), choices=presets))
+    out = resolve(spec, _vec_target, {"cam_pos": (0.0, 1.0, 0.0)})
+    assert out["cam_pos"] == (0.0, 1.0, 0.0)
+
+
+def test_param_spec_rejects_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="'suite' more than once"):
+        ParamSpec(Param("suite", str), Param("suite", "enum", choices=("a",)))
 
 
 def test_describe_emits_vector_dim_and_unit() -> None:

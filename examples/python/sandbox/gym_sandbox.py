@@ -1,11 +1,10 @@
-from rlmesh.numpy import SandboxEnv
+from rlmesh.numpy import SandboxBuild, SandboxEnv
 
 MAX_STEPS = 45
 
 env = SandboxEnv(
     "CartPole-v1",
-    packages=["gymnasium==1.3.0"],
-    imports=["gymnasium"],
+    build=SandboxBuild(packages=["gymnasium==1.3.0"], imports=["gymnasium"]),
 )
 
 try:

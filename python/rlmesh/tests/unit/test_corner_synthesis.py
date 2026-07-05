@@ -143,13 +143,15 @@ def test_constructed_model_chunk_corner_keyword_path() -> None:
     assert cast("Any", m._raw_predict_chunk)(SINGLE, horizon=3).shape == (3, 2)
 
 
-def test_accepts_horizon_detects_optional_second_param() -> None:
-    from rlmesh._models.base import _accepts_horizon
+def test_horizon_mode_detects_positional_and_keyword_spellings() -> None:
+    from rlmesh._models.base import _horizon_mode
 
-    assert not _accepts_horizon(lambda obs: obs)
-    assert _accepts_horizon(lambda obs, h: obs)
-    assert _accepts_horizon(lambda obs, execution_horizon=1: obs)
-    assert _accepts_horizon(lambda obs, *args: obs)
+    assert _horizon_mode(lambda obs: obs) is None
+    assert _horizon_mode(lambda obs, h: obs) == "positional"
+    assert _horizon_mode(lambda obs, execution_horizon=1: obs) == "positional"
+    assert _horizon_mode(lambda obs, *args: obs) == "positional"
+    assert _horizon_mode(lambda obs, *, execution_horizon=1: obs) == "keyword"
+    assert _horizon_mode(lambda obs, *, other=1: obs) is None
 
 
 def test_predict_chunk_without_horizon_constructs_and_swallows_horizon() -> None:
@@ -187,6 +189,25 @@ def test_predict_chunk_with_execution_horizon_receives_runtime_value() -> None:
     m = M()
     chunk = cast("Any", m._raw_predict_chunk)(SINGLE, 3)
     assert chunk.shape == (3, 2)  # decoded exactly execution_horizon actions
+    assert seen == [3]
+
+
+def test_predict_chunk_keyword_only_execution_horizon_receives_runtime_value() -> None:
+    # The keyword-only spelling must ALSO receive the horizon: the corner is
+    # normalized to be called `fn(obs, execution_horizon=h)` rather than silently
+    # never getting the value.
+    seen: list[int] = []
+
+    class M(rlmesh.numpy.Model):
+        spec = rlmesh.NO_ADAPTER
+
+        def predict_chunk(self, observation, *, execution_horizon: int = 1):
+            seen.append(execution_horizon)
+            return np.stack([[0, frame] for frame in range(execution_horizon)])
+
+    m = M()
+    chunk = cast("Any", m._raw_predict_chunk)(SINGLE, 3)
+    assert chunk.shape == (3, 2)
     assert seen == [3]
 
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from ..constants import MODEL_METADATA_KEY
-from ._codec import normalize_spec
+from ._codec import hashable_node, normalize_spec
 from .action import Action
 from .action_serialization import action_from_dict, action_to_dict
 from .model_inputs import InputNode
@@ -37,15 +37,16 @@ class ModelSpec:
     output: Action
 
     def __hash__(self) -> int:
-        # `input` can be a Dict node (an unhashable Python ``dict``), so the
-        # dataclass-default field hash would fail even though the spec is frozen
-        # and compares by value. Hash the dataclass ``repr`` instead: it is a
-        # stable, field-by-field rendering, so equal specs (equal fields) render
-        # identically and hash equal -- consistent with the generated ``__eq__``.
-        # ``repr`` (unlike ``to_dict``) never raises, so a Custom-input spec stays
-        # hashable, and it applies no canonicalization, so distinct authored forms
-        # cannot collide. (frozen=True keeps the generated __eq__.)
-        return hash(repr(self))
+        """Hash consistently with the generated order-insensitive ``__eq__``.
+
+        ``input`` can be a Dict node (an unhashable Python ``dict``), so the
+        dataclass-default field hash would fail even though the spec is frozen
+        and compares by value -- and ``__eq__`` compares Dict nodes without
+        regard to key order, so the hash must not depend on it either. Hash a
+        key-order-canonical rendering (see :func:`hashable_node`); it applies no
+        serialization, so a Custom-input spec stays hashable.
+        """
+        return hash((hashable_node(self.input), self.output))
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
@@ -58,7 +59,7 @@ class ModelSpec:
             "input": model_input_to_dict(self.input),
             "output": action_to_dict(self.output),
         }
-        return normalize_spec("model", raw, allow_custom=True)
+        return normalize_spec("model", raw, allow_custom=False)
 
     def to_json(self) -> str:
         """Return this spec serialized as a JSON string."""
@@ -89,6 +90,13 @@ class ModelSpec:
 
         The input is validated and canonicalized by the Rust codec first, so the
         Python shape readers below operate on already-valid data.
+
+        One canonicalization caveat: a :class:`~rlmesh.adapters.Concat` with a
+        single *parameterized* part serializes identically to the equivalent
+        :class:`~rlmesh.adapters.State` (the documented wire equivalence), and
+        reads back as that ``State`` -- so ``from_dict(spec.to_dict())`` can
+        differ from ``spec`` by that leaf class alone, with identical wire form
+        and behavior.
         """
         canonical = normalize_spec("model", data, allow_custom=True)
         return cls(
@@ -115,7 +123,11 @@ class ModelSpec:
         if payload is None:
             return None
         if not isinstance(payload, Mapping):
-            raise TypeError(f"metadata key {MODEL_METADATA_KEY!r} must hold a mapping")
+            from ..resolver import AdapterResolutionError
+
+            raise AdapterResolutionError(
+                f"metadata key {MODEL_METADATA_KEY!r} must hold a mapping"
+            )
         return cls.from_dict(cast(Mapping[str, Any], payload))
 
 

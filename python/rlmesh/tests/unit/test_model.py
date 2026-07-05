@@ -39,7 +39,7 @@ def test_connect_uses_an_env_like_object_directly() -> None:
         def step(self, action: object) -> None: ...
 
     env = Env()
-    client, contract, owns = connect_env(env, "", None)
+    client, contract, owns = connect_env(env, None)
     assert client is env
     assert contract == "contract"
     assert owns is False  # caller-owned env objects are not closed by the loop
@@ -48,8 +48,20 @@ def test_connect_uses_an_env_like_object_directly() -> None:
 def test_connect_rejects_unsupported() -> None:
     from rlmesh._models._eval import connect_env
 
-    with pytest.raises(TypeError, match="remote-env object, or an address string"):
-        connect_env(object(), "", None)
+    with pytest.raises(TypeError, match="reset\\(\\) and step\\(\\)"):
+        connect_env(object(), None)
+
+
+def test_connect_rejects_a_contract_only_object_by_naming_accepted_forms() -> None:
+    # EnvTarget's HasEnvContract arm is served-session-only; a contract-only
+    # object cannot be stepped locally, so connect_env names the accepted forms.
+    from rlmesh._models._eval import connect_env
+
+    class ContractOnly:
+        env_contract = "contract"
+
+    with pytest.raises(TypeError, match="only env_contract cannot be stepped"):
+        connect_env(ContractOnly(), None)
 
 
 def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> None:
@@ -81,29 +93,31 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
     assert forwarded == []  # nothing reached the forwarding __getattr__
 
 
-def test_shutdown_passes_a_reason_when_accepted() -> None:
+def test_shutdown_calls_shutdown_plainly_with_no_reason() -> None:
+    # shutdown_env calls the owner-level shutdown() with no arguments; a remote
+    # owner's shutdown(reason=...) keeps its own default.
     from rlmesh._models._eval import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
-    class WithReason:
-        def shutdown(self, reason: str) -> None:
+    class Owner:
+        def shutdown(self, reason: str = "owner shutdown") -> None:
             calls.append((reason,))
 
-    shutdown_env(WithReason())
-    assert calls == [("model run complete",)]
+    shutdown_env(Owner())
+    assert calls == [("owner shutdown",)]
 
 
-def test_shutdown_falls_back_to_no_arg_shutdown() -> None:
+def test_shutdown_falls_back_to_close() -> None:
     from rlmesh._models._eval import shutdown_env
 
     calls: list[tuple[object, ...]] = []
 
-    class NoReason:
-        def shutdown(self) -> None:
+    class CloseOnly:
+        def close(self) -> None:
             calls.append(())
 
-    shutdown_env(NoReason())
+    shutdown_env(CloseOnly())
     assert calls == [()]
 
 
@@ -145,7 +159,9 @@ def test_no_adapter_sentinel_skips_adapter_resolution_for_tagged_env() -> None:
     import rlmesh.adapters as adapt
     from rlmesh._models._eval import resolve_adapter
 
-    tags = adapt.EnvTags(observation={}, action=adapt.Action())
+    tags = adapt.EnvTags(
+        observation={}, action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    )
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
     assert resolve_adapter(rlmesh.NO_ADAPTER, cast(Any, contract), False) is None
@@ -157,7 +173,9 @@ def test_spec_none_rejects_tagged_env_with_no_adapter_hint() -> None:
     import rlmesh.adapters as adapt
     from rlmesh._models._eval import resolve_adapter
 
-    tags = adapt.EnvTags(observation={}, action=adapt.Action())
+    tags = adapt.EnvTags(
+        observation={}, action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    )
     contract = SimpleNamespace(metadata=tags.to_metadata())
 
     with pytest.raises(adapt.AdapterResolutionError, match="spec=NO_ADAPTER"):
@@ -172,7 +190,9 @@ def test_random_sample_samples_action_space_and_skips_adapter_on_tagged_env() ->
     import rlmesh
     import rlmesh.adapters as adapt
 
-    tags = adapt.EnvTags(observation={}, action=adapt.Action())
+    tags = adapt.EnvTags(
+        observation={}, action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    )
     sentinel = object()
 
     class Env:
@@ -294,7 +314,7 @@ def test_adapted_run_uses_env_bridge_for_adapter_boundary(
 
     monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: adapter)
 
-    result = eval_mod.Session(
+    result = eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
         predict=predict,
         spec=object(),
         env=Client(),
@@ -364,7 +384,7 @@ def test_adapted_run_defaults_a_bridge_less_env_to_the_numpy_bridge(
 
     monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: Adapter())
 
-    result = eval_mod.Session(
+    result = eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
         predict=lambda payload: "model-action",
         spec=object(),
         env=Client(),
@@ -403,13 +423,17 @@ def _address_run_calls(*, close_env: bool) -> tuple[Any, list[str]]:
         def close(self) -> None:
             calls.append("close")
 
-    result = Session(
+    sess = Session._create(  # pyright: ignore[reportPrivateUsage]
         predict=lambda obs: 0,
         spec=None,
         env="tcp://env:9000",
         close_env=close_env,
         remote_env_cls=FakeRemoteEnv,
-    ).run(max_episodes=1)
+    )
+    result = sess.run(max_episodes=1)
+    # run() leaves a caller-held session open (reusable); teardown is close()'s.
+    assert calls == []
+    sess.close()
     return result, calls
 
 
@@ -452,13 +476,32 @@ def test_split_chunk_stays_in_framework_and_does_not_force_numpy() -> None:
     assert split_chunk(FakeDeviceTensor(rows)) == rows
 
 
-def test_split_chunk_degenerate_scalar_and_mapping_are_single_step() -> None:
+def test_split_chunk_degenerate_scalar_and_scalar_leaf_mapping_are_single_step() -> (
+    None
+):
     from rlmesh._models._chunk import split_chunk
 
-    # A bare scalar (not iterable) and a structured (dict) action are each one
-    # step, matching the native split_chunk's single-step leaf handling.
+    # A bare scalar (not iterable) is one step, matching the native split_chunk's
+    # single-step leaf handling; a dict whose leaves are scalars zips to one step.
     assert split_chunk(5.0) == [5.0]
     assert split_chunk({"a": 1}) == [{"a": 1}]
+
+
+def test_split_chunk_zips_a_dict_chunk_per_leaf_like_the_native_map_arm() -> None:
+    import numpy as np
+    from rlmesh._models._chunk import split_chunk
+
+    # A Dict-space chunk carries the horizon INSIDE each leaf ({k: [H, ...]});
+    # every leaf splits along its chunk axis and the frames zip into H per-step
+    # dicts, mirroring stateful.rs::split_chunk's Map arm (and _first_frame).
+    chunk = {"arm": np.arange(6).reshape(3, 2), "grip": np.arange(3).reshape(3, 1)}
+    steps = split_chunk(chunk)
+    assert len(steps) == 3
+    assert steps[0]["arm"].tolist() == [0, 1]
+    assert steps[2]["grip"].tolist() == [2]
+
+    with pytest.raises(ValueError, match="disagree on horizon"):
+        split_chunk({"arm": np.zeros((3, 2)), "grip": np.zeros((2, 1))})
 
 
 def test_split_chunk_treats_text_as_a_single_step_like_the_native_side() -> None:
@@ -558,7 +601,7 @@ def test_device_guard_allows_a_torch_model() -> None:
 def test_local_session_threads_device_to_predict_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Session(device=) -> _predict_step -> model_bridge.to_device(payload, device):
+    # Session._create(device=) -> _predict_step -> model_bridge.to_device(payload, device):
     # prove the obs the local predict sees was placed on the model's device.
     from types import SimpleNamespace
 
@@ -591,7 +634,7 @@ def test_local_session_threads_device_to_predict_step(
         return "action"
 
     monkeypatch.setattr(eval_mod, "resolve_adapter", lambda *_args: None)
-    eval_mod.Session(
+    eval_mod.Session._create(  # pyright: ignore[reportPrivateUsage]
         predict=predict,
         spec=object(),
         env=Client(),

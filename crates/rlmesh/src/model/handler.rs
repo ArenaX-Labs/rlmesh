@@ -135,7 +135,7 @@ pub trait ModelHandler: Send {
         results
     }
 
-    /// Per-route setup invoked at `ConfigureRoute`, before any `predict` on the
+    /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or
     /// `None` for no per-route setup), obtained once when serving begins so the
     /// server runs it **off** the predict-serialization lock — see

@@ -48,6 +48,55 @@ def test_view_validates_backend_and_port() -> None:
         View(backend="http", port=0)
 
 
+def test_view_validates_fps_format_and_quality() -> None:
+    # Every documented field range is enforced, not just backend/port.
+    with pytest.raises(ValueError, match="fps"):
+        View(fps=0)
+    with pytest.raises(ValueError, match="format"):
+        View(format="gif")
+    with pytest.raises(ValueError, match="quality"):
+        View(quality=0)
+    with pytest.raises(ValueError, match="quality"):
+        View(quality=101)
+    View(fps=1, format="png", quality=100)  # bounds are inclusive
+
+
+def test_viewer_driver_feed_failure_warns_once_and_disables() -> None:
+    # A per-step feed failure must not be swallowed silently forever: the first
+    # failure warns and disables the viewer; later feeds are quiet no-ops.
+    from rlmesh._models._view import ViewerDriver
+
+    class _BoomPV:
+        def wants_frame(self) -> bool:
+            raise RuntimeError("boom-feed")
+
+        def close(self) -> None:
+            pass
+
+    driver = ViewerDriver(View())
+    driver._pv = _BoomPV()
+    with pytest.warns(UserWarning, match="disabled after feed error: boom-feed"):
+        driver.feed(
+            contract=None,
+            client=None,
+            obs=None,
+            read=lambda o, i: None,
+            steps=1,
+            reward=0.0,
+            outcome="",
+        )
+    assert driver._pv is None
+    driver.feed(  # disabled: no second warning, no crash
+        contract=None,
+        client=None,
+        obs=None,
+        read=lambda o, i: None,
+        steps=2,
+        reward=0.0,
+        outcome="",
+    )
+
+
 def test_to_hwc_u8_uint8_passthrough() -> None:
     arr = np.arange(2 * 2 * 3, dtype=np.uint8).reshape(2, 2, 3)
     data, h, w, c = _u8(arr)
@@ -105,7 +154,9 @@ def test_resolve_render_picks_convention_by_signature() -> None:
 
 
 def test_view_outcome_prefers_info_over_terminated() -> None:
-    sess: Session[object, object] = Session(env=object())
+    sess: Session[object, object] = Session._create(  # pyright: ignore[reportPrivateUsage]
+        env=object()
+    )
     assert sess._view_outcome() == ""
 
     sess._terminated = True

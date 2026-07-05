@@ -135,7 +135,7 @@ def main() -> None:
 
         # The adapter the model would get against this env, for illustration:
         print("Resolved adapter:")
-        print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).describe())
+        print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).explain())
         print("\nRunning one episode:")
 
         # No glue: the adapter is resolved from the env's published tags.

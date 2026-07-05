@@ -85,6 +85,8 @@
     "rlmesh.numpy",
     "rlmesh.torch",
     "rlmesh.jax",
+    "rlmesh.adapters",
+    "rlmesh.params",
     "rlmesh.spaces",
     "rlmesh.types",
     "rlmesh.specs"
@@ -105,6 +107,18 @@
     "rlmesh.torch": {
       "title": "rlmesh.torch",
       "description": "Torch-backed clients, models, sandbox sessions, and tensor helpers.",
+      "stability": "Experimental",
+      "status": "Experimental."
+    },
+    "rlmesh.adapters": {
+      "title": "rlmesh.adapters",
+      "description": "Declarative env-to-model adapters: tags, model specs, and contract-based resolution.",
+      "stability": "Stable",
+      "status": "Stable core adapter surface."
+    },
+    "rlmesh.params": {
+      "title": "rlmesh.params",
+      "description": "Declared construction parameters for env factories and models.",
       "stability": "Experimental",
       "status": "Experimental."
     },
@@ -213,6 +227,108 @@
     },
     "rlmesh.torch.from_tensor": {
       "stability": "Experimental"
+    },
+    "rlmesh.adapters.ACTION_DELTA_POS": {
+      "description": "Action role for an end-effector Cartesian position delta (action/delta_eef_pos)."
+    },
+    "rlmesh.adapters.ACTION_DELTA_POS_2": {
+      "description": "Second-arm variant of ACTION_DELTA_POS (action/delta_eef_pos_2)."
+    },
+    "rlmesh.adapters.ACTION_DELTA_ROT": {
+      "description": "Action role for an end-effector rotation delta (action/delta_eef_rot)."
+    },
+    "rlmesh.adapters.ACTION_DELTA_ROT_2": {
+      "description": "Second-arm variant of ACTION_DELTA_ROT (action/delta_eef_rot_2)."
+    },
+    "rlmesh.adapters.ACTION_GRIPPER": {
+      "description": "Action role for a gripper command (action/gripper)."
+    },
+    "rlmesh.adapters.ACTION_GRIPPER_2": {
+      "description": "Second-arm variant of ACTION_GRIPPER (action/gripper_2)."
+    },
+    "rlmesh.adapters.ACTION_JOINT_POS": {
+      "description": "Action role for joint position targets (action/joint_pos)."
+    },
+    "rlmesh.adapters.ACTION_JOINT_VEL": {
+      "description": "Action role for joint velocity targets (action/joint_vel)."
+    },
+    "rlmesh.adapters.EEF_POS": {
+      "description": "Observation role for the end-effector Cartesian position (proprio/eef_pos)."
+    },
+    "rlmesh.adapters.EEF_POS_2": {
+      "description": "Second-arm variant of EEF_POS (proprio/eef_pos_2)."
+    },
+    "rlmesh.adapters.EEF_ROT": {
+      "description": "Observation role for the end-effector rotation (proprio/eef_rot)."
+    },
+    "rlmesh.adapters.EEF_ROT_2": {
+      "description": "Second-arm variant of EEF_ROT (proprio/eef_rot_2)."
+    },
+    "rlmesh.adapters.ENV_METADATA_KEY": {
+      "description": "Contract metadata key under which an environment publishes its EnvTags (rlmesh.adapters.v1.env_tags)."
+    },
+    "rlmesh.adapters.GRIPPER_POS": {
+      "description": "Observation role for the gripper opening state (proprio/gripper)."
+    },
+    "rlmesh.adapters.GRIPPER_POS_2": {
+      "description": "Second-arm variant of GRIPPER_POS (proprio/gripper_2)."
+    },
+    "rlmesh.adapters.IMAGE_PRIMARY": {
+      "description": "Observation role for the primary scene camera (image/primary)."
+    },
+    "rlmesh.adapters.IMAGE_SECONDARY": {
+      "description": "Observation role for a secondary scene camera (image/secondary)."
+    },
+    "rlmesh.adapters.IMAGE_WRIST": {
+      "description": "Observation role for a wrist-mounted camera (image/wrist)."
+    },
+    "rlmesh.adapters.INSTRUCTION": {
+      "description": "Observation role for the task instruction text (text/instruction)."
+    },
+    "rlmesh.adapters.JOINT_POS": {
+      "description": "Observation role for joint positions (proprio/joint_pos)."
+    },
+    "rlmesh.adapters.JOINT_VEL": {
+      "description": "Observation role for joint velocities (proprio/joint_vel)."
+    },
+    "rlmesh.adapters.MODEL_METADATA_KEY": {
+      "description": "Contract metadata key under which a model publishes its ModelSpec (rlmesh.adapters.v1.model_spec)."
+    },
+    "rlmesh.adapters.ROTATION_DIMS": {
+      "description": "Mapping from each rotation encoding to its dimension count."
+    },
+    "rlmesh.adapters.ConcatPart": {
+      "description": "One part of a Concat state input: a State leaf or a bare role string."
+    },
+    "rlmesh.adapters.FitMode": {
+      "description": "How an image is fit to a declared size: 'stretch', 'letterbox', or 'crop'."
+    },
+    "rlmesh.adapters.Resample": {
+      "description": "Image resampling filter vocabulary for declared resizes."
+    },
+    "rlmesh.adapters.ImageLayout": {
+      "description": "Image axis-layout vocabulary: 'hwc' or 'chw'."
+    },
+    "rlmesh.adapters.InputNode": {
+      "description": "A node of the ModelSpec input tree: a leaf, a mapping, or a tuple of nodes."
+    },
+    "rlmesh.adapters.ModelLeaf": {
+      "description": "A model-input leaf: Image, State, Concat, Text, or Custom."
+    },
+    "rlmesh.adapters.ObsLeaf": {
+      "description": "An observation tag leaf: ImageTag, StateTag, TextTag, or Split."
+    },
+    "rlmesh.adapters.ObsNode": {
+      "description": "A node of the observation tag tree: a leaf, a mapping, or a tuple of nodes."
+    },
+    "rlmesh.adapters.ObsTransform": {
+      "description": "An in-process callable mapping a raw observation to one payload slot (Custom transform)."
+    },
+    "rlmesh.adapters.RotationEncoding": {
+      "description": "Rotation encoding vocabulary (quat_xyzw, quat_wxyz, axis_angle, rot6d, rot6d_rowmajor, euler_xyz)."
+    },
+    "rlmesh.adapters.RotationTransform": {
+      "description": "An in-process callable repacking a rotation block for a CustomEncoding."
     },
     "rlmesh.spaces.MultiBinary": {
       "stability": "Experimental"

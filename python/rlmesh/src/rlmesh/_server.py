@@ -6,17 +6,13 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from ._client import Transport, normalize_bind_address
+from ._load_native import load_native
 from ._value_conversion import resolve_bridge
 from .specs import EnvContract
 from .types import EnvLike, VectorEnvLike
 
-try:
-    from rlmesh._rlmesh import PyEnvServer, PyVectorEnvServer
-except ImportError as e:
-    raise ImportError("Failed to import _rlmesh native module.") from e
-
 if TYPE_CHECKING:
-    from rlmesh._rlmesh import ServeOptions
+    from rlmesh._rlmesh import PyEnvServer, PyVectorEnvServer, ServeOptions
 
     from ._value_conversion import ValueBridge
     from .adapters import EnvTags
@@ -67,13 +63,15 @@ class EnvServer:
             metadata, so a model client can resolve an adapter from the
             contract alone (see :func:`rlmesh.adapters.resolve_from_contract`).
         framework: The framework the env's ``step`` requires its *action* as --
-            ``"torch"``, ``"jax"``, ``"numpy"`` (default), or a
-            :class:`~rlmesh._value_conversion.ValueBridge`. Only needed for a
+            ``"torch"``, ``"jax"``, ``"numpy"`` (default), or a pre-resolved
+            value-bridge object (advanced). Only needed for a
             framework-strict env (one whose ``step`` does e.g. ``action.to(...)``);
             a tolerant env can omit it. *Observations* need no declaration -- a
             torch/jax obs (GPU included) is auto-detected and encoded either way.
             The wire stays framework-neutral, so the env's action framework is
-            independent of any consuming model's framework.
+            independent of any consuming model's framework. ``render()`` is not
+            bridged: frames pass through as-is and the native layer imports CPU
+            arrays only, so a framework env should return numpy/CPU frames.
         device: Device to place the incoming action on (torch/jax only), e.g.
             ``"cuda:0"`` or a ``torch.device``. Requires ``framework=``; rejected
             for numpy/the default.
@@ -82,12 +80,8 @@ class EnvServer:
         >>> from rlmesh import EnvServer, spaces
         >>>
         >>> class TinyEnv:
-        ...     observation_space = spaces.from_gymnasium_space(
-        ...         __import__("gymnasium").spaces.Discrete(4)
-        ...     )
-        ...     action_space = spaces.from_gymnasium_space(
-        ...         __import__("gymnasium").spaces.Discrete(2)
-        ...     )
+        ...     observation_space = spaces.Discrete(4)
+        ...     action_space = spaces.Discrete(2)
         ...
         ...     def reset(self, *, seed=None, options=None):
         ...         return 0, {}
@@ -97,8 +91,8 @@ class EnvServer:
         ...
         ...     def close(self):
         ...         return None
-        >>> server = EnvServer(TinyEnv(), "localhost:5555")
-        >>> server.serve()
+        >>> server = EnvServer(TinyEnv(), "localhost:5555")  # doctest: +SKIP
+        >>> server.serve()  # doctest: +SKIP
     """
 
     def __init__(
@@ -121,10 +115,12 @@ class EnvServer:
         is_vector = _is_vector_env(env)
         if tags is not None:
             # Imported lazily so the common (un-tagged) serve path does not
-            # pull in the adapters/numpy stack.
+            # pull in the adapters/numpy stack. A vector env's served spaces are
+            # batched while tags describe one lane, so per-lane space validation
+            # is deferred to resolve time there (mirroring the factory stamp).
             from .adapters import tag
 
-            env = tag(env, tags)
+            env = tag(env, tags, validate=not is_vector)
         elif not is_vector:
             # A prebuilt or EnvFactory-stamped env can carry tags in its metadata
             # that were never validated against its spaces (the factory stamp uses
@@ -177,20 +173,12 @@ class EnvServer:
             path=path,
             transport=transport,
         )
-        self._server: PyEnvServer | PyVectorEnvServer = (
-            PyVectorEnvServer(
-                env=env,
-                address=normalized_address,
-                options=options,
-                native_values=native_values,
-            )
-            if is_vector
-            else PyEnvServer(
-                env=env,
-                address=normalized_address,
-                options=options,
-                native_values=native_values,
-            )
+        server_cls = load_native("PyVectorEnvServer" if is_vector else "PyEnvServer")
+        self._server: PyEnvServer | PyVectorEnvServer = server_cls(
+            env=env,
+            address=normalized_address,
+            options=options,
+            native_values=native_values,
         )
 
     @property
@@ -202,11 +190,6 @@ class EnvServer:
     def env_contract(self) -> EnvContract:
         """Environment contract served by this endpoint."""
         return self._server.env_contract
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for `env_contract`."""
-        return self._server.spec
 
     def serve(self) -> None:
         """Start serving the environment (blocking)."""

@@ -185,21 +185,24 @@ class AdapterBase(ABC, Generic[ActionT]):
         served path stacks natively with episode-keyed buffers in the core).
         """
 
-    def describe(self) -> str:
+    def explain(self) -> str:
         """Return a human-readable summary of the adapter."""
         return f"{type(self).__name__} (custom adapter)"
 
     def wrap_predict(
-        self, predict_fn: Callable[[dict[str, Any]], object]
+        self, predict_fn: Callable[[Any], object]
     ) -> Callable[[Any], ActionT]:
         """Wrap a model predict function with both transforms.
 
-        The returned callable takes a raw env observation -- a mapping, or a
+        ``predict_fn`` receives the model input payload *tree* -- a dict for a
+        Dict-shaped input, a list for a Tuple-shaped input, or a bare leaf for a
+        single-leaf input (whatever :meth:`transform_obs` produces). The
+        returned callable takes a raw env observation -- a mapping, or a
         bare array/leaf for a flat (non-Dict) env -- and returns an env-ready
         action, suitable for :class:`rlmesh.numpy.Model`.
 
         Action chunking is no longer driven here: the execution horizon is a runtime
-        decision (``execution_horizon`` on ``ConfigureRoute``, owned by the runtime
+        decision (``execution_horizon`` on ``ResolveAdapter``, owned by the runtime
         driver) and the served engine emits the chunk. This direct wrapper applies
         one action per step; in-process chunk replay lives in
         :class:`rlmesh._models._chunk.ChunkReplay`, driven by ``run`` with a
@@ -235,9 +238,10 @@ class Adapter(AdapterBase[NumpyArray]):
         # ``str``/``int`` segment tuple), so the in-process path never re-parses
         # a rendered placement string.
         self._customs = dict(customs)
-        # Per-placement frame-history depth (>1 only) and the rolling buffers
-        # that back it. Stacking happens host-side, after the native transform.
-        self._stacks = {key: n for key, n in (stacks or {}).items() if n > 1}
+        # Per-placement frame-history depth (>1 only, filtered by the resolver's
+        # _image_stacks) and the rolling buffers that back it. Stacking happens
+        # host-side, after the native transform.
+        self._stacks = dict(stacks or {})
         self._buffers: dict[Placement, deque[Any]] = {}
         # Host-side custom-encoding shims: the native plan resolves each to a
         # base encoding; these repack the field at the boundary (obs after the
@@ -451,6 +455,15 @@ class Adapter(AdapterBase[NumpyArray]):
             render_placement(segments): _serve_custom(transform, bridge)
             for segments, transform in self._customs.items()
         }
+        if len(customs) != len(self._customs):
+            rendered = sorted(render_placement(s) for s in self._customs)
+            colliding = sorted({r for r in rendered if rendered.count(r) > 1})
+            raise ValueError(
+                "custom input placements render to colliding route keys "
+                f"{colliding}; the served engine routes by the rendered path, so "
+                "Dict keys containing '.' or '[' must not shadow another custom "
+                "input's placement -- rename the colliding keys"
+            )
         return {
             "plan": self._plan,
             "customs": customs,
@@ -485,7 +498,7 @@ class Adapter(AdapterBase[NumpyArray]):
         raw = self._apply_action_enc(from_value(action, numpy_bridge))
         return to_value(raw, numpy_bridge)
 
-    def describe(self) -> str:
+    def explain(self) -> str:
         """Return a human-readable summary of the resolved transformations."""
         native = self._plan.describe()
         if not self._obs_enc_shims and not self._action_enc_shims:

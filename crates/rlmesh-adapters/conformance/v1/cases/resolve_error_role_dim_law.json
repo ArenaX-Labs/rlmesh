@@ -45,7 +45,7 @@
   "model_spec": {
     "input": {
       "container": "str",
-      "default": null,
+      "fill": null,
       "role": "text/instruction",
       "type": "text"
     },

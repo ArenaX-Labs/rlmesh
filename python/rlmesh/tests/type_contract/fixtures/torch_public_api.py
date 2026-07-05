@@ -27,3 +27,11 @@ assert_type(remote.address, str)
 action = remote.action_space.sample()
 assert_type(action, rlmesh_torch.TorchValue)
 assert_type(remote.action_space.contains(action), bool)
+
+
+def typed_predict(observation: dict[str, torch.Tensor]) -> torch.Tensor:
+    return observation["state"]
+
+
+typed_model = rlmesh_torch.Model(typed_predict)
+assert_type(typed_model, rlmesh_torch.Model[dict[str, torch.Tensor], torch.Tensor])

@@ -5,17 +5,27 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import inspect
+import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Generic,
+    Literal,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from .._value_conversion import ValueBridge, identity_bridge, tree_map
-from ..types import Value
+from ..types import EnvTarget, LocalEnvTarget, Value, ViewArg
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModel, ServeOptions
     from rlmesh.params import ParamSpec
 
-    from ._eval import RunResult, Session
+    from ._eval import RunHooks, RunResult, Session
 
 ObsT = TypeVar("ObsT")
 ActT = TypeVar("ActT")
@@ -96,23 +106,29 @@ def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
     return derived
 
 
-def _accepts_horizon(fn: Corner) -> bool:
-    """Whether a chunk corner declared a second param to receive the execution horizon.
+def _horizon_mode(fn: Corner) -> Literal["positional", "keyword"] | None:
+    """How a chunk corner declared it receives the execution horizon, if at all.
 
     A policy returns its *native* chunk and usually ignores the horizon -- its length
     is fixed by the trained weights. An autoregressive decoder that can stop early
-    declares an optional second parameter (``execution_horizon``); detecting that once
-    here keeps the common corner a clean ``predict_chunk(obs)`` while the rare one is
-    handed how many actions the runtime will execute.
+    declares an optional parameter (``execution_horizon``), either as a second
+    positional parameter (``"positional"``) or keyword-only (``"keyword"``);
+    detecting that once here keeps the common corner a clean ``predict_chunk(obs)``
+    while the rare one is handed how many actions the runtime will execute.
+    ``None`` means the corner takes no horizon.
     """
     try:
         params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):  # un-introspectable builtin -- assume no horizon
-        return False
+    except (TypeError, ValueError):
+        return None
     positional = sum(
         p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params
     )
-    return positional >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params)
+    if positional >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params):
+        return "positional"
+    if any(p.kind == p.KEYWORD_ONLY and p.name == "execution_horizon" for p in params):
+        return "keyword"
+    return None
 
 
 def _normalize_chunk(fn: Corner | None) -> Corner | None:
@@ -120,11 +136,23 @@ def _normalize_chunk(fn: Corner | None) -> Corner | None:
 
     Every internal caller -- :func:`_synthesize_corners`, :func:`_dechunk`, the native
     neutral wrappers, the local replay -- passes ``(obs, horizon)`` positionally. A
-    corner that didn't ask for the horizon is wrapped to swallow it, so the rest of the
-    pipeline is uniform and the author writes whichever signature their model needs.
+    corner that didn't ask for the horizon is wrapped to swallow it, and one that
+    declared a keyword-only ``execution_horizon`` is called by keyword, so the rest
+    of the pipeline is uniform and the author writes whichever signature their
+    model needs.
     """
-    if fn is None or _accepts_horizon(fn):
+    if fn is None:
+        return None
+    mode = _horizon_mode(fn)
+    if mode == "positional":
         return fn
+    if mode == "keyword":
+        chunk_fn = fn
+
+        def by_keyword(observation: object, execution_horizon: object) -> object:
+            return chunk_fn(observation, execution_horizon=execution_horizon)
+
+        return by_keyword
 
     def absorbing(observation: object, _execution_horizon: object) -> object:
         return fn(observation)
@@ -228,11 +256,12 @@ class ModelBase(Generic[ObsT, ActT]):
         trust_entrypoints: Allow ``module:callable`` custom-input entrypoints in a
             spec to be imported during adapter resolution.
 
-    Examples:
-        >>> from rlmesh.numpy import Model
-        >>> result = Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0])
-        >>> result.mean_reward
-        0.0
+    Example::
+
+        from rlmesh.numpy import Model
+
+        result = Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0])
+        print(result.mean_reward)
     """
 
     _bridge: ClassVar[ValueBridge]
@@ -256,10 +285,40 @@ class ModelBase(Generic[ObsT, ActT]):
     @classmethod
     def describe(cls) -> dict[str, Any]:
         """Return this model's full metadata envelope (see :func:`rlmesh.describe`)."""
-        from ..describe import describe  # lazy: avoid an import cycle at module load
+        from .._describe import describe  # lazy: avoid an import cycle at module load
 
         return describe(cls, kind="model")
 
+    @overload
+    def __init__(
+        self,
+        source: type[Any],
+        *,
+        spec: object | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+        trust_entrypoints: bool = False,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        source: PredictFn[ObsT, ActT],
+        *,
+        spec: object | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+        trust_entrypoints: bool = False,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        source: object | None = None,
+        *,
+        spec: object | None = None,
+        on_episode_end: LifecycleCallback | None = None,
+        on_close: LifecycleCallback | None = None,
+        trust_entrypoints: bool = False,
+    ) -> None: ...
     def __init__(
         self,
         source: Callable[..., object] | object | None = None,
@@ -269,6 +328,15 @@ class ModelBase(Generic[ObsT, ActT]):
         on_close: LifecycleCallback | None = None,
         trust_entrypoints: bool = False,
     ) -> None:
+        """Build the model from ``source`` (see the class docstring for the modes).
+
+        The overloads are the typed face of the permissive runtime contract: a
+        *predict callable* flows its annotated observation/action types onto the
+        model's generic parameters (``Model(predict)`` with
+        ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``), while a class source
+        (instantiated by :func:`coerce_model`), a duck-typed policy object, or an
+        unannotated callable falls back to the framework's default value types.
+        """
         self._bridge.ensure_available()
 
         # A Model subclass overrides at least one predict corner (plus optionally
@@ -320,7 +388,9 @@ class ModelBase(Generic[ObsT, ActT]):
 
             coerced = coerce_model(source, spec=spec)
             raw_predict = coerced.predict
-            raw_predict_chunk = raw_predict_batch = raw_predict_chunk_batch = None
+            raw_predict_chunk = coerced.predict_chunk
+            raw_predict_batch = coerced.predict_batch
+            raw_predict_chunk_batch = coerced.predict_chunk_batch
             resolved_spec = coerced.spec
             coerced_on_episode_end = coerced.on_episode_end
             coerced_on_close = coerced.on_close
@@ -414,11 +484,12 @@ class ModelBase(Generic[ObsT, ActT]):
 
         Most policies ignore the execution horizon -- their chunk length is fixed by
         the trained weights, and the runtime simply uses a prefix of the native chunk.
-        An autoregressive decoder that can stop early may add an optional second
-        parameter ``execution_horizon: int = 1`` (keep the default, so it stays a
-        compatible override of this one-arg base); the runtime fills it with how many
-        actions it will execute, so the head can decode exactly that many instead of
-        its full natural length. The default raises.
+        An autoregressive decoder that can stop early may add an optional
+        ``execution_horizon: int = 1`` parameter -- as a second positional parameter
+        or keyword-only (keep the default, so it stays a compatible override of this
+        one-arg base); the runtime fills it with how many actions it will execute,
+        so the head can decode exactly that many instead of its full natural length.
+        The default raises.
         """
         raise NotImplementedError(
             "this model does not emit action chunks; override predict_chunk() to "
@@ -479,7 +550,7 @@ class ModelBase(Generic[ObsT, ActT]):
         raw predict. A spec-less / ``NO_ADAPTER`` model serves its own predict.
         """
         from .._load_native import load_native
-        from ._eval import resolve_route_adapter
+        from ._eval import resolve_adapter
 
         spec = self.spec
         bridge = self._bridge
@@ -490,7 +561,7 @@ class ModelBase(Generic[ObsT, ActT]):
             # The served route resolves to a native plan plus neutral host holes
             # the Rust engine drives (it owns the per-episode frame buffers and
             # adapter application); a spec-less / NO_ADAPTER model returns None.
-            adapter = resolve_route_adapter(
+            adapter = resolve_adapter(
                 spec, cast("Any", env_contract), trust_entrypoints=trust
             )
             return adapter.serve_route(bridge) if adapter is not None else None
@@ -579,15 +650,18 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def run(
         self,
-        env_or_address: object,
+        env_or_address: LocalEnvTarget,
         *,
         seeds: Sequence[int] | None = None,
         max_episodes: int | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        hooks: RunHooks | None = None,
         instruction: str | None = None,
         close_env: bool = False,
-        token: str = "",
+        trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
-        view: object = None,
+        view: ViewArg = None,
     ) -> RunResult:
         """Drive this model against an env and return a :class:`RunResult`.
 
@@ -597,48 +671,76 @@ class ModelBase(Generic[ObsT, ActT]):
         overrides *every* text input the spec declares on each step -- at its
         placement in the input tree (bare-root, top-level, or nested) and in that
         input's declared shape (a bare ``str``, or ``[instruction]`` for a
-        ``container='list'`` text input). ``env_or_address`` is an env object
-        exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
+        ``container='list'`` text input). (A *served* model rejects
+        ``instruction=`` -- the env's own instruction is used.) ``env_or_address``
+        is an env object exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
         :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
         object with an ``address``, or a bare address string the loop dials.
+
+        ``max_episode_steps`` / ``max_episode_seconds`` cap each episode (hitting a
+        cap marks it ``truncated``), and ``hooks`` (:class:`rlmesh.RunHooks`)
+        observes the loop; all three pass through to :meth:`Session.run
+        <rlmesh.Session.run>`.
 
         ``execution_horizon`` (> 1) executes that many actions of each predicted
         chunk one per env step, re-planning every ``execution_horizon`` steps -- only
         when this model defines :meth:`predict_chunk`; otherwise it runs un-chunked.
+
+        This one-shot convenience creates its session internally and closes it
+        (honoring ``close_env``) when the run ends. To reuse one binding across
+        several runs, hold a :meth:`session` yourself -- :meth:`Session.run` leaves
+        a caller-held session open.
         """
-        return self.session(
+        session = self.session(
             env_or_address,
             instruction=instruction,
             close_env=close_env,
-            token=token,
+            trust_entrypoints=trust_entrypoints,
             execution_horizon=execution_horizon,
             view=view,
-        ).run(seeds=seeds, max_episodes=max_episodes)
+        )
+        try:
+            return session.run(
+                seeds=seeds,
+                max_episodes=max_episodes,
+                max_episode_steps=max_episode_steps,
+                max_episode_seconds=max_episode_seconds,
+                hooks=hooks,
+            )
+        finally:
+            session.close()
 
     def session(
         self,
-        env_or_address: object,
+        env_or_address: LocalEnvTarget,
         *,
         instruction: str | None = None,
         close_env: bool = False,
-        token: str = "",
         trust_entrypoints: bool | None = None,
         execution_horizon: int = 1,
-        view: object = None,
+        view: ViewArg = None,
     ) -> Session[ObsT, ActT]:
         """Bind this model to an env and return a :class:`Session` to drive by hand.
 
         The manual counterpart of :meth:`run`: drive ``reset`` / ``predict`` / ``step``
-        yourself, or call :meth:`Session.run` to pump whole episodes. ``env_or_address``
-        is an env object, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an
-        address string (see :meth:`run`).
+        yourself, or call :meth:`Session.run` to pump whole episodes -- as many times
+        as you like; the caller-held session (its connection, viewer, and adapter
+        state) stays open until you close it (``close()`` or the ``with`` block).
+        ``env_or_address`` is an env object, an :class:`~rlmesh.EnvFactory`, a
+        remote-env handle, or an address string (see :meth:`run`).
         ``execution_horizon`` (> 1) executes that many actions per predicted chunk, one
         per env step, when this model defines :meth:`predict_chunk` (see :meth:`run`).
         """
         from ._eval import Session
 
         self._require_device_support()
-        return Session(
+        if execution_horizon > 1 and self._raw_predict_chunk is None:
+            warnings.warn(
+                f"execution_horizon={execution_horizon} was requested but "
+                "the model defines no predict_chunk(); running un-chunked.",
+                stacklevel=2,
+            )
+        return Session._create(  # pyright: ignore[reportPrivateUsage]
             predict=self._raw_predict,
             predict_chunk=self._raw_predict_chunk,
             spec=self.spec,
@@ -655,13 +757,15 @@ class ModelBase(Generic[ObsT, ActT]):
             remote_env_cls=type(self)._remote_env_cls,
             instruction=instruction,
             close_env=close_env,
-            token=token,
             execution_horizon=execution_horizon,
             view=view,
         )
 
     def serve(
-        self, address: str, *, token: str = "", options: ServeOptions | None = None
+        self,
+        address: str,
+        *,
+        options: ServeOptions | None = None,
     ) -> None:
         """Host this model as an endpoint (blocking).
 
@@ -670,26 +774,24 @@ class ModelBase(Generic[ObsT, ActT]):
         spec-less / ``NO_ADAPTER`` model serves its own predict directly.
         """
         self._require_device_support()
-        self._worker.serve(address, token, options)
+        self._worker.serve(address, options)
 
-    def run_local(self, env_address: str, *, token: str = "") -> None:
+    def _run_local(self, env_address: str) -> None:
         """Native worker loop against a remote env, until the env ends.
 
         Runs the session to completion for its side effects. Telemetry is
         surfaced on the serving runtime via its ``on_telemetry`` hook, not
         returned here.
         """
-        return self._worker.run_local(env_address, token)
+        return self._worker.run_local(env_address)
 
-    def run_local_for_episodes(
-        self, env_address: str, *, token: str = "", max_episodes: int
-    ) -> None:
+    def _run_local_for_episodes(self, env_address: str, *, max_episodes: int) -> None:
         """Native worker loop against a remote env for a fixed episode count.
 
         Runs for the requested episode count for its side effects; see
-        :meth:`run_local` for where telemetry is surfaced.
+        :meth:`_run_local` for where telemetry is surfaced.
         """
-        return self._worker.run_local_for_episodes(env_address, token, max_episodes)
+        return self._worker.run_local_for_episodes(env_address, max_episodes)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -712,16 +814,59 @@ def as_model(model: object) -> ModelBase[Any, Any]:
     return Model(cast(object, model))
 
 
+@overload
 def session(
-    model: object,
-    env: object,
+    model: ModelBase[ObsT, ActT],
+    env: LocalEnvTarget,
     *,
     instruction: str | None = None,
     close_env: bool = False,
-    token: str = "",
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
-    view: object = None,
+    view: ViewArg = None,
+) -> Session[ObsT, ActT]: ...
+@overload
+def session(
+    model: type[Any],
+    env: EnvTarget,
+    *,
+    instruction: str | None = None,
+    close_env: bool = False,
+    trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
+    view: ViewArg = None,
+) -> Session[Any, Any]: ...
+@overload
+def session(
+    model: PredictFn[ObsT, ActT],
+    env: LocalEnvTarget,
+    *,
+    instruction: str | None = None,
+    close_env: bool = False,
+    trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
+    view: ViewArg = None,
+) -> Session[ObsT, ActT]: ...
+@overload
+def session(
+    model: object,
+    env: EnvTarget,
+    *,
+    instruction: str | None = None,
+    close_env: bool = False,
+    trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
+    view: ViewArg = None,
+) -> Session[Any, Any]: ...
+def session(
+    model: object,
+    env: EnvTarget,
+    *,
+    instruction: str | None = None,
+    close_env: bool = False,
+    trust_entrypoints: bool | None = None,
+    execution_horizon: int = 1,
+    view: ViewArg = None,
 ) -> Session[Any, Any]:
     """Bind a model to an env and return a :class:`Session` to drive by hand or via run().
 
@@ -730,31 +875,43 @@ def session(
     is a local env, an :class:`~rlmesh.EnvFactory`, a remote-env handle, or an address
     string. A spec'd model resolves its adapter from the env's tags -- a local env must
     carry them (via :func:`rlmesh.adapters.tag` or an :class:`~rlmesh.EnvFactory`).
+    A *served* model rejects ``instruction=`` (the env's own instruction is used).
+
+    The returned session is yours: :meth:`Session.run` leaves it open, so drive it
+    (or re-run it) as often as you like, then close it via ``close()`` or the
+    ``with`` block.
 
     Pass :data:`rlmesh.RANDOM_SAMPLE` as ``model`` for a random baseline: each step
     samples the env's action space, no spec or adapter involved.
+
+    Typing: a :class:`Model` instance or an annotated predict callable flows its
+    observation/action types onto the returned ``Session`` (``predict``/``step``
+    are typed accordingly); a class source, duck-typed policy, or served handle
+    yields ``Session[Any, Any]``.
     """
     from ._adapter_mode import NO_ADAPTER
     from ._eval import RANDOM_SAMPLE, Session
 
     if model is RANDOM_SAMPLE:
+        if execution_horizon > 1:
+            warnings.warn(
+                f"execution_horizon={execution_horizon} was requested but "
+                "RANDOM_SAMPLE defines no predict_chunk(); running un-chunked.",
+                stacklevel=2,
+            )
         # A random baseline samples the env's action space and ignores observations,
         # so it adapts nothing -- skip adapter resolution even on a tagged env.
-        return cast(
-            "Session[Any, Any]",
-            Session(
-                env=env,
-                # RANDOM_SAMPLE is a private sentinel Session special-cases by
-                # identity; cast keeps it out of the public `predict` signature.
-                predict=cast("Any", RANDOM_SAMPLE),
-                spec=NO_ADAPTER,
-                instruction=instruction,
-                close_env=close_env,
-                token=token,
-                trust_entrypoints=bool(trust_entrypoints),
-                execution_horizon=execution_horizon,
-                view=view,
-            ),
+        return Session._create(  # pyright: ignore[reportPrivateUsage]
+            env=env,
+            # RANDOM_SAMPLE is a private sentinel Session special-cases by
+            # identity; cast keeps it out of the public `predict` signature.
+            predict=cast("Any", RANDOM_SAMPLE),
+            spec=NO_ADAPTER,
+            instruction=instruction,
+            close_env=close_env,
+            trust_entrypoints=bool(trust_entrypoints),
+            execution_horizon=execution_horizon,
+            view=view,
         )
     # A handle that knows how to bind itself -- Model, RemoteModel, SandboxModel -- has
     # its own ``.session``; anything else (a callable / subclass class) is normalized.
@@ -766,17 +923,15 @@ def session(
                 env,
                 instruction=instruction,
                 close_env=close_env,
-                token=token,
                 trust_entrypoints=trust_entrypoints,
                 execution_horizon=execution_horizon,
                 view=view,
             ),
         )
     return as_model(model).session(
-        env,
+        cast("LocalEnvTarget", env),
         instruction=instruction,
         close_env=close_env,
-        token=token,
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
         view=view,
@@ -785,33 +940,49 @@ def session(
 
 def run(
     model: object,
-    env: object,
+    env: EnvTarget,
     *,
     seeds: Sequence[int] | None = None,
     max_episodes: int | None = None,
+    max_episode_steps: int | None = None,
+    max_episode_seconds: float | None = None,
+    hooks: RunHooks | None = None,
     instruction: str | None = None,
     close_env: bool = False,
-    token: str = "",
     trust_entrypoints: bool | None = None,
     execution_horizon: int = 1,
-    view: object = None,
+    view: ViewArg = None,
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
-    The auto-pump convenience over :func:`rlmesh.session` -- equivalent to
-    ``rlmesh.session(model, env).run(seeds=...)``. Works for a local :class:`Model` or a
-    served :class:`RemoteModel` / :class:`SandboxModel`.
+    The auto-pump convenience over :func:`rlmesh.session`: it creates the session
+    internally and closes it (honoring ``close_env``) when the run ends -- hold a
+    :func:`rlmesh.session` yourself to reuse one binding across runs. Works for a
+    local :class:`Model` or a served :class:`RemoteModel` / :class:`SandboxModel`
+    (a served model rejects ``instruction=``; the env's own instruction is used).
+    ``max_episode_steps`` / ``max_episode_seconds`` cap each episode (hitting a cap
+    marks it ``truncated``), and ``hooks`` (:class:`rlmesh.RunHooks`) observes the
+    loop; all three pass through to :meth:`Session.run <rlmesh.Session.run>`.
     """
-    return session(
+    sess = session(
         model,
         env,
         instruction=instruction,
         close_env=close_env,
-        token=token,
         trust_entrypoints=trust_entrypoints,
         execution_horizon=execution_horizon,
         view=view,
-    ).run(seeds=seeds, max_episodes=max_episodes)
+    )
+    try:
+        return sess.run(
+            seeds=seeds,
+            max_episodes=max_episodes,
+            max_episode_steps=max_episode_steps,
+            max_episode_seconds=max_episode_seconds,
+            hooks=hooks,
+        )
+    finally:
+        sess.close()
 
 
 __all__ = ["LifecycleCallback", "ModelBase", "PredictFn", "run", "session"]

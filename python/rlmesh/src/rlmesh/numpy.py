@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 from abc import ABC
-from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias, TypeVar, cast, final
 
 from ._authoring import EnvFactory as _EnvFactory
 from ._client import RemoteEnvBase, RemoteModelBase, RemoteVectorEnvBase
@@ -26,6 +26,7 @@ from .types import PrimitiveValue
 
 if TYPE_CHECKING:
     import numpy as np
+    from typing_extensions import TypeVar as _DefaultTypeVar
 
     NumpyArray: TypeAlias = np.ndarray[Any, Any]
     NumpyValue: TypeAlias = (
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
         | tuple["NumpyValue", ...]
         | dict[str, "NumpyValue"]
     )
+    _ObsT = _DefaultTypeVar("_ObsT", default=NumpyValue)
+    _ActT = _DefaultTypeVar("_ActT", default=NumpyValue)
 else:
     NumpyArray: TypeAlias = object
     NumpyValue: TypeAlias = (
@@ -44,6 +47,8 @@ else:
         | tuple["NumpyValue", ...]
         | dict[str, "NumpyValue"]
     )
+    _ObsT = TypeVar("_ObsT")
+    _ActT = TypeVar("_ActT")
 
 
 def ensure_available() -> None:
@@ -56,31 +61,34 @@ def ensure_available() -> None:
         ) from exc
 
 
-def asarray(tensor: Tensor) -> NumpyArray:
-    """Return a writable NumPy array containing an RLMesh tensor's data.
+def asarray(tensor: Tensor | bool | int | float) -> NumpyArray:
+    """Return a writable NumPy array copied from an RLMesh tensor.
 
-    The returned array owns a fresh copy of the tensor bytes, so it is writable
-    and matches Gymnasium, where ``reset``/``step`` observations are writable
-    (idioms such as ``obs /= 255.0`` work). For an opt-in zero-copy view that
-    shares the tensor buffer, use the buffer protocol or DLPack directly
-    (for example ``numpy.from_dlpack(tensor)``), treating the result as
-    read-only.
+    Always copies: the returned array owns a fresh buffer (exactly one copy of
+    the tensor bytes, taken through a zero-copy buffer-protocol view), so it is
+    writable, never aliases the wire buffer, and matches Gymnasium, where
+    ``reset``/``step`` observations are writable (idioms such as
+    ``obs /= 255.0`` work). Scalar primitives (``bool``/``int``/``float``) are
+    accepted for symmetry with :func:`rlmesh.torch.as_tensor` and become 0-d
+    arrays. For an opt-in zero-copy view that shares the tensor buffer, use the
+    buffer protocol or DLPack directly (for example
+    ``numpy.from_dlpack(tensor)``), treating the result as read-only.
 
     Args:
-        tensor: RLMesh tensor value to convert.
+        tensor: RLMesh tensor or scalar primitive to convert.
 
     Returns:
-        A writable NumPy array with a copy of the tensor data.
+        A writable NumPy array owning a copy of the tensor data.
     """
     ensure_available()
     import numpy as np
 
+    if not isinstance(tensor, Tensor):
+        return cast(NumpyArray, np.asarray(tensor))
     shape = tuple(tensor.shape)
     dtype = np.dtype(tensor.dtype)
-    # ``bytearray`` yields a writable buffer, so the resulting array is writable
-    # (np.frombuffer over immutable ``bytes`` would be read-only).
-    array = np.frombuffer(bytearray(tensor.tobytes()), dtype=dtype)
-    return cast(NumpyArray, np.reshape(array, shape if shape else ()))
+    view = cast("Any", np.frombuffer(cast("Any", tensor), dtype=dtype))
+    return cast(NumpyArray, view.reshape(shape if shape else ()).copy())
 
 
 def from_array(array: object) -> Tensor | PrimitiveValue:
@@ -102,6 +110,8 @@ def from_array(array: object) -> Tensor | PrimitiveValue:
     ndarray = cast(NumpyArray, array)
     if ndarray.ndim == 0:
         return cast(PrimitiveValue, ndarray.item())
+    if str(ndarray.dtype) == "bfloat16":
+        raise ValueError("bfloat16 is not supported on the wire; cast to float32 first")
     contiguous = cast(NumpyArray, np.ascontiguousarray(ndarray))
     return Tensor(
         contiguous.tobytes(order="C"),
@@ -124,7 +134,13 @@ def _stack_leaf(values: list[object]) -> object:
     # Text leaves stay a per-lane list; arrays and numeric primitives stack to
     # [N, ...]. A ragged leaf cannot fuse -- raise rather than silently returning a
     # list for this leaf while siblings stack, which hands the model a structurally
-    # inconsistent batch ({stacked leaves} + {one list leaf}).
+    # inconsistent batch ({stacked leaves} + {one list leaf}). A None leaf would
+    # silently fuse into an object-dtype array, so it is rejected explicitly.
+    if any(v is None for v in values):
+        raise ValueError(
+            f"cannot fuse a None observation leaf across {len(values)} lanes; a "
+            "batched predict needs every lane to return a value for every leaf"
+        )
     if isinstance(values[0], (str, bytes)):
         return list(values)
     try:
@@ -152,8 +168,10 @@ def _unstack_leaf(value: object, n: int) -> list[object]:
     if isinstance(value, (list, tuple)) and len(seq) == n:
         return list(seq)
     raise ValueError(
-        f"cannot split a batched action leaf of type {type(cast(object, value)).__name__} into "
-        f"{n} lanes; return one batched value (leaves [{n}, ...])"
+        f"cannot split a batched action leaf of type "
+        f"{type(cast(object, value)).__name__} into "
+        f"{n} lanes; return one batched value (leaves [{n}, ...]) or a "
+        f"per-lane list of {n} actions"
     )
 
 
@@ -187,6 +205,10 @@ class RemoteEnv(RemoteEnvBase[NumpyValue, NumpyValue]):
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
         transport: Explicit transport selector.
+        connect_timeout_seconds: Optional dial timeout in seconds; ``None``
+            uses the native default.
+        request_timeout_seconds: Optional per-request (reset/step/render)
+            timeout in seconds; ``None`` waits indefinitely.
 
     Examples:
         >>> from rlmesh.numpy import RemoteEnv
@@ -233,6 +255,10 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
         port: TCP port helper used when ``address`` is omitted.
         path: Unix socket path helper used when ``address`` is omitted.
         transport: Explicit transport selector.
+        connect_timeout_seconds: Optional dial timeout in seconds; ``None``
+            uses the native default.
+        request_timeout_seconds: Optional per-request (reset/step/render)
+            timeout in seconds; ``None`` waits indefinitely.
 
     Examples:
         >>> from rlmesh.numpy import RemoteVectorEnv
@@ -246,16 +272,23 @@ class RemoteVectorEnv(RemoteVectorEnvBase[NumpyValue, NumpyValue]):
     _bridge: ClassVar[ValueBridge] = _numpy_bridge
 
 
-class Model(ModelBase[NumpyValue, NumpyValue]):
+class Model(ModelBase[_ObsT, _ActT]):
     """NumPy-backed model: ``predict`` works in NumPy values.
 
     The NumPy-typed :class:`~rlmesh._models.base.ModelBase`: wrap a predict callable
     (``Model(fn, spec=...)``) or subclass and override ``predict``; ``run(env,
     seeds=[...])`` returns a typed ``RunResult``. See :class:`~rlmesh._models.base.ModelBase`.
 
+    Generic over the observation/action types, defaulting to ``NumpyValue``:
+    wrapping an annotated predict callable infers them (``Model(predict)`` with
+    ``def predict(obs: X) -> Y`` is a ``Model[X, Y]``, and its ``session`` a
+    ``Session[X, Y]``); subclasses and unannotated sources bind ``NumpyValue``.
+
     Examples:
         >>> from rlmesh.numpy import Model
-        >>> Model(lambda observation: 0).run("127.0.0.1:5555", seeds=[0]).mean_reward
+        >>> Model(lambda observation: 0).run(
+        ...     "127.0.0.1:5555", seeds=[0]
+        ... ).mean_reward  # doctest: +SKIP
         0.0
     """
 

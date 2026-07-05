@@ -7,12 +7,14 @@ override the container's baked spec).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import rlmesh
 import rlmesh._sandbox._model as model_mod
+import rlmesh._sandbox._sources as _sources
 import rlmesh._sandbox.session as session_mod
+from rlmesh.specs import EnvContract
 
 
 class _StartProc:
@@ -27,17 +29,26 @@ class _PortProc:
     stderr = ""
 
 
+class _ImageProc:
+    returncode = 0
+    stdout = "[]\n"
+    stderr = ""
+
+
 def _serve_dispatch(
     captured: dict[str, list[str]],
 ) -> Any:
     """Fake ``subprocess.run`` for the serve path: dispatch on argv.
 
+    ``docker image inspect`` reports the image as local (no pre-pull);
     ``docker run -d ...`` returns the container id; ``docker port ...`` returns
     the Docker-assigned host mapping that serve reads back (BUG #4: no host-side
     bind/close, so the published port is read from Docker, not guessed).
     """
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return _ImageProc()
         if cmd[:3] == ["docker", "run", "-d"]:
             captured["run"] = cmd
             return _StartProc()
@@ -53,7 +64,7 @@ def test_image_source_serve_starts_a_published_container(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, list[str]] = {}
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch(captured))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch(captured))
 
     model = rlmesh.SandboxModel("image://my-model:latest")
     assert model.serve() is model
@@ -79,7 +90,7 @@ def test_gpus_requests_the_device_on_serve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, list[str]] = {}
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch(captured))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch(captured))
 
     # serve, with an int count normalized to a string
     model_mod.SandboxModel(
@@ -91,7 +102,7 @@ def test_gpus_requests_the_device_on_serve(
 
 def test_no_gpus_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, list[str]] = {}
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch(captured))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch(captured))
     model_mod.SandboxModel("image://m:latest").serve()
     assert "--gpus" not in captured["run"]
 
@@ -106,7 +117,7 @@ def test_gpus_rejects_empty() -> None:
 def test_session_serves_then_binds_to_the_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
 
     captured: dict[str, object] = {}
 
@@ -130,7 +141,7 @@ def test_session_serves_then_binds_to_the_env(
     sentinel_bridge = object()
 
     class FakeEnv:
-        env_contract = object()
+        env_contract = cast("EnvContract", object())
         _bridge = sentinel_bridge
 
     model = rlmesh.SandboxModel("image://m:latest")
@@ -159,6 +170,8 @@ class _ExitedProc:
 
 def _docker_dispatch(stop_calls: list[str], *, running: bool):
     def fake_run(cmd: list[str], **_kwargs: Any) -> Any:
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return _ImageProc()
         if cmd[:3] == ["docker", "run", "-d"]:
             return _StartProc()
         if cmd[:2] == ["docker", "port"]:
@@ -177,9 +190,7 @@ def _docker_dispatch(stop_calls: list[str], *, running: bool):
 def test_session_fails_fast_with_logs_when_container_exits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        model_mod.subprocess, "run", _docker_dispatch([], running=False)
-    )
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch([], running=False))
 
     class AlwaysFailingClient:
         def __init__(self, *_a: object, **_kw: object) -> None:
@@ -197,7 +208,7 @@ def test_session_fails_fast_with_logs_when_container_exits(
     )
 
     class FakeEnv:
-        env_contract = object()
+        env_contract = cast("EnvContract", object())
 
     model = rlmesh.SandboxModel("image://m:latest")
     with pytest.raises(RuntimeError, match="exited before becoming ready"):
@@ -212,7 +223,7 @@ def test_session_fails_fast_with_logs_when_container_exits(
 def test_session_stops_container_on_missing_env_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
 
     import rlmesh._rlmesh as native
 
@@ -225,14 +236,14 @@ def test_session_stops_container_on_missing_env_contract(
 
     model = rlmesh.SandboxModel("image://m:latest")
     with pytest.raises(TypeError, match="requires an env client exposing"):
-        rlmesh.session(model, object())
+        rlmesh.session(model, cast("Any", object()))
 
     # #3: the container started by serve() is stopped before re-raising.
     assert stopped == ["container-abc"]
 
 
 class _FakeEnv:
-    env_contract = object()
+    env_contract = cast("EnvContract", object())
 
 
 def _patch_ok_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,7 +272,7 @@ def test_session_keeps_owner_alive_so_it_is_not_gc_before_predict(
     import gc
     import weakref
 
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
     _patch_ok_client(monkeypatch)
 
     stopped: list[str] = []
@@ -288,7 +299,7 @@ def test_session_keeps_owner_alive_so_it_is_not_gc_before_predict(
 def test_failed_session_on_reused_handle_does_not_shut_it_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
     _patch_ok_client(monkeypatch)
 
     stopped: list[str] = []
@@ -304,7 +315,7 @@ def test_failed_session_on_reused_handle_does_not_shut_it_down(
     # #7: a second bind that fails must NOT stop a container this call did
     # not start -- the caller is still managing the handle.
     with pytest.raises(TypeError, match="requires an env client exposing"):
-        rlmesh.session(model, object())
+        rlmesh.session(model, cast("Any", object()))
     assert "container-abc" not in stopped
 
 
@@ -321,7 +332,7 @@ class _ConfigErrorClient:
 def test_contract_config_error_fails_fast_without_retrying(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(model_mod.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
 
     import rlmesh._rlmesh as native
 
@@ -346,7 +357,7 @@ def test_resolve_published_port_accepts_ipv6_mapping(
         stderr = ""
 
     monkeypatch.setattr(
-        session_mod.subprocess,
+        _sources.subprocess,
         "run",
         lambda *_a, **_k: _IPv6PortProc(),
     )
@@ -355,3 +366,90 @@ def test_resolve_published_port_accepts_ipv6_mapping(
     # against `[::]:51000`), not raise "published no host port". The model path
     # now shares this helper with the env path (session._resolve_published_port).
     assert session_mod._resolve_published_port("container-abc") == 51000
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"instruction": "pick up the cube"}, "instruction from the env"),
+        ({"trust_entrypoints": True}, "trust_entrypoints= applies to local"),
+    ],
+)
+def test_session_rejects_unhonorable_options_instead_of_dropping(
+    monkeypatch: pytest.MonkeyPatch,
+    kwargs: dict[str, Any],
+    match: str,
+) -> None:
+    """instruction/trust_entrypoints cannot be honored by a served
+    container; setting one is a hard error before any container starts."""
+    monkeypatch.setattr(
+        _sources.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("no container may start"),
+    )
+
+    model = rlmesh.SandboxModel("image://m:latest")
+    with pytest.raises(ValueError, match=match):
+        model.session(_FakeEnv(), **kwargs)
+
+
+def test_session_closes_dialed_client_when_bind_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote_session failure after a successful dial must close the client
+    rather than leak its connection."""
+    import rlmesh._client._remote_model as remote_model_mod
+    import rlmesh._rlmesh as native
+
+    monkeypatch.setattr(_sources.subprocess, "run", _serve_dispatch({}))
+    monkeypatch.setattr(native, "sandbox_stop_env", lambda *, container_id: None)
+
+    closed: list[bool] = []
+
+    class OkClient:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            pass
+
+        def address(self) -> str:
+            return "127.0.0.1:9"
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(native, "PyModelClient", OkClient)
+
+    def failing_remote_session(*_a: object, **_kw: object) -> object:
+        raise RuntimeError("bind blew up after dial")
+
+    monkeypatch.setattr(remote_model_mod, "remote_session", failing_remote_session)
+
+    model = rlmesh.SandboxModel("image://m:latest")
+    with pytest.raises(RuntimeError, match="bind blew up after dial"):
+        model.session(_FakeEnv())
+
+    assert closed == [True]
+
+
+def test_dial_timeout_error_names_image_and_appends_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The not-ready timeout must carry the image tag and recent container logs,
+    matching the exited-container twin."""
+    import rlmesh._rlmesh as native
+
+    monkeypatch.setattr(_sources.subprocess, "run", _docker_dispatch([], running=True))
+    monkeypatch.setattr(native, "sandbox_stop_env", lambda *, container_id: None)
+
+    class AlwaysFailingClient:
+        def __init__(self, *_a: object, **_kw: object) -> None:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(native, "PyModelClient", AlwaysFailingClient)
+
+    model = rlmesh.SandboxModel("image://m:latest")
+    with pytest.raises(RuntimeError, match="did not become ready") as excinfo:
+        model.session(_FakeEnv(), connect_timeout_seconds=0.0)
+
+    message = str(excinfo.value)
+    assert "'m:latest'" in message
+    assert "boom: model failed to load" in message

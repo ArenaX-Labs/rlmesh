@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package rlmesh.spaces.v1;
+
+message MetaValue {
+  oneof kind {
+    int64 integer = 1;
+    double number = 2;
+    string text = 3;
+    bool bool = 4;
+    bytes bytes = 5;
+    MetaList list = 6;
+    MetaMap map = 7;
+  }
+}
+
+message MetaList {
+  repeated MetaValue items = 1;
+}
+
+message MetaMap {
+  map<string, MetaValue> entries = 1;
+}

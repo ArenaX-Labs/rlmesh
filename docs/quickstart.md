@@ -42,6 +42,25 @@ env.close()
 
 The server owns the Gymnasium environment and its dependencies. The client needs only the endpoint address and the spaces the server reports.
 
+## Run a Model Against It
+
+Wrap a prediction function in `rlmesh.Model` and let it pump whole episodes:
+
+```python
+import rlmesh
+
+
+def predict(observation):
+    return 0
+
+
+model = rlmesh.Model(predict)
+result = model.run("127.0.0.1:5555", max_episodes=3)
+print(result.mean_reward)
+```
+
+`run` dials the endpoint, plays three episodes, and returns a `RunResult` with per-episode rewards, `mean_reward`, and `success_rate`.
+
 ## Runnable Files
 
 From the repository root:
@@ -66,5 +85,5 @@ For the smallest custom environment object, use `examples/python/quickstart/serv
 
 ## Next
 
-- {doc}`gymnasium`: the Gymnasium spaces RLMesh supports.
-- {doc}`examples`: swap environments, run sandboxed stacks, and fan one evaluator out to multiple endpoints.
+- {doc}`user-guide/evaluation`: `run`, `session`, seeds, and reading results.
+- {doc}`user-guide/models`: wrapping a predict callable or subclassing a backend `Model`.

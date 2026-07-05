@@ -5,9 +5,9 @@ This is the autodoc API reference. For the authoring guide see {doc}`../user-gui
 {doc}`../user-guide/models/reference` for the full prediction-corner contract.
 ```
 
-Model workers wrap a Python prediction function and run it against an RLMesh environment endpoint. The framework backend controls how observations are decoded before `predict_fn` runs and how returned actions are encoded.
+Models wrap a Python prediction function and run it against an RLMesh environment endpoint. The framework backend controls how observations are decoded before `predict_fn` runs and how returned actions are encoded.
 
-Reach for a concrete `Model` class below in the value type your prediction function wants. Authors implement `load()` plus exactly one of the four prediction corners (`predict`, `predict_chunk`, `predict_batch`, or `predict_chunk_batch`); the runtime dispatches to whichever is defined.
+Reach for a concrete `Model` class below in the value type your prediction function wants. Authors implement `load()` plus exactly one of the four predict corners (`predict`, `predict_chunk`, `predict_batch`, or `predict_chunk_batch`); the runtime dispatches to whichever is defined.
 
 ## Base Model
 
@@ -29,3 +29,32 @@ Concrete backend model classes inherit `ModelBase` and only change value convers
 | JAX model    | `rlmesh.jax.Model`   | JAX arrays, primitives, and containers    | JAX arrays and primitives    |
 
 See {doc}`backends` for backend helpers.
+
+## Served and Sandboxed Models
+
+A model does not have to run in your process. `RemoteModel` dials a policy that is already served on an endpoint; `SandboxModel` runs a prebuilt `image://` tag in its own container. Both bind to an environment through {func}`~rlmesh.session` and expose the same {class}`~rlmesh.Session` drive loop.
+
+```{eval-rst}
+.. autoclass:: rlmesh.RemoteModel
+   :members:
+   :show-inheritance:
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.SandboxModel
+   :members:
+```
+
+## Sandbox Configuration
+
+`SandboxBuild` groups the build-from-source settings for a `gym://` / `hf://` env source; `SandboxRuntime` groups the `docker run` flags applied when a prebuilt container starts. See {doc}`../user-guide/sandbox` for where each option goes.
+
+```{eval-rst}
+.. autoclass:: rlmesh.SandboxBuild
+   :members:
+```
+
+```{eval-rst}
+.. autoclass:: rlmesh.SandboxRuntime
+   :members:
+```

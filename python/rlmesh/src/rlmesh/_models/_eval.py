@@ -14,9 +14,9 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 from __future__ import annotations
 
 import time
-import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from .._value_conversion import from_value, identity_bridge
@@ -31,20 +31,23 @@ from ._connect import (
 )
 from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
-from ._resolve import reject_vector_env, resolve_adapter, resolve_route_adapter
+from ._resolve import reject_vector_env, resolve_adapter
 from ._view import ViewerDriver, resolve_view
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
 
     from .._value_conversion import ValueBridge
+    from ..adapters import ObservationRoles
 
 __all__ = [
     "RANDOM_SAMPLE",
     "EpisodeResult",
+    "RunHooks",
     "RunResult",
     "Session",
-    "resolve_route_adapter",
+    "StepEvent",
+    "resolve_adapter",
 ]
 
 # bound the loop so a non-terminating env cannot hang it forever.
@@ -77,7 +80,26 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
 
 @dataclass(frozen=True)
 class EpisodeResult:
-    """The outcome of one evaluation episode."""
+    """The outcome of one evaluation episode.
+
+    Attributes:
+        index: 0-based episode index within the run.
+        seed: The seed the episode was reset with, or ``None``.
+        steps: Number of env steps taken.
+        reward: Total reward accumulated over the episode.
+        terminated: Whether the env reported a terminal state.
+        truncated: Whether the episode was cut short (env truncation, a
+            ``max_episode_steps`` / ``max_episode_seconds`` cap, or the built-in
+            step bound).
+        success: The env-reported task outcome from the final step's ``info``
+            (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the
+            env emits no such signal. Distinct from ``terminated`` (which only
+            says the episode reached a terminal state, not whether it succeeded).
+        duration_s: Wall time from reset-return to episode end, in seconds.
+        predict_ms: Mean per-step wall time of ``predict``, in milliseconds.
+        step_ms: Mean per-step wall time of the env ``step`` round trip, in
+            milliseconds.
+    """
 
     index: int
     seed: int | None
@@ -85,11 +107,10 @@ class EpisodeResult:
     reward: float
     terminated: bool
     truncated: bool
-    #: The env-reported task outcome from the final step's ``info``
-    #: (Gymnasium's ``is_success`` / ``success`` key), or ``None`` when the env
-    #: emits no such signal. Distinct from ``terminated`` (which only says the
-    #: episode reached a terminal state, not whether it succeeded).
     success: bool | None = None
+    duration_s: float = 0.0
+    predict_ms: float = 0.0
+    step_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -139,6 +160,73 @@ class RunResult:
             f"RunResult(episodes={self.num_episodes}, mean_reward={self.mean_reward:.3f}, "
             f"total_steps={self.total_steps})"
         )
+
+
+@dataclass(frozen=True)
+class StepEvent:
+    """One env step of a :meth:`Session.run` eval, passed to :meth:`RunHooks.on_step`.
+
+    Attributes:
+        episode: 0-based episode index (equals :attr:`EpisodeResult.index`).
+        seed: The episode's reset seed, or ``None``.
+        step: 0-based step index within the episode.
+        observation: The raw observation the action was predicted from (pre-step).
+        action: The env-ready action applied to the env.
+        reward: The step's reward.
+        terminated: Whether the env reported a terminal state on this step.
+        truncated: Whether this step truncated the episode.
+        info: The step's ``info`` mapping.
+        predict_ms: Raw wall time of this step's ``predict``, in milliseconds;
+            near zero on chunk-replay steps, where no model forward runs.
+        step_ms: Raw wall time of the env ``step`` round trip, in milliseconds.
+        read: Lazy role reader bound to ``observation`` -- ``event.read(item)``
+            delegates to :meth:`Session.read`, so resolution is cached per item
+            and never triggered unless called.
+    """
+
+    episode: int
+    seed: int | None
+    step: int
+    observation: Any
+    action: Any
+    reward: float
+    terminated: bool
+    truncated: bool
+    info: Mapping[str, Any]
+    predict_ms: float
+    step_ms: float
+    read: Callable[[object], object]
+
+
+class RunHooks:
+    """Observer callbacks for :meth:`Session.run`; every default is a no-op.
+
+    Subclass and override any subset, then pass an instance as ``hooks=`` to
+    :func:`rlmesh.run`, :meth:`Model.run <rlmesh.Model.run>`, or
+    :meth:`Session.run`. Hook exceptions propagate and abort the run;
+    :meth:`on_run_end` still fires exactly once with the completed episodes.
+    """
+
+    def on_episode_start(self, *, episode: int, seed: int | None) -> None:
+        """Called after each episode's reset returns (no-op by default).
+
+        Args:
+            episode: 0-based episode index (equals :attr:`EpisodeResult.index`).
+            seed: The seed the episode was reset with, or ``None``.
+        """
+
+    def on_step(self, event: StepEvent) -> None:
+        """Called after each env step with its :class:`StepEvent` (no-op by default)."""
+
+    def on_episode_end(self, result: EpisodeResult) -> None:
+        """Called with each completed episode's :class:`EpisodeResult` (no-op by default)."""
+
+    def on_run_end(self, result: RunResult) -> None:
+        """Called exactly once when the run ends (no-op by default).
+
+        Fires even on an exception or interrupt, with the possibly-partial
+        :class:`RunResult` of the episodes that completed.
+        """
 
 
 def _predict_step(
@@ -192,13 +280,72 @@ class Session(Generic[ObsT, ActT]):
     chunk one action per step when ``execution_horizon`` > 1 and the model defines
     ``predict_chunk``. ``run`` pumps whole episodes and returns a typed :class:`RunResult`.
 
-    The env connection is opened lazily on first ``reset`` (manual driving); ``run`` drives
-    whole episodes through the same primitives. Use it as a context manager to close a
-    manually-opened connection.
+    The env connection is opened lazily on first ``reset`` (manual driving); ``run``
+    drives whole episodes through the same primitives and leaves the session open, so
+    a caller-held session runs as often as you like. Close it yourself -- ``close()``
+    or the ``with`` block; after that, any further use raises. (The one-shot
+    :func:`rlmesh.run` / :meth:`Model.run <rlmesh.Model.run>` create their session
+    internally and close it when the run ends.)
     """
 
-    def __init__(
-        self,
+    #: Instance attributes, declared here because :meth:`_create` (a classmethod)
+    #: populates a bare ``object.__new__`` instance -- the public ``__init__`` only
+    #: rejects direct construction. ``_device`` is the compute device for the local
+    #: model's inputs (torch/jax); obs tensor leaves are moved onto it before
+    #: predict (a served model leaves it unset -- the server worker places obs).
+    _predict: Callable[[Any], Any] | None
+    _predict_chunk: Callable[..., Any] | None
+    _execution_horizon: int
+    _spec: object | None
+    _env: object
+    _on_episode_end: Callable[[], None] | None
+    _on_close: Callable[[], None] | None
+    _trust: bool
+    _bridge: ValueBridge | None
+    _remote_env_cls: type | None
+    _instruction: str | None
+    _close_env: bool
+    _model_client: PyModelClient | None
+    _owner: Any
+    _device: object | None
+    _closed: bool
+    _connected: bool
+    _client: Any
+    _owns_client: bool
+    _adapter: Any
+    _contract: Any
+    _env_bridge: ValueBridge | None
+    _text_placements: tuple[TextPlacement, ...]
+    _horizon: int
+    _replay: ChunkReplay
+    _terminated: bool
+    _truncated: bool
+    _steps: int
+    _reward: float
+    _last_info: Mapping[str, Any]
+    _model_ms: float
+    _env_ms: float
+    _sps: float
+    _ep_start: float | None
+    _last_step_t: float | None
+    _ep_index: int
+    _ep_total: int
+    _seed: int | None
+    _chunk_pos: int
+    _chunk_len: int
+    _episode_open: bool
+    _read_cache: dict[Any, Reader]
+    _view_driver: ViewerDriver | None
+
+    def __init__(self) -> None:
+        raise TypeError(
+            "Session is not constructed directly; use rlmesh.session(model, env) "
+            "or model.session(env)"
+        )
+
+    @classmethod
+    def _create(
+        cls,
         *,
         env: object,
         predict: Callable[[Any], Any] | None = None,
@@ -211,16 +358,21 @@ class Session(Generic[ObsT, ActT]):
         remote_env_cls: type | None = None,
         instruction: str | None = None,
         close_env: bool = False,
-        token: str = "",
         execution_horizon: int = 1,
         model_client: PyModelClient | None = None,
         owner: Any = None,
         device: object | None = None,
         view: object = None,
-    ) -> None:
-        # Two modes: a local model (``predict`` + client-side ``spec`` adapter) or a
-        # served model (``model_client`` -- the server applies its adapter). ``owner``
-        # is a managed source (e.g. a SandboxModel container) to shut down on close.
+    ) -> Session[Any, Any]:
+        """Build and populate a session (two modes: local predict+spec, or served model_client).
+
+        The single construction seam behind :func:`rlmesh.session`,
+        :meth:`Model.session`, and the served handles' ``session``; the public
+        ``__init__`` only rejects direct construction.
+        """
+        if execution_horizon < 1:
+            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        self = object.__new__(cls)
         self._predict = predict
         self._predict_chunk = predict_chunk
         self._execution_horizon = execution_horizon
@@ -233,27 +385,27 @@ class Session(Generic[ObsT, ActT]):
         self._remote_env_cls = remote_env_cls
         self._instruction = instruction
         self._close_env = close_env
-        self._token = token
         self._model_client = model_client
         self._owner = owner
         #: Compute device for the local model's inputs (torch/jax), from the model's
         #: ``device``; obs tensor leaves are moved onto it before predict. None / a
         #: served model (the server worker places obs) leaves it unset.
         self._device = device
+        self._closed = False
         self._connected = False
-        self._client: Any = None
+        self._client = None
         self._owns_client = False
-        self._adapter: Any = None
-        self._contract: Any = None
-        self._env_bridge: ValueBridge | None = None
-        self._text_placements: tuple[TextPlacement, ...] = ()
+        self._adapter = None
+        self._contract = None
+        self._env_bridge = None
+        self._text_placements = ()
         self._horizon = 1
         self._replay = ChunkReplay(1)
         self._terminated = False
         self._truncated = False
         self._steps = 0
         self._reward = 0.0
-        self._last_info: Mapping[str, Any] = {}
+        self._last_info = {}
         #: Debug-viewer telemetry (smoothed), fed to the HUD each step. ``model_ms``
         #: tracks the forward cost only when the model actually runs (so chunk-replay
         #: steps don't read as 0ms); ``env_ms`` the simulator ``step``; ``sps`` the
@@ -262,11 +414,11 @@ class Session(Generic[ObsT, ActT]):
         self._model_ms = 0.0
         self._env_ms = 0.0
         self._sps = 0.0
-        self._ep_start: float | None = None
-        self._last_step_t: float | None = None
+        self._ep_start = None
+        self._last_step_t = None
         self._ep_index = 0
         self._ep_total = 0
-        self._seed: int | None = None
+        self._seed = None
         self._chunk_pos = 0
         self._chunk_len = 0
         #: Whether an episode has been reset and not yet ended. The local episode
@@ -275,18 +427,23 @@ class Session(Generic[ObsT, ActT]):
         self._episode_open = False
         #: Resolved Readers (sess.read), cached per read item so a per-step read
         #: does not re-resolve.
-        self._read_cache: dict[Any, Reader] = {}
+        self._read_cache = {}
         #: Optional built-in debug viewer (``view=`` on run/session). Lazily builds
         #: a native ``PyViewer`` on the first fed frame; best-effort, never fatal.
         _view = resolve_view(view)
         self._view_driver = ViewerDriver(_view) if _view is not None else None
+        return self
+
+    def _require_open(self) -> None:
+        """Reject any use of an explicitly closed session (no silent reconnect)."""
+        if self._closed:
+            raise RuntimeError("session is closed")
 
     def _ensure_connected(self) -> None:
+        self._require_open()
         if self._connected:
             return
-        client, contract, owns = connect_env(
-            self._env, self._token, self._remote_env_cls
-        )
+        client, contract, owns = connect_env(self._env, self._remote_env_cls)
         reject_vector_env(contract)
         self._client = client
         self._contract = contract
@@ -300,14 +457,9 @@ class Session(Generic[ObsT, ActT]):
             )
             self._text_placements = text_placements(self._spec)
             # The execution horizon is a caller decision (execution_horizon), not the
-            # spec. It engages only when the model exposes a predict_chunk corner;
+            # spec. It engages only when the model exposes a predict_chunk corner
+            # (the entry points warn about the un-chunked fallback at creation);
             # without one, fall back to single-step predict.
-            if self._execution_horizon > 1 and self._predict_chunk is None:
-                warnings.warn(
-                    f"execution_horizon={self._execution_horizon} was requested but "
-                    "the model defines no predict_chunk(); running un-chunked.",
-                    stacklevel=2,
-                )
             self._horizon = (
                 self._execution_horizon if self._predict_chunk is not None else 1
             )
@@ -465,10 +617,12 @@ class Session(Generic[ObsT, ActT]):
             return out
 
         raw_action = self._replay.next_action(_forward)
-        # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not chunking).
+        # Mirror the local chunk-replay position for the HUD (1-based; 0/0 = not
+        # chunking). The length is the chunk the model actually returned (post-cap),
+        # not the requested horizon, so a short native chunk displays truthfully.
         if self._horizon > 1:
-            self._chunk_len = self._horizon
-            self._chunk_pos = self._horizon - self._replay.pending
+            self._chunk_len = self._replay.last_chunk_len
+            self._chunk_pos = self._chunk_len - self._replay.pending
         else:
             self._chunk_len = self._chunk_pos = 0
         if self._adapter is not None:
@@ -506,10 +660,14 @@ class Session(Generic[ObsT, ActT]):
         self._feed_view(obs)
         # Viewer "skip episode" (the `n` key / `/skip` button): a soft, non-failure end
         # -- like a time-limit truncation -- that advances to the next episode, distinct
-        # from quit (which stops the whole run via KeyboardInterrupt). Forcing the
+        # from quit (which stops the whole run early with a partial result). Forcing the
         # returned `truncated` true ends the episode in any loop that reads this tuple
         # (the catalog's record.run) as well as ones reading `self.done` (Session.run).
-        if self._view_driver is not None and self._view_driver.consume_skip():
+        # Quit (`q` / Esc) also truncates the current episode so a hand-driven loop
+        # ends; Session.run additionally stops iterating episodes (see run()).
+        if self._view_driver is not None and (
+            self._view_driver.consume_skip() or self._view_driver.quit_requested()
+        ):
             truncated = True
             self._truncated = True
         return (
@@ -547,7 +705,7 @@ class Session(Generic[ObsT, ActT]):
         adapter, roles = resolve_read_adapter(self._contract, items, self._trust)
         return Reader(adapter, roles, adapter_env_bridge(self._client))
 
-    def read(self, observation: object, item: object) -> object:
+    def read(self, observation: object, item: object) -> Any:
         """One-shot read of a single role from one observation.
 
         The single-value convenience for :meth:`reader` -- ``item`` is a role
@@ -556,26 +714,70 @@ class Session(Generic[ObsT, ActT]):
 
             ee = sess.read(obs, EEF_POS)
             img = sess.read(obs, Image(IMAGE_PRIMARY, layout="hwc"))
+
+        The value is typed ``Any`` (like :class:`Reader`'s): its concrete shape is
+        the leaf's declared encoding, which the caller owns.
         """
+        self._require_open()
         reader = self._read_cache.get(item)
         if reader is None:
             reader = self.reader(item)
             self._read_cache[item] = reader
         return reader(observation)[reader.roles[0]]
 
+    def observation_roles(self) -> ObservationRoles:
+        """The observation roles this session's env declares, grouped by kind.
+
+        Connects if needed, reads the env contract's published tags, and returns
+        their :attr:`~rlmesh.adapters.EnvTags.observation_roles`. An env that
+        publishes no tags yields empty groups -- "none declared" is an answer,
+        not an error.
+        """
+        from ..adapters import EnvTags
+        from ..adapters import ObservationRoles as _ObservationRoles
+
+        self._ensure_connected()
+        env_tags = EnvTags.from_metadata(
+            getattr(self._contract, "metadata", None) or {}
+        )
+        if env_tags is None:
+            return _ObservationRoles()
+        return env_tags.observation_roles
+
     def run(
         self,
         *,
         seeds: Sequence[int] | None = None,
         max_episodes: int | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        hooks: RunHooks | None = None,
     ) -> RunResult:
         """Drive whole episodes to completion and return a typed :class:`RunResult`.
 
         The single drive loop: pumps this session's own ``reset`` / ``predict`` /
         ``step`` primitives, so ``Model.run`` routes through here.
         ``seeds`` gives a per-episode seed and sets the episode count unless
-        ``max_episodes`` is given.
+        ``max_episodes`` is given. ``max_episode_steps`` / ``max_episode_seconds``
+        cap each episode -- hitting a cap marks it ``truncated``, exactly like the
+        built-in step bound (the wall-clock cap is checked at the top of the step
+        loop). ``hooks`` (:class:`RunHooks`) observes the loop; hook exceptions
+        propagate and abort the run, and :meth:`RunHooks.on_run_end` always fires
+        exactly once with the completed episodes, even on an error or interrupt.
+
+        Does **not** close the session: a caller-held session (from
+        :func:`rlmesh.session` / :meth:`Model.session`) stays connected -- viewer
+        and hooks included -- so ``run`` can be called again or mixed with manual
+        driving; close it via :meth:`close` or the ``with`` block. (The one-shot
+        :func:`rlmesh.run` / :meth:`Model.run` own their internal session and
+        close it for you.)
         """
+        if max_episode_steps is not None and max_episode_steps < 1:
+            raise ValueError(f"max_episode_steps must be >= 1, got {max_episode_steps}")
+        if max_episode_seconds is not None and max_episode_seconds <= 0:
+            raise ValueError(
+                f"max_episode_seconds must be > 0, got {max_episode_seconds}"
+            )
         self._ensure_connected()
         if max_episodes is not None:
             n_episodes = max_episodes
@@ -583,56 +785,118 @@ class Session(Generic[ObsT, ActT]):
             n_episodes = len(seeds)
         else:
             n_episodes = 1
+        step_cap = (
+            max_episode_steps
+            if max_episode_steps is not None
+            else _MAX_STEPS_PER_EPISODE
+        )
         episodes: list[EpisodeResult] = []
-        on_close_error: BaseException | None = None
+        run_end_error: BaseException | None = None
         self._ep_total = n_episodes
         try:
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None
                 obs, last_info = self.reset(seed=seed)
-                while not self.done and self._steps < _MAX_STEPS_PER_EPISODE:
-                    obs, _r, _t, _tr, last_info = self.step(self.predict(obs))
-                # Hitting the step cap is a truncation, not a silent non-outcome.
+                ep_start = time.perf_counter()
+                if hooks is not None:
+                    hooks.on_episode_start(episode=i, seed=seed)
+                predict_total_ms = 0.0
+                step_total_ms = 0.0
+                while not self.done and self._steps < step_cap:
+                    if (
+                        max_episode_seconds is not None
+                        and time.perf_counter() - ep_start >= max_episode_seconds
+                    ):
+                        break
+                    step_index = self._steps
+                    prev_obs = obs
+                    t0 = time.perf_counter()
+                    action = self.predict(prev_obs)
+                    t1 = time.perf_counter()
+                    obs, reward, terminated, truncated, last_info = self.step(action)
+                    t2 = time.perf_counter()
+                    predict_ms = (t1 - t0) * 1000.0
+                    step_ms = (t2 - t1) * 1000.0
+                    predict_total_ms += predict_ms
+                    step_total_ms += step_ms
+                    if hooks is not None:
+                        hooks.on_step(
+                            StepEvent(
+                                episode=i,
+                                seed=seed,
+                                step=step_index,
+                                observation=prev_obs,
+                                action=action,
+                                reward=reward,
+                                terminated=terminated,
+                                truncated=truncated,
+                                info=last_info,
+                                predict_ms=predict_ms,
+                                step_ms=step_ms,
+                                read=partial(self.read, prev_obs),
+                            )
+                        )
                 if not self._terminated and not self._truncated:
                     self._truncated = True
-                episodes.append(
-                    EpisodeResult(
-                        index=i,
-                        seed=seed,
-                        steps=self._steps,
-                        reward=self._reward,
-                        terminated=self._terminated,
-                        truncated=self._truncated,
-                        success=_episode_success(last_info),
-                    )
+                steps = self._steps
+                episode = EpisodeResult(
+                    index=i,
+                    seed=seed,
+                    steps=steps,
+                    reward=self._reward,
+                    terminated=self._terminated,
+                    truncated=self._truncated,
+                    success=_episode_success(last_info),
+                    duration_s=time.perf_counter() - ep_start,
+                    predict_ms=predict_total_ms / steps if steps else 0.0,
+                    step_ms=step_total_ms / steps if steps else 0.0,
                 )
+                episodes.append(episode)
+                if hooks is not None:
+                    hooks.on_episode_end(episode)
+                # Viewer quit (`q` / Esc): stop early and return the partial result
+                # -- the just-recorded (truncated) episode is the last one. A real
+                # Ctrl-C still raises KeyboardInterrupt out of the loop above.
+                if self._view_driver is not None and self._view_driver.quit_requested():
+                    break
         finally:
-            # End the final episode (earlier ones end at the next reset()), then the
-            # close hook -- `["episode_end", ..., "close"]`.
-            self._end_episode()
-            if self._on_close is not None:
+            if hooks is not None:
                 try:
-                    self._on_close()
+                    hooks.on_run_end(RunResult(episodes=tuple(episodes)))
                 except BaseException as exc:
-                    on_close_error = exc
-            self.close()
-        if on_close_error is not None:
-            raise on_close_error
+                    run_end_error = exc
+            self._end_episode()
+        if run_end_error is not None:
+            raise run_end_error
         return RunResult(episodes=tuple(episodes))
 
     def close(self) -> None:
-        """Close this session: the served route (and any owned source), then the env.
+        """Close this session: model close hook, served route (and owned source), env.
 
         For a served model, closes the model client and shuts down a managed source it
         started (e.g. a ``SandboxModel`` container). For the env, shuts it down only on
         the ``close_env`` opt-in and closes a connection this session dialed.
+
+        Idempotent: the first call tears everything down (firing a local model's
+        ``on_close`` exactly once, whether the session was pumped via ``run`` or
+        driven by hand); later calls are no-ops, and any other use of a closed
+        session raises ``RuntimeError``.
         """
+        if self._closed:
+            return
+        self._closed = True
         # End an episode left open by a hand-driven loop, so a stateful model's
         # `on_episode_end` fires for the last episode even without a following reset().
         if self._view_driver is not None:
             self._view_driver.close()
         self._end_episode()
+        on_close_error: BaseException | None = None
+        if self._on_close is not None:
+            try:
+                self._on_close()
+            except BaseException as exc:
+                on_close_error = exc
         model_client = self._model_client
         if model_client is not None:
             self._model_client = None
@@ -656,6 +920,8 @@ class Session(Generic[ObsT, ActT]):
                     close_client(self._client)
                 self._connected = False
                 self._client = None
+        if on_close_error is not None:
+            raise on_close_error
 
     def __enter__(self) -> Session[ObsT, ActT]:
         return self

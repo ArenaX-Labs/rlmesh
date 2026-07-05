@@ -3,8 +3,8 @@
 The **describe envelope** is the single, self-contained JSON artifact that fully
 describes an environment factory or a model: its parameters, variants, IO
 contract, obs/action spaces, and the runtime it was generated under. It is
-generated once (build/generate-time), uploaded to a managed service, listed in a
-dashboard, and is forward-compatible with being baked into an OCI image label.
+generated once (build/generate-time), uploaded to the managed platform, listed in
+a dashboard, and is forward-compatible with being baked into an OCI image label.
 
 This document is the **cross-language contract**. The format (the field set,
 versioning, ordering, and serialization) is owned by the Rust crate

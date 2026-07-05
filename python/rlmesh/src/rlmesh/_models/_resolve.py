@@ -1,9 +1,9 @@
 """Adapter resolution from an env contract and a model spec.
 
-``resolve_route_adapter`` is the served-route entry (resolved once per route at
-``ConfigureRoute``); ``resolve_adapter`` is the shared core used by both the
-served path and the local :class:`rlmesh._models._eval.Session`;
-``reject_vector_env`` is the single-env guard the per-episode loop relies on.
+``resolve_adapter`` is the shared core used by both the served path (resolved
+once per route at ``ResolveAdapter``) and the local
+:class:`rlmesh._models._eval.Session`; ``reject_vector_env`` is the single-env
+guard the per-episode loop relies on.
 """
 
 from __future__ import annotations
@@ -16,29 +16,9 @@ if TYPE_CHECKING:
     from ..adapters import Adapter
     from ..specs import EnvContract
 
-# Cross-module surface: the public route resolver plus the helpers ``_eval``
+# Cross-module surface: the shared resolver plus the helpers ``_eval``
 # resolves as module globals (see note in ``_connect``).
-__all__ = ["reject_vector_env", "resolve_adapter", "resolve_route_adapter"]
-
-
-def resolve_route_adapter(
-    spec: object | None, contract: EnvContract, trust_entrypoints: bool
-) -> Adapter | None:
-    """Resolve a served route's adapter from its configure-time env contract.
-
-    The serve-path counterpart of the run(env) resolution: a served model
-    receives the env contract once per route (the ``ConfigureRoute`` RPC), so it
-    resolves the adapter there rather than at connect. Returns ``None`` for a
-    spec-less / ``NO_ADAPTER`` model (no transform). Raises on a spec/env mismatch
-    so route configuration fails loudly instead of predicting wrongly.
-
-    Frame-stacking state is now episode-keyed in the native serving engine, so a
-    stateful (frame-stacking) adapter serves correctly against a vectorized route
-    -- the old single-lane rejection is lifted. (Model-*internal* state, which the
-    engine cannot key by episode, is gated to single-lane by a registration-time
-    probe instead.)
-    """
-    return resolve_adapter(spec, contract, trust_entrypoints)
+__all__ = ["reject_vector_env", "resolve_adapter"]
 
 
 def resolve_adapter(
@@ -47,10 +27,19 @@ def resolve_adapter(
     """Resolve the adapter from a model ``spec`` and an env contract.
 
     The shared core of both the served path and the local
-    :class:`rlmesh._models._eval.Session`. Returns ``None`` for a ``NO_ADAPTER`` or
+    :class:`rlmesh._models._eval.Session`. On the serve path a model receives the
+    env contract once per route (the ``ResolveAdapter`` RPC), so it resolves the
+    adapter there rather than at connect. Returns ``None`` for a ``NO_ADAPTER`` or
     spec-less model on an untagged env (no transform). Raises on a spec/env
     mismatch, a non-:class:`~rlmesh.adapters.ModelSpec` spec, or a tagged env paired
-    with ``spec=None``.
+    with ``spec=None`` -- so route configuration fails loudly instead of predicting
+    wrongly.
+
+    Frame-stacking state is episode-keyed in the native serving engine, so a
+    stateful (frame-stacking) adapter serves correctly against a vectorized route
+    -- the old single-lane rejection is lifted. (Model-*internal* state, which the
+    engine cannot key by episode, is gated to single-lane by a registration-time
+    probe instead.)
     """
     from ..adapters import (
         AdapterResolutionError,

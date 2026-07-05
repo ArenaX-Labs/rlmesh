@@ -4,6 +4,7 @@ import importlib
 import sys
 from collections.abc import Callable
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -424,3 +425,137 @@ def test_resolve_bootstrap_spec_reads_inline_payload(
     spec = resolve_bootstrap_spec([], prog="x")
 
     assert spec["kind"] == "gym"
+
+
+def test_load_environment_chains_lookup_error_with_suggestion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gymnasium's NameNotFound ("Did you mean ...?") must be quoted and
+    chained, not masked by a complaint about the missing gym module."""
+    from rlmesh._bootstrap.loaders import load_environment
+
+    name_not_found = type("NameNotFound", (Exception,), {})
+
+    gymnasium = ModuleType("gymnasium")
+
+    def missing_make(env_id: str, **kwargs: object) -> object:
+        raise name_not_found(
+            f"Environment {env_id} doesn't exist. Did you mean CartPole-v1?"
+        )
+
+    gymnasium.make = missing_make  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "gymnasium", gymnasium)
+    monkeypatch.setitem(sys.modules, "gym", None)  # type: ignore[arg-type]
+
+    with pytest.raises(ImportError) as excinfo:
+        load_environment("CartPole-v2", [], num_envs=1)
+
+    message = str(excinfo.value)
+    assert "Did you mean CartPole-v1?" in message
+    assert "Missing modules" not in message
+    assert isinstance(excinfo.value.__cause__, name_not_found)
+
+
+def test_import_packages_chains_and_quotes_cause() -> None:
+    from rlmesh._bootstrap.loaders import import_packages
+
+    with pytest.raises(ImportError, match="Unable to import package") as excinfo:
+        import_packages(["definitely_not_a_real_pkg_xyz"])
+
+    assert "No module named" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, ImportError)
+
+
+def test_load_gym_env_does_not_retry_construction_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A construction error (not a lookup miss) raises as-is instead of
+    re-running side-effecting construction against gym and blaming both."""
+    from rlmesh._bootstrap.loaders import load_gym_env
+
+    gymnasium = ModuleType("gymnasium")
+
+    def exploding_make(env_id: str, **kwargs: object) -> object:
+        raise RuntimeError("construction exploded")
+
+    gymnasium.make = exploding_make  # type: ignore[attr-defined]
+
+    gym = ModuleType("gym")
+    gym.make = lambda env_id, **k: pytest.fail("gym must not be retried")  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "gymnasium", gymnasium)
+    monkeypatch.setitem(sys.modules, "gym", gym)
+
+    with pytest.raises(RuntimeError, match="construction exploded"):
+        load_gym_env({"kind": "gym", "env_id": "E-v0"})
+
+
+def test_vectorize_rejects_unknown_mode() -> None:
+    from rlmesh._bootstrap.gym_support import vectorize
+
+    with pytest.raises(ValueError, match="vectorization_mode"):
+        vectorize(lambda: object(), 2, "Async")
+
+
+def test_expect_vectorization_mode_none_means_auto() -> None:
+    from rlmesh._bootstrap.spec_resolution import expect_vectorization_mode
+
+    assert expect_vectorization_mode(None, "x") is None
+    assert expect_vectorization_mode("async", "x") == "async"
+    with pytest.raises(ValueError, match="'sync' or 'async'"):
+        expect_vectorization_mode("Async", "x")
+
+
+def test_call_hf_make_env_leaves_kwargs_only_signature_alone_by_default() -> None:
+    """A **kwargs-only make_env only receives n_envs/use_async_envs when
+    vectorization is actually requested, so the default single-env case never
+    crashes a natural passthrough signature."""
+    from rlmesh._bootstrap.gym_support import call_hf_make_env
+
+    captured: dict[str, object] = {}
+
+    def make_env(**kwargs: object) -> object:
+        captured.clear()
+        captured.update(kwargs)
+        return SimpleNamespace(reset=lambda: None, step=lambda action: None)
+
+    call_hf_make_env(make_env, {}, num_envs=1, vectorization_mode=None)
+    assert captured == {}
+
+    call_hf_make_env(make_env, {}, num_envs=3, vectorization_mode="async")
+    assert captured == {"n_envs": 3, "use_async_envs": True}
+
+
+def test_load_hf_env_uses_unique_module_names(tmp_path) -> None:
+    """Two hf env loads in one process must not clobber each other's
+    sys.modules entry."""
+    from rlmesh._bootstrap.loaders import load_hf_env
+
+    markers: dict[str, str] = {}
+    for marker in ("alpha", "beta"):
+        source = tmp_path / marker
+        source.mkdir()
+        (source / "env.py").write_text(
+            f"""
+class TinyEnv:
+    marker = {marker!r}
+
+    def reset(self, seed=None, options=None):
+        return 0, {{}}
+
+    def step(self, action):
+        return 0, 0.0, True, False, {{}}
+
+
+def make_env(**kwargs):
+    return TinyEnv()
+""",
+            encoding="utf-8",
+        )
+        env = load_hf_env({"kind": "hf", "source_subdir": str(source)})
+        markers[marker] = cast("Any", env).marker
+
+    assert markers == {"alpha": "alpha", "beta": "beta"}
+    hf_modules = [name for name in sys.modules if name.startswith("rlmesh_hf_env")]
+    assert len(hf_modules) >= 2

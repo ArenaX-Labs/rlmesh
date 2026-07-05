@@ -29,13 +29,28 @@ __all__ = ["main", "serve_env", "serve_model"]
 _DEVICE_FRAMEWORKS = ("torch", "jax")
 
 
-def _framework_name(framework: object) -> object:
+def _framework_name(framework: str | ValueBridge | None) -> str | None:
     # framework is a str, a ValueBridge (which carries .name), or None; normalize to
     # the name string (or None) without importing the bridge at runtime.
-    return getattr(framework, "name", framework)
+    return cast("str | None", getattr(framework, "name", framework))
 
 
-def _gate_device(device: object, framework: object) -> object:
+def _normalize_framework(framework: str | None) -> str | None:
+    """Canonicalize a framework name the way ``resolve_bridge`` does.
+
+    ``resolve_bridge`` strips and lowercases the name, so the device and
+    vectorization guards must compare the same canonical value -- otherwise an
+    ambient ``RLMESH_FRAMEWORK=JAX`` would slip past them while still resolving
+    to the jax bridge.
+    """
+    if isinstance(framework, str):
+        return framework.strip().lower()
+    return framework
+
+
+def _gate_device(
+    device: object | None, framework: str | ValueBridge | None
+) -> object | None:
     # --device defaults to RLMESH_DEVICE, so a GPU node's global default would reach
     # a numpy/gym env and make EnvServer reject it at startup. The device only types
     # the torch/jax seam; ignore it for anything else.
@@ -44,7 +59,9 @@ def _gate_device(device: object, framework: object) -> object:
     return device if _framework_name(framework) in _DEVICE_FRAMEWORKS else None
 
 
-def _reject_vectorized_framework(vectorized: bool, framework: object) -> None:
+def _reject_vectorized_framework(
+    vectorized: bool, framework: str | ValueBridge | None
+) -> None:
     # gym vectorization concatenates observations with numpy, discarding the
     # framework tensors (and crashing on GPU tensors), so a torch/jax env can't be
     # fanned out that way. A natively batched env returning [N, ...] tensors is
@@ -67,15 +84,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--address", default=os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
     )
-    parser.add_argument("--token", default="")
     parser.add_argument(
         "--framework",
         default=os.environ.get("RLMESH_FRAMEWORK") or None,
         help=(
             "Array framework for the env's obs/action seam: 'torch', 'jax', or "
-            "'numpy' (default). Needed only for a classless --env (a make-callable "
-            "/ gym-id / hf source); an EnvFactory pins it on the class. Defaults to "
-            "RLMESH_FRAMEWORK. Env only."
+            "'numpy' (default). Needed only when --env resolves to a bare "
+            "make-callable or env class; an EnvFactory pins it on the class. "
+            "Defaults to RLMESH_FRAMEWORK. Env only."
         ),
     )
     parser.add_argument(
@@ -90,16 +106,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--kwargs-json",
         type=_json_object,
         help=(
-            "JSON object bound to the env factory's make(**binding) -- the env "
+            "JSON object bound to the entrypoint's declared params -- the env "
+            "factory's make(**binding) or the model's load(**binding), i.e. the "
             "variation to serve. Defaults to RLMESH_MAKE_KWARGS; absent serves "
-            "make()'s defaults. Validated against the factory's declared params "
-            "before construction. Env only."
+            "the declared defaults. Validated before construction."
         ),
     )
     args = parser.parse_args(argv)
 
     if bool(args.model) == bool(args.env):
         parser.error("provide exactly one of a model entrypoint or --env")
+    if args.model and (args.framework is not None or args.device is not None):
+        parser.error(
+            "--framework/--device apply only to an env (--env); unset them (and "
+            "RLMESH_FRAMEWORK / RLMESH_DEVICE) when serving a model"
+        )
 
     # Eval shape from the container env (start_prebuilt_container injects these for a
     # SandboxVectorEnv): honor RLMESH_NUM_ENVS by fanning the factory out into a
@@ -125,19 +146,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             binding = {}
 
     if args.env:
-        # num_envs / vectorization_mode are vectorization controls (their own env
-        # vars), not env make() kwargs; a binding key of either name would otherwise
-        # collide with serve_env's explicit args as an opaque "multiple values"
-        # TypeError. Point the operator at the right knob instead.
-        control_collisions = {"num_envs", "vectorization_mode"} & binding.keys()
+        # num_envs / vectorization_mode / framework / device are serve controls
+        # (their own env vars / flags), not env make() kwargs; a binding key of any
+        # of those names would otherwise collide with serve_env's explicit args as
+        # an opaque "multiple values" TypeError. Point the operator at the right
+        # knob instead.
+        control_collisions = {
+            "num_envs",
+            "vectorization_mode",
+            "framework",
+            "device",
+        } & binding.keys()
         if control_collisions:
             parser.error(
-                f"{', '.join(sorted(control_collisions))} control vectorization, not "
+                f"{', '.join(sorted(control_collisions))} control serving, not "
                 "env construction; set RLMESH_NUM_ENVS / RLMESH_VECTORIZATION_MODE "
-                "instead of passing them in RLMESH_MAKE_KWARGS / --kwargs-json"
+                "/ --framework / --device instead of passing them in "
+                "RLMESH_MAKE_KWARGS / --kwargs-json"
             )
         env = resolve_entrypoint(args.env, label="env entrypoint")
-        print(f"RLMesh serving env {args.env} on {args.address}", flush=True)
         serve_env(
             env,
             args.address,
@@ -149,8 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     else:
         model = resolve_entrypoint(args.model, label="model entrypoint")
-        print(f"RLMesh serving model {args.model} on {args.address}", flush=True)
-        serve_model(model, args.address, token=args.token, binding=binding)
+        serve_model(model, args.address, binding=binding)
     return 0
 
 
@@ -169,7 +195,6 @@ def serve_model(
     model_source: object,
     address: str,
     *,
-    token: str = "",
     binding: dict[str, Any] | None = None,
 ) -> None:
     """Host a model on ``address`` (blocking).
@@ -180,9 +205,12 @@ def serve_model(
     hand-written request builder. A non-empty ``binding`` validates against the
     model's declared ``params`` and is applied to ``load(**binding)`` on the
     bootstrap-authoritative path. Heavy imports stay inside this call so importing
-    the authoring base stays cheap.
+    the authoring base stays cheap. A one-line serving status is printed once the
+    model is resolved and loaded, before the blocking serve.
     """
-    _resolve_model(model_source, binding).serve(address, token=token)
+    model = _resolve_model(model_source, binding)
+    print(f"RLMesh serving model on {address}", flush=True)
+    model.serve(address)
 
 
 def _resolve_model(
@@ -248,13 +276,16 @@ def serve_env(
     (``rlmesh.torch.EnvFactory`` etc.), so a classless make-callable / gym-id /
     hf source is the only case that needs it passed explicitly. ``device`` places
     the incoming action (torch/jax only). Heavy imports stay inside this call so
-    importing the authoring base stays cheap.
+    importing the authoring base stays cheap. A one-line serving status is
+    printed once the server has bound its address, before the blocking serve.
     """
     from rlmesh import EnvServer
 
     from ._bootstrap.loaders import construct_authored_env
 
+    framework = _normalize_framework(framework)
     vectorized = num_envs > 1
+    tags: object | None = None
     if hasattr(env_source, "make"):  # EnvFactory class or instance
         # The framework rides the factory class (_bridge ClassVar); an explicit
         # framework= overrides it. Unlike tags, it survives vectorization. Resolve
@@ -276,17 +307,11 @@ def serve_env(
         # publish tags only on the scalar path -- mirroring the gym build path,
         # which serves vector envs untagged.
         tags = None if vectorized else getattr(env_source, "tags", None)
-        EnvServer(
-            env,
-            address,
-            tags=tags,
-            framework=env_framework,
-            device=_gate_device(device, env_framework),
-        ).serve()
     else:  # bare make-env callable
         # A bare callable has no class to pin a framework, so honor only the
         # explicit framework= (from --framework / RLMESH_FRAMEWORK).
-        _reject_vectorized_framework(vectorized, framework)
+        env_framework = framework
+        _reject_vectorized_framework(vectorized, env_framework)
         make_env = cast("Callable[..., EnvLike[Any, Any]]", env_source)
         if vectorized:
             from ._bootstrap.gym_support import vectorize
@@ -301,9 +326,15 @@ def serve_env(
             )
         else:
             env = make_env(**make_kwargs)
-        EnvServer(
-            env, address, framework=framework, device=_gate_device(device, framework)
-        ).serve()
+    server = EnvServer(
+        env,
+        address,
+        tags=cast("Any", tags),
+        framework=env_framework,
+        device=_gate_device(device, env_framework),
+    )
+    print(f"RLMesh serving env on {server.address}", flush=True)
+    server.serve()
 
 
 if __name__ == "__main__":

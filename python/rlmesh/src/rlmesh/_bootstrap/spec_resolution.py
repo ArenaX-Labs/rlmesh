@@ -147,9 +147,15 @@ def expect_num_envs(value: object, label: str) -> int:
     return value
 
 
-def expect_vectorization_mode(value: object, label: str) -> str:
+def expect_vectorization_mode(value: object, label: str) -> str | None:
+    """Validate a vectorization mode; ``None`` means auto (the loader decides).
+
+    ``None`` passes through so an unset mode reaches gymnasium's ``make_vec``
+    unset (its auto mode), matching the serve-CLI surface instead of silently
+    pinning the sandbox to ``sync``.
+    """
     if value is None:
-        return "sync"
+        return None
     value = expect_str(value, label)
     if value not in {"sync", "async"}:
         raise ValueError(f"{label} must be 'sync' or 'async'")

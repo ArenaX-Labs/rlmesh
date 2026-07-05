@@ -231,6 +231,16 @@ pub fn resolve(
     // an env range, it does not clamp). Surface that so the author learns it will
     // not take effect. (State: env is the source; action: env is the destination.)
     for obs_plan in &obs_plans {
+        if let ObsPlan::Image(image) = obs_plan
+            && let Some((requested, bound)) = &image.role_rebound
+        {
+            advisories.push(format!(
+                "model input {}: no env camera has role {}; bound to the env's                  only camera ({}) instead -- declare the matching role on one                  side to silence this",
+                quoted(&image.placement.to_string()),
+                quoted(requested),
+                quoted(bound),
+            ));
+        }
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
                 !piece.zero_fill && piece.dst_range.is_some() && piece.src_range.is_none()
@@ -264,7 +274,7 @@ pub fn resolve(
     );
     // The frame-stacking × action-chunk-replay guard used to live here, but the
     // execution horizon is no longer part of the spec — it is a runtime decision
-    // (`execution_horizon` on ConfigureRoute). The guard moved to the engine's
+    // (`execution_horizon` on ResolveAdapter). The guard moved to the engine's
     // configure_route, where the resolved stacks and the runtime horizon are both
     // known; see `AdaptedRouteSetup::configure_route`.
     Ok(resolved)
@@ -375,9 +385,9 @@ mod unknown_kind_tests {
     }
 
     #[test]
-    fn defaulted_text_referencing_unknown_kind_is_unsupported_kind() {
-        // A text input with a default still fails loud when the env provides its
-        // role under an unrecognized kind -- the default must not mask present-
+    fn filled_text_referencing_unknown_kind_is_unsupported_kind() {
+        // A text input with a fill still fails loud when the env provides its
+        // role under an unrecognized kind -- the fill must not mask present-
         // but-unreadable data.
         let env_tags = format!(
             r#"{{"observation":{{"note":{{"type":"richtext","role":"instruction"}}}},"action":{ACTION_TAGS}}}"#
@@ -385,7 +395,7 @@ mod unknown_kind_tests {
         let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["note"],"children":[
             {"kind":"box","shape":[4],"dtype":"float32"}]}"#;
         let model = format!(
-            r#"{{"input":{{"t":{{"type":"text","role":"instruction","default":"hi"}}}},"output":{ACTION_OUT}}}"#
+            r#"{{"input":{{"t":{{"type":"text","role":"instruction","fill":"hi"}}}},"output":{ACTION_OUT}}}"#
         );
         let err = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect_err("unsupported");
         assert_eq!(err.code, ErrorCode::UnsupportedKind);

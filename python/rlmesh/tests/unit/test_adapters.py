@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import warnings
 from types import SimpleNamespace
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 
 import gymnasium as gym
 import numpy as np
@@ -595,7 +595,7 @@ def test_optional_state_without_width_is_an_error():
 
 
 def test_describe_mentions_zero_fill_for_absent_optional_roles():
-    text = resolve(LIBERO_ENV, XVLA).describe()
+    text = resolve(LIBERO_ENV, XVLA).explain()
     assert "zeros(3)" in text and "zeros(6)" in text and "zeros(1)" in text
 
 
@@ -650,7 +650,7 @@ def test_custom_adapter_subclass_is_interchangeable():
     np.testing.assert_allclose(
         action, np.asarray(obs["robot0_eef_pos"], np.float32) + 1.0
     )
-    assert "JointSpaceAdapter" in adapter.describe()
+    assert "JointSpaceAdapter" in adapter.explain()
     assert isinstance(resolve(LIBERO_ENV, SMOLVLA), adapt.AdapterBase)
 
 
@@ -683,7 +683,7 @@ GR00T = adapt.ModelSpec(
         "tag.human.action.task_description": adapt.Text(
             role=adapt.INSTRUCTION,
             container="list",
-            default="",
+            fill="",
         ),
     },
     output=adapt.Action(
@@ -1134,6 +1134,68 @@ def test_unreferenced_unencodable_obs_key_is_ignored():
 
 
 # ---------------------------------------------------------------------------
+# Declared observation roles (EnvTags.observation_roles)
+# ---------------------------------------------------------------------------
+
+
+def test_observation_roles_groups_a_dict_tree_in_declaration_order():
+    tags = adapt.EnvTags(
+        observation={
+            "cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            "instr": adapt.TextTag(role=adapt.INSTRUCTION),
+            "wrist": adapt.ImageTag(role=adapt.IMAGE_WRIST),
+            "eef": adapt.StateTag(role=adapt.EEF_POS),
+        },
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    roles = tags.observation_roles
+    assert roles == adapt.ObservationRoles(
+        images=(adapt.IMAGE_PRIMARY, adapt.IMAGE_WRIST),
+        states=(adapt.EEF_POS,),
+        texts=(adapt.INSTRUCTION,),
+    )
+
+
+def test_observation_roles_split_fields_are_states_and_skips_are_excluded():
+    tags = adapt.EnvTags(
+        observation={
+            "state": adapt.Split(
+                adapt.Field(adapt.EEF_POS, 3),
+                adapt.Field(dim=2),
+                adapt.Field(adapt.GRIPPER_POS, 1),
+            )
+        },
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    assert tags.observation_roles.states == (adapt.EEF_POS, adapt.GRIPPER_POS)
+
+
+def test_observation_roles_handles_bare_leaf_and_nested_containers():
+    bare = adapt.EnvTags(
+        observation=adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    assert bare.observation_roles == adapt.ObservationRoles(
+        images=(adapt.IMAGE_PRIMARY,)
+    )
+
+    nested = adapt.EnvTags(
+        observation={
+            "outer": {"eef": adapt.StateTag(role=adapt.EEF_POS)},
+            "pair": (
+                adapt.TextTag(role=adapt.INSTRUCTION),
+                adapt.StateTag(role=adapt.GRIPPER_POS),
+            ),
+        },
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    assert nested.observation_roles == adapt.ObservationRoles(
+        states=(adapt.EEF_POS, adapt.GRIPPER_POS),
+        texts=(adapt.INSTRUCTION,),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
 
@@ -1389,7 +1451,7 @@ def test_wrong_model_action_length_is_an_error():
 
 
 def test_describe_mentions_each_model_key():
-    text = resolve(LIBERO_ENV, XVLA).describe()
+    text = resolve(LIBERO_ENV, XVLA).explain()
     assert '"state"' in text
     # X-VLA proprio and action both use row-major rot6d.
     assert "quat_xyzw->rot6d_rowmajor" in text
@@ -1513,18 +1575,17 @@ def test_role_policy_levels() -> None:
 
 def test_negative_u32_fields_rejected_by_rust_codec() -> None:
     # Negatives are rejected by the authoritative Rust codec (u32) at
-    # serialize/normalize with a field-path-annotated message. Action components
-    # (not behind a tag) get a deep path; model-input payload fields resolve to
-    # `inputs[0]` (the ModelInput tag boundary) plus the u32 constraint.
+    # serialize/normalize with a field-path-annotated message; model-input
+    # payload fields resolve to `inputs[0]` (the ModelInput tag boundary) plus
+    # the u32 constraint. An Actuator's dim never reaches the codec: its
+    # construction guard enforces dim >= 1 first (matching Field).
     gripper = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
 
     def to_dict(*, output: adapt.Action = gripper, **inputs: adapt.ModelLeaf) -> None:
         adapt.ModelSpec(input=inputs, output=output).to_dict()
 
-    with pytest.raises(
-        ValueError, match=r"at output\.components\[0\]\.dim.*non-negative integer"
-    ):
-        to_dict(output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=-1)))
+    with pytest.raises(ValueError, match=r"dim must be >= 1, got -1"):
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=-1)
     with pytest.raises(ValueError, match=r"non-negative integer"):
         to_dict(image=adapt.Image(role=adapt.IMAGE_PRIMARY, width=-1))
     with pytest.raises(ValueError, match=r"non-negative integer"):
@@ -1706,7 +1767,7 @@ def test_stateful_adapter_allowed_on_vector_route() -> None:
     # Frame-stacking state is now episode-keyed in the native serving engine, so
     # a served stateful adapter resolves against a vectorized route -- the old
     # single-lane rejection is lifted.
-    from rlmesh._models._eval import resolve_route_adapter
+    from rlmesh._models._eval import resolve_adapter
 
     env = image_env(4, 4)
     stateful_spec = adapt.ModelSpec(
@@ -1727,23 +1788,19 @@ def test_stateful_adapter_allowed_on_vector_route() -> None:
         )
 
     # A stateful (frame-stacking) adapter now resolves against a vector route.
-    vector_stateful = resolve_route_adapter(
+    vector_stateful = resolve_adapter(
         stateful_spec, contract(2), trust_entrypoints=False
     )
     assert vector_stateful is not None
     # And still against a single lane.
-    single_lane = resolve_route_adapter(
-        stateful_spec, contract(1), trust_entrypoints=False
-    )
+    single_lane = resolve_adapter(stateful_spec, contract(1), trust_entrypoints=False)
     assert single_lane is not None
     # A stateless adapter on a vector route is harmless.
-    stateless = resolve_route_adapter(
-        stateless_spec, contract(2), trust_entrypoints=False
-    )
+    stateless = resolve_adapter(stateless_spec, contract(2), trust_entrypoints=False)
     assert stateless is not None
     # spec=None / no tags also resolves to None without over-rejecting.
     untagged: Any = SimpleNamespace(metadata={}, num_envs=2)
-    assert resolve_route_adapter(None, untagged, trust_entrypoints=False) is None
+    assert resolve_adapter(None, untagged, trust_entrypoints=False) is None
 
 
 def test_euler_xyz_encoding_converts_end_to_end() -> None:
@@ -1870,7 +1927,7 @@ def test_flat_layout_resolves_by_role_and_slices():
     np.testing.assert_allclose(out, [0.0, 1.0, 2.0, 9.0, 3.0, 4.0, 5.0], atol=1e-6)
     # describe() shows each field's env-side slice (the skipped index is the
     # gap between [3:4] and [5:8]).
-    text = adapter.describe()
+    text = adapter.explain()
     assert "<root>[0:3]" in text and "<root>[3:4]" in text and "<root>[5:8]" in text
 
 
@@ -2026,7 +2083,7 @@ def test_custom_encoding_describe_shows_host_layer():
         input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV)},
         output=_gripper_action(),
     )
-    text = resolve(env, spec).describe()
+    text = resolve(env, spec).explain()
     assert "host-side encodings:" in text
     assert "rot6d -> rot6d_rev" in text
 
@@ -2338,14 +2395,14 @@ def test_non_serializable_contract_metadata_is_a_clean_error():
         adapt.resolve_from_contract(contract, spec)
 
 
-def test_default_only_text_is_not_a_referenced_obs_key():
-    # A TextInput satisfied only by its default has env_key ""; that empty key
+def test_fill_only_text_is_not_a_referenced_obs_key():
+    # A TextInput satisfied only by its fill has env_key ""; that empty key
     # must not be reported as an observation key to decode.
     env = single_state_env("pos", gym.spaces.Dict({"pos": box(3)}))
     spec = adapt.ModelSpec(
         input={
             "state": adapt.State(adapt.EEF_POS),
-            "instruction": adapt.Text(role=adapt.INSTRUCTION, default="do the task"),
+            "instruction": adapt.Text(role=adapt.INSTRUCTION, fill="do the task"),
         },
         output=SMOLVLA.output,
     )
@@ -2425,7 +2482,9 @@ def test_from_metadata_reads_v1_and_returns_none_when_absent():
     assert adapt.ModelSpec.from_metadata(spec.to_metadata()) == spec
     assert adapt.ModelSpec.from_metadata({}) is None
 
-    tags = adapt.EnvTags(observation={}, action=adapt.Action())
+    tags = adapt.EnvTags(
+        observation={}, action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    )
     assert adapt.EnvTags.from_metadata(tags.to_metadata()) == tags
     assert adapt.EnvTags.from_metadata({}) is None
 
@@ -2499,7 +2558,7 @@ def test_image_fit_list_authoring_round_trips():
                 role=adapt.IMAGE_PRIMARY, height=64, width=64, fit=("crop", "pad")
             )
         },
-        output=adapt.Action(),
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     doc = spec.to_dict()
     assert doc["input"]["image"]["fit"] == ["crop", "pad"]  # a sequence -> JSON list
@@ -2513,7 +2572,7 @@ def test_image_fit_list_authoring_round_trips():
     # Byte-parity: a single fit stays a bare string, not a one-element list.
     single = adapt.ModelSpec(
         input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, fit="crop")},
-        output=adapt.Action(),
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
     )
     assert single.to_dict()["input"]["image"]["fit"] == "crop"
 
@@ -2639,3 +2698,213 @@ def test_image_optional_camera_zero_fills_when_absent():
     np.testing.assert_array_equal(payload["overhead"], 0)
     # The zero-filled camera surfaces as a non-fatal advisory.
     assert any("blank" in note and "overhead" in note for note in adapter.advisories())
+
+
+# ---------------------------------------------------------------------------
+# Review-wave regressions: the fill rename, hard errors, hash/eq, canonical
+# authored forms.
+# ---------------------------------------------------------------------------
+
+
+def test_image_fill_requires_optional():
+    """fill without optional could never take effect; it fails at construction
+    (naming the role), mirroring Actuator's fill validation."""
+    with pytest.raises(ValueError, match=r"'image/primary'.*fill only applies"):
+        adapt.Image(adapt.IMAGE_PRIMARY, fill=200)
+    filled = adapt.Image(
+        adapt.IMAGE_PRIMARY, size=8, channels=3, optional=True, fill=200
+    )
+    assert filled.fill == 200
+
+
+def test_image_and_text_fill_travel_under_the_fill_wire_key():
+    """The pre-1.0 wire rename: Image.fill and Text.fill serialize as "fill"
+    (formerly "absent_fill" / "default"), with no back-compat alias."""
+    spec = adapt.ModelSpec(
+        input={
+            "cam": adapt.Image(
+                adapt.IMAGE_PRIMARY, size=8, channels=3, optional=True, fill=128
+            ),
+            "instruction": adapt.Text(role=adapt.INSTRUCTION, fill="do the task"),
+        },
+        output=SMOLVLA.output,
+    )
+    wire = spec.to_dict()
+    assert wire["input"]["cam"]["fill"] == 128
+    assert "absent_fill" not in wire["input"]["cam"]
+    assert wire["input"]["instruction"]["fill"] == "do the task"
+    assert "default" not in wire["input"]["instruction"]
+    assert adapt.ModelSpec.from_dict(wire) == spec
+
+
+def test_optional_actuator_round_trips_through_the_wire():
+    """action_from_dict reads optional back, so an optional actuator (+fill)
+    survives the round-trip instead of dropping the flag."""
+    tags = adapt.EnvTags(
+        observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, optional=True, fill=0.5),
+        ),
+    )
+    back = adapt.EnvTags.from_dict(tags.to_dict())
+    assert back == tags
+    assert back.action.components[1].optional is True
+    assert back.action.components[1].fill == 0.5
+
+
+def test_declarative_spec_resolves_without_numpy(monkeypatch):
+    """A fully declarative spec resolves on a numpy-less install: the inverse
+    self-check imports numpy only when a CustomEncoding is present. Uses
+    rlmesh.spaces (native SpaceSpec) spaces; gymnasium spaces are numpy-backed
+    and unavailable on such an install anyway."""
+    import sys
+
+    from rlmesh import spaces
+
+    monkeypatch.setitem(sys.modules, "numpy", None)
+    env_tags = adapt.EnvTags(
+        observation={"pos": adapt.StateTag(role=adapt.EEF_POS)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    spec = adapt.ModelSpec(
+        input={"state": adapt.State(adapt.EEF_POS)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    adapter = adapt.resolve(
+        env_tags,
+        spaces.Dict({"pos": spaces.Box(-1.0, 1.0, (3,))}),
+        spaces.Box(-1.0, 1.0, (1,)),
+        spec,
+    )
+    assert adapter.explain()
+
+
+def test_env_tags_reject_duplicate_observation_roles():
+    with pytest.raises(ValueError, match=r"'image/primary' more than once"):
+        adapt.EnvTags(
+            observation={
+                "a": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+                "b": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+            },
+            action=LIBERO_ACTION,
+        )
+    with pytest.raises(ValueError, match=r"'proprio/eef_pos' more than once"):
+        adapt.EnvTags(
+            observation={
+                "pos": adapt.StateTag(role=adapt.EEF_POS),
+                "flat": adapt.Split(adapt.Field(adapt.EEF_POS, 3)),
+            },
+            action=LIBERO_ACTION,
+        )
+
+
+def test_model_spec_hash_is_key_order_insensitive():
+    """Equal specs whose Dict inputs were authored in different key orders must
+    hash equal (eq is order-insensitive); a Custom spec stays hashable."""
+    a = adapt.ModelSpec(
+        input={
+            "state": adapt.State(adapt.EEF_POS),
+            "instruction": adapt.Text(role=adapt.INSTRUCTION),
+        },
+        output=SMOLVLA.output,
+    )
+    b = adapt.ModelSpec(
+        input={
+            "instruction": adapt.Text(role=adapt.INSTRUCTION),
+            "state": adapt.State(adapt.EEF_POS),
+        },
+        output=SMOLVLA.output,
+    )
+    assert a == b
+    assert hash(a) == hash(b)
+    custom = adapt.ModelSpec(
+        input={"extra": adapt.Custom(transform=lambda obs: 0)},
+        output=SMOLVLA.output,
+    )
+    assert isinstance(hash(custom), int)
+
+
+def test_env_tags_hash_is_key_order_insensitive():
+    forward = {
+        "pos": adapt.StateTag(role=adapt.EEF_POS),
+        "cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY),
+    }
+    backward = dict(reversed(list(forward.items())))
+    a = adapt.EnvTags(observation=forward, action=LIBERO_ACTION)
+    b = adapt.EnvTags(observation=backward, action=LIBERO_ACTION)
+    assert a == b
+    assert hash(a) == hash(b)
+
+
+def test_one_element_accept_set_canonicalizes_to_the_bare_form():
+    """A 1-element accept-set unwraps at construction (the Rust codec emits the
+    bare string on the wire), so from_json(to_json()) == spec."""
+    assert adapt.State(adapt.EEF_ROT, encoding=["rot6d"]) == adapt.State(
+        adapt.EEF_ROT, encoding="rot6d"
+    )
+    spec = adapt.ModelSpec(
+        input={
+            "img": adapt.Image(adapt.IMAGE_PRIMARY, size=8, fit=["crop"]),
+            "rot": adapt.State(adapt.EEF_ROT, encoding=["rot6d"]),
+        },
+        output=SMOLVLA.output,
+    )
+    assert adapt.ModelSpec.from_json(spec.to_json()) == spec
+
+
+def test_custom_encoding_in_accept_set_is_rejected_at_construction():
+    with pytest.raises(ValueError, match=r"State 'proprio/eef_rot'.*accept-set"):
+        adapt.State(adapt.EEF_ROT, encoding=cast("Any", ["rot6d", ROT6D_REV]))
+    with pytest.raises(ValueError, match=r"StateTag 'proprio/eef_rot'.*accept-set"):
+        adapt.StateTag(role=adapt.EEF_ROT, encoding=cast("Any", ["rot6d", ROT6D_REV]))
+    with pytest.raises(ValueError, match=r"Field 'proprio/eef_rot'.*accept-set"):
+        adapt.Field(adapt.EEF_ROT, 6, encoding=cast("Any", ["rot6d", ROT6D_REV]))
+
+
+def test_from_metadata_non_mapping_is_a_resolution_error():
+    """The malformed-metadata error converges on AdapterResolutionError, the
+    same type resolve_from_contract raises for the same payload."""
+    with pytest.raises(adapt.AdapterResolutionError, match="must hold a mapping"):
+        adapt.EnvTags.from_metadata({adapt.ENV_METADATA_KEY: "not-a-mapping"})
+    with pytest.raises(adapt.AdapterResolutionError, match="must hold a mapping"):
+        adapt.ModelSpec.from_metadata({adapt.MODEL_METADATA_KEY: "not-a-mapping"})
+
+
+def test_observation_role_walk_rejects_a_list_container():
+    """The role walker raises the same TypeError the wire encoder raises, so a
+    list container fails at construction instead of first at to_dict."""
+    with pytest.raises(TypeError, match="must be a leaf, a dict, or a tuple"):
+        adapt.EnvTags(
+            observation=cast("Any", [adapt.ImageTag(role=adapt.IMAGE_PRIMARY)]),
+            action=LIBERO_ACTION,
+        )
+
+
+def test_actuator_rejects_non_positive_dim():
+    with pytest.raises(ValueError, match=r"dim must be >= 1, got -2"):
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=-2)
+
+
+def test_image_size_conflict_error_names_the_role():
+    with pytest.raises(ValueError, match=r"'image/primary'.*not both"):
+        adapt.Image(adapt.IMAGE_PRIMARY, height=8, size=8)
+
+
+def test_serve_route_rejects_colliding_custom_placements():
+    """Two custom inputs whose structured placements render to the same
+    NodePath string cannot share a served-route customs map."""
+    from rlmesh.numpy import _numpy_bridge
+
+    env = single_state_env("pos", gym.spaces.Dict({"pos": box(3)}))
+    spec = adapt.ModelSpec(
+        input={
+            "state": adapt.State(adapt.EEF_POS),
+            "a": {"b": adapt.Custom(transform=lambda obs: 0.0)},
+            "a.b": adapt.Custom(transform=lambda obs: 1.0),
+        },
+        output=SMOLVLA.output,
+    )
+    adapter = resolve(env, spec)
+    with pytest.raises(ValueError, match="colliding route keys"):
+        adapter.serve_route(_numpy_bridge)

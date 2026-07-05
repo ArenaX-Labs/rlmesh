@@ -3,10 +3,10 @@
 A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds append a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, chosen during handshake.
 
 ```{note}
-In 0.1.0-rc.1 the active cohort is `2026.06-0.1.0-rc.1`; the bare `2026.06` edition seals at the final 0.1.0.
+The bare `2026.06` edition seals at 0.1.0. Prerelease and local builds before it use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
 ```
 
-Editions answer a different question than the protocol generation. The protocol generation (`rlmesh.protocol.v1`) names the wire shape: which services, messages, and fields exist. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
+Editions answer a different question than the protocol generation. The protocol generation (`rlmesh-wire-v1`) names the wire shape: which services, messages, and fields exist. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
 
 ## Negotiation
 
@@ -25,7 +25,7 @@ Most development never touches the edition:
 
 ## Lifecycle: Provisional, Then Sealed
 
-An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names such as `2026.06-0.1.0-rc.1`, and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
+An edition is **provisional** while no stable release has shipped it: prerelease builds use exact release-cohort names (`YYYY.MM-X.Y.Z-beta.N`), and local source builds use exact `dev.<git>` cohort names. This prevents accidental interoperability between moving builds that have not had stable-release scrutiny. The first stable release that ships an edition **seals** the bare `YYYY.MM` name permanently: the spec document becomes immutable (enforced by checksum), and any later semantic change mints a new edition.
 
 ```{mermaid}
 stateDiagram-v2
@@ -34,7 +34,7 @@ stateDiagram-v2
     Sealed --> Sealed: spec immutable, valid indefinitely
 ```
 
-`2026.06` uses provisional cohorts through the 0.1 beta and release-candidate series and seals at v0.1.0. After sealing it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule.
+`2026.06` uses provisional cohorts through the 0.1 prerelease series and seals at v0.1.0. After sealing it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule.
 
 ## Support Window
 

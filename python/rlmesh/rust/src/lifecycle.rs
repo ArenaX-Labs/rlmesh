@@ -21,13 +21,12 @@ pub struct PyServeOptions {
 #[pymethods]
 impl PyServeOptions {
     #[new]
-    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None, token=None))]
+    #[pyo3(signature = (*, allow_remote_shutdown=false, idle_timeout_seconds=None, drain_timeout_seconds=None, close_timeout_seconds=None))]
     fn new(
         allow_remote_shutdown: bool,
         idle_timeout_seconds: Option<f64>,
         drain_timeout_seconds: Option<f64>,
         close_timeout_seconds: Option<f64>,
-        token: Option<String>,
     ) -> PyResult<PyServeOptions> {
         Ok(PyServeOptions {
             options: ServeOptions {
@@ -35,7 +34,7 @@ impl PyServeOptions {
                 idle_timeout: optional_duration("idle_timeout_seconds", idle_timeout_seconds)?,
                 drain_timeout: optional_duration("drain_timeout_seconds", drain_timeout_seconds)?,
                 close_timeout: optional_duration("close_timeout_seconds", close_timeout_seconds)?,
-                token,
+                token: None,
                 // The Python model client wrapper is inherently single-flight
                 // (its `block_on` predict API serializes by construction), so the
                 // server-side concurrency cap is left at the default here. A
@@ -63,11 +62,6 @@ impl PyServeOptions {
     #[getter]
     fn close_timeout_seconds(&self) -> Option<f64> {
         self.options.close_timeout.map(|value| value.as_secs_f64())
-    }
-
-    #[getter]
-    fn token(&self) -> Option<String> {
-        self.options.token.clone()
     }
 }
 

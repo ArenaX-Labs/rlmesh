@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, cast
 
 
 def split_chunk(raw_action: Any) -> list[Any]:
@@ -21,22 +21,37 @@ def split_chunk(raw_action: Any) -> list[Any]:
     A ``[chunk, dim]`` output becomes ``chunk`` per-step ``[dim]`` actions. Splits
     with ``list()`` so each per-step leaf stays in the model's own framework (a
     torch/jax *device* tensor is NOT force-converted to numpy here) -- it is then
-    bridged identically to the non-chunked path and the serve path. A string/bytes
-    leaf, a non-iterable (scalar), or a structured (mapping) output is a degenerate
+    bridged identically to the non-chunked path and the serve path. A Dict-space
+    action carries the horizon as each leaf's leading axis (e.g. ``{"arm":
+    tensor[H, ...]}``): every ``Mapping`` leaf is split recursively, leaves must
+    agree on the horizon, and the frames are zipped into H per-step mappings --
+    mirroring the native ``split_chunk`` Map arm and the ``_first_frame`` Mapping
+    recursion. A string/bytes leaf or a non-iterable (scalar) is a degenerate
     single-step "chunk", matching the native ``split_chunk`` (which treats a
-    text / scalar / map leaf as one step). Called only when the replay ``horizon > 1``;
+    text / scalar leaf as one step). Called only when the replay ``horizon > 1``;
     a mis-shaped output fails the action conversion downstream rather than being
     silently mis-sliced (except a flat dim-1 action, the inference blind spot the
     native ``split_chunk`` shares).
     """
-    # A str/bytes is iterable but a single action leaf, not a per-character chunk;
-    # match the native side, which keeps a text action as one step.
-    if isinstance(raw_action, (str, bytes, bytearray, Mapping)):
+    if isinstance(raw_action, (str, bytes, bytearray)):
         return [raw_action]
+    if isinstance(raw_action, Mapping):
+        items = cast("Mapping[Any, Any]", raw_action)
+        fields: list[tuple[Any, list[Any]]] = []
+        horizon: int | None = None
+        for key, value in items.items():
+            frames = split_chunk(value)
+            if horizon is not None and horizon != len(frames):
+                raise ValueError(
+                    f"action chunk fields disagree on horizon: {horizon} vs "
+                    f"{len(frames)}"
+                )
+            horizon = len(frames)
+            fields.append((key, frames))
+        return [{key: frames[i] for key, frames in fields} for i in range(horizon or 0)]
     try:
         return list(raw_action)
     except TypeError:
-        # A 0-d array / scalar tensor / bare number is not iterable: one step.
         return [raw_action]
 
 
@@ -51,13 +66,20 @@ class ChunkReplay:
     """
 
     def __init__(self, horizon: int) -> None:
-        # Coerce defensively: a duck-typed adapter may expose a non-int horizon.
         self.horizon = max(1, int(horizon))
         self._queue: deque[Any] = deque()
+        self.last_chunk_len = 0
+        """Length of the chunk the model last returned (post-cap), 0 before any.
+
+        The HUD reads this instead of the requested horizon so a model whose
+        native chunk is shorter than ``execution_horizon`` displays its real
+        replay position (e.g. 1/4, not 5/8).
+        """
 
     def reset(self) -> None:
         """Drop any un-replayed actions at an episode boundary."""
         self._queue.clear()
+        self.last_chunk_len = 0
 
     @property
     def pending(self) -> int:
@@ -85,5 +107,6 @@ class ChunkReplay:
             raise ValueError(
                 "a chunked model (execute_horizon>1) returned an empty action chunk"
             )
+        self.last_chunk_len = len(chunk)
         self._queue.extend(chunk[1:])
         return chunk[0]

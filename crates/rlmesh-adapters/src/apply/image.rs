@@ -46,7 +46,7 @@ fn finalize_image(image: Tensor, plan: &ImagePlan) -> Result<Value, ApplyError> 
 }
 
 /// Synthesize the model input for an optional image the env did not provide: a
-/// frame filled with the spec's `absent_fill` level (black by default), run
+/// frame filled with the spec's `fill` level (black by default), run
 /// through the same normalize/dtype/layout/lead steps as a real frame so it is
 /// indistinguishable from an actual flat observation at that level.
 fn apply_zero_fill_image(
@@ -58,7 +58,7 @@ fn apply_zero_fill_image(
     let (height, width, channels) = (height as usize, width as usize, channels as usize);
     let fill = value::tensor_from_u8(
         value::shape_i64(&[height, width, channels]),
-        vec![plan.absent_fill; height * width * channels],
+        vec![plan.fill; height * width * channels],
     );
     finalize_image(fill, plan)
 }
@@ -604,7 +604,8 @@ mod tests {
             src_range: None,
             stack: 1,
             zero_fill: Some((2, 2, 3)),
-            absent_fill: 0,
+            fill: 0,
+            role_rebound: None,
         };
         let Value::Tensor(tensor) =
             apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")
@@ -622,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_fill_uses_the_absent_fill_level() {
+    fn zero_fill_uses_the_fill_level() {
         let plan = ImagePlan {
             placement: crate::path::NodePath::root().push_key("image"),
             source: crate::path::NodePath::root(),
@@ -638,7 +639,8 @@ mod tests {
             src_range: None,
             stack: 1,
             zero_fill: Some((2, 2, 3)),
-            absent_fill: 128,
+            fill: 128,
+            role_rebound: None,
         };
         let Value::Tensor(tensor) =
             apply_image(&plan, &std::collections::BTreeMap::new()).expect("zero-fill")

@@ -37,7 +37,7 @@ flowchart LR
   D --> E["publish contract, block"]
 ```
 
-| Hook             | When it runs              | Reach for it when                                                                                                           |
+| Hook             | When it runs              | Implement it when                                                                                                           |
 | ---------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `prepare()`      | Once, before `make()`     | A one-time cost the env should not pay per construction: download a task suite, start a sim daemon, warm a cache. Optional. |
 | `make(**kwargs)` | Once per env construction | Always. Build and return the env; task selection and `num_envs` are its parameters, not separate subclasses. Required.      |
@@ -62,7 +62,7 @@ of the envelope still ships.)
 - The **signature-derived floor**: every keyword of `make()` is presented and type-checked from the signature for free. The four scalar annotations (`int`, `float`, `str`, `bool`) are checked; anything else passes through verbatim.
 - The **declared ceiling**: a {class}`~rlmesh.ParamSpec` of {class}`~rlmesh.Param` entries enriches chosen knobs with a domain, choices, grouping, and sweepability, and validates them before construction.
 
-Declaring a `Param` is the act of marking a knob primary. A managed dashboard presents it as a first-class widget, validates it (type, choices, required) before paying GPU cost, and offers it as a sweep axis. A typo (`task_idd=`) or an out-of-range choice fails pre-construction instead of mid-startup.
+Declaring a `Param` is the act of marking a knob primary. The managed platform presents it as a first-class widget, validates it (type, choices, required) before paying GPU cost, and offers it as a sweep axis. A typo (`task_idd=`) or an out-of-range choice fails pre-construction instead of mid-startup.
 
 ```python
 class Libero(rlmesh.EnvFactory):
@@ -98,7 +98,7 @@ A `Vector` is a fixed-length float-vector `Param` type, passed as `Param("offset
 
 `ParamSpec(*params, extra="forbid")` is the validated ceiling over the free signature-derived floor. `extra` governs the single door for undeclared keys.
 
-| `extra`         | Behavior                                                                                                                                                         | Reach for it when                                            |
+| `extra`         | Behavior                                                                                                                                                         | Use it when                                                  |
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `"forbid"`      | Default. An undeclared key raises before construction, so a typo (`robtos=`) fails pre-GPU instead of vanishing.                                                 | The construction surface is fully known.                     |
 | `"passthrough"` | Undeclared keys forward verbatim through the author's own `**kwargs` into a third-party constructor. Bounded by that `**kwargs`, never by any downstream target. | You wrap a constructor whose keyword surface you do not own. |
@@ -140,7 +140,7 @@ class Libero(rlmesh.EnvFactory):
         return variants
 ```
 
-Return a list, or `yield` lazily for a very large catalog. Both work. `python -m rlmesh.describe` emits the catalog off-GPU for a managed dashboard or env hub to list and spawn.
+Return a list, or `yield` lazily for a very large catalog. Both work. `python -m rlmesh._describe` emits the catalog off-GPU for the managed platform or an env hub to list and spawn.
 
 ### Variant arguments
 
@@ -218,8 +218,8 @@ schema = rlmesh.describe(MyEnv)        # parsed dict; same for a Model
 ```
 
 ```bash
-python -m rlmesh.describe --env mypkg.envs:Libero            # prints the envelope
-python -m rlmesh.describe --env mypkg.envs:Libero --out describe.json
+python -m rlmesh._describe --env mypkg.envs:Libero            # prints the envelope
+python -m rlmesh._describe --env mypkg.envs:Libero --out describe.json
 ```
 
 The envelope (env kind) carries:
@@ -240,7 +240,7 @@ Every gathered piece is best-effort: a failure to build the env, read a spec, or
 The format (version, shape, serialization) is owned by the Rust layer, so the bytes are identical across Python versions and any future native producer. See [the contract](../../specs/describe.v1.md). The artifact is self-contained JSON, ready to bake into an image at build time:
 
 ```dockerfile
-RUN python -m rlmesh.describe --env mypkg.envs:Libero --out /etc/rlmesh/describe.json
+RUN python -m rlmesh._describe --env mypkg.envs:Libero --out /etc/rlmesh/describe.json
 ```
 
 Use `rlmesh.describe_json(...)` when you need the exact byte-stable string (for an OCI label) rather than a parsed dict. Pass `generated_at=` for an RFC-3339 timestamp, or omit it for a content-addressable artifact.
@@ -300,7 +300,7 @@ EXPOSE 50051
 CMD ["uv", "run", "python", "-m", "rlmesh.serve", "--env", "environments.libero:Libero"]
 ```
 
-The same image runs locally (`docker run -p 50051:50051 my-env`, then dial it with `rlmesh.RemoteEnv("127.0.0.1:50051")`) and on RLMesh Managed, which runs the image and connects via {class}`~rlmesh.SandboxEnv`. The runtime variation (which suite, which task) is chosen at run time through `RLMESH_MAKE_KWARGS` / `--kwargs-json`, validated against the factory's `params`, so one image serves the whole catalog.
+The same image runs locally (`docker run -p 50051:50051 my-env`, then dial it with `rlmesh.RemoteEnv("127.0.0.1:50051")`) and on the managed platform, which runs the image and connects via {class}`~rlmesh.SandboxEnv`. The runtime variation (which suite, which task) is chosen at run time through `RLMESH_MAKE_KWARGS` / `--kwargs-json`, validated against the factory's `params`, so one image serves the whole catalog.
 
 For a complete, runnable container (both the entrypoint-script form and the lazy CLI form), see {source}`examples/python/byo_container`.
 

@@ -212,12 +212,28 @@ run = "cargo run --manifest-path python/rlmesh/rust/Cargo.toml --features stub-g
 description = "Check rlmesh.toml, artifact versions, and compatibility constants"
 run = "python scripts/check_rlmesh_policy.py"
 
+[tasks."protocol:baseline-regen"]
+description = "Re-snapshot the frozen proto baseline for the current protocol generation"
+run = "python scripts/protocol_baseline.py regen"
+
+[tasks."protocol:baseline-verify"]
+description = "Verify live protos are byte-identical to the frozen generation baseline"
+run = "python scripts/protocol_baseline.py verify"
+
 # ──────────────────────────────────────────────
 # Check (non-mutating)
 # ──────────────────────────────────────────────
 [tasks."check"]
 description = "Run non-mutating verification checks"
-depends = ["fmt:check", "lint", "typecheck", "docs:rust:check", "stubs:check", "policy:check"]
+depends = [
+  "fmt:check",
+  "lint",
+  "typecheck",
+  "docs:rust:check",
+  "stubs:check",
+  "policy:check",
+  "protocol:baseline-verify",
+]
 
 # ──────────────────────────────────────────────
 # Test

@@ -12,9 +12,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import InitVar, dataclass
 from typing import Any, Literal, TypeAlias
 
-from ._codec import one_or_many
+from ._codec import check_accept_set, one_or_many
 from .custom_encoding import CustomEncoding
-from .vocabularies import FitMode, ImageLayout, RotationEncoding
+from .vocabularies import FitMode, ImageLayout, Resample, RotationEncoding
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
 
@@ -69,6 +69,11 @@ class Image:
         optional: Zero-fill a black frame when the env does not provide this
             camera, instead of failing resolution. Needs ``height``, ``width``,
             and ``channels`` so the blank can be sized.
+        fill: Fill value (0-255) for the blank frame an ``optional`` camera
+            synthesizes when the env offers no matching image; default 0
+            (black). Requires ``optional=True`` (without it the fill could
+            never take effect, so setting it alone is a construction error);
+            named to match ``Actuator.fill``.
         stack: Number of consecutive observations to stack on a new leading
             axis (frame history). ``1`` (default) means no stacking. Stacking
             is applied by the adapter from an episode-keyed rolling buffer
@@ -88,11 +93,11 @@ class Image:
     normalize: bool | tuple[float, float] = False
     lead_dims: int = 0
     upside_down: bool = False
-    resample: str = "bilinear"
+    resample: Resample = "bilinear"
     allow_upscale: bool = False
     fit: FitMode | Sequence[FitMode] | None = None
     optional: bool = False
-    absent_fill: int | None = None
+    fill: int | None = None
     stack: int = 1
     size: InitVar[int | None] = None
 
@@ -102,9 +107,16 @@ class Image:
         # are enforced by the Rust codec at serialize/normalize (u32 + de_stack).
         if size is not None:
             if self.height is not None or self.width is not None:
-                raise ValueError("Image: pass size=, or height=/width=, not both")
+                raise ValueError(
+                    f"Image {self.role!r}: pass size=, or height=/width=, not both"
+                )
             object.__setattr__(self, "height", size)
             object.__setattr__(self, "width", size)
+        if self.fill is not None and not self.optional:
+            raise ValueError(
+                f"Image {self.role!r}: fill only applies to an optional camera; "
+                "set optional=True or drop fill"
+            )
         # A single fit stays a string; a preference list normalizes to a tuple
         # (hashable, round-trips by value) -- mirrors the rotation accept-set.
         object.__setattr__(self, "fit", one_or_many(self.fit))
@@ -190,6 +202,7 @@ class State:
                 "(index selects one element, dim truncates to the leading N)"
             )
         object.__setattr__(self, "encoding", one_or_many(self.encoding))
+        check_accept_set("State", self.role, self.encoding)
 
 
 # A part of a :class:`Concat`: a bare role string, or a :class:`State` whose part
@@ -233,6 +246,13 @@ class Concat:
     ) -> None:
         if not parts:
             raise ValueError("Concat needs at least one part")
+        for part in parts:
+            if not isinstance(part, (str, State)):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(
+                    f"Concat parts must be role strings or State leaves; got "
+                    f"{type(part).__name__!r}. Pass a role constant "
+                    "(e.g. Concat(EEF_POS, GRIPPER_POS)) or wrap it in State(...)"
+                )
         # A State used as a part contributes only its part fields; its container
         # fields (pad_to/dtype/reshape/container) belong on the Concat. Catch a
         # non-default one at construction rather than letting it be silently
@@ -265,13 +285,14 @@ class Text:
     Attributes:
         role: Semantic role matched against env text features.
         container: Emit a plain string or a single-element list.
-        default: Value used when the observation omits the feature; when
-            None the input is omitted from the payload instead.
+        fill: Fallback value used when the observation omits the feature; when
+            None the input is omitted from the payload instead. Named to match
+            ``Actuator.fill``.
     """
 
     role: str
     container: Literal["str", "list"] = "str"
-    default: str | None = None
+    fill: str | None = None
 
 
 @dataclass(frozen=True)
@@ -288,6 +309,10 @@ class Custom:
       refuses to import it. Travels on the wire under the key ``transform``.
 
     There is no ``key`` -- placement in the input tree *is* the payload position.
+
+    The callable receives the raw observation as a mapping: the observation
+    itself for a Dict env, or the single-leaf envelope ``{"<obs>": leaf}`` for a
+    flat (non-Dict) env.
 
     Attributes:
         transform: An in-process callable taking the raw observation mapping.

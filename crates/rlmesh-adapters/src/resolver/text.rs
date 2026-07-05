@@ -1,4 +1,4 @@
-//! Pair one model text input with an env text feature or its default.
+//! Pair one model text input with an env text feature or its fill.
 
 use std::collections::BTreeMap;
 
@@ -18,15 +18,15 @@ pub(super) fn plan_text(
     let env_text = texts_by_role.get(&model_input.role).copied();
     if env_text.is_none() {
         // The role's data is present but under a kind this core can't read: fail
-        // loud before a default silently masks it. A role the env genuinely lacks
-        // falls through to the default (or the missing-role error below).
+        // loud before a fill silently masks it. A role the env genuinely lacks
+        // falls through to the fill (or the missing-role error below).
         super::reject_referenced_unknown(&model_input.role, &placement, unknown_roles)?;
-        if model_input.default.is_none() {
+        if model_input.fill.is_none() {
             return Err(err(
                 ErrorCode::MissingRole,
                 format!(
                     "model input {} needs text role {} but the env offers {} and no \
-                 default is set",
+                 fill is set",
                     quoted(&placement.to_string()),
                     quoted(&model_input.role),
                     quoted_keys(texts_by_role)
@@ -36,9 +36,9 @@ pub(super) fn plan_text(
     }
     Ok(TextPlan {
         placement,
-        // A default-only text input (no matching env role) has no source.
+        // A fill-only text input (no matching env role) has no source.
         source: env_text.map(|text| text.source.clone()),
         container: model_input.container,
-        default: model_input.default.clone(),
+        fill: model_input.fill.clone(),
     })
 }

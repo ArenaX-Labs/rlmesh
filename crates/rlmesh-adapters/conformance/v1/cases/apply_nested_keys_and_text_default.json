@@ -99,7 +99,7 @@
     "input": {
       "instruction": {
         "container": "str",
-        "default": "do the task",
+        "fill": "do the task",
         "role": "text/instruction",
         "type": "text"
       },

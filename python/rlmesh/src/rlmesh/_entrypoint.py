@@ -22,7 +22,13 @@ def parse_entrypoint(value: str, *, label: str = "entrypoint") -> tuple[str, str
 
 
 def resolve_entrypoint(value: str, *, label: str = "entrypoint") -> Callable[..., Any]:
-    """Resolve a ``module:callable`` entrypoint to a callable object."""
+    """Resolve a ``module:callable`` entrypoint to a serveable object.
+
+    The target is normally a callable (a class or a bare predict / make-env
+    function); a non-callable object exposing ``make`` -- an
+    :class:`~rlmesh.EnvFactory` *instance* -- is also accepted, matching
+    ``serve_env``'s factory-instance support.
+    """
     module_name, callable_path = parse_entrypoint(value, label=label)
     module = importlib.import_module(module_name)
 
@@ -35,8 +41,11 @@ def resolve_entrypoint(value: str, *, label: str = "entrypoint") -> Callable[...
                 f"{label} {value!r} could not resolve {segment!r}"
             ) from exc
 
-    if not callable(resolved):
-        raise TypeError(f"{label} {value!r} did not resolve to a callable")
+    if not callable(resolved) and not hasattr(resolved, "make"):
+        raise TypeError(
+            f"{label} {value!r} did not resolve to a callable or an object "
+            "with a make() method (an EnvFactory instance)"
+        )
 
     return cast(Callable[..., Any], resolved)
 

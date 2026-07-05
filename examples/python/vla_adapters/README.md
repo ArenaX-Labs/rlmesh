@@ -39,7 +39,7 @@ uv run python -m vla_adapters.eval                       # every model x env pai
 uv run python -m vla_adapters.eval --model xvla --env simpler-bridge  # a single pairing
 ```
 
-Each run starts by printing `adapter.describe()` — the exact transformations the resolver chose for that pairing, e.g. for `xvla` on `libero`:
+Each run starts by printing `adapter.explain()` — the exact transformations the resolver chose for that pairing, e.g. for `xvla` on `libero`:
 
 - `agentview_image`/`robot0_eye_in_hand_image` are resized to 256x256,
 - `robot0_eef_quat` is converted `quat_xyzw -> rot6d_rowmajor`, and the second-arm proprio components resolve to zero fill because this env declares no `_2` roles (the spec marks them `optional`),

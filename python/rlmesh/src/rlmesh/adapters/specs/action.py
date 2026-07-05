@@ -72,8 +72,10 @@ class Actuator:
     optional: bool = False
 
     def __post_init__(self) -> None:
-        if self.dim == 0:
-            raise ValueError(f"Actuator {self.role!r}: dim is required (>= 1)")
+        if self.dim < 1:
+            raise ValueError(
+                f"Actuator {self.role!r}: dim must be >= 1, got {self.dim}"
+            )
         if self.role is None:
             if (
                 self.encoding is not None
@@ -126,7 +128,7 @@ class Action:
         clip: Optional ``(low, high)`` clip applied to the final vector.
 
     Action chunking is no longer a spec knob: the execution horizon is chosen by the
-    runtime (``execution_horizon`` on ``ConfigureRoute``), and a chunked policy
+    runtime (``execution_horizon`` on ``ResolveAdapter``), and a chunked policy
     declares a ``predict_chunk`` corner rather than an ``execute_horizon``.
     """
 
@@ -138,6 +140,8 @@ class Action:
         *components: Actuator,
         clip: tuple[float, float] | None = None,
     ) -> None:
+        if not components:
+            raise ValueError("Action needs at least one actuator")
         object.__setattr__(self, "components", tuple(components))
         object.__setattr__(self, "clip", clip)
 

@@ -126,7 +126,7 @@ impl ModelClient {
 
     /// The model's bind-time offer learned at handshake: the workflow editions it
     /// supports. The runtime (client to both the env and the model) feeds this
-    /// into [`rlmesh_proto::negotiate_session_floor`] to pick the route edition.
+    /// into [`rlmesh_proto::negotiate_session_floor`] to pick the workflow edition.
     /// Empty before [`handshake`](Self::handshake) completes. Capabilities are read
     /// pairwise (see [`server_pipelines_predict`](Self::server_pipelines_predict)), not here.
     pub fn model_session_offer(&self) -> rlmesh_proto::SessionOffer {

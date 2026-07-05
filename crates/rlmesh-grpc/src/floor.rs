@@ -4,7 +4,7 @@
 //!
 //! Lives here — not in the `RemoteModel` facade — so the production runtime, which
 //! drives the env and model clients directly, computes and sets the same pin
-//! instead of leaving the route edition unset.
+//! instead of leaving the workflow edition unset.
 
 use rlmesh_proto::{
     SessionFloor, SessionOffer, negotiate_session_floor, supported_workflow_editions,
@@ -22,7 +22,7 @@ use crate::error::{Error as GrpcError, ProtocolError};
 /// runs, safely, at the floor). Errs when the three share no edition — the caller
 /// must fail before opening any Join stream. The returned
 /// [`SessionFloor::selected_workflow_edition`] is what the runtime pins onto the
-/// model's `ConfigureRoute` and the env's `ConfigureEnv`.
+/// model's `ResolveAdapter` and the env's `ConfigureEnv`.
 pub fn env_floor(
     env_offer: &SessionOffer,
     model_offer: &SessionOffer,

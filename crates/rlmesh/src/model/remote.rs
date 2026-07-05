@@ -131,7 +131,7 @@ impl RemoteModel {
     /// its window, then reconciles the floor. If this runtime is what holds the
     /// edition back it **warns** (still runs, safely, at the floor); with no mutual
     /// edition at all it **fails before any route is configured**, naming each
-    /// tier's offer. The selected edition is sent to the model in `ConfigureRoute`
+    /// tier's offer. The selected edition is sent to the model in `ResolveAdapter`
     /// as authoritative over its own handshake.
     ///
     /// `env_offer` is the env's advertised window; take it from
@@ -168,7 +168,7 @@ impl RemoteModel {
 
         // Reconcile the 3-way floor (env + model + this runtime) via the shared
         // helper, which warns when this runtime is the limiting tier and errs when
-        // the three share no edition (before any Join/ConfigureRoute is sent). The
+        // the three share no edition (before any Join/ResolveAdapter is sent). The
         // helper lives in rlmesh-grpc so the production runtime computes the same
         // floor; here the facade just consumes it.
         let selected_workflow_edition = rlmesh_grpc::env_floor(&env_offer, &model_offer)
@@ -196,7 +196,7 @@ impl RemoteModel {
     /// `h > 1` opts a chunk-capable served model into action chunking: each real
     /// `predict` returns the chunk's future frames, which this client replays
     /// open-loop. Must be set **before the first `predict`** (the route is
-    /// configured lazily there and the horizon is pinned on `ConfigureRoute`);
+    /// configured lazily there and the horizon is pinned on `ResolveAdapter`);
     /// `1` (the default) leaves chunking off.
     pub fn set_execution_horizon(&mut self, execution_horizon: u32) {
         self.execution_horizon = execution_horizon;

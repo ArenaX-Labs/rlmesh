@@ -72,6 +72,7 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
             binary=bool(item.get("binary", False)),
             clip=bool(item.get("clip", False)),
             fill=float(item.get("fill", 0.0)),
+            optional=bool(item.get("optional", False)),
         )
         for item in data["components"]
     ]

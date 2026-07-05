@@ -15,11 +15,17 @@ from ._cli.main import find_repo_root
 _DISTRIBUTION_ENV = "RLMESH_CLI_DISTRIBUTION"
 
 
-def _run_extension_cli(argv: list[str]) -> int:
+def _load_extension_cli() -> Callable[[list[str]], int]:
+    """Import and return the native ``run_cli``, or raise ``ImportError``.
+
+    Import/lookup only -- the returned callable runs outside any ImportError
+    handler, so an ImportError raised *by* the CLI itself propagates instead of
+    being misreported as a missing native module. ``run_cli`` only exists in
+    builds with the 'cli' cargo feature; lean wheels omit it (and the embedded
+    CLI) entirely.
+    """
     import rlmesh._rlmesh as _rlmesh
 
-    # run_cli only exists in builds with the 'cli' cargo feature; lean
-    # wheels omit it (and the embedded CLI) entirely.
     run_cli = cast(
         "Callable[[list[str]], int] | None", getattr(_rlmesh, "run_cli", None)
     )
@@ -27,7 +33,7 @@ def _run_extension_cli(argv: list[str]) -> int:
         raise ImportError(
             "the rlmesh native module was built without the 'cli' feature"
         )
-    return int(run_cli(argv))
+    return run_cli
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,9 +46,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        return _run_extension_cli(argv)
+        run_cli = _load_extension_cli()
     except ImportError:
-        pass
+        run_cli = None
+    if run_cli is not None:
+        return int(run_cli(argv))
 
     cargo = shutil.which("cargo")
     if repo_root is not None and cargo is not None:

@@ -39,7 +39,7 @@ pub trait PredictFn: Send + Sync {
     /// (e.g. a Python `predict_chunk`) returns `Some(chunk)`.
     ///
     /// `execution_horizon` is how many actions the runtime will execute before
-    /// re-planning (pinned at `ConfigureRoute`). The model returns its *native*
+    /// re-planning (pinned at `ResolveAdapter`). The model returns its *native*
     /// chunk; the engine executes a prefix of it (`split_chunk(...).take(h)`) and
     /// discards the rest, so a fixed-size head ignores the value and is correct
     /// either way. An autoregressive head may decode exactly `execution_horizon`
@@ -48,7 +48,7 @@ pub trait PredictFn: Send + Sync {
         Ok(None)
     }
 
-    /// Whether this model defines a chunk corner. Queried once at `ConfigureRoute`
+    /// Whether this model defines a chunk corner. Queried once at `ResolveAdapter`
     /// so the engine can warn when the runtime pins a horizon > 1 but the model
     /// cannot chunk (chunking is then inactive — the runtime re-plans every step).
     fn has_chunk(&self) -> bool {
@@ -118,7 +118,7 @@ pub trait PredictFn: Send + Sync {
     }
 }
 
-/// The resolved per-route state the engine caches at `ConfigureRoute`: the
+/// The resolved per-route state the engine caches at `ResolveAdapter`: the
 /// native adapter, the obs/action spaces, and the two host holes. Built by a
 /// [`RouteResolver`] (which has the model spec); held beside an episode-keyed
 /// `FrameBuffers` inside the engine.
@@ -129,7 +129,7 @@ pub struct RouteConfig {
     pub(crate) customs: Box<dyn CustomTransform + Send>,
     pub(crate) encodings: Box<dyn EncodingTransform + Send>,
     /// Runtime-chosen execution horizon: how many actions of each predicted chunk the
-    /// runtime executes before re-planning, set by the engine from the `ConfigureRoute`
+    /// runtime executes before re-planning, set by the engine from the `ResolveAdapter`
     /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the resolver
     /// builds the spec-derived config and the engine stamps the horizon on top, since
     /// it is a runtime decision, not part of the model spec.
@@ -156,13 +156,13 @@ impl RouteConfig {
             customs,
             encodings,
             // Spec-derived default; the engine overwrites it with the route's
-            // runtime-pinned execution_horizon at ConfigureRoute.
+            // runtime-pinned execution_horizon at ResolveAdapter.
             execution_horizon: 1,
         }
     }
 }
 
-/// Resolves a route's [`RouteConfig`] from its env contract at `ConfigureRoute`.
+/// Resolves a route's [`RouteConfig`] from its env contract at `ResolveAdapter`.
 ///
 /// Returns `None` for a spec-less route (the env sent `NO_ADAPTER`), which the
 /// engine then serves through [`PredictFn::predict_spec_less`]. Runs off the

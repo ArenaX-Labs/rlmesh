@@ -3,14 +3,6 @@
 RLMesh documents compatibility at the workflow level rather than freezing every internal type. The project is released and pre-1.0: the stability labels below describe the support level today. See {doc}`versioning` for the version contract.
 
 ```{note}
-**This documents 0.1.0-rc.2, a release candidate.** The active workflow cohort is
-`2026.06-0.1.0-rc.2`; the stable cutover (sealing the bare `2026.06` edition and
-the `Production/Stable` trove status) lands at the final 0.1.0. The labels below
-describe that release. Install the candidate with
-`pip install rlmesh==0.1.0rc2`.
-```
-
-```{note}
 RLMesh is pre-1.0 (`0.x`). "Stable" means the surface we intend to keep and will change carefully, with a migration note in the {doc}`changelog`, not an API frozen until 1.0. "Experimental" may change or disappear. A `0.x` minor release may break a stable API, so pin a minor range for active projects.
 ```
 
@@ -36,8 +28,8 @@ on the roadmap below.
 ```
 
 ```{warning}
-The `rlmesh.protocol.v1` wire format stabilizes at 0.1.0. The earlier 0.1.0 beta releases are not
-wire-compatible with it; rebuild both peers when upgrading from a beta.
+The `rlmesh-wire-v1` protocol generation stabilizes at 0.1.0. The earlier 0.1.0 beta releases are
+not wire-compatible with it; rebuild both peers when upgrading from a beta.
 
 The supported-generation window currently holds a single generation. A future incompatible wire
 change mints a new generation rather than mutating v1; a cross-version generation window is on the
@@ -74,13 +66,13 @@ The floor harness runs via `mise run test:python:floors`, which builds a `cp310`
 
 ## Workflow Editions
 
-Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake selects the highest edition supported by both peers. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition seals at 0.1.0; this release candidate advertises `2026.06-0.1.0-rc.2`.
+Workflow semantics are governed by a negotiated workflow edition. Each base edition names a behavioral contract documented in {doc}`editions/index`; prerelease and local builds append exact cohort suffixes. The handshake selects the highest edition supported by both peers. Editions change only on deliberate semantic redesigns; new features and new APIs do not mint editions. The `2026.06` edition sealed at 0.1.0.
 
 ## Versioning and forward-compatibility roadmap
 
 Today, peers must run the same release. Forward-compatibility guarantees become binding only once the code enforces them and a cross-version path is proven. The planned work, with target windows:
 
-- **v0.1.0 (upcoming).** First stable release. It seals the `2026.06` workflow edition, freezing its spec checksum. The 0.1.0-rc.2 candidate ships first as the exact `2026.06-0.1.0-rc.2` cohort.
+- **v0.1.0.** First stable release. Seals the `2026.06` workflow edition, freezing its spec checksum, and freezes the `rlmesh-wire-v1` protocol generation.
 - **Hardening, around July 2026.** A cross-version test harness and a shared compatibility helper, stricter protocol checks, and the workflow edition made load-bearing in the runtime. This enables edition-driven behavior and a cross-version path once a second edition exists.
 - **Forward tolerance, around late July 2026.** Edition retention guarantees, a dtype negotiation floor, and adapter forward-tolerance.
 - **Second edition, around August 2026.** Mint a second workflow edition to exercise negotiation against a real semantic change.

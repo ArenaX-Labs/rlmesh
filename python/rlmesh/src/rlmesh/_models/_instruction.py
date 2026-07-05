@@ -65,9 +65,11 @@ def text_placements(spec: object | None) -> tuple[TextPlacement, ...]:
 def tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
     """Return ``tree`` with the value at ``segments`` replaced by ``value``.
 
-    A small structured set over the payload tree (dict for str segments, list for
-    int segments). Rebuilds only the path it touches, so the env's observation is
-    never mutated; the empty path replaces the whole payload (a bare-root leaf).
+    A small structured set over the payload tree (dict for str segments,
+    list/tuple for int segments -- the rebuilt node keeps the input's container
+    type, so a tuple payload stays a tuple). Rebuilds only the path it touches,
+    so the env's observation is never mutated; the empty path replaces the whole
+    payload (a bare-root leaf).
     """
     if not segments:
         return value
@@ -75,7 +77,7 @@ def tree_set(tree: Any, segments: tuple[str | int, ...], value: Any) -> Any:
     if isinstance(head, int):
         items: list[Any] = list(cast("Sequence[Any]", tree))
         items[head] = tree_set(items[head], rest, value)
-        return items
+        return tuple(items) if isinstance(tree, tuple) else items
     node: dict[str, Any] = (
         dict(cast("Mapping[str, Any]", tree)) if isinstance(tree, Mapping) else {}
     )

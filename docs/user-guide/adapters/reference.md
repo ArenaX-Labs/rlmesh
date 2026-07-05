@@ -187,7 +187,7 @@ spec = adapt.ModelSpec(
 | `allow_upscale`         | `False`      | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                |
 | `fit`                   | `None`       | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                             |
 | `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
-| `absent_fill`           | `None`       | fill value for the blank frame                                                | non-black fill                                                 |
+| `fill`                  | `None`       | fill value for the blank frame (requires `optional=True`)                     | non-black fill                                                 |
 | `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
@@ -235,7 +235,7 @@ Parts are concatenated in order. The container-level fields (`pad_to`, `dtype`, 
 | ----------------------- | ------- | ------------------------------------------------------------ | ----------------------------- |
 | `role` (1st positional) | --      | match an env text feature                                    | always                        |
 | `container`             | `"str"` | emit a plain string or a single-element list                 | the model wants a list        |
-| `default`               | `None`  | value when the obs omits the feature; `None` omits the input | supply a fallback instruction |
+| `fill`                  | `None`  | value when the obs omits the feature; `None` omits the input | supply a fallback instruction |
 
 Tokenization stays in the model; `Text` delivers the raw string.
 
@@ -294,7 +294,7 @@ Each conversion the resolver can perform falls into one of four policies. **Sile
 | `fit` (aspect-changing resize)         | OPT-IN        | aspect mismatch; **absent `fit` → resolve error**                                   |
 | `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                 |
 | `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise) |
-| `optional` / `absent_fill`             | OPT-IN        | env lacks the camera/role; **absent → resolve error**                               |
+| `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                               |
 | Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                              |
 | Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                   |
 | Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                            |
@@ -364,9 +364,9 @@ Find the row that matches your model, then spec it:
 
 Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
 
-Once resolution succeeds, call `adapter.describe()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
+Once resolution succeeds, call `adapter.explain()` to print the exact transforms the resolver chose (each resize, layout transpose, encoding conversion, range map, key remap, slice, and clip) before you run a single step. It is the fastest way to confirm the bridge is what you intended.
 
 ```python
 adapter = adapt.resolve(tags, env.observation_space, env.action_space, spec)
-print(adapter.describe())
+print(adapter.explain())
 ```

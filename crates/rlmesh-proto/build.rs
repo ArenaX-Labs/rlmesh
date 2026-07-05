@@ -47,7 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &[
                 // Core
                 spec.join("rlmesh/core/v1/env_contract.proto"),
-                spec.join("rlmesh/core/v1/model_contract.proto"),
                 spec.join("rlmesh/core/v1/handshake.proto"),
                 // Env
                 spec.join("rlmesh/env/v1/interaction.proto"),

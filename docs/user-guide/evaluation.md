@@ -56,9 +56,20 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 | `instruction`       | `None`  | Overrides every {class}`~rlmesh.adapters.Text` input the spec declares, on each step, at its placement in the input tree. No-op if the spec declares no text input. |
 | `execution_horizon` | `1`     | Actions executed per predicted chunk; only engages on a chunk corner (see [below](#execution-horizon-end-to-end)).                                                  |
 | `close_env`         | `False` | Shut the env down when the run finishes (opt-in).                                                                                                                   |
-| `token`             | `""`    | Auth token for a remote env or model.                                                                                                                               |
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode. `execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session`, which forwards it through.
+
+### Watching and capping the loop
+
+`run()` also takes `max_episode_steps` and `max_episode_seconds`, per-episode caps that mark a capped episode `truncated` exactly like an env time limit, and `hooks`, a {class}`~rlmesh.RunHooks` subclass whose overrides observe the loop: `on_episode_start`, `on_step` (with a {class}`~rlmesh.StepEvent` carrying the observation, action, reward, per-step timings, and a lazy role `read`), `on_episode_end`, and `on_run_end`. Every default is a no-op, hook exceptions abort the run, and `on_run_end` always fires once with the completed episodes -- enough for progress bars, per-step logging, or streaming metrics without writing the loop yourself:
+
+```python
+class Progress(rlmesh.RunHooks):
+    def on_episode_end(self, result):
+        print(f"episode {result.index}: reward {result.reward:.2f}")
+
+result = model.run(env, seeds=range(50), max_episode_steps=500, hooks=Progress())
+```
 
 ### The result
 

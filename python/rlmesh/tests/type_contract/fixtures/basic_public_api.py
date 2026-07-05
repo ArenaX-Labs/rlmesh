@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 
 import rlmesh
 from rlmesh import types
@@ -56,3 +56,44 @@ def accepts_env(env: types.EnvLike[int, int]) -> None:
 
 
 accepts_env(TinyEnv())
+
+
+def consumes_info(info: types.InfoDict) -> bool:
+    assert_type(info["success"], Any)
+    return info["success"] > 0.5
+
+
+class TinyVectorEnv:
+    num_envs = 2
+    single_observation_space = IntSpace()
+    single_action_space = IntSpace()
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: types.InfoDict | None = None,
+    ) -> tuple[list[int], types.InfoDict]:
+        return [0, 0], {"seed": seed, "options": options}
+
+    def step(
+        self, actions: list[int]
+    ) -> tuple[list[int], list[float], list[bool], list[bool], types.InfoDict]:
+        return actions, [0.0, 0.0], [False, False], [False, False], {}
+
+    def close(self) -> None:
+        return None
+
+
+def accepts_vector_env(
+    env: types.VectorEnvLike[list[int], int, int, list[int], list[float] | list[bool]],
+) -> None:
+    assert_type(env.reset(), tuple[list[int], types.InfoDict])
+
+
+def accepts_legacy_vector_env(env: types.VectorEnvLike[list[int], int, int]) -> None:
+    assert_type(env.reset(), tuple[Any, types.InfoDict])
+
+
+accepts_vector_env(TinyVectorEnv())
+accepts_legacy_vector_env(TinyVectorEnv())

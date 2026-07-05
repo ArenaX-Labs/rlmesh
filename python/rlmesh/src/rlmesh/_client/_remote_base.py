@@ -45,6 +45,8 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         port: int | None = None,
         path: str | None = None,
         transport: Transport | None = None,
+        connect_timeout_seconds: float | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> None:
         self._initialize(
             address,
@@ -52,7 +54,8 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             port=port,
             path=path,
             transport=transport,
-            connect_timeout_seconds=None,
+            connect_timeout_seconds=connect_timeout_seconds,
+            request_timeout_seconds=request_timeout_seconds,
         )
 
     def _initialize(
@@ -64,6 +67,7 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
         path: str | None = None,
         transport: Transport | None = None,
         connect_timeout_seconds: float | None,
+        request_timeout_seconds: float | None = None,
     ) -> None:
         self._bridge.ensure_available()
         normalized_address = normalize_connect_address(
@@ -73,13 +77,41 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
             path=path,
             transport=transport,
         )
-        self._client = self._make_client(normalized_address, connect_timeout_seconds)
+        try:
+            self._client = self._make_client(
+                normalized_address, connect_timeout_seconds, request_timeout_seconds
+            )
+        except ConnectionError as exc:
+            raise ConnectionError(
+                f"could not connect to an env at {normalized_address!r}; "
+                f"is the EnvServer running? ({exc})"
+            ) from None
         self._address = self._client.address()
-        self._env_contract: EnvContract = self._client.handshake()
+        try:
+            self._env_contract: EnvContract = self._client.handshake()
+        except ConnectionError as exc:
+            # The connected native client must not leak; close it before
+            # raising, and name the handshake so the failure is not mislabeled
+            # as the server being down.
+            try:
+                self._client.close()
+            finally:
+                raise ConnectionError(
+                    f"connected to an env at {normalized_address!r}, but the "
+                    f"handshake failed ({exc})"
+                ) from None
+        except BaseException:
+            self._client.close()
+            raise
         self._post_handshake()
 
     # --- arity / backend hooks -------------------------------------------------
-    def _make_client(self, address: str, connect_timeout_seconds: float | None) -> Any:
+    def _make_client(
+        self,
+        address: str,
+        connect_timeout_seconds: float | None,
+        request_timeout_seconds: float | None,
+    ) -> Any:
         """Build and return the native client. Overridden per arity."""
         raise NotImplementedError
 
@@ -108,11 +140,6 @@ class RemoteClientBase(Generic[ValueT, ActionT]):
     @property
     def env_contract(self) -> EnvContract:
         """Environment contract returned by the endpoint handshake."""
-        return self._env_contract
-
-    @property
-    def spec(self) -> EnvContract:
-        """Alias for `env_contract`."""
         return self._env_contract
 
     @property

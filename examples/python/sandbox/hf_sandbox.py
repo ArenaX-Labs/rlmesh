@@ -1,12 +1,11 @@
-from rlmesh.numpy import SandboxEnv
+from rlmesh.numpy import SandboxBuild, SandboxEnv
 
 MAX_STEPS = 45
 
 
 env = SandboxEnv(
     "hf://lerobot/cartpole-env:cartpole_suite/0",
-    trust_remote_code=True,
-    allow_unpinned_hf=True,
+    build=SandboxBuild(trust_remote_code=True, allow_unpinned_hf=True),
 )
 
 try:

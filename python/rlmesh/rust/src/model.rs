@@ -12,6 +12,7 @@ use rlmesh::{
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::adapters::{PyCustomTransform, PyEncodings, decode_value, encode_value};
@@ -380,15 +381,12 @@ impl PyModel {
         })
     }
 
-    fn run_local(&self, py: Python<'_>, env_address: &str, token: &str) -> PyResult<()> {
+    fn run_local(&self, py: Python<'_>, env_address: &str) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        // `token` is retained for backward compatibility; env auth is configured
-        // on the environment server.
-        let _ = token;
         let handler = self.build_handler();
 
         py.detach(|| {
@@ -409,7 +407,6 @@ impl PyModel {
         &self,
         py: Python<'_>,
         env_address: &str,
-        token: &str,
         max_episodes: u64,
     ) -> PyResult<()> {
         let run_span = tracing::info_span!(
@@ -421,9 +418,6 @@ impl PyModel {
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
-        // `token` retained for backward compatibility; run_local does not
-        // authenticate against the env (see `run_local`).
-        let _ = token;
         let handler = self.build_handler();
 
         py.detach(|| {
@@ -440,12 +434,11 @@ impl PyModel {
         Ok(())
     }
 
-    #[pyo3(signature = (address, token, options=None))]
+    #[pyo3(signature = (address, options=None))]
     fn serve(
         &self,
         py: Python<'_>,
         address: &str,
-        token: &str,
         options: Option<PyServeOptions>,
     ) -> PyResult<()> {
         let run_span = tracing::info_span!("rlmesh.model.serve", address = address);
@@ -453,18 +446,13 @@ impl PyModel {
         let total_guard = self.profiler.start("model.serve.total");
 
         let address = BindAddress::parse(address).map_err(to_py_err)?;
-        let token = token.to_string();
         let options = options.map(PyServeOptions::into_rust).unwrap_or_default();
         let handler = self.build_handler();
 
         py.detach(|| {
             self.runtime.block_on(async move {
                 ModelWorker::new(handler)
-                    .serve_async(
-                        ServeModelOptions::new(address)
-                            .token(token)
-                            .serve_options(options),
-                    )
+                    .serve_async(ServeModelOptions::new(address).serve_options(options))
                     .await
             })
         })
@@ -484,9 +472,9 @@ import collections.abc
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
-    def run_local(self, env_address: str, token: str) -> None: ...
-    def run_local_for_episodes(self, env_address: str, token: str, max_episodes: int) -> None: ...
-    def serve(self, address: str, token: str, options: ServeOptions | None = None) -> None: ...
+    def run_local(self, env_address: str) -> None: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int) -> None: ...
+    def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
 }
@@ -496,7 +484,7 @@ submit! {
     gen_methods_from_python! {
         r#"
 class PyModelClient:
-    def __init__(self, address: str, env_contract: EnvContract, token: str = "", execution_horizon: int = 1) -> None: ...
+    def __init__(self, address: str, env_contract: EnvContract, execution_horizon: int = 1, *, connect_timeout_seconds: float | None = None, request_timeout_seconds: float | None = None) -> None: ...
     def address(self) -> str: ...
     def env_id(self) -> str: ...
     def observation_space(self) -> Space: ...
@@ -525,18 +513,20 @@ pub struct PyModelClient {
     observation_space: SpaceSpec,
     action_space: SpaceSpec,
     address: String,
+    default_timeout: Option<std::time::Duration>,
 }
 
 #[pymethods]
 impl PyModelClient {
     #[new]
-    #[pyo3(signature = (address, env_contract, token="", execution_horizon=1))]
+    #[pyo3(signature = (address, env_contract, execution_horizon=1, *, connect_timeout_seconds=None, request_timeout_seconds=None))]
     fn new(
         py: Python<'_>,
         address: &str,
         env_contract: &Bound<'_, PyAny>,
-        token: &str,
         execution_horizon: u32,
+        connect_timeout_seconds: Option<f64>,
+        request_timeout_seconds: Option<f64>,
     ) -> PyResult<Self> {
         init_tracing("model_client");
         let contract = native_env_contract_from_py(env_contract)?;
@@ -546,14 +536,27 @@ impl PyModelClient {
         let action_space = contract.action_space.clone().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("env contract missing action_space")
         })?;
+        let connect_timeout =
+            crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
+        let default_timeout =
+            crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
         let runtime = model_client_runtime();
         let address = address.to_string();
-        let token = token.to_string();
-        let mut inner = py
-            .detach(|| {
-                runtime.block_on(RemoteModel::connect_with_token(&address, &token, contract))
-            })
-            .map_err(to_py_err)?;
+        let mut inner = py.detach(|| {
+            let connect = RemoteModel::connect(&address, contract);
+            match connect_timeout {
+                Some(timeout) => {
+                    match runtime.block_on(async { tokio::time::timeout(timeout, connect).await }) {
+                        Ok(result) => result.map_err(to_py_err),
+                        Err(_) => Err(pyo3::exceptions::PyTimeoutError::new_err(format!(
+                            "remote model connect timed out after {:.3}s",
+                            timeout.as_secs_f64()
+                        ))),
+                    }
+                }
+                None => runtime.block_on(connect).map_err(to_py_err),
+            }
+        })?;
         // Opt the served model into chunking (h > 1): pinned on ConfigureRoute and
         // replayed open-loop by RemoteModel. 1 = no chunking.
         inner.set_execution_horizon(execution_horizon);
@@ -564,6 +567,7 @@ impl PyModelClient {
             observation_space,
             action_space,
             address,
+            default_timeout,
         })
     }
 
@@ -598,18 +602,39 @@ impl PyModelClient {
             ValueBackend::Native,
         )?;
         let runtime = self.runtime;
+        let timeout = self.default_timeout;
         let inner = &mut self.inner;
-        let action = py
-            .detach(|| runtime.block_on(inner.predict(value)))
-            .map_err(to_py_err)?;
+        let action = py.detach(|| block_on_with_timeout(runtime, timeout, inner.predict(value)))?;
         Ok(space_value_to_py_neutral(py, &action, &self.action_space)?.unbind())
     }
 
     fn close(&mut self, py: Python<'_>) -> PyResult<()> {
         let runtime = self.runtime;
+        let timeout = self.default_timeout;
         let inner = &mut self.inner;
-        py.detach(|| runtime.block_on(inner.close()))
-            .map_err(to_py_err)
+        py.detach(|| block_on_with_timeout(runtime, timeout, inner.close()))
+    }
+}
+
+/// Run one model RPC on `runtime` with the GIL released, honoring the client's
+/// optional request timeout; `None` blocks indefinitely (the pre-timeout
+/// behavior).
+fn block_on_with_timeout<T>(
+    runtime: &tokio::runtime::Runtime,
+    timeout: Option<std::time::Duration>,
+    rpc: impl Future<Output = rlmesh::Result<T>>,
+) -> PyResult<T> {
+    match timeout {
+        Some(timeout) => {
+            match runtime.block_on(async { tokio::time::timeout(timeout, rpc).await }) {
+                Ok(result) => result.map_err(to_py_err),
+                Err(_) => Err(pyo3::exceptions::PyTimeoutError::new_err(format!(
+                    "remote model request timed out after {:.3}s",
+                    timeout.as_secs_f64()
+                ))),
+            }
+        }
+        None => runtime.block_on(rpc).map_err(to_py_err),
     }
 }
 
