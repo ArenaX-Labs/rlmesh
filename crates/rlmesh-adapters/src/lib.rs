@@ -20,6 +20,7 @@
 //! defaults), and a later breaking change bumps the key to v2. The [`v1`] facade
 //! is only a stable import path; the implementation sits flat at the crate root.
 
+mod advisory;
 mod apply;
 mod describe;
 mod envelope;
@@ -39,6 +40,7 @@ mod stateful;
 pub mod v1 {
     pub use crate::roles;
 
+    pub use crate::advisory::{Advisory, AdvisorySeverity};
     pub use crate::apply::{
         ApplyError, CustomTransform, NoCustoms, SkipCustoms, Value, convert_rotation,
     };

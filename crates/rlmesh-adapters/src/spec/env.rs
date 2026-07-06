@@ -57,5 +57,5 @@ pub struct EnvFeatures {
     /// layout that looks mis-declared given its shape). Surfaced — not raised —
     /// at both join seams: authoring (`adapt.tag`) and serve-time resolve. Empty
     /// when nothing looks off.
-    pub advisories: Vec<String>,
+    pub advisories: Vec<crate::advisory::Advisory>,
 }

@@ -15,7 +15,7 @@ from .helpers import render_placement
 from .specs import ObsTransform, RotationTransform
 
 if TYPE_CHECKING:
-    from .._rlmesh import AdapterPlan
+    from .._rlmesh import AdapterPlan, Advisory
 
 ActionT = TypeVar("ActionT")
 
@@ -512,13 +512,16 @@ class Adapter(AdapterBase[NumpyArray]):
             lines.append(f"  action [{shim.offset}:{stop}]: {shim.name} -> {shim.base}")
         return "\n".join(lines)
 
-    def advisories(self) -> list[str]:
+    def advisories(self) -> list[Advisory]:
         """Per-env data-loss / fabrication notes for this resolved adapter.
 
         The "warn" subset of :meth:`describe` -- e.g. a camera the env did not
         provide that is being zero-filled, or an aspect crop that drops pixels.
-        A managed runner can log these without failing; empty when nothing
-        noteworthy happened.
+        Each note carries a ``severity``: ``"info"`` for benign hints and
+        ``"caution"`` when the adapter substituted or fabricated model-visible
+        data (a role-rebound camera, a zero-filled frame) -- the tier a managed
+        runner or eval harness may want to hard-fail on. ``str(note)`` is the
+        message; empty when nothing noteworthy happened.
         """
         return list(self._plan.advisories())
 

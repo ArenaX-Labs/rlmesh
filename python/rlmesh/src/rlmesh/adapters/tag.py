@@ -60,7 +60,7 @@ def _validate(env: object, tags: EnvTags) -> None:
     # Non-fatal hints (e.g. a layout that looks mis-declared): surface at tag time
     # so the author sees their own mistake now, not via a peer's serve logs.
     for note in advisories:
-        warnings.warn(note, stacklevel=3)
+        warnings.warn(str(note), stacklevel=3)
 
 
 __all__ = ["tag"]

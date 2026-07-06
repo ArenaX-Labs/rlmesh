@@ -229,6 +229,34 @@ class RunHooks:
         """
 
 
+def _summarize_payload(payload: Any) -> str:
+    """One value's dtype/shape signature for error context.
+
+    Mirrors the served engine's wording: ``float32[8]``,
+    ``{image: uint8[8, 8, 3], state: float32[7]}``.
+    """
+    shape = getattr(payload, "shape", None)
+    dtype = getattr(payload, "dtype", None)
+    if shape is not None and dtype is not None:
+        return f"{dtype}{list(shape)}"
+    if isinstance(payload, Mapping):
+        items = cast("Mapping[Any, Any]", payload).items()
+        entries = ", ".join(
+            f"{key}: {_summarize_payload(value)}" for key, value in items
+        )
+        return "{" + entries + "}"
+    if isinstance(payload, str):
+        return f"text(len={len(payload)})"
+    if isinstance(payload, bytes):
+        return f"bytes(len={len(payload)})"
+    if isinstance(payload, (list, tuple)):
+        seq = cast("Sequence[Any]", payload)
+        if not seq:
+            return "list(len=0)"
+        return f"list(len={len(seq)}, first={_summarize_payload(seq[0])})"
+    return type(payload).__name__
+
+
 def _predict_step(
     predict: Callable[[Any], Any],
     obs: Any,
@@ -268,7 +296,15 @@ def _predict_step(
         for placement in text_placements:
             value: Any = [instruction] if placement.as_list else instruction
             payload = tree_set(payload, placement.segments, value)
-    return predict(payload)
+    try:
+        return predict(payload)
+    except Exception as exc:
+        kind = "adapter-assembled" if adapter is not None else "spec-less (raw obs)"
+        note = f"{kind} model input: {_summarize_payload(payload)}"
+        add_note = getattr(exc, "add_note", None)
+        if add_note is not None:
+            add_note(note)
+        raise
 
 
 class Session(Generic[ObsT, ActT]):

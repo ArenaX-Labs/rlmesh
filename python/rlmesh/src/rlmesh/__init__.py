@@ -62,6 +62,8 @@ try:
 except _PackageNotFoundError:
     __version__ = str(getattr(_rlmesh, "__version__", "0+unknown"))
 
+__build__ = str(getattr(_rlmesh, "__build__", "unknown"))
+
 __doc__ = _rlmesh.__doc__
 
 # Stamp this Python runtime's identity onto the native handshake PeerInfo so a
@@ -99,6 +101,7 @@ __all__ = [
     "Variant",
     "Vector",
     "View",
+    "__build__",
     "__version__",
     "adapters",
     "describe",

@@ -23,9 +23,9 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyT
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use rlmesh_adapters::v1::{
-    ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf, ModelSpec,
-    NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView, Value,
-    build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model,
+    Advisory, ApplyError, CustomTransform, EncodingTransform, EnvTags, InputNode, ModelLeaf,
+    ModelSpec, NodePath, ObsPlan, PathSeg, ResolvedAdapter, RolePolicy, SkipCustoms, SpaceView,
+    Value, build_describe_envelope, join, reject_unknowns_env, reject_unknowns_model,
     reject_unsanctioned_roles_env, reject_unsanctioned_roles_model, resolve, roles,
 };
 use serde::de::DeserializeOwned;
@@ -422,6 +422,54 @@ impl PyAdapterPlan {
     }
 }
 
+/// One non-fatal adapter advisory: a message plus a severity tier.
+///
+/// `severity` is `"info"` for benign hints (an authoring nudge, an
+/// explicitly-requested lossy step) and `"caution"` when the adapter
+/// substituted or fabricated model-visible data (a role-rebound camera, a
+/// zero-filled frame) — the tier an eval harness may want to hard-fail on.
+/// `str(advisory)` is the message.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "Advisory", frozen)]
+pub struct PyAdvisory {
+    advisory: Advisory,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[cfg_attr(not(feature = "stub-gen"), pyo3_stub_gen_derive::remove_gen_stub)]
+#[pymethods]
+impl PyAdvisory {
+    /// The severity tier: `"info"` or `"caution"`.
+    #[getter]
+    fn severity(&self) -> &'static str {
+        self.advisory.severity.as_str()
+    }
+
+    /// The human-readable note.
+    #[getter]
+    fn message(&self) -> &str {
+        &self.advisory.message
+    }
+
+    fn __str__(&self) -> &str {
+        &self.advisory.message
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Advisory(severity={:?}, message={:?})",
+            self.advisory.severity.as_str(),
+            self.advisory.message
+        )
+    }
+}
+
+impl From<Advisory> for PyAdvisory {
+    fn from(advisory: Advisory) -> Self {
+        Self { advisory }
+    }
+}
+
 /// A resolved adapter plan handle backed by the `rlmesh-adapters` core.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "AdapterPlan", frozen)]
@@ -440,8 +488,13 @@ impl PyAdapterPlan {
 
     /// Per-env data-loss / fabrication notes (zero-filled camera, aspect crop):
     /// the "warn" subset of `describe`, empty when nothing noteworthy happened.
-    fn advisories(&self) -> Vec<String> {
-        self.adapter.advisories()
+    /// Each note carries a severity tier (`"info"` / `"caution"`).
+    fn advisories(&self) -> Vec<PyAdvisory> {
+        self.adapter
+            .advisories()
+            .into_iter()
+            .map(PyAdvisory::from)
+            .collect()
     }
 
     /// The top-level observation keys this adapter reads.
@@ -562,7 +615,7 @@ pub fn adapters_resolve(
     gen_stub_pyfunction(
         module = "rlmesh._rlmesh",
         python = r#"
-def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[str]: ...
+def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[Advisory]: ...
 "#
     )
 )]
@@ -571,7 +624,7 @@ pub fn adapters_join_check(
     env_tags_json: &str,
     observation_space: &Bound<'_, PyAny>,
     action_space: &Bound<'_, PyAny>,
-) -> PyResult<Vec<String>> {
+) -> PyResult<Vec<PyAdvisory>> {
     let tags: EnvTags = de_spec("env tags", env_tags_json)?;
     // Authoring-time check is a PUBLISH door: an env validating its own tags must
     // see a typo or unbuildable kind now, not relay it to a peer.
@@ -583,7 +636,11 @@ pub fn adapters_join_check(
     // that looks mis-declared) come back so the author sees them at `tag()` time.
     let features = join(&tags, &obs_view, &action_view)
         .map_err(|err| PyValueError::new_err(err.to_string()))?;
-    Ok(features.advisories)
+    Ok(features
+        .advisories
+        .into_iter()
+        .map(PyAdvisory::from)
+        .collect())
 }
 
 /// Validate and canonicalize a spec's JSON through the Rust serde codec.

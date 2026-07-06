@@ -2,6 +2,7 @@
 
 use std::fmt::Write as _;
 
+use crate::advisory::Advisory;
 use crate::fmt::{quoted, quoted_range};
 use crate::plans::{ActionSegment, ImagePlan, ObsPlan, ResolvedAdapter, StatePlan, TextPlan};
 use crate::spec::{FitMode, ImageLayout};
@@ -26,32 +27,34 @@ fn describe_obs_plan(plan: &ObsPlan) -> String {
 /// camera, an aspect crop/letterbox). Lossless or explicitly-requested steps
 /// (layout, dtype, normalize, stretch) are omitted -- this is the "warn" subset
 /// of [`describe_adapter`], not the full transform list.
-pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<String> {
-    let mut notes: Vec<String> = Vec::new();
+pub(crate) fn adapter_advisories(adapter: &ResolvedAdapter) -> Vec<Advisory> {
+    let mut notes: Vec<Advisory> = Vec::new();
     for plan in &adapter.obs_plans {
         match plan {
-            ObsPlan::Image(image) if image.zero_fill.is_some() => notes.push(format!(
-                "image {}: the env provides no source camera; using a blank (zero) frame",
-                quoted(&image.placement.to_string())
-            )),
+            ObsPlan::Image(image) if image.zero_fill.is_some() => {
+                notes.push(Advisory::caution(format!(
+                    "image {}: the env provides no source camera; using a blank (zero) frame",
+                    quoted(&image.placement.to_string())
+                )))
+            }
             ObsPlan::Image(image) if image.size.is_some() => match image.fit {
-                FitMode::Crop => notes.push(format!(
+                FitMode::Crop => notes.push(Advisory::info(format!(
                     "image {}: aspect crop drops edge pixels",
                     quoted(&image.placement.to_string())
-                )),
-                FitMode::Pad => notes.push(format!(
+                ))),
+                FitMode::Pad => notes.push(Advisory::info(format!(
                     "image {}: aspect pad adds letterbox borders",
                     quoted(&image.placement.to_string())
-                )),
+                ))),
                 FitMode::Stretch => {}
             },
             ObsPlan::State(state) => {
                 let zeros = state.pieces.iter().filter(|piece| piece.zero_fill).count();
                 if zeros > 0 {
-                    notes.push(format!(
+                    notes.push(Advisory::caution(format!(
                         "state {}: {zeros} component(s) zero-filled for an absent env role",
                         quoted(&state.placement.to_string())
-                    ));
+                    )));
                 }
             }
             _ => {}

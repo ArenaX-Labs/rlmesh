@@ -29,6 +29,7 @@
       "Variant",
       "Vector",
       "View",
+      "__build__",
       "__version__",
       "adapters",
       "describe",
@@ -976,6 +977,11 @@
         "signature": "View(backend: str = 'terminal', port: int = 8008, fps: int = 30, source: str | None = None, format: str = 'jpeg', quality: int = 75)",
         "stability": "Stable"
       },
+      "__build__": {
+        "kind": "type alias",
+        "signature": "__build__ = str(getattr(_rlmesh, '__build__', 'unknown'))",
+        "stability": "Stable"
+      },
       "__version__": {
         "kind": "type alias",
         "signature": "__version__ = _package_version('rlmesh')",
@@ -1058,6 +1064,7 @@
       "Adapter",
       "AdapterBase",
       "AdapterResolutionError",
+      "Advisory",
       "Concat",
       "ConcatPart",
       "Custom",
@@ -1203,7 +1210,7 @@
         "members": {
           "advisories": {
             "kind": "function",
-            "signature": "advisories() -> list[str]"
+            "signature": "advisories() -> list[Advisory]"
           },
           "explain": {
             "kind": "function",
@@ -1269,6 +1276,20 @@
       },
       "AdapterResolutionError": {
         "kind": "class",
+        "stability": "Stable"
+      },
+      "Advisory": {
+        "kind": "class",
+        "members": {
+          "message": {
+            "kind": "property",
+            "signature": "property message: str"
+          },
+          "severity": {
+            "kind": "property",
+            "signature": "property severity: str"
+          }
+        },
         "stability": "Stable"
       },
       "Concat": {

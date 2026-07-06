@@ -205,11 +205,14 @@ for w in caught:
     print(w.message)   # e.g. a layout hint for a frame that looks CHW
 ```
 
-At resolve time, an adapter that fabricates or drops data records it. `adapter.advisories()` returns that subset of the description, the per-env data-loss and fabrication notes (a zero-filled camera, an aspect crop), empty when nothing noteworthy happened. A managed runner can log these without failing the run.
+At resolve time, an adapter that fabricates or drops data records it. `adapter.advisories()` returns that subset of the description, the per-env data-loss and fabrication notes (a zero-filled camera, an aspect crop), empty when nothing noteworthy happened. Each note carries a `severity`: `"info"` for benign hints and explicitly-requested lossy steps, `"caution"` when the adapter substituted or fabricated data the model consumes (a camera bound to a different role than the model asked for, a zero-filled frame). A managed runner can log everything and choose to hard-fail on the caution tier alone.
 
 ```python
 for note in adapter.advisories():
-    print(note)
+    print(f"[{note.severity}] {note}")
+
+if any(note.severity == "caution" for note in adapter.advisories()):
+    raise RuntimeError("the model is not seeing what its spec asked for")
 ```
 
 ```{note}

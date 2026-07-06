@@ -300,6 +300,23 @@ def test_instruction_injection_does_not_mutate_the_source_payload() -> None:
     assert source == {"lang": {"instr": "x"}}  # injected into a rebuilt copy
 
 
+def test_predict_failure_is_annotated_with_the_payload_signature() -> None:
+    """A predict that raises gains a note naming the shapes it was handed."""
+    import numpy as np
+    from rlmesh._models._eval import _predict_step
+
+    def predict(payload: Any) -> Any:
+        raise RuntimeError("size mismatch")
+
+    payload = {"image": np.zeros((8, 8, 3), dtype=np.uint8), "instruction": "pick"}
+    with pytest.raises(RuntimeError, match="size mismatch") as excinfo:
+        _predict_step(predict, payload, None, None, (), None, None, None)
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert any("model input" in note and "uint8[8, 8, 3]" in note for note in notes), (
+        notes
+    )
+
+
 # ---------------------------------------------------------------------------
 # run() observability (hooks) + per-episode caps
 # ---------------------------------------------------------------------------

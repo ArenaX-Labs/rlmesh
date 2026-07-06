@@ -1,10 +1,12 @@
 //! The `rlmesh` command-line binary.
 //!
 //! [`run_cli`] parses argv with clap and dispatches the available subcommands.
-//! Today that is just `version`, which reports this build's version and the
-//! distribution it shipped in (read from the `RLMESH_CLI_DISTRIBUTION`
-//! environment variable, defaulting to `standalone`) so a wheel- or
-//! container-bundled CLI can identify how it was packaged.
+//! Today that is just `version`, which reports this build's version, its
+//! workflow edition (the commit-stamped build identity, so two builds sharing a
+//! package version stay distinguishable), and the distribution it shipped in
+//! (read from the `RLMESH_CLI_DISTRIBUTION` environment variable, defaulting to
+//! `standalone`) so a wheel- or container-bundled CLI can identify how it was
+//! packaged.
 
 mod cli;
 mod viewtest;
@@ -52,6 +54,11 @@ async fn run_cli_with_writers(
 
 fn version(stdout: &mut impl Write) -> Result<i32> {
     writeln!(stdout, "rlmesh-cli {}", env!("CARGO_PKG_VERSION"))?;
+    writeln!(
+        stdout,
+        "edition: {}",
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+    )?;
     writeln!(stdout, "distribution: {}", cli_distribution())?;
     Ok(0)
 }
@@ -120,6 +127,10 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
         assert!(stdout.contains(concat!("rlmesh-cli ", env!("CARGO_PKG_VERSION"))));
+        assert!(stdout.contains(&format!(
+            "edition: {}",
+            rlmesh_proto::CURRENT_WORKFLOW_EDITION
+        )));
         assert!(stdout.contains("distribution: "));
     }
 

@@ -63,6 +63,7 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
 #[pyo3(name = "_rlmesh")]
 pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("__build__", rlmesh_proto::CURRENT_WORKFLOW_EDITION)?;
 
     types::register_exceptions(m)?;
     spaces::register_classes(m)?;
@@ -83,6 +84,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sandbox::sandbox_reap_orphans, m)?)?;
 
     adapters::register_constants(m)?;
+    m.add_class::<adapters::PyAdvisory>()?;
     m.add_class::<adapters::PyAdapterPlan>()?;
     m.add_function(wrap_pyfunction!(adapters::adapters_resolve, m)?)?;
     m.add_function(wrap_pyfunction!(adapters::adapters_join_check, m)?)?;

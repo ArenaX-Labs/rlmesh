@@ -183,6 +183,9 @@
     "rlmesh.__version__": {
       "description": "Installed RLMesh package version."
     },
+    "rlmesh.__build__": {
+      "description": "Commit-stamped build identity (workflow edition) of the native core, distinguishing two builds that share a package version."
+    },
     "rlmesh.spaces": {
       "description": "Space wrappers and Gymnasium conversion helpers."
     },

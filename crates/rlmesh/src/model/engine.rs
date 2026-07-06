@@ -86,6 +86,56 @@ fn obs_keys(config: &RouteConfig) -> BTreeSet<String> {
     }
 }
 
+/// One value's dtype/shape signature for error context: `float32[8]`,
+/// `{image: uint8[3, 256, 256], state: float32[8]}`.
+fn value_summary(value: &Value) -> String {
+    match value {
+        Value::Tensor(tensor) => format!("{}{:?}", tensor.dtype().name(), tensor.shape()),
+        Value::Text(text) => format!("text(len={})", text.len()),
+        Value::Bytes(bytes) => format!("bytes(len={})", bytes.len()),
+        Value::Number(_) => "number".to_owned(),
+        Value::List(items) => match items.first() {
+            Some(first) => format!("list(len={}, first={})", items.len(), value_summary(first)),
+            None => "list(len=0)".to_owned(),
+        },
+        Value::Map(map) => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(key, value)| format!("{key}: {}", value_summary(value)))
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+    }
+}
+
+/// The signature of the assembled model inputs handed to predict. Lanes share
+/// one shape (a homogeneous vectorized fleet), so summarize lane 0 plus the
+/// lane count.
+fn inputs_summary(inputs: &[Value]) -> String {
+    match inputs.first() {
+        Some(first) => format!(
+            "adapter-assembled model input (per lane): {}; lanes: {}",
+            value_summary(first),
+            inputs.len()
+        ),
+        None => "adapter-assembled model input: (no lanes)".to_owned(),
+    }
+}
+
+/// Append the assembled-input signature to a predict failure, so a shape/dtype
+/// error raised inside the model states what the adapter actually handed it
+/// instead of surfacing as an opaque framework traceback.
+fn annotate_predict_error(err: Error, summary: &str) -> Error {
+    match err {
+        Error::Model(mut model) => {
+            model.message = format!("{}\n{summary}", model.message);
+            Error::Model(model)
+        }
+        Error::Internal(message) => Error::Internal(format!("{message}\n{summary}")),
+        other => other,
+    }
+}
+
 /// The spec'd per-lane loop (CPU + the model's predict callback), run on a
 /// blocking worker thread. Holds the per-route entry lock across the lanes so
 /// the frame buffers mutate in place.
@@ -157,53 +207,58 @@ fn predict_route(
     // chunk corner was already warned at configure and falls through to a
     // single-action corner (the runtime then re-plans every step). split_chunk caps
     // each chunk to the horizon (a receding-horizon model may over-produce).
-    let lane_raw_steps: Vec<Vec<Value>> = if horizon > 1 && predict.has_chunk_batch() {
-        let chunks = predict.predict_chunk_batch(inputs, horizon)?;
-        if chunks.len() != num_envs {
-            return Err(Error::model(format!(
-                "predict_chunk_batch returned {} chunks for {num_envs} lanes",
-                chunks.len()
-            )));
-        }
-        chunks
-            .into_iter()
-            .map(|chunk| -> Result<Vec<Value>> {
-                Ok(split_chunk(chunk)?
-                    .into_iter()
-                    .take(horizon as usize)
-                    .collect())
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else if horizon > 1 && has_chunk {
-        inputs
-            .into_iter()
-            .map(|input| -> Result<Vec<Value>> {
-                let chunk = predict.predict_chunk(input, horizon)?.ok_or_else(|| {
-                    Error::model(
-                        "model reports a chunk corner (has_chunk) but predict_chunk returned None",
-                    )
-                })?;
-                Ok(split_chunk(chunk)?
-                    .into_iter()
-                    .take(horizon as usize)
-                    .collect())
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else if predict.has_batch() {
-        let actions = predict.predict_batch(inputs)?;
-        if actions.len() != num_envs {
-            return Err(Error::model(format!(
-                "predict_batch returned {} actions for {num_envs} lanes",
-                actions.len()
-            )));
-        }
-        actions.into_iter().map(|action| vec![action]).collect()
-    } else {
-        inputs
-            .into_iter()
-            .map(|input| -> Result<Vec<Value>> { Ok(vec![predict.predict(input)?]) })
-            .collect::<Result<Vec<_>>>()?
+    let input_summary = inputs_summary(&inputs);
+    let dispatch = || -> Result<Vec<Vec<Value>>> {
+        Ok(if horizon > 1 && predict.has_chunk_batch() {
+            let chunks = predict.predict_chunk_batch(inputs, horizon)?;
+            if chunks.len() != num_envs {
+                return Err(Error::model(format!(
+                    "predict_chunk_batch returned {} chunks for {num_envs} lanes",
+                    chunks.len()
+                )));
+            }
+            chunks
+                .into_iter()
+                .map(|chunk| -> Result<Vec<Value>> {
+                    Ok(split_chunk(chunk)?
+                        .into_iter()
+                        .take(horizon as usize)
+                        .collect())
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else if horizon > 1 && has_chunk {
+            inputs
+                .into_iter()
+                .map(|input| -> Result<Vec<Value>> {
+                    let chunk = predict.predict_chunk(input, horizon)?.ok_or_else(|| {
+                        Error::model(
+                            "model reports a chunk corner (has_chunk) but predict_chunk \
+                             returned None",
+                        )
+                    })?;
+                    Ok(split_chunk(chunk)?
+                        .into_iter()
+                        .take(horizon as usize)
+                        .collect())
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else if predict.has_batch() {
+            let actions = predict.predict_batch(inputs)?;
+            if actions.len() != num_envs {
+                return Err(Error::model(format!(
+                    "predict_batch returned {} actions for {num_envs} lanes",
+                    actions.len()
+                )));
+            }
+            actions.into_iter().map(|action| vec![action]).collect()
+        } else {
+            inputs
+                .into_iter()
+                .map(|input| -> Result<Vec<Value>> { Ok(vec![predict.predict(input)?]) })
+                .collect::<Result<Vec<_>>>()?
+        })
     };
+    let lane_raw_steps = dispatch().map_err(|err| annotate_predict_error(err, &input_summary))?;
 
     // Apply the per-step adapter transform to each frame, then peel frame 0 (this
     // step's action) from the future frames (which the runtime replays).
@@ -411,7 +466,11 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         // signal stays buried on the adapter handle and the degradation is silent
         // in practice.
         for note in config.adapter.advisories() {
-            tracing::warn!(env_id = %env_id, "adapter advisory: {note}");
+            tracing::warn!(
+                env_id = %env_id,
+                severity = note.severity.as_str(),
+                "adapter advisory: {note}"
+            );
         }
         // Stamp the runtime-chosen execution horizon onto the resolved config (1 = no
         // chunking). Warn once here when the runtime asks for chunking but the model
@@ -474,5 +533,59 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             .expect("routes map poisoned")
             .remove(env_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod input_context_tests {
+    use std::collections::BTreeMap;
+
+    use rlmesh_spaces::{DType, Tensor};
+
+    use super::*;
+
+    fn sample_input() -> Value {
+        Value::Map(BTreeMap::from([
+            (
+                "image".to_owned(),
+                Value::Tensor(Tensor::from_vec(vec![0; 48], vec![3, 4, 4], DType::Uint8).unwrap()),
+            ),
+            (
+                "state".to_owned(),
+                Value::Tensor(Tensor::from_vec(vec![0; 28], vec![7], DType::Float32).unwrap()),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn inputs_summary_names_keys_dtypes_shapes_and_lanes() {
+        let summary = inputs_summary(&[sample_input(), sample_input()]);
+        assert_eq!(
+            summary,
+            "adapter-assembled model input (per lane): \
+             {image: uint8[3, 4, 4], state: float32[7]}; lanes: 2"
+        );
+    }
+
+    #[test]
+    fn model_error_gains_the_input_signature() {
+        let annotated = annotate_predict_error(
+            Error::model("RuntimeError: size mismatch"),
+            "adapter-assembled model input (per lane): {state: float32[7]}; lanes: 1",
+        );
+        match annotated {
+            Error::Model(model) => assert_eq!(
+                model.message,
+                "RuntimeError: size mismatch\nadapter-assembled model input (per lane): \
+                 {state: float32[7]}; lanes: 1"
+            ),
+            other => panic!("expected Error::Model, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transport_errors_pass_through_unannotated() {
+        let annotated = annotate_predict_error(Error::Connection("reset".to_owned()), "ctx");
+        assert_eq!(annotated, Error::Connection("reset".to_owned()));
     }
 }

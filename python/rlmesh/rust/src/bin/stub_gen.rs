@@ -13,6 +13,8 @@ const SUPPLEMENTAL_EXPORTS: &[&str] = &[
 const SUPPLEMENTAL_STUBS: &str = r#"
 __version__: builtins.str
 
+__build__: builtins.str
+
 class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...

@@ -7,6 +7,7 @@
 //! the untrusted handshake contract). Every failure names which side
 //! disagreed — the tag or the space.
 
+use crate::advisory::Advisory;
 use crate::fmt::quoted;
 use crate::path::NodePath;
 use crate::space_view::{SpaceView, SpaceViewKind};
@@ -128,7 +129,7 @@ pub fn join(
         &mut unknown,
     )?;
     let action = resolve_action(&tags.action, action_space)?;
-    let mut advisories: Vec<String> = observation
+    let mut advisories: Vec<Advisory> = observation
         .iter()
         .filter_map(|feature| match feature {
             EnvFeature::Image(image) => image_layout_advisory(image),
@@ -163,16 +164,16 @@ pub fn join(
 /// One advisory if `role` is neither registered nor an `x/` escape -- an ad-hoc
 /// role resolves only on exact-string agreement, so nudge the author toward a
 /// blessed role, the `x/` escape, or (for dims no model reads) an opaque actuator.
-fn role_registry_advisory(role: &str) -> Option<String> {
+fn role_registry_advisory(role: &str) -> Option<Advisory> {
     if crate::roles::registry::is_sanctioned_role(role) {
         return None;
     }
-    Some(format!(
+    Some(Advisory::info(format!(
         "role {role:?} is not in the role registry; it resolves only when the env and \
          model agree on its exact string. Prefer a blessed role, mark it intentionally \
          non-standard with an `x/` prefix, or -- for dims no model reads -- use a \
          role-less (opaque) actuator"
-    ))
+    )))
 }
 
 /// Plausible image channel-axis length (RGBA=4, RGB=3, grayscale=1, ...). A
@@ -186,7 +187,7 @@ const PLAUSIBLE_CHANNELS: u32 = 4;
 /// defaults to `hwc`), so a CHW env that forgets `layout="chw"` silently derives
 /// a wrong channel count. This is a *hint*, never an error: an env may
 /// legitimately carry an unusual channel count.
-fn image_layout_advisory(image: &EnvImage) -> Option<String> {
+fn image_layout_advisory(image: &EnvImage) -> Option<Advisory> {
     // image_hwc maps the axes so that, under hwc, channels = shape[2] and the
     // chw channel axis would be shape[0] = height; under chw it is the mirror.
     let (declared, opposite_channels, other) = match image.layout {
@@ -195,12 +196,12 @@ fn image_layout_advisory(image: &EnvImage) -> Option<String> {
     };
     (image.channels > PLAUSIBLE_CHANNELS && (1..=PLAUSIBLE_CHANNELS).contains(&opposite_channels))
         .then(|| {
-            format!(
+            Advisory::info(format!(
                 "image {}: shape implies {} channels under layout={declared}; this looks like \
                  {other} — declare layout=\"{other}\" if so",
                 quoted(&image.role),
                 image.channels,
-            )
+            ))
         })
 }
 
@@ -800,13 +801,14 @@ mod tests {
             ]),
         };
         let features = join(&tags, &obs, &action_space).expect("join");
-        let nudges: Vec<&String> = features
+        let nudges: Vec<&Advisory> = features
             .advisories
             .iter()
-            .filter(|note| note.contains("role registry"))
+            .filter(|note| note.message.contains("role registry"))
             .collect();
         assert_eq!(nudges.len(), 1, "{:?}", features.advisories);
-        assert!(nudges[0].contains("action/wiggle"), "{}", nudges[0]);
+        assert!(nudges[0].message.contains("action/wiggle"), "{}", nudges[0]);
+        assert_eq!(nudges[0].severity, crate::advisory::AdvisorySeverity::Info);
     }
 
     #[test]
@@ -1065,11 +1067,14 @@ mod tests {
         })
     }
 
-    /// The joined advisories for a single camera of `shape` declared `layout`.
+    /// The joined advisory messages for a single camera of `shape` declared `layout`.
     fn cam_advisories(shape: Vec<i64>, layout: ImageLayout) -> Vec<String> {
         join_obs("camera", box_view(shape, None, None), image_leaf(layout))
             .expect("joins")
             .advisories
+            .into_iter()
+            .map(|advisory| advisory.message)
+            .collect()
     }
 
     #[test]

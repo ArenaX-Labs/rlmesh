@@ -55,6 +55,7 @@ Model runtime paths use the active RLMesh backend. Encoded image bytes
 (PNG/JPEG) in observations are decoded natively -- no Pillow.
 """
 
+from .._rlmesh import Advisory
 from .adapter import Adapter, AdapterBase
 from .constants import (
     ACTION_DELTA_POS,
@@ -142,6 +143,7 @@ __all__ = [
     "Adapter",
     "AdapterBase",
     "AdapterResolutionError",
+    "Advisory",
     "Concat",
     "ConcatPart",
     "Custom",

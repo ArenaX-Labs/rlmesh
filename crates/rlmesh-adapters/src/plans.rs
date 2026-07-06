@@ -8,6 +8,7 @@ mod text;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::advisory::Advisory;
 use super::describe;
 use super::path::{NodePath, PathSeg};
 
@@ -70,14 +71,14 @@ pub struct ResolvedAdapter {
     /// *unreferenced* unknown observation kind the env declared (an old core
     /// ignored it). Surfaced through [`advisories`](Self::advisories) alongside
     /// the per-apply data-loss notes. Empty on a fully-understood spec.
-    resolve_advisories: Vec<String>,
+    resolve_advisories: Vec<Advisory>,
     /// Hints the env's own declaration raised at join (e.g. an image layout that
     /// looks mis-declared given its shape). Carried from [`EnvFeatures`] so the
     /// serve side surfaces the same note the author saw. Surfaced through
     /// [`advisories`](Self::advisories) but kept out of [`describe`](Self::describe):
     /// these are not *dropped* env modalities, so they must not land under that
     /// header (which conformance vectors pin).
-    join_advisories: Vec<String>,
+    join_advisories: Vec<Advisory>,
 }
 
 impl ResolvedAdapter {
@@ -89,8 +90,8 @@ impl ResolvedAdapter {
     pub(crate) fn new(
         obs_plans: Vec<ObsPlan>,
         action_plan: ActionPlan,
-        resolve_advisories: Vec<String>,
-        join_advisories: Vec<String>,
+        resolve_advisories: Vec<Advisory>,
+        join_advisories: Vec<Advisory>,
     ) -> Self {
         let stacked = obs_plans
             .iter()
@@ -126,7 +127,7 @@ impl ResolvedAdapter {
             summary.push_str("\ndropped:");
             for note in &self.resolve_advisories {
                 summary.push_str("\n  ");
-                summary.push_str(note);
+                summary.push_str(&note.message);
             }
         }
         summary
@@ -136,7 +137,7 @@ impl ResolvedAdapter {
     /// crop or letterbox, a dropped unknown-kind modality): the "warn" subset of
     /// [`describe`](Self::describe), for a caller to surface (e.g. log) without
     /// failing. Empty when nothing noteworthy happened.
-    pub fn advisories(&self) -> Vec<String> {
+    pub fn advisories(&self) -> Vec<Advisory> {
         // Resolve-time advisories (unreferenced unknown kinds) first, then the
         // env-declaration hints raised at join, then the per-apply data-loss
         // notes derived from the plans.

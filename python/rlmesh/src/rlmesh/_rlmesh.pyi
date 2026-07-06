@@ -18,6 +18,7 @@ __all__ = [
     "ACTION_JOINT_POS",
     "ACTION_JOINT_VEL",
     "AdapterPlan",
+    "Advisory",
     "DESCRIBE_METADATA_KEY",
     "DESCRIBE_SCHEMA_VERSION",
     "EEF_POS",
@@ -98,6 +99,8 @@ MODEL_METADATA_KEY: builtins.str
 ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
 __version__: builtins.str
 
+__build__: builtins.str
+
 class RLMeshException(builtins.RuntimeError): ...
 
 class ProtocolException(RLMeshException): ...
@@ -130,10 +133,11 @@ class AdapterPlan:
         r"""
         Human-readable summary of the resolved transformations.
         """
-    def advisories(self) -> builtins.list[builtins.str]:
+    def advisories(self) -> builtins.list[Advisory]:
         r"""
         Per-env data-loss / fabrication notes (zero-filled camera, aspect crop):
         the "warn" subset of `describe`, empty when nothing noteworthy happened.
+        Each note carries a severity tier (`"info"` / `"caution"`).
         """
     def referenced_obs_keys(self) -> builtins.list[builtins.str]:
         r"""
@@ -165,6 +169,30 @@ class AdapterPlan:
         r"""
         Apply the action plan to a canonical value-tree model action.
         """
+
+@typing.final
+class Advisory:
+    r"""
+    One non-fatal adapter advisory: a message plus a severity tier.
+    
+    `severity` is `"info"` for benign hints (an authoring nudge, an
+    explicitly-requested lossy step) and `"caution"` when the adapter
+    substituted or fabricated model-visible data (a role-rebound camera, a
+    zero-filled frame) — the tier an eval harness may want to hard-fail on.
+    `str(advisory)` is the message.
+    """
+    @property
+    def severity(self) -> builtins.str:
+        r"""
+        The severity tier: `"info"` or `"caution"`.
+        """
+    @property
+    def message(self) -> builtins.str:
+        r"""
+        The human-readable note.
+        """
+    def __str__(self) -> builtins.str: ...
+    def __repr__(self) -> builtins.str: ...
 
 @typing.final
 class EnvContract:
@@ -460,7 +488,7 @@ class Tensor:
 
 def _set_python_peer_info(*, language: str | None = None, language_version: str | None = None, package_version: str | None = None, os: str | None = None, os_version: str | None = None, arch: str | None = None, framework_versions: dict[str, str] | None = None) -> None: ...
 
-def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[str]: ...
+def adapters_join_check(env_tags_json: str, observation_space: object, action_space: object) -> list[Advisory]: ...
 
 def adapters_resolve(env_tags_json: str, observation_space: object, action_space: object, model_spec_json: str) -> AdapterPlan: ...
 

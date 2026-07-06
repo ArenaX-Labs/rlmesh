@@ -2315,9 +2315,10 @@ def test_unreferenced_unknown_obs_kind_resolves_through_contract():
         output=adapt.Action(adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3)),
     )
     adapter = adapt.resolve_from_contract(contract, spec)
-    assert any("audio" in note and "mic" in note for note in adapter.advisories()), (
-        adapter.advisories()
-    )
+    assert any(
+        "audio" in note.message and "mic" in note.message
+        for note in adapter.advisories()
+    ), adapter.advisories()
 
 
 def test_referenced_unknown_obs_kind_is_unsupported_through_contract():
@@ -2725,8 +2726,14 @@ def test_image_optional_camera_zero_fills_when_absent():
     )
     assert payload["overhead"].shape == (8, 8, 3)
     np.testing.assert_array_equal(payload["overhead"], 0)
-    # The zero-filled camera surfaces as a non-fatal advisory.
-    assert any("blank" in note and "overhead" in note for note in adapter.advisories())
+    # The zero-filled camera surfaces as a non-fatal advisory, on the caution
+    # tier (the model consumes fabricated frames).
+    assert any(
+        "blank" in note.message
+        and "overhead" in note.message
+        and note.severity == "caution"
+        for note in adapter.advisories()
+    )
 
 
 # ---------------------------------------------------------------------------

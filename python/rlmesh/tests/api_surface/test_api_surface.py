@@ -33,6 +33,7 @@ def test_root_namespace_is_small() -> None:
         "Variant",
         "Vector",
         "View",
+        "__build__",
         "__version__",
         "adapters",
         "describe",

@@ -8,6 +8,7 @@ mod text;
 
 use std::collections::BTreeMap;
 
+use super::advisory::Advisory;
 use super::error::{AdapterResolutionError, ErrorCode};
 use super::fmt::quoted;
 use super::join::join;
@@ -210,16 +211,16 @@ pub fn resolve(
     // Reaching here means no model input referenced an unknown kind (a reference
     // hard-errors above), so every recorded unknown leaf was unreferenced: emit
     // one deterministic advisory per leaf, sorted by tree path. Run proceeds.
-    let mut advisories: Vec<String> = env_spec
+    let mut advisories: Vec<Advisory> = env_spec
         .unknown
         .iter()
         .map(|unknown| {
-            format!(
+            Advisory::info(format!(
                 "env feature {} (role {}): unrecognized kind {}; ignored (no model input requires it)",
                 quoted(&unknown.source.to_string()),
                 quoted(unknown.role.as_deref().unwrap_or("<none>")),
                 quoted(&unknown.kind)
-            )
+            ))
         })
         .collect();
 
@@ -234,37 +235,37 @@ pub fn resolve(
         if let ObsPlan::Image(image) = obs_plan
             && let Some((requested, bound)) = &image.role_rebound
         {
-            advisories.push(format!(
+            advisories.push(Advisory::caution(format!(
                 "model input {}: no env camera has role {}; bound to the env's                  only camera ({}) instead -- declare the matching role on one                  side to silence this",
                 quoted(&image.placement.to_string()),
                 quoted(requested),
                 quoted(bound),
-            ));
+            )));
         }
         if let ObsPlan::State(state) = obs_plan
             && state.pieces.iter().any(|piece| {
                 !piece.zero_fill && piece.dst_range.is_some() && piece.src_range.is_none()
             })
         {
-            advisories.push(format!(
+            advisories.push(Advisory::info(format!(
                 "model input {}: a state range is set but the env feature is \
                      unbounded, so the range is a no-op (it remaps an env range, it \
                      does not clamp)",
                 quoted(&state.placement.to_string()),
-            ));
+            )));
         }
     }
     for segment in &action_plan.segments {
         if segment.src_range.is_some() && segment.dst_range.is_none() {
-            advisories.push(format!(
+            advisories.push(Advisory::info(format!(
                 "model action (role {}): a range is set but the env actuator is \
                  unbounded, so the range is a no-op (it remaps into an env range, it \
                  does not clamp)",
                 quoted(segment.role.as_deref().unwrap_or("?")),
-            ));
+            )));
         }
     }
-    advisories.sort();
+    advisories.sort_by(|a, b| a.message.cmp(&b.message));
 
     let resolved = ResolvedAdapter::new(
         obs_plans,
@@ -328,7 +329,7 @@ mod unknown_kind_tests {
         assert!(
             advisories
                 .iter()
-                .any(|a| a.contains("mic") && a.contains("audio")),
+                .any(|a| a.message.contains("mic") && a.message.contains("audio")),
             "expected an unknown-kind advisory, got: {advisories:?}"
         );
         // The dropped modality is also surfaced in the human summary (it produces
@@ -489,7 +490,7 @@ mod unknown_kind_tests {
         assert!(
             advisories
                 .iter()
-                .any(|a| a.contains("layout=hwc") && a.contains("looks like chw")),
+                .any(|a| a.message.contains("layout=hwc") && a.message.contains("looks like chw")),
             "expected the join layout hint in advisories(), got: {advisories:?}"
         );
         let described = adapter.describe();
