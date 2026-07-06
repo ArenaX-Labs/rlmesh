@@ -26,14 +26,12 @@ See {doc}`contracts` for contract fields.
 
 When RLMesh serves an environment through its bootstrap entrypoint (for example inside a sandbox container), the bind address follows a single canonical contract so that hosts and downstream images agree on where the environment listens:
 
-| Variable             | Meaning                                                                                        |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `RLMESH_ADDRESS`     | Full bind address (`host:port`, `port`, `tcp://host:port`, `unix:///...`). When set, it wins.  |
-| `RLMESH_PORT`        | Port-only fallback, bound on `0.0.0.0`, used when `RLMESH_ADDRESS` is unset (default `50051`). |
-| `RLMESH_ENV_ADDRESS` | Deprecated alias for `RLMESH_ADDRESS`; read only when it is unset.                             |
-| `RLMESH_ENV_PORT`    | Deprecated alias for `RLMESH_PORT`; read only when both addresses are unset.                   |
+| Variable         | Meaning                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `RLMESH_ADDRESS` | Full bind address (`host:port`, `port`, `tcp://host:port`, `unix:///...`). When set, it wins.  |
+| `RLMESH_PORT`    | Port-only fallback, bound on `0.0.0.0`, used when `RLMESH_ADDRESS` is unset (default `50051`). |
 
-`RLMESH_ADDRESS` is the preferred knob; it accepts the same forms as the server `address` argument, so a non-default host or a Unix socket can be selected without code changes. `RLMESH_ENV_ADDRESS` / `RLMESH_ENV_PORT` are deprecated aliases kept for backward compatibility. Constructing `EnvServer` directly in your own process ignores these variables. Pass `address`/`host`/`port` explicitly.
+`RLMESH_ADDRESS` accepts the same forms as the server `address` argument, so a non-default host or a Unix socket can be selected without code changes. Constructing `EnvServer` directly in your own process ignores these variables. Pass `address`/`host`/`port` explicitly.
 
 ```{eval-rst}
 .. autoclass:: rlmesh.EnvServer
@@ -48,7 +46,7 @@ When RLMesh serves an environment through its bootstrap entrypoint (for example 
 pinning; signatures may still change before the stable release.
 ```
 
-`rlmesh._serving` exposes a small surface for constructing an environment to serve through {py:class}`~rlmesh.EnvServer`. It promotes the loaders previously hidden in `rlmesh._cli.serve_env` so that scripts and downstream runners can build an environment by Gymnasium id or by `module:callable` entrypoint.
+`rlmesh._serving` exposes a small surface for constructing an environment to serve through {py:class}`~rlmesh.EnvServer`. It exposes the loaders that `rlmesh._cli.serve_env` uses internally, so scripts and downstream runners can build an environment by Gymnasium id or by `module:callable` entrypoint.
 
 Use it when a script or runner has to build the environment itself before serving. If you already hold an env object, pass it straight to {py:class}`~rlmesh.EnvServer`.
 

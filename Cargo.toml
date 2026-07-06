@@ -18,6 +18,7 @@ resolver = "3"
 version = "0.1.0"
 authors = ["ArenaX Labs, Inc. <research@competesai.com>", "Josh Blayone <josh@arenaxlabs.com>"]
 edition = "2024"
+rust-version = "1.96"
 homepage = "https://rlmesh.dev"
 repository = "https://github.com/ArenaX-Labs/rlmesh"
 documentation = "https://docs.rs/rlmesh"

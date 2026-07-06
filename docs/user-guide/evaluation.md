@@ -174,11 +174,7 @@ An **item** is one of:
 
 Roles and leaves are the same vocabulary the rest of the adapter system uses; see {doc}`adapters`. The env must publish adapter tags (via an {class}`~rlmesh.EnvFactory` or `rlmesh.adapters.tag(...)`), or the read raises an `AdapterResolutionError`, since there are no roles to address otherwise. Values come back in the env's own framework (NumPy for a Gymnasium env, torch for a torch route).
 
-Three things this is for:
-
-- **Debugging an env.** Confirm what a camera returns (shape, layout, value range) without threading it through a model.
-- **Logging canonical roles.** Record `EEF_POS` or the primary image the same way across heterogeneous envs, since the role addresses the quantity, not the env's key.
-- **Reward shaping.** Compute a shaped term over canonical roles, e.g. `reward - 0.1 * distance(sess.read(obs, adapt.EEF_POS), goal)`.
+Reach for it to debug an env: confirm what a camera returns (shape, layout, value range) without threading it through a model. It also gives a consistent way to log canonical roles, recording `EEF_POS` or the primary image the same way across heterogeneous envs, since the role addresses the quantity rather than the env's key. The same read works for reward shaping: compute a shaped term over canonical roles, e.g. `reward - 0.1 * distance(sess.read(obs, adapt.EEF_POS), goal)`.
 
 ## Execution horizon, end to end
 

@@ -444,6 +444,223 @@ mod tests {
         }
     }
 
+    /// Cross-language byte contract (value-encoding-v1), integer side: `[0, 1,
+    /// MIN, MAX]` per dtype as exact little-endian bytes. Unsigned maxima above
+    /// `i64::MAX` ride the documented wrap ([`Scalar`] has no unsigned
+    /// variant), so `u64::MAX` is spelled `u64::MAX as i64` and must produce
+    /// the all-0xFF slab. A failure here is a wire break, not a golden update.
+    #[test]
+    fn value_encoding_v1_integer_golden() {
+        let cases: &[(&str, &[i64], DType, &[u8])] = &[
+            (
+                "i8",
+                &[0, 1, i8::MIN as i64, i8::MAX as i64],
+                DType::Int8,
+                &[0x00, 0x01, 0x80, 0x7F],
+            ),
+            (
+                "i16",
+                &[0, 1, i16::MIN as i64, i16::MAX as i64],
+                DType::Int16,
+                &[0x00, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F],
+            ),
+            (
+                "i32",
+                &[0, 1, i32::MIN as i64, i32::MAX as i64],
+                DType::Int32,
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF,
+                    0xFF, 0xFF, 0x7F,
+                ],
+            ),
+            (
+                "i64",
+                &[0, 1, i64::MIN, i64::MAX],
+                DType::Int64,
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,
+                ],
+            ),
+            (
+                "u8",
+                &[0, 1, u8::MIN as i64, u8::MAX as i64],
+                DType::Uint8,
+                &[0x00, 0x01, 0x00, 0xFF],
+            ),
+            (
+                "u16",
+                &[0, 1, u16::MIN as i64, u16::MAX as i64],
+                DType::Uint16,
+                &[0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF],
+            ),
+            (
+                "u32",
+                &[0, 1, u32::MIN as i64, u32::MAX as i64],
+                DType::Uint32,
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+                    0xFF, 0xFF, 0xFF,
+                ],
+            ),
+            (
+                "u64",
+                &[0, 1, u64::MIN as i64, u64::MAX as i64],
+                DType::Uint64,
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                ],
+            ),
+        ];
+        for (label, values, dtype, want) in cases {
+            let scalars: Vec<Scalar> = values.iter().copied().map(Scalar::Int).collect();
+            let got = encode_scalars(&scalars, *dtype).expect("encode");
+            assert_eq!(&got, want, "{label}: got {got:02x?}, want {want:02x?}");
+        }
+    }
+
+    /// Decode-direction golden (value-encoding-v1): fixed checked-in bytes must
+    /// decode to these exact scalars, so a decode regression is caught even when
+    /// encode drifts in a matched way and the round-trip test stays green.
+    /// A failure here is a wire break, not a golden update.
+    #[test]
+    fn value_encoding_v1_decode_golden() {
+        let cases: &[(&str, &[u8], DType, &[Scalar])] = &[
+            (
+                "f16",
+                &[0x00, 0x3C, 0x00, 0x3E, 0x00, 0xC0],
+                DType::Float16,
+                &[Scalar::Float(1.0), Scalar::Float(1.5), Scalar::Float(-2.0)],
+            ),
+            (
+                "f32",
+                &[
+                    0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0xC0,
+                ],
+                DType::Float32,
+                &[Scalar::Float(1.0), Scalar::Float(1.5), Scalar::Float(-2.0)],
+            ),
+            (
+                "f64",
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0xF8, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0,
+                ],
+                DType::Float64,
+                &[Scalar::Float(1.0), Scalar::Float(1.5), Scalar::Float(-2.0)],
+            ),
+            (
+                "i8",
+                &[0x00, 0x01, 0x80, 0x7F],
+                DType::Int8,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(i8::MIN as i64),
+                    Scalar::Int(i8::MAX as i64),
+                ],
+            ),
+            (
+                "i16",
+                &[0x00, 0x00, 0x01, 0x00, 0x00, 0x80, 0xFF, 0x7F],
+                DType::Int16,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(i16::MIN as i64),
+                    Scalar::Int(i16::MAX as i64),
+                ],
+            ),
+            (
+                "i32",
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF,
+                    0xFF, 0xFF, 0x7F,
+                ],
+                DType::Int32,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(i32::MIN as i64),
+                    Scalar::Int(i32::MAX as i64),
+                ],
+            ),
+            (
+                "i64",
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xFF, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F,
+                ],
+                DType::Int64,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(i64::MIN),
+                    Scalar::Int(i64::MAX),
+                ],
+            ),
+            (
+                "u8",
+                &[0x00, 0x01, 0x00, 0xFF],
+                DType::Uint8,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(0),
+                    Scalar::Int(u8::MAX as i64),
+                ],
+            ),
+            (
+                "u16",
+                &[0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF],
+                DType::Uint16,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(0),
+                    Scalar::Int(u16::MAX as i64),
+                ],
+            ),
+            (
+                "u32",
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+                    0xFF, 0xFF, 0xFF,
+                ],
+                DType::Uint32,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(0),
+                    Scalar::Int(u32::MAX as i64),
+                ],
+            ),
+            (
+                "u64",
+                &[
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                ],
+                DType::Uint64,
+                &[
+                    Scalar::Int(0),
+                    Scalar::Int(1),
+                    Scalar::Int(0),
+                    Scalar::Int(u64::MAX as i64),
+                ],
+            ),
+        ];
+        for (label, bytes, dtype, want) in cases {
+            let got = decode_scalars(bytes, *dtype).expect("decode");
+            assert_eq!(&got, want, "{label}: got {got:?}, want {want:?}");
+        }
+    }
+
     #[test]
     fn test_scalar_roundtrip_all_dtypes() {
         let cases: [(DType, Vec<Scalar>); 12] = [

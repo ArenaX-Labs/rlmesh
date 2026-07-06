@@ -36,10 +36,9 @@ graph TD
 
 So `predict_chunk_batch` alone yields all four corners. Going _up_ either axis is impossible: chunking is a model capability rather than glue, and batching up is left to the engine's per-lane loop.
 
-Two cases are worth pinning down:
+Two cases are worth pinning down. When both `predict_batch` and `predict_chunk` exist but `predict` does not, the runtime derives `predict` from the un-chunked `predict_batch`, so a single-step call stays un-chunked instead of paying for a chunk decode it would discard.
 
-- **The ambiguous `predict`.** When both `predict_batch` and `predict_chunk` exist but `predict` does not, the runtime derives `predict` from the un-chunked `predict_batch`, so a single-step call stays un-chunked instead of paying for a chunk decode it would discard.
-- **The native backend cannot de-chunk.** De-chunking indexes the chunk axis on array leaves, which the native `rlmesh.Model` over raw values does not have. A chunk-only model on that backend must define `predict()` explicitly, or construction raises a clear `TypeError`. The numpy, torch, and jax backends have no such restriction.
+The native backend also cannot de-chunk: de-chunking indexes the chunk axis on array leaves, which the native `rlmesh.Model` over raw values does not have. A chunk-only model on that backend must define `predict()` explicitly, or construction raises a clear `TypeError`. The numpy, torch, and jax backends have no such restriction.
 
 ```{note}
 De-batch and de-chunk are byte-consistent with the served path. The local first-frame split matches

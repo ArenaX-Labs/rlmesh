@@ -161,3 +161,30 @@ def test_backend_namespaces_do_not_export_adapters() -> None:
     ]
     assert "TorchAdapter" not in rlmesh_torch.__all__
     assert not hasattr(rlmesh_torch, "TorchAdapter")
+
+
+def test_token_auth_surface_stays_removed() -> None:
+    """The token-auth surface was deliberately stripped from the Python SDK
+    (the Rust core keeps its internals). Beyond snapshot omission, pin it
+    explicitly: the connecting classes accept no credential parameter, and no
+    snapshotted public module exports an auth-named symbol.
+    """
+    import importlib
+    import inspect
+    import json
+    from pathlib import Path
+
+    import rlmesh
+
+    for cls in (rlmesh.RemoteEnv, rlmesh.RemoteModel, rlmesh.RemoteVectorEnv):
+        parameters = inspect.signature(cls.__init__).parameters
+        for name in ("token", "api_key", "bearer", "auth"):
+            assert name not in parameters, (cls.__name__, name)
+
+    snapshot = Path(__file__).parent / "snapshots" / "api_surface.json"
+    for module_name in json.loads(snapshot.read_text(encoding="utf-8")):
+        module = importlib.import_module(module_name)
+        for export in module.__all__:
+            lowered = export.lower()
+            for needle in ("token", "auth", "credential"):
+                assert needle not in lowered, (module_name, export)

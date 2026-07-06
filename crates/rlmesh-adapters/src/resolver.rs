@@ -470,6 +470,35 @@ mod unknown_kind_tests {
         assert!(err.message.contains("normalize"), "got: {}", err.message);
     }
 
+    /// Deliberate invariant: join advisories (env-declaration hints like a
+    /// mislabeled image layout) surface through `advisories()` but stay OUT of
+    /// `describe()` — they are not dropped env modalities, and the conformance
+    /// vectors pin describe()'s exact text including its `dropped:` section.
+    #[test]
+    fn image_layout_advisory_surfaces_in_advisories_but_not_describe() {
+        let env_tags = format!(
+            r#"{{"observation":{{"cam":{{"type":"image","role":"image/primary","layout":"hwc"}}}},"action":{ACTION_TAGS}}}"#
+        );
+        let obs_space = r#"{"kind":"dict","dtype":"unspecified","keys":["cam"],"children":[
+            {"kind":"box","shape":[3,224,224],"dtype":"uint8"}]}"#;
+        let model = format!(
+            r#"{{"input":{{"pixels":{{"type":"image","role":"image/primary"}}}},"output":{ACTION_OUT}}}"#
+        );
+        let adapter = do_resolve(&env_tags, obs_space, ACTION_SPACE, &model).expect("resolves");
+        let advisories = adapter.advisories();
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.contains("layout=hwc") && a.contains("looks like chw")),
+            "expected the join layout hint in advisories(), got: {advisories:?}"
+        );
+        let described = adapter.describe();
+        assert!(
+            !described.contains("looks like chw") && !described.contains("dropped:"),
+            "join advisories must stay out of describe(), got:\n{described}"
+        );
+    }
+
     #[test]
     fn x_prefixed_field_does_not_taint_at_resolve() {
         // The producer's `x-` opt-out: a marked-ignorable field resolves cleanly.

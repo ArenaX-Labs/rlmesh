@@ -2366,6 +2366,35 @@ def test_bare_unknown_field_on_contract_taints_resolve():
     adapt.resolve_from_contract(contract, spec)
 
 
+def test_unknown_kind_is_rejected_at_the_publish_door():
+    """Python mirror of crates/rlmesh-adapters/tests/tolerance_roundtrip.rs.
+
+    The tolerant READ half (parse-total, hard-error only when a model input
+    references the unknown leaf) is pinned above through resolve_from_contract.
+    The Rust relay-fidelity round-trip has no Python hop to pin: the frozen
+    dataclasses cannot represent an unknown leaf, so resolve_from_contract
+    forwards a peer's raw tags verbatim and from_dict stays the strict PUBLISH
+    door. This pins that complement: an unknown kind dies at from_dict on both
+    sides, so a spec this core cannot build is never published from Python.
+    """
+    with pytest.raises(ValueError, match="unrecognized kind"):
+        adapt.EnvTags.from_dict(
+            {
+                "observation": {
+                    "mic": {"type": "audio", "role": "audio/mic", "sample_rate": 16000}
+                },
+                "action": {"components": [{"role": adapt.ACTION_DELTA_POS, "dim": 3}]},
+            }
+        )
+    with pytest.raises(ValueError, match="unrecognized kind"):
+        adapt.ModelSpec.from_dict(
+            {
+                "input": {"vibe": {"type": "haptics", "role": "touch", "channels": 12}},
+                "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+            }
+        )
+
+
 def test_non_serializable_contract_metadata_is_a_clean_error():
     # A peer's contract whose adapter-tag metadata holds a non-JSON value (here a
     # set) must surface a clean AdapterResolutionError, not a raw TypeError that

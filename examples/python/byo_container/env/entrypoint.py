@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 import gymnasium as gym
-from rlmesh import EnvFactory, EnvServer
+from rlmesh import EnvFactory
 
 
 class MyEnv(EnvFactory):
@@ -37,9 +37,7 @@ def main() -> None:
     address = os.environ.get("RLMESH_ADDRESS", "0.0.0.0:50051")
     print(f"RLMesh BYO env serving {address}", flush=True)
     # Equivalent one-liner: `python -m rlmesh.serve --env <this_module>:MyEnv`.
-    recipe = MyEnv()
-    recipe.prepare()
-    EnvServer(recipe.make(), address, tags=recipe.tags).serve()
+    MyEnv().serve(address)
 
 
 if __name__ == "__main__":

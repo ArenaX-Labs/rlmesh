@@ -220,6 +220,10 @@ run = "python scripts/protocol_baseline.py regen"
 description = "Verify live protos are byte-identical to the frozen generation baseline"
 run = "python scripts/protocol_baseline.py verify"
 
+[tasks."protocol:breaking"]
+description = "Check live protos for wire-breaking changes against the frozen generation baseline"
+run = "buf breaking crates/rlmesh-proto/proto --against crates/rlmesh-proto/baselines/rlmesh-wire-v1"
+
 # ──────────────────────────────────────────────
 # Check (non-mutating)
 # ──────────────────────────────────────────────
@@ -233,6 +237,7 @@ depends = [
   "stubs:check",
   "policy:check",
   "protocol:baseline-verify",
+  "protocol:breaking",
 ]
 
 # ──────────────────────────────────────────────
@@ -265,6 +270,10 @@ run = "uv run pytest python/rlmesh/tests/conformance -q"
 [tasks."test:python:api-surface"]
 description = "Run Python API surface tests"
 run = "uv run pytest python/rlmesh/tests/api_surface -q"
+
+[tasks."test:python:examples"]
+description = "Run the headless example programs end to end"
+run = "uv run pytest python/rlmesh/tests/examples -q"
 
 [tasks."test:system:harness"]
 description = "Run system test runner and fixture tests"
@@ -386,13 +395,7 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set l
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-run = [
-  "cargo package -p rlmesh-proto --allow-dirty",
-  "cargo package -p rlmesh-spaces --allow-dirty",
-  "cargo package -p rlmesh-cli --allow-dirty",
-  "cargo package -p rlmesh-viewer --allow-dirty",
-  "cargo package --workspace --allow-dirty --no-verify",
-]
+run = "cargo package --workspace --allow-dirty"
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"
@@ -405,11 +408,15 @@ run = [
   "mise run check",
   "mise run test",
   "mise run test:python:api-surface",
+  "mise run test:python:examples",
   "mise run test:system:harness",
+  "mise run docs:build",
   "mise run release:rust:package",
   "mise run build:python",
+  "mise run release:artifacts:licenses",
   "mise run test:system",
   "mise run test:system:heavy",
+  "mise run test:python:floors",
 ]
 
 # ──────────────────────────────────────────────

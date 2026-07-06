@@ -6,28 +6,8 @@
 
 # Executes the floors documented in docs/compatibility.md: the framework
 # integration suites run on Python 3.10 against the oldest supported
-# numpy/torch/jax, using a locally built cp310 wheel.
-#
-# CI-ready: this task is not wired into CI yet. When wanted, add a separate
-# .github/workflows/floors.yml so PR latency is unaffected:
-#
-#   name: Dependency Floors
-#   on:
-#     workflow_dispatch:
-#     schedule:
-#       - cron: "17 6 * * 1"
-#   jobs:
-#     floors:
-#       runs-on: ubuntu-latest
-#       steps:
-#         - uses: actions/checkout@v6
-#         - name: Scope mise to repository config
-#           run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
-#         - uses: jdx/mise-action@v4.1.0   # same version/cache_key as ci.yml
-#         - uses: Swatinem/rust-cache@v2
-#           with: { workspaces: ". -> target" }
-#         - name: Floor-matrix tests
-#           run: mise run --skip-tools test:python:floors
+# numpy/torch/jax, using a locally built cp310 wheel. Gated in
+# .github/workflows/floors.yml (weekly) and `mise run release:check`.
 
 set -euo pipefail
 

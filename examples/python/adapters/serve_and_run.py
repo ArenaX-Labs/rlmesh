@@ -34,7 +34,7 @@ class CubePickEnv:
         self.metadata: dict[str, Any] = {"render_modes": []}
         self.observation_space = gym.spaces.Dict(
             {
-                "wrist_rgb": gym.spaces.Box(0, 255, (16, 16, 3), np.uint8),
+                "wrist_rgb": gym.spaces.Box(0, 255, (256, 256, 3), np.uint8),
                 "ee_pos": gym.spaces.Box(-np.inf, np.inf, (3,), np.float32),
                 "ee_quat": gym.spaces.Box(-np.inf, np.inf, (4,), np.float32),
                 "grip": gym.spaces.Box(-np.inf, np.inf, (1,), np.float32),
@@ -49,7 +49,7 @@ class CubePickEnv:
         quat = rng.normal(size=4).astype(np.float32)
         quat /= np.linalg.norm(quat)
         return {
-            "wrist_rgb": rng.integers(0, 256, (16, 16, 3), dtype=np.uint8),
+            "wrist_rgb": rng.integers(0, 256, (256, 256, 3), dtype=np.uint8),
             "ee_pos": rng.normal(size=3).astype(np.float32),
             "ee_quat": quat,
             "grip": np.array([0.02], dtype=np.float32),

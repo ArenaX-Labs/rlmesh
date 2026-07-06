@@ -298,6 +298,56 @@ mod opaque_actuator_contract {
     }
 }
 
+/// Rejected-design contract: actions have NO accept-set. An actuator's
+/// `encoding` is a single `RotationEncoding` (both action producers and
+/// consumers are rigid; flexibility is env-producer-only, so the obs-side
+/// `AcceptSet` list form must never parse here). These tests pin the rejection
+/// itself, not just the current type shape.
+#[cfg(test)]
+mod no_action_accept_set_contract {
+    use super::Action;
+    use crate::spec::env_tags::EnvTags;
+    use crate::spec::model::ModelSpec;
+
+    const LIST_ENCODED_COMPONENTS: &str =
+        r#"{"components": [{"role": "action/rot", "dim": 6, "encoding": ["rot6d", "quat_wxyz"]}]}"#;
+
+    #[test]
+    fn action_encoding_list_fails_to_parse() {
+        assert!(serde_json::from_str::<Action>(LIST_ENCODED_COMPONENTS).is_err());
+
+        let ok: Action = serde_json::from_str(
+            r#"{"components": [{"role": "action/rot", "dim": 6, "encoding": "rot6d"}]}"#,
+        )
+        .expect("a single encoding value parses");
+        assert_eq!(
+            ok.components[0].encoding,
+            Some(crate::spec::rotations::RotationEncoding::Rot6d)
+        );
+    }
+
+    const SINGLE_ENCODED_COMPONENTS: &str =
+        r#"{"components": [{"role": "action/rot", "dim": 6, "encoding": "rot6d"}]}"#;
+
+    #[test]
+    fn env_side_action_encoding_list_fails_to_parse() {
+        let ok = format!(r#"{{"observation": {{}}, "action": {SINGLE_ENCODED_COMPONENTS}}}"#);
+        serde_json::from_str::<EnvTags>(&ok).expect("the single-encoding control doc parses");
+
+        let doc = format!(r#"{{"observation": {{}}, "action": {LIST_ENCODED_COMPONENTS}}}"#);
+        assert!(serde_json::from_str::<EnvTags>(&doc).is_err());
+    }
+
+    #[test]
+    fn model_side_action_encoding_list_fails_to_parse() {
+        let ok = format!(r#"{{"input": {{}}, "output": {SINGLE_ENCODED_COMPONENTS}}}"#);
+        serde_json::from_str::<ModelSpec>(&ok).expect("the single-encoding control doc parses");
+
+        let doc = format!(r#"{{"input": {{}}, "output": {LIST_ENCODED_COMPONENTS}}}"#);
+        assert!(serde_json::from_str::<ModelSpec>(&doc).is_err());
+    }
+}
+
 #[cfg(test)]
 mod dup_role_contract {
     use super::Action;

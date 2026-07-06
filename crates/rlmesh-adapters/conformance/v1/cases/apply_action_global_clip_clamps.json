@@ -1,0 +1,114 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [2]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/x"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/y"
+        }
+      ]
+    },
+    "observation": {
+      "pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [1.0, -1.0],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [2]
+    },
+    "atol": 1e-6,
+    "payload": {
+      "data": {
+        "state": {
+          "data": [0.25, -0.5, 1.5],
+          "dtype": "float32",
+          "kind": "array",
+          "shape": [3]
+        }
+      },
+      "kind": "map"
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [5.0, -5.0],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [2]
+  },
+  "model_spec": {
+    "input": {
+      "state": {
+        "components": ["proprio/eef_pos"],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/x"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/y"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "pos": {
+        "data": [0.25, -0.5, 1.5],
+        "dtype": "float32",
+        "kind": "array",
+        "shape": [3]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "float32",
+        "kind": "box",
+        "shape": [3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["pos"],
+    "kind": "dict"
+  }
+}

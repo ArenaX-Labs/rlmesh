@@ -70,6 +70,19 @@ def changelog_section(version: str) -> str:
     return m.group(1).strip()
 
 
+def require_changelog_date(version: str) -> None:
+    """Reject a placeholder release date: the `## [version]` heading needs YYYY-MM-DD."""
+    text = CHANGELOG.read_text()
+    m = re.search(rf"^## \[{re.escape(version)}\]([^\n]*)$", text, re.MULTILINE)
+    if not m:
+        sys.exit(f"CHANGELOG.md has no '## [{version}]' heading yet")
+    if not re.fullmatch(r" - \d{4}-\d{2}-\d{2}", m.group(1)):
+        sys.exit(
+            f"CHANGELOG.md heading '## [{version}]{m.group(1)}' needs a real "
+            f"'- YYYY-MM-DD' release date before releasing"
+        )
+
+
 def preflight(version: str) -> None:
     if not SEMVER.match(version):
         sys.exit(f"not a SemVer version: {version!r}")
@@ -88,6 +101,7 @@ def preflight(version: str) -> None:
             "CHANGELOG.md still has <!-- DRAFT --> markers; curate them before releasing"
         )
     changelog_section(version)  # fails if the version section is missing/empty
+    require_changelog_date(version)
     print("preflight ok")
 
 
@@ -104,6 +118,7 @@ def publish(version: str) -> None:
         sys.exit(
             f"no wheel for {pep440} in {dist}/ (build wheels before --publish); found: {found}"
         )
+    run(sys.executable, "scripts/check_python_wheels.py", str(dist), "--platform-set", "all")
     for crate in CRATE_ORDER:
         run("cargo", "publish", "-p", crate)
     run("maturin", "upload", *[str(p) for p in dist.glob("*")])

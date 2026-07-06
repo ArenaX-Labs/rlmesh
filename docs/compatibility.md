@@ -28,18 +28,16 @@ on the roadmap below.
 ```
 
 ```{warning}
-The `rlmesh-wire-v1` protocol generation stabilizes at 0.1.0. The earlier 0.1.0 beta releases are
-not wire-compatible with it; rebuild both peers when upgrading from a beta.
-
-The supported-generation window currently holds a single generation. A future incompatible wire
-change mints a new generation rather than mutating v1; a cross-version generation window is on the
-roadmap below. Until `2026.06` seals at 0.1.0, prerelease and local builds use exact cohort suffixes
-so mismatched moving builds fail loudly instead of guessing they are compatible.
+The `rlmesh-wire-v1` protocol generation stabilized at 0.1.0, and the supported-generation window
+holds that single generation. A future incompatible wire change mints a new generation rather than
+mutating v1; a cross-version generation window is on the roadmap below. Prerelease and local builds
+carry exact cohort suffixes, so mismatched moving builds fail loudly instead of guessing they are
+compatible.
 ```
 
 ## Rust crates
 
-Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. See {doc}`versioning`.
+Most Rust crates are internal implementation detail with no stability promise: they are published to crates.io so the Python extension can build, but their Rust API may change at any time and there is no plan to stabilize it. The exceptions are the `rlmesh` facade crate and the CLI commands, the Rust-side surfaces we intend to stabilize. Stabilizing the facade API is a near-term goal (see the roadmap below); until then, build on the Python package. Every crate declares `rust-version = "1.96"`, the toolchain CI builds and tests with. See {doc}`versioning`.
 
 ## Framework Version Floors
 
@@ -54,7 +52,7 @@ The optional framework backends declare the lowest versions their conversion pat
 
 [^torch-glibc]: Torch wheels older than 1.13 fail to load on glibc 2.41+ hosts ("cannot enable executable stack"), so the floor harness exercises 1.13.1 there; 1.11 remains the declared install floor for older systems.
 
-The floor harness runs via `mise run test:python:floors`, which builds a `cp310` wheel and runs the framework test suites against exactly these versions. Versions below a floor may work but are unsupported. Within a framework, some features need newer releases: `rlmesh.numpy` itself converts through the buffer protocol on any supported numpy, but consuming RLMesh tensors with `np.from_dlpack` needs numpy 1.23 (`bool` needs 1.25). Torch `bool` over DLPack needs 2.2 (older versions fall back to a copy), and Torch `uint16/32/64` need 2.3.
+The floor harness runs via `mise run test:python:floors`, which builds a `cp310` wheel and runs the framework test suites against exactly these versions; it is gated in the weekly `Dependency Floors` CI workflow and in `mise run release:check`, so a release cannot ship with untested floors. Versions below a floor may work but are unsupported. Within a framework, some features need newer releases: `rlmesh.numpy` itself converts through the buffer protocol on any supported numpy, but consuming RLMesh tensors with `np.from_dlpack` needs numpy 1.23 (`bool` needs 1.25). Torch `bool` over DLPack needs 2.2 (older versions fall back to a copy), and Torch `uint16/32/64` need 2.3.
 
 ## Value Semantics and Caveats
 
@@ -98,4 +96,4 @@ Core feature releases move together. Patch releases may be artifact-specific whe
 python scripts/check_rlmesh_policy.py
 ```
 
-`mise run check` includes `mise run policy:check`. Protobuf breaking-change checks are disabled while the protocol contract is being reset before the final 0.1.0 cut.
+`mise run check` includes `mise run policy:check`, `mise run protocol:baseline-verify` (live protos byte-identical to the frozen generation baseline), and `mise run protocol:breaking` (`buf breaking` against the same baseline, so a wire-incompatible edit within `rlmesh-wire-v1` fails CI even after a baseline re-snapshot).

@@ -32,7 +32,7 @@ ENV_TAGS = adapt.EnvTags(
 )
 ```
 
-The model declares its own format, written without any knowledge of an environment: a 224x224 image, a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action. The `input` is a tree whose container _is_ the payload the prediction function receives -- here a `dict`, so each key is a payload slot.
+The model declares its own format, written without any knowledge of an environment: a 224x224 image, a `list` state whose rotation is `rot6d`, the instruction under its own key, and a `rot6d` action. The `input` is a tree whose container is the payload the prediction function receives. Here that container is a `dict`, so each key is a payload slot.
 
 ```python
 MODEL_SPEC = adapt.ModelSpec(
@@ -73,11 +73,11 @@ server = rlmesh.EnvServer(env, "127.0.0.1:0", tags=ENV_TAGS)
 server.start()
 client = RemoteEnv(server.address)
 
-print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).describe())
+print(adapt.resolve_from_contract(client.env_contract, MODEL_SPEC).explain())
 Model(predict, spec=MODEL_SPEC).run(client, max_episodes=1)
 ```
 
-The script first prints `resolve_from_contract(...).describe()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped, and the model's `rot6d` action is converted `rot6d -> axis_angle` and clipped into the environment's action.
+The script first prints `resolve_from_contract(...).explain()`, the exact transformations chosen: the image is resized, `quat_xyzw -> rot6d` is applied to the rotation, the instruction key is remapped, and the model's `rot6d` action is converted `rot6d -> axis_angle` and clipped into the environment's action.
 
 ## A project with many models and environments
 
@@ -171,7 +171,7 @@ uv run python -m vla_adapters.eval --model smolvla --env libero --address 127.0.
 
 ```python
 if is_plain:
-    print(adapt.resolve_from_contract(env.env_contract, model_entry.spec).describe())
+    print(adapt.resolve_from_contract(env.env_contract, model_entry.spec).explain())
     model = Model(model_entry.load_predict_fn(), spec=model_entry.spec)
     model.run(env, max_episodes=episodes)
 else:

@@ -12,9 +12,9 @@ RLMesh connects models to environments for evaluation. The Python SDK serves Gym
 
 ## Project Status
 
-RLMesh is in the **0.1.0 release-candidate** phase: the `2026.06` workflow edition is still provisional and seals at the final 0.1.0. The PyPI and crates.io badges above show the latest published version.
+RLMesh **0.1.0** freezes the `rlmesh-wire-v1` protocol generation and seals the `2026.06` workflow edition. The PyPI and crates.io badges above show the latest published version.
 
-RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we aim to stabilize; the other crates are internal implementation detail with no stability promise. See the [compatibility](https://docs.rlmesh.dev/compatibility/) and [versioning](https://docs.rlmesh.dev/versioning/) policies.
+RLMesh is released and pre-1.0 (`0.x`). The Python package is the supported surface; a minor release may change a stable API with a migration note, so pin a minor range for active projects. The `rlmesh` facade crate and the CLI commands are the Rust-side surfaces we intend to stabilize; the other crates are internal implementation detail with no stability promise. See the [compatibility](https://docs.rlmesh.dev/compatibility/) and [versioning](https://docs.rlmesh.dev/versioning/) policies.
 
 RLMesh is built around a language-neutral model-environment boundary. Python and Rust are supported today. Additional language bindings are future work, not part of the current public surface.
 
@@ -71,7 +71,7 @@ The gRPC crates generate their stubs from `.proto` files at build time. Building
 - Python package: [`rlmesh`](python/rlmesh/README.md)
 - Rust SDK: [`crates/rlmesh`](crates/rlmesh/README.md)
 - CLI: [`rlmesh-cli`](crates/rlmesh-cli/README.md)
-- Supporting crates: [`rlmesh-spaces`](crates/rlmesh-spaces/README.md), [`rlmesh-proto`](crates/rlmesh-proto/README.md), [`rlmesh-grpc`](crates/rlmesh-grpc/README.md), [`rlmesh-runtime`](crates/rlmesh-runtime/README.md), and [`rlmesh-sandbox`](crates/rlmesh-sandbox/README.md)
+- Supporting crates: [`rlmesh-spaces`](crates/rlmesh-spaces/README.md), [`rlmesh-proto`](crates/rlmesh-proto/README.md), [`rlmesh-adapters`](crates/rlmesh-adapters/README.md), [`rlmesh-grpc`](crates/rlmesh-grpc/README.md), [`rlmesh-runtime`](crates/rlmesh-runtime/README.md), [`rlmesh-sandbox`](crates/rlmesh-sandbox/README.md), and [`rlmesh-viewer`](crates/rlmesh-viewer/README.md)
 
 ## Resources
 

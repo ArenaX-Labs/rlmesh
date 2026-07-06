@@ -1121,6 +1121,26 @@ mod tests {
         }
     }
 
+    /// The floor check is membership in `SUPPORTED_WORKFLOW_EDITIONS`, not
+    /// equality with `CURRENT_WORKFLOW_EDITION`: a supported edition passes and
+    /// an unimplemented one is refused as a hard configuration error.
+    #[test]
+    fn enforce_route_floor_refuses_an_unimplemented_edition() {
+        let supported = RouteFloor {
+            selected_workflow_edition: CURRENT_WORKFLOW_EDITION.to_string(),
+        };
+        assert_eq!(enforce_route_floor(&supported), Ok(()));
+
+        let unimplemented = RouteFloor {
+            selected_workflow_edition: "2099.01".to_string(),
+        };
+        let error = enforce_route_floor(&unimplemented).expect_err("must refuse");
+        assert!(
+            error.contains("2099.01") && error.contains("does not implement"),
+            "expected the membership-refusal error, got: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn handshake_selects_highest_mutual_edition() {
         let server = test_server();

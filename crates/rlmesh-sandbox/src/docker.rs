@@ -481,7 +481,6 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
 ENV RLMESH_PORT={DEFAULT_CONTAINER_PORT}\n\
-ENV RLMESH_ENV_PORT={DEFAULT_CONTAINER_PORT}\n\
 ENV PYTHONUNBUFFERED=1\n\n\
 WORKDIR /opt/rlmesh\n\
 {}\

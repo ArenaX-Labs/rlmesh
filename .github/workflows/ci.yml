@@ -70,6 +70,9 @@ jobs:
       - name: Python API surface tests
         run: mise run --skip-tools test:python:api-surface
 
+      - name: Python example programs
+        run: mise run --skip-tools test:python:examples
+
       - name: System harness tests
         run: mise run --skip-tools test:system:harness
 

@@ -360,7 +360,7 @@ Find the row that matches your model, then spec it:
 | Resolve fails on a missing camera | env lacks the role                   | `optional=True` (with `height`/`width`/`channels`) |
 | Resolve fails on upscale          | target larger than the camera        | `allow_upscale=True`, or lower the target          |
 
-## Errors and `describe()`
+## Errors and `explain()`
 
 Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a spec cannot be bridged to the spaces: a required role with no `optional`/zero-fill, a declared channel mismatch, an upscale without `allow_upscale`, an aspect mismatch without `fit`, an unsupported `resample`/`dtype`, an impossible encoding conversion, a bare unknown field on a known kind, or a join-time class/width/encoding/range disagreement between a tag and its space. The message names the offending leaf and what it expected.
 

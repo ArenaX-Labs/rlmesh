@@ -166,7 +166,7 @@ ROT6D_MINE = adapt.CustomEncoding(
 
 The packing must preserve the base width, and an observation custom encoding must be the sole part of a single-part `State` (the offset of a field interior to a multi-part `Concat` is env-dependent). At resolve time the two arms are round-tripped on a probe to catch a mispaired encode/decode; pass `resolve(..., check_inverse=False)` to skip. The transforms are in-process callables, so the spec is local; a serializable `module:callable` form is planned.
 
-When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field state, or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole payload slot with a `Custom` input. What none of these do is attach a custom encoding to a role in the spec itself: the vocabulary stays closed so specs remain pure data that resolve on a remote client with no code. Reach for the boundary wrapper for a one-off; upstream the encoding once you want it attached to a role and reused.
+When the constraints do not fit (a width-changing repack, a rotation interior to a multi-field state, or non-rotation feature engineering), drop to a custom `AdapterBase` or replace a whole payload slot with a `Custom` input. None of these attach a custom encoding to a role in the spec itself: the vocabulary stays closed so specs remain pure data that resolve on a remote client with no code. Reach for the boundary wrapper for a one-off; upstream the encoding once you want it attached to a role and reused.
 
 ### Custom adapters
 

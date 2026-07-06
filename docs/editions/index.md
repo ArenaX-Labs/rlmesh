@@ -3,7 +3,7 @@
 A workflow edition is a named behavioral contract for RLMesh workflow semantics. The base edition (`YYYY.MM`) identifies one spec document in this section; prerelease and local builds append a cohort suffix so moving builds fail closed unless both sides are from the same cohort. Exactly one edition governs a session, chosen during handshake.
 
 ```{note}
-The bare `2026.06` edition seals at 0.1.0. Prerelease and local builds before it use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
+The bare `2026.06` edition sealed at 0.1.0. Prerelease and local builds use exact cohort suffixes (for example `2026.06-dev.<git>`) so moving builds fail closed rather than guess they are compatible.
 ```
 
 Editions answer a different question than the protocol generation. The protocol generation (`rlmesh-wire-v1`) names the wire shape: which services, messages, and fields exist. The edition names what a conforming interaction over that shape _means_: lifecycle, ordering, episode accounting, and error semantics.
@@ -34,7 +34,7 @@ stateDiagram-v2
     Sealed --> Sealed: spec immutable, valid indefinitely
 ```
 
-`2026.06` uses provisional cohorts through the 0.1 prerelease series and seals at v0.1.0. After sealing it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule.
+`2026.06` used provisional cohorts through the 0.1 prerelease series and sealed at v0.1.0. After sealing, it remains valid indefinitely; a new edition is minted only by a deliberate semantic redesign, never on a schedule.
 
 ## Support Window
 

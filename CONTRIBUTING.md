@@ -16,7 +16,7 @@ Changes that touch public Python or Rust APIs should update API surface snapshot
 
 ## Examples
 
-Examples live in `examples/python/` and `crates/rlmesh/examples/`. Each one shares the repository environment and runs against the working tree, so it breaks in the same pull request that breaks the code it exercises. Run a Python example from the repository root:
+Examples live in `examples/python/` and `crates/rlmesh/examples/`. Each one shares the repository environment and runs against the working tree, so it breaks in the same pull request that breaks the code it exercises: every Python example is typechecked by `basedpyright`, and the headless ones (quickstart, adapters) are executed end to end in CI by `mise run test:python:examples`. Run a Python example from the repository root:
 
 ```bash
 uv run python examples/python/<dir>/<file>.py

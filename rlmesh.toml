@@ -13,7 +13,7 @@ supported_editions = ["2026.06"]
 status = "sealed"
 spec = "docs/editions/2026.06.md"
 sealed_in = "0.1.0"
-spec_sha256 = "08f1a8a7d6839920147ca71f3fc3f84791e11845f5c513280605048d747c5918"
+spec_sha256 = "298082c83051b889730361720bfcb49fcccd2d9b5c80b3447f3a90e439c9e9e6"
 
 [protocol]
 # Single generation, equality-only: there is no support window, so no
@@ -109,6 +109,15 @@ id = "cargo:rlmesh-spaces"
 ecosystem = "cargo"
 name = "rlmesh-spaces"
 manifest = "crates/rlmesh-spaces/Cargo.toml"
+version = "0.1.0"
+role = "core"
+publish = true
+
+[[artifact]]
+id = "cargo:rlmesh-viewer"
+ecosystem = "cargo"
+name = "rlmesh-viewer"
+manifest = "crates/rlmesh-viewer/Cargo.toml"
 version = "0.1.0"
 role = "core"
 publish = true

@@ -114,7 +114,7 @@ payload = adapter.transform_obs(obs)    # env observation -> model input
 action = adapter.transform_action(out)  # model output    -> env action
 ```
 
-`describe()` prints what the resolver derived. For the pair above the image is resized, the rotation goes `quat_xyzw -> rot6d`, the instruction key is remapped (`goal -> task`), and the 6-d rotation in the model's action is converted back to the env's 3-d `axis_angle` and clipped. Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a model input or action actuator has no usable counterpart, or when a declared conversion is impossible. The conversion policy in {doc}`adapters/reference` decides which conversions apply silently, warn, or fail.
+`explain()` prints what the resolver derived. For the pair above the image is resized, the rotation goes `quat_xyzw -> rot6d`, the instruction key is remapped (`goal -> task`), and the 6-d rotation in the model's action is converted back to the env's 3-d `axis_angle` and clipped. Resolution raises {exc}`~rlmesh.adapters.AdapterResolutionError` when a model input or action actuator has no usable counterpart, or when a declared conversion is impossible. The conversion policy in {doc}`adapters/reference` decides which conversions apply silently, warn, or fail.
 
 ```{warning}
 Specs are pure data. Nothing in a tag or spec is ever evaluated as code. The one exception is

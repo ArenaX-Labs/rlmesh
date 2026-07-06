@@ -167,6 +167,7 @@ def validate_rlmesh_policy(*, repo_root: Path, manifest_path: Path) -> list[str]
                     f"workspace dependency {artifact.name} is {actual}, expected {expected}"
                 )
 
+    errors.extend(_validate_release_crate_order(repo_root, artifacts))
     errors.extend(_validate_protocol_and_workflow(repo_root, protocol))
     errors.extend(_validate_workflow_editions(repo_root, workflow, release, workspace_version))
     errors.extend(_validate_adapters(repo_root))
@@ -301,6 +302,49 @@ def _validate_python_public_modules(repo_root: Path) -> list[str]:
                 "(curate the public surface; _-prefix internal modules)"
             )
     return errors
+
+
+def _validate_release_crate_order(repo_root: Path, artifacts: list[Artifact]) -> list[str]:
+    """Cross-check the [[artifact]] cargo inventory against release.py CRATE_ORDER.
+
+    Every crate the release driver publishes must be a declared artifact (so its
+    version and license payload are validated), and every declared cargo artifact
+    must be in the publish order (so it cannot be silently skipped at release).
+    """
+    release_py = repo_root / "scripts" / "release.py"
+    crate_order = _release_crate_order(release_py)
+    if crate_order is None:
+        return [f"{release_py.relative_to(repo_root)}: CRATE_ORDER list not found"]
+
+    declared = {a.name for a in artifacts if a.ecosystem == "cargo" and a.publish}
+    ordered = set(crate_order)
+    errors: list[str] = []
+    for name in sorted(ordered - declared):
+        errors.append(
+            f"release.py CRATE_ORDER publishes {name} but rlmesh.toml has no "
+            f"publish=true cargo artifact for it"
+        )
+    for name in sorted(declared - ordered):
+        errors.append(
+            f"rlmesh.toml declares cargo artifact {name} but release.py "
+            f"CRATE_ORDER does not publish it"
+        )
+    return errors
+
+
+def _release_crate_order(path: Path) -> list[str] | None:
+    if not path.exists():
+        return None
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "CRATE_ORDER" for t in node.targets):
+            continue
+        value = ast.literal_eval(node.value)
+        if isinstance(value, list) and all(isinstance(v, str) for v in value):
+            return value
+    return None
 
 
 def _defines_dunder_all(path: Path) -> bool:

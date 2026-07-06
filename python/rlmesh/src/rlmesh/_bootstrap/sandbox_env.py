@@ -75,20 +75,13 @@ def main(
                 "the framework tensors. Serve scalar (RLMESH_NUM_ENVS=1)."
             )
         # Canonical bind contract: RLMESH_ADDRESS (a full bind address) wins, then
-        # RLMESH_PORT (default 50051); RLMESH_ENV_ADDRESS/RLMESH_ENV_PORT remain
-        # deprecated aliases read after the new names. EnvServer auto-detects the
-        # vectorized shape, so one construction path serves scalar and vector envs.
-        address = os.environ.get("RLMESH_ADDRESS") or os.environ.get(
-            "RLMESH_ENV_ADDRESS"
-        )
+        # RLMESH_PORT (default 50051). EnvServer auto-detects the vectorized
+        # shape, so one construction path serves scalar and vector envs.
+        address = os.environ.get("RLMESH_ADDRESS")
         if address:
             server = EnvServer(env, address, framework=framework, device=device)
         else:
-            port = int(
-                os.environ.get("RLMESH_PORT")
-                or os.environ.get("RLMESH_ENV_PORT")
-                or "50051"
-            )
+            port = int(os.environ.get("RLMESH_PORT") or "50051")
             server = EnvServer(
                 env, host="0.0.0.0", port=port, framework=framework, device=device
             )
