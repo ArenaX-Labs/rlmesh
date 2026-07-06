@@ -5,5 +5,5 @@ mod route;
 mod tests;
 mod types;
 
-pub(crate) use route::{RequestPhase, RouteState};
+pub(crate) use route::{RequestPhase, RouteState, now_unix_ns};
 pub(crate) use types::{EpisodeState, RouteSnapshot, SlotState, StartedEpisode};

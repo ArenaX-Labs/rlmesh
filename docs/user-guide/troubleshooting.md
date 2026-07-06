@@ -179,11 +179,14 @@ A bare role read keeps the env's native layout, so a `chw` camera comes back
 
 ### See it live
 
-For a moving target, attach the built-in viewer with `view=` on `run` or `session`. It shows the env's `render()` frame plus every declared camera role, selectable at runtime, with a step/reward HUD.
+For a moving target, attach the built-in viewer with `view=` on `session`. It shows the env's `render()` frame plus every declared camera role, selectable at runtime, with a step/reward HUD. (`run()` drives the native runtime loop, which has no viewer seam -- the viewer is fed from the session's step loop.)
 
 ```python
-model.run(env, seeds=range(5), view="terminal")   # half-block frames in the terminal
-model.run(env, seeds=range(5), view="http:9000")   # serve frames over HTTP on :9000
+with model.session(env, view="terminal") as sess:   # half-block frames in the terminal
+    sess.run(seeds=range(5))
+
+with model.session(env, view="http:9000") as sess:  # serve frames over HTTP on :9000
+    sess.run(seeds=range(5))
 ```
 
 The string shorthands are `"terminal"`, `"http"`, `"http:PORT"`, and `"both"`; construct `rlmesh.View(...)` directly to tune `fps`, image `format`, or `quality`. The viewer is best-effort: any setup failure disables it with a warning and never breaks the eval. It draws the same image roles `read` exposes, so what you see is what the adapter feeds the model.

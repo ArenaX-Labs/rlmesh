@@ -68,7 +68,7 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
     # A local env (no env_contract) yields a contract synthesized from its spaces
     # and metadata; num_envs must NOT be probed via __getattr__, so a gymnasium
     # wrapper does not emit its deprecated attribute-forwarding warning.
-    from rlmesh._models._connect import _local_contract
+    from rlmesh._models._connect import local_contract
 
     forwarded: list[str] = []
 
@@ -86,7 +86,7 @@ def test_local_contract_builds_from_a_bare_env_without_forwarding_lookups() -> N
         def reset(self) -> None: ...
         def step(self, action: object) -> None: ...
 
-    contract = _local_contract(ForwardingEnv())
+    contract = local_contract(ForwardingEnv())
     assert contract.num_envs == 1
     assert contract.observation_space == "obs"
     assert contract.metadata == {"k": "v"}
@@ -642,3 +642,14 @@ def test_local_session_threads_device_to_predict_step(
         device="cpu",
     ).run(max_episodes=1)
     assert seen["payload"] == {"placed_on": "cpu"}
+
+
+def test_model_construction_builds_no_native_worker() -> None:
+    """The native worker (and its runtime) is lazy: a Model that is only ever
+    driven locally must not pay for serve-path machinery at construction."""
+    import rlmesh
+
+    model = rlmesh.Model(lambda obs: 0)
+    assert model._worker is None
+    assert model._install_worker() is model._worker
+    assert model._install_worker() is model._worker  # cached, built once

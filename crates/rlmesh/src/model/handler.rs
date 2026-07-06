@@ -109,28 +109,33 @@ pub trait ModelHandler: Send {
         })
     }
 
-    /// Produce actions for a batch of routed observations in one call.
+    /// Produce action frames for a batch of routed observations in one call.
     ///
     /// The server calls this for a `GroupedPredictRequest` — a control-plane-
     /// grouped batch where each observation belongs to a *different* configured
     /// route (and so a different env spec/adapter). The default fans out to
-    /// [`predict`](ModelHandler::predict) per group, sequentially, which is
-    /// behaviorally identical to handling each group as its own predict. A
-    /// handler overrides this to fuse the groups into ONE forward pass (e.g. a
-    /// single batched GPU inference across env types) — this is the only seam a
-    /// fusing model must implement.
+    /// [`predict_chunked`](ModelHandler::predict_chunked) per group,
+    /// sequentially, which is behaviorally identical to handling each group as
+    /// its own predict — including action chunking: a group whose route pinned
+    /// an `execution_horizon > 1` returns frame 0 plus replay frames, and each
+    /// group's horizon stays its own (routes pin independently at
+    /// `ResolveAdapter`). A handler overrides this to fuse the groups into ONE
+    /// forward pass (e.g. a single batched GPU inference across env types) —
+    /// this is the only seam a fusing model must implement.
     ///
     /// The returned `Vec` aligns 1:1 and in order with `observations`; each
     /// element is that group's own `Result`, so one group's failure is reported
     /// per-group and never sinks the others. An override MUST preserve that
-    /// length and order.
+    /// length and order. A non-chunking group returns an empty
+    /// [`PredictFrames::replay`], keeping `PredictFrames::actions`'s
+    /// `== num_envs` lane contract per group.
     async fn predict_grouped(
         &mut self,
         observations: Vec<ModelObservation>,
-    ) -> Vec<Result<Vec<spaces::SpaceValue>>> {
+    ) -> Vec<Result<PredictFrames>> {
         let mut results = Vec::with_capacity(observations.len());
         for observation in observations {
-            results.push(self.predict(observation).await);
+            results.push(self.predict_chunked(observation).await);
         }
         results
     }
@@ -143,9 +148,10 @@ pub trait ModelHandler: Send {
     ///
     /// A spec'd model returns a setup that resolves and caches its env→model
     /// adapter per route (from the contract's spaces and adapter tags) for
-    /// `predict` to apply. Defaults to `None`. Only the served path configures
-    /// routes; the in-process [`run_local`](crate::ModelWorker::run_local) path
-    /// never calls it.
+    /// `predict` to apply. Defaults to `None`. The served path runs it at
+    /// `ResolveAdapter`; the in-process
+    /// [`run_local`](crate::ModelWorker::run_local) path runs it once at
+    /// connect, before driving.
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         None
     }

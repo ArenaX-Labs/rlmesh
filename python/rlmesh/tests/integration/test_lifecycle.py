@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -1025,3 +1026,32 @@ def test_server_client_lifecycle_process_exits_promptly() -> None:
         pytest.skip("local tcp bind is not permitted in this environment")
     assert result.returncode == 0, result.stderr
     assert "CLEAN-EXIT" in result.stdout
+
+
+@pytest.mark.skipif(not os.path.isdir("/dev/fd"), reason="needs /dev/fd (POSIX)")
+def test_repeated_evals_do_not_accumulate_fds_or_runtimes() -> None:
+    """Server+session lifecycles return their fds: repeated evals must run at a
+    steady state well under the stock macOS 256-fd soft limit.
+
+    Regression pin for the leak where every ``Model(...)`` construction built a
+    dedicated native runtime (a worker-thread pool plus kqueue/pipe fds) that an
+    uncollectable reference cycle then held for the process lifetime, exhausting
+    the default fd limit across a long test session.
+    """
+    import rlmesh
+
+    def one_eval() -> None:
+        server = env_server(TinyEnv())
+        server.start()
+        try:
+            remote = connect_with_retry(rlmesh.RemoteEnv, server.address)
+            rlmesh.run(rlmesh.Model(lambda _o: 0), remote, max_episodes=1)
+        finally:
+            server.shutdown()
+
+    one_eval()  # warm-up: initializes the process-wide shared runtimes
+    baseline = len(os.listdir("/dev/fd"))
+    for _ in range(5):
+        one_eval()
+    grown = len(os.listdir("/dev/fd")) - baseline
+    assert grown <= 5, f"fd count grew by {grown} across 5 evals (leak)"

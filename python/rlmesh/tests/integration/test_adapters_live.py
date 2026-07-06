@@ -244,9 +244,10 @@ def test_instruction_override_reaches_predict_in_declared_shape(
         return np.zeros(spec.output.dim, dtype=np.float32)
 
     tagged = adapt.tag(env_obj, _tags())
-    Model(predict, spec=spec).run(
-        tagged, max_episodes=1, instruction="follow the override"
-    )
+    with rlmesh.session(
+        Model(predict, spec=spec), tagged, instruction="follow the override"
+    ) as sess:
+        sess.run(max_episodes=1)
 
     assert seen["instruction"] == expected
 

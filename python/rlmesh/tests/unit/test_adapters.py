@@ -1730,9 +1730,10 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
 
 
 def test_vector_env_rejected_by_single_env_eval_loop() -> None:
-    # The per-episode eval loop reads scalar reward/termination, so it rejects any
-    # vector env (num_envs>1) up front instead of crashing on array truthiness deep
-    # in the step loop -- regardless of whether the adapter is stateful.
+    # The SESSION's per-episode loop reads scalar reward/termination, so it rejects
+    # any vector env (num_envs>1) up front instead of crashing on array truthiness
+    # deep in the step loop. (Model.run drives vector envs through the native
+    # runtime loop instead, so only the interactive session rejects them.)
     from rlmesh.numpy import Model
 
     env = image_env(4, 4)
@@ -1759,8 +1760,10 @@ def test_vector_env_rejected_by_single_env_eval_loop() -> None:
             output=SMOLVLA.output,
         ),
     )
+    import rlmesh
+
     with pytest.raises(ValueError, match="num_envs=2"):
-        model.run(fake_env, max_episodes=1)
+        rlmesh.session(model, fake_env).run(max_episodes=1)
 
 
 def test_stateful_adapter_allowed_on_vector_route() -> None:

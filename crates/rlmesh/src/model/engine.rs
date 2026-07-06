@@ -37,11 +37,18 @@ struct RouteEntry {
 /// per-lane loop, so configuring one route never blocks predict on another.
 type Routes = Arc<Mutex<HashMap<String, Arc<Mutex<RouteEntry>>>>>;
 
+/// `env_id -> execution horizon` for SPEC-LESS routes (no [`RouteEntry`]): the
+/// horizon is pinned at `ResolveAdapter` like a spec'd route's, but there is no
+/// config to stamp it on, so it lives here for the spec-less predict branch to
+/// read (chunk corner support without an adapter).
+type SpecLessHorizons = Arc<Mutex<HashMap<String, u32>>>;
+
 /// A served [`ModelHandler`] that drives the vectorized stateful adapter engine.
 pub struct AdaptedModelHandler {
     predict: Arc<dyn PredictFn>,
     resolver: Option<Arc<dyn RouteResolver>>,
     routes: Routes,
+    spec_less_horizons: SpecLessHorizons,
 }
 
 impl AdaptedModelHandler {
@@ -53,6 +60,7 @@ impl AdaptedModelHandler {
             predict,
             resolver,
             routes: Arc::new(Mutex::new(HashMap::new())),
+            spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -63,6 +71,16 @@ impl AdaptedModelHandler {
             .expect("routes map poisoned")
             .get(env_id)
             .cloned()
+    }
+
+    /// The horizon pinned for a spec-less route (1 = no chunking / never pinned).
+    fn spec_less_horizon(&self, env_id: &str) -> u32 {
+        self.spec_less_horizons
+            .lock()
+            .expect("spec-less horizons poisoned")
+            .get(env_id)
+            .copied()
+            .unwrap_or(1)
     }
 }
 
@@ -365,18 +383,20 @@ impl ModelHandler for AdaptedModelHandler {
 
     async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
         let entry = self.entry(&observation.route.env_id);
+        let spec_less_horizon = if entry.is_none() {
+            self.spec_less_horizon(&observation.route.env_id)
+        } else {
+            1
+        };
         let predict = Arc::clone(&self.predict);
         // Decode + frame-stack + the model's predict are CPU/host work; run them
         // off the async worker so concurrent (pipelined) requests on other routes
         // are not stalled. A spec'd route runs the per-lane engine loop (emitting
         // chunk frames); a spec-less route takes the preserved batched raw path
-        // (one action per lane, no chunk).
+        // (chunked through the model's chunk corner when a horizon was pinned).
         tokio::task::spawn_blocking(move || match entry {
             Some(entry) => predict_route(&entry, &predict, observation),
-            None => Ok(PredictFrames {
-                actions: predict.predict_spec_less(observation)?,
-                replay: Vec::new(),
-            }),
+            None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
         .await
         .map_err(|err| Error::Internal(format!("predict task panicked: {err}")))?
@@ -388,6 +408,7 @@ impl ModelHandler for AdaptedModelHandler {
             resolver,
             routes: Arc::clone(&self.routes),
             predict: Arc::clone(&self.predict),
+            spec_less_horizons: Arc::clone(&self.spec_less_horizons),
         }))
     }
 
@@ -445,6 +466,7 @@ struct AdaptedRouteSetup {
     resolver: Arc<dyn RouteResolver>,
     routes: Routes,
     predict: Arc<dyn PredictFn>,
+    spec_less_horizons: SpecLessHorizons,
 }
 
 #[async_trait]
@@ -456,6 +478,25 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         execution_horizon: u32,
     ) -> Result<()> {
         let Some(mut config) = self.resolver.resolve(env_id, env_contract).await? else {
+            let horizon = execution_horizon.max(1);
+            if horizon > 1 && !self.predict.has_chunk() {
+                tracing::warn!(
+                    env_id = %env_id,
+                    execution_horizon = horizon,
+                    "runtime pinned execution_horizon > 1 but the model defines no chunk \
+                     corner (predict_chunk); chunking is inactive — the model re-plans \
+                     every step",
+                );
+            }
+            let mut horizons = self
+                .spec_less_horizons
+                .lock()
+                .expect("spec-less horizons poisoned");
+            if horizon > 1 {
+                horizons.insert(env_id.to_string(), horizon);
+            } else {
+                horizons.remove(env_id);
+            }
             return Ok(());
         };
         // Surface the adapter's advisories once at configure. These are the
@@ -531,6 +572,10 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         self.routes
             .lock()
             .expect("routes map poisoned")
+            .remove(env_id);
+        self.spec_less_horizons
+            .lock()
+            .expect("spec-less horizons poisoned")
             .remove(env_id);
         Ok(())
     }

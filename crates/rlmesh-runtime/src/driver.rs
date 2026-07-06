@@ -119,6 +119,31 @@ pub trait RuntimeModel: Send {
 /// one via [`RuntimeDriver::run_with_cancellation_reason`].
 const DEFAULT_CANCELLATION_REASON: &str = "cancelled by caller";
 
+/// Built-in per-episode step bound applied when the spec sets no explicit
+/// `max_episode_steps` and the driver owns resets (autoreset `DISABLED`): a
+/// broken termination condition surfaces as a truncation at this bound instead
+/// of hanging the run forever. Mirrors the Python Session loop's
+/// `_MAX_STEPS_PER_EPISODE` so the two loops bound episodes identically.
+/// Inactive under `NEXT_STEP` autoreset (the env owns lane resets there).
+const DEFAULT_MAX_EPISODE_STEPS: i64 = 100_000;
+
+/// The env-reported task outcome from an episode's final-step info: Gymnasium's
+/// `is_success` (preferred) or `success` key, `None` when absent. Numeric
+/// values coerce by truthiness (`1`/`1.0` → true), matching the Python
+/// Session's `bool(info[key])` so the two loops report identical success.
+fn success_from_final_info(final_info: Option<&rlmesh_proto::spaces::v1::MetaMap>) -> Option<bool> {
+    use rlmesh_proto::spaces::v1::meta_value::Kind;
+    let entries = &final_info?.entries;
+    ["is_success", "success"]
+        .iter()
+        .find_map(|key| match entries.get(*key)?.kind.as_ref()? {
+            Kind::Bool(value) => Some(*value),
+            Kind::Integer(value) => Some(*value != 0),
+            Kind::Number(value) => Some(*value != 0.0),
+            _ => None,
+        })
+}
+
 // Telemetry sources for the three driver ops. `component` is a coarse class
 // label — the serial single-route driver has one model + one env, and `op`
 // already distinguishes them (see telemetry::Source).
@@ -166,6 +191,26 @@ where
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
             observation_space: Arc::default(),
+        }
+    }
+
+    /// Reset seeds for the lanes a reset restarts: explicit `episode_seeds`
+    /// (claimed in episode-start order) when configured, else the `base_seed`
+    /// derivation, else unseeded. `env_indices` is `None` for a whole-vector
+    /// reset.
+    fn planned_reset_seeds(
+        &self,
+        state: &mut RouteState,
+        reset_generation: u64,
+        env_indices: Option<&[u32]>,
+    ) -> Vec<i64> {
+        if !self.spec.episode_seeds.is_empty() {
+            let lanes = env_indices.map_or(self.spec.num_envs, <[u32]>::len);
+            return state.claim_episode_seeds(&self.spec.episode_seeds, lanes);
+        }
+        match env_indices {
+            None => self.reset_seeds(reset_generation),
+            Some(indices) => self.reset_subset_seeds(reset_generation, indices),
         }
     }
 
@@ -317,11 +362,12 @@ where
         let reset_timeout = self.spec.limits.env_reset_timeout;
         // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
         let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms().max(0) as u64;
-        let reset_seeds = self.reset_seeds(reset_generation);
+        let reset_seeds = self.planned_reset_seeds(state, reset_generation, None);
         // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per lane
         // and push them DOWN so the env tags its episodes with our ids; we never
         // read ids back from the env.
         let initial_episode_ids = mint_episode_ids(self.spec.num_envs);
+        state.note_episode_seeds(&initial_episode_ids, &reset_seeds);
         let reset_request = ResetRequest {
             seeds: reset_seeds,
             options: None,
@@ -533,7 +579,7 @@ where
             );
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
 
-            state.record_step();
+            state.record_step(&step_ok.response.rewards);
             let step_snapshot = state.snapshot();
             fan_out_event!(
                 self,
@@ -566,18 +612,26 @@ where
             // pre-transform bytes and, when the episode completes, an
             // observation the model never sees.
 
-            self.emit_completed_episodes(state, &step_ok.response.completed_episodes)
+            let capped = self.capped_lane_completions(state, &step_ok.response.completed_episodes);
+            let completed_episodes: std::borrow::Cow<'_, [EpisodeMetadata]> = if capped.is_empty() {
+                std::borrow::Cow::Borrowed(&step_ok.response.completed_episodes)
+            } else {
+                let mut all = step_ok.response.completed_episodes.clone();
+                all.extend(capped);
+                std::borrow::Cow::Owned(all)
+            };
+
+            self.emit_completed_episodes(state, &completed_episodes)
                 .await;
             // Tell the model to evict the ended episodes' frame-stack buffers
             // (best-effort GC; ids never repeat so a miss only leaks memory).
-            self.emit_reset_adapter(state, &step_ok.response.completed_episodes)
-                .await;
+            self.emit_reset_adapter(state, &completed_episodes).await;
 
             // A lane that completed this step gets a fresh episode, so its buffered
             // future actions are stale. The replay buffer holds whole-batch frames
             // and cannot be partially invalidated, so flush it and re-plan on the
             // next step (receding horizon on reset). No-op when not chunking.
-            if !step_ok.response.completed_episodes.is_empty() {
+            if !completed_episodes.is_empty() {
                 replay_buffer.clear();
             }
 
@@ -588,7 +642,7 @@ where
                 self.autoreset_mode(),
                 AutoresetMode::NextStep | AutoresetMode::SameStep
             ) {
-                for completed in &step_ok.response.completed_episodes {
+                for completed in completed_episodes.iter() {
                     pending_roll
                         .entry(completed.env_index)
                         .or_insert_with(mint_episode_id);
@@ -633,6 +687,7 @@ where
                     env_id: self.spec.env_id.clone(),
                     total_steps: state.total_steps(),
                     total_episodes: state.total_episodes(),
+                    episodes: state.take_episode_summaries(),
                     telemetry: telemetry_snapshot,
                 });
             }
@@ -658,9 +713,7 @@ where
                 AutoresetMode::Unspecified | AutoresetMode::Disabled => {
                     // Proto env_index is uint32; thread it straight into the
                     // uint32 ResetRequest.env_indices without a round-trip.
-                    let mut done_lanes: Vec<u32> = step_ok
-                        .response
-                        .completed_episodes
+                    let mut done_lanes: Vec<u32> = completed_episodes
                         .iter()
                         .map(|metadata| metadata.env_index)
                         .collect();
@@ -692,17 +745,22 @@ where
                         // done_lanes for a partial one) and push them DOWN.
                         let (reset_seeds, env_indices, reset_episode_ids) = if whole_vector {
                             (
-                                self.reset_seeds(reset_generation),
+                                self.planned_reset_seeds(state, reset_generation, None),
                                 Vec::new(),
                                 mint_episode_ids(self.spec.num_envs),
                             )
                         } else {
                             (
-                                self.reset_subset_seeds(reset_generation, &done_lanes),
+                                self.planned_reset_seeds(
+                                    state,
+                                    reset_generation,
+                                    Some(&done_lanes),
+                                ),
                                 done_lanes.clone(),
                                 mint_episode_ids(done_lanes.len()),
                             )
                         };
+                        state.note_episode_seeds(&reset_episode_ids, &reset_seeds);
                         let reset_request = ResetRequest {
                             seeds: reset_seeds,
                             options: None,
@@ -853,6 +911,67 @@ where
         }
     }
 
+    /// Runtime-truncated completions for lanes at the step/time cap this step,
+    /// excluding lanes the env itself just completed. Built from the driver's
+    /// own per-slot accounting (steps, accumulated reward, episode start time);
+    /// `validate()` guarantees driver-owned resets (autoreset `DISABLED`)
+    /// whenever a cap is configured, so the DISABLED reset path restarts these
+    /// lanes exactly like env-reported completions.
+    fn capped_lane_completions(
+        &self,
+        state: &RouteState,
+        env_completed: &[EpisodeMetadata],
+    ) -> Vec<EpisodeMetadata> {
+        let driver_owns_resets = matches!(
+            self.autoreset_mode(),
+            AutoresetMode::Disabled | AutoresetMode::Unspecified
+        );
+        let step_cap = self
+            .spec
+            .max_episode_steps
+            .or_else(|| driver_owns_resets.then_some(DEFAULT_MAX_EPISODE_STEPS));
+        let time_cap = self.spec.max_episode_seconds;
+        if step_cap.is_none() && time_cap.is_none() {
+            return Vec::new();
+        }
+        let env_done: Vec<u32> = env_completed
+            .iter()
+            .map(|metadata| metadata.env_index)
+            .collect();
+        let now_ns = crate::state::now_unix_ns();
+        state
+            .slots()
+            .iter()
+            .filter_map(|slot| {
+                let episode = slot.episode.as_ref()?;
+                let env_index = u32::try_from(slot.env_index).ok()?;
+                if env_done.contains(&env_index) {
+                    return None;
+                }
+                let steps_capped = step_cap.is_some_and(|cap| slot.step >= cap);
+                let elapsed_seconds = (now_ns - slot.started_at_ns).max(0) as f64 / 1e9;
+                let time_capped = time_cap.is_some_and(|cap| elapsed_seconds >= cap);
+                (steps_capped || time_capped).then(|| EpisodeMetadata {
+                    episode_id: episode.episode_id.clone(),
+                    seed: None,
+                    env_index,
+                    step_count: slot.step,
+                    cumulative_reward: slot.cumulative_reward,
+                    terminated: false,
+                    truncated: true,
+                    start_timestamp_ns: slot.started_at_ns,
+                    end_timestamp_ns: now_ns,
+                    final_info: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Complete each episode: registry + summary (bounded runs only) + the
+    /// `episode_completed` hook event. Summaries are recorded only when
+    /// `max_episodes` is set — that early-return is the report's single drain,
+    /// so an unbounded (`max_episodes: None`) session would otherwise
+    /// accumulate one entry per episode for its whole lifetime with no reader.
     async fn emit_completed_episodes(&self, state: &mut RouteState, episodes: &[EpisodeMetadata]) {
         for completed in episodes {
             let record = state.complete_episode(&completed.episode_id);
@@ -862,6 +981,21 @@ where
                 .unwrap_or_default();
             // Proto env_index is uint32; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
+            let seed = state.take_episode_seed(&completed.episode_id);
+            if self.spec.max_episodes.is_some() {
+                state.record_episode_summary(crate::spec::EpisodeSummary {
+                    episode_index: record.as_ref().map_or(0, |record| record.index),
+                    env_index,
+                    seed,
+                    step_count: completed.step_count,
+                    cumulative_reward: completed.cumulative_reward,
+                    terminated: completed.terminated,
+                    truncated: completed.truncated,
+                    duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
+                        / 1_000_000,
+                    success: success_from_final_info(completed.final_info.as_ref()),
+                });
+            }
             fan_out_event!(
                 self,
                 episode_completed,

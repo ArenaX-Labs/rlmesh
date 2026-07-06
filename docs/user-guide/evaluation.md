@@ -49,26 +49,30 @@ baseline = rlmesh.run(rlmesh.RANDOM_SAMPLE, env, max_episodes=10)
 
 ### Arguments
 
-| Argument            | Default | Meaning                                                                                                                                                             |
-| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `seeds`             | `None`  | Per-episode seed sequence; also sets the episode count unless `max_episodes` is given.                                                                              |
-| `max_episodes`      | `None`  | Number of episodes to run; overrides the length of `seeds`.                                                                                                         |
-| `instruction`       | `None`  | Overrides every {class}`~rlmesh.adapters.Text` input the spec declares, on each step, at its placement in the input tree. No-op if the spec declares no text input. |
-| `execution_horizon` | `1`     | Actions executed per predicted chunk; only engages on a chunk corner (see [below](#execution-horizon-end-to-end)).                                                  |
-| `close_env`         | `False` | Shut the env down when the run finishes (opt-in).                                                                                                                   |
+| Argument            | Default | Meaning                                                                                                            |
+| ------------------- | ------- | ------------------------------------------------------------------------------------------------------------------ |
+| `seeds`             | `None`  | Per-episode seed sequence; also sets the episode count unless `max_episodes` is given.                             |
+| `max_episodes`      | `None`  | Number of episodes to run; overrides the length of `seeds`.                                                        |
+| `execution_horizon` | `1`     | Actions executed per predicted chunk; only engages on a chunk corner (see [below](#execution-horizon-end-to-end)). |
+| `close_env`         | `False` | Shut the env down when the run finishes (opt-in).                                                                  |
 
 With neither `seeds` nor `max_episodes`, `run()` does a single episode. `execution_horizon` is accepted by both the bound methods (`model.run` / `model.session`) and the module-level {func}`~rlmesh.run` / {func}`~rlmesh.session`, which forwards it through.
 
+`run()` drives the native runtime loop -- the same engine that drives a served model -- so a vectorized env (`num_envs > 1`) runs through the identical call, with all lanes batched into each predict (the batch corners in {doc}`models`). The step-level knobs live on the session loop instead: `instruction=` (per-step text override), `hooks=`, and `view=` are {func}`~rlmesh.session` parameters, and `run()` rejects them with a pointer there.
+
 ### Watching and capping the loop
 
-`run()` also takes `max_episode_steps` and `max_episode_seconds`, per-episode caps that mark a capped episode `truncated` exactly like an env time limit, and `hooks`, a {class}`~rlmesh.RunHooks` subclass whose overrides observe the loop: `on_episode_start`, `on_step` (with a {class}`~rlmesh.StepEvent` carrying the observation, action, reward, per-step timings, and a lazy role `read`), `on_episode_end`, and `on_run_end`. Every default is a no-op, hook exceptions abort the run, and `on_run_end` always fires once with the completed episodes -- enough for progress bars, per-step logging, or streaming metrics without writing the loop yourself:
+`run()` also takes `max_episode_steps` and `max_episode_seconds`, per-episode caps that mark a capped episode `truncated` exactly like an env time limit (runtime-enforced, so they need the runtime to own resets -- an autoresetting vector env is driven with `max_episodes` instead).
+
+To _observe_ the loop, use {meth}`Session.run <rlmesh.Session.run>`: it takes the same arguments plus `hooks`, a {class}`~rlmesh.RunHooks` subclass whose overrides observe the loop: `on_episode_start`, `on_step` (with a {class}`~rlmesh.StepEvent` carrying the observation, action, reward, per-step timings, and a lazy role `read`), `on_episode_end`, and `on_run_end`. Every default is a no-op, hook exceptions abort the run, and `on_run_end` always fires once with the completed episodes -- enough for progress bars, per-step logging, or streaming metrics without writing the loop yourself:
 
 ```python
 class Progress(rlmesh.RunHooks):
     def on_episode_end(self, result):
         print(f"episode {result.index}: reward {result.reward:.2f}")
 
-result = model.run(env, seeds=range(50), max_episode_steps=500, hooks=Progress())
+with model.session(env) as sess:
+    result = sess.run(seeds=range(50), max_episode_steps=500, hooks=Progress())
 ```
 
 ### The result

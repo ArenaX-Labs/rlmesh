@@ -768,7 +768,7 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     // One batched predict over the prepared observations. The default
     // `predict_grouped` runs them sequentially; a fusing handler overrides it to
     // run a single forward pass. Results align 1:1 and in order with `batch`.
-    let mut actions = handler.predict_grouped(batch).await.into_iter();
+    let mut frames = handler.predict_grouped(batch).await.into_iter();
 
     let results = finishers
         .into_iter()
@@ -779,23 +779,13 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
                     num_envs,
                     action_space,
                     route,
-                } => match actions.next() {
-                    // Grouped predict does not chunk: each group yields one action
-                    // per lane (no replay frames).
-                    Some(Ok(actions)) => finish_predict(
-                        PredictFrames {
-                            actions,
-                            replay: Vec::new(),
-                        },
-                        num_envs,
-                        &action_space,
-                        route,
-                    ),
+                } => match frames.next() {
+                    Some(Ok(frames)) => finish_predict(frames, num_envs, &action_space, route),
                     Some(Err(error)) => Err(error),
                     // A correct `predict_grouped` returns one result per prepared
                     // group; a short Vec is a handler-contract violation.
                     None => Err(Error::model(
-                        "predict_grouped returned fewer action sets than prepared groups",
+                        "predict_grouped returned fewer results than prepared groups",
                     )),
                 },
             };

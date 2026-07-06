@@ -25,16 +25,21 @@ use crate::spaces::{
 use crate::telemetry::{ProfileCollector, init_tracing};
 use crate::types::to_py_err;
 
-/// Process-wide multi-threaded runtime shared by Python model clients. The Join
-/// response pump spawned during handshake lives here, so it must outlive any
-/// single client; a process-wide runtime is simplest and matches the env client.
-fn model_client_runtime() -> &'static tokio::runtime::Runtime {
+/// Process-wide multi-threaded runtime shared by Python model clients AND
+/// served model workers. The Join response pump spawned during handshake lives
+/// here, so it must outlive any single client; a process-wide runtime is
+/// simplest and matches the env client. Workers share it too: a per-`PyModel`
+/// runtime would cost a full worker-thread pool (plus its kqueue/pipe fds) per
+/// constructed model, and Python's cycle collector cannot reclaim a pyclass
+/// (no `__traverse__`), so those runtimes leaked for the process lifetime —
+/// exhausting the default macOS 256-fd limit in model-heavy test suites.
+fn model_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .expect("failed to build shared rlmesh model-client runtime")
+            .expect("failed to build shared rlmesh model runtime")
     })
 }
 
@@ -186,6 +191,71 @@ impl PredictFn for PyPredict {
         .map_err(|err| RLMeshError::Internal(err.to_string()))
     }
 
+    fn predict_spec_less_chunked(
+        &self,
+        observation: ModelObservation,
+        execution_horizon: u32,
+    ) -> rlmesh::Result<rlmesh::PredictFrames> {
+        let horizon = execution_horizon.max(1) as usize;
+        if horizon <= 1 || self.predict_chunk_fn.is_none() || observation.num_envs != 1 {
+            return Ok(rlmesh::PredictFrames {
+                actions: self.predict_spec_less(observation)?,
+                replay: Vec::new(),
+            });
+        }
+        let predict_chunk_fn = self
+            .predict_chunk_fn
+            .as_ref()
+            .expect("checked predict_chunk_fn above");
+        let lanes = observation
+            .decoded_lanes()
+            .map_err(|err| RLMeshError::Internal(err.to_string()))?;
+        Python::attach(|py| -> PyResult<rlmesh::PredictFrames> {
+            let contract = observation.env_contract.as_ref();
+            let observation_space = contract
+                .and_then(|contract| contract.observation_space.as_ref())
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(
+                        "model worker requires observation space metadata",
+                    )
+                })?;
+            let action_space = contract
+                .and_then(|contract| contract.action_space.as_ref())
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(
+                        "model worker requires action space metadata",
+                    )
+                })?;
+            let lane = lanes.first().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "spec-less chunked predict received no observation lane",
+                )
+            })?;
+            let obs = space_value_to_py_neutral(py, lane, observation_space)?;
+            let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32))?;
+            let chunk = chunk.bind(py);
+            let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
+            let frames = py_any_to_batched_space_values_with_backend(
+                py,
+                chunk,
+                action_space,
+                frames_len,
+                ValueBackend::Native,
+            )?;
+            let mut frames = frames.into_iter().take(horizon);
+            let first = frames.next().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "predict_chunk returned an empty chunk; return at least one action",
+                )
+            })?;
+            Ok(rlmesh::PredictFrames {
+                actions: vec![first],
+                replay: frames.map(|frame| vec![frame]).collect(),
+            })
+        })
+        .map_err(|err| RLMeshError::Internal(err.to_string()))
+    }
+
     fn on_episode_end(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_episode_end)
     }
@@ -193,6 +263,30 @@ impl PredictFn for PyPredict {
     fn on_close(&self) -> rlmesh::Result<()> {
         Self::fire(&self.on_close)
     }
+}
+
+/// The leading-axis length of a neutral chunk value: a tensor-like exposes
+/// `shape` (native `Tensor`, numpy array), a Dict chunk carries the axis
+/// inside each leaf (probe the first value), a plain sequence its `len`.
+/// `None` only for shapes this cannot introspect, where the caller falls back
+/// to the pinned horizon.
+fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
+    if let Ok(shape) = value.getattr("shape")
+        && let Ok(first) = shape.get_item(0)
+        && let Ok(len) = first.extract::<usize>()
+    {
+        return Some(len);
+    }
+    if let Ok(dict) = value.cast::<pyo3::types::PyDict>() {
+        let (_, first) = dict.iter().next()?;
+        return leading_axis_len(&first);
+    }
+    if value.is_instance_of::<pyo3::types::PyList>()
+        || value.is_instance_of::<pyo3::types::PyTuple>()
+    {
+        return value.len().ok();
+    }
+    None
 }
 
 /// Call a Python batched corner (`predict_batch` / `predict_chunk_batch`) with N
@@ -223,6 +317,89 @@ fn call_batched(
         Ok(out)
     })
     .map_err(|err| RLMeshError::Internal(err.to_string()))
+}
+
+/// The in-process run's per-episode results as a Python `list[dict]` (keys
+/// matching the SDK's `EpisodeResult` fields), from the runtime report's
+/// episode summaries. `predict_ms`/`step_ms` carry the report's SESSION-mean
+/// op latencies (the runtime aggregates timing per op, not per episode), so
+/// every episode reports the same mean -- real numbers rather than silent
+/// zeros, with the per-episode distinction documented on `Model.run`.
+fn report_episodes_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
+    let predict_ms = session_mean_ms(report, "model.predict");
+    let step_ms = session_mean_ms(report, "env.step");
+    let episodes = pyo3::types::PyList::empty(py);
+    for episode in &report.episodes {
+        let entry = pyo3::types::PyDict::new(py);
+        entry.set_item("index", episode.episode_index)?;
+        entry.set_item("env_index", episode.env_index)?;
+        entry.set_item("seed", episode.seed)?;
+        entry.set_item("steps", episode.step_count)?;
+        entry.set_item("reward", episode.cumulative_reward)?;
+        entry.set_item("terminated", episode.terminated)?;
+        entry.set_item("truncated", episode.truncated)?;
+        entry.set_item("success", episode.success)?;
+        entry.set_item("duration_s", episode.duration_ms as f64 / 1000.0)?;
+        entry.set_item("predict_ms", predict_ms)?;
+        entry.set_item("step_ms", step_ms)?;
+        episodes.append(entry)?;
+    }
+    Ok(episodes.into_any().unbind())
+}
+
+/// The session-mean `rpc.total` latency (ms) for `op` from the report's
+/// telemetry aggregate, `0.0` when the op never ran.
+fn session_mean_ms(report: &rlmesh::RuntimeReport, op: &str) -> f64 {
+    report
+        .telemetry
+        .rows
+        .iter()
+        .find(|row| row.source.op == op && row.metric.name == "rpc.total")
+        .map(|row| row.avg)
+        .unwrap_or(0.0)
+}
+
+/// Run the in-process worker loop with Python signal delivery: the run future
+/// races a poll interval that re-attaches only to check for pending signals
+/// (Ctrl-C), cancelling the runtime session and re-raising the signal's
+/// exception -- the same pattern the remote-env client uses (`run_rpc`), so a
+/// long eval aborts between operations instead of blocking SIGINT until the
+/// final episode.
+fn run_local_blocking(
+    py: Python<'_>,
+    handler: AdaptedModelHandler,
+    options: RunLocalOptions,
+) -> PyResult<rlmesh::RuntimeReport> {
+    enum RunOutcome {
+        Done(rlmesh::Result<rlmesh::RuntimeReport>),
+        Signal(PyErr),
+    }
+    let cancellation = rlmesh::CancellationToken::new();
+    let run_token = cancellation.clone();
+    let outcome = py.detach(|| {
+        model_runtime().block_on(async move {
+            let run = ModelWorker::new(handler).run_local_cancellable_async(options, run_token);
+            let mut run = std::pin::pin!(run);
+            let mut poll = tokio::time::interval(crate::client::SIGNAL_POLL_INTERVAL);
+            poll.tick().await;
+            loop {
+                tokio::select! {
+                    result = &mut run => return RunOutcome::Done(result),
+                    _ = poll.tick() => {
+                        if let Err(err) = Python::attach(|py| py.check_signals()) {
+                            cancellation.cancel();
+                            let _ = (&mut run).await;
+                            return RunOutcome::Signal(err);
+                        }
+                    }
+                }
+            }
+        })
+    });
+    match outcome {
+        RunOutcome::Done(result) => result.map_err(to_py_err),
+        RunOutcome::Signal(err) => Err(err),
+    }
 }
 
 /// The per-route resolver the served model exposes via `route_setup`. Runs the
@@ -316,7 +493,6 @@ pub struct PyModel {
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
-    runtime: tokio::runtime::Runtime,
     profiler: Arc<ProfileCollector>,
 }
 
@@ -362,12 +538,6 @@ impl PyModel {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|err| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "failed to create tokio runtime: {err}"
-            ))
-        })?;
-
         Ok(Self {
             predict_fn,
             predict_chunk_fn,
@@ -376,39 +546,45 @@ impl PyModel {
             configure_fn,
             on_episode_end,
             on_close,
-            runtime,
             profiler,
         })
     }
 
-    fn run_local(&self, py: Python<'_>, env_address: &str) -> PyResult<()> {
+    #[pyo3(signature = (env_address, execution_horizon=1))]
+    fn run_local(
+        &self,
+        py: Python<'_>,
+        env_address: &str,
+        execution_horizon: u32,
+    ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!("rlmesh.model.run_local", env_address = env_address);
         let _run_enter = run_span.enter();
         let total_guard = self.profiler.start("model.run_local.total");
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
         let handler = self.build_handler();
+        let options = RunLocalOptions::new(env_address).execution_horizon(execution_horizon);
 
-        py.detach(|| {
-            self.runtime.block_on(async move {
-                ModelWorker::new(handler)
-                    .run_local_async(RunLocalOptions::new(env_address))
-                    .await
-            })
-        })
-        .map_err(to_py_err)?;
+        let report = run_local_blocking(py, handler, options)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(())
+        report_episodes_to_py(py, &report)
     }
 
+    #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false))]
+    #[allow(clippy::too_many_arguments)]
     fn run_local_for_episodes(
         &self,
         py: Python<'_>,
         env_address: &str,
         max_episodes: u64,
-    ) -> PyResult<()> {
+        execution_horizon: u32,
+        seeds: Option<Vec<i64>>,
+        max_episode_steps: Option<i64>,
+        max_episode_seconds: Option<f64>,
+        close_env: bool,
+    ) -> PyResult<Py<PyAny>> {
         let run_span = tracing::info_span!(
             "rlmesh.model.run_local_for_episodes",
             env_address = env_address,
@@ -419,19 +595,23 @@ impl PyModel {
 
         let env_address = ConnectAddress::parse(env_address).map_err(to_py_err)?;
         let handler = self.build_handler();
+        let mut options = RunLocalOptions::new(env_address)
+            .for_episodes(max_episodes)
+            .execution_horizon(execution_horizon)
+            .episode_seeds(seeds.unwrap_or_default())
+            .close_env(close_env);
+        if let Some(cap) = max_episode_steps {
+            options = options.max_episode_steps(cap);
+        }
+        if let Some(cap) = max_episode_seconds {
+            options = options.max_episode_seconds(cap);
+        }
 
-        py.detach(|| {
-            self.runtime.block_on(async move {
-                ModelWorker::new(handler)
-                    .run_local_async(RunLocalOptions::new(env_address).for_episodes(max_episodes))
-                    .await
-            })
-        })
-        .map_err(to_py_err)?;
+        let report = run_local_blocking(py, handler, options)?;
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        Ok(())
+        report_episodes_to_py(py, &report)
     }
 
     #[pyo3(signature = (address, options=None))]
@@ -450,7 +630,7 @@ impl PyModel {
         let handler = self.build_handler();
 
         py.detach(|| {
-            self.runtime.block_on(async move {
+            model_runtime().block_on(async move {
                 ModelWorker::new(handler)
                     .serve_async(ServeModelOptions::new(address).serve_options(options))
                     .await
@@ -469,11 +649,12 @@ submit! {
     gen_methods_from_python! {
         r#"
 import collections.abc
+import typing
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
-    def run_local(self, env_address: str) -> None: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int) -> None: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1) -> list[dict[str, typing.Any]]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> list[dict[str, typing.Any]]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }
@@ -540,7 +721,7 @@ impl PyModelClient {
             crate::client::optional_timeout(connect_timeout_seconds, "connect_timeout_seconds")?;
         let default_timeout =
             crate::client::optional_timeout(request_timeout_seconds, "request_timeout_seconds")?;
-        let runtime = model_client_runtime();
+        let runtime = model_runtime();
         let address = address.to_string();
         let mut inner = py.detach(|| {
             let connect = RemoteModel::connect(&address, contract);

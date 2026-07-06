@@ -7,9 +7,11 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
+use std::collections::HashMap;
+
 use crate::episodes::{EpisodeRecord, EpisodeRecordRegistry};
 use crate::hooks::RuntimeEnvContext;
-use crate::spec::RuntimeSessionSpec;
+use crate::spec::{EpisodeSummary, RuntimeSessionSpec};
 
 use super::{EpisodeState, RouteSnapshot, SlotState, StartedEpisode};
 
@@ -43,6 +45,13 @@ pub(crate) struct RouteState {
     total_steps: i64,
     total_episodes: i64,
     records: EpisodeRecordRegistry,
+    episode_summaries: Vec<EpisodeSummary>,
+    /// The explicit seed each live episode was reset with, keyed by episode id;
+    /// drained into that episode's summary at completion.
+    seed_by_episode: HashMap<String, i64>,
+    /// How many of the spec's `episode_seeds` have been claimed (episode-start
+    /// order).
+    seed_cursor: usize,
 }
 
 impl RouteState {
@@ -53,6 +62,8 @@ impl RouteState {
                 episode: None,
                 step: 0,
                 reset: true,
+                cumulative_reward: 0.0,
+                started_at_ns: now_unix_ns(),
             })
             .collect();
 
@@ -66,7 +77,58 @@ impl RouteState {
             total_steps: 0,
             total_episodes: 0,
             records: EpisodeRecordRegistry::default(),
+            episode_summaries: Vec::new(),
+            seed_by_episode: HashMap::new(),
+            seed_cursor: 0,
         }
+    }
+
+    /// Claim the next `lanes` explicit reset seeds from `episode_seeds`
+    /// (episode-start order). Once the list cannot cover a whole reset batch the
+    /// remaining episodes run unseeded (an all-or-nothing batch: `ResetRequest`
+    /// seeds align positionally with the lanes being reset).
+    pub(crate) fn claim_episode_seeds(&mut self, episode_seeds: &[i64], lanes: usize) -> Vec<i64> {
+        let remaining = episode_seeds.len().saturating_sub(self.seed_cursor);
+        if remaining < lanes {
+            if remaining > 0 {
+                tracing::warn!(
+                    remaining,
+                    lanes,
+                    "episode_seeds cannot cover this reset batch; the remaining \
+                     seeds are discarded and further episodes reset unseeded"
+                );
+            }
+            self.seed_cursor = episode_seeds.len();
+            return Vec::new();
+        }
+        let claimed = episode_seeds[self.seed_cursor..self.seed_cursor + lanes].to_vec();
+        self.seed_cursor += lanes;
+        claimed
+    }
+
+    /// Remember which explicit seed each episode in a reset batch received, so
+    /// its completion summary can report it. No-op for an unseeded batch.
+    pub(crate) fn note_episode_seeds(&mut self, episode_ids: &[String], seeds: &[i64]) {
+        for (episode_id, seed) in episode_ids.iter().zip(seeds) {
+            self.seed_by_episode.insert(episode_id.clone(), *seed);
+        }
+    }
+
+    /// The explicit seed `episode_id` was reset with, if any (drained: each
+    /// episode completes once).
+    pub(crate) fn take_episode_seed(&mut self, episode_id: &str) -> Option<i64> {
+        self.seed_by_episode.remove(episode_id)
+    }
+
+    /// Record one completed episode's summary (completion order) for the
+    /// session report.
+    pub(crate) fn record_episode_summary(&mut self, summary: EpisodeSummary) {
+        self.episode_summaries.push(summary);
+    }
+
+    /// Drain the recorded episode summaries into the returned report.
+    pub(crate) fn take_episode_summaries(&mut self) -> Vec<EpisodeSummary> {
+        std::mem::take(&mut self.episode_summaries)
     }
 
     pub(crate) fn session_id(&self) -> &str {
@@ -179,11 +241,12 @@ impl RouteState {
             .collect()
     }
 
-    pub(crate) fn record_step(&mut self) {
+    pub(crate) fn record_step(&mut self, rewards: &[f64]) {
         self.total_steps += 1;
-        for slot in &mut self.slots {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
             slot.step += 1;
             slot.reset = false;
+            slot.cumulative_reward += rewards.get(index).copied().unwrap_or(0.0);
         }
     }
 
@@ -237,6 +300,10 @@ impl RouteState {
         }
     }
 
+    pub(crate) fn slots(&self) -> &[SlotState] {
+        &self.slots
+    }
+
     fn sync_slots(
         &mut self,
         episode_ids: Vec<String>,
@@ -273,7 +340,20 @@ impl RouteState {
             if reset_steps || rolled {
                 slot.step = 0;
                 slot.reset = true;
+                slot.cumulative_reward = 0.0;
+                slot.started_at_ns = now_unix_ns();
             }
         }
     }
+}
+
+/// Current wall-clock time as unix nanoseconds (saturating; the epoch is
+/// always in the past on a sane clock). The single clock both the per-slot
+/// episode-start stamp and the driver's cap check read, so elapsed times are
+/// always computed against the same convention.
+pub(crate) fn now_unix_ns() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }

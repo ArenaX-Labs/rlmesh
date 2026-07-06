@@ -34,7 +34,20 @@ pub struct RuntimeSessionSpec {
     pub env_contract: EnvContract,
     pub num_envs: usize,
     pub base_seed: Option<i64>,
+    /// Explicit per-episode reset seeds, consumed in episode-start order (a
+    /// vector reset claims one per lane). Overrides `base_seed` derivation when
+    /// non-empty; episodes beyond the list reset unseeded. Requires
+    /// driver-owned resets (autoreset `DISABLED`): under `NEXT_STEP` the env
+    /// seeds its own rolls, so the list would silently not apply.
+    pub episode_seeds: Vec<i64>,
     pub max_episodes: Option<u64>,
+    /// Truncate any episode after this many steps (runtime-enforced; the lane
+    /// is reset and the episode reported `truncated`). Requires driver-owned
+    /// resets (autoreset `DISABLED`).
+    pub max_episode_steps: Option<i64>,
+    /// Truncate any episode after this wall-clock duration (seconds), same
+    /// semantics and autoreset requirement as `max_episode_steps`.
+    pub max_episode_seconds: Option<f64>,
     pub close_env_on_end: bool,
     pub limits: RuntimeLimits,
 }
@@ -64,6 +77,49 @@ impl RuntimeSessionSpec {
         }
         if self.max_episodes == Some(0) {
             return Err("runtime max_episodes must be greater than zero when set".to_string());
+        }
+        if self.max_episode_steps.is_some_and(|cap| cap <= 0) {
+            return Err("runtime max_episode_steps must be greater than zero when set".to_string());
+        }
+        if self.max_episode_seconds.is_some_and(|cap| cap <= 0.0) {
+            return Err(
+                "runtime max_episode_seconds must be greater than zero when set".to_string(),
+            );
+        }
+        let driver_owns_resets = matches!(
+            rlmesh_proto::core::v1::AutoresetMode::try_from(self.env_contract.autoreset_mode),
+            Ok(rlmesh_proto::core::v1::AutoresetMode::Disabled)
+                | Ok(rlmesh_proto::core::v1::AutoresetMode::Unspecified)
+        );
+        if !self.episode_seeds.is_empty()
+            && self.num_envs > 1
+            && !self.episode_seeds.len().is_multiple_of(self.num_envs)
+        {
+            return Err(format!(
+                "episode_seeds ({} seeds) must be a multiple of num_envs ({}) for a \
+                 vectorized env: driver-owned vector resets claim one seed per lane \
+                 per batch, so a partial batch would silently drop the tail seeds",
+                self.episode_seeds.len(),
+                self.num_envs
+            ));
+        }
+        if !driver_owns_resets {
+            if !self.episode_seeds.is_empty() {
+                return Err(
+                    "episode_seeds requires an env with autoreset disabled: under NEXT_STEP \
+                     autoreset the env seeds its own episode rolls, so explicit per-episode \
+                     seeds cannot apply"
+                        .to_string(),
+                );
+            }
+            if self.max_episode_steps.is_some() || self.max_episode_seconds.is_some() {
+                return Err(
+                    "max_episode_steps / max_episode_seconds require an env with autoreset \
+                     disabled: under NEXT_STEP autoreset the env owns lane resets, so the \
+                     runtime cannot truncate an episode"
+                        .to_string(),
+                );
+            }
         }
         // The runtime drives one of the editions it was built for; a session
         // negotiated under an edition outside the support window is refused rather
@@ -174,6 +230,29 @@ impl RuntimeSessionSpec {
     }
 }
 
+/// One completed episode's summary, recorded in completion order across all
+/// lanes. The pull counterpart of the `episode_completed` hook event, so a
+/// caller without hooks (e.g. the in-process `run_local` loop) still gets
+/// per-episode results on the report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpisodeSummary {
+    /// 0-based completion index within the session.
+    pub episode_index: i64,
+    /// The vector lane the episode ran on (0 for a single env).
+    pub env_index: i32,
+    /// The explicit seed this episode was reset with (`episode_seeds` /
+    /// `base_seed` derivation), `None` for an unseeded or autoreset-rolled one.
+    pub seed: Option<i64>,
+    pub step_count: i64,
+    pub cumulative_reward: f64,
+    pub terminated: bool,
+    pub truncated: bool,
+    pub duration_ms: i64,
+    /// Env-reported task outcome from the final step's info (Gymnasium's
+    /// `is_success` / `success` key); `None` when the env emits no such signal.
+    pub success: Option<bool>,
+}
+
 /// What a finished or aborted session returns: totals plus the durable
 /// telemetry aggregate.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +261,8 @@ pub struct RuntimeReport {
     pub env_id: String,
     pub total_steps: i64,
     pub total_episodes: i64,
+    /// Every completed episode, in completion order.
+    pub episodes: Vec<EpisodeSummary>,
     /// Session-total telemetry aggregate (per-op latency/percentiles/bytes) —
     /// the durable pull counterpart to the live `RuntimeHooks::on_telemetry` push.
     pub telemetry: crate::telemetry::Snapshot,
@@ -363,11 +444,34 @@ mod tests {
                 ..Default::default()
             },
             num_envs: 1,
+            episode_seeds: Vec::new(),
             base_seed: None,
             max_episodes: Some(1),
+            max_episode_steps: None,
+            max_episode_seconds: None,
             close_env_on_end: true,
             limits: RuntimeLimits::default(),
         }
+    }
+
+    #[test]
+    fn validate_rejects_vector_episode_seeds_that_do_not_cover_whole_batches() {
+        let mut spec = valid_spec();
+        spec.num_envs = 2;
+        spec.env_contract.autoreset_mode = AutoresetMode::NextStep as i32;
+        spec.episode_seeds = vec![7, 8, 9];
+        let error = spec.validate().unwrap_err();
+        assert!(
+            error.contains("multiple of num_envs"),
+            "expected the whole-batch seed rule, got: {error}"
+        );
+
+        spec.episode_seeds = vec![7, 8, 9, 10];
+        let error = spec.validate().unwrap_err();
+        assert!(
+            error.contains("autoreset disabled"),
+            "a covering list still needs driver-owned resets, got: {error}"
+        );
     }
 
     #[test]

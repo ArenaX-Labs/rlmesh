@@ -395,7 +395,7 @@ run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set l
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
 env = { RLMESH_RELEASE_BUILD = "1" }
-run = "cargo package --workspace --allow-dirty"
+run = 'rm -rf target/package-cargo-home/registry/*/-*; CARGO_HOME="$PWD/target/package-cargo-home" cargo package --workspace --allow-dirty'
 
 [tasks."release:artifacts:licenses"]
 description = "Validate release artifact license files before publishing"

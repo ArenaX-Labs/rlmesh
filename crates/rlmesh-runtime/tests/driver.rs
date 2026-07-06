@@ -815,8 +815,11 @@ fn one_episode_spec() -> RuntimeSessionSpec {
             ..Default::default()
         },
         num_envs: 1,
+        episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(1),
+        max_episode_steps: None,
+        max_episode_seconds: None,
         close_env_on_end: true,
         limits: Default::default(),
     }
@@ -954,8 +957,11 @@ fn vector_spec(num_envs: usize, max_episodes: u64) -> RuntimeSessionSpec {
             ..Default::default()
         },
         num_envs,
+        episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(max_episodes),
+        max_episode_steps: None,
+        max_episode_seconds: None,
         close_env_on_end: true,
         limits: Default::default(),
     }

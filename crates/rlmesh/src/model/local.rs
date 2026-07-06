@@ -16,18 +16,24 @@ use super::wire::{
     ModelAction, check_actions_conform, encode_replay_frames, model_action_to_endpoint_response,
     model_observation_from_endpoint_request,
 };
-use crate::{ConnectAddress, Error, Result, spaces};
+use crate::{Error, Result, spaces};
 
+/// Connect to the env, resolve the handler's route, and drive the runtime
+/// loop to completion. The route resolves before driving, exactly as the
+/// served path does at `ResolveAdapter`: that arms the spec'd engine path
+/// (adapter, per-episode frame buffers, batched/chunked predict corners) and
+/// pins the execution horizon — without it every predict would fall into the
+/// spec-less branch. The handler is dropped when the run ends, so there is no
+/// release step.
 pub(super) async fn run_local<H>(
     handler: &mut H,
-    env_address: ConnectAddress,
-    max_episodes: Option<u64>,
-    base_seed: Option<i64>,
+    options: crate::RunLocalOptions,
+    cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<RuntimeReport>
 where
     H: ModelHandler + 'static,
 {
-    let mut env = rlmesh_grpc::EnvClient::connect(&env_address.to_string())
+    let mut env = rlmesh_grpc::EnvClient::connect(&options.env_address.to_string())
         .await
         .map_err(Error::from)?;
     let handshake = env.handshake().await.map_err(Error::from)?;
@@ -47,6 +53,12 @@ where
     let num_envs = handshake.num_envs;
     let session_id = format!("local-{}", std::process::id());
 
+    if let Some(route_setup) = handler.route_setup() {
+        route_setup
+            .resolve_adapter(&env_id, &env_contract, options.execution_horizon)
+            .await?;
+    }
+
     let spec = RuntimeSessionSpec {
         session_id,
         env_id,
@@ -55,16 +67,19 @@ where
         workflow_edition: handshake.workflow_edition,
         env_contract: env_contract_to_proto(&env_contract),
         num_envs,
-        base_seed,
-        max_episodes,
-        close_env_on_end: false,
+        base_seed: options.base_seed,
+        episode_seeds: options.episode_seeds,
+        max_episodes: options.max_episodes,
+        max_episode_steps: options.max_episode_steps,
+        max_episode_seconds: options.max_episode_seconds,
+        close_env_on_end: options.close_env,
         limits: Default::default(),
     };
     let env = EnvClientRuntimeEnv::new(env);
     let model = ModelHandlerRuntimeModel::new(handler, env_contract, num_envs);
 
     RuntimeDriver::new(spec, env, model, Arc::new(NoopRuntimeHooks))
-        .run()
+        .run_with_cancellation_reason(cancellation, "interrupted by the host (signal)")
         .await
         .map_err(|err| Error::Internal(err.to_string()))
 }

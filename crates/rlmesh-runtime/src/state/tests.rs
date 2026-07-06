@@ -59,8 +59,11 @@ fn test_session_spec() -> RuntimeSessionSpec {
         workflow_edition: rlmesh_proto::CURRENT_WORKFLOW_EDITION.to_string(),
         env_contract: Default::default(),
         num_envs: 1,
+        episode_seeds: Vec::new(),
         base_seed: None,
         max_episodes: Some(1),
+        max_episode_steps: None,
+        max_episode_seconds: None,
         close_env_on_end: true,
         limits: RuntimeLimits::default(),
     }

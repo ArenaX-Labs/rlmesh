@@ -17,6 +17,12 @@ from rlmesh._models._view import ViewerDriver
 class _TinyEnv:
     """A minimal local env: one step, then terminates with reward 1.0."""
 
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Discrete(1)
+        self.action_space = spaces.Discrete(1)
+
     def reset(
         self, *, seed: object = None, options: object = None
     ) -> tuple[int, dict[str, object]]:
@@ -61,6 +67,12 @@ def test_session_run_matches_top_level_run() -> None:
 
 class _ForeverEnv:
     """A local env that never terminates on its own (only a cap/skip can end it)."""
+
+    def __init__(self) -> None:
+        from rlmesh import spaces
+
+        self.observation_space = spaces.Discrete(1)
+        self.action_space = spaces.Discrete(1)
 
     def reset(
         self, *, seed: object = None, options: object = None
@@ -349,8 +361,8 @@ class _Recorder(rlmesh.RunHooks):
 
 def test_run_hooks_fire_in_order_with_indices_and_seeds() -> None:
     recorder = _Recorder()
-    result = rlmesh.run(
-        rlmesh.Model(lambda obs: 0), _TinyEnv(), seeds=[7, 8], hooks=recorder
+    result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(
+        seeds=[7, 8], hooks=recorder
     )
 
     assert recorder.calls == [
@@ -406,8 +418,8 @@ def test_max_episode_seconds_truncates_and_records_duration(
     import rlmesh._models._eval as eval_mod
 
     monkeypatch.setattr(eval_mod, "time", _FakeTime(1.0))
-    result = rlmesh.run(
-        rlmesh.Model(lambda obs: 0), _ForeverEnv(), max_episode_seconds=4.0
+    result = rlmesh.session(rlmesh.Model(lambda obs: 0), _ForeverEnv()).run(
+        max_episode_seconds=4.0
     )
 
     episode = result.episodes[0]
@@ -428,7 +440,9 @@ def test_keyboard_interrupt_propagates_and_run_end_sees_completed_episodes() -> 
         return 0
 
     with pytest.raises(KeyboardInterrupt):
-        rlmesh.run(rlmesh.Model(predict), _TinyEnv(), seeds=[0, 1], hooks=recorder)
+        rlmesh.session(rlmesh.Model(predict), _TinyEnv()).run(
+            seeds=[0, 1], hooks=recorder
+        )
 
     assert [c for c in recorder.calls if c[0] == "run_end"] == [("run_end", 1)]
     assert [c for c in recorder.calls if c[0] == "end"] == [("end", 0)]
@@ -442,7 +456,7 @@ def test_raising_on_step_aborts_but_on_run_end_still_fires() -> None:
 
     recorder = _BoomStep()
     with pytest.raises(RuntimeError, match="boom-step"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), hooks=recorder)
+        rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=recorder)
 
     assert [c for c in recorder.calls if c[0] == "run_end"] == [("run_end", 0)]
     assert not [c for c in recorder.calls if c[0] == "end"]
@@ -459,7 +473,7 @@ def test_original_exception_wins_over_a_raising_on_run_end() -> None:
 
     recorder = _BoomBoth()
     with pytest.raises(RuntimeError, match="original"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), hooks=recorder)
+        rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=recorder)
     assert [c for c in recorder.calls if c[0] == "run_end"] == [("run_end", 0)]
 
 
@@ -469,7 +483,7 @@ def test_a_lone_raising_on_run_end_propagates() -> None:
             raise RuntimeError("boom-run-end")
 
     with pytest.raises(RuntimeError, match="boom-run-end"):
-        rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), hooks=_BoomRunEnd())
+        rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=_BoomRunEnd())
 
 
 def test_step_event_read_resolves_roles_against_a_tagged_env() -> None:
@@ -535,7 +549,7 @@ def test_step_event_read_is_lazy_and_never_resolves_unless_called(
         lambda *_a, **_kw: pytest.fail("read resolution must stay lazy"),
     )
     recorder = _Recorder()
-    result = rlmesh.run(rlmesh.Model(lambda obs: 0), _TinyEnv(), hooks=recorder)
+    result = rlmesh.session(rlmesh.Model(lambda obs: 0), _TinyEnv()).run(hooks=recorder)
     assert result.num_episodes == 1
     assert len(recorder.events) == 1
 

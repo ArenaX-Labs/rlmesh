@@ -29,9 +29,10 @@ impl<H> ModelWorker<H> {
 ///
 /// Build with [`RunLocalOptions::new`] (or `RunLocalOptions::parse` from a
 /// string address) and the chaining setters covering the run axes:
-/// `for_episodes` (run a bounded number of episodes) and `base_seed`
-/// (deterministic env seeding).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `for_episodes` (run a bounded number of episodes), `base_seed` /
+/// `episode_seeds` (deterministic env seeding), the episode caps, and
+/// `execution_horizon` (action chunking).
+#[derive(Debug, Clone, PartialEq)]
 pub struct RunLocalOptions {
     /// Address of the environment server to connect to.
     pub env_address: ConnectAddress,
@@ -40,6 +41,22 @@ pub struct RunLocalOptions {
     /// Base seed threaded into the runtime session for deterministic env
     /// reset seeding; `None` leaves seeding to the env.
     pub base_seed: Option<i64>,
+    /// Explicit per-episode reset seeds, consumed in episode-start order.
+    /// Overrides `base_seed` when non-empty; requires an env with autoreset
+    /// disabled (see `RuntimeSessionSpec::episode_seeds`).
+    pub episode_seeds: Vec<i64>,
+    /// Truncate any episode after this many steps (reported `truncated`).
+    /// Requires an env with autoreset disabled.
+    pub max_episode_steps: Option<i64>,
+    /// Truncate any episode after this wall-clock duration in seconds
+    /// (reported `truncated`). Requires an env with autoreset disabled.
+    pub max_episode_seconds: Option<f64>,
+    /// Ask the env to close when the run ends.
+    pub close_env: bool,
+    /// How many actions of each predicted chunk the runtime executes before
+    /// re-planning (1 = no chunking). Pinned onto the route at resolve, exactly
+    /// as the served path pins it via `ResolveAdapter`.
+    pub execution_horizon: u32,
 }
 
 impl RunLocalOptions {
@@ -49,6 +66,11 @@ impl RunLocalOptions {
             env_address,
             max_episodes: None,
             base_seed: None,
+            episode_seeds: Vec::new(),
+            max_episode_steps: None,
+            max_episode_seconds: None,
+            close_env: false,
+            execution_horizon: 1,
         }
     }
 
@@ -66,6 +88,39 @@ impl RunLocalOptions {
     /// Set the base seed used for deterministic env reset seeding.
     pub fn base_seed(mut self, base_seed: i64) -> Self {
         self.base_seed = Some(base_seed);
+        self
+    }
+
+    /// Execute `execution_horizon` actions of each predicted chunk before
+    /// re-planning (1 = no chunking).
+    pub fn execution_horizon(mut self, execution_horizon: u32) -> Self {
+        self.execution_horizon = execution_horizon.max(1);
+        self
+    }
+
+    /// Reset each episode with the next seed from `episode_seeds`, in
+    /// episode-start order (overrides `base_seed`; autoreset-disabled envs
+    /// only).
+    pub fn episode_seeds(mut self, episode_seeds: Vec<i64>) -> Self {
+        self.episode_seeds = episode_seeds;
+        self
+    }
+
+    /// Truncate any episode after `max_episode_steps` steps.
+    pub fn max_episode_steps(mut self, max_episode_steps: i64) -> Self {
+        self.max_episode_steps = Some(max_episode_steps);
+        self
+    }
+
+    /// Truncate any episode after `max_episode_seconds` of wall-clock time.
+    pub fn max_episode_seconds(mut self, max_episode_seconds: f64) -> Self {
+        self.max_episode_seconds = Some(max_episode_seconds);
+        self
+    }
+
+    /// Ask the env to close when the run ends.
+    pub fn close_env(mut self, close_env: bool) -> Self {
+        self.close_env = close_env;
         self
     }
 }
@@ -136,17 +191,24 @@ impl<H: ModelHandler + 'static> ModelWorker<H> {
 
     /// Async variant of [`ModelWorker::run_local`].
     pub async fn run_local_async(
-        mut self,
+        self,
         options: impl Into<RunLocalOptions>,
     ) -> Result<RuntimeReport> {
+        self.run_local_cancellable_async(options, tokio_util::sync::CancellationToken::new())
+            .await
+    }
+
+    /// [`run_local_async`](ModelWorker::run_local_async) with an external
+    /// cancellation token: cancelling it aborts the run between operations
+    /// (the driver returns a cancellation error) with the close hook still
+    /// fired -- the seam a host binding uses to deliver e.g. Ctrl-C.
+    pub async fn run_local_cancellable_async(
+        mut self,
+        options: impl Into<RunLocalOptions>,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> Result<RuntimeReport> {
         let options = options.into();
-        let result = local::run_local(
-            &mut self.handler,
-            options.env_address,
-            options.max_episodes,
-            options.base_seed,
-        )
-        .await;
+        let result = local::run_local(&mut self.handler, options, cancellation).await;
         let close_result = self.handler.on_close().await;
         crate::error::join_results(result, close_result, "local model run failed")
     }

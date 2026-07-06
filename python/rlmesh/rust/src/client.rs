@@ -22,7 +22,7 @@ use crate::telemetry::{ProfileCollector, init_tracing, profiling_enabled};
 use crate::types::{space_value_size, to_py_err};
 
 /// Interval for polling Python signals during blocked RPCs.
-const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub(crate) const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Process-wide Tokio runtime shared by Python env clients.
 fn shared_runtime() -> &'static tokio::runtime::Runtime {

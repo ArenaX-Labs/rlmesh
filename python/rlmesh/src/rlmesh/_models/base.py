@@ -38,6 +38,20 @@ Corner = Callable[..., object]
 _CORNERS = ("predict", "predict_chunk", "predict_batch", "predict_chunk_batch")
 
 
+def _served_handle(model: object) -> bool:
+    """Whether ``model`` is a served handle (``RemoteModel`` / ``SandboxModel``).
+
+    A served handle binds itself via its own ``.session``; a local
+    :class:`ModelBase` (or a class / bare callable) is normalized through
+    :func:`as_model` instead.
+    """
+    return (
+        callable(getattr(model, "session", None))
+        and not isinstance(model, type)
+        and not isinstance(model, ModelBase)
+    )
+
+
 def _debatch(bridge: ValueBridge, batched_fn: Corner) -> Corner:
     """Single-lane corner from a batched one: run a batch of one and unwrap.
 
@@ -434,7 +448,7 @@ class ModelBase(Generic[ObsT, ActT]):
             on_episode_end if on_episode_end is not None else coerced_on_episode_end
         )
         self._trust_entrypoints = trust_entrypoints
-        self._install_worker()
+        self._worker: PyModel | None = None
 
     def _to_device(self, value: object) -> object:
         """Move every framework tensor leaf of an input onto :attr:`device`.
@@ -541,28 +555,43 @@ class ModelBase(Generic[ObsT, ActT]):
     def close(self) -> None:
         """Optional: release resources at the end of a run (no-op by default)."""
 
-    def _install_worker(self) -> None:
-        """Build the native model worker (the serve path).
+    def _install_worker(self) -> PyModel:
+        """Build (once) and return the native model worker (the serve path).
 
         A spec'd model's adapter resolves per env at ``resolve_adapter`` (the
         served endpoint receives the env contract there): ``configure`` resolves
         it from the env's contract and the native worker applies it around the
         raw predict. A spec-less / ``NO_ADAPTER`` model serves its own predict.
+
+        Built lazily on the first serve-path call, not in ``__init__``: a model
+        driven locally (``run()`` / ``session()`` against an in-process loop)
+        never needs the native worker, and the worker's callbacks close over
+        ``self`` -- a reference cycle through a native class the Python cycle
+        collector cannot free -- so an unserved model should not pay for one.
         """
+        if self._worker is not None:
+            return self._worker
         from .._load_native import load_native
         from ._eval import resolve_adapter
 
         spec = self.spec
         bridge = self._bridge
         raw_predict = self._raw_predict
-        trust = self._trust_entrypoints
 
         def configure(env_contract: object) -> object:
-            # The served route resolves to a native plan plus neutral host holes
-            # the Rust engine drives (it owns the per-episode frame buffers and
-            # adapter application); a spec-less / NO_ADAPTER model returns None.
+            """Resolve the served route: a native plan plus neutral host holes.
+
+            The Rust engine drives the result (it owns the per-episode frame
+            buffers and adapter application); a spec-less / ``NO_ADAPTER``
+            model returns ``None``. Trust is read at resolve time (not
+            captured at worker build), so a ``run()``'s per-call
+            ``trust_entrypoints`` override stays scoped to that run even
+            though the worker itself is cached.
+            """
             adapter = resolve_adapter(
-                spec, cast("Any", env_contract), trust_entrypoints=trust
+                spec,
+                cast("Any", env_contract),
+                trust_entrypoints=self._trust_entrypoints,
             )
             return adapter.serve_route(bridge) if adapter is not None else None
 
@@ -638,7 +667,7 @@ class ModelBase(Generic[ObsT, ActT]):
 
             predict_chunk_batch_neutral = _predict_chunk_batch_neutral
 
-        self._worker: PyModel = load_native("PyModel")(
+        worker: PyModel = load_native("PyModel")(
             predict_fn=predict_neutral,
             configure_fn=configure,
             on_episode_end=self._on_episode_end,
@@ -647,6 +676,8 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
         )
+        self._worker = worker
+        return worker
 
     def run(
         self,
@@ -663,52 +694,202 @@ class ModelBase(Generic[ObsT, ActT]):
         execution_horizon: int = 1,
         view: ViewArg = None,
     ) -> RunResult:
-        """Drive this model against an env and return a :class:`RunResult`.
+        """Drive this model against an env on the native runtime loop.
 
-        Resolves the adapter from the env's tags and this model's spec, then runs a
-        per-episode loop. ``seeds`` gives a per-episode seed and sets the episode
-        count unless ``max_episodes`` is given; ``instruction``, when given,
-        overrides *every* text input the spec declares on each step -- at its
-        placement in the input tree (bare-root, top-level, or nested) and in that
-        input's declared shape (a bare ``str``, or ``[instruction]`` for a
-        ``container='list'`` text input). (A *served* model rejects
-        ``instruction=`` -- the env's own instruction is used.) ``env_or_address``
-        is an env object exposing ``reset``/``step`` (e.g. a ``RemoteEnv``), an
-        :class:`~rlmesh.EnvFactory` (built and tag-stamped, then driven locally), an
-        object with an ``address``, or a bare address string the loop dials.
+        One loop for every env shape: a single env and a vectorized
+        (``num_envs > 1``) one run through the same native runtime the served
+        path uses -- the route resolves at connect (adapter, per-episode frame
+        buffers), the engine dispatches the most specific predict corner
+        (:meth:`predict_batch` / :meth:`predict_chunk_batch` for a vectorized
+        route), and ``execution_horizon`` (> 1) executes that many actions of
+        each predicted chunk before re-planning (needs :meth:`predict_chunk`).
 
-        ``max_episode_steps`` / ``max_episode_seconds`` cap each episode (hitting a
-        cap marks it ``truncated``), and ``hooks`` (:class:`rlmesh.RunHooks`)
-        observes the loop; all three pass through to :meth:`Session.run
-        <rlmesh.Session.run>`.
+        ``env_or_address`` is a bare address string the loop dials, an object
+        with an ``address`` (:class:`~rlmesh.EnvServer`, ``RemoteEnv`` /
+        ``RemoteVectorEnv``), or a local env object -- served on a loopback
+        port for the duration of the run (tag it via
+        :func:`rlmesh.adapters.tag` for a spec'd model).
 
-        ``execution_horizon`` (> 1) executes that many actions of each predicted
-        chunk one per env step, re-planning every ``execution_horizon`` steps -- only
-        when this model defines :meth:`predict_chunk`; otherwise it runs un-chunked.
+        ``seeds`` gives a per-episode reset seed and sets the episode count
+        unless ``max_episodes`` is given (both default to one episode; an empty
+        ``seeds`` returns an empty result). ``max_episode_steps`` /
+        ``max_episode_seconds`` truncate an episode at a step / wall-clock cap,
+        and a non-terminating env is bounded regardless: without an explicit
+        cap the runtime truncates any episode at 100,000 steps (the same
+        built-in bound as :meth:`Session.run <rlmesh.Session.run>`). Explicit
+        seeds and caps need the runtime to own resets, so they reject an
+        autoresetting vector env (drive it with ``max_episodes``; seeds on a
+        driver-reset vector env must be a multiple of ``num_envs``). For a
+        vectorized env ``max_episodes`` is a lower bound reached in lane
+        batches (episodes complete interleaved). A per-call
+        ``trust_entrypoints`` override applies to this run only. On the
+        result, each episode's ``predict_ms`` / ``step_ms`` carry the run's
+        session-mean op latencies (the runtime aggregates timing per op, not
+        per episode).
 
-        This one-shot convenience creates its session internally and closes it
-        (honoring ``close_env``) when the run ends. To reuse one binding across
-        several runs, hold a :meth:`session` yourself -- :meth:`Session.run` leaves
-        a caller-held session open.
+        The Session-only knobs -- ``hooks``, ``instruction``, ``view`` -- are
+        not part of this loop; use :meth:`session` and
+        :meth:`Session.run <rlmesh.Session.run>` for step-level observation,
+        instruction override, or a live viewer.
         """
-        session = self.session(
-            env_or_address,
-            instruction=instruction,
-            close_env=close_env,
-            trust_entrypoints=trust_entrypoints,
-            execution_horizon=execution_horizon,
-            view=view,
-        )
+        rejected = [
+            name
+            for name, given in (
+                ("hooks", hooks is not None),
+                ("instruction", instruction is not None),
+                ("view", view is not None),
+            )
+            if given
+        ]
+        if rejected:
+            raise ValueError(
+                f"run() drives the native runtime loop, which does not support "
+                f"{', '.join(rejected)}; use session().run(...) for these."
+            )
+        if execution_horizon < 1:
+            raise ValueError(f"execution_horizon must be >= 1, got {execution_horizon}")
+        self._require_device_support()
+        if execution_horizon > 1 and self._raw_predict_chunk is None:
+            warnings.warn(
+                f"execution_horizon={execution_horizon} was requested but "
+                "the model defines no predict_chunk(); running un-chunked.",
+                stacklevel=2,
+            )
+        if max_episodes is None:
+            max_episodes = len(seeds) if seeds is not None else 1
+        if max_episodes == 0:
+            from ._eval import RunResult
+
+            return RunResult()
+
+        previous_trust = self._trust_entrypoints
+        if trust_entrypoints is not None:
+            self._trust_entrypoints = trust_entrypoints
         try:
-            return session.run(
-                seeds=seeds,
+            episodes = self._run_native(
+                env_or_address,
                 max_episodes=max_episodes,
+                seeds=seeds,
                 max_episode_steps=max_episode_steps,
                 max_episode_seconds=max_episode_seconds,
-                hooks=hooks,
+                close_env=close_env,
+                execution_horizon=execution_horizon,
             )
         finally:
-            session.close()
+            self._trust_entrypoints = previous_trust
+        from ._eval import EpisodeResult, RunResult
+
+        return RunResult(
+            episodes=tuple(
+                EpisodeResult(
+                    index=episode["index"],
+                    seed=episode["seed"],
+                    steps=episode["steps"],
+                    reward=episode["reward"],
+                    terminated=episode["terminated"],
+                    truncated=episode["truncated"],
+                    success=episode["success"],
+                    duration_s=episode["duration_s"],
+                    predict_ms=episode["predict_ms"],
+                    step_ms=episode["step_ms"],
+                )
+                for episode in episodes
+            )
+        )
+
+    def _run_native(
+        self,
+        env_or_address: object,
+        *,
+        max_episodes: int,
+        seeds: Sequence[int] | None,
+        max_episode_steps: int | None,
+        max_episode_seconds: float | None,
+        close_env: bool,
+        execution_horizon: int,
+    ) -> list[dict[str, Any]]:
+        """Normalize the env target, drive the native loop, return the episodes.
+
+        Target handling follows :func:`~rlmesh._models._connect.classify_env_target`
+        (the same precedence ``session()`` uses): a bare address is dialed; a
+        remote handle is dialed by its own address (it cannot be re-served); a
+        local env or a built :class:`~rlmesh.EnvFactory` env is served on a
+        loopback port for the duration of the run. ``close_env`` maps per kind:
+        the wire close op for a bare address, the handle's ``shutdown``/``close``
+        for a handle, and the env object's ``close()`` for a locally served env.
+
+        A local single env's spec/tags pairing is pre-flighted in Python so a
+        mismatch surfaces as the typed ``AdapterResolutionError`` rather than
+        stringified out of the native route resolve (a vector env's local spaces
+        are batched while tags describe one lane, so its check stays at the
+        served resolve).
+        """
+        from ._connect import classify_env_target
+
+        kind, payload = classify_env_target(env_or_address)
+        env_obj: object = payload
+        address: str | None = None
+        server = None
+        if kind == "address":
+            address = cast(str, payload)
+        elif kind == "handle":
+            handle_address = getattr(payload, "address", None)
+            if not isinstance(handle_address, str):
+                raise TypeError(
+                    "this env handle exposes env_contract but no dialable "
+                    "address; pass the env's address string instead"
+                )
+            address = handle_address
+        elif kind == "factory":
+            from ._connect import factory_env
+
+            env_obj = factory_env(payload)
+        if address is None:
+            from .._server import EnvServer, VectorServerEnvLike
+
+            if not hasattr(env_obj, "single_observation_space"):
+                from ._connect import local_contract
+                from ._resolve import resolve_adapter
+
+                resolve_adapter(
+                    self.spec,
+                    local_contract(env_obj),
+                    trust_entrypoints=self._trust_entrypoints,
+                )
+            server = EnvServer(cast("VectorServerEnvLike", env_obj), "127.0.0.1:0")
+            server.start()
+            address = server.address
+        try:
+            return self._run_local_for_episodes(
+                address,
+                max_episodes=max_episodes,
+                execution_horizon=execution_horizon,
+                seeds=list(seeds) if seeds is not None else None,
+                max_episode_steps=max_episode_steps,
+                max_episode_seconds=max_episode_seconds,
+                close_env=close_env and kind == "address",
+            )
+        except RuntimeError as error:
+            if "active Join session" in str(error):
+                raise RuntimeError(
+                    "the target env already has an active session: a RemoteEnv / "
+                    "RemoteVectorEnv handle that was driven with reset()/step() "
+                    "holds the env's single session slot. close() the handle (or "
+                    "its open session) before run(), or drive it interactively "
+                    "via session()."
+                ) from error
+            raise
+        finally:
+            if server is not None:
+                server.shutdown()
+                if close_env:
+                    close = getattr(env_obj, "close", None)
+                    if callable(close):
+                        close()
+            elif close_env and kind == "handle":
+                from ._connect import shutdown_env
+
+                shutdown_env(env_obj)
 
     def session(
         self,
@@ -774,24 +955,50 @@ class ModelBase(Generic[ObsT, ActT]):
         spec-less / ``NO_ADAPTER`` model serves its own predict directly.
         """
         self._require_device_support()
-        self._worker.serve(address, options)
+        self._install_worker().serve(address, options)
 
-    def _run_local(self, env_address: str) -> None:
+    def _run_local(
+        self, env_address: str, *, execution_horizon: int = 1
+    ) -> list[dict[str, Any]]:
         """Native worker loop against a remote env, until the env ends.
 
-        Runs the session to completion for its side effects. Telemetry is
+        Returns the runtime report's per-episode summaries (one dict per
+        completed episode, ``EpisodeResult``-shaped keys). Telemetry is
         surfaced on the serving runtime via its ``on_telemetry`` hook, not
-        returned here.
+        returned here. Drives vectorized (``num_envs > 1``) envs through the
+        native engine: the route resolves at connect (adapter + batched
+        predict corners), and ``execution_horizon`` (> 1) enables action
+        chunking exactly as the served path's ``ResolveAdapter`` pin does.
         """
-        return self._worker.run_local(env_address)
+        return self._install_worker().run_local(env_address, execution_horizon)
 
-    def _run_local_for_episodes(self, env_address: str, *, max_episodes: int) -> None:
+    def _run_local_for_episodes(
+        self,
+        env_address: str,
+        *,
+        max_episodes: int,
+        execution_horizon: int = 1,
+        seeds: list[int] | None = None,
+        max_episode_steps: int | None = None,
+        max_episode_seconds: float | None = None,
+        close_env: bool = False,
+    ) -> list[dict[str, Any]]:
         """Native worker loop against a remote env for a fixed episode count.
 
-        Runs for the requested episode count for its side effects; see
-        :meth:`_run_local` for where telemetry is surfaced.
+        Returns the per-episode summaries; see :meth:`_run_local` for the
+        shape, where telemetry is surfaced, and what ``execution_horizon``
+        does. ``seeds`` / the episode caps mirror :meth:`run` (explicit seeds
+        and caps need runtime-owned resets, i.e. autoreset disabled).
         """
-        return self._worker.run_local_for_episodes(env_address, max_episodes)
+        return self._install_worker().run_local_for_episodes(
+            env_address,
+            max_episodes,
+            execution_horizon,
+            seeds,
+            max_episode_steps,
+            max_episode_seconds,
+            close_env,
+        )
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
@@ -955,15 +1162,30 @@ def run(
 ) -> RunResult:
     """Drive ``model`` against ``env`` to completion and return a :class:`RunResult`.
 
-    The auto-pump convenience over :func:`rlmesh.session`: it creates the session
-    internally and closes it (honoring ``close_env``) when the run ends -- hold a
-    :func:`rlmesh.session` yourself to reuse one binding across runs. Works for a
-    local :class:`Model` or a served :class:`RemoteModel` / :class:`SandboxModel`
-    (a served model rejects ``instruction=``; the env's own instruction is used).
-    ``max_episode_steps`` / ``max_episode_seconds`` cap each episode (hitting a cap
-    marks it ``truncated``), and ``hooks`` (:class:`rlmesh.RunHooks`) observes the
-    loop; all three pass through to :meth:`Session.run <rlmesh.Session.run>`.
+    A *local* model (a :class:`Model` instance, subclass class, or bare predict
+    callable) runs on :meth:`Model.run`'s native runtime loop -- single or
+    vectorized env, batched predict corners, runtime-enforced seeds/caps; see
+    its docstring for the parameter surface (``hooks`` / ``instruction`` /
+    ``view`` are :func:`rlmesh.session`-only). A served :class:`RemoteModel` /
+    :class:`SandboxModel` (and the :data:`rlmesh.RANDOM_SAMPLE` baseline) runs
+    through its own session loop, which supports all parameters.
     """
+    from ._eval import RANDOM_SAMPLE
+
+    if model is not RANDOM_SAMPLE and not _served_handle(model):
+        return as_model(model).run(
+            cast("LocalEnvTarget", env),
+            seeds=seeds,
+            max_episodes=max_episodes,
+            max_episode_steps=max_episode_steps,
+            max_episode_seconds=max_episode_seconds,
+            hooks=hooks,
+            instruction=instruction,
+            close_env=close_env,
+            trust_entrypoints=trust_entrypoints,
+            execution_horizon=execution_horizon,
+            view=view,
+        )
     sess = session(
         model,
         env,

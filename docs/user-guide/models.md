@@ -191,7 +191,7 @@ Drive the model against an environment with `run` to auto-pump whole episodes, o
 ```python
 model = MyPolicy()
 
-result = model.run(env, seeds=range(10), instruction="put the cup on the plate")
+result = model.run(env, seeds=range(10))
 print(result.mean_reward, result.success_rate)
 ```
 

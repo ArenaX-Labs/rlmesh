@@ -115,7 +115,11 @@ def test_duck_policy_predict_chunk_is_picked_up_and_actually_chunks() -> None:
 
     class _SixStepEnv:
         def __init__(self) -> None:
+            from rlmesh import spaces
+
             self._steps = 0
+            self.observation_space = spaces.Discrete(1)
+            self.action_space = spaces.Discrete(3)
 
         def reset(
             self, *, seed: object = None, options: object = None

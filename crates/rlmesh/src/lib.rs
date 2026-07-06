@@ -131,12 +131,14 @@ pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
     AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, ModelHandler,
     ModelHandlerRuntimeModel, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelWorker,
-    PredictFn, RemoteModel, RouteConfig, RouteResolver, RunLocalOptions, ServeModelOptions,
+    PredictFn, PredictFrames, RemoteModel, RouteConfig, RouteResolver, RunLocalOptions,
+    ServeModelOptions,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::RuntimeReport;
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
+pub use tokio_util::sync::CancellationToken;
 
 /// Mint one fresh routing/episode id (UUIDv7 — time-ordered, sortable by creation,
 /// never repeats). The single id-format home for this crate's id authorities (the

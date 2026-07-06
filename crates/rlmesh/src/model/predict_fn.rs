@@ -95,6 +95,23 @@ pub trait PredictFn: Send + Sync {
     /// behavior byte-for-byte (the binding reproduces the original path).
     fn predict_spec_less(&self, observation: ModelObservation) -> Result<Vec<SpaceValue>>;
 
+    /// Spec-less route with a pinned execution horizon: like
+    /// [`predict_spec_less`](Self::predict_spec_less), but when the runtime pinned
+    /// `execution_horizon > 1` a chunking binding runs its chunk corner on the raw
+    /// observation and returns frame 0 plus the replay frames. The default ignores
+    /// the horizon and stays un-chunked (a non-chunking model re-plans every step,
+    /// exactly as before).
+    fn predict_spec_less_chunked(
+        &self,
+        observation: ModelObservation,
+        _execution_horizon: u32,
+    ) -> Result<super::handler::PredictFrames> {
+        Ok(super::handler::PredictFrames {
+            actions: self.predict_spec_less(observation)?,
+            replay: Vec::new(),
+        })
+    }
+
     /// Whether this model permits the future fused forward pass. Default-OFF; an
     /// inert permission door in v1 (the per-lane loop runs regardless) — the seam
     /// the deferred fusion reads.

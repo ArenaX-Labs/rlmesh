@@ -885,13 +885,20 @@ fn space_value_len(payload: Option<&rlmesh_proto::spaces::v1::SpaceValue>) -> us
         .unwrap_or(0)
 }
 
+/// A completing lane's final info: the Gymnasium vector-autoreset
+/// `final_info` entry when present, else (single env only) the terminal
+/// step's own top-level info map — a scalar env has no `final_info` wrapper,
+/// its terminal info IS the final info, and the eval loop's success signal
+/// reads `is_success`/`success` from it.
 fn extract_env_final_info(
     info: Option<&MetaMap>,
     env_idx: usize,
     num_envs: usize,
 ) -> Option<MetaMap> {
     let info = info?;
-    let final_info = info.entries.get("final_info")?;
+    let Some(final_info) = info.entries.get("final_info") else {
+        return (num_envs == 1).then(|| info.clone());
+    };
     let is_present = match info.entries.get("_final_info") {
         Some(mask) => value_bool_at(mask, env_idx).unwrap_or(false),
         None => num_envs == 1,

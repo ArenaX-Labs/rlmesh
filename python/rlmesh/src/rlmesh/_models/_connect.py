@@ -21,11 +21,51 @@ if TYPE_CHECKING:
 # the type checker does not read sibling imports as private-symbol leakage.
 __all__ = [
     "adapter_env_bridge",
+    "classify_env_target",
     "close_client",
     "connect_env",
+    "factory_env",
+    "local_contract",
     "reset_env",
     "shutdown_env",
 ]
+
+
+def classify_env_target(target: object) -> tuple[str, Any]:
+    """Classify a session/run env target under ONE duck-type precedence.
+
+    Returns ``(kind, payload)``:
+
+    * ``("address", str)`` -- a bare address string, or an object exposing a
+      dialable ``address`` (the payload is the address string).
+    * ``("handle", env)`` -- a live env exposing a native ``env_contract``
+      (a remote/served handle such as ``RemoteEnv`` / ``RemoteVectorEnv``).
+    * ``("env", env)`` -- a plain local env exposing ``reset``/``step``.
+    * ``("factory", factory)`` -- an :class:`~rlmesh.EnvFactory` (``make``).
+
+    Both :func:`connect_env` (the session loop) and ``Model.run`` (the native
+    loop) resolve their targets through this single classifier, so an object
+    never classifies differently between the two entry points -- what differs
+    is only what each loop *does* with a kind (a session drives a handle
+    in-process; the native loop dials its address).
+    """
+    if isinstance(target, str):
+        return ("address", target)
+    if hasattr(target, "reset") and hasattr(target, "step"):
+        if _native_contract(target) is not None:
+            return ("handle", target)
+        return ("env", target)
+    if hasattr(target, "make"):
+        return ("factory", target)
+    address = getattr(target, "address", None)
+    if isinstance(address, str):
+        return ("address", address)
+    raise TypeError(
+        "session()/run() expect a live env exposing reset() and step(), an "
+        "EnvFactory exposing make(), an object exposing a dialable address, or "
+        f"an address string; got {type(target).__name__} (an object exposing "
+        "only env_contract cannot be stepped)"
+    )
 
 
 def connect_env(target: object, remote_env_cls: type | None) -> tuple[Any, Any, bool]:
@@ -34,32 +74,21 @@ def connect_env(target: object, remote_env_cls: type | None) -> tuple[Any, Any, 
     ``target`` is an address string, a live env (local object or remote handle), an
     :class:`~rlmesh.EnvFactory`, or an object exposing an ``address``. ``owns_client``
     is True when this dialed the connection, so the session knows to close it.
+    A handle is driven in-process through its own client; a plain local env gets
+    a synthesized contract (tags ride in ``env.metadata`` via ``tag()`` /
+    ``EnvFactory.make``); a factory is built and driven locally -- no serving
+    needed to resolve a spec'd adapter.
     """
-    if isinstance(target, str):
-        client = _remote_env(target, remote_env_cls)
+    kind, payload = classify_env_target(target)
+    if kind == "address":
+        client = _remote_env(payload, remote_env_cls)
         return client, client.env_contract, True
-    if hasattr(target, "reset") and hasattr(target, "step"):
-        # A live env: a remote/served handle exposes a native env_contract; a local
-        # env exposes its spaces + metadata directly, so synthesize the contract from
-        # the env (tags ride in env.metadata via tag() / EnvFactory.make).
-        native = _native_contract(target)
-        contract = native if native is not None else _local_contract(target)
-        return target, contract, False
-    if hasattr(target, "make"):
-        # An EnvFactory: prepare()+make() its env (which carries the factory's tags)
-        # and drive it locally -- no serving needed to resolve a spec'd adapter.
-        env = _factory_env(target)
-        return env, _local_contract(env), False
-    address = getattr(target, "address", None)
-    if isinstance(address, str):
-        client = _remote_env(address, remote_env_cls)
-        return client, client.env_contract, True
-    raise TypeError(
-        "session()/run() expect a live env exposing reset() and step(), an "
-        "EnvFactory exposing make(), an object exposing a dialable address, or "
-        f"an address string; got {type(target).__name__} (an object exposing "
-        "only env_contract cannot be stepped)"
-    )
+    if kind == "handle":
+        return payload, payload.env_contract, False
+    if kind == "factory":
+        env = factory_env(payload)
+        return env, local_contract(env), False
+    return payload, local_contract(payload), False
 
 
 @dataclass(frozen=True)
@@ -96,7 +125,7 @@ def _native_contract(env: object) -> object | None:
     return None
 
 
-def _local_contract(env: object) -> Any:
+def local_contract(env: object) -> Any:
     return _LocalEnvContract(
         metadata=getattr(env, "metadata", None),
         observation_space=getattr(env, "observation_space", None),
@@ -119,7 +148,7 @@ def _num_envs(env: object) -> int:
     return 1
 
 
-def _factory_env(factory: object) -> Any:
+def factory_env(factory: object) -> Any:
     """Build a local env from an EnvFactory: ``prepare()`` + ``make()``.
 
     ``EnvFactory.make`` stamps the factory's ``tags`` onto the env it returns, so a

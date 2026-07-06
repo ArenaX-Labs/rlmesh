@@ -148,10 +148,12 @@ condition surfaces as a truncation rather than hanging the run forever.
 ```
 
 ```{note}
-`run` returns its {class}`~rlmesh.RunResult` only after the last episode finishes.
-The public Python API has no per-episode streaming callback. For live progress
-during a long run, drive {func}`~rlmesh.session` by hand (below) and read each
-episode as it ends, or attach the built-in viewer with `view=` (see {doc}`troubleshooting`).
+`run` returns its {class}`~rlmesh.RunResult` only after the last episode finishes,
+and drives the native runtime loop, which has no per-episode callback. For live
+progress during a long run, use {func}`~rlmesh.session`: pass `hooks=` to
+{meth}`Session.run <rlmesh.Session.run>` for per-step/per-episode callbacks,
+drive the session by hand (below), or attach the built-in viewer with `view=`
+on `session` (see {doc}`troubleshooting`).
 ```
 
 ## Session lifecycle

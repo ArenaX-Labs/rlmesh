@@ -229,22 +229,27 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
 
 #[test]
 fn run_local_and_serve_options_cover_all_axes() {
-    // run_local: address + for_episodes + base_seed axes via one options struct.
+    // run_local: address + for_episodes + base_seed + execution_horizon axes
+    // via one options struct.
     let run = RunLocalOptions::parse("tcp://env:50051")
         .unwrap()
         .for_episodes(5)
-        .base_seed(123);
+        .base_seed(123)
+        .execution_horizon(8);
     assert_eq!(run.max_episodes, Some(5));
     assert_eq!(run.base_seed, Some(123));
+    assert_eq!(run.execution_horizon, 8);
     assert_eq!(
         run.env_address,
         ConnectAddress::parse("tcp://env:50051").unwrap()
     );
 
-    // Defaults: unbounded, no seed.
+    // Defaults: unbounded, no seed, no chunking; horizon 0 clamps to 1.
     let default_run = RunLocalOptions::new(ConnectAddress::parse("tcp://env:1").unwrap());
     assert_eq!(default_run.max_episodes, None);
     assert_eq!(default_run.base_seed, None);
+    assert_eq!(default_run.execution_horizon, 1);
+    assert_eq!(default_run.execution_horizon(0).execution_horizon, 1);
 
     // serve: address + token + serve options axes via one options struct.
     let serve = ServeModelOptions::parse("tcp://0.0.0.0:50061")
@@ -515,6 +520,104 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
             ("env-box".to_string(), "ep-box".to_string()),
             ("env-disc".to_string(), "ep-disc".to_string()),
         ]
+    );
+}
+
+/// Chunks only on the `env-chunk` route (frame 0 + two replay frames); every
+/// other route returns a single un-chunked frame — the mixed-horizon fleet
+/// shape, where each group's route pinned its own execution horizon.
+struct PerRouteChunkHandler;
+
+impl PerRouteChunkHandler {
+    fn box_action() -> spaces::SpaceValue {
+        spaces::SpaceValue::Box(
+            spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+        )
+    }
+}
+
+#[async_trait]
+impl ModelHandler for PerRouteChunkHandler {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        Ok((0..observation.num_envs)
+            .map(|_| Self::box_action())
+            .collect())
+    }
+
+    async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
+        let lanes = observation.num_envs;
+        let frame = || (0..lanes).map(|_| Self::box_action()).collect();
+        let replay = if observation.route.env_id == "env-chunk" {
+            vec![frame(), frame()]
+        } else {
+            Vec::new()
+        };
+        Ok(PredictFrames {
+            actions: frame(),
+            replay,
+        })
+    }
+}
+
+/// Two groups on routes with DIFFERENT chunking: one route replays a 3-frame
+/// chunk, the other is un-chunked. One grouped request must return each
+/// group's own ordered frame list (frame 0 + its replay), independently —
+/// horizons never cross-contaminate between groups.
+#[tokio::test]
+async fn grouped_predict_carries_each_groups_own_chunk_frames() {
+    let handler = Arc::new(Mutex::new(PerRouteChunkHandler));
+    let configs = Arc::new(Mutex::new(HashMap::from([
+        (
+            "env-chunk".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
+            },
+        ),
+        (
+            "env-single".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
+            },
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
+                groups: vec![
+                    grouped_member("env-chunk", "p-chunk", "ep-chunk"),
+                    grouped_member("env-single", "p-single", "ep-single"),
+                ],
+            })),
+            request_id: "grouped-chunk-1".to_string(),
+        },
+        Arc::clone(&handler),
+        None,
+        Arc::clone(&configs),
+    )
+    .await;
+
+    let results = match response.kind {
+        Some(join_response::Kind::GroupedPredict(GroupedPredictResponse { results })) => results,
+        other => panic!("expected grouped predict response, got {other:?}"),
+    };
+    assert_eq!(results.len(), 2, "one result per group, in order");
+
+    let chunked = expect_group_response(&results[0]);
+    assert_eq!(chunked.context.as_ref().unwrap().env_id, "env-chunk");
+    assert_eq!(
+        chunked.actions.len(),
+        3,
+        "the chunking group returns frame 0 plus its two replay frames"
+    );
+    let single = expect_group_response(&results[1]);
+    assert_eq!(single.context.as_ref().unwrap().env_id, "env-single");
+    assert_eq!(
+        single.actions.len(),
+        1,
+        "the un-chunked group stays a single frame"
     );
 }
 

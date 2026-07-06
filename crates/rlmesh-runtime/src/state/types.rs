@@ -17,12 +17,18 @@ pub(crate) struct StartedEpisode {
     pub(crate) record: EpisodeRecord,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SlotState {
     pub(crate) env_index: i32,
     pub(crate) episode: Option<EpisodeState>,
     pub(crate) step: i64,
     pub(crate) reset: bool,
+    /// Reward accumulated over the slot's current episode; feeds the
+    /// runtime-synthesized completion when a step/time cap truncates the lane.
+    pub(crate) cumulative_reward: f64,
+    /// Unix-ns timestamp of the slot's current episode start (reset), for the
+    /// `max_episode_seconds` cap and synthesized completion timestamps.
+    pub(crate) started_at_ns: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
