@@ -240,6 +240,7 @@ where
                 route,
             }),
             endpoint_total_ns: None,
+            group_size: None,
         })
     }
 

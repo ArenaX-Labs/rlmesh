@@ -14,11 +14,13 @@ use reservoir::ValueReservoir;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// What a metric measures — fixes its unit (ms for `Duration`, bytes for `Bytes`).
+/// What a metric measures — fixes its unit (ms for `Duration`, bytes for
+/// `Bytes`, a dimensionless count for `Count`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Duration,
     Bytes,
+    Count,
 }
 
 /// A metric's identity (`name`) + `kind`. Defined only in the [`metrics`] catalog.
@@ -41,6 +43,12 @@ impl Metric {
             kind: Kind::Bytes,
         }
     }
+    pub const fn count(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: Kind::Count,
+        }
+    }
 }
 
 /// The metric catalog — adding a metric is one const here (plus `ALL`).
@@ -51,9 +59,18 @@ pub mod metrics {
     pub const RPC_TOTAL: Metric = Metric::duration("rpc.total");
     pub const REQUEST_BYTES: Metric = Metric::bytes("request.bytes");
     pub const RESPONSE_BYTES: Metric = Metric::bytes("response.bytes");
+    /// Lanes fused into the model forward this predict rode in (1 = unfused;
+    /// recorded only when the transport reports it — grouped/coalesced predicts).
+    pub const GROUP_SIZE: Metric = Metric::count("group.size");
 
     /// The cardinality allowlist — derived from the catalog, not a second table.
-    pub const ALL: &[Metric] = &[ENDPOINT_TOTAL, RPC_TOTAL, REQUEST_BYTES, RESPONSE_BYTES];
+    pub const ALL: &[Metric] = &[
+        ENDPOINT_TOTAL,
+        RPC_TOTAL,
+        REQUEST_BYTES,
+        RESPONSE_BYTES,
+        GROUP_SIZE,
+    ];
 }
 
 /// Who produced a sample: an `operation` on a `component`.
@@ -81,6 +98,13 @@ impl Sample {
         }
     }
     pub fn bytes(source: Source, metric: Metric, n: u64) -> Self {
+        Self {
+            source,
+            metric,
+            value: n as f64,
+        }
+    }
+    pub fn count(source: Source, metric: Metric, n: u64) -> Self {
         Self {
             source,
             metric,

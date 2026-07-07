@@ -67,6 +67,10 @@ pub struct RuntimeModelPrediction {
     pub response: PredictResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
+    /// Lanes fused into the model forward this predict rode in (1 = a lone
+    /// predict). `None` when the transport does not group predicts; recorded
+    /// as the `group.size` telemetry metric when present.
+    pub group_size: Option<u64>,
 }
 
 /// The environment side of a route: reset and step over the wire, plus close.
@@ -503,6 +507,13 @@ where
                     predict_request_bytes,
                     action_msg.response.encoded_len() as u64,
                 );
+                if let Some(group) = action_msg.group_size {
+                    lock_agg(telemetry).record(Sample::count(
+                        SRC_PREDICT,
+                        metrics::GROUP_SIZE,
+                        group,
+                    ));
+                }
                 if action_msg.response.actions.is_empty() {
                     return Err(RuntimeError::Protocol(format!(
                         "model endpoint {} returned a predict response with no actions",

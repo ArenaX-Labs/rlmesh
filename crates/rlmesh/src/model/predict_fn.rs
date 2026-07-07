@@ -112,9 +112,11 @@ pub trait PredictFn: Send + Sync {
         })
     }
 
-    /// Whether this model permits the future fused forward pass. Default-OFF; an
-    /// inert permission door in v1 (the per-lane loop runs regardless) — the seam
-    /// the deferred fusion reads.
+    /// Whether this model permits the fused forward pass: a grouped predict may
+    /// concatenate lanes from *different* routes into ONE batched corner call.
+    /// Default-OFF (a hand-written batched corner is not necessarily
+    /// lane-independent); a binding whose batched corners fuse independent lanes
+    /// by construction turns it on.
     fn allow_fusion(&self) -> bool {
         false
     }
