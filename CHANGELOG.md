@@ -13,7 +13,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Serve Gymnasium-style environments and drive them with `reset`, `step`, `render`, and `close` over local or remote gRPC transports: `EnvServer`, `RemoteEnv`, `RemoteVectorEnv`, and `python -m rlmesh.serve` as a universal container entrypoint.
 - Evaluate models locally, against a remote server, or inside a sandbox: `Model`, `RemoteModel`, and `SandboxModel`, with `run()` for whole evals and `session()`/`Session` for manual `reset`/`predict`/`step` control.
 - Tag-driven IO adapters that resolve environment tags against model specs at runtime. Environments tag what they emit (`ImageTag`, `StateTag`, `TextTag`, `Split`); models declare what they consume (`Image`, `State`, `Text`, `Concat`) and produce (`Action`, `Actuator`). Conversions cover rotation accept-sets, image `fit` and `normalize` ranges, channel validation, optional cameras, frame stacking, per-actuator `clip`/`scale`/`invert`/`threshold`, and role-less actuators; `adapter.explain()` prints the chosen transforms and `adapter.advisories()` surfaces severity-tiered data-loss notes (`info` for benign hints, `caution` when the adapter substituted or fabricated model-visible data).
-- Action chunking and batched prediction in the runtime. Implement the most general of four corners and the runtime derives the rest: `predict`, `predict_chunk`, `predict_batch`, `predict_chunk_batch`. The runtime owns chunk replay and the execution horizon, so one action still reaches the environment per step.
+- Action chunking and batched prediction in the runtime. Implement the most general of four corners and the runtime derives the rest: `predict`, `predict_chunk`, `predict_batch`, `predict_chunk_batch`. The runtime owns chunk replay and the execution horizon, so one action still reaches the environment per step. Grouped predict requests spanning several environments fuse into one batched forward pass when the model's batched corner is the corner a direct predict would run, so grouping never changes model behavior; `Model.allow_fusion = False` opts out a batched forward that assumes fixed-size, single-environment batches.
 - Run observability: pass `hooks=RunHooks(...)` to `run()`/`Session.run` for per-step `StepEvent`s (action, reward, timing, lazy role-addressed reads) and episode/run boundaries, cap episodes with `max_episode_steps`/`max_episode_seconds`, and read per-episode timing off `EpisodeResult`.
 - Read-only observation inspection: `Session.reader()`/`Session.read()` extract any role from a raw observation through the model's adapter, and `Session.observation_roles()`/`EnvTags.observation_roles` list the roles an env declares.
 - PyTorch and JAX end to end: environments served with framework tensors (`EnvServer(env, framework="torch", device="cuda:0")`), `rlmesh.torch` and `rlmesh.jax` factory, model, and sandbox classes, and DLPack-native `Tensor` transport with zero-copy NumPy, Torch, and JAX backends.
@@ -27,4 +27,17 @@ The first release. RLMesh connects models to environments across process, depend
 - Build identity: `rlmesh.__build__` and `rlmesh version` report the commit-stamped workflow edition, so two builds sharing a package version stay distinguishable.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
 
+## [0.1.0-rc.3] - 2026-07-06
+
+### Added
+
+- Grouped predicts fuse across environments. When the control plane groups predict requests, a model with a batched corner (`predict_batch` or `predict_chunk_batch`) serves the whole group in one forward pass. Fusion engages only when that batched corner is exactly the corner a direct predict would run, so grouping never changes which of a model's predict methods executes or how it chunks; a fused failure keeps the model error's recoverable flag and annotates each group with its own input signature.
+- `Model.allow_fusion` (default `True`). Set it to `False` when a batched forward assumes fixed-size, single-environment batches, such as a shape-pinned `jit` trace or per-batch statistics; grouped predicts then run one route at a time.
+- Adapter advisories carry a severity tier: `Advisory.severity` is `"info"` for benign hints and `"caution"` when the adapter substituted or fabricated model-visible data, the tier an eval harness may want to hard-fail on.
+
+### Fixed
+
+- Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
+
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
+[0.1.0-rc.3]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.3
