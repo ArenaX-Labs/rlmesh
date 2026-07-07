@@ -220,6 +220,7 @@ where
         wire_actions.push(frame0);
         wire_actions.extend(replay_frames);
         Ok(RuntimeModelPrediction {
+            group_size: None,
             response: model_action_to_endpoint_response(ModelAction {
                 actions: wire_actions,
                 route,

@@ -109,16 +109,19 @@ pub trait ModelHandler: Send {
         })
     }
 
-    /// Produce actions for a batch of routed observations in one call.
+    /// Produce frames for a batch of routed observations in one call.
     ///
     /// The server calls this for a `GroupedPredictRequest` — a control-plane-
     /// grouped batch where each observation belongs to a *different* configured
-    /// route (and so a different env spec/adapter). The default fans out to
-    /// [`predict`](ModelHandler::predict) per group, sequentially, which is
-    /// behaviorally identical to handling each group as its own predict. A
-    /// handler overrides this to fuse the groups into ONE forward pass (e.g. a
-    /// single batched GPU inference across env types) — this is the only seam a
-    /// fusing model must implement.
+    /// route (and so a different env spec/adapter). Each group's result carries
+    /// its full [`PredictFrames`] — frame 0 plus any chunk replay frames — so
+    /// grouping composes with action chunking instead of silently disabling it.
+    /// The default fans out to
+    /// [`predict_chunked`](ModelHandler::predict_chunked) per group,
+    /// sequentially, which is behaviorally identical to handling each group as
+    /// its own predict. A handler overrides this to fuse the groups into ONE
+    /// forward pass (e.g. a single batched GPU inference across env types) —
+    /// this is the only seam a fusing model must implement.
     ///
     /// The returned `Vec` aligns 1:1 and in order with `observations`; each
     /// element is that group's own `Result`, so one group's failure is reported
@@ -127,10 +130,10 @@ pub trait ModelHandler: Send {
     async fn predict_grouped(
         &mut self,
         observations: Vec<ModelObservation>,
-    ) -> Vec<Result<Vec<spaces::SpaceValue>>> {
+    ) -> Vec<Result<PredictFrames>> {
         let mut results = Vec::with_capacity(observations.len());
         for observation in observations {
-            results.push(self.predict(observation).await);
+            results.push(self.predict_chunked(observation).await);
         }
         results
     }

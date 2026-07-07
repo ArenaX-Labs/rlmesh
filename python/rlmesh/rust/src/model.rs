@@ -130,6 +130,14 @@ impl PredictFn for PyPredict {
         self.predict_chunk_batch_fn.is_some()
     }
 
+    fn allow_fusion(&self) -> bool {
+        // An SDK-built model's batched corners fuse independent lanes by
+        // construction (`tree_stack` over the batch axis), so a batched corner's
+        // presence is the fusion permission. Hand-written Rust `PredictFn`s keep
+        // the conservative default-off.
+        self.predict_batch_fn.is_some() || self.predict_chunk_batch_fn.is_some()
+    }
+
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
         // A spec-less route hands the raw observation straight to the model,
         // batched, preserving the pre-relocation path exactly (no adapter).

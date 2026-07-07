@@ -1870,3 +1870,86 @@ async fn idle_shutdown_arms_immediately_and_activity_extends_window() {
         .unwrap()
         .unwrap();
 }
+
+/// A chunking handler: every `predict_chunked` returns frame 0 plus one replay
+/// frame, all conforming to the SmokeEnv Uint8 Box[1] action space.
+#[derive(Clone, Default)]
+struct ChunkedFramesHandler;
+
+fn smoke_box_action() -> spaces::SpaceValue {
+    spaces::SpaceValue::Box(
+        spaces::Tensor::from_vec(vec![0u8], vec![1], spaces::DType::Uint8).unwrap(),
+    )
+}
+
+#[async_trait]
+impl ModelHandler for ChunkedFramesHandler {
+    async fn predict(&mut self, observation: ModelObservation) -> Result<Vec<spaces::SpaceValue>> {
+        Ok((0..observation.num_envs)
+            .map(|_| smoke_box_action())
+            .collect())
+    }
+
+    async fn predict_chunked(&mut self, observation: ModelObservation) -> Result<PredictFrames> {
+        let lanes = observation.num_envs;
+        Ok(PredictFrames {
+            actions: (0..lanes).map(|_| smoke_box_action()).collect(),
+            replay: vec![(0..lanes).map(|_| smoke_box_action()).collect()],
+        })
+    }
+}
+
+#[tokio::test]
+async fn grouped_predict_carries_chunk_replay_frames() {
+    // Grouping must compose with action chunking: each group's wire response
+    // carries its full ordered frame list (frame 0 + replay), exactly as a
+    // direct predict would. The old grouped path discarded the replay frames.
+    let handler = Arc::new(Mutex::new(ChunkedFramesHandler));
+    let configs = Arc::new(Mutex::new(HashMap::from([
+        (
+            "env-a".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
+            },
+        ),
+        (
+            "env-b".to_string(),
+            ModelRouteConfig {
+                env_contract: Some(Arc::new(SmokeEnv::new().env_contract)),
+                floor: None,
+            },
+        ),
+    ])));
+
+    let response = handle_model_request(
+        JoinRequest {
+            kind: Some(join_request::Kind::GroupedPredict(GroupedPredictRequest {
+                groups: vec![
+                    grouped_member("env-a", "p-a", "ep-a"),
+                    grouped_member("env-b", "p-b", "ep-b"),
+                ],
+            })),
+            request_id: "grouped-chunked".to_string(),
+        },
+        Arc::clone(&handler),
+        None,
+        Arc::clone(&configs),
+    )
+    .await;
+
+    let results = match response.kind {
+        Some(join_response::Kind::GroupedPredict(GroupedPredictResponse { results })) => results,
+        other => panic!("expected grouped predict response, got {other:?}"),
+    };
+    assert_eq!(results.len(), 2, "one result per group, in order");
+    for (result, env_id) in results.iter().zip(["env-a", "env-b"]) {
+        let response = expect_group_response(result);
+        assert_eq!(response.context.as_ref().unwrap().env_id, env_id);
+        assert_eq!(
+            response.actions.len(),
+            2,
+            "{env_id}: frame 0 plus one replay frame survive the grouped path"
+        );
+    }
+}
