@@ -28,7 +28,7 @@ use crate::{Error, Result};
 /// (frame 0 + future frames) as [`PredictFrames`] and the runtime driver owns the
 /// per-step replay buffer. Only the frame-stack windows remain engine state.
 struct RouteEntry {
-    config: RouteConfig,
+    config: Arc<RouteConfig>,
     buffers: FrameBuffers,
 }
 
@@ -216,7 +216,70 @@ fn assemble_route_inputs(
 /// chunk corner was already warned at configure and falls through to a
 /// single-action corner (the runtime then re-plans every step). split_chunk
 /// caps each chunk to the horizon (a receding-horizon model may over-produce).
-/// A predict failure is annotated with the assembled-input signature.
+///
+/// This is the ONE corner-precedence table: the direct predict path wraps it
+/// with the input-signature annotation ([`dispatch_route_corners`]) and the
+/// fused grouped path calls it on a cross-route batch whose corner
+/// [`bucket_fuses`] proved identical, so grouping can never change which model
+/// function runs.
+fn dispatch_corners(
+    predict: &Arc<dyn PredictFn>,
+    inputs: Vec<Value>,
+    horizon: u32,
+    num_envs: usize,
+) -> Result<Vec<Vec<Value>>> {
+    if horizon > 1 && predict.has_chunk_batch() {
+        let chunks = predict.predict_chunk_batch(inputs, horizon)?;
+        if chunks.len() != num_envs {
+            return Err(Error::model(format!(
+                "predict_chunk_batch returned {} chunks for {num_envs} lanes",
+                chunks.len()
+            )));
+        }
+        chunks
+            .into_iter()
+            .map(|chunk| -> Result<Vec<Value>> {
+                Ok(split_chunk(chunk)?
+                    .into_iter()
+                    .take(horizon as usize)
+                    .collect())
+            })
+            .collect::<Result<Vec<_>>>()
+    } else if horizon > 1 && predict.has_chunk() {
+        inputs
+            .into_iter()
+            .map(|input| -> Result<Vec<Value>> {
+                let chunk = predict.predict_chunk(input, horizon)?.ok_or_else(|| {
+                    Error::model(
+                        "model reports a chunk corner (has_chunk) but predict_chunk \
+                         returned None",
+                    )
+                })?;
+                Ok(split_chunk(chunk)?
+                    .into_iter()
+                    .take(horizon as usize)
+                    .collect())
+            })
+            .collect::<Result<Vec<_>>>()
+    } else if predict.has_batch() {
+        let actions = predict.predict_batch(inputs)?;
+        if actions.len() != num_envs {
+            return Err(Error::model(format!(
+                "predict_batch returned {} actions for {num_envs} lanes",
+                actions.len()
+            )));
+        }
+        Ok(actions.into_iter().map(|action| vec![action]).collect())
+    } else {
+        inputs
+            .into_iter()
+            .map(|input| -> Result<Vec<Value>> { Ok(vec![predict.predict(input)?]) })
+            .collect::<Result<Vec<_>>>()
+    }
+}
+
+/// [`dispatch_corners`] with a predict failure annotated with the
+/// assembled-input signature.
 fn dispatch_route_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
@@ -224,57 +287,24 @@ fn dispatch_route_corners(
     num_envs: usize,
 ) -> Result<Vec<Vec<Value>>> {
     let input_summary = inputs_summary(&inputs);
-    let dispatch = || -> Result<Vec<Vec<Value>>> {
-        if horizon > 1 && predict.has_chunk_batch() {
-            let chunks = predict.predict_chunk_batch(inputs, horizon)?;
-            if chunks.len() != num_envs {
-                return Err(Error::model(format!(
-                    "predict_chunk_batch returned {} chunks for {num_envs} lanes",
-                    chunks.len()
-                )));
-            }
-            chunks
-                .into_iter()
-                .map(|chunk| -> Result<Vec<Value>> {
-                    Ok(split_chunk(chunk)?
-                        .into_iter()
-                        .take(horizon as usize)
-                        .collect())
-                })
-                .collect::<Result<Vec<_>>>()
-        } else if horizon > 1 && predict.has_chunk() {
-            inputs
-                .into_iter()
-                .map(|input| -> Result<Vec<Value>> {
-                    let chunk = predict.predict_chunk(input, horizon)?.ok_or_else(|| {
-                        Error::model(
-                            "model reports a chunk corner (has_chunk) but predict_chunk \
-                             returned None",
-                        )
-                    })?;
-                    Ok(split_chunk(chunk)?
-                        .into_iter()
-                        .take(horizon as usize)
-                        .collect())
-                })
-                .collect::<Result<Vec<_>>>()
-        } else if predict.has_batch() {
-            let actions = predict.predict_batch(inputs)?;
-            if actions.len() != num_envs {
-                return Err(Error::model(format!(
-                    "predict_batch returned {} actions for {num_envs} lanes",
-                    actions.len()
-                )));
-            }
-            Ok(actions.into_iter().map(|action| vec![action]).collect())
-        } else {
-            inputs
-                .into_iter()
-                .map(|input| -> Result<Vec<Value>> { Ok(vec![predict.predict(input)?]) })
-                .collect::<Result<Vec<_>>>()
-        }
-    };
-    dispatch().map_err(|err| annotate_predict_error(err, &input_summary))
+    dispatch_corners(predict, inputs, horizon, num_envs)
+        .map_err(|err| annotate_predict_error(err, &input_summary))
+}
+
+/// Whether a bucket of grouped lanes at `horizon` may fuse into one batched
+/// corner call: true only when that batched corner is the SAME corner
+/// [`dispatch_corners`] picks for a direct predict (`predict_chunk_batch` at
+/// horizon > 1, else the per-lane chunk corner, else `predict_batch`, else the
+/// per-lane predict loop). Fusion can only substitute a batched corner, so a
+/// bucket whose direct choice is a per-lane corner serves per group instead —
+/// grouping is purely an optimization and never changes which model function
+/// runs or its chunk semantics.
+fn bucket_fuses(predict: &dyn PredictFn, horizon: u32) -> bool {
+    if horizon > 1 {
+        predict.has_chunk_batch() || (!predict.has_chunk() && predict.has_batch())
+    } else {
+        predict.has_batch()
+    }
 }
 
 /// Apply the per-step adapter transform to each frame, peel frame 0 (this
@@ -322,8 +352,10 @@ fn finish_route_frames(
 }
 
 /// The spec'd per-lane loop (CPU + the model's predict callback), run on a
-/// blocking worker thread. Holds the per-route entry lock across the lanes so
-/// the frame buffers mutate in place.
+/// blocking worker thread. Holds the per-route entry lock only across input
+/// assembly (the frame buffers mutate in place there); the horizon it
+/// dispatches with is the runtime-chosen execution horizon pinned on
+/// `ResolveAdapter`, not the model spec.
 ///
 /// Emits each lane's action chunk as [`PredictFrames`]: frame 0 per lane plus the
 /// future-step frames the runtime driver replays. With execution horizon 1 every
@@ -336,191 +368,156 @@ fn predict_route(
     observation: ModelObservation,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
-    let mut guard = entry.lock().expect("route entry poisoned");
-    let inputs = assemble_route_inputs(&mut guard, &observation)?;
-    // Runtime-chosen execution horizon (pinned on ResolveAdapter), not the model spec.
-    let horizon = guard.config.execution_horizon;
-    let lane_raw_steps = dispatch_route_corners(predict, inputs, horizon, num_envs)?;
-    finish_route_frames(&guard.config, lane_raw_steps, num_envs)
+    let (inputs, config) = {
+        let mut guard = entry.lock().expect("route entry poisoned");
+        let inputs = assemble_route_inputs(&mut guard, &observation)?;
+        (inputs, Arc::clone(&guard.config))
+    };
+    let lane_raw_steps =
+        dispatch_route_corners(predict, inputs, config.execution_horizon, num_envs)?;
+    finish_route_frames(&config, lane_raw_steps, num_envs)
 }
 
-/// One fused corner call for a same-horizon bucket of `total` lanes, yielding
-/// each lane's ordered raw frames. Horizon > 1 prefers the batched chunk corner
-/// and falls back to the plain batched corner (single-step, as warned at
-/// configure); horizon 1 prefers the plain batched corner and falls back to a
-/// 1-frame chunk batch when only the chunk corner exists. The caller's fusion
-/// gate guarantees at least one batched corner is present. A predict failure is
-/// annotated with the assembled-input signature.
-fn fused_bucket_frames(
-    predict: &Arc<dyn PredictFn>,
-    flat: Vec<Value>,
-    horizon: u32,
-    total: usize,
-) -> Result<Vec<Vec<Value>>> {
-    let input_summary = inputs_summary(&flat);
-    let dispatch = || -> Result<Vec<Vec<Value>>> {
-        if horizon > 1 && predict.has_chunk_batch() {
-            let chunks = predict.predict_chunk_batch(flat, horizon)?;
-            if chunks.len() != total {
-                return Err(Error::model(format!(
-                    "predict_chunk_batch returned {} chunks for {total} grouped lanes",
-                    chunks.len()
-                )));
-            }
-            chunks
-                .into_iter()
-                .map(|chunk| -> Result<Vec<Value>> {
-                    Ok(split_chunk(chunk)?
-                        .into_iter()
-                        .take(horizon as usize)
-                        .collect())
-                })
-                .collect::<Result<Vec<_>>>()
-        } else if predict.has_batch() {
-            let actions = predict.predict_batch(flat)?;
-            if actions.len() != total {
-                return Err(Error::model(format!(
-                    "predict_batch returned {} actions for {total} grouped lanes",
-                    actions.len()
-                )));
-            }
-            Ok(actions.into_iter().map(|action| vec![action]).collect())
-        } else {
-            let chunks = predict.predict_chunk_batch(flat, 1)?;
-            if chunks.len() != total {
-                return Err(Error::model(format!(
-                    "predict_chunk_batch returned {} chunks for {total} grouped lanes",
-                    chunks.len()
-                )));
-            }
-            chunks
-                .into_iter()
-                .map(|chunk| -> Result<Vec<Value>> {
-                    Ok(split_chunk(chunk)?.into_iter().take(1).collect())
-                })
-                .collect::<Result<Vec<_>>>()
-        }
-    };
-    dispatch().map_err(|err| annotate_predict_error(err, &input_summary))
+/// One grouped predict group's serving lane, classified once (on the async
+/// side) from the routes map: a spec-less route carries the horizon pinned for
+/// it (there is no [`RouteEntry`] to stamp it on); a spec'd route carries its
+/// entry.
+enum GroupLane {
+    SpecLess { horizon: u32 },
+    Routed { entry: Arc<Mutex<RouteEntry>> },
 }
 
 /// The fused grouped predict (the batched forward across routes), run on a
-/// blocking worker thread. Each group prepares under its own route entry lock
-/// (frame-stack buffers mutate there); prepared groups are bucketed by their
-/// pinned execution horizon (a fused corner call takes one horizon — in
-/// practice one runner pins one value, so this is a single bucket), dispatched
-/// through ONE batched corner call per bucket with lanes concatenated in group
-/// order, split back by lane count, and finished per group with replay frames
-/// intact. Lanes from different routes are independent by the batched-corner
-/// contract, so a cross-route batch is semantically identical to a vectorized
-/// route's lanes. Per-group errors stay per-group; a fused corner failure
-/// reports to every group in its bucket.
+/// blocking worker thread.
+///
+/// A spec-less group has no adapter or chunk semantics of its own and serves
+/// inline through the preserved raw path, matching `predict_chunked`. Each
+/// spec'd group assembles its inputs under a short-lived per-route entry lock
+/// (the frame-stack buffers mutate there); the lock drops before any model
+/// call, so a route repeated within one request re-locks sequentially instead
+/// of self-deadlocking, and a panic can poison at most the route being
+/// assembled. Prepared groups are bucketed by their pinned execution horizon
+/// (in practice one runner pins one value, so this is a single bucket). A
+/// bucket fuses into ONE batched corner call — lanes concatenated in group
+/// order, split back by lane count, finished per group with replay frames
+/// intact — only when [`bucket_fuses`] proves that corner is the one a direct
+/// predict would pick; otherwise the bucket serves per group through the same
+/// dispatch as a direct predict. Lanes from different routes are independent
+/// by the batched-corner contract, so a fused cross-route batch is
+/// semantically identical to a vectorized route's lanes. Per-group errors stay
+/// per-group; a fused corner failure is cloned to every group in its bucket
+/// (variant and recoverability preserved) and annotated with that group's own
+/// assembled-input signature.
 fn predict_grouped_fused(
-    entries: Vec<Option<Arc<Mutex<RouteEntry>>>>,
-    spec_less_horizons: Vec<u32>,
+    lanes: Vec<GroupLane>,
     observations: Vec<ModelObservation>,
     predict: &Arc<dyn PredictFn>,
 ) -> Vec<Result<PredictFrames>> {
-    enum Slot<'a> {
-        Done(Result<PredictFrames>),
-        Ready {
-            guard: std::sync::MutexGuard<'a, RouteEntry>,
-            inputs: Option<Vec<Value>>,
-            num_envs: usize,
-            frames: Option<Result<Vec<Vec<Value>>>>,
-        },
+    struct Prepared {
+        index: usize,
+        inputs: Vec<Value>,
+        config: Arc<RouteConfig>,
+        num_envs: usize,
     }
 
-    let mut slots: Vec<Slot> = Vec::with_capacity(observations.len());
-    for ((entry, horizon), observation) in entries.iter().zip(spec_less_horizons).zip(observations)
-    {
-        match entry {
-            // A spec-less route has no adapter or chunk semantics of its own;
-            // serve it through the preserved raw path (chunked through the
-            // model's chunk corner when a horizon was pinned), matching
-            // `predict_chunked`.
-            None => slots.push(Slot::Done(
+    let mut results: Vec<Option<Result<PredictFrames>>> = Vec::with_capacity(observations.len());
+    let mut prepared: Vec<Prepared> = Vec::new();
+    for (index, (lane, observation)) in lanes.into_iter().zip(observations).enumerate() {
+        match lane {
+            GroupLane::SpecLess { horizon } => results.push(Some(
                 predict.predict_spec_less_chunked(observation, horizon),
             )),
-            Some(entry) => {
-                let mut guard = entry.lock().expect("route entry poisoned");
+            GroupLane::Routed { entry } => {
                 let num_envs = observation.num_envs;
-                match assemble_route_inputs(&mut guard, &observation) {
-                    Ok(inputs) => slots.push(Slot::Ready {
-                        guard,
-                        inputs: Some(inputs),
-                        num_envs,
-                        frames: None,
-                    }),
-                    Err(error) => slots.push(Slot::Done(Err(error))),
+                let assembled = {
+                    let mut guard = entry.lock().expect("route entry poisoned");
+                    assemble_route_inputs(&mut guard, &observation)
+                        .map(|inputs| (inputs, Arc::clone(&guard.config)))
+                };
+                match assembled {
+                    Ok((inputs, config)) => {
+                        results.push(None);
+                        prepared.push(Prepared {
+                            index,
+                            inputs,
+                            config,
+                            num_envs,
+                        });
+                    }
+                    Err(error) => results.push(Some(Err(error))),
                 }
             }
         }
     }
 
-    let mut buckets: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for (index, slot) in slots.iter().enumerate() {
-        if let Slot::Ready { guard, .. } = slot {
-            buckets
-                .entry(guard.config.execution_horizon.max(1))
-                .or_default()
-                .push(index);
+    let mut buckets: BTreeMap<u32, Vec<Prepared>> = BTreeMap::new();
+    for group in prepared {
+        buckets
+            .entry(group.config.execution_horizon.max(1))
+            .or_default()
+            .push(group);
+    }
+
+    for (horizon, groups) in buckets {
+        if bucket_fuses(predict.as_ref(), horizon) {
+            struct FusedGroup {
+                index: usize,
+                lane_count: usize,
+                summary: String,
+                config: Arc<RouteConfig>,
+                num_envs: usize,
+            }
+            let mut flat: Vec<Value> = Vec::new();
+            let mut fused: Vec<FusedGroup> = Vec::with_capacity(groups.len());
+            for group in groups {
+                fused.push(FusedGroup {
+                    index: group.index,
+                    lane_count: group.inputs.len(),
+                    summary: inputs_summary(&group.inputs),
+                    config: group.config,
+                    num_envs: group.num_envs,
+                });
+                flat.extend(group.inputs);
+            }
+            let total = flat.len();
+            match dispatch_corners(predict, flat, horizon, total) {
+                Ok(all_frames) => {
+                    let mut frames = all_frames.into_iter();
+                    for group in fused {
+                        let group_frames: Vec<Vec<Value>> =
+                            frames.by_ref().take(group.lane_count).collect();
+                        results[group.index] = Some(finish_route_frames(
+                            &group.config,
+                            group_frames,
+                            group.num_envs,
+                        ));
+                    }
+                }
+                Err(error) => {
+                    for group in fused {
+                        results[group.index] =
+                            Some(Err(annotate_predict_error(error.clone(), &group.summary)));
+                    }
+                }
+            }
+        } else {
+            for group in groups {
+                results[group.index] = Some(
+                    dispatch_route_corners(predict, group.inputs, horizon, group.num_envs)
+                        .and_then(|raw| finish_route_frames(&group.config, raw, group.num_envs)),
+                );
+            }
         }
     }
 
-    for (horizon, indices) in buckets {
-        let mut flat: Vec<Value> = Vec::new();
-        let mut lane_counts: Vec<usize> = Vec::with_capacity(indices.len());
-        for &index in &indices {
-            let Slot::Ready { inputs, .. } = &mut slots[index] else {
-                unreachable!("bucketed slot is Ready");
-            };
-            let inputs = inputs.take().expect("bucketed group inputs taken once");
-            lane_counts.push(inputs.len());
-            flat.extend(inputs);
-        }
-        let total: usize = lane_counts.iter().sum();
-        match fused_bucket_frames(predict, flat, horizon, total) {
-            Ok(mut all_frames) => {
-                for (&index, count) in indices.iter().zip(lane_counts) {
-                    let rest = all_frames.split_off(count);
-                    let group_frames = std::mem::replace(&mut all_frames, rest);
-                    let Slot::Ready { frames, .. } = &mut slots[index] else {
-                        unreachable!("bucketed slot is Ready");
-                    };
-                    *frames = Some(Ok(group_frames));
-                }
-            }
-            Err(error) => {
-                let message = error.to_string();
-                for &index in &indices {
-                    let Slot::Ready { frames, .. } = &mut slots[index] else {
-                        unreachable!("bucketed slot is Ready");
-                    };
-                    *frames = Some(Err(Error::model(message.clone())));
-                }
-            }
-        }
-    }
-
-    slots
+    results
         .into_iter()
-        .map(|slot| match slot {
-            Slot::Done(result) => result,
-            Slot::Ready {
-                guard,
-                num_envs,
-                frames,
-                ..
-            } => match frames {
-                Some(Ok(lane_raw_steps)) => {
-                    finish_route_frames(&guard.config, lane_raw_steps, num_envs)
-                }
-                Some(Err(error)) => Err(error),
-                None => Err(Error::Internal(
-                    "grouped predict left a prepared group undispatched".to_string(),
-                )),
-            },
+        .map(|result| {
+            result.unwrap_or_else(|| {
+                Err(Error::Internal(
+                    "grouped predict left a prepared group unserved".to_string(),
+                ))
+            })
         })
         .collect()
 }
@@ -611,13 +608,13 @@ impl ModelHandler for AdaptedModelHandler {
         .map_err(|err| Error::Internal(format!("predict task panicked: {err}")))?
     }
 
+    /// Fusion needs a batched corner and the model's permission
+    /// (`allow_fusion`); without both, keep the chunk-preserving sequential
+    /// default — correct per group, just unfused.
     async fn predict_grouped(
         &mut self,
         observations: Vec<ModelObservation>,
     ) -> Vec<Result<PredictFrames>> {
-        // Fusion needs a batched corner and the model's permission
-        // (`allow_fusion`); without both, keep the chunk-preserving sequential
-        // default — correct per group, just unfused.
         let fusable = self.predict.allow_fusion()
             && (self.predict.has_chunk_batch() || self.predict.has_batch());
         if observations.len() <= 1 || !fusable {
@@ -627,30 +624,25 @@ impl ModelHandler for AdaptedModelHandler {
             }
             return results;
         }
-        let entries: Vec<Option<Arc<Mutex<RouteEntry>>>> = observations
+        let lanes: Vec<GroupLane> = observations
             .iter()
-            .map(|observation| self.entry(&observation.route.env_id))
-            .collect();
-        let spec_less_horizons: Vec<u32> = observations
-            .iter()
-            .zip(&entries)
-            .map(|(observation, entry)| match entry {
-                Some(_) => 1,
-                None => self.spec_less_horizon(&observation.route.env_id),
+            .map(|observation| match self.entry(&observation.route.env_id) {
+                Some(entry) => GroupLane::Routed { entry },
+                None => GroupLane::SpecLess {
+                    horizon: self.spec_less_horizon(&observation.route.env_id),
+                },
             })
             .collect();
         let predict = Arc::clone(&self.predict);
         let group_count = observations.len();
-        tokio::task::spawn_blocking(move || {
-            predict_grouped_fused(entries, spec_less_horizons, observations, &predict)
-        })
-        .await
-        .unwrap_or_else(|err| {
-            let message = format!("grouped predict task panicked: {err}");
-            (0..group_count)
-                .map(|_| Err(Error::Internal(message.clone())))
-                .collect()
-        })
+        tokio::task::spawn_blocking(move || predict_grouped_fused(lanes, observations, &predict))
+            .await
+            .unwrap_or_else(|err| {
+                let message = format!("grouped predict task panicked: {err}");
+                (0..group_count)
+                    .map(|_| Err(Error::Internal(message.clone())))
+                    .collect()
+            })
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
@@ -809,7 +801,7 @@ impl ModelRouteSetup for AdaptedRouteSetup {
             config
         };
         let entry = Arc::new(Mutex::new(RouteEntry {
-            config,
+            config: Arc::new(config),
             buffers: FrameBuffers::new(),
         }));
         self.routes
@@ -894,34 +886,55 @@ mod fused_predict_tests {
     use crate::model::types::ModelRouteContext;
 
     /// Counts corner calls and emits `native_chunk`-frame `Value::List` chunks
-    /// from the batched chunk corner (or single Numbers from the plain batched
-    /// corner), so the fused dispatch's corner selection, lane math, and chunk
-    /// capping are observable without an adapter resolver. `short` drops one
-    /// output to exercise the lane-count guard.
+    /// from the chunk corners (or single Numbers from the plain corners), so
+    /// corner selection, lane math, and chunk capping are observable without an
+    /// adapter resolver. `short` drops one batched output to exercise the
+    /// lane-count guard.
     struct CountingPredict {
         batch: bool,
+        chunk: bool,
         chunk_batch: bool,
         native_chunk: usize,
         short: bool,
+        predict_calls: AtomicUsize,
+        chunk_calls: AtomicUsize,
         batch_calls: AtomicUsize,
         chunk_batch_calls: AtomicUsize,
     }
 
     impl CountingPredict {
-        fn new(batch: bool, chunk_batch: bool, native_chunk: usize, short: bool) -> Arc<Self> {
+        fn new(
+            batch: bool,
+            chunk: bool,
+            chunk_batch: bool,
+            native_chunk: usize,
+            short: bool,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 batch,
+                chunk,
                 chunk_batch,
                 native_chunk,
                 short,
+                predict_calls: AtomicUsize::new(0),
+                chunk_calls: AtomicUsize::new(0),
                 batch_calls: AtomicUsize::new(0),
                 chunk_batch_calls: AtomicUsize::new(0),
             })
+        }
+
+        fn native_chunk_value(&self) -> Value {
+            Value::List(
+                (0..self.native_chunk)
+                    .map(|frame| Value::Number(frame as f64))
+                    .collect(),
+            )
         }
     }
 
     impl PredictFn for CountingPredict {
         fn predict(&self, _model_input: Value) -> Result<Value> {
+            self.predict_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Value::Number(0.0))
         }
 
@@ -929,6 +942,15 @@ mod fused_predict_tests {
             Ok((0..observation.num_envs)
                 .map(|_| SpaceValue::Discrete(0))
                 .collect())
+        }
+
+        fn has_chunk(&self) -> bool {
+            self.chunk
+        }
+
+        fn predict_chunk(&self, _model_input: Value, _horizon: u32) -> Result<Option<Value>> {
+            self.chunk_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.native_chunk_value()))
         }
 
         fn has_batch(&self) -> bool {
@@ -952,15 +974,7 @@ mod fused_predict_tests {
         ) -> Result<Vec<Value>> {
             self.chunk_batch_calls.fetch_add(1, Ordering::SeqCst);
             let keep = inputs.len() - usize::from(self.short);
-            Ok((0..keep)
-                .map(|_| {
-                    Value::List(
-                        (0..self.native_chunk)
-                            .map(|frame| Value::Number(frame as f64))
-                            .collect(),
-                    )
-                })
-                .collect())
+            Ok((0..keep).map(|_| self.native_chunk_value()).collect())
         }
 
         fn allow_fusion(&self) -> bool {
@@ -973,11 +987,11 @@ mod fused_predict_tests {
     }
 
     #[test]
-    fn fused_bucket_prefers_chunk_batch_and_caps_to_horizon() {
-        let counting = CountingPredict::new(true, true, 10, false);
+    fn dispatch_prefers_chunk_batch_and_caps_to_horizon() {
+        let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = fused_bucket_frames(&predict, lanes(5), 4, 5).expect("fused frames");
+        let frames = dispatch_route_corners(&predict, lanes(5), 4, 5).expect("frames");
 
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -989,47 +1003,106 @@ mod fused_predict_tests {
     }
 
     #[test]
-    fn fused_bucket_horizon_one_uses_plain_batch() {
-        let counting = CountingPredict::new(true, true, 10, false);
+    fn dispatch_horizon_one_uses_plain_batch() {
+        let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = fused_bucket_frames(&predict, lanes(3), 1, 3).expect("fused frames");
+        let frames = dispatch_route_corners(&predict, lanes(3), 1, 3).expect("frames");
 
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
         assert!(frames.iter().all(|lane| lane.len() == 1));
     }
 
+    /// The chunk-preserving corner precedence a declined fusion falls back to:
+    /// a chunk + batch model (no batched chunk corner) at horizon > 1 keeps its
+    /// per-lane chunk corner and full replay frames.
     #[test]
-    fn fused_bucket_horizon_one_falls_back_to_chunk_batch() {
-        let counting = CountingPredict::new(false, true, 10, false);
+    fn dispatch_horizon_gt_one_prefers_per_lane_chunk_over_batch() {
+        let counting = CountingPredict::new(true, true, false, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = fused_bucket_frames(&predict, lanes(2), 1, 2).expect("fused frames");
+        let frames = dispatch_route_corners(&predict, lanes(3), 4, 3).expect("frames");
 
-        assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(counting.chunk_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
         assert!(
-            frames.iter().all(|lane| lane.len() == 1),
-            "a 1-frame prefix of the native chunk stands in for predict_batch"
+            frames.iter().all(|lane| lane.len() == 4),
+            "per-lane chunks keep the horizon prefix"
         );
     }
 
     #[test]
-    fn fused_bucket_reports_lane_count_mismatch() {
-        let counting = CountingPredict::new(true, true, 10, true);
+    fn dispatch_reports_lane_count_mismatch() {
+        let counting = CountingPredict::new(true, false, true, 10, true);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let error = fused_bucket_frames(&predict, lanes(4), 4, 4).expect_err("short output fails");
+        let error = dispatch_route_corners(&predict, lanes(4), 4, 4).expect_err("short fails");
 
         assert!(
-            error.to_string().contains("grouped lanes"),
+            error.to_string().contains("lanes"),
             "unexpected error: {error}"
         );
     }
 
+    /// The behavior-parity fusion gate: a bucket fuses ONLY when the batched
+    /// corner it would run is the corner a direct predict picks, so grouping
+    /// never changes which model function runs.
+    #[test]
+    fn bucket_fuses_only_when_the_direct_corner_is_batched() {
+        let chunk_batch = CountingPredict::new(true, true, true, 10, false);
+        assert!(bucket_fuses(chunk_batch.as_ref(), 4));
+        assert!(bucket_fuses(chunk_batch.as_ref(), 1));
+
+        let chunk_and_batch = CountingPredict::new(true, true, false, 10, false);
+        assert!(
+            !bucket_fuses(chunk_and_batch.as_ref(), 4),
+            "direct picks the per-lane chunk corner; fusing would drop chunking"
+        );
+        assert!(bucket_fuses(chunk_and_batch.as_ref(), 1));
+
+        let batch_only = CountingPredict::new(true, false, false, 10, false);
+        assert!(
+            bucket_fuses(batch_only.as_ref(), 4),
+            "direct already degrades to single-step batch (warned at configure)"
+        );
+
+        let chunk_batch_only = CountingPredict::new(false, false, true, 10, false);
+        assert!(
+            !bucket_fuses(chunk_batch_only.as_ref(), 1),
+            "direct picks the per-lane predict loop at horizon 1"
+        );
+        assert!(bucket_fuses(chunk_batch_only.as_ref(), 4));
+
+        let per_lane_only = CountingPredict::new(false, false, false, 10, false);
+        assert!(!bucket_fuses(per_lane_only.as_ref(), 1));
+        assert!(!bucket_fuses(per_lane_only.as_ref(), 4));
+    }
+
+    /// A fused corner failure is cloned per group (not rebuilt from its
+    /// message), so the model's recoverable flag survives to the wire and the
+    /// annotation carries the group's own input signature.
+    #[test]
+    fn fused_error_broadcast_preserves_recoverability() {
+        let error = Error::model_recoverable("transient OOM, retry");
+
+        let annotated = annotate_predict_error(error.clone(), "sig: float32[8]; lanes: 2");
+
+        assert!(annotated.is_recoverable(), "recoverable flag must survive");
+        match annotated {
+            Error::Model(model) => assert_eq!(
+                model.message,
+                "transient OOM, retry\nsig: float32[8]; lanes: 2"
+            ),
+            other => panic!("expected Error::Model, got {other:?}"),
+        }
+    }
+
+    /// Spec-less routes bypass the engine corners entirely: each group serves
+    /// through the preserved raw path, one result per group, in order.
     #[tokio::test]
     async fn grouped_predict_serves_spec_less_groups_per_group() {
-        let counting = CountingPredict::new(true, true, 10, false);
+        let counting = CountingPredict::new(true, false, true, 10, false);
         let mut handler =
             AdaptedModelHandler::new(Arc::clone(&counting) as Arc<dyn PredictFn>, None);
         let observations = (0..3)
@@ -1053,7 +1126,6 @@ mod fused_predict_tests {
             assert_eq!(frames.actions.len(), 1);
             assert!(frames.replay.is_empty());
         }
-        // Spec-less routes bypass the engine corners entirely.
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
     }

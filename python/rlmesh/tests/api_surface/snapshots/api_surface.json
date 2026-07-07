@@ -168,6 +168,10 @@
       "Model": {
         "kind": "class",
         "members": {
+          "allow_fusion": {
+            "kind": "attribute",
+            "signature": "allow_fusion: bool"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -1890,6 +1894,10 @@
       "Model": {
         "kind": "class",
         "members": {
+          "allow_fusion": {
+            "kind": "attribute",
+            "signature": "allow_fusion: bool"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -2444,6 +2452,10 @@
       "Model": {
         "kind": "class",
         "members": {
+          "allow_fusion": {
+            "kind": "attribute",
+            "signature": "allow_fusion: bool"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"
@@ -3615,6 +3627,10 @@
       "Model": {
         "kind": "class",
         "members": {
+          "allow_fusion": {
+            "kind": "attribute",
+            "signature": "allow_fusion: bool"
+          },
           "close": {
             "kind": "function",
             "signature": "close() -> None"

@@ -405,6 +405,7 @@ where
             reset_ok.endpoint_total_ns,
             reset_request_bytes,
             reset_ok.response.encoded_len() as u64,
+            None,
         );
         fan_out_event!(
             self,
@@ -506,14 +507,8 @@ where
                     action_msg.endpoint_total_ns,
                     predict_request_bytes,
                     action_msg.response.encoded_len() as u64,
+                    action_msg.group_size,
                 );
-                if let Some(group) = action_msg.group_size {
-                    lock_agg(telemetry).record(Sample::count(
-                        SRC_PREDICT,
-                        metrics::GROUP_SIZE,
-                        group,
-                    ));
-                }
                 if action_msg.response.actions.is_empty() {
                     return Err(RuntimeError::Protocol(format!(
                         "model endpoint {} returned a predict response with no actions",
@@ -587,6 +582,7 @@ where
                 step_ok.endpoint_total_ns,
                 step_request_bytes,
                 step_ok.response.encoded_len() as u64,
+                None,
             );
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
 
@@ -802,6 +798,7 @@ where
                             reset_ok.endpoint_total_ns,
                             reset_request_bytes,
                             reset_ok.response.encoded_len() as u64,
+                            None,
                         );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
@@ -1230,10 +1227,11 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Record the four per-op telemetry samples — RPC latency, the optional
-/// endpoint-local duration the peer stamped, and request + response wire bytes —
-/// under a single lock. Every driver op (predict, step, reset) records this same
-/// shape, so they all route through here.
+/// Record the per-op telemetry samples — RPC latency, the optional
+/// endpoint-local duration the peer stamped, request + response wire bytes, and
+/// the optional fused-group size a grouping transport reported — under a single
+/// lock. Every driver op (predict, step, reset) records this same shape, so
+/// they all route through here.
 fn record_op(
     telemetry: &Mutex<Aggregator>,
     src: Source,
@@ -1241,6 +1239,7 @@ fn record_op(
     endpoint_total_ns: Option<u64>,
     request_bytes: u64,
     response_bytes: u64,
+    group_size: Option<u64>,
 ) {
     let mut agg = lock_agg(telemetry);
     agg.record(Sample::dur(src, metrics::RPC_TOTAL, rpc));
@@ -1253,6 +1252,9 @@ fn record_op(
     }
     agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
     agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));
+    if let Some(group) = group_size {
+        agg.record(Sample::count(src, metrics::GROUP_SIZE, group));
+    }
 }
 
 /// Background wall-clock telemetry emitter. On a fixed real-time cadence it

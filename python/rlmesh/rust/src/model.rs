@@ -61,6 +61,12 @@ struct PyPredict {
     /// Optional batched chunk corner (`predict_chunk_batch`): a list of N inputs ->
     /// N action chunks, in one call.
     predict_chunk_batch_fn: Option<Py<PyAny>>,
+    /// The author's fusion permission (`Model.allow_fusion`, default true): the
+    /// SDK's batched-corner glue (`tree_stack` over the batch axis) fuses
+    /// independent lanes by construction, but the forward body it wraps is the
+    /// author's own — one written against same-route, fixed-size batches (a
+    /// shape-pinned jit trace, per-batch statistics) opts out here.
+    allow_fusion: bool,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
 }
@@ -137,11 +143,8 @@ impl PredictFn for PyPredict {
     }
 
     fn allow_fusion(&self) -> bool {
-        // An SDK-built model's batched corners fuse independent lanes by
-        // construction (`tree_stack` over the batch axis), so a batched corner's
-        // presence is the fusion permission. Hand-written Rust `PredictFn`s keep
-        // the conservative default-off.
-        self.predict_batch_fn.is_some() || self.predict_chunk_batch_fn.is_some()
+        self.allow_fusion
+            && (self.predict_batch_fn.is_some() || self.predict_chunk_batch_fn.is_some())
     }
 
     fn predict_spec_less(&self, observation: ModelObservation) -> rlmesh::Result<Vec<SpaceValue>> {
@@ -498,6 +501,7 @@ pub struct PyModel {
     predict_chunk_fn: Option<Py<PyAny>>,
     predict_batch_fn: Option<Py<PyAny>>,
     predict_chunk_batch_fn: Option<Py<PyAny>>,
+    allow_fusion: bool,
     configure_fn: Option<Py<PyAny>>,
     on_episode_end: Option<Py<PyAny>>,
     on_close: Option<Py<PyAny>>,
@@ -517,6 +521,7 @@ impl PyModel {
                 .predict_chunk_batch_fn
                 .as_ref()
                 .map(|cb| cb.clone_ref(py)),
+            allow_fusion: self.allow_fusion,
             on_episode_end: self.on_episode_end.as_ref().map(|cb| cb.clone_ref(py)),
             on_close: self.on_close.as_ref().map(|cb| cb.clone_ref(py)),
         });
@@ -532,7 +537,7 @@ impl PyModel {
 #[pymethods]
 impl PyModel {
     #[new]
-    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None))]
+    #[pyo3(signature = (predict_fn, configure_fn=None, on_episode_end=None, on_close=None, predict_chunk_fn=None, predict_batch_fn=None, predict_chunk_batch_fn=None, allow_fusion=true))]
     #[allow(clippy::too_many_arguments)] // a PyO3 #[new] ctor maps each arg to a Python kwarg
     fn new(
         predict_fn: Py<PyAny>,
@@ -542,6 +547,7 @@ impl PyModel {
         predict_chunk_fn: Option<Py<PyAny>>,
         predict_batch_fn: Option<Py<PyAny>>,
         predict_chunk_batch_fn: Option<Py<PyAny>>,
+        allow_fusion: bool,
     ) -> PyResult<Self> {
         init_tracing("model_worker");
         let profiler = ProfileCollector::new("model_worker");
@@ -551,6 +557,7 @@ impl PyModel {
             predict_chunk_fn,
             predict_batch_fn,
             predict_chunk_batch_fn,
+            allow_fusion,
             configure_fn,
             on_episode_end,
             on_close,
@@ -660,7 +667,7 @@ import collections.abc
 import typing
 
 class PyModel:
-    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None) -> None: ...
+    def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None, allow_fusion: bool = True) -> None: ...
     def run_local(self, env_address: str, execution_horizon: int = 1) -> list[dict[str, typing.Any]]: ...
     def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> list[dict[str, typing.Any]]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...

@@ -295,6 +295,15 @@ class ModelBase(Generic[ObsT, ActT]):
     #: yourself. ``None`` (the default) leaves obs as decoded; ignored by the numpy /
     #: raw-Value model (no device concept).
     device: object | None = None
+    #: Whether the runtime may FUSE this model's batched corner across routes: a
+    #: grouped predict then concatenates lanes from *different* envs into one
+    #: :meth:`predict_batch` / :meth:`predict_chunk_batch` call (one forward for
+    #: the whole group), so the batch size varies with what the control plane
+    #: grouped. On (the default) suits any row-independent forward. Set ``False``
+    #: when your batched forward assumes same-route, fixed-size batches -- a
+    #: shape-pinned jit/compile trace, per-batch statistics, batch-position
+    #: logic -- and grouped predicts will run per route instead.
+    allow_fusion: bool = True
 
     @classmethod
     def describe(cls) -> dict[str, Any]:
@@ -675,6 +684,7 @@ class ModelBase(Generic[ObsT, ActT]):
             predict_chunk_fn=predict_chunk_neutral,
             predict_batch_fn=predict_batch_neutral,
             predict_chunk_batch_fn=predict_chunk_batch_neutral,
+            allow_fusion=self.allow_fusion,
         )
         self._worker = worker
         return worker

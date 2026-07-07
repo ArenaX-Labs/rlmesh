@@ -2002,11 +2002,11 @@ impl ModelHandler for ChunkedFramesHandler {
     }
 }
 
+/// Grouping must compose with action chunking: each group's wire response
+/// carries its full ordered frame list (frame 0 + replay), exactly as a
+/// direct predict would. The old grouped path discarded the replay frames.
 #[tokio::test]
 async fn grouped_predict_carries_chunk_replay_frames() {
-    // Grouping must compose with action chunking: each group's wire response
-    // carries its full ordered frame list (frame 0 + replay), exactly as a
-    // direct predict would. The old grouped path discarded the replay frames.
     let handler = Arc::new(Mutex::new(ChunkedFramesHandler));
     let configs = Arc::new(Mutex::new(HashMap::from([
         (

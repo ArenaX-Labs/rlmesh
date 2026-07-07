@@ -145,8 +145,8 @@ pub struct RouteConfig {
     pub(crate) adapter: ResolvedAdapter,
     pub(crate) observation_space: SpaceSpec,
     pub(crate) action_space: SpaceSpec,
-    pub(crate) customs: Box<dyn CustomTransform + Send>,
-    pub(crate) encodings: Box<dyn EncodingTransform + Send>,
+    pub(crate) customs: Box<dyn CustomTransform + Send + Sync>,
+    pub(crate) encodings: Box<dyn EncodingTransform + Send + Sync>,
     /// Runtime-chosen execution horizon: how many actions of each predicted chunk the
     /// runtime executes before re-planning, set by the engine from the `ResolveAdapter`
     /// pin (1 = no chunking). Defaulted to 1 by [`new`](RouteConfig::new); the resolver
@@ -165,8 +165,8 @@ impl RouteConfig {
         adapter: ResolvedAdapter,
         observation_space: SpaceSpec,
         action_space: SpaceSpec,
-        customs: Box<dyn CustomTransform + Send>,
-        encodings: Box<dyn EncodingTransform + Send>,
+        customs: Box<dyn CustomTransform + Send + Sync>,
+        encodings: Box<dyn EncodingTransform + Send + Sync>,
     ) -> Self {
         Self {
             adapter,
