@@ -16,18 +16,16 @@ dist="$repo_root/python/rlmesh/dist"
 venv="$repo_root/target/floors-venv"
 
 numpy_floor="1.22.4"
-# Declared install floor is torch 1.11 (first cp310 wheels + from_dlpack),
-# but wheels older than 1.13 fail to dlopen on glibc >= 2.41 ("cannot
-# enable executable stack"), so the oldest *executable* floor here is 1.13.
 torch_floor="1.13.1"
 jax_floor="0.4.24"
 ml_dtypes_floor="0.2.0"
 
-if [ "$(uname -s)" != Linux ]; then
-  # torch 1.11 CPU wheels for the floor matrix come from the linux-only
-  # +cpu index; macOS would need a different torch pin.
-  echo "error: test:python:floors currently supports Linux hosts only" >&2
-  exit 1
+if [ "$(uname -s)" = Linux ]; then
+  torch_pin="torch==${torch_floor}+cpu"
+  torch_index=(--index-url https://download.pytorch.org/whl/cpu)
+else
+  torch_pin="torch==${torch_floor}"
+  torch_index=()
 fi
 
 # 1. Locate or build the cp310 wheel.
@@ -51,10 +49,10 @@ rm -rf "$venv"
 uv venv --python "$python310" "$venv"
 py="$venv/bin/python"
 
-# 3. torch alone from the CPU index (the PyPI 1.11 wheel bundles CUDA).
+# 3. torch alone from its platform index (the PyPI linux wheels bundle CUDA).
 uv pip install --no-config --python "$py" \
-  --index-url https://download.pytorch.org/whl/cpu \
-  "torch==${torch_floor}+cpu"
+  ${torch_index[@]+"${torch_index[@]}"} \
+  "$torch_pin"
 
 # 4. Everything else from PyPI. jax <= 0.4.30 does not depend on jaxlib,
 # hence the explicit pin.
@@ -93,7 +91,7 @@ if [ "${usage_perf:-false}" = true ]; then
   mkdir -p target/python-validation
   "$py" -m rlmesh_system_fixtures.artifacts \
     --environment floors-py310 --python-version 3.10 --tier basic \
-    --dependency "numpy==${numpy_floor}" --dependency "torch==${torch_floor}+cpu" \
+    --dependency "numpy==${numpy_floor}" --dependency "$torch_pin" \
     --dependency "jax==${jax_floor}" \
     --artifact tensor-numpy-view --artifact tensor-export-copy \
     --artifact tensor-numpy-encode --artifact tensor-dlpack-import \
