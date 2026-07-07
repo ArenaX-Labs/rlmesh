@@ -1639,6 +1639,7 @@ dependencies = [
  "rlmesh-proto",
  "rlmesh-runtime",
  "rlmesh-spaces",
+ "serde_json",
  "tokio",
  "tokio-stream",
  "tokio-util",

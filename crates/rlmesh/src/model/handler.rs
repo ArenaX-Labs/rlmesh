@@ -49,6 +49,7 @@ pub trait ModelRouteSetup: Send + Sync {
 /// WITHOUT re-calling the model (action chunking): `replay[j]` is the per-lane
 /// actions for future step `j + 1` (each `len == num_envs`). An empty `replay`
 /// means the model is not chunking — one action this step, re-plan next step.
+#[derive(Debug)]
 pub struct PredictFrames {
     /// Frame 0: one action per lane, applied this step.
     pub actions: Vec<spaces::SpaceValue>,

@@ -35,6 +35,7 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tonic-health = { workspace = true }
 tracing = { workspace = true }

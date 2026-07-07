@@ -1130,3 +1130,386 @@ mod fused_predict_tests {
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[cfg(test)]
+mod fused_route_tests {
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use rlmesh_adapters::v1::{EnvTags, ModelSpec, NoCustoms, NoEncodings, SpaceView, resolve};
+
+    use super::*;
+    use crate::model::types::ModelRouteContext;
+    use crate::spaces::{self, DType, Tensor};
+
+    const ENV_TAGS: &str = r#"{
+        "observation": {"state": {"type": "state", "role": "proprio/gripper"}},
+        "action": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+    const MODEL_SPEC: &str = r#"{
+        "input": {"state": {"type": "state", "container": "list", "dtype": "float32",
+                            "components": [{"role": "proprio/gripper", "dim": 1}]}},
+        "output": {"components": [{"role": "action/gripper", "dim": 1, "range": [0.0, 10.0]}]}
+    }"#;
+
+    /// Resolves every route through the one ENV_TAGS x MODEL_SPEC pairing — the
+    /// minimal real spec'd route (one gripper state in, one gripper action out),
+    /// so grouped predicts exercise assemble -> fuse -> split -> finish against
+    /// genuine adapter plans instead of hand-built frames.
+    struct TagResolver;
+
+    #[async_trait]
+    impl RouteResolver for TagResolver {
+        async fn resolve(
+            &self,
+            _route_key: &str,
+            env_contract: &EnvContract,
+        ) -> Result<Option<RouteConfig>> {
+            let tags: EnvTags = serde_json::from_str(ENV_TAGS).expect("env tags parse");
+            let spec: ModelSpec = serde_json::from_str(MODEL_SPEC).expect("model spec parse");
+            let obs = env_contract
+                .observation_space
+                .clone()
+                .expect("contract obs space");
+            let action = env_contract
+                .action_space
+                .clone()
+                .expect("contract action space");
+            let adapter = resolve(
+                &tags,
+                &SpaceView::from(&obs),
+                &SpaceView::from(&action),
+                &spec,
+                true,
+            )
+            .map_err(|err| Error::model(err.message))?;
+            Ok(Some(RouteConfig::new(
+                adapter,
+                obs,
+                action,
+                Box::new(NoCustoms),
+                Box::new(NoEncodings),
+            )))
+        }
+    }
+
+    /// Echoes each lane's state value back as its action (lane-identifying, so a
+    /// split-back misalignment returns the wrong route's actions and fails the
+    /// equality asserts). The chunk corner emits `CHUNK_FRAMES` frames of
+    /// `state + 0.125 * frame`; `fail_recoverable` makes the batched corner
+    /// return a recoverable model error instead.
+    struct EchoModel {
+        chunk: bool,
+        fail_recoverable: bool,
+        predict_calls: AtomicUsize,
+        chunk_calls: AtomicUsize,
+        batch_calls: AtomicUsize,
+    }
+
+    const CHUNK_FRAMES: usize = 6;
+
+    impl EchoModel {
+        fn new(chunk: bool, fail_recoverable: bool) -> Arc<Self> {
+            Arc::new(Self {
+                chunk,
+                fail_recoverable,
+                predict_calls: AtomicUsize::new(0),
+                chunk_calls: AtomicUsize::new(0),
+                batch_calls: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    /// The first number reachable in the assembled input tree (the echoed state).
+    fn state_number(input: &Value) -> f64 {
+        match input {
+            Value::Number(n) => *n,
+            Value::List(items) => items.first().map(state_number).unwrap_or(0.0),
+            Value::Map(map) => map.values().next().map(state_number).unwrap_or(0.0),
+            _ => 0.0,
+        }
+    }
+
+    fn action_value(state: f64) -> Value {
+        Value::List(vec![Value::Number(state)])
+    }
+
+    impl PredictFn for EchoModel {
+        fn predict(&self, model_input: Value) -> Result<Value> {
+            self.predict_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(action_value(state_number(&model_input)))
+        }
+
+        fn predict_spec_less(&self, _observation: ModelObservation) -> Result<Vec<SpaceValue>> {
+            Err(Error::model("EchoModel serves spec'd routes only"))
+        }
+
+        fn has_chunk(&self) -> bool {
+            self.chunk
+        }
+
+        fn predict_chunk(&self, model_input: Value, _horizon: u32) -> Result<Option<Value>> {
+            self.chunk_calls.fetch_add(1, Ordering::SeqCst);
+            let state = state_number(&model_input);
+            Ok(Some(Value::List(
+                (0..CHUNK_FRAMES)
+                    .map(|frame| action_value(state + 0.125 * frame as f64))
+                    .collect(),
+            )))
+        }
+
+        fn has_batch(&self) -> bool {
+            true
+        }
+
+        fn predict_batch(&self, inputs: Vec<Value>) -> Result<Vec<Value>> {
+            self.batch_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_recoverable {
+                return Err(Error::model_recoverable("transient forward failure"));
+            }
+            Ok(inputs
+                .iter()
+                .map(|input| action_value(state_number(input)))
+                .collect())
+        }
+
+        fn allow_fusion(&self) -> bool {
+            true
+        }
+    }
+
+    fn obs_space() -> spaces::SpaceSpec {
+        spaces::spaces::DictSpaceBuilder::new()
+            .insert(
+                "state",
+                spaces::spaces::BoxSpaceBuilder::scalar(0.0, 10.0, vec![1])
+                    .dtype(DType::Float32)
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn action_space() -> spaces::SpaceSpec {
+        spaces::spaces::BoxSpaceBuilder::scalar(0.0, 10.0, vec![1])
+            .dtype(DType::Float32)
+            .build()
+            .unwrap()
+    }
+
+    fn contract(env_id: &str, num_envs: u32) -> spaces::EnvContract {
+        spaces::EnvContract {
+            id: env_id.to_string(),
+            observation_space: Some(obs_space()),
+            action_space: Some(action_space()),
+            metadata: None,
+            render_mode: String::new(),
+            num_envs,
+            autoreset_mode: Default::default(),
+        }
+    }
+
+    fn box_f32(value: f32) -> SpaceValue {
+        SpaceValue::Box(
+            Tensor::from_vec(value.to_le_bytes().to_vec(), vec![1], DType::Float32).unwrap(),
+        )
+    }
+
+    /// A grouped-member observation for `env_id`: one lane per value, each lane's
+    /// state = the value, episode ids derived from the values (unique per lane).
+    fn grouped_obs(
+        env_id: &str,
+        values: &[f32],
+        env_contract: &Arc<spaces::EnvContract>,
+    ) -> ModelObservation {
+        let lanes: Vec<SpaceValue> = values
+            .iter()
+            .map(|value| {
+                SpaceValue::Dict(BTreeMap::from([(
+                    "state".to_string(),
+                    box_f32(*value).clone(),
+                )]))
+            })
+            .collect();
+        let wire = rlmesh_grpc::wire::encode_batched_partial_values(&lanes, &obs_space()).unwrap();
+        ModelObservation {
+            observation: Some(wire.leaves),
+            route: ModelRouteContext {
+                env_id: env_id.to_string(),
+                episode_ids: values
+                    .iter()
+                    .map(|value| format!("{env_id}-ep-{value}"))
+                    .collect(),
+                ..Default::default()
+            },
+            num_envs: values.len(),
+            env_contract: Some(Arc::clone(env_contract)),
+        }
+    }
+
+    /// Build a handler with real resolved routes (one per `(env_id, lanes)`),
+    /// pinning `horizon` on each at resolve.
+    async fn spec_handler(
+        predict: Arc<dyn PredictFn>,
+        envs: &[(&str, u32)],
+        horizon: u32,
+    ) -> (AdaptedModelHandler, Vec<Arc<spaces::EnvContract>>) {
+        let handler = AdaptedModelHandler::new(predict, Some(Arc::new(TagResolver)));
+        let setup = handler.route_setup().expect("resolver-backed route setup");
+        let mut contracts = Vec::with_capacity(envs.len());
+        for (env_id, lanes) in envs {
+            let env_contract = contract(env_id, *lanes);
+            setup
+                .resolve_adapter(env_id, &env_contract, horizon)
+                .await
+                .expect("route resolves");
+            contracts.push(Arc::new(env_contract));
+        }
+        (handler, contracts)
+    }
+
+    #[tokio::test]
+    async fn fused_grouped_predict_runs_one_forward_and_splits_actions_per_group() {
+        let echo = EchoModel::new(false, false);
+        let (mut handler, contracts) = spec_handler(
+            Arc::clone(&echo) as Arc<dyn PredictFn>,
+            &[("env-a", 2), ("env-b", 3)],
+            1,
+        )
+        .await;
+        let batch_baseline = echo.batch_calls.load(Ordering::SeqCst);
+
+        let results = handler
+            .predict_grouped(vec![
+                grouped_obs("env-a", &[1.0, 2.0], &contracts[0]),
+                grouped_obs("env-b", &[3.0, 4.0, 5.0], &contracts[1]),
+            ])
+            .await;
+
+        assert_eq!(
+            echo.batch_calls.load(Ordering::SeqCst) - batch_baseline,
+            1,
+            "the whole group rides ONE fused forward"
+        );
+        assert_eq!(results.len(), 2);
+        let a = results[0].as_ref().expect("env-a serves");
+        assert_eq!(
+            a.actions,
+            vec![box_f32(1.0), box_f32(2.0)],
+            "env-a gets its own lanes back"
+        );
+        assert!(a.replay.is_empty());
+        let b = results[1].as_ref().expect("env-b serves");
+        assert_eq!(
+            b.actions,
+            vec![box_f32(3.0), box_f32(4.0), box_f32(5.0)],
+            "env-b gets its own lanes back"
+        );
+        assert!(b.replay.is_empty());
+    }
+
+    #[tokio::test]
+    async fn grouped_chunk_and_batch_model_keeps_chunking_when_grouped() {
+        let echo = EchoModel::new(true, false);
+        let (mut handler, contracts) = spec_handler(
+            Arc::clone(&echo) as Arc<dyn PredictFn>,
+            &[("env-a", 2), ("env-b", 3)],
+            4,
+        )
+        .await;
+        let batch_baseline = echo.batch_calls.load(Ordering::SeqCst);
+        let chunk_baseline = echo.chunk_calls.load(Ordering::SeqCst);
+
+        let results = handler
+            .predict_grouped(vec![
+                grouped_obs("env-a", &[1.0, 2.0], &contracts[0]),
+                grouped_obs("env-b", &[3.0, 4.0, 5.0], &contracts[1]),
+            ])
+            .await;
+
+        assert_eq!(
+            echo.batch_calls.load(Ordering::SeqCst) - batch_baseline,
+            0,
+            "the parity gate declines fusion: batching would drop chunking"
+        );
+        assert_eq!(
+            echo.chunk_calls.load(Ordering::SeqCst) - chunk_baseline,
+            5,
+            "every lane runs the per-lane chunk corner, exactly as ungrouped"
+        );
+        for (result, lane_states) in results.iter().zip([vec![1.0f32, 2.0], vec![3.0, 4.0, 5.0]]) {
+            let frames = result.as_ref().expect("group serves chunked");
+            let frame0: Vec<SpaceValue> = lane_states.iter().map(|s| box_f32(*s)).collect();
+            assert_eq!(frames.actions, frame0);
+            assert_eq!(frames.replay.len(), 3, "horizon 4 = frame 0 + 3 replays");
+            for (step, row) in frames.replay.iter().enumerate() {
+                let expected: Vec<SpaceValue> = lane_states
+                    .iter()
+                    .map(|s| box_f32(s + 0.125 * (step as f32 + 1.0)))
+                    .collect();
+                assert_eq!(row, &expected, "replay step {step} keeps lane order");
+            }
+        }
+    }
+
+    /// Regression for the grouped-fusion deadlock: the fused path once held every
+    /// route's entry guard across the whole call, so a request repeating one
+    /// env_id re-locked the same mutex on one thread and hung forever. Locks are
+    /// now short-lived; a duplicate route must simply serve twice.
+    #[tokio::test]
+    async fn grouped_predict_with_duplicate_env_completes() {
+        let echo = EchoModel::new(false, false);
+        let (mut handler, contracts) =
+            spec_handler(Arc::clone(&echo) as Arc<dyn PredictFn>, &[("env-a", 2)], 1).await;
+
+        let results = tokio::time::timeout(
+            Duration::from_secs(10),
+            handler.predict_grouped(vec![
+                grouped_obs("env-a", &[1.0, 2.0], &contracts[0]),
+                grouped_obs("env-a", &[3.0, 4.0], &contracts[0]),
+            ]),
+        )
+        .await
+        .expect("a grouped predict repeating an env must not deadlock");
+
+        assert_eq!(results.len(), 2);
+        let first = results[0].as_ref().expect("first duplicate serves");
+        assert_eq!(first.actions, vec![box_f32(1.0), box_f32(2.0)]);
+        let second = results[1].as_ref().expect("second duplicate serves");
+        assert_eq!(second.actions, vec![box_f32(3.0), box_f32(4.0)]);
+    }
+
+    #[tokio::test]
+    async fn fused_failure_reports_recoverable_error_with_each_groups_own_signature() {
+        let echo = EchoModel::new(false, true);
+        let (mut handler, contracts) = spec_handler(
+            Arc::clone(&echo) as Arc<dyn PredictFn>,
+            &[("env-a", 2), ("env-b", 3)],
+            1,
+        )
+        .await;
+
+        let results = handler
+            .predict_grouped(vec![
+                grouped_obs("env-a", &[1.0, 2.0], &contracts[0]),
+                grouped_obs("env-b", &[3.0, 4.0, 5.0], &contracts[1]),
+            ])
+            .await;
+
+        for (result, lanes) in results.iter().zip([2usize, 3]) {
+            let error = result
+                .as_ref()
+                .expect_err("fused failure reaches the group");
+            assert!(
+                error.is_recoverable(),
+                "the model's recoverable flag survives the fused broadcast: {error}"
+            );
+            assert!(
+                error.to_string().contains(&format!("lanes: {lanes}")),
+                "each group is annotated with its OWN input signature, got: {error}"
+            );
+        }
+    }
+}

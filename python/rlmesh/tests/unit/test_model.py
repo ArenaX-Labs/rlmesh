@@ -653,3 +653,35 @@ def test_model_construction_builds_no_native_worker() -> None:
     assert model._worker is None
     assert model._install_worker() is model._worker
     assert model._install_worker() is model._worker  # cached, built once
+
+
+def test_allow_fusion_reaches_the_native_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Model.allow_fusion`` is the author's cross-route fusion permission: it
+    must reach the native ``PyModel`` worker as the ``allow_fusion`` kwarg --
+    True by default, False when the author opts a shape-pinned batched forward
+    out (grouped predicts then serve per route)."""
+    import rlmesh
+    import rlmesh._load_native as load_native_mod
+
+    captured: dict[str, Any] = {}
+
+    def fake_worker(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(load_native_mod, "load_native", lambda name: fake_worker)
+
+    rlmesh.Model(lambda obs: 0)._install_worker()
+    assert captured["allow_fusion"] is True
+
+    class OptedOut(rlmesh.Model):
+        allow_fusion = False
+
+        def predict(self, observation: object) -> object:
+            return 0
+
+    captured.clear()
+    OptedOut()._install_worker()
+    assert captured["allow_fusion"] is False
