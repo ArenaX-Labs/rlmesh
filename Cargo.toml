@@ -85,6 +85,14 @@ pyo3-stub-gen-derive = "0.23"
 
 # CLI
 clap = "4.6"
+keyring = { version = "3", features = [
+  "apple-native",
+  "windows-native",
+  "sync-secret-service",
+  "vendored",
+] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+toml = "0.9"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

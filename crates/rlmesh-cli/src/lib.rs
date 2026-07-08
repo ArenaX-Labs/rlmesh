@@ -1,14 +1,21 @@
 //! The `rlmesh` command-line binary.
 //!
-//! [`run_cli`] parses argv with clap and dispatches the available subcommands.
-//! Today that is just `version`, which reports this build's version, its
-//! workflow edition (the commit-stamped build identity, so two builds sharing a
-//! package version stay distinguishable), and the distribution it shipped in
-//! (read from the `RLMESH_CLI_DISTRIBUTION` environment variable, defaulting to
-//! `standalone`) so a wheel- or container-bundled CLI can identify how it was
-//! packaged.
+//! [`run_cli`] parses argv with clap and dispatches the available subcommands:
+//! `version` reports this build's version, its workflow edition (the
+//! commit-stamped build identity, so two builds sharing a package version stay
+//! distinguishable), and the distribution it shipped in (read from the
+//! `RLMESH_CLI_DISTRIBUTION` environment variable, defaulting to `standalone`)
+//! so a wheel- or container-bundled CLI can identify how it was packaged;
+//! `login`/`logout` sign in to and out of a managed platform via the OAuth
+//! device flow; `whoami` reports the active profile's platform and sign-in
+//! state, verifying a stored credential against the platform when one exists;
+//! `profile` manages the AWS-CLI-style
+//! named profiles those commands act on (each remembering its own platform and
+//! credential); and `registry login` authenticates docker with the platform's
+//! image registry (see [`platform`]).
 
 mod cli;
+mod platform;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
@@ -48,6 +55,17 @@ async fn run_cli_with_writers(
 
     match cli.command {
         Command::Version => version(stdout),
+        Command::Login(args) => platform::login(&args, stdout).await,
+        Command::Logout(args) => platform::logout(&args, stdout),
+        Command::Whoami(args) => platform::whoami(&args, stdout).await,
+        Command::Registry(args) => match args.command {
+            cli::RegistryCommand::Login(args) => platform::registry_login(&args, stdout).await,
+        },
+        Command::Profile(args) => match args.command {
+            cli::ProfileCommand::List => platform::profile_list(stdout),
+            cli::ProfileCommand::Use { name } => platform::profile_use(&name, stdout),
+            cli::ProfileCommand::Remove { name } => platform::profile_remove(&name, stdout),
+        },
         Command::Viewtest(args) => viewtest::run(&args, stderr),
     }
 }
@@ -106,6 +124,11 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
         assert!(stdout.contains("version"));
+        assert!(stdout.contains("login"));
+        assert!(stdout.contains("logout"));
+        assert!(stdout.contains("registry"));
+        assert!(stdout.contains("profile"));
+        assert!(stdout.contains("whoami"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
