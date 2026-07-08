@@ -16,6 +16,7 @@ def test_root_namespace_is_small() -> None:
         "Param",
         "ParamSpec",
         "Reader",
+        "Recorder",
         "RemoteEnv",
         "RemoteModel",
         "RemoteVectorEnv",
