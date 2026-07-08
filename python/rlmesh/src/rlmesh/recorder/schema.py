@@ -26,10 +26,11 @@ if TYPE_CHECKING:
 class MediaRef:
     """A per-episode media asset referenced by a bundle-relative ``path``.
 
-    ``kind="video"`` is an env-produced container (e.g. mp4) carried verbatim;
-    ``kind="frames"`` is a captured per-step stack (an uint8 ``(T, H, W, C)`` array
-    saved as compressed ``.npz``) that the closed-side mapper stitches into mp4.
-    The actual bytes live in the bundle at ``path``; this is just the manifest row.
+    ``kind="video"`` is a video file living in the bundle at ``path`` -- either
+    recorded from the env's image observations (AV1 mp4, encoded in process) or an
+    env-produced container carried verbatim. ``frame_count``/``width``/``height``/``fps``
+    are filled for recorded videos. This is just the manifest row; the bytes are in the
+    bundle.
     """
 
     camera: str

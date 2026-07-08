@@ -1,21 +1,19 @@
-"""Frame acquisition and staging for the recorder (no video encoding).
+"""Frame acquisition for the recorder.
 
-This module only *collects* pixels the env already produces --
-either a whole env-rendered video file (carried verbatim) or per-step image
-observations grabbed through the very same read path the live viewer uses -- and
-stages captured frames as a compressed uint8 ``(T, H, W, C)`` ``.npz`` stack. numpy
-is imported lazily so importing the recorder never pulls the optional dependency;
-frame capture is only reachable once an env is already handing back arrays.
+The recorder never encodes pixels in Python: it reads each step's image roles
+through the very same read path the live viewer uses, normalizes them to a
+contiguous uint8 HWC buffer (shared with the viewer via
+:func:`rlmesh._models._view.normalize_frame`), and hands the raw bytes to the native
+AV1 writer. numpy is imported lazily so importing the recorder never pulls it.
 """
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import numpy as np
-
     from .._models import StepEvent
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -25,18 +23,6 @@ def sanitize_part(part: str) -> str:
     """A single path segment reduced to ``[A-Za-z0-9._-]`` (managed-layout safe)."""
     cleaned = _UNSAFE.sub("_", part).strip("._-")
     return cleaned or "unnamed"
-
-
-def to_frame(value: object) -> np.ndarray | None:
-    """Normalize one read/render array to a contiguous uint8 HWC frame, or ``None``.
-
-    Delegates to the viewer's shared normalization so a captured frame is identical to
-    what the live viewer would draw (range-normalizes float frames, keeps 1/3/4
-    channels).
-    """
-    from .._models._view import normalize_frame
-
-    return normalize_frame(value)
 
 
 def image_roles(contract: object) -> list[str]:
@@ -53,12 +39,30 @@ def image_roles(contract: object) -> list[str]:
         return []
 
 
-def read_image(event: StepEvent, role: str) -> np.ndarray | None:
-    """Grab one HWC uint8 frame for ``role`` from a step event, or ``None``.
+def to_frame_bytes(value: object) -> tuple[bytes, int, int, int] | None:
+    """Normalize any read/render array to ``(bytes, width, height, channels)``.
+
+    Reuses the viewer's converter (:func:`rlmesh._models._view._to_hwc_u8`), so a
+    recorded frame matches what the viewer draws; only the ``(w, h)`` order differs to
+    match the native writer's signature. ``None`` when the value is not a 1/3/4-channel
+    image (that frame is skipped).
+    """
+    from .._models._view import _to_hwc_u8  # pyright: ignore[reportPrivateUsage]
+
+    hwc = _to_hwc_u8(value)
+    if hwc is None:
+        return None
+    data, height, width, channels = hwc
+    return data, width, height, channels
+
+
+def read_frame(event: StepEvent, role: str) -> tuple[bytes, int, int, int] | None:
+    """Read one image-observation ``role`` frame, or ``None``.
 
     Uses ``event.read`` -- the session's own role-addressed reader -- so the frame
-    comes back in the requested ``hwc`` layout whatever the env stores. Any read or
-    conversion failure degrades to ``None`` (capture is best-effort, never fatal).
+    comes back in the requested ``hwc`` layout whatever the env stores. Returns ``None``
+    when the read fails, the role is absent, or the value is not a 1/3/4-channel image
+    -- that frame is skipped (a transient miss never disables the camera).
     """
     from ..adapters import Image
 
@@ -66,19 +70,27 @@ def read_image(event: StepEvent, role: str) -> np.ndarray | None:
         value = event.read(Image(role, layout="hwc"))
     except Exception:
         return None
-    return to_frame(value)
+    return to_frame_bytes(value)
 
 
-def write_frame_stack(path: str, frames: list[np.ndarray]) -> dict[str, Any]:
-    """Save a list of HWC uint8 frames as a compressed ``(T, H, W, C)`` npz.
+def render_source(session: object) -> Callable[[], object] | None:
+    """A zero-arg thunk for the env's rgb ``render()``, or ``None`` if unavailable.
 
-    Returns ``{frame_count, height, width}`` for the media manifest row. Raises if
-    the frames have mismatched shapes (a real capture bug worth surfacing).
+    Mirrors the viewer's source discovery: only offered when the connected env exposes
+    an rgb render mode, and resolved through the same :func:`_resolve_render` so a
+    recorded render matches the viewer's default source.
     """
-    import numpy as np
+    client = getattr(session, "_client", None)
+    if client is None:
+        return None
+    render_mode = getattr(client, "render_mode", None)
+    if not (isinstance(render_mode, str) and "rgb" in render_mode.lower()):
+        return None
+    try:
+        from .._models._view import (
+            _resolve_render,  # pyright: ignore[reportPrivateUsage]
+        )
 
-    stack = np.stack(frames, axis=0)
-    with open(path, "wb") as handle:
-        np.savez_compressed(handle, frames=stack)
-    count, height, width = int(stack.shape[0]), int(stack.shape[1]), int(stack.shape[2])
-    return {"frame_count": count, "height": height, "width": width}
+        return _resolve_render(client)  # pyright: ignore[reportPrivateUsage]
+    except Exception:
+        return None

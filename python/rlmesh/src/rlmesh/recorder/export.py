@@ -23,9 +23,11 @@ if TYPE_CHECKING:
 
 
 def _use_zip(archive: bool | str | None, path: Path) -> bool:
-    if archive in (True, "zip"):
+    if isinstance(archive, str):
+        archive = archive.strip().lower()
+    if archive is True or archive == "zip":
         return True
-    if archive in (False, "folder", "dir"):
+    if archive is False or archive in ("folder", "dir"):
         return False
     return path.suffix.lower() == ".zip"
 

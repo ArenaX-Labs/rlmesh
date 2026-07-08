@@ -4,3 +4,6 @@ arange = "arange"
 fo = "fo"
 iterm = "iterm"
 mis = "mis"
+# MP4 (ISO BMFF) box fourccs used by the recorder muxer.
+trak = "trak"
+mdia = "mdia"

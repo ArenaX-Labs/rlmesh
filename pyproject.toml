@@ -13,7 +13,7 @@ dev = [
   "ruff==0.14.9",
   "pytest==8.4.2",
   "pillow",
-  "rlmesh[gymnasium,numpy,torch,jax,recorder]",
+  "rlmesh[gymnasium,numpy,torch,jax]",
   "rlmesh-api-surface",
   "rlmesh-system",
   "rlmesh-system-fixtures",

@@ -44,6 +44,7 @@ __all__ = [
     "PyModelClient",
     "PyVectorEnvClient",
     "PyVectorEnvServer",
+    "PyVideoWriter",
     "PyViewer",
     "ROTATION_DIMS",
     "ServeOptions",
@@ -329,6 +330,22 @@ class PyVectorEnvServer:
     def start(self) -> None: ...
     def wait(self, timeout: typing.Optional[builtins.float] = None) -> builtins.bool: ...
     def shutdown(self) -> None: ...
+
+@typing.final
+class PyVideoWriter:
+    r"""
+    Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` in process (no ffmpeg),
+    built by the Python recorder and fed one camera's frames per step.
+    """
+    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ...) -> PyVideoWriter: ...
+    def write_frame(self, buf: typing.Sequence[builtins.int], width: builtins.int, height: builtins.int, channels: builtins.int) -> None:
+        r"""
+        Encode one contiguous HWC uint8 frame (`channels` = 1/3/4).
+        """
+    def finish(self) -> tuple[builtins.int, builtins.int, builtins.int]:
+        r"""
+        Flush and finalize the file; returns `(frame_count, width, height)`.
+        """
 
 @typing.final
 class PyViewer:

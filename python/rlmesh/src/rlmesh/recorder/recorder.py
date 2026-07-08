@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .constants import DEFAULT_FPS, DEFAULT_VIDEO_INFO_KEYS
+from .constants import DEFAULT_FPS, DEFAULT_QUALITY, DEFAULT_VIDEO_INFO_KEYS
 from .export import write_bundle
-from .frames import image_roles
-from .hooks import CaptureHooks, FrameFn
+from .frames import sanitize_part
+from .hooks import CaptureHooks
 from .media import MediaStager
 from .schema import EpisodeRecord, ResultSet, WorkloadRecord
 
@@ -62,18 +62,17 @@ class Recorder:
         self,
         *,
         result_set_id: str | None = None,
-        video: bool = False,
         fps: int = DEFAULT_FPS,
+        quality: int = DEFAULT_QUALITY,
     ) -> None:
         """Create a recorder.
 
-        ``video=True`` encodes captured frame stacks to H.264 mp4 (``fps`` playback
-        rate) instead of shipping raw ``.npz`` stacks -- it needs ffmpeg, via the
-        ``rlmesh[recorder]`` extra or a system binary (see :mod:`rlmesh.recorder.encode`).
-        The default (``video=False``) stays dependency-free.
+        Frames captured on the session path are encoded to AV1 mp4 in process (pure
+        Rust, no ffmpeg); ``fps`` sets the recorded playback rate and ``quality``
+        (1..=100, higher is better/larger) trades file size against fidelity.
         """
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
-        self._stager = MediaStager(video=video, fps=fps)
+        self._stager = MediaStager(fps=fps, quality=quality)
 
     @property
     def result_set_id(self) -> str:
@@ -135,34 +134,34 @@ class Recorder:
         task: str | None = None,
         config: dict[str, Any] | None = None,
         cameras: list[str] | None = None,
-        frame_fn: FrameFn | None = None,
         session: Session[Any, Any] | None = None,
         video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS,
         included_in_metrics: bool = True,
     ) -> RunHooks:
         """A :class:`~rlmesh.RunHooks` that records a live run into a new workload.
 
-        Frame sourcing (all optional -- omit everything for metrics-only):
+        Frame sourcing (both optional -- omit both for metrics-only):
 
-        * ``frame_fn`` -- full override: ``frame_fn(step_event)`` returns an HWC
-          array, a ``{camera: array}`` map, or ``None`` to skip that step.
-        * ``cameras`` -- explicit env image roles to read each step (HWC).
-        * ``session`` -- when given and ``cameras``/``frame_fn`` are not, the env's
-          declared image roles are auto-discovered from the session's contract.
+        * ``cameras`` -- explicit sources to record each step: env image roles (read
+          as HWC) and/or ``"render"`` for the env's ``render()`` frame.
+        * ``session`` -- when given and ``cameras`` is not, the recorded sources are
+          auto-discovered on the first step (once connected): the env's ``render()``
+          frame (when it exposes an rgb render mode) plus every declared image role,
+          each to its own video -- the same sources the live viewer offers.
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
-        video file path (case 1: the env renders its own video); the file is copied
-        into the bundle at export.
+        video file path (the env renders its own video); the file is copied into the
+        bundle. Recorded frames are encoded to AV1 mp4 in process.
         """
         workload = self._new_workload(model, env, task, config)
-        resolved = list(cameras) if cameras is not None else []
-        if not resolved and frame_fn is None and session is not None:
-            resolved = image_roles(getattr(session, "_contract", None))
+        ordinal = len(self._result_set.workloads) - 1
+        prefix = f"w{ordinal:03d}-{sanitize_part(model)}/{sanitize_part(workload.task)}"
         return CaptureHooks(
             workload=workload,
             stager=self._stager,
-            cameras=resolved,
-            frame_fn=frame_fn,
+            prefix=prefix,
+            cameras=cameras,
+            session=session,
             video_keys=tuple(video_info_keys),
             included_in_metrics=included_in_metrics,
         )

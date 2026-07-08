@@ -54,11 +54,6 @@ jax = ["jax>=0.4.24", "jaxlib>=0.4.24"]
 # managed sidecar materializes inputs and the eval container never imports it.
 hf = ["huggingface_hub"]
 
-# rlmesh.Recorder(video=True) encodes captured frames to mp4. numpy stacks the
-# frames; imageio-ffmpeg supplies a bundled ffmpeg binary (broad OS/Python support,
-# no system install), and the encoder shells out to it so any recent ffmpeg works.
-recorder = ["numpy>=1.22", "imageio-ffmpeg>=0.4.0"]
-
 [project.scripts]
 rlmesh = "rlmesh.__main__:main"
 

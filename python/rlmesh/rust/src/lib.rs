@@ -76,6 +76,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     m.add_class::<viewer::PyViewer>()?;
+    m.add_class::<viewer::PyVideoWriter>()?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;

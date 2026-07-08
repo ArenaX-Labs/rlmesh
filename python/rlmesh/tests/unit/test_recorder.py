@@ -89,7 +89,6 @@ def test_add_records_schema_and_metrics() -> None:
     assert wl["metrics"]["meanReward"] == 1.0
     assert wl["metrics"]["successRate"] == 0.5
     assert wl["metrics"]["totalSteps"] == 6
-    # SDK vocabulary, not the platform's camelCase episode.v1 names.
     ep = wl["episodes"][0]
     assert (
         ep["reward"] == 2.0
@@ -106,6 +105,7 @@ def test_task_defaults_to_env() -> None:
 
 
 def test_included_in_metrics_excludes_from_aggregates() -> None:
+    """An excluded episode is still recorded, but not counted in aggregates."""
     rec = Recorder()
     rec.add(
         _run(_episode(0, reward=10.0, success=True)),
@@ -115,15 +115,14 @@ def test_included_in_metrics_excludes_from_aggregates() -> None:
         included_in_metrics=False,
     )
     wl = rec.workloads[0]
-    # Excluded episode still recorded, but not counted.
     assert wl.total_steps == 3
     assert wl.mean_reward == 0.0 and wl.success_rate == 0.0
     assert wl.episodes[0].included_in_metrics is False
 
 
 def test_success_rate_falls_back_to_terminated_when_unreported() -> None:
+    """success=None falls back to terminated; terminated False -> not a success."""
     rec = Recorder()
-    # success=None -> use terminated; here terminated is False -> not a success.
     rec.add(_run(_episode(0, reward=1.0, success=None)), model="m", env="e")
     assert rec.workloads[0].success_rate == 0.0
 
@@ -153,25 +152,20 @@ def test_export_zip_by_suffix(tmp_path: Path) -> None:
 
 
 def test_export_folder_clears_stale_media(tmp_path: Path) -> None:
+    """Re-exporting a media-less bundle over a folder drops the earlier media/."""
     np = pytest.importorskip("numpy")
     dest = tmp_path / "bundle"
+    img = np.full((32, 32, 3), 100, dtype=np.uint8)
 
-    # First export captures a frame stack -> media/.../*.npz on disk.
     rec1 = Recorder()
-    hooks = rec1.capture(
-        model="m",
-        env="e",
-        task="t",
-        frame_fn=lambda _e: np.zeros((4, 4, 3), dtype=np.uint8),
-    )
+    hooks = rec1.capture(model="m", env="e", task="t", cameras=["cam0"])
     hooks.on_episode_start(episode=0, seed=0)
-    hooks.on_step(_step_event())
+    hooks.on_step(_step_event(read=lambda _item: img))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
     rec1.export(dest)
     assert (dest / rec1.workloads[0].episodes[0].media[0].path).is_file()
     rec1.close()
 
-    # Re-exporting a media-less bundle to the same folder drops the stale media/.
     rec2 = Recorder()
     rec2.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="e", task="t")
     rec2.export(dest)
@@ -179,89 +173,247 @@ def test_export_folder_clears_stale_media(tmp_path: Path) -> None:
     assert (dest / "result.json").is_file()
 
 
-def test_capture_env_video_path_is_copied(tmp_path: Path) -> None:
-    # An env that renders its own video (case 1): it leaves the path in step info.
-    video = tmp_path / "ep.mp4"
-    video.write_bytes(b"\x00\x01fake-mp4")
-    rec = Recorder()
-    hooks = rec.capture(model="m", env="e", task="t")
-
-    hooks.on_episode_start(episode=0, seed=7)
-    hooks.on_step(_step_event(info={"video_artifact_path": str(video)}))
-    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
-
-    ep = rec.workloads[0].episodes[0]
-    assert len(ep.media) == 1
-    ref = ep.media[0]
-    assert ref.kind == "video" and ref.format == "mp4"
-
-    out = rec.export(tmp_path / "bundle")
-    copied = out / ref.path
-    assert copied.is_file() and copied.read_bytes() == b"\x00\x01fake-mp4"
-    rec.close()
-
-
-def test_capture_frame_fn_stages_npz(tmp_path: Path) -> None:
+def test_capture_records_av1_mp4(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
-    rec = Recorder()
-    frame = np.zeros((4, 5, 3), dtype=np.uint8)
-    hooks = rec.capture(model="m", env="e", task="t", frame_fn=lambda _e: frame)
-
-    hooks.on_episode_start(episode=0, seed=7)
-    hooks.on_step(_step_event())
-    hooks.on_step(_step_event())
-    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
-
-    ref = rec.workloads[0].episodes[0].media[0]
-    assert ref.kind == "frames" and ref.format == "npz"
-    assert ref.frame_count == 2 and ref.height == 4 and ref.width == 5
-
-    out = rec.export(tmp_path / "bundle")
-    npz = out / ref.path
-    assert npz.is_file()
-    with np.load(npz) as data:
-        assert data["frames"].shape == (2, 4, 5, 3)
-    rec.close()
-
-
-def test_capture_video_encodes_mp4(tmp_path: Path) -> None:
-    np = pytest.importorskip("numpy")
-    from rlmesh.recorder.encode import ffmpeg_available
-
-    if not ffmpeg_available():
-        pytest.skip("ffmpeg not available (install rlmesh[recorder])")
-    rec = Recorder(video=True, fps=10)
-    frame = np.zeros((16, 16, 3), dtype=np.uint8)
-    hooks = rec.capture(model="m", env="e", task="t", frame_fn=lambda _e: frame)
-    hooks.on_episode_start(episode=0, seed=0)
-    for _ in range(6):
-        hooks.on_step(_step_event())
-    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
-
-    ref = rec.workloads[0].episodes[0].media[0]
-    assert ref.kind == "video" and ref.format == "mp4"
-    assert ref.frame_count == 6 and ref.fps == 10.0
-    out = rec.export(tmp_path / "bundle")
-    mp4 = out / ref.path
-    assert mp4.is_file() and mp4.stat().st_size > 0
-    assert mp4.read_bytes()[4:8] == b"ftyp"  # mp4 container signature
-    rec.close()
-
-
-def test_capture_cameras_read_through_event(tmp_path: Path) -> None:
-    np = pytest.importorskip("numpy")
-    rec = Recorder()
-    img = np.full((2, 2, 3), 128, dtype=np.uint8)
+    rec = Recorder(fps=10)
+    img = np.full((32, 32, 3), 128, dtype=np.uint8)
     hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
 
-    # event.read(item) ignores the item here and returns the HWC frame.
     hooks.on_episode_start(episode=0, seed=7)
+    for _ in range(5):
+        hooks.on_step(_step_event(read=lambda _item: img))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    ref = rec.workloads[0].episodes[0].media[0]
+    assert ref.kind == "video" and ref.format == "mp4"
+    assert ref.frame_count == 5 and ref.fps == 10.0 and ref.camera == "cam0"
+    assert ref.width == 32 and ref.height == 32
+
+    out = rec.export(tmp_path / "bundle")
+    mp4 = out / ref.path
+    assert mp4.is_file() and mp4.read_bytes()[4:8] == b"ftyp"
+    rec.close()
+
+
+def test_quality_controls_file_size(tmp_path: Path) -> None:
+    """Lower quality (higher quantizer) yields a smaller file for the same footage."""
+    np = pytest.importorskip("numpy")
+    frames = []
+    for t in range(12):
+        col = ((np.arange(128) + t) % 256).astype(np.uint8)
+        frames.append(np.repeat(np.tile(col, (128, 1))[:, :, None], 3, axis=2))
+
+    def recorded_size(quality: int) -> int:
+        rec = Recorder(quality=quality)
+        hooks = rec.capture(model="m", env="e", task="t", cameras=["cam"])
+        hooks.on_episode_start(episode=0, seed=0)
+        for f in frames:
+            hooks.on_step(_step_event(read=lambda _i, _f=f: _f))
+        hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+        out = rec.export(tmp_path / f"b{quality}")
+        size = (out / rec.workloads[0].episodes[0].media[0].path).stat().st_size
+        rec.close()
+        return size
+
+    assert recorded_size(5) < recorded_size(95)
+
+
+def test_capture_multi_camera_records_each(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    rec = Recorder()
+    img = np.full((32, 32, 3), 64, dtype=np.uint8)
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["front", "wrist"])
+
+    hooks.on_episode_start(episode=0, seed=0)
     hooks.on_step(_step_event(read=lambda _item: img))
     hooks.on_episode_end(_episode(0, reward=1.0, success=True))
 
     media = rec.workloads[0].episodes[0].media
-    assert [m.camera for m in media] == ["cam0"]
-    assert media[0].frame_count == 1
+    assert sorted(m.camera for m in media) == ["front", "wrist"]
+    assert len({m.path for m in media}) == 2
+    rec.close()
+
+
+def test_capture_records_render_source(tmp_path: Path) -> None:
+    """An env with an rgb render mode but no image obs roles still records render()."""
+    np = pytest.importorskip("numpy")
+    img = np.full((48, 64, 3), 120, dtype=np.uint8)
+
+    class _Client:
+        render_mode = "rgb_array"
+
+        def render(self) -> object:
+            return img
+
+    class _Sess:
+        _client = _Client()
+        _contract = None
+
+    rec = Recorder(fps=20)
+    session: Any = _Sess()
+    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks.on_episode_start(episode=0, seed=0)
+    for _ in range(4):
+        hooks.on_step(_step_event())
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render"]
+    assert media[0].frame_count == 4
+    assert (media[0].width, media[0].height) == (64, 48)
+    out = rec.export(tmp_path / "bundle")
+    assert (out / media[0].path).read_bytes()[4:8] == b"ftyp"
+    rec.close()
+
+
+def test_media_paths_unique_across_workloads(tmp_path: Path) -> None:
+    """Two models on the same task must not overwrite each other's media."""
+    np = pytest.importorskip("numpy")
+    rec = Recorder()
+    img = np.full((32, 32, 3), 200, dtype=np.uint8)
+    paths = []
+    for model in ("a", "b"):
+        hooks = rec.capture(model=model, env="e", task="t", cameras=["cam0"])
+        hooks.on_episode_start(episode=0, seed=0)
+        hooks.on_step(_step_event(read=lambda _item: img))
+        hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+        paths.append(rec.workloads[-1].episodes[0].media[0].path)
+
+    assert paths[0] != paths[1]
+    out = rec.export(tmp_path / "bundle")
+    assert all((out / p).is_file() for p in paths)
+    rec.close()
+
+
+def test_colliding_camera_names_get_distinct_paths(tmp_path: Path) -> None:
+    """Two roles that sanitize to the same filename must not share a media path."""
+    np = pytest.importorskip("numpy")
+    rec = Recorder()
+    img = np.full((32, 32, 3), 90, dtype=np.uint8)
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam/left", "cam left"])
+
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=lambda _item: img))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    media = rec.workloads[0].episodes[0].media
+    assert len({m.path for m in media}) == 2
+    out = rec.export(tmp_path / "bundle")
+    assert all((out / m.path).is_file() for m in media)
+    rec.close()
+
+
+def test_env_video_eager_copy_survives_overwrite(tmp_path: Path) -> None:
+    """An env reusing one output path per episode must not clobber earlier ones."""
+    src = tmp_path / "rollout.mp4"
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t")
+
+    src.write_bytes(b"AAAA-ep0")
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(info={"video_artifact_path": str(src)}))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    src.write_bytes(b"BBBB-ep1")
+    hooks.on_episode_start(episode=1, seed=1)
+    hooks.on_step(_step_event(info={"video_artifact_path": str(src)}))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    eps = rec.workloads[0].episodes
+    assert eps[0].media[0].format == "mp4" and eps[0].media[0].kind == "video"
+    out = rec.export(tmp_path / "bundle")
+    assert (out / eps[0].media[0].path).read_bytes() == b"AAAA-ep0"
+    assert (out / eps[1].media[0].path).read_bytes() == b"BBBB-ep1"
+    rec.close()
+
+
+def test_capture_defers_camera_discovery_to_first_step() -> None:
+    """capture(session=) must not read the contract before the session connects."""
+    rec = Recorder()
+
+    class _Spy:
+        reads = 0
+
+        @property
+        def _contract(self) -> None:
+            type(self).reads += 1
+            return None
+
+    spy: Any = _Spy()
+    hooks = rec.capture(model="m", env="e", task="t", session=spy)
+    assert _Spy.reads == 0
+
+    hooks.on_episode_start(episode=0, seed=0)
+    with pytest.warns(UserWarning, match="no render.* or image roles"):
+        hooks.on_step(_step_event())
+    assert _Spy.reads >= 1
+
+
+def test_explicit_empty_cameras_skips_discovery() -> None:
+    """cameras=[] is an explicit opt-out, distinct from cameras=None (auto-discover)."""
+    rec = Recorder()
+
+    class _Spy:
+        reads = 0
+
+        @property
+        def _contract(self) -> None:
+            type(self).reads += 1
+            return None
+
+    spy: Any = _Spy()
+    hooks = rec.capture(model="m", env="e", task="t", cameras=[], session=spy)
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event())
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    assert _Spy.reads == 0
+    assert rec.workloads[0].episodes[0].media == ()
+
+
+def test_transient_read_error_skips_frame_keeps_camera() -> None:
+    """A one-off read failure drops that frame only; the camera keeps recording."""
+    np = pytest.importorskip("numpy")
+    rec = Recorder()
+    img = np.full((32, 32, 3), 7, dtype=np.uint8)
+    calls = {"n": 0}
+
+    def read(_item: object) -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient read blip")
+        return img
+
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
+    hooks.on_episode_start(episode=0, seed=0)
+    for _ in range(3):
+        hooks.on_step(_step_event(read=read))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    ref = rec.workloads[0].episodes[0].media[0]
+    assert ref.camera == "cam0" and ref.frame_count == 2
+    rec.close()
+
+
+def test_capture_hook_guards_encode_errors() -> None:
+    """A staging/encode failure warns and drops the camera, never aborts the run."""
+    np = pytest.importorskip("numpy")
+    rec = Recorder()
+    img = np.full((32, 32, 3), 10, dtype=np.uint8)
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
+
+    def boom(**_: Any) -> Any:
+        raise RuntimeError("no encoder")
+
+    rec._stager.open_video = boom  # type: ignore[method-assign]
+
+    hooks.on_episode_start(episode=0, seed=0)
+    with pytest.warns(UserWarning, match="cam0"):
+        hooks.on_step(_step_event(read=lambda _item: img))
+    hooks.on_episode_end(_episode(0, reward=2.0, success=True))
+
+    ep = rec.workloads[0].episodes[0]
+    assert ep.media == () and ep.reward == 2.0
     rec.close()
 
 
@@ -277,13 +429,12 @@ def test_capture_metrics_only_when_no_media() -> None:
 
 
 def test_multiple_episodes_into_one_capture_are_uniquely_indexed() -> None:
+    """Episodes all built with per-run index 0 are reindexed 0,1,2 in the workload."""
     rec = Recorder()
     hooks = rec.capture(model="m", env="e", task="t")
     for i in range(3):
         hooks.on_episode_start(episode=i, seed=i)
-        hooks.on_episode_end(
-            _episode(0, reward=float(i), success=True)
-        )  # per-run index all 0
+        hooks.on_episode_end(_episode(0, reward=float(i), success=True))
 
     indices = [e.index for e in rec.workloads[0].episodes]
     assert indices == [0, 1, 2]
@@ -291,15 +442,11 @@ def test_multiple_episodes_into_one_capture_are_uniquely_indexed() -> None:
 
 def test_context_manager_cleans_staging(tmp_path: Path) -> None:
     np = pytest.importorskip("numpy")
+    img = np.full((32, 32, 3), 50, dtype=np.uint8)
     with Recorder() as rec:
-        hooks = rec.capture(
-            model="m",
-            env="e",
-            task="t",
-            frame_fn=lambda _e: np.zeros((2, 2, 3), dtype=np.uint8),
-        )
+        hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
         hooks.on_episode_start(episode=0, seed=0)
-        hooks.on_step(_step_event())
+        hooks.on_step(_step_event(read=lambda _item: img))
         hooks.on_episode_end(_episode(0, reward=1.0, success=True))
         staging = rec._stager._dir
         rec.export(tmp_path / "bundle")

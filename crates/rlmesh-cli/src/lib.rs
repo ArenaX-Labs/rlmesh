@@ -12,7 +12,7 @@
 //! `profile` manages the AWS-CLI-style
 //! named profiles those commands act on (each remembering its own platform and
 //! credential); and `registry login` authenticates docker with the platform's
-//! image registry (see [`platform`]).
+//! image registry.
 
 mod cli;
 mod platform;

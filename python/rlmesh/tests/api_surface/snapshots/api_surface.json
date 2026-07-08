@@ -298,38 +298,38 @@
       },
       "Recorder": {
         "kind": "class",
+        "stability": "Stable",
+        "signature": "Recorder(*, result_set_id: str | None = None, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY)",
         "members": {
+          "result_set_id": {
+            "kind": "property",
+            "signature": "property result_set_id: str"
+          },
+          "workloads": {
+            "kind": "property",
+            "signature": "property workloads: tuple[WorkloadRecord, ...]"
+          },
           "add": {
             "kind": "function",
             "signature": "add(result: RunResult, *, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, included_in_metrics: bool = True)"
           },
           "capture": {
             "kind": "function",
-            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, frame_fn: FrameFn | None = None, session: Session[Any, Any] | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True)"
-          },
-          "close": {
-            "kind": "function",
-            "signature": "close()"
-          },
-          "export": {
-            "kind": "function",
-            "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None)"
-          },
-          "result_set_id": {
-            "kind": "property",
-            "signature": "property result_set_id: str"
+            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, session: Session[Any, Any] | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True)"
           },
           "to_dict": {
             "kind": "function",
             "signature": "to_dict(*, recorded_at: str | None = None)"
           },
-          "workloads": {
-            "kind": "property",
-            "signature": "property workloads: tuple[WorkloadRecord, ...]"
+          "export": {
+            "kind": "function",
+            "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None)"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close()"
           }
-        },
-        "signature": "Recorder(*, result_set_id: str | None = None, video: bool = False, fps: int = DEFAULT_FPS)",
-        "stability": "Stable"
+        }
       },
       "RemoteEnv": {
         "kind": "class",

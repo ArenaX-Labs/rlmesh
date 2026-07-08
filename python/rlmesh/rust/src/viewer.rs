@@ -1,11 +1,13 @@
 //! PyO3 wrapper over the `rlmesh-viewer` engine, fed from the Python Session loop.
 
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
-use rlmesh_viewer::{Backend, FrameFormat, Hud, Viewer};
+use rlmesh_viewer::{Backend, FrameFormat, Hud, VideoWriter, Viewer};
 
 /// Native debug viewer, built by the Python `Session` when `view=` is set and fed
 /// one decoded HWC uint8 frame (the selected camera) per step.
@@ -145,6 +147,68 @@ impl PyViewer {
 
 impl PyViewer {
     fn lock(&self) -> MutexGuard<'_, Option<Viewer>> {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+}
+
+/// Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` in process (no ffmpeg),
+/// built by the Python recorder and fed one camera's frames per step.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(module = "rlmesh._rlmesh", name = "PyVideoWriter")]
+pub struct PyVideoWriter {
+    inner: Mutex<Option<VideoWriter>>,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[pymethods]
+impl PyVideoWriter {
+    #[new]
+    #[pyo3(signature = (path, width, height, fps=30, quality=60))]
+    fn new(path: String, width: u32, height: u32, fps: u32, quality: u8) -> PyResult<Self> {
+        let writer = VideoWriter::create(Path::new(&path), width, height, fps, quality)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: Mutex::new(Some(writer)),
+        })
+    }
+
+    /// Encode one contiguous HWC uint8 frame (`channels` = 1/3/4).
+    fn write_frame(
+        &self,
+        py: Python<'_>,
+        buf: Vec<u8>,
+        width: u32,
+        height: u32,
+        channels: u32,
+    ) -> PyResult<()> {
+        py.detach(|| {
+            let mut guard = self.lock();
+            let writer = guard
+                .as_mut()
+                .ok_or_else(|| PyRuntimeError::new_err("video writer already finished"))?;
+            writer
+                .push(&buf, width, height, channels)
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
+    /// Flush and finalize the file; returns `(frame_count, width, height)`.
+    fn finish(&self, py: Python<'_>) -> PyResult<(u32, u32, u32)> {
+        py.detach(|| {
+            let writer = self
+                .lock()
+                .take()
+                .ok_or_else(|| PyRuntimeError::new_err("video writer already finished"))?;
+            let stats = writer
+                .finish()
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            Ok((stats.frame_count, stats.width, stats.height))
+        })
+    }
+}
+
+impl PyVideoWriter {
+    fn lock(&self) -> MutexGuard<'_, Option<VideoWriter>> {
         self.inner.lock().unwrap_or_else(|err| err.into_inner())
     }
 }
