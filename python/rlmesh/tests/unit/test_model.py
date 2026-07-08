@@ -29,6 +29,18 @@ def test_success_rate_prefers_info_success_then_falls_back_to_terminated() -> No
     assert RunResult(episodes).success_rate == pytest.approx(2 / 3)
 
 
+def test_success_rate_warns_when_env_never_reports_success() -> None:
+    from rlmesh import RunResult
+    from rlmesh._models._eval import EpisodeResult
+
+    episodes = (
+        EpisodeResult(0, None, 5, 1.0, terminated=True, truncated=False),
+        EpisodeResult(1, None, 5, 0.0, terminated=False, truncated=True),
+    )
+    with pytest.warns(UserWarning, match="no episode reported a task-outcome"):
+        assert RunResult(episodes).success_rate == pytest.approx(0.5)
+
+
 def test_connect_uses_an_env_like_object_directly() -> None:
     from rlmesh._models._eval import connect_env
 

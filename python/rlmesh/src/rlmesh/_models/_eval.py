@@ -14,6 +14,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 from __future__ import annotations
 
 import time
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -144,10 +145,20 @@ class RunResult:
         ``["success"]``, captured per episode in :attr:`EpisodeResult.success`).
         For an env that emits no such signal, falls back to ``terminated`` for
         that episode -- so a time-limit env whose success *is* the truncation
-        cap should report success via ``info`` rather than rely on this.
+        cap should report success via ``info`` rather than rely on this. When
+        *no* episode in the run reported a signal, warns once: the whole rate is
+        then the terminal-state fallback, a different definition of success.
         """
         if not self.episodes:
             return 0.0
+        if all(e.success is None for e in self.episodes):
+            warnings.warn(
+                "no episode reported a task-outcome signal (Gymnasium "
+                "info['is_success'] / info['success']); success_rate fell back "
+                "to `terminated`, counting any terminal state as a success. Have "
+                "the env emit success through step info to measure it directly.",
+                stacklevel=2,
+            )
         succeeded = sum(
             1
             for e in self.episodes
