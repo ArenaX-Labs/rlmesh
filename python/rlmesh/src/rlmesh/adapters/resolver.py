@@ -42,6 +42,7 @@ from .specs import (
     Text,
 )
 from .specs.action_serialization import action_to_dict
+from .specs.custom_encoding import LOCAL_ARM
 from .specs.model_serialization import model_input_to_dict
 
 if TYPE_CHECKING:
@@ -155,6 +156,35 @@ def _check_native_encoding(encoding: object, where: str) -> None:
         )
 
 
+def _resolve_encoding_arm(
+    arm: RotationTransform | str, *, label: str
+) -> RotationTransform:
+    """Return the runnable callable for one ``CustomEncoding`` arm, or hard-fail.
+
+    A custom encoding executes in exactly one place: the process that defined its
+    in-process callable. So an in-process callable arm passes through and runs.
+    A *string* arm is not runnable -- a custom encoding is an extract/describe
+    schema for validation, not a portable runtime. The
+    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker means a
+    callable that did not survive serialization; a ``module:callable`` entrypoint
+    is a portable reference whose execution is deferred (not wired up). Either
+    way it is language-tied and cannot be run here.
+    """
+    if not isinstance(arm, str):
+        return arm
+    if arm == LOCAL_ARM:
+        raise AdapterResolutionError(
+            f"{label}: this custom encoding was read back from a serialized spec; "
+            "its in-process transform did not travel, so it cannot be run -- "
+            "resolve the original spec (holding the callable) locally"
+        )
+    raise AdapterResolutionError(
+        f"{label}: entrypoint custom-encoding execution is not supported yet; a "
+        "custom encoding is a validation/describe schema, not a portable runtime "
+        "-- use an in-process callable to run it locally"
+    )
+
+
 def _shadow_state(
     segments: tuple[str | int, ...], state: State, obs_shims: list[ObsEncShim]
 ) -> State:
@@ -187,11 +217,6 @@ def _shadow_state(
         raise AdapterResolutionError(
             f"state input {placement!r}: a CustomEncoding requires container='array'"
         )
-    if encoding.is_entrypoint:
-        raise AdapterResolutionError(
-            f"state input {placement!r}: entrypoint CustomEncoding is not yet "
-            "supported; use in-process callables for now"
-        )
     if encoding.from_base is None:
         raise AdapterResolutionError(
             f"state input {placement!r}: an observation CustomEncoding needs from_base"
@@ -203,7 +228,9 @@ def _shadow_state(
             width=encoding.width,
             name=encoding.name,
             dtype=state.dtype,
-            from_base=cast("RotationTransform", encoding.from_base),
+            from_base=_resolve_encoding_arm(
+                encoding.from_base, label=f"state input {placement!r}"
+            ),
         )
     )
     return replace(state, encoding=encoding.base)
@@ -240,11 +267,6 @@ def _shadow_action(action: Action, act_shims: list[ActEncShim]) -> Action:
                 raise AdapterResolutionError(
                     f"actuator {component.role!r}: a CustomEncoding cannot be binary"
                 )
-            if encoding.is_entrypoint:
-                raise AdapterResolutionError(
-                    f"actuator {component.role!r}: entrypoint CustomEncoding is "
-                    "not yet supported; use in-process callables for now"
-                )
             if encoding.to_base is None:
                 raise AdapterResolutionError(
                     f"actuator {component.role!r}: an action CustomEncoding needs to_base"
@@ -255,7 +277,9 @@ def _shadow_action(action: Action, act_shims: list[ActEncShim]) -> Action:
                     base=encoding.base,
                     width=component.dim,
                     name=encoding.name,
-                    to_base=cast("RotationTransform", encoding.to_base),
+                    to_base=_resolve_encoding_arm(
+                        encoding.to_base, label=f"actuator {component.role!r}"
+                    ),
                 )
             )
             shadow_components.append(replace(component, encoding=encoding.base))
@@ -334,7 +358,11 @@ def _substitute_encodings(
     """Return a base-substituted shadow spec plus host-side encoding shims.
 
     The shadow spec lets the native core see only known encodings; the shims
-    repack the custom fields at the boundary, keyed by placement path.
+    repack the custom fields at the boundary, keyed by placement path. An
+    in-process callable arm runs in this process; a string arm (an entrypoint,
+    or a reconstructed-from-wire marker) hard-fails -- a custom encoding is a
+    validation/describe schema, executable only where its callable was defined
+    (see :func:`_resolve_encoding_arm`).
     """
     obs_shims: list[ObsEncShim] = []
     act_shims: list[ActEncShim] = []
@@ -431,7 +459,9 @@ def resolve(
         model_spec: The model's declared input/output format.
         trust_entrypoints: Allow ``module:callable`` strings in custom
             inputs to be imported. Leave False for specs from untrusted
-            sources; in-process callables are always allowed.
+            sources; in-process callables are always allowed. (Custom-encoding
+            entrypoint arms are never run -- a custom encoding executes only
+            where its in-process callable was defined.)
         check_inverse: Round-trip each two-armed
             :class:`~rlmesh.adapters.CustomEncoding` on a probe at resolve
             time to catch a mispaired encode/decode. Set False for an

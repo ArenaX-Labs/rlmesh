@@ -6,8 +6,7 @@ use std::fmt;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::spec::AcceptSet;
-use crate::spec::rotations::RotationEncoding;
+use crate::spec::StateEncoding;
 
 fn default_float32() -> String {
     "float32".to_owned()
@@ -24,13 +23,14 @@ fn default_float32() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ConcatPart {
     pub role: String,
-    /// Rotation encoding(s) the model accepts for this part, in preference
-    /// order (most-preferred first). The resolver picks the env's native
-    /// encoding when it appears here (no conversion), else converts the env's
-    /// native into the first entry. A bare string on the wire for the common
-    /// single-encoding case.
+    /// Rotation encoding(s) the model accepts for this part. A bare string (the
+    /// common single-encoding case) or a list, in preference order -- the
+    /// resolver picks the env's native encoding when it appears here (no
+    /// conversion), else converts the env's native into the first entry. Or a
+    /// custom-encoding object (`{base, ...}`), a host-side re-packing that
+    /// shadows to its `base` for resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<AcceptSet<RotationEncoding>>,
+    pub encoding: Option<StateEncoding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dim: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,7 +54,7 @@ pub struct ConcatPart {
 struct ConcatPartWire {
     role: String,
     #[serde(default)]
-    encoding: Option<AcceptSet<RotationEncoding>>,
+    encoding: Option<StateEncoding>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]
     dim: Option<u32>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_count")]

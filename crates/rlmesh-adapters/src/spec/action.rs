@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::rotations::RotationEncoding;
+use super::custom_encoding::ActionEncoding;
 
 /// One contiguous slice of an action vector.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,8 +20,11 @@ pub struct Actuator {
     // width-sum mismatch. Mirrors StateFieldWire, which also omits `default`.
     #[serde(deserialize_with = "crate::spec::num::de_count")]
     pub dim: u32,
+    /// A single native encoding (bare string) or a custom-encoding object
+    /// (`{base, ...}`) that shadows to its `base`. No accept-set list: the
+    /// action side is rigid (see `no_action_accept_set_contract`).
     #[serde(default)]
-    pub encoding: Option<RotationEncoding>,
+    pub encoding: Option<ActionEncoding>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     pub range: Option<(f64, f64)>,
     #[serde(default)]
@@ -322,7 +325,25 @@ mod no_action_accept_set_contract {
         .expect("a single encoding value parses");
         assert_eq!(
             ok.components[0].encoding,
-            Some(crate::spec::rotations::RotationEncoding::Rot6d)
+            Some(crate::spec::ActionEncoding::Native(
+                crate::spec::rotations::RotationEncoding::Rot6d
+            ))
+        );
+
+        // A custom-encoding *object* is accepted on the action side (it is a
+        // single encoding, not an accept-set list); only the list form is
+        // rejected above.
+        let custom: Action = serde_json::from_str(
+            r#"{"components": [{"role": "action/rot", "dim": 3, "encoding": {"base": "euler_xyz", "to_base": "m:g"}}]}"#,
+        )
+        .expect("a custom-encoding object parses");
+        assert!(
+            custom.components[0]
+                .encoding
+                .as_ref()
+                .unwrap()
+                .custom()
+                .is_some()
         );
     }
 

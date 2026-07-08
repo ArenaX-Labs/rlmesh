@@ -28,8 +28,16 @@ if TYPE_CHECKING:
     from ...numpy import NumpyArray
 
 # One arm of a custom encoding: an in-process callable, or a ``module:callable``
-# entrypoint string (imported only under ``resolve(..., trust_entrypoints=True)``).
+# entrypoint string.
 RotationTransform: TypeAlias = Callable[["NumpyArray"], "ArrayLike"]
+
+# Wire sentinel for an in-process callable arm. A closure has no serializable
+# form, so a published spec records this non-portable marker instead of a
+# ``module:callable`` reference: the spec stays showable and validatable (base
+# vs env), but the arm cannot be reconstructed or run from the wire -- only the
+# process that defined the callable can apply it. A spec read back from the wire
+# carrying this marker is a describe-only stub, not a runnable encoding.
+LOCAL_ARM = "<local>"
 
 
 @dataclass(frozen=True)
@@ -43,10 +51,13 @@ class CustomEncoding:
     Attributes:
         base: The native encoding the field resolves as.
         from_base: ``base -> custom``, used when the encoding tags an
-            observation (model) state component. An in-process callable, or a
-            ``"module:callable"`` entrypoint string. None when action-only.
+            observation (model) state component. An in-process callable (runs
+            locally, serializes to a ``<local>`` marker), or a
+            ``"module:callable"`` entrypoint string (a describe-only reference;
+            its execution is deferred). None when action-only.
         to_base: ``custom -> base``, used when the encoding tags an action
-            component. A callable or entrypoint string. None when obs-only.
+            component. A callable or entrypoint string (see ``from_base``). None
+            when obs-only.
         name: Display name surfaced in :meth:`Adapter.describe`.
     """
 
@@ -86,4 +97,4 @@ class CustomEncoding:
         return int(ROTATION_DIMS[self.base])
 
 
-__all__ = ["CustomEncoding", "RotationTransform"]
+__all__ = ["LOCAL_ARM", "CustomEncoding", "RotationTransform"]

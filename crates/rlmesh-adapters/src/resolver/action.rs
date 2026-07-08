@@ -30,13 +30,44 @@ fn check_role_dim_law(role: &str, dim: u32) -> Result<()> {
 /// the matched (always present) role both sides share.
 fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()> {
     check_role_dim_law(role, model.dim)?;
-    let converting = match (model.encoding, env.encoding) {
+    // A custom action encoding shadows to its `base` for the structural checks;
+    // the host-side arm (`to_base`) is never imported or run here. Validate that
+    // a model-side custom carries the action arm it needs.
+    if let Some(custom) = model
+        .encoding
+        .as_ref()
+        .and_then(|encoding| encoding.custom())
+    {
+        if custom.to_base.is_none() {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "action role {}: an action custom encoding needs to_base",
+                    quoted(role)
+                ),
+            ));
+        }
+        if model.dim != custom.base().dims() {
+            return Err(err(
+                ErrorCode::DimMismatch,
+                format!(
+                    "action role {}: a custom encoding preserves its base width {} but the actuator declares dim {}",
+                    quoted(role),
+                    custom.base().dims(),
+                    model.dim
+                ),
+            ));
+        }
+    }
+    let model_encoding = model.encoding.as_ref().map(|encoding| encoding.base());
+    let env_encoding = env.encoding.as_ref().map(|encoding| encoding.base());
+    let converting = match (model_encoding, env_encoding) {
         (Some(model_encoding), Some(env_encoding)) => model_encoding != env_encoding,
         _ => false,
     };
     if converting {
-        let model_encoding = model.encoding.expect("checked above");
-        let env_encoding = env.encoding.expect("checked above");
+        let model_encoding = model_encoding.expect("checked above");
+        let env_encoding = env_encoding.expect("checked above");
         if model.dim != model_encoding.dims() || env.dim != env_encoding.dims() {
             return Err(err(
                 ErrorCode::DimMismatch,
@@ -45,22 +76,22 @@ fn check_action_dims(model: &Actuator, env: &Actuator, role: &str) -> Result<()>
                     quoted(role),
                     model.dim,
                     env.dim,
-                    quoted_encoding(model.encoding),
-                    quoted_encoding(env.encoding)
+                    quoted_encoding(Some(model_encoding)),
+                    quoted_encoding(Some(env_encoding))
                 ),
             ));
         }
         return Ok(());
     }
-    if model.encoding != env.encoding && (model.encoding.is_none() || env.encoding.is_none()) {
+    if model_encoding != env_encoding && (model_encoding.is_none() || env_encoding.is_none()) {
         return Err(err(
             ErrorCode::EncodingMismatch,
             format!(
                 "action role {}: cannot convert encoding {} to {}; both sides must \
              declare a rotation encoding",
                 quoted(role),
-                quoted_encoding(model.encoding),
-                quoted_encoding(env.encoding)
+                quoted_encoding(model_encoding),
+                quoted_encoding(env_encoding)
             ),
         ));
     }
@@ -232,8 +263,14 @@ pub(super) fn plan_action(model: &Action, env: &Action) -> Result<ActionPlan> {
             role: Some(role.clone()),
             start,
             stop: start + model_component.dim,
-            src_encoding: model_component.encoding,
-            dst_encoding: env_component.encoding,
+            src_encoding: model_component
+                .encoding
+                .as_ref()
+                .map(|encoding| encoding.base()),
+            dst_encoding: env_component
+                .encoding
+                .as_ref()
+                .map(|encoding| encoding.base()),
             src_range: if same_range {
                 None
             } else {
@@ -322,6 +359,30 @@ mod tests {
         let error = plan_action(&model, &env).unwrap_err();
         assert_eq!(error.code, ErrorCode::Unsupported);
         assert!(error.message.contains("threshold requires a binary"));
+    }
+
+    #[test]
+    fn rejects_custom_action_encoding_with_a_non_base_width() {
+        use crate::spec::{ActionEncoding, CustomEncoding, RotationEncoding};
+
+        let mut model_rot = component("custom/rot");
+        model_rot.dim = 3;
+        model_rot.encoding = Some(ActionEncoding::Custom(CustomEncoding {
+            base: RotationEncoding::Rot6d,
+            name: "packed".to_owned(),
+            from_base: None,
+            to_base: Some("m:g".to_owned()),
+        }));
+        let mut env_rot = component("custom/rot");
+        env_rot.dim = 6;
+        env_rot.encoding = Some(ActionEncoding::Native(RotationEncoding::Rot6d));
+        let error = plan_action(&layout(vec![model_rot]), &layout(vec![env_rot])).unwrap_err();
+        assert_eq!(error.code, ErrorCode::DimMismatch);
+        assert!(
+            error.message.contains("preserves its base width"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

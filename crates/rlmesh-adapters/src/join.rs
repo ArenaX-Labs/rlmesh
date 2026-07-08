@@ -538,7 +538,10 @@ fn resolve_action(action: &Action, action_space: &SpaceView) -> Result<Action> {
             offset += component.dim;
             continue;
         };
-        if let Some(encoding) = component.encoding
+        // An env actuator declares a native format; a (nonsensical) custom
+        // encoding on the env side shadows to its base -- env-side host arms are
+        // never run, so there is nothing to inject, only a base width to check.
+        if let Some(encoding) = component.encoding.as_ref().map(|encoding| encoding.base())
             && component.dim != encoding.dims()
         {
             return Err(JoinError::ActionEncodingMismatch {
@@ -660,7 +663,7 @@ mod tests {
         Actuator {
             role: Some(role.to_owned()),
             dim,
-            encoding,
+            encoding: encoding.map(crate::spec::ActionEncoding::Native),
             range: None,
             scale: None,
             invert: false,

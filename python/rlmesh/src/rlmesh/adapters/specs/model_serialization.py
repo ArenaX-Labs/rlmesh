@@ -20,8 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
-from ._codec import one_or_many, to_pair
-from .custom_encoding import CustomEncoding
+from ._codec import encoding_from_wire, encoding_to_wire, one_or_many, to_pair
 from .model_inputs import (
     Concat,
     ConcatPart,
@@ -138,14 +137,12 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
 
 
 def _part_to_dict(part: State) -> Any:
-    """Return the wire form of one concat part: a bare role string or object."""
-    if isinstance(part.encoding, CustomEncoding):
-        raise ValueError(
-            f"state part {part.role!r} uses a CustomEncoding, whose host-side "
-            "transforms cannot be serialized; resolve it locally (the model spec "
-            "need not travel), or add the encoding to the native vocabulary for "
-            "a shared convention"
-        )
+    """Return the wire form of one concat part: a bare role string or object.
+
+    A ``CustomEncoding`` part serializes to its ``{base, ...}`` object when its
+    arms are ``module:callable`` entrypoints; an in-process callable arm is
+    refused (see :func:`._codec.encoding_to_wire`).
+    """
     role_only = (
         part.encoding is None
         and part.dim is None
@@ -157,7 +154,7 @@ def _part_to_dict(part: State) -> Any:
         return part.role
     out: dict[str, Any] = {"role": part.role}
     if part.encoding is not None:
-        out["encoding"] = part.encoding
+        out["encoding"] = encoding_to_wire(part.encoding)
     if part.dim is not None:
         out["dim"] = part.dim
     if part.index is not None:
@@ -251,7 +248,7 @@ def _part_from_dict(item: object) -> ConcatPart:
     part = cast(Mapping[str, Any], item)
     return State(
         role=part["role"],
-        encoding=one_or_many(part.get("encoding")),
+        encoding=encoding_from_wire(part.get("encoding")),
         dim=part.get("dim"),
         index=part.get("index"),
         optional=bool(part.get("optional", False)),

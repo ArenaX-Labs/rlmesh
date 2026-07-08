@@ -58,11 +58,12 @@ pub mod v1 {
     pub use crate::resolver::resolve;
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
-        Action, Actuator, ConcatPart, Custom, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags,
-        EnvText, Field, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, Normalize,
-        ObsLeaf, ObsNode, RolePolicy, RotationEncoding, SplitLayout, State, StateContainer,
-        StateTag, Text, TextContainer, TextTag, UnknownFeature, reject_unknowns_env,
-        reject_unknowns_model, reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
+        Action, ActionEncoding, Actuator, ConcatPart, Custom, CustomEncoding, EnvFeature,
+        EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, Field, Image, ImageLayout, ImageTag,
+        InputNode, ModelLeaf, ModelSpec, Normalize, ObsLeaf, ObsNode, RolePolicy, RotationEncoding,
+        SplitLayout, State, StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag,
+        UnknownFeature, reject_unknowns_env, reject_unknowns_model, reject_unsanctioned_roles_env,
+        reject_unsanctioned_roles_model,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, NoEncodings, apply_actions, assemble_obs,

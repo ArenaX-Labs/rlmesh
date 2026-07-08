@@ -51,8 +51,14 @@ class ModelSpec:
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible dict form of this spec.
 
+        A ``CustomEncoding`` field serializes to a describe/validate schema
+        (``{base, ...}``): the platform validates its base against an env and
+        shows it, but never runs the arm. An entrypoint arm travels as its
+        ``module:callable`` string; an in-process callable arm has no wire form,
+        so it travels as a non-portable ``<local>`` marker.
+
         Raises:
-            ValueError: If a custom input cannot be serialized (an in-process
+            ValueError: If a custom *input* cannot be serialized (an in-process
                 callable, or an entrypoint custom at the publish boundary).
         """
         raw = {
@@ -72,11 +78,14 @@ class ModelSpec:
         """Return a metadata mapping fragment carrying this spec.
 
         Merge the result into model contract metadata so remote consumers
-        can recover the spec via :meth:`from_metadata`. A published spec must
-        be fully declarative: custom inputs (whether in-process callables or
-        ``module:callable`` entrypoint strings) cannot be published, because a
-        consumer would have to import code from the contract. Resolve such a
-        spec locally instead (the model spec need not travel).
+        can recover the spec via :meth:`from_metadata`. Custom *inputs* (whole
+        opaque host transforms, whether in-process callables or
+        ``module:callable`` entrypoints) cannot be published, because a consumer
+        would have to import code from the contract; resolve such a spec locally
+        instead. A custom *encoding* is different: it publishes as a
+        describe/validate schema (``{base, ...}``, in-process arms as a
+        ``<local>`` marker) that the platform shows and validates against an env
+        but never runs -- execution stays where the callable was defined.
 
         Raises:
             ValueError: If any input is a custom transform (in-process callable

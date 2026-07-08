@@ -23,6 +23,7 @@
 
 mod accept_set;
 mod action;
+mod custom_encoding;
 mod env;
 mod env_tags;
 mod layouts;
@@ -34,6 +35,7 @@ mod strict;
 
 pub use accept_set::AcceptSet;
 pub use action::{Action, Actuator};
+pub use custom_encoding::{ActionEncoding, CustomEncoding, StateEncoding};
 pub use env::{EnvFeature, EnvFeatures, EnvImage, EnvState, EnvText, UnknownFeature};
 pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, StateTag, TextTag};
 pub use layouts::{FitMode, ImageLayout};

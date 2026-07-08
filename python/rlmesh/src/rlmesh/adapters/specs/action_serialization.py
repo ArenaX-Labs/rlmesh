@@ -10,20 +10,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from ._codec import to_pair
+from ._codec import encoding_from_wire, encoding_to_wire, to_pair
 from .action import Action, Actuator
-from .custom_encoding import CustomEncoding
 
 
 def action_to_dict(action: Action) -> dict[str, Any]:
-    """Return the JSON-compatible dict form of an action layout."""
-    for component in action.components:
-        if isinstance(component.encoding, CustomEncoding):
-            raise ValueError(
-                f"actuator {component.role!r} uses a CustomEncoding, "
-                "whose host-side transforms cannot be serialized; resolve it "
-                "locally, or add the encoding to the native vocabulary"
-            )
+    """Return the JSON-compatible dict form of an action layout.
+
+    A ``CustomEncoding`` actuator serializes to its ``{base, ...}`` object when
+    its arms are ``module:callable`` entrypoints; an in-process callable arm is
+    refused (see :func:`._codec.encoding_to_wire`).
+    """
     out: dict[str, Any] = {
         "components": [_actuator_to_dict(component) for component in action.components],
         "clip": list(action.clip) if action.clip else None,
@@ -38,7 +35,7 @@ def _actuator_to_dict(component: Actuator) -> dict[str, Any]:
     if component.role is not None:
         out["role"] = component.role
     out["dim"] = component.dim
-    out["encoding"] = component.encoding
+    out["encoding"] = encoding_to_wire(component.encoding)
     out["range"] = list(component.range) if component.range else None
     out["binary"] = component.binary
     # scale/invert/threshold/clip/fill are additive: emit only when set, so
@@ -64,7 +61,7 @@ def action_from_dict(data: Mapping[str, Any]) -> Action:
         Actuator(
             role=item.get("role"),
             dim=int(item["dim"]),
-            encoding=item.get("encoding"),
+            encoding=encoding_from_wire(item.get("encoding")),
             range=to_pair(item.get("range")),
             scale=item.get("scale"),
             invert=bool(item.get("invert", False)),

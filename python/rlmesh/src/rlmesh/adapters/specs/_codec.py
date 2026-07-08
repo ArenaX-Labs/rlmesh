@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 from ..._rlmesh import adapters_spec_normalize
+from .custom_encoding import LOCAL_ARM, CustomEncoding
 
 
 def normalize_spec(
@@ -51,6 +52,62 @@ def one_or_many(value: Any) -> Any:
             return items[0]
         return items
     return value
+
+
+def _arm_to_wire(arm: Any) -> str:
+    """One custom-encoding arm as a wire string.
+
+    An entrypoint arm travels as its ``module:callable`` reference. An in-process
+    callable has no wire form, so it travels as the non-portable
+    :data:`~rlmesh.adapters.specs.custom_encoding.LOCAL_ARM` marker: the spec is
+    still showable and validatable, but the arm cannot be reconstructed or run
+    from the wire.
+    """
+    return arm if isinstance(arm, str) else LOCAL_ARM
+
+
+def encoding_to_wire(encoding: Any) -> Any:
+    """Render a rotation-encoding field to its JSON-compatible wire form.
+
+    A native encoding (a ``str``, or a ``tuple`` accept-set of strings) passes
+    through (the tuple as a list); ``None`` stays ``None``. A
+    :class:`~rlmesh.adapters.CustomEncoding` becomes a ``{base, ...}`` object the
+    Rust codec accepts: a *schema* the platform describes and validates against
+    an env but never runs. Entrypoint arms travel as their ``module:callable``
+    strings; in-process callable arms travel as the ``<local>`` marker (see
+    :func:`_arm_to_wire`).
+    """
+    if encoding is None or isinstance(encoding, str):
+        return encoding
+    if isinstance(encoding, tuple):
+        return list(cast("tuple[Any, ...]", encoding))
+    if isinstance(encoding, CustomEncoding):
+        out: dict[str, Any] = {"base": encoding.base, "name": encoding.name}
+        if encoding.from_base is not None:
+            out["from_base"] = _arm_to_wire(encoding.from_base)
+        if encoding.to_base is not None:
+            out["to_base"] = _arm_to_wire(encoding.to_base)
+        return out
+    return encoding
+
+
+def encoding_from_wire(raw: Any) -> Any:
+    """Rebuild a rotation-encoding field from its canonical wire form.
+
+    The inverse of :func:`encoding_to_wire`, reading Rust-validated data: a
+    ``str`` or accept-set list via :func:`one_or_many`, and a ``{base, ...}``
+    object into a :class:`~rlmesh.adapters.CustomEncoding` (whose arms are the
+    published entrypoint strings).
+    """
+    if isinstance(raw, Mapping):
+        part = cast("Mapping[str, Any]", raw)
+        return CustomEncoding(
+            base=part["base"],
+            from_base=part.get("from_base"),
+            to_base=part.get("to_base"),
+            name=part.get("name", "custom"),
+        )
+    return one_or_many(raw)
 
 
 def check_accept_set(what: str, role: str | None, encoding: Any) -> None:

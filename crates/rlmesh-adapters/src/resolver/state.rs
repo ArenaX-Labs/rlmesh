@@ -20,7 +20,7 @@ fn zero_fill_width(component: &ConcatPart, at: &str) -> Result<u32> {
     if let Some(native) = component
         .encoding
         .as_ref()
-        .and_then(|set| set.first_known())
+        .and_then(|encoding| encoding.base())
     {
         return Ok(native.dims());
     }
@@ -106,6 +106,36 @@ pub(super) fn plan_state(
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
+        // A custom encoding resolves structurally to its `base` here, but it can
+        // only ever *run* as a sole, always-present host-side repack: a
+        // multi-part concat places it at an env-dependent offset the shim cannot
+        // pin, and an absent optional part has no zero form of the custom
+        // packing. Reject both at this platform door rather than admit a spec
+        // that provably cannot resolve where the arm lives.
+        let is_custom = component
+            .encoding
+            .as_ref()
+            .is_some_and(|encoding| encoding.custom().is_some());
+        if is_custom && model_input.components.len() > 1 {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "state role {}: a custom encoding must be the sole part of its input; a \
+                     multi-part concat's offsets are env-dependent",
+                    quoted(&component.role)
+                ),
+            ));
+        }
+        if is_custom && component.optional {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "state role {}: a custom encoding cannot be optional (its host-side repack \
+                     has no zero form)",
+                    quoted(&component.role)
+                ),
+            ));
+        }
         let Some(env_state) = states_by_role.get(&component.role).copied() else {
             // The role's data is present but under a kind this core can't read:
             // fail loud before the optional zero-fill silently degrades it. A
@@ -135,10 +165,41 @@ pub(super) fn plan_state(
                 ),
             ));
         };
+        // A custom encoding shadows to its `base` for the structural
+        // negotiation; the host-side arm is never imported or run here (only a
+        // trusted in-process resolve does). Validate the obs-side invariants the
+        // platform can check without running the arm.
+        let model_set = match component.encoding.as_ref() {
+            Some(encoding) => {
+                if let Some(custom) = encoding.custom() {
+                    if custom.from_base.is_none() {
+                        return Err(err(
+                            ErrorCode::Unsupported,
+                            format!(
+                                "state role {}: an observation custom encoding needs from_base",
+                                quoted(&component.role)
+                            ),
+                        ));
+                    }
+                    if component.dim.is_some() || component.index.is_some() {
+                        return Err(err(
+                            ErrorCode::Unsupported,
+                            format!(
+                                "state role {}: a custom encoding cannot also set dim or index \
+                                 (they would change its width)",
+                                quoted(&component.role)
+                            ),
+                        ));
+                    }
+                }
+                Some(encoding.accept_set())
+            }
+            None => None,
+        };
         let (src_encoding, dst_encoding) = select_state_encoding(
             &component.role,
             env_state.encoding.as_ref(),
-            component.encoding.as_ref(),
+            model_set.as_ref(),
         )?;
         // When converting, the env feature's declared width must match the
         // native (source) encoding the raw value is in.

@@ -2013,6 +2013,17 @@ ROT6D_REV = adapt.CustomEncoding(
     name="rot6d_rev",
 )
 
+# The same reversal expressed as `module:callable` entrypoint arms. This is the
+# portable-*schema* form: it publishes as a `{base, ...}` object and validates
+# against an env, but its execution is deferred -- a custom encoding runs only
+# via an in-process callable, so the entrypoint arm is never imported here.
+ROT6D_FLIP_ENTRYPOINT = adapt.CustomEncoding(
+    base="rot6d",
+    from_base="numpy:flip",
+    to_base="numpy:flip",
+    name="rot6d_flip",
+)
+
 
 def _rot_obs_env() -> Env:
     """An env with a quaternion EEF_ROT and a trivial gripper action."""
@@ -2231,13 +2242,177 @@ def test_custom_obs_encoding_rejects_non_1d_transform_output():
         adapter.transform_obs({"q": quat})
 
 
-def test_custom_encoding_spec_is_not_serializable():
+def test_inprocess_custom_encoding_serializes_as_local_marker():
+    # An in-process callable arm has no wire form, so the spec still serializes
+    # (showable + validatable) but records a non-portable <local> marker. It runs
+    # locally where the callable lives; the reconstructed stub does not.
     spec = adapt.ModelSpec(
         input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_REV)},
         output=_gripper_action(),
     )
-    with pytest.raises(ValueError, match="CustomEncoding"):
-        spec.to_dict()
+    data = spec.to_dict()
+    enc = data["input"]["rot"]["components"][0]["encoding"]
+    assert enc == {
+        "base": "rot6d",
+        "name": "rot6d_rev",
+        "from_base": "<local>",
+        "to_base": "<local>",
+    }
+    assert spec.to_metadata()  # publishable as a schema, no raise
+    # Reading it back gives a describe-only stub that cannot be run.
+    env = _rot_obs_env()
+    stub = adapt.ModelSpec.from_dict(data)
+    with pytest.raises(adapt.AdapterResolutionError, match="did not travel"):
+        resolve(env, stub)
+
+
+def test_entrypoint_custom_encoding_is_publishable_and_round_trips():
+    # The entrypoint form serializes to a `{base, ...}` object, round-trips
+    # through the Rust codec, and is publishable in contract metadata -- the
+    # spec travels and validates even though the platform never runs the arm.
+    spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_FLIP_ENTRYPOINT)},
+        output=adapt.Action(
+            adapt.Actuator(
+                adapt.ACTION_DELTA_ROT, dim=6, encoding=ROT6D_FLIP_ENTRYPOINT
+            )
+        ),
+    )
+    data = spec.to_dict()
+    obs_leaf = data["input"]["rot"]["components"][0]["encoding"]
+    assert obs_leaf == {
+        "base": "rot6d",
+        "name": "rot6d_flip",
+        "from_base": "numpy:flip",
+        "to_base": "numpy:flip",
+    }
+    action_enc = data["output"]["components"][0]["encoding"]
+    assert action_enc["base"] == "rot6d" and action_enc["to_base"] == "numpy:flip"
+    assert adapt.ModelSpec.from_dict(data) == spec
+    assert spec.to_metadata()  # publishable, no raise
+
+
+def test_entrypoint_custom_encoding_execution_is_unsupported():
+    # An entrypoint custom encoding is a validation/describe schema: it serializes
+    # and the CP resolves it structurally, but executing it is deferred. Execution
+    # is pinned to an in-process callable (the only runnable form), so even
+    # trust_entrypoints does not run the arm.
+    env = _rot_obs_env()
+    spec = adapt.ModelSpec(
+        input={"rot": adapt.State(adapt.EEF_ROT, encoding=ROT6D_FLIP_ENTRYPOINT)},
+        output=_gripper_action(),
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="not supported yet"):
+        resolve(env, spec)
+    with pytest.raises(adapt.AdapterResolutionError, match="not supported yet"):
+        resolve(env, spec, trust_entrypoints=True)  # no bypass
+
+
+def test_platform_resolve_validates_custom_encoding_object_without_running_it():
+    # The Rust resolver (the platform's adapters-resolve door) validates a
+    # published custom-encoding object against an env by shadowing it to its
+    # base, and never imports the arm -- an unimportable arm still resolves.
+    import json
+
+    from rlmesh._rlmesh import adapters_resolve
+
+    env = _rot_obs_env()
+    model_spec_json = json.dumps(
+        {
+            "input": {
+                "rot": {
+                    "type": "state",
+                    "components": [
+                        {
+                            "role": adapt.EEF_ROT,
+                            "encoding": {
+                                "base": "rot6d",
+                                "from_base": "does.not:exist",
+                            },
+                        }
+                    ],
+                }
+            },
+            "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+        }
+    )
+    plan = adapters_resolve(
+        json.dumps(env.tags.to_dict()),
+        env.obs_space,
+        env.action_space,
+        model_spec_json,
+    )
+    assert plan is not None  # validated structurally as rot6d; arm never touched
+
+
+def test_platform_resolve_rejects_optional_custom_encoding():
+    # A custom encoding cannot be optional: its host-side repack has no zero form,
+    # so an absent part could never be filled. The platform door rejects it up
+    # front rather than admit a spec the model can never resolve.
+    import json
+
+    from rlmesh._rlmesh import adapters_resolve
+
+    env = _rot_obs_env()
+    model_spec_json = json.dumps(
+        {
+            "input": {
+                "rot": {
+                    "type": "state",
+                    "components": [
+                        {
+                            "role": adapt.EEF_ROT,
+                            "encoding": {"base": "rot6d", "from_base": "m:f"},
+                            "optional": True,
+                        }
+                    ],
+                }
+            },
+            "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+        }
+    )
+    with pytest.raises(ValueError, match="cannot be optional"):
+        adapters_resolve(
+            json.dumps(env.tags.to_dict()),
+            env.obs_space,
+            env.action_space,
+            model_spec_json,
+        )
+
+
+def test_platform_resolve_rejects_custom_encoding_in_a_multipart_concat():
+    # A custom encoding must be the sole part of its input slot: in a multi-part
+    # concat its offset is env-dependent, so the host-side repack cannot be
+    # placed. The platform door rejects it up front.
+    import json
+
+    from rlmesh._rlmesh import adapters_resolve
+
+    env = _rot_obs_env()
+    model_spec_json = json.dumps(
+        {
+            "input": {
+                "proprio": {
+                    "type": "state",
+                    "components": [
+                        {
+                            "role": adapt.EEF_ROT,
+                            "encoding": {"base": "rot6d", "from_base": "m:f"},
+                        },
+                        {"role": adapt.EEF_POS, "dim": 3},
+                    ],
+                }
+            },
+            "output": {"components": [{"role": adapt.ACTION_GRIPPER, "dim": 1}]},
+        }
+    )
+    with pytest.raises(ValueError, match="sole part"):
+        adapters_resolve(
+            json.dumps(env.tags.to_dict()),
+            env.obs_space,
+            env.action_space,
+            model_spec_json,
+        )
 
 
 def test_encoding_free_spec_still_serializes_unchanged():
