@@ -12,6 +12,7 @@
       "Param",
       "ParamSpec",
       "Reader",
+      "Recorder",
       "RemoteEnv",
       "RemoteModel",
       "RemoteVectorEnv",
@@ -293,6 +294,41 @@
           }
         },
         "signature": "Reader(adapter: Any, roles: tuple[str, ...], bridge: ValueBridge)",
+        "stability": "Stable"
+      },
+      "Recorder": {
+        "kind": "class",
+        "members": {
+          "add": {
+            "kind": "function",
+            "signature": "add(result: RunResult, *, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, included_in_metrics: bool = True)"
+          },
+          "capture": {
+            "kind": "function",
+            "signature": "capture(*, model: str, env: str, task: str | None = None, config: dict[str, Any] | None = None, cameras: list[str] | None = None, frame_fn: FrameFn | None = None, session: Session[Any, Any] | None = None, video_info_keys: tuple[str, ...] = DEFAULT_VIDEO_INFO_KEYS, included_in_metrics: bool = True)"
+          },
+          "close": {
+            "kind": "function",
+            "signature": "close()"
+          },
+          "export": {
+            "kind": "function",
+            "signature": "export(path: str | Path, *, archive: bool | str | None = None, recorded_at: str | None = None)"
+          },
+          "result_set_id": {
+            "kind": "property",
+            "signature": "property result_set_id: str"
+          },
+          "to_dict": {
+            "kind": "function",
+            "signature": "to_dict(*, recorded_at: str | None = None)"
+          },
+          "workloads": {
+            "kind": "property",
+            "signature": "property workloads: tuple[WorkloadRecord, ...]"
+          }
+        },
+        "signature": "Recorder(*, result_set_id: str | None = None, video: bool = False, fps: int = DEFAULT_FPS)",
         "stability": "Stable"
       },
       "RemoteEnv": {

@@ -307,10 +307,13 @@ def _resolve_render(client: Any) -> Callable[[], object]:
     return lambda: render()
 
 
-def _to_hwc_u8(frame: object) -> tuple[bytes, int, int, int] | None:
-    """A render/read camera array (numpy / torch / jax) to ``(bytes, H, W, C)`` uint8.
+def normalize_frame(frame: object) -> Any:
+    """A render/read camera array (numpy / torch / jax) to a contiguous uint8 HWC array.
 
-    Returns ``None`` for anything not a 1/3/4-channel HWC image.
+    Returns ``None`` for anything not a 1/3/4-channel HWC image. Range-normalizes a
+    float frame (``[0, 1]``, ``[-1, 1]``, or min-max) into ``[0, 255]``. Shared by the
+    live viewer (:func:`_to_hwc_u8`) and the recorder so a captured frame is identical
+    to what the viewer would draw.
     """
     import numpy as np
 
@@ -332,6 +335,16 @@ def _to_hwc_u8(frame: object) -> tuple[bytes, int, int, int] | None:
             span = hi - lo
             a = (a - lo) * (255.0 / span) if span > 1e-12 else a - lo
         array = a.clip(0.0, 255.0).astype(np.uint8)
-    array = np.ascontiguousarray(array)
+    return np.ascontiguousarray(array)
+
+
+def _to_hwc_u8(frame: object) -> tuple[bytes, int, int, int] | None:
+    """A render/read camera array (numpy / torch / jax) to ``(bytes, H, W, C)`` uint8.
+
+    Returns ``None`` for anything not a 1/3/4-channel HWC image.
+    """
+    array = normalize_frame(frame)
+    if array is None:
+        return None
     height, width, channels = (int(dim) for dim in array.shape)
     return array.tobytes(), height, width, channels

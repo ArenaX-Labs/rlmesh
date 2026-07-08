@@ -56,6 +56,7 @@ from ._sandbox import SandboxBuild, SandboxRuntime
 from ._server import EnvServer
 from ._variants import Variant
 from .params import Param, ParamSpec, Vector
+from .recorder import Recorder
 
 try:
     __version__ = _package_version("rlmesh")
@@ -84,6 +85,7 @@ __all__ = [
     "Param",
     "ParamSpec",
     "Reader",
+    "Recorder",
     "RemoteEnv",
     "RemoteModel",
     "RemoteVectorEnv",
