@@ -71,6 +71,8 @@ class Recorder:
         Rust, no ffmpeg); ``fps`` sets the recorded playback rate and ``quality``
         (1..=100, higher is better/larger) trades file size against fidelity.
         """
+        if fps < 1:
+            raise ValueError(f"Recorder.fps must be >= 1; got {fps}")
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
         self._stager = MediaStager(fps=fps, quality=quality)
 

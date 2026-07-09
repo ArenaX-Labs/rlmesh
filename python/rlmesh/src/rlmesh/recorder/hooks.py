@@ -40,6 +40,22 @@ class _Cam:
     rel: str
 
 
+def _render_camera_label(roles: list[str]) -> str:
+    """Return a render label that cannot shadow a declared image role."""
+    taken = set(roles)
+    if RENDER_CAMERA not in taken:
+        return RENDER_CAMERA
+    label = f"{RENDER_CAMERA}()"
+    if label not in taken:
+        return label
+    index = 2
+    while True:
+        label = f"{RENDER_CAMERA}({index})"
+        if label not in taken:
+            return label
+        index += 1
+
+
 class CaptureHooks(RunHooks):
     """Accumulate episodes (and streamed media) into one :class:`WorkloadRecord`.
 
@@ -70,6 +86,7 @@ class CaptureHooks(RunHooks):
         #: Memoized ``render()`` thunk (resolved once from the session), or ``None``.
         self._render: Callable[[], object] | None = None
         self._render_resolved = False
+        self._render_camera = RENDER_CAMERA if cameras is not None else None
         #: camera -> in-flight writer for the current episode.
         self._writers: dict[str, _Cam] = {}
         #: cameras that raised while encoding -- dropped for the whole run.
@@ -97,11 +114,13 @@ class CaptureHooks(RunHooks):
         if self._session is None:
             return
         names: list[str] = []
+        roles = image_roles(getattr(self._session, "_contract", None))
         if self._render_thunk() is not None:
-            names.append(RENDER_CAMERA)
-        for role in image_roles(getattr(self._session, "_contract", None)):
-            if role not in names:
-                names.append(role)
+            self._render_camera = _render_camera_label(roles)
+            names.append(self._render_camera)
+        else:
+            self._render_camera = None
+        names.extend(roles)
         self._cameras = tuple(names)
         if not self._cameras:
             warnings.warn(
@@ -113,7 +132,7 @@ class CaptureHooks(RunHooks):
     def _read_source(
         self, event: StepEvent, camera: str
     ) -> tuple[bytes, int, int, int] | None:
-        if camera == RENDER_CAMERA:
+        if camera == self._render_camera:
             thunk = self._render_thunk()
             if thunk is None:
                 return None

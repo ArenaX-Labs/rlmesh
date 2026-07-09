@@ -12,10 +12,12 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import rlmesh
+import rlmesh.adapters as adapt
 from rlmesh import EpisodeResult, Recorder, RunResult, StepEvent
 from rlmesh.recorder import SCHEMA
 
@@ -102,6 +104,12 @@ def test_task_defaults_to_env() -> None:
     rec = Recorder()
     wl = rec.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="cartpole")
     assert wl.task == "cartpole"
+
+
+def test_recorder_validates_fps() -> None:
+    with pytest.raises(ValueError, match="fps"):
+        Recorder(fps=0)
+    Recorder(fps=1)
 
 
 def test_included_in_metrics_excludes_from_aggregates() -> None:
@@ -263,6 +271,139 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
     assert (media[0].width, media[0].height) == (64, 48)
     out = rec.export(tmp_path / "bundle")
     assert (out / media[0].path).read_bytes()[4:8] == b"ftyp"
+    rec.close()
+
+
+def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
+    """Recorder.capture works through a real session().run hook path."""
+    np = pytest.importorskip("numpy")
+    gym = pytest.importorskip("gymnasium")
+
+    class _ImageEnv:
+        def __init__(self) -> None:
+            self.metadata: dict[str, object] = {}
+            self.observation_space = gym.spaces.Dict(
+                {"cam": gym.spaces.Box(0, 255, shape=(16, 16, 3), dtype=np.uint8)}
+            )
+            self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(1,), dtype=np.float32)
+            self._step = 0
+
+        def _obs(self) -> dict[str, object]:
+            return {"cam": np.full((16, 16, 3), 40 + self._step * 20, dtype=np.uint8)}
+
+        def reset(
+            self, *, seed: object = None, options: object = None
+        ) -> tuple[dict[str, object], dict[str, object]]:
+            self._step = 0
+            return self._obs(), {"seed": seed}
+
+        def step(
+            self, action: object
+        ) -> tuple[dict[str, object], float, bool, bool, dict[str, object]]:
+            self._step += 1
+            return self._obs(), 1.0, self._step >= 2, False, {"action": action}
+
+        def close(self) -> None:
+            pass
+
+    tags = adapt.EnvTags(
+        observation={"cam": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    env = adapt.tag(_ImageEnv(), tags)
+
+    rec = Recorder(fps=12)
+    with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
+        result = sess.run(
+            seeds=[123],
+            hooks=rec.capture(
+                model="random", env="image-env", task="smoke", session=sess
+            ),
+        )
+
+    assert result.num_episodes == 1
+    assert result.episodes[0].steps == 2
+    media = rec.workloads[0].episodes[0].media
+    assert len(media) == 1
+    ref = media[0]
+    assert ref.camera == adapt.IMAGE_PRIMARY
+    assert ref.frame_count == 2 and ref.fps == 12.0
+    assert (ref.width, ref.height) == (16, 16)
+    out = rec.export(tmp_path / "bundle")
+    assert (out / ref.path).read_bytes()[4:8] == b"ftyp"
+    rec.close()
+
+
+def test_auto_discovery_records_image_role_named_render() -> None:
+    """A role named ``render`` must not be hidden by the env render() source."""
+    np = pytest.importorskip("numpy")
+    render_img = np.full((32, 32, 3), 200, dtype=np.uint8)
+    role_img = np.full((32, 32, 3), 50, dtype=np.uint8)
+    reads: list[str] = []
+    tags = adapt.EnvTags(
+        observation={"rgb": adapt.ImageTag(role="render")},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+
+    class _Client:
+        render_mode = "rgb_array"
+
+        def render(self) -> object:
+            return render_img
+
+    session: Any = SimpleNamespace(
+        _client=_Client(),
+        _contract=SimpleNamespace(metadata=tags.to_metadata()),
+    )
+
+    def read(item: object) -> object:
+        role = getattr(item, "role", None)
+        assert role == "render"
+        reads.append(role)
+        return role_img
+
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=read))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render()", "render"]
+    assert len({m.path for m in media}) == 2
+    assert reads == ["render"]
+    rec.close()
+
+
+def test_auto_discovery_reads_render_role_without_render_source() -> None:
+    """A ``render`` image role is recordable when there is no env render() source."""
+    np = pytest.importorskip("numpy")
+    role_img = np.full((32, 32, 3), 75, dtype=np.uint8)
+    reads: list[str] = []
+    tags = adapt.EnvTags(
+        observation={"rgb": adapt.ImageTag(role="render")},
+        action=adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1)),
+    )
+    session: Any = SimpleNamespace(
+        _client=SimpleNamespace(render_mode=None),
+        _contract=SimpleNamespace(metadata=tags.to_metadata()),
+    )
+
+    def read(item: object) -> object:
+        role = getattr(item, "role", None)
+        assert role == "render"
+        reads.append(role)
+        return role_img
+
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", session=session)
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=read))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render"]
+    assert reads == ["render"]
     rec.close()
 
 
