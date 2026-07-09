@@ -16,6 +16,7 @@
 
 mod cli;
 mod platform;
+mod style;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
@@ -53,7 +54,7 @@ async fn run_cli_with_writers(
         }
     };
 
-    match cli.command {
+    let result = match cli.command {
         Command::Version => version(stdout),
         Command::Login(args) => platform::login(&args, stdout).await,
         Command::Logout(args) => platform::logout(&args, stdout),
@@ -67,6 +68,20 @@ async fn run_cli_with_writers(
             cli::ProfileCommand::Remove { name } => platform::profile_remove(&name, stdout),
         },
         Command::Viewtest(args) => viewtest::run(&args, stderr),
+    };
+
+    // Render a command failure as a clean one-line diagnostic and a non-zero
+    // exit code rather than letting it propagate. The native binary would print
+    // it itself, but the embedded Python entrypoint turns a propagated error
+    // into an uncaught `RuntimeError` traceback -- so an expected nudge like
+    // "sign in first" looks like a crash. Keep both surfaces identical here.
+    match result {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            let prefix = style::Style::stderr().red_bold("Error:");
+            writeln!(stderr, "{prefix} {err:#}")?;
+            Ok(1)
+        }
     }
 }
 

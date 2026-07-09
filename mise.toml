@@ -51,7 +51,7 @@ run = "mise install python@3.10"
 
 [tasks."setup:hooks"]
 description = "Install git hooks"
-run = "prek install"
+run = "prek install --hook-type pre-commit --hook-type post-merge --hook-type post-checkout"
 
 [tasks."setup:rust:targets"]
 description = "Install Rust targets used for release wheel builds"
