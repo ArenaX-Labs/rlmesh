@@ -40,16 +40,47 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{LoginArgs, ProfileArgs};
+use crate::style::Style;
+
+/// The hosted RLMesh platform, used by `login` when neither `--platform`,
+/// `RLMESH_PLATFORM_URL`, nor a remembered profile supplies one. Already in the
+/// normalized form [`normalize_base_url`] produces (explicit scheme, no trailing
+/// slash), so it needs no further massaging.
+const DEFAULT_PLATFORM_URL: &str = "https://api.rlmesh.dev";
 
 /// Normalize an operator-supplied base URL: trim whitespace, drop a trailing
-/// slash, and prefix `https://` unless an explicit scheme is already present.
+/// slash, and prefix a scheme unless one is already present — `http://` for
+/// loopback hosts (a local dev server almost never terminates TLS, and trying
+/// anyway dies in an opaque rustls handshake error), `https://` for everything
+/// else. An explicit scheme always wins.
 fn normalize_base_url(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        trimmed.to_string()
-    } else {
-        format!("https://{trimmed}")
+        return trimmed.to_string();
     }
+    let scheme = if is_loopback_host(trimmed) {
+        "http"
+    } else {
+        "https"
+    };
+    format!("{scheme}://{trimmed}")
+}
+
+/// Whether a scheme-less base URL points at the local machine: `localhost`,
+/// any `*.localhost` name, a `127.0.0.0/8` address, or IPv6 `::1` (bare or
+/// bracketed), each with or without a port.
+fn is_loopback_host(rest: &str) -> bool {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority == "::1" || authority.starts_with("[::1]") {
+        return true;
+    }
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _port)| host);
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return ip.is_loopback();
+    }
+    host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost")
 }
 
 /// Resolve which named profile to act on.
@@ -284,12 +315,75 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Build an HTTP client with a bounded timeout.
+/// Build an HTTP client with a bounded timeout. The separate connect timeout
+/// keeps commands that merely *verify* state (whoami) from hanging half a
+/// minute on an unreachable host.
 fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .context("building HTTP client")
+}
+
+/// The transport-level failures (no HTTP response at all) that have a
+/// specific, actionable remedy worth naming.
+#[derive(Debug, PartialEq)]
+enum TransportProblem {
+    /// The server answered our TLS handshake with plain HTTP — an https URL
+    /// pointed at an http server.
+    PlaintextServer,
+    /// TLS connected but the certificate did not verify.
+    BadCertificate,
+    /// Nothing is listening on that host/port.
+    ConnectionRefused,
+    /// The hostname did not resolve.
+    UnknownHost,
+}
+
+/// Classify the rendered error chain of a failed request. reqwest exposes no
+/// structured cause for these, so this matches the stable substrings that
+/// rustls, hyper, and the OS put in the chain.
+fn classify_transport_error(chain: &str) -> Option<TransportProblem> {
+    let chain = chain.to_ascii_lowercase();
+    if chain.contains("corrupt message") || chain.contains("invalidcontenttype") {
+        Some(TransportProblem::PlaintextServer)
+    } else if chain.contains("certificate") {
+        Some(TransportProblem::BadCertificate)
+    } else if chain.contains("connection refused") {
+        Some(TransportProblem::ConnectionRefused)
+    } else if chain.contains("dns error") || chain.contains("failed to lookup") {
+        Some(TransportProblem::UnknownHost)
+    } else {
+        None
+    }
+}
+
+/// Turn a transport-level failure into a diagnostic that names the failing URL
+/// and, for the classifiable cases, the likely remedy — reqwest's own
+/// rendering ("received corrupt message of type InvalidContentType") diagnoses
+/// nothing for the operator.
+fn describe_transport_error(err: reqwest::Error, url: &str, what: &str) -> anyhow::Error {
+    if err.is_timeout() {
+        return anyhow!("{what}: {url} did not respond in time");
+    }
+    let chain = format!("{:#}", anyhow::Error::from(err.without_url()));
+    match classify_transport_error(&chain) {
+        Some(TransportProblem::PlaintextServer) => anyhow!(
+            "{what}: {url} speaks plain HTTP, not TLS. If it is a local dev server, use an explicit http:// URL, e.g. {}",
+            url.replacen("https://", "http://", 1)
+        ),
+        Some(TransportProblem::BadCertificate) => {
+            anyhow!("{what}: could not verify the TLS certificate of {url} ({chain})")
+        }
+        Some(TransportProblem::ConnectionRefused) => {
+            anyhow!("{what}: nothing is listening at {url} (connection refused)")
+        }
+        Some(TransportProblem::UnknownHost) => {
+            anyhow!("{what}: cannot resolve the host in {url}")
+        }
+        None => anyhow!("{what}: could not reach {url}: {chain}"),
+    }
 }
 
 /// Issue a GET expecting a JSON body, optionally with a bearer token.
@@ -306,27 +400,34 @@ async fn get_json<T: DeserializeOwned>(
     let resp = request
         .send()
         .await
-        .with_context(|| format!("{what} could not reach {url}"))?;
+        .map_err(|err| describe_transport_error(err, url, what))?;
     expect_json(resp, what).await
 }
 
-/// Turn a response into a decoded JSON value, mapping non-success statuses into
-/// a descriptive error that includes a truncated response body.
+/// Turn a response into a decoded JSON value, mapping non-success statuses
+/// through [`http_failure_message`].
 async fn expect_json<T: DeserializeOwned>(resp: reqwest::Response, what: &str) -> Result<T> {
     let status = resp.status();
     if !status.is_success() {
-        let body: String = resp
-            .text()
-            .await
-            .unwrap_or_default()
-            .chars()
-            .take(300)
-            .collect();
-        bail!("{what} failed with HTTP {status}: {body}");
+        let body = resp.text().await.unwrap_or_default();
+        bail!(http_failure_message(status, &body, what));
     }
     resp.json::<T>()
         .await
         .with_context(|| format!("parsing {what} response"))
+}
+
+/// Render a non-success HTTP response as a one-line diagnostic: the server's
+/// own `error.message` when the body carries the platform error shape,
+/// otherwise the truncated raw body.
+fn http_failure_message(status: reqwest::StatusCode, body: &str, what: &str) -> String {
+    match parse_error_detail(body) {
+        Some(message) => format!("{what} failed: {message} (HTTP {status})"),
+        None => {
+            let truncated: String = body.chars().take(300).collect();
+            format!("{what} failed with HTTP {status}: {truncated}")
+        }
+    }
 }
 
 /// Public `cli-config` response describing the AuthKit tenant to use.
@@ -405,6 +506,11 @@ struct RegistryInfo {
 
 /// Sign in to a platform via the OAuth device flow and store the issued API key
 /// under the selected profile.
+///
+/// The platform URL is resolved by precedence: `--platform` (into which clap
+/// folds `RLMESH_PLATFORM_URL`), then the profile's remembered platform, then
+/// [`DEFAULT_PLATFORM_URL`] — so `rlmesh login` with no flags signs in to the
+/// hosted platform, while `--platform` still points a profile at any other one.
 pub async fn login(args: &LoginArgs, stdout: &mut impl Write) -> Result<i32> {
     let mut config = load_config()?;
     let name = resolve_profile_name(args.profile.profile.as_deref(), &config);
@@ -416,42 +522,95 @@ pub async fn login(args: &LoginArgs, stdout: &mut impl Write) -> Result<i32> {
             .and_then(|p| p.platform_url.clone())
         {
             Some(url) => normalize_base_url(&url),
-            None => bail!("profile \"{name}\" has no platform yet; pass --platform <url>"),
+            None => DEFAULT_PLATFORM_URL.to_string(),
         },
     };
+    let style = Style::stdout();
     let client = http_client()?;
 
-    let auth_config: CliAuthConfig = get_json(
-        &client,
-        &format!("{platform}/v1/auth/cli-config"),
-        None,
-        "fetching sign-in configuration",
-    )
-    .await?;
+    writeln!(
+        stdout,
+        "Signing in to {} (profile \"{name}\")",
+        style.bold(&platform)
+    )?;
+    stdout.flush()?;
+
+    let config_url = format!("{platform}/v1/auth/cli-config");
+    let config_resp = client.get(&config_url).send().await.map_err(|err| {
+        describe_transport_error(err, &config_url, "fetching sign-in configuration")
+    })?;
+    if config_resp.status() == reqwest::StatusCode::NOT_FOUND {
+        bail!(
+            "{platform} does not offer CLI sign-in (GET /v1/auth/cli-config returned 404); check the platform URL"
+        );
+    }
+    let auth_config: CliAuthConfig =
+        expect_json(config_resp, "fetching sign-in configuration").await?;
     let authkit = normalize_base_url(&auth_config.authkit_domain);
 
+    let device_auth_url = format!("{authkit}/oauth2/device_authorization");
     let grant: DeviceAuthorization = expect_json(
         client
-            .post(format!("{authkit}/oauth2/device_authorization"))
+            .post(&device_auth_url)
             .form(&[("client_id", auth_config.client_id.as_str())])
             .send()
             .await
-            .context("requesting a device authorization from AuthKit")?,
+            .map_err(|err| {
+                describe_transport_error(err, &device_auth_url, "requesting a device authorization")
+            })?,
         "requesting a device authorization",
     )
     .await?;
 
+    let open_url = grant
+        .verification_uri_complete
+        .as_deref()
+        .unwrap_or(&grant.verification_uri);
+    let opened = style.interactive() && try_open_browser(open_url);
     writeln!(stdout)?;
-    writeln!(stdout, "To sign in, open {}", grant.verification_uri)?;
-    writeln!(stdout, "and enter the code: {}", grant.user_code)?;
-    if let Some(complete) = &grant.verification_uri_complete {
-        writeln!(stdout, "(direct link: {complete})")?;
+    if opened {
+        writeln!(
+            stdout,
+            "Opening your browser to approve this sign-in; if nothing appears, visit:"
+        )?;
+    } else {
+        writeln!(stdout, "To approve this sign-in, visit:")?;
     }
     writeln!(stdout)?;
-    writeln!(stdout, "Waiting for approval...")?;
+    writeln!(stdout, "    {}", style.cyan(open_url))?;
+    writeln!(stdout)?;
+    if grant.verification_uri_complete.is_some() {
+        writeln!(
+            stdout,
+            "and confirm that the page shows code {}.",
+            style.bold(&grant.user_code)
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "and enter the code {}.",
+            style.bold(&grant.user_code)
+        )?;
+    }
+    writeln!(stdout)?;
+    let minutes = grant.expires_in.div_ceil(60);
+    write!(
+        stdout,
+        "Waiting for approval (the code is valid for {minutes} minutes)"
+    )?;
     stdout.flush()?;
 
-    let access_token = poll_for_token(&client, &authkit, &auth_config.client_id, &grant).await?;
+    let poll_result = poll_for_token(
+        &client,
+        &authkit,
+        &auth_config.client_id,
+        &grant,
+        stdout,
+        style,
+    )
+    .await;
+    writeln!(stdout)?;
+    let access_token = poll_result?;
 
     let created = create_api_key(&client, &platform, &access_token).await?;
     let Some(value) = created.value else {
@@ -476,11 +635,15 @@ pub async fn login(args: &LoginArgs, stdout: &mut impl Write) -> Result<i32> {
 
     writeln!(
         stdout,
-        "Signed in to {platform} (profile \"{name}\"); API key stored in {location}."
+        "{} Signed in to {} (profile \"{name}\").",
+        style.green("✓"),
+        style.bold(&platform)
     )?;
+    writeln!(stdout, "  API key stored in {location}.")?;
     writeln!(
         stdout,
-        "Run `rlmesh registry login` to authenticate docker with the platform registry."
+        "  Next: run {} to authenticate docker with the platform registry.",
+        style.bold("rlmesh registry login")
     )?;
     Ok(0)
 }
@@ -492,6 +655,8 @@ async fn poll_for_token(
     authkit: &str,
     client_id: &str,
     grant: &DeviceAuthorization,
+    stdout: &mut impl Write,
+    style: Style,
 ) -> Result<String> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(grant.expires_in);
     let mut interval = Duration::from_secs(grant.interval.unwrap_or(5).max(1));
@@ -501,6 +666,10 @@ async fn poll_for_token(
             bail!("the sign-in code expired before approval; run `rlmesh login` again");
         }
         tokio::time::sleep(interval).await;
+        if style.interactive() {
+            let _ = write!(stdout, ".");
+            let _ = stdout.flush();
+        }
 
         let resp = client
             .post(format!("{authkit}/oauth2/token"))
@@ -532,6 +701,30 @@ async fn poll_for_token(
             other => bail!("the token endpoint rejected the sign-in: {other}"),
         }
     }
+}
+
+/// Best-effort launch of the platform-default browser at `url`, returning
+/// whether the opener command was spawned successfully. Never blocks on the
+/// browser and never fails the sign-in: a headless or locked-down host just
+/// falls back to the printed URL. The URL comes from the platform's own
+/// AuthKit response, not user input, so it is not shell-injected — and it is
+/// passed as an argv element regardless.
+fn try_open_browser(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    let (program, args): (&str, &[&str]) = ("open", &[]);
+    #[cfg(target_os = "windows")]
+    let (program, args): (&str, &[&str]) = ("cmd", &["/C", "start", ""]);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let (program, args): (&str, &[&str]) = ("xdg-open", &[]);
+
+    Command::new(program)
+        .args(args)
+        .arg(url)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .stdin(Stdio::null())
+        .spawn()
+        .is_ok()
 }
 
 /// Name for the minted API key: `rlmesh-cli <hostname>`, or plain `rlmesh-cli`
@@ -623,6 +816,7 @@ fn render_whoami(
     is_default: bool,
     platform_url: Option<&str>,
     api_key_id: Option<&str>,
+    login_cmd: &str,
 ) -> String {
     let profile = if is_default {
         format!("{name} (default)")
@@ -631,7 +825,7 @@ fn render_whoami(
     };
     let platform = match platform_url {
         Some(url) => url.to_string(),
-        None => format!("(none; run `rlmesh login --profile {name} --platform <url>`)"),
+        None => format!("(none; run `{login_cmd}`)"),
     };
     let api_key = match api_key_id {
         Some(id) => format!("{id} (signed in)"),
@@ -697,11 +891,13 @@ pub async fn whoami(args: &ProfileArgs, stdout: &mut impl Write) -> Result<i32> 
         .get(&name)
         .and_then(|profile| profile.platform_url.as_deref());
     let creds = load_credentials(&name)?;
+    let hint = login_hint(&name, is_effective_default(&config, &name));
     let report = render_whoami(
         &name,
         is_default,
         platform_url,
         creds.as_ref().map(|creds| creds.api_key_id.as_str()),
+        &hint,
     );
     write!(stdout, "{report}")?;
 
@@ -719,11 +915,33 @@ pub async fn whoami(args: &ProfileArgs, stdout: &mut impl Write) -> Result<i32> 
     Ok(0)
 }
 
+/// Whether `name` is the profile a flagless `rlmesh login` resolves to: the
+/// configured default, or the literal `"default"` when none is configured yet.
+/// This is what makes `rlmesh login` (no flags) sign the profile in, so it also
+/// governs whether the suggested hint can drop `--profile`/`--platform`.
+fn is_effective_default(config: &Config, name: &str) -> bool {
+    config.default_profile.as_deref().unwrap_or("default") == name
+}
+
+/// Format the `rlmesh login` command to suggest for `name`. The effective
+/// default profile (see [`is_effective_default`]) signs in to the hosted
+/// platform ([`DEFAULT_PLATFORM_URL`]) with no flags; any other named profile is
+/// assumed to target its own platform, so its hint carries `--profile` and a
+/// `--platform <url>` placeholder to point it there.
+fn login_hint(name: &str, is_default: bool) -> String {
+    if is_default {
+        "rlmesh login".to_string()
+    } else {
+        format!("rlmesh login --profile {name} --platform <url>")
+    }
+}
+
 /// Authenticate the local docker client with the platform's image registry,
 /// using the selected profile's platform and stored credential.
 pub async fn registry_login(args: &ProfileArgs, stdout: &mut impl Write) -> Result<i32> {
     let config = load_config()?;
     let name = resolve_profile_name(args.profile.as_deref(), &config);
+    let is_default = is_effective_default(&config, &name);
     let platform = match config
         .profiles
         .get(&name)
@@ -731,11 +949,17 @@ pub async fn registry_login(args: &ProfileArgs, stdout: &mut impl Write) -> Resu
     {
         Some(url) => normalize_base_url(&url),
         None => {
-            bail!("no profile \"{name}\"; run `rlmesh login --profile {name} --platform <url>`")
+            bail!(
+                "no profile \"{name}\" yet; run `{}` to sign in",
+                login_hint(&name, is_default)
+            )
         }
     };
     let creds = load_credentials(&name)?.ok_or_else(|| {
-        anyhow!("profile \"{name}\" is not signed in; run `rlmesh login --profile {name}`")
+        anyhow!(
+            "profile \"{name}\" is not signed in; run `{}`",
+            login_hint(&name, is_default)
+        )
     })?;
 
     let client = http_client()?;
@@ -802,7 +1026,7 @@ pub fn profile_list(stdout: &mut impl Write) -> Result<i32> {
     if config.profiles.is_empty() {
         writeln!(
             stdout,
-            "No profiles yet; run `rlmesh login --platform <url>` to create one."
+            "No profiles yet; run `rlmesh login` to sign in to the hosted platform."
         )?;
         return Ok(0);
     }
@@ -917,6 +1141,101 @@ mod tests {
     }
 
     #[test]
+    fn normalize_defaults_loopback_to_http() {
+        // A scheme-less loopback host gets http:// (local dev servers rarely
+        // terminate TLS); everything else still gets https://.
+        assert_eq!(
+            normalize_base_url("localhost:3300"),
+            "http://localhost:3300"
+        );
+        assert_eq!(
+            normalize_base_url("127.0.0.1:8080"),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(normalize_base_url("[::1]:3300"), "http://[::1]:3300");
+        assert_eq!(
+            normalize_base_url("api.rlmesh.dev"),
+            "https://api.rlmesh.dev"
+        );
+        // An explicit scheme is always honored, even for loopback.
+        assert_eq!(
+            normalize_base_url("https://localhost:3300"),
+            "https://localhost:3300"
+        );
+    }
+
+    #[test]
+    fn loopback_host_detection() {
+        for host in [
+            "localhost",
+            "localhost:3300",
+            "LOCALHOST:3300",
+            "foo.localhost",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "127.5.6.7",
+            "::1",
+            "[::1]:3300",
+        ] {
+            assert!(is_loopback_host(host), "{host} should be loopback");
+        }
+        for host in [
+            "api.rlmesh.dev",
+            "example.com:443",
+            "10.0.0.1",
+            "localhosting.example.com",
+        ] {
+            assert!(!is_loopback_host(host), "{host} should not be loopback");
+        }
+    }
+
+    #[test]
+    fn transport_errors_are_classified() {
+        assert_eq!(
+            classify_transport_error(
+                "error sending request: received corrupt message of type InvalidContentType"
+            ),
+            Some(TransportProblem::PlaintextServer)
+        );
+        assert_eq!(
+            classify_transport_error("invalid peer certificate: UnknownIssuer"),
+            Some(TransportProblem::BadCertificate)
+        );
+        assert_eq!(
+            classify_transport_error("tcp connect error: Connection refused (os error 111)"),
+            Some(TransportProblem::ConnectionRefused)
+        );
+        assert_eq!(
+            classify_transport_error("dns error: failed to lookup address information"),
+            Some(TransportProblem::UnknownHost)
+        );
+        assert_eq!(classify_transport_error("some other failure"), None);
+    }
+
+    #[test]
+    fn http_failure_prefers_server_message() {
+        let with_detail = http_failure_message(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error": {"code": "unauthorized", "message": "missing bearer token"}}"#,
+            "fetching sign-in configuration",
+        );
+        assert_eq!(
+            with_detail,
+            "fetching sign-in configuration failed: missing bearer token (HTTP 401 Unauthorized)"
+        );
+
+        let plain = http_failure_message(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "upstream is down",
+            "fetching registry info",
+        );
+        assert_eq!(
+            plain,
+            "fetching registry info failed with HTTP 502 Bad Gateway: upstream is down"
+        );
+    }
+
+    #[test]
     fn resolve_profile_name_precedence() {
         let mut config = Config::default();
         assert_eq!(resolve_profile_name(None, &config), "default");
@@ -956,6 +1275,39 @@ mod tests {
         assert_eq!(
             reparsed.profiles["staging"].platform_url.as_deref(),
             Some("https://staging.example.com")
+        );
+    }
+
+    #[test]
+    fn login_hint_omits_flags_for_default_profile() {
+        assert_eq!(login_hint("default", true), "rlmesh login");
+        assert_eq!(
+            login_hint("staging", false),
+            "rlmesh login --profile staging --platform <url>"
+        );
+    }
+
+    #[test]
+    fn effective_default_covers_the_implicit_default() {
+        // No configured default: only the literal "default" is effective.
+        let empty = Config::default();
+        assert!(is_effective_default(&empty, "default"));
+        assert!(!is_effective_default(&empty, "staging"));
+
+        // A configured default wins, and "default" is no longer special.
+        let config = Config {
+            default_profile: Some("staging".to_string()),
+            profiles: BTreeMap::new(),
+        };
+        assert!(is_effective_default(&config, "staging"));
+        assert!(!is_effective_default(&config, "default"));
+    }
+
+    #[test]
+    fn default_platform_url_is_normalized() {
+        assert_eq!(
+            normalize_base_url(DEFAULT_PLATFORM_URL),
+            DEFAULT_PLATFORM_URL
         );
     }
 
@@ -1021,17 +1373,29 @@ mod tests {
             true,
             Some("https://staging.example.com"),
             Some("key_123"),
+            "rlmesh login",
         );
         assert_eq!(
             signed_in,
             "profile:   staging (default)\nplatform:  https://staging.example.com\napi key:   key_123 (signed in)\n"
         );
 
-        let signed_out = render_whoami("scratch", false, None, None);
+        let signed_out = render_whoami(
+            "scratch",
+            false,
+            None,
+            None,
+            "rlmesh login --profile scratch --platform <url>",
+        );
         assert_eq!(
             signed_out,
             "profile:   scratch\nplatform:  (none; run `rlmesh login --profile scratch --platform <url>`)\napi key:   (signed out; run `rlmesh login`)\n"
         );
+
+        // The literal "default" profile with no configured default still gets
+        // the flagless hint, since `rlmesh login` alone would sign it in.
+        let fresh_default = render_whoami("default", false, None, None, "rlmesh login");
+        assert!(fresh_default.contains("(none; run `rlmesh login`)"));
 
         let creds = Credentials {
             api_key_id: "key_123".to_string(),
@@ -1042,6 +1406,7 @@ mod tests {
             true,
             Some("https://staging.example.com"),
             Some(creds.api_key_id.as_str()),
+            "rlmesh login",
         );
         assert!(!rendered.contains("sentinel-secret-value"));
     }

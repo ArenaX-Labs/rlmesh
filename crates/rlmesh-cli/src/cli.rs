@@ -44,7 +44,7 @@ pub struct ProfileArgs {
 pub struct LoginArgs {
     #[command(flatten)]
     pub profile: ProfileArgs,
-    /// Platform base URL, e.g. https://platform.example.com (required the first time a profile signs in; remembered afterwards).
+    /// Platform base URL, e.g. https://platform.example.com (defaults to the hosted platform, https://api.rlmesh.dev; remembered per profile afterwards).
     #[arg(long, value_name = "URL", env = "RLMESH_PLATFORM_URL")]
     pub platform: Option<String>,
 }

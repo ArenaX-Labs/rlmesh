@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#MISE description="Rebuild the in-tree _rlmesh extension for the local editable install"
+#MISE dir="{{ config_root }}"
+#USAGE flag "--debug" help="Build a debug (unoptimized) extension for faster compiles"
+
+# The editable install (rlmesh.pth -> python/rlmesh/src) imports the compiled
+# extension straight from the source tree. `maturin build` only writes a wheel
+# to dist/ and never refreshes that in-tree .so, so after any Rust change the
+# CLI keeps loading a stale binary. Run this to regenerate it in place.
+set -euo pipefail
+
+maturin_args=(develop)
+if [ "${usage_debug:-false}" != true ]; then
+  maturin_args+=(--release)
+fi
+
+cd python/rlmesh
+maturin "${maturin_args[@]}"

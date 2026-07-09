@@ -60,3 +60,19 @@ name = "typos"
 language = "system"
 entry = "mise run lint:spelling"
 pass_filenames = false
+
+# Native extension — the editable install imports the compiled _rlmesh.abi3.so
+# straight from the source tree, and `maturin build` never refreshes it, so a
+# pull or branch switch that touched Rust leaves the CLI on a stale binary.
+# post-checkout/post-merge hooks receive no changed-file list, so the guard
+# lives in the script: it rebuilds only when a Rust source is newer than the
+# built .so, and is a cheap no-op otherwise. always_run because there are no
+# filenames to match on for these stages.
+[[repos.hooks]]
+id = "rebuild-rlmesh-ext"
+name = "rebuild _rlmesh extension"
+language = "system"
+entry = "scripts/rebuild_ext_if_stale.sh"
+pass_filenames = false
+always_run = true
+stages = ["post-merge", "post-checkout"]
