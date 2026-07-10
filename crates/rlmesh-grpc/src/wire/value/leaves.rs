@@ -20,8 +20,6 @@ use crate::error::ProtocolError;
 use super::codec::tensor_wire_bytes;
 use super::scalars::{decode_int_sequence, encode_int_sequence};
 
-// ---- single value -------------------------------------------------------
-
 /// Encode a single typed value into one `Bytes` per canonical leaf.
 pub fn encode_leaves(value: &SpaceValue, spec: &SpaceSpec) -> Result<Vec<Bytes>, ProtocolError> {
     let values = native::flatten_leaves(spec, value).map_err(structural_encode)?;
@@ -49,8 +47,6 @@ pub fn decode_leaves(leaves: &[Bytes], spec: &SpaceSpec) -> Result<SpaceValue, P
         .collect::<Result<Vec<_>, _>>()?;
     native::assemble_value(spec, values).map_err(structural_decode)
 }
-
-// ---- batch (row-major slab) ---------------------------------------------
 
 /// Encode `values.len()` lanes into one slab `Bytes` per canonical leaf.
 pub fn encode_leaf_slab(
@@ -126,8 +122,6 @@ pub fn decode_leaf_slab(
         .map(|values| native::assemble_value(spec, values).map_err(structural_decode))
         .collect()
 }
-
-// ---- per-leaf -----------------------------------------------------------
 
 fn encode_leaf(value: &SpaceValue, spec: &SpaceSpec) -> Result<Bytes, ProtocolError> {
     match (spec.spec.as_ref(), value) {
@@ -239,8 +233,7 @@ fn decode_leaf_column(
         .collect()
 }
 
-// ---- Text batch framing: [u64 count][u64 byte_len…] + concatenated UTF-8 --
-
+/// Text batch framing: `[u64 count][u64 byte_len…]` + concatenated UTF-8.
 fn encode_text_slab<'a>(
     column: impl Iterator<Item = &'a SpaceValue>,
     n: usize,
@@ -313,8 +306,6 @@ fn read_u64(buf: &[u8], cur: &mut usize) -> Result<u64, ProtocolError> {
     *cur = end;
     Ok(u64::from_le_bytes(bytes.try_into().expect("8-byte slice")))
 }
-
-// ---- small helpers ------------------------------------------------------
 
 fn range_check(value: i64, dtype: native::DType) -> Result<(), ProtocolError> {
     native::check_int_in_dtype_range(value, dtype)

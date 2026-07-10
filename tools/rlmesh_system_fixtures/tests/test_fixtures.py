@@ -31,7 +31,6 @@ def test_counter_env_is_deterministic() -> None:
 def test_fixture_registry_discovers_envs_and_models() -> None:
     assert set(list_env_fixtures()) == {"counter", "image-grid"}
     assert {
-        "discrete.one",
         "discrete.zero",
         "gymnasium.pendulum_zero_numpy",
         "image_grid.numpy_action",

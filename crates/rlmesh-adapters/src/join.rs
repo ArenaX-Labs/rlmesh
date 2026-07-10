@@ -746,7 +746,6 @@ mod tests {
 
         let features = join(&tags, &obs, &action).expect("join");
         assert_eq!(features.observation.len(), 3);
-        // The state's width and range are derived from the space.
         let state = features
             .observation
             .iter()
@@ -851,7 +850,6 @@ mod tests {
 
     #[test]
     fn joins_a_tuple_observation_positionally() {
-        // A Tuple obs: items descend by index, source paths render `[i]`.
         let obs = SpaceView {
             kind: SpaceViewKind::Tuple,
             shape: Vec::new(),
@@ -929,7 +927,6 @@ mod tests {
 
     #[test]
     fn rejects_dict_node_against_non_dict_space() {
-        // A Dict observation node against a flat Box space is a class mismatch.
         let obs = box_view(vec![3], None, None);
         let action = box_view(vec![0], None, None);
         let tags = EnvTags {
@@ -955,8 +952,6 @@ mod tests {
 
     #[test]
     fn joins_a_bare_single_leaf_at_root() {
-        // A single-leaf observation is a bare Leaf at the root (no key), and its
-        // source path is the empty root.
         let obs = box_view(vec![3], Some(vec![-1.0]), Some(vec![1.0]));
         let action = box_view(vec![0], None, None);
         let tags = EnvTags {
@@ -1122,7 +1117,6 @@ mod tests {
 
     #[test]
     fn enforces_rotation_width_law_unconditionally() {
-        // A quaternion encoding (4 dims) on a width-3 space.
         let result = join_obs(
             "rot",
             box_view(vec![3], None, None),
@@ -1153,7 +1147,6 @@ mod tests {
                 unknown: Default::default(),
             })
         };
-        // Finite space bounds [0, 1] disagree with tag [0, 2] -> error.
         assert!(matches!(
             join_obs(
                 "g",
@@ -1163,7 +1156,6 @@ mod tests {
             Err(JoinError::RangeDisagreement { .. })
         ));
 
-        // An unbounded space lets the tag supply the range.
         let features = join_obs("g", box_view(vec![1], None, None), gripper()).expect("join");
         let EnvFeature::State(state) = &features.observation[0] else {
             panic!("expected state");
@@ -1215,7 +1207,6 @@ mod tests {
 
     #[test]
     fn splits_flat_layout_into_role_fields_with_offsets() {
-        // A flat width-8 root obs split into three role fields plus a skip.
         let obs = box_view(vec![8], None, None);
         let action = box_view(vec![0], None, None);
         let tags = layout_tags(vec![
@@ -1225,7 +1216,6 @@ mod tests {
             field(Some("proprio/obj_pos"), 3, None),
         ]);
         let features = join(&tags, &obs, &action).expect("join");
-        // Three role fields emitted; the skip produces nothing.
         assert_eq!(features.observation.len(), 3);
         let states: Vec<&EnvState> = features
             .observation
@@ -1304,7 +1294,6 @@ mod tests {
 
     #[test]
     fn rejects_layout_field_encoding_width_mismatch() {
-        // A quaternion field (4 dims) declared as width 3.
         let obs = box_view(vec![3], None, None);
         let action = box_view(vec![0], None, None);
         let tags = layout_tags(vec![field(
@@ -1375,7 +1364,6 @@ mod tests {
 
     #[test]
     fn leaves_action_ranges_untouched_for_unbounded_space() {
-        // An unbounded action space derives nothing; an explicit tag survives.
         let obs = dict_view(vec![]);
         let action = box_view(vec![1], None, None);
         let mut gripper = component("action/gripper", 1, None);

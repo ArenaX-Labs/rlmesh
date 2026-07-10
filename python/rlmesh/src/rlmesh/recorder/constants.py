@@ -8,6 +8,8 @@ on the managed side, so the open-source SDK never imports the closed schema.
 
 from __future__ import annotations
 
+from .._models._view import RENDER_SOURCE
+
 #: Schema tag stamped onto every exported bundle. Bump the minor only for additive
 #: fields; a breaking change gets a new ``.v2`` tag so an older mapper can reject it.
 SCHEMA = "rlmesh.result.v1"
@@ -27,8 +29,9 @@ DEFAULT_VIDEO_INFO_KEYS = ("video_artifact_path", "video_url")
 DEFAULT_CAMERA = "default"
 
 #: Camera label for the env's ``render()`` frame -- the viewer's default source,
-#: recorded alongside the declared image roles.
-RENDER_CAMERA = "render"
+#: recorded alongside the declared image roles. Aliases the viewer's own label so
+#: the two surfaces share one camera vocabulary by construction.
+RENDER_CAMERA = RENDER_SOURCE
 
 #: Default playback rate for the recorded mp4. Matches the managed runner's default
 #: so uploaded and locally-recorded videos play at the same speed.

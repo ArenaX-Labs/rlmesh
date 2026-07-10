@@ -302,6 +302,12 @@ def _json_object(value: str) -> dict[str, Any]:
 
 
 def _socket_label(value: str) -> str:
+    """A lowercase socket-filename label.
+
+    Sibling of the case-preserving bundle-path sanitizer
+    :func:`rlmesh.recorder.frames.sanitize_part`; keep the two in sight of
+    each other before adding a third.
+    """
     return re.sub(r"[^a-z0-9_-]+", "_", value.lower()).strip("_") or "env"
 
 

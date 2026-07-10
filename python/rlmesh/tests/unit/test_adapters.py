@@ -21,10 +21,6 @@ import numpy as np
 import pytest
 import rlmesh.adapters as adapt
 
-# ---------------------------------------------------------------------------
-# Reference math ported from the bespoke adapter base class.
-# ---------------------------------------------------------------------------
-
 
 def ref_quat2axisangle(quat):
     quat = np.asarray(quat, dtype=np.float32).reshape(-1)
@@ -85,11 +81,6 @@ def ref_r6d_to_rotvec(r6d):
     return (axis / (2.0 * np.sin(theta) + 1e-8) * theta).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Space + tag helpers.
-# ---------------------------------------------------------------------------
-
-
 class Env(NamedTuple):
     """A tagged environment: tags plus the gymnasium spaces."""
 
@@ -119,10 +110,6 @@ def text_space() -> gym.spaces.Text:
 ACTION7 = box(7, low=-1.0, high=1.0)
 ACTION14 = box(14, low=-1.0, high=1.0)
 
-
-# ---------------------------------------------------------------------------
-# Shared LIBERO-style env and a synthetic observation.
-# ---------------------------------------------------------------------------
 
 LIBERO_ACTION = adapt.Action(
     adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
@@ -172,10 +159,6 @@ def make_obs(size: int = 64) -> dict[str, object]:
         "instruction": "pick up the bowl",
     }
 
-
-# ---------------------------------------------------------------------------
-# SmolVLA
-# ---------------------------------------------------------------------------
 
 SMOLVLA = adapt.ModelSpec(
     input={
@@ -392,10 +375,6 @@ def test_action_layout_loosely_typed_corrections_rejected() -> None:
     assert ok.output.components[0].threshold == 0.5
 
 
-# ---------------------------------------------------------------------------
-# OpenVLA
-# ---------------------------------------------------------------------------
-
 OPENVLA = adapt.ModelSpec(
     input={
         "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64),
@@ -416,12 +395,6 @@ def test_openvla_obs_matches_bespoke_adapter():
     assert set(payload) == {"image", "instruction"}
     np.testing.assert_array_equal(payload["image"], obs["agentview_image"])
 
-
-# ---------------------------------------------------------------------------
-# X-VLA (rot6d proprio, unified 20-dim single/bimanual state and ee6d action:
-# dims 1-10 are the first arm, dims 11-20 the second; second-arm components
-# are optional so single-arm envs resolve them to zero fill / dropped dims)
-# ---------------------------------------------------------------------------
 
 XVLA = adapt.ModelSpec(
     input={
@@ -485,10 +458,6 @@ def test_xvla_action_matches_bespoke_adapter():
     )
 
 
-# ---------------------------------------------------------------------------
-# Bimanual env: the same X-VLA spec consumes dims 11-20 for real.
-# ---------------------------------------------------------------------------
-
 BIMANUAL_ENV = Env(
     tags=adapt.EnvTags(
         observation={
@@ -543,6 +512,10 @@ def make_bimanual_obs() -> dict[str, object]:
 
 
 def test_xvla_state_consumes_second_arm_on_bimanual_env():
+    """X-VLA's unified 20-dim single/bimanual state and ee6d action layout:
+    dims 1-10 are the first arm, dims 11-20 the second; second-arm components
+    are optional, so single-arm envs resolve them to zero fill / dropped dims.
+    """
     obs = make_bimanual_obs()
     adapter = resolve(BIMANUAL_ENV, XVLA)
     payload = adapter.transform_obs(obs)
@@ -662,10 +635,6 @@ def test_custom_adapter_reset_is_a_no_op_by_default():
     assert "observation.state" in payload
 
 
-# ---------------------------------------------------------------------------
-# GR00T-style (split state keys, flipped images, lead dims, binary gripper)
-# ---------------------------------------------------------------------------
-
 GR00T = adapt.ModelSpec(
     input={
         "video.image": adapt.Image(
@@ -730,11 +699,6 @@ def test_gr00t_action_gripper_sign_matches_bespoke_adapter():
 
     raw[6] = 0.2
     assert adapter.transform_action(raw)[6] == np.sign(2.0 * 0.2 - 1.0)
-
-
-# ---------------------------------------------------------------------------
-# Image pipeline details
-# ---------------------------------------------------------------------------
 
 
 def image_env(height: int, width: int, *, role: str = adapt.IMAGE_PRIMARY) -> Env:
@@ -911,11 +875,6 @@ def test_single_env_image_fallback_match():
     adapter = resolve(env, spec)
     obs = {"rgb": np.zeros((8, 8, 3), dtype=np.uint8)}
     assert adapter.transform_obs(obs)["image"].shape == (8, 8, 3)
-
-
-# ---------------------------------------------------------------------------
-# Lookup, custom transforms, wrap_predict, nested keys
-# ---------------------------------------------------------------------------
 
 
 def single_state_env(
@@ -1133,11 +1092,6 @@ def test_unreferenced_unencodable_obs_key_is_ignored():
     assert set(payload) == {"image", "instruction"}
 
 
-# ---------------------------------------------------------------------------
-# Declared observation roles (EnvTags.observation_roles)
-# ---------------------------------------------------------------------------
-
-
 def test_observation_roles_groups_a_dict_tree_in_declaration_order():
     tags = adapt.EnvTags(
         observation={
@@ -1193,11 +1147,6 @@ def test_observation_roles_handles_bare_leaf_and_nested_containers():
         states=(adapt.EEF_POS, adapt.GRIPPER_POS),
         texts=(adapt.INSTRUCTION,),
     )
-
-
-# ---------------------------------------------------------------------------
-# Serialization
-# ---------------------------------------------------------------------------
 
 
 def test_env_tags_json_round_trip():
@@ -1271,11 +1220,6 @@ def test_host_placeholder_custom_cannot_be_reconstructed_from_wire():
     rebuilt = model_input_from_dict({"type": "custom", "transform": "builtins:len"})
     assert isinstance(rebuilt, adapt.Custom)
     assert rebuilt.entrypoint == "builtins:len"
-
-
-# ---------------------------------------------------------------------------
-# Resolution errors
-# ---------------------------------------------------------------------------
 
 
 def test_missing_state_role_is_an_error():
@@ -1458,11 +1402,6 @@ def test_describe_mentions_each_model_key():
     assert "rot6d_rowmajor->axis_angle" in text
 
 
-# ---------------------------------------------------------------------------
-# tag verb + Model(spec=) entry-point guards
-# ---------------------------------------------------------------------------
-
-
 def _fake_env(obs_space: gym.spaces.Space[Any]) -> Any:
     return SimpleNamespace(
         observation_space=obs_space, action_space=ACTION7, metadata={"render_fps": 30}
@@ -1606,11 +1545,6 @@ def test_value_bridge_encodes_numpy_bool_scalar_as_python_bool() -> None:
     assert to_value(np.bool_(False), _numpy_bridge) is False
 
 
-# ---------------------------------------------------------------------------
-# Spec ergonomics: size=, single-component StateInput, eager validation
-# ---------------------------------------------------------------------------
-
-
 def test_image_input_size_shorthand() -> None:
     assert adapt.Image(role=adapt.IMAGE_PRIMARY, size=224) == adapt.Image(
         role=adapt.IMAGE_PRIMARY, height=224, width=224
@@ -1638,11 +1572,6 @@ def test_state_input_sugar_resolves_like_explicit() -> None:
         adapter.transform_obs(make_obs())["state"],
         np.asarray(make_obs()["robot0_eef_pos"], dtype=np.float32),
     )
-
-
-# ---------------------------------------------------------------------------
-# Frame stacking (host-side, stateful)
-# ---------------------------------------------------------------------------
 
 
 def test_image_frame_stacking_buffers_and_pads() -> None:
@@ -1722,11 +1651,6 @@ def test_image_input_stack_round_trips_and_omits_default() -> None:
             input={"img": adapt.Image(role=adapt.IMAGE_PRIMARY, stack=10_000)},
             output=SMOLVLA.output,
         ).to_dict()
-
-
-# ---------------------------------------------------------------------------
-# Vector-env handling
-# ---------------------------------------------------------------------------
 
 
 def test_vector_env_rejected_by_single_env_eval_loop() -> None:
@@ -1828,11 +1752,6 @@ def test_euler_xyz_encoding_converts_end_to_end() -> None:
         {"rpy": np.array([0.0, 0.0, np.pi / 2], dtype=np.float32)}
     )["rot"]
     np.testing.assert_allclose(out, [0.0, 0.0, np.pi / 2], atol=1e-4)
-
-
-# ---------------------------------------------------------------------------
-# Flat (non-Dict) observations: env-side StateLayout
-# ---------------------------------------------------------------------------
 
 
 def test_bare_layout_observation_stored_as_bare_leaf():
@@ -1999,10 +1918,6 @@ def test_state_field_requires_positive_dim():
     with pytest.raises(ValueError, match="dim must be >= 1"):
         adapt.Field(adapt.EEF_POS, 0)
 
-
-# ---------------------------------------------------------------------------
-# Host-side custom rotation encodings (CustomEncoding)
-# ---------------------------------------------------------------------------
 
 # A width-preserving rot6d repacking whose inverse is itself (reverse the
 # 6-vector). Used to exercise the host-side shims against a native baseline.
@@ -2620,14 +2535,6 @@ def test_fill_only_text_is_not_a_referenced_obs_key():
     assert "pos" in referenced
 
 
-# ---------------------------------------------------------------------------
-# Finiteness contract (P0.3): range/clip/scale/threshold bounds are finite on
-# the wire (an unbounded bound is omitted, not +/-inf). Python is the *produce*
-# side: it must reject non-finite at construction and refuse to emit Infinity,
-# so it never ships a spec the Rust serde codec rejects.
-# ---------------------------------------------------------------------------
-
-
 def test_nonfinite_range_rejected_at_from_dict():
     # from_dict routes through the Rust codec, whose json.dumps(allow_nan=False)
     # rejects the non-finite value at the boundary (the dedicated Python check is
@@ -2676,12 +2583,6 @@ def test_nonfinite_rejected_on_emit_to_json():
         spec.to_json()
 
 
-# ---------------------------------------------------------------------------
-# Metadata dual-read dispatch (P0.6): from_metadata iterates known keys
-# newest-format-first, so a v2 reader still reads v1. Today only v1 exists.
-# ---------------------------------------------------------------------------
-
-
 def test_from_metadata_reads_v1_and_returns_none_when_absent():
     spec = adapt.ModelSpec(
         input={},
@@ -2695,14 +2596,6 @@ def test_from_metadata_reads_v1_and_returns_none_when_absent():
     )
     assert adapt.EnvTags.from_metadata(tags.to_metadata()) == tags
     assert adapt.EnvTags.from_metadata({}) is None
-
-
-# ---------------------------------------------------------------------------
-# Rotation-encoding accept-sets: a side declares a preference list; the resolver
-# prefers the env's native encoding when the model accepts it (no conversion),
-# else converts into the first preference. A single encoding stays a bare string
-# on the wire (byte-parity with pre-accept-set specs).
-# ---------------------------------------------------------------------------
 
 
 def _rot_model(encoding) -> adapt.ModelSpec:
@@ -2912,12 +2805,6 @@ def test_image_optional_camera_zero_fills_when_absent():
         and note.severity == "caution"
         for note in adapter.advisories()
     )
-
-
-# ---------------------------------------------------------------------------
-# Review-wave regressions: the fill rename, hard errors, hash/eq, canonical
-# authored forms.
-# ---------------------------------------------------------------------------
 
 
 def test_image_fill_requires_optional():

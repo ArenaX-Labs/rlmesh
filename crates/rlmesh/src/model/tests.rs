@@ -229,8 +229,6 @@ async fn user_set_base_seed_reaches_the_env_reset_seeds() {
 
 #[test]
 fn run_local_and_serve_options_cover_all_axes() {
-    // run_local: address + for_episodes + base_seed + execution_horizon axes
-    // via one options struct.
     let run = RunLocalOptions::parse("tcp://env:50051")
         .unwrap()
         .for_episodes(5)
@@ -244,14 +242,12 @@ fn run_local_and_serve_options_cover_all_axes() {
         ConnectAddress::parse("tcp://env:50051").unwrap()
     );
 
-    // Defaults: unbounded, no seed, no chunking; horizon 0 clamps to 1.
     let default_run = RunLocalOptions::new(ConnectAddress::parse("tcp://env:1").unwrap());
     assert_eq!(default_run.max_episodes, None);
     assert_eq!(default_run.base_seed, None);
     assert_eq!(default_run.execution_horizon, 1);
     assert_eq!(default_run.execution_horizon(0).execution_horizon, 1);
 
-    // serve: address + token + serve options axes via one options struct.
     let serve = ServeModelOptions::parse("tcp://0.0.0.0:50061")
         .unwrap()
         .token("secret")
@@ -262,7 +258,6 @@ fn run_local_and_serve_options_cover_all_axes() {
     assert_eq!(serve.token, "secret");
     assert!(serve.serve.allow_remote_shutdown);
 
-    // No token => empty (auth disabled), default serve options.
     let default_serve = ServeModelOptions::new(BindAddress::parse("tcp://0.0.0.0:1").unwrap());
     assert!(default_serve.token.is_empty());
     assert_eq!(default_serve.serve, ServeOptions::default());
@@ -512,8 +507,6 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
     assert_eq!(disc_response.context.as_ref().unwrap().env_id, "env-disc");
     assert_eq!(disc_response.actions.len(), 1);
 
-    // Both groups reached the handler in group order, each decoded against its
-    // own adapter config.
     assert_eq!(
         *seen.lock().await,
         vec![
@@ -675,7 +668,6 @@ async fn grouped_predict_isolates_a_single_group_failure() {
         }
         other => panic!("expected an error for the unresolved group, got {other:?}"),
     }
-    // Only the configured group reached the handler.
     assert_eq!(
         *seen.lock().await,
         vec![("env-box".to_string(), "ep-box".to_string())]
@@ -756,9 +748,7 @@ async fn served_model_release_adapter_tears_down_only_its_env() {
         response.kind,
         Some(join_response::Kind::ReleaseAdapter(_))
     ));
-    // The setup was torn down for exactly the released env.
     assert_eq!(*released.lock().await, vec!["env-1".to_string()]);
-    // Only env-1's config was dropped; env-2 stays resolved.
     let route_configs = route_configs.lock().await;
     assert!(!route_configs.contains_key("env-1"));
     assert!(route_configs.contains_key("env-2"));
@@ -1351,7 +1341,6 @@ async fn remote_model_predict_requires_reset() {
         .await
         .unwrap();
 
-    // predict() before reset() is a usage error, and no predict reaches the server.
     let err = model
         .predict(spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(vec![0], vec![1], spaces::DType::Uint8).unwrap(),
@@ -1635,7 +1624,6 @@ async fn pipelined_requests_complete_out_of_order() {
         .unwrap()
         .into_inner();
 
-    // Resolve the "slow" env's adapter and read its ack.
     req_tx
         .send(resolve_adapter_request("slow", "cfg-slow"))
         .await
@@ -1713,7 +1701,6 @@ async fn pipelined_predicts_preserve_per_route_order() {
         .await
         .unwrap();
 
-    // Same-env responses also arrive in order.
     let first = responses.message().await.unwrap().unwrap();
     assert_eq!(first.request_id, "p0");
     let second = responses.message().await.unwrap().unwrap();
@@ -1928,7 +1915,6 @@ async fn pipelined_idle_activity_stays_balanced() {
             .await
             .unwrap();
         let _ = responses.message().await.unwrap().unwrap();
-        // Fire several overlapping predicts (the first is slow).
         for i in 0..5 {
             req_tx
                 .send(predict_join_request("r", &format!("p{i}"), i == 0))
@@ -1938,12 +1924,10 @@ async fn pipelined_idle_activity_stays_balanced() {
         for _ in 0..5 {
             let _ = responses.message().await.unwrap().unwrap();
         }
-        // Drop the stream so no further activity is generated.
         drop(req_tx);
         let _ = responses.message().await;
     }
 
-    // With balanced activity, the idle timer fires and the server shuts down.
     tokio::time::timeout(Duration::from_secs(2), server)
         .await
         .expect("server must idle-shut-down (balanced idle activity)")

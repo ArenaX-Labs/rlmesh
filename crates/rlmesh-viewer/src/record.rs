@@ -38,6 +38,10 @@ struct Sample {
 }
 
 /// Streaming AV1-to-MP4 recorder for a single camera's frames.
+///
+/// The `y`/`u`/`v` fields are per-frame conversion scratch, allocated once at
+/// [`create`](Self::create) and overwritten each [`push`](Self::push) so the
+/// hot path performs no per-frame heap allocation.
 pub struct VideoWriter {
     ctx: Context<u8>,
     out: BufWriter<File>,
@@ -46,6 +50,9 @@ pub struct VideoWriter {
     fps: u32,
     mdat_len: u64,
     samples: Vec<Sample>,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
 }
 
 impl VideoWriter {
@@ -96,6 +103,9 @@ impl VideoWriter {
             fps,
             mdat_len: 0,
             samples: Vec::new(),
+            y: vec![0u8; ew as usize * eh as usize],
+            u: vec![0u8; (ew as usize / 2) * (eh as usize / 2)],
+            v: vec![0u8; (ew as usize / 2) * (eh as usize / 2)],
         })
     }
 
@@ -110,41 +120,71 @@ impl VideoWriter {
                 self.width, self.height
             )));
         }
-        let rgb = rgb_from_hwc(buf, width, height, channels)
+        let (w, h, c) = (width as usize, height as usize, channels as usize);
+        let needed = w
+            .checked_mul(h)
+            .and_then(|n| n.checked_mul(c))
+            .filter(|&n| matches!(c, 1 | 3 | 4) && buf.len() >= n)
             .ok_or_else(|| io::Error::other("frame is not a 1/3/4-channel HWC image"))?;
         let ew = self.width & !1;
-        let (y, u, v) = rgb_to_i420(rgb.as_raw(), width as usize, height as usize);
+        if c == 3 {
+            rgb_to_i420(
+                &buf[..needed],
+                w,
+                h,
+                (&mut self.y, &mut self.u, &mut self.v),
+            );
+        } else {
+            let rgb = rgb_from_hwc(buf, width, height, channels)
+                .ok_or_else(|| io::Error::other("frame is not a 1/3/4-channel HWC image"))?;
+            rgb_to_i420(rgb.as_raw(), w, h, (&mut self.y, &mut self.u, &mut self.v));
+        }
 
         let mut frame = self.ctx.new_frame();
-        frame.planes[0].copy_from_raw_u8(&y, ew as usize, 1);
-        frame.planes[1].copy_from_raw_u8(&u, (ew / 2) as usize, 1);
-        frame.planes[2].copy_from_raw_u8(&v, (ew / 2) as usize, 1);
+        frame.planes[0].copy_from_raw_u8(&self.y, ew as usize, 1);
+        frame.planes[1].copy_from_raw_u8(&self.u, (ew / 2) as usize, 1);
+        frame.planes[2].copy_from_raw_u8(&self.v, (ew / 2) as usize, 1);
         self.ctx
             .send_frame(frame)
             .map_err(|e| io::Error::other(format!("rav1e send_frame: {e:?}")))?;
+        self.drain(false)
+    }
 
+    /// Mux every packet the encoder has ready.
+    ///
+    /// When `flushing`, polls through `NeedMoreData`/`Encoded` until
+    /// `LimitReached`, bounded so an encoder that never reports completion
+    /// (rav1e documents no post-flush guarantee) errors out instead of
+    /// spinning forever.
+    fn drain(&mut self, flushing: bool) -> io::Result<()> {
+        let mut spins = 0u32;
         loop {
             match self.ctx.receive_packet() {
-                Ok(pkt) => self.write_packet(&pkt.data, pkt.frame_type == FrameType::KEY)?,
-                Err(EncoderStatus::NeedMoreData) | Err(EncoderStatus::Encoded) => break,
-                Err(EncoderStatus::LimitReached) => break,
+                Ok(pkt) => {
+                    spins = 0;
+                    self.write_packet(&pkt.data, pkt.frame_type == FrameType::KEY)?;
+                }
+                Err(EncoderStatus::LimitReached) => return Ok(()),
+                Err(EncoderStatus::NeedMoreData) | Err(EncoderStatus::Encoded) => {
+                    if !flushing {
+                        return Ok(());
+                    }
+                    spins += 1;
+                    if spins > 100_000 {
+                        return Err(io::Error::other(
+                            "rav1e did not report completion after flush",
+                        ));
+                    }
+                }
                 Err(e) => return Err(io::Error::other(format!("rav1e receive: {e:?}"))),
             }
         }
-        Ok(())
     }
 
     /// Flush the encoder, write the `moov`, and finalize the file.
     pub fn finish(mut self) -> io::Result<Stats> {
         self.ctx.flush();
-        loop {
-            match self.ctx.receive_packet() {
-                Ok(pkt) => self.write_packet(&pkt.data, pkt.frame_type == FrameType::KEY)?,
-                Err(EncoderStatus::LimitReached) => break,
-                Err(EncoderStatus::Encoded) | Err(EncoderStatus::NeedMoreData) => continue,
-                Err(e) => return Err(io::Error::other(format!("rav1e flush: {e:?}"))),
-            }
-        }
+        self.drain(true)?;
         if self.samples.is_empty() {
             return Err(io::Error::other("no frames were recorded"));
         }
@@ -177,6 +217,90 @@ impl VideoWriter {
     }
 }
 
+/// One HWC uint8 frame queued for the encoder thread.
+struct FrameMsg {
+    buf: Vec<u8>,
+    width: u32,
+    height: u32,
+    channels: u32,
+}
+
+/// A [`VideoWriter`] running on its own encoder thread.
+///
+/// `push` hands the frame to a bounded queue and returns immediately, so the
+/// caller (the eval loop) overlaps env stepping and model inference with AV1
+/// encoding instead of stalling on it; the queue bound keeps at most a few
+/// frames in flight. An encode error surfaces on the next `push` (or at
+/// `finish`), which is also when a dimension change is rejected.
+pub struct ThreadedVideoWriter {
+    sender: Option<std::sync::mpsc::SyncSender<FrameMsg>>,
+    worker: Option<std::thread::JoinHandle<io::Result<Stats>>>,
+}
+
+impl ThreadedVideoWriter {
+    /// Open the file and start the encoder thread (see [`VideoWriter::create`]).
+    pub fn create(path: &Path, width: u32, height: u32, fps: u32, quality: u8) -> io::Result<Self> {
+        let mut writer = VideoWriter::create(path, width, height, fps, quality)?;
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<FrameMsg>(3);
+        let worker = std::thread::Builder::new()
+            .name("rlmesh-av1-encode".to_string())
+            .spawn(move || {
+                let mut failed: Option<io::Error> = None;
+                while let Ok(msg) = receiver.recv() {
+                    if failed.is_none()
+                        && let Err(err) = writer.push(&msg.buf, msg.width, msg.height, msg.channels)
+                    {
+                        failed = Some(err);
+                    }
+                }
+                match failed {
+                    Some(err) => Err(err),
+                    None => writer.finish(),
+                }
+            })?;
+        Ok(Self {
+            sender: Some(sender),
+            worker: Some(worker),
+        })
+    }
+
+    /// Queue one frame for encoding, blocking only when the queue is full.
+    pub fn push(&mut self, buf: Vec<u8>, width: u32, height: u32, channels: u32) -> io::Result<()> {
+        let Some(sender) = self.sender.as_ref() else {
+            return Err(io::Error::other("video writer already finished"));
+        };
+        let msg = FrameMsg {
+            buf,
+            width,
+            height,
+            channels,
+        };
+        if sender.send(msg).is_ok() {
+            return Ok(());
+        }
+        self.sender = None;
+        match self.join() {
+            Err(err) => Err(err),
+            Ok(_) => Err(io::Error::other("encoder thread exited unexpectedly")),
+        }
+    }
+
+    /// Close the queue, wait for the encoder to drain, and finalize the file.
+    pub fn finish(&mut self) -> io::Result<Stats> {
+        self.sender = None;
+        self.join()
+    }
+
+    fn join(&mut self) -> io::Result<Stats> {
+        let Some(worker) = self.worker.take() else {
+            return Err(io::Error::other("video writer already finished"));
+        };
+        worker
+            .join()
+            .map_err(|_| io::Error::other("encoder thread panicked"))?
+    }
+}
+
 /// Map a 1..=100 quality (higher is better) to a rav1e quantizer (0 best, 255 worst).
 fn quantizer_for(quality: u8) -> usize {
     let q = quality.clamp(1, 100) as usize;
@@ -184,11 +308,12 @@ fn quantizer_for(quality: u8) -> usize {
 }
 
 /// BT.601 limited-range RGB -> I420 planar, cropping to even dimensions.
-fn rgb_to_i420(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+///
+/// Writes into caller-provided plane buffers (sized for the even-cropped
+/// dimensions) so the per-frame hot path allocates nothing.
+fn rgb_to_i420(rgb: &[u8], w: usize, h: usize, out: (&mut [u8], &mut [u8], &mut [u8])) {
+    let (y, u, v) = out;
     let (ew, eh) = (w & !1, h & !1);
-    let mut y = vec![0u8; ew * eh];
-    let mut u = vec![0u8; (ew / 2) * (eh / 2)];
-    let mut v = vec![0u8; (ew / 2) * (eh / 2)];
     for row in 0..eh {
         for col in 0..ew {
             let i = (row * w + col) * 3;
@@ -213,7 +338,6 @@ fn rgb_to_i420(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             v[ci] = (((112 * r - 94 * g - 18 * b + 128) >> 8) + 128) as u8;
         }
     }
-    (y, u, v)
 }
 
 fn write_ftyp(out: &mut impl Write) -> io::Result<()> {
@@ -428,6 +552,43 @@ mod tests {
             vw.push(&frame(w, h, t), w, h, 3).expect("push");
         }
         vw.finish().expect("finish")
+    }
+
+    #[test]
+    fn threaded_writer_matches_sync_stats() {
+        let dir = std::env::temp_dir().join(format!("rlmesh-threaded-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("threaded.mp4");
+        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, 60).expect("create");
+        for t in 0..12 {
+            vw.push(frame(64, 48, t), 64, 48, 3).expect("push");
+        }
+        let stats = vw.finish().expect("finish");
+        assert_eq!(stats.frame_count, 12);
+        assert_eq!((stats.width, stats.height), (64, 48));
+        assert!(
+            vw.finish().is_err(),
+            "second finish reports already-finished"
+        );
+        let bytes = std::fs::read(&path).expect("read");
+        assert_eq!(&bytes[4..8], b"ftyp");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn threaded_writer_surfaces_encode_error_on_push_or_finish() {
+        let dir = std::env::temp_dir().join(format!("rlmesh-threaded-err-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("bad.mp4");
+        let mut vw = ThreadedVideoWriter::create(&path, 64, 48, 30, 60).expect("create");
+        vw.push(frame(64, 48, 0), 64, 48, 3).expect("push");
+        vw.push(frame(32, 32, 1), 32, 32, 3)
+            .expect("queued; error surfaces later");
+        let err = vw
+            .finish()
+            .expect_err("size change must fail the recording");
+        assert!(err.to_string().contains("size changed"), "{err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

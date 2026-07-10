@@ -79,6 +79,16 @@ def _episode_success(info: Mapping[str, Any]) -> bool | None:
     return None
 
 
+def episode_succeeded(*, success: bool | None, terminated: bool) -> bool:
+    """The SDK success doctrine, as a bare function.
+
+    Single source for :attr:`EpisodeResult.succeeded` and the recorder's
+    :class:`~rlmesh.recorder.schema.EpisodeRecord`, which snapshots the same
+    fields into a bundle document and must count success identically.
+    """
+    return terminated if success is None else success
+
+
 @dataclass(frozen=True)
 class EpisodeResult:
     """The outcome of one evaluation episode.
@@ -112,6 +122,18 @@ class EpisodeResult:
     duration_s: float = 0.0
     predict_ms: float = 0.0
     step_ms: float = 0.0
+
+    @property
+    def succeeded(self) -> bool:
+        """Whether this episode counts as a success.
+
+        The single success doctrine: the env-reported :attr:`success` signal
+        when present, falling back to :attr:`terminated` for an env that emits
+        none. :attr:`RunResult.success_rate` and the recorder's exported
+        ``successRate`` both count episodes through this property, so an SDK
+        metric and an uploaded metric always agree.
+        """
+        return episode_succeeded(success=self.success, terminated=self.terminated)
 
 
 @dataclass(frozen=True)
@@ -159,11 +181,7 @@ class RunResult:
                 "the env emit success through step info to measure it directly.",
                 stacklevel=2,
             )
-        succeeded = sum(
-            1
-            for e in self.episodes
-            if (e.terminated if e.success is None else e.success)
-        )
+        succeeded = sum(1 for e in self.episodes if e.succeeded)
         return succeeded / len(self.episodes)
 
     def __repr__(self) -> str:
@@ -217,6 +235,15 @@ class RunHooks:
     :meth:`Session.run`. Hook exceptions propagate and abort the run;
     :meth:`on_run_end` still fires exactly once with the completed episodes.
     """
+
+    def on_run_start(self, session: Session[Any, Any]) -> None:
+        """Called once per ``run``, after the session connects (no-op by default).
+
+        Receives the running :class:`Session` so a hook can inspect the
+        connected env (e.g. :meth:`Session.read` items, declared image roles)
+        without the caller wiring the session into the hook by hand. Fires
+        before the first episode's reset.
+        """
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Called after each episode's reset returns (no-op by default).
@@ -434,9 +461,6 @@ class Session(Generic[ObsT, ActT]):
         self._close_env = close_env
         self._model_client = model_client
         self._owner = owner
-        #: Compute device for the local model's inputs (torch/jax), from the model's
-        #: ``device``; obs tensor leaves are moved onto it before predict. None / a
-        #: served model (the server worker places obs) leaves it unset.
         self._device = device
         self._closed = False
         self._connected = False
@@ -841,6 +865,8 @@ class Session(Generic[ObsT, ActT]):
         run_end_error: BaseException | None = None
         self._ep_total = n_episodes
         try:
+            if hooks is not None:
+                hooks.on_run_start(self)
             for i in range(n_episodes):
                 self._ep_index = i + 1
                 seed = seeds[i] if seeds is not None and i < len(seeds) else None

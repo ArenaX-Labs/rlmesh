@@ -18,12 +18,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from .._models import RunHooks
+from .._models._view import FrameSources
 from .constants import DEFAULT_CAMERA, RENDER_CAMERA
-from .frames import image_roles, read_frame, render_source, to_frame_bytes
+from .frames import as_frame, read_frame
 from .schema import EpisodeRecord, MediaRef
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from typing import Any
 
     from .._models import EpisodeResult, RunResult, Session, StepEvent
     from .._rlmesh import PyVideoWriter
@@ -40,20 +42,17 @@ class _Cam:
     rel: str
 
 
-def _render_camera_label(roles: list[str]) -> str:
-    """Return a render label that cannot shadow a declared image role."""
-    taken = set(roles)
-    if RENDER_CAMERA not in taken:
-        return RENDER_CAMERA
-    label = f"{RENDER_CAMERA}()"
-    if label not in taken:
-        return label
-    index = 2
-    while True:
-        label = f"{RENDER_CAMERA}({index})"
-        if label not in taken:
-            return label
-        index += 1
+def _warn(message: str) -> None:
+    """Emit a best-effort recorder warning that never propagates.
+
+    Capture must never abort the run (the module contract), so even under
+    warnings-as-errors (``python -W error``) a degradation notice must not raise
+    out of a hook and kill the eval.
+    """
+    try:
+        warnings.warn(message, stacklevel=3)
+    except Exception:
+        pass
 
 
 class CaptureHooks(RunHooks):
@@ -83,10 +82,11 @@ class CaptureHooks(RunHooks):
         #: An explicit ``cameras`` list (even empty) is honored as-is; ``None`` defers
         #: discovery to the first step, when the session's contract is populated.
         self._resolved = cameras is not None
+        self._explicit = cameras is not None
         #: Memoized ``render()`` thunk (resolved once from the session), or ``None``.
         self._render: Callable[[], object] | None = None
         self._render_resolved = False
-        self._render_camera = RENDER_CAMERA if cameras is not None else None
+        self._render_camera: str | None = RENDER_CAMERA if cameras is not None else None
         #: camera -> in-flight writer for the current episode.
         self._writers: dict[str, _Cam] = {}
         #: cameras that raised while encoding -- dropped for the whole run.
@@ -94,6 +94,16 @@ class CaptureHooks(RunHooks):
         #: cameras that produced at least one frame (to flag silent no-capture).
         self._captured: set[str] = set()
         self._video_path: str | None = None
+
+    def on_run_start(self, session: Session[Any, Any]) -> None:
+        """Adopt the running session, so ``capture(session=...)`` is optional.
+
+        An explicitly passed session wins (a hand-driven loop can still wire
+        one in); otherwise the session driving :meth:`Session.run` is used for
+        source discovery and the ``render()`` frame.
+        """
+        if self._session is None:
+            self._session = session
 
     def on_episode_start(self, *, episode: int, seed: int | None) -> None:
         """Reset the per-episode writers and env-video path."""
@@ -104,8 +114,23 @@ class CaptureHooks(RunHooks):
         if not self._render_resolved:
             self._render_resolved = True
             if self._session is not None:
-                self._render = render_source(self._session)
+                self._render = self._discover().render
         return self._render
+
+    def _discover(self) -> FrameSources:
+        """The session's frame sources, via the viewer's own discovery."""
+        from .._models._view import discover_frame_sources
+
+        session = self._session
+        if session is None:
+            return FrameSources(roles=(), render_label=None, render=None)
+        try:
+            return discover_frame_sources(
+                session._contract,  # pyright: ignore[reportPrivateUsage]
+                session._client,  # pyright: ignore[reportPrivateUsage]
+            )
+        except Exception:
+            return FrameSources(roles=(), render_label=None, render=None)
 
     def _resolve_cameras(self) -> None:
         if self._resolved:
@@ -113,26 +138,31 @@ class CaptureHooks(RunHooks):
         self._resolved = True
         if self._session is None:
             return
-        names: list[str] = []
-        roles = image_roles(getattr(self._session, "_contract", None))
-        if self._render_thunk() is not None:
-            self._render_camera = _render_camera_label(roles)
-            names.append(self._render_camera)
-        else:
-            self._render_camera = None
-        names.extend(roles)
-        self._cameras = tuple(names)
+        sources = self._discover()
+        self._render = sources.render
+        self._render_resolved = True
+        self._render_camera = sources.render_label
+        self._cameras = sources.labels
         if not self._cameras:
-            warnings.warn(
+            _warn(
                 "recorder: no render() or image roles discovered from the session; "
-                "recording metrics only",
-                stacklevel=2,
+                "recording metrics only"
             )
 
     def _read_source(
         self, event: StepEvent, camera: str
-    ) -> tuple[bytes, int, int, int] | None:
+    ) -> tuple[Any, int, int, int] | None:
+        """Read one camera's frame for this step, or ``None``.
+
+        An explicit ``"render"`` camera prefers a declared image role of that
+        name (mirroring auto-discovery, where a role named ``render`` is never
+        shadowed) and only falls back to the env ``render()`` thunk.
+        """
         if camera == self._render_camera:
+            if self._explicit:
+                frame = read_frame(event, camera)
+                if frame is not None:
+                    return frame
             thunk = self._render_thunk()
             if thunk is None:
                 return None
@@ -140,7 +170,7 @@ class CaptureHooks(RunHooks):
                 value = thunk()
             except Exception:
                 return None
-            return to_frame_bytes(value)
+            return as_frame(value)
         return read_frame(event, camera)
 
     def on_step(self, event: StepEvent) -> None:
@@ -160,15 +190,12 @@ class CaptureHooks(RunHooks):
                 if frame is not None:
                     self._write(camera, frame)
             except Exception as exc:
-                warnings.warn(
-                    f"recorder: disabling camera {camera!r} after an error: {exc}",
-                    stacklevel=2,
-                )
+                _warn(f"recorder: disabling camera {camera!r} after an error: {exc}")
                 self._disabled.add(camera)
                 self._writers.pop(camera, None)
 
-    def _write(self, camera: str, frame: tuple[bytes, int, int, int]) -> None:
-        data, width, height, channels = frame
+    def _write(self, camera: str, frame: tuple[Any, int, int, int]) -> None:
+        data, height, width, channels = frame
         cam = self._writers.get(camera)
         if cam is None:
             writer, staged, rel = self._stager.open_video(
@@ -180,7 +207,7 @@ class CaptureHooks(RunHooks):
             )
             cam = _Cam(writer=writer, staged=staged, rel=rel)
             self._writers[camera] = cam
-        cam.writer.write_frame(data, width, height, channels)
+        cam.writer.write_frame(memoryview(data).cast("B"), width, height, channels)
         self._captured.add(camera)
 
     def on_episode_end(self, result: EpisodeResult) -> None:
@@ -196,9 +223,7 @@ class CaptureHooks(RunHooks):
                         self._stager.video_ref(camera=camera, path=cam.rel, meta=meta)
                     )
             except Exception as exc:
-                warnings.warn(
-                    f"recorder: dropping video for {camera!r}: {exc}", stacklevel=2
-                )
+                _warn(f"recorder: dropping video for {camera!r}: {exc}")
         if self._video_path is not None:
             try:
                 ref = self._stager.carry_file(
@@ -209,8 +234,13 @@ class CaptureHooks(RunHooks):
                 )
                 if ref is not None:
                     media.append(ref)
+                else:
+                    _warn(
+                        f"recorder: env video {self._video_path!r} is not a "
+                        "readable local file; skipping"
+                    )
             except Exception as exc:
-                warnings.warn(f"recorder: dropping env video: {exc}", stacklevel=2)
+                _warn(f"recorder: dropping env video: {exc}")
         self._workload.episodes.append(
             EpisodeRecord.from_result(
                 result,
@@ -232,8 +262,7 @@ class CaptureHooks(RunHooks):
         self._writers = {}
         missing = set(self._cameras) - self._captured - self._disabled
         if missing:
-            warnings.warn(
+            _warn(
                 f"recorder: no frames captured for {sorted(missing)} "
-                "(role absent or not a 1/3/4-channel image)",
-                stacklevel=2,
+                "(role absent or not a 1/3/4-channel image)"
             )

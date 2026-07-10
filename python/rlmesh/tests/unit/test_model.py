@@ -527,7 +527,6 @@ def test_split_chunk_treats_text_as_a_single_step_like_the_native_side() -> None
     assert split_chunk(bytearray(b"go")) == [bytearray(b"go")]
 
 
-# --- model-input device placement ------------------------------------------
 # rlmesh moves every obs tensor leaf onto the model's `device` before predict,
 # so authors delete `.to(self.device)`. The dual of the env-side action
 # placement (test_env_framework.py); real-GPU round-trips are the integration

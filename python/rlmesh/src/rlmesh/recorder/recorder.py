@@ -51,9 +51,7 @@ class Recorder:
         sess = rlmesh.session(model, env)
         sess.run(
             max_episodes=50,
-            hooks=rec.capture(
-                model="smolvla", env="libero", task="libero-spatial-0", session=sess
-            ),
+            hooks=rec.capture(model="smolvla", env="libero", task="libero-spatial-0"),
         )
         rec.export("results/run.zip")
     """
@@ -71,8 +69,18 @@ class Recorder:
         Rust, no ffmpeg); ``fps`` sets the recorded playback rate and ``quality``
         (1..=100, higher is better/larger) trades file size against fidelity.
         """
-        if fps < 1:
-            raise ValueError(f"Recorder.fps must be >= 1; got {fps}")
+        if (
+            not isinstance(fps, int)  # pyright: ignore[reportUnnecessaryIsInstance]
+            or fps < 1
+        ):
+            raise ValueError(f"Recorder.fps must be an integer >= 1; got {fps!r}")
+        if (
+            not isinstance(quality, int)  # pyright: ignore[reportUnnecessaryIsInstance]
+            or not 1 <= quality <= 100
+        ):
+            raise ValueError(
+                f"Recorder.quality must be an integer in 1..=100; got {quality!r}"
+            )
         self._result_set = ResultSet(result_set_id=result_set_id or uuid.uuid4().hex)
         self._stager = MediaStager(fps=fps, quality=quality)
 
@@ -142,14 +150,20 @@ class Recorder:
     ) -> RunHooks:
         """A :class:`~rlmesh.RunHooks` that records a live run into a new workload.
 
-        Frame sourcing (both optional -- omit both for metrics-only):
+        Frame sourcing:
 
-        * ``cameras`` -- explicit sources to record each step: env image roles (read
-          as HWC) and/or ``"render"`` for the env's ``render()`` frame.
-        * ``session`` -- when given and ``cameras`` is not, the recorded sources are
-          auto-discovered on the first step (once connected): the env's ``render()``
-          frame (when it exposes an rgb render mode) plus every declared image role,
-          each to its own video -- the same sources the live viewer offers.
+        * By default the recorded sources are auto-discovered on the first step
+          from the session running the hooks (received via
+          :meth:`~rlmesh.RunHooks.on_run_start`): the env's ``render()`` frame
+          (when it exposes an rgb render mode) plus every declared image role,
+          each to its own video -- exactly the sources the live viewer offers,
+          under the same labels.
+        * ``cameras`` -- explicit sources to record each step: env image roles
+          (read as HWC) and/or ``"render"`` for the env's ``render()`` frame.
+          ``cameras=[]`` opts out of frames entirely (metrics only).
+        * ``session`` -- only needed when driving the hooks by hand (outside
+          :meth:`Session.run`); an explicitly passed session also wins over the
+          running one.
 
         ``video_info_keys`` name the step-``info`` keys checked for an env-produced
         video file path (the env renders its own video); the file is copied into the
@@ -184,6 +198,11 @@ class Recorder:
         Writes a folder by default, or a zip when ``path`` ends ``.zip`` or
         ``archive`` is ``True`` / ``"zip"``. ``archive=False`` forces a folder.
         """
+        if self._stager.closed and self._stager.assets:
+            raise RuntimeError(
+                "Recorder is closed (its staged media was removed); "
+                "export before close()"
+            )
         return write_bundle(
             self._result_set,
             Path(path),

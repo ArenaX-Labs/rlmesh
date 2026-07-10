@@ -286,7 +286,7 @@ def serve_env(
     framework = _normalize_framework(framework)
     vectorized = num_envs > 1
     tags: object | None = None
-    if hasattr(env_source, "make"):  # EnvFactory class or instance
+    if hasattr(env_source, "make"):
         # The framework rides the factory class (_bridge ClassVar); an explicit
         # framework= overrides it. Unlike tags, it survives vectorization. Resolve
         # it before constructing so a vectorized framework env is rejected up front
@@ -307,7 +307,7 @@ def serve_env(
         # publish tags only on the scalar path -- mirroring the gym build path,
         # which serves vector envs untagged.
         tags = None if vectorized else getattr(env_source, "tags", None)
-    else:  # bare make-env callable
+    else:
         # A bare callable has no class to pin a framework, so honor only the
         # explicit framework= (from --framework / RLMESH_FRAMEWORK).
         env_framework = framework

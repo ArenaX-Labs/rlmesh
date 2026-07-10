@@ -275,7 +275,11 @@ def test_capture_records_render_source(tmp_path: Path) -> None:
 
 
 def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
-    """Recorder.capture works through a real session().run hook path."""
+    """Recorder.capture works through a real session().run hook path.
+
+    Deliberately omits ``session=``: the hooks must adopt the running session
+    via ``RunHooks.on_run_start`` and auto-discover the image role from it.
+    """
     np = pytest.importorskip("numpy")
     gym = pytest.importorskip("gymnasium")
 
@@ -316,9 +320,7 @@ def test_capture_smoke_with_real_session_run(tmp_path: Path) -> None:
     with rlmesh.session(rlmesh.RANDOM_SAMPLE, env) as sess:
         result = sess.run(
             seeds=[123],
-            hooks=rec.capture(
-                model="random", env="image-env", task="smoke", session=sess
-            ),
+            hooks=rec.capture(model="random", env="image-env", task="smoke"),
         )
 
     assert result.num_episodes == 1
@@ -592,3 +594,188 @@ def test_context_manager_cleans_staging(tmp_path: Path) -> None:
         staging = rec._stager._dir
         rec.export(tmp_path / "bundle")
     assert staging is None or not Path(staging).exists()
+
+
+def test_recorder_validates_quality_and_integer_fps() -> None:
+    """Bad fps/quality fail at construction, not as a swallowed first-frame error."""
+    with pytest.raises(ValueError, match="quality"):
+        _ = Recorder(quality=300)
+    with pytest.raises(ValueError, match="quality"):
+        _ = Recorder(quality=0)
+    with pytest.raises(ValueError, match="fps"):
+        _ = Recorder(fps=29.97)  # pyright: ignore[reportArgumentType]
+    _ = Recorder(quality=1)
+    _ = Recorder(quality=100)
+
+
+def test_export_rejects_unknown_archive_string(tmp_path: Path) -> None:
+    rec = Recorder()
+    rec.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="e", task="t")
+    with pytest.raises(ValueError, match="archive"):
+        rec.export(tmp_path / "bundle", archive="tar")
+
+
+def test_export_refuses_to_clobber_foreign_media_dir(tmp_path: Path) -> None:
+    """Folder export into a non-bundle directory must not delete its media/."""
+    dest = tmp_path / "project"
+    keep = dest / "media" / "precious.txt"
+    keep.parent.mkdir(parents=True)
+    keep.write_text("mine")
+
+    rec = Recorder()
+    rec.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="e", task="t")
+    with pytest.raises(FileExistsError, match="not an rlmesh bundle"):
+        rec.export(dest)
+    assert keep.read_text() == "mine"
+
+
+def test_export_folder_over_zip_file_errors(tmp_path: Path) -> None:
+    rec = Recorder()
+    rec.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="e", task="t")
+    out = rec.export(tmp_path / "bundle", archive="zip")
+    with pytest.raises(FileExistsError, match="not a directory"):
+        rec.export(out, archive="folder")
+
+
+def test_export_after_close_with_media_errors(tmp_path: Path) -> None:
+    """close() removes staged media; a later export must fail, not ship a bundle
+    whose manifest references files absent from the archive."""
+    np = pytest.importorskip("numpy")
+    img = np.full((32, 32, 3), 50, dtype=np.uint8)
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=lambda _item: img))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+    rec.export(tmp_path / "a.zip")
+    rec.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        rec.export(tmp_path / "b.zip")
+
+
+def test_export_after_close_without_media_is_fine(tmp_path: Path) -> None:
+    rec = Recorder()
+    rec.add(_run(_episode(0, reward=1.0, success=True)), model="m", env="e", task="t")
+    rec.close()
+    assert rec.export(tmp_path / "bundle.zip").is_file()
+
+
+def test_zip_export_stores_media_uncompressed(tmp_path: Path) -> None:
+    """Already-AV1-compressed mp4s are STORED; result.json stays deflated."""
+    np = pytest.importorskip("numpy")
+    img = np.full((32, 32, 3), 90, dtype=np.uint8)
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=lambda _item: img))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+    out = rec.export(tmp_path / "bundle.zip")
+    with zipfile.ZipFile(out) as zf:
+        by_name = {info.filename: info.compress_type for info in zf.infolist()}
+    assert by_name["result.json"] == zipfile.ZIP_DEFLATED
+    mp4s = [ct for name, ct in by_name.items() if name.endswith(".mp4")]
+    assert mp4s == [zipfile.ZIP_STORED]
+    rec.close()
+
+
+def test_explicit_render_camera_prefers_declared_role() -> None:
+    """cameras=["render"] must reach an image role literally named render."""
+    np = pytest.importorskip("numpy")
+    role_img = np.full((16, 16, 3), 30, dtype=np.uint8)
+    reads: list[str] = []
+
+    def read(item: Any) -> object:
+        reads.append(item.role)
+        return role_img
+
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["render"])
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(read=read))
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    assert reads == ["render"]
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render"] and media[0].frame_count == 1
+    rec.close()
+
+
+def test_explicit_render_camera_falls_back_to_render_source() -> None:
+    """cameras=["render"] with no such role still records the env render()."""
+    np = pytest.importorskip("numpy")
+    img = np.full((16, 16, 3), 60, dtype=np.uint8)
+
+    class _Client:
+        render_mode = "rgb_array"
+
+        def render(self) -> object:
+            return img
+
+    class _Sess:
+        _client = _Client()
+        _contract = None
+
+    session: Any = _Sess()
+    rec = Recorder()
+    hooks = rec.capture(
+        model="m", env="e", task="t", cameras=["render"], session=session
+    )
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event())
+    hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+
+    media = rec.workloads[0].episodes[0].media
+    assert [m.camera for m in media] == ["render"] and media[0].frame_count == 1
+    rec.close()
+
+
+def test_unreadable_env_video_path_warns(tmp_path: Path) -> None:
+    """A video_url that is not a local file is skipped loudly, not silently."""
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t")
+    hooks.on_episode_start(episode=0, seed=0)
+    hooks.on_step(_step_event(info={"video_url": "https://bucket/rollout.mp4"}))
+    with pytest.warns(UserWarning, match="not a readable local file"):
+        hooks.on_episode_end(_episode(0, reward=1.0, success=True))
+    assert rec.workloads[0].episodes[0].media == ()
+
+
+def test_on_run_start_prefers_explicit_session() -> None:
+    """A session passed to capture(session=...) wins over the running one."""
+    from rlmesh.recorder.hooks import CaptureHooks
+
+    rec = Recorder()
+    explicit: Any = SimpleNamespace(_client=None, _contract=None)
+    other: Any = SimpleNamespace(_client=None, _contract=None)
+    hooks = rec.capture(model="m", env="e", task="t", session=explicit)
+    assert isinstance(hooks, CaptureHooks)
+    hooks.on_run_start(other)
+    assert hooks._session is explicit  # pyright: ignore[reportPrivateUsage]
+
+    adopted = rec.capture(model="m", env="e", task="t")
+    assert isinstance(adopted, CaptureHooks)
+    adopted.on_run_start(other)
+    assert adopted._session is other  # pyright: ignore[reportPrivateUsage]
+
+
+def test_capture_warnings_never_raise_under_warnings_as_errors() -> None:
+    """The capture contract holds under -W error: degradation never aborts the run."""
+    import warnings as _warnings
+
+    np = pytest.importorskip("numpy")
+    img = np.full((32, 32, 3), 10, dtype=np.uint8)
+    rec = Recorder()
+    hooks = rec.capture(model="m", env="e", task="t", cameras=["cam0"])
+
+    def boom(**_: Any) -> Any:
+        raise RuntimeError("no encoder")
+
+    rec._stager.open_video = boom  # type: ignore[method-assign]
+    hooks.on_episode_start(episode=0, seed=0)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        hooks.on_step(_step_event(read=lambda _item: img))
+        hooks.on_episode_end(_episode(0, reward=2.0, success=True))
+    ep = rec.workloads[0].episodes[0]
+    assert ep.media == () and ep.reward == 2.0
+    rec.close()

@@ -364,7 +364,6 @@ where
 
         let mut reset_generation = 0_u64;
         let reset_timeout = self.spec.limits.env_reset_timeout;
-        // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
         let reset_timeout_ms = self.spec.limits.env_reset_timeout_ms().max(0) as u64;
         let reset_seeds = self.planned_reset_seeds(state, reset_generation, None);
         // The runtime is the sole id authority (R1): mint a fresh UUIDv7 per lane
@@ -545,7 +544,6 @@ where
             fan_out_event!(self, action_received, action_event.clone());
 
             let step_timeout = self.spec.limits.env_step_timeout;
-            // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
             let step_timeout_ms = self.spec.limits.env_step_timeout_ms().max(0) as u64;
             // Down-push the authoritative per-lane ids. For a NEXT_STEP autoreset
             // roll (a lane in `pending_roll`), substitute the freshly minted id so
@@ -743,7 +741,6 @@ where
                         reset_generation += 1;
                         let step = state.snapshot().step;
                         let reset_timeout = self.spec.limits.env_reset_timeout;
-                        // Spec timeout getter returns a clamped-non-negative i64; proto field is uint64.
                         let reset_timeout_ms =
                             self.spec.limits.env_reset_timeout_ms().max(0) as u64;
                         let whole_vector = done_lanes.len() == self.spec.num_envs;

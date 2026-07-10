@@ -24,12 +24,15 @@ if TYPE_CHECKING:
 
 def _use_zip(archive: bool | str | None, path: Path) -> bool:
     if isinstance(archive, str):
-        archive = archive.strip().lower()
-    if archive is True or archive == "zip":
-        return True
-    if archive is False or archive in ("folder", "dir"):
-        return False
-    return path.suffix.lower() == ".zip"
+        value = archive.strip().lower()
+        if value == "zip":
+            return True
+        if value in ("folder", "dir"):
+            return False
+        raise ValueError(f"archive must be 'zip' or 'folder'; got {archive!r}")
+    if archive is None:
+        return path.suffix.lower() == ".zip"
+    return archive
 
 
 def write_bundle(
@@ -53,13 +56,22 @@ def write_bundle(
             archive_file.writestr(RESULT_FILENAME, payload)
             for source, rel in assets:
                 if os.path.isfile(source):
-                    archive_file.write(source, rel)
+                    archive_file.write(source, rel, compress_type=zipfile.ZIP_STORED)
         return path
 
+    if path.exists() and not path.is_dir():
+        raise FileExistsError(
+            f"{path} exists and is not a directory; pass archive='zip' to "
+            "overwrite a zip bundle, or export to a different path"
+        )
     path.mkdir(parents=True, exist_ok=True)
-    (path / RESULT_FILENAME).unlink(missing_ok=True)
     old_media = path / MEDIA_DIR
     if old_media.is_dir():
+        if not (path / RESULT_FILENAME).is_file():
+            raise FileExistsError(
+                f"refusing to overwrite {old_media}: {path} is not an rlmesh "
+                f"bundle (no {RESULT_FILENAME}); export to a different path"
+            )
         shutil.rmtree(old_media, ignore_errors=True)
     (path / RESULT_FILENAME).write_text(payload, encoding="utf-8")
     for source, rel in assets:

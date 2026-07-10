@@ -43,276 +43,258 @@ pub struct StartedContainer {
     pub address: String,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct DockerBackend;
+pub fn ensure_image(spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
+    ensure_image_tagged(spec, &spec.image_tag())
+}
 
-impl DockerBackend {
-    pub fn ensure_image(&self, spec: &EffectiveSandboxSpec) -> Result<BuildArtifact> {
-        self.ensure_image_tagged(spec, &spec.image_tag())
+fn ensure_image_tagged(spec: &EffectiveSandboxSpec, image_tag: &str) -> Result<BuildArtifact> {
+    // A single `docker image inspect` answers both "does it exist" and
+    // "what is its id": inspect_image_id returns Ok(None) when the image is
+    // absent, so a second existence probe is redundant.
+    if let Some(image_id) = inspect_image_id(image_tag)? {
+        return Ok(BuildArtifact { image_id });
     }
 
-    fn ensure_image_tagged(
-        &self,
-        spec: &EffectiveSandboxSpec,
-        image_tag: &str,
-    ) -> Result<BuildArtifact> {
-        // A single `docker image inspect` answers both "does it exist" and
-        // "what is its id": inspect_image_id returns Ok(None) when the image is
-        // absent, so a second existence probe is redundant.
-        if let Some(image_id) = inspect_image_id(image_tag)? {
-            return Ok(BuildArtifact { image_id });
-        }
+    let tempdir = tempfile::tempdir().context("failed to create sandbox build context")?;
+    write_build_context(spec, &tempdir)?;
 
-        let tempdir = tempfile::tempdir().context("failed to create sandbox build context")?;
-        self.write_build_context(spec, &tempdir)?;
-
-        // Opt-in: when a build memory ceiling is requested, route the build
-        // through a bounded `docker-container` buildx builder so an OOM is a
-        // clean cgroup-local build failure instead of a host freeze. Wrapping the
-        // `docker` CLI in a systemd scope does NOT work -- the build runs in the
-        // daemon's own cgroup (system.slice), a sibling of the CLI, so only a
-        // builder whose cgroup contains the work can bound it. Without a ceiling
-        // we keep the default builder (today's behaviour).
-        let build_memory = match spec.build_memory.as_deref() {
-            Some(raw) => resolve_build_memory(raw)?,
-            None => None,
-        };
-        let output = match &build_memory {
-            Some(memory) => {
-                let builder = ensure_bounded_builder(memory)?;
-                Command::new("docker")
-                    .args([
-                        "buildx",
-                        "build",
-                        "--builder",
-                        &builder,
-                        "--load",
-                        "-t",
-                        image_tag,
-                        ".",
-                    ])
-                    .current_dir(tempdir.path())
-                    .output()
-                    .context("failed to invoke docker buildx build")?
-            }
-            None => Command::new("docker")
-                .args(["build", "-t", image_tag, "."])
+    // Opt-in: when a build memory ceiling is requested, route the build
+    // through a bounded `docker-container` buildx builder so an OOM is a
+    // clean cgroup-local build failure instead of a host freeze. Wrapping the
+    // `docker` CLI in a systemd scope does NOT work -- the build runs in the
+    // daemon's own cgroup (system.slice), a sibling of the CLI, so only a
+    // builder whose cgroup contains the work can bound it. Without a ceiling
+    // we keep the default builder (today's behaviour).
+    let build_memory = match spec.build_memory.as_deref() {
+        Some(raw) => resolve_build_memory(raw)?,
+        None => None,
+    };
+    let output = match &build_memory {
+        Some(memory) => {
+            let builder = ensure_bounded_builder(memory)?;
+            Command::new("docker")
+                .args([
+                    "buildx",
+                    "build",
+                    "--builder",
+                    &builder,
+                    "--load",
+                    "-t",
+                    image_tag,
+                    ".",
+                ])
                 .current_dir(tempdir.path())
                 .output()
-                .context("failed to invoke docker build")?,
-        };
-        if !output.status.success() {
-            bail!("docker build failed:\n{}", command_output(&output));
+                .context("failed to invoke docker buildx build")?
         }
-
-        let image_id = inspect_image_id(image_tag)?
-            .ok_or_else(|| anyhow!("docker build completed but image id was not found"))?;
-        Ok(BuildArtifact { image_id })
-    }
-
-    pub async fn run_container_async(
-        &self,
-        spec: &EffectiveSandboxSpec,
-        artifact: &BuildArtifact,
-    ) -> Result<StartedContainer> {
-        let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
-        // The bootstrap payload carries runtime-only parameters (kwargs,
-        // num_envs, vectorization_mode, and similar settings). It is delivered at `docker run`
-        // time via an env var rather than baked into the image, so changing a
-        // runtime parameter never rebuilds the image or invalidates the pip
-        // install layer.
-        let bootstrap_json = render_bootstrap_json(spec)?;
-        let output = Command::new("docker")
-            .args(docker_run_args(
-                &container_name,
-                &artifact.image_id,
-                &bootstrap_json,
-                std::process::id(),
-            ))
+        None => Command::new("docker")
+            .args(["build", "-t", image_tag, "."])
+            .current_dir(tempdir.path())
             .output()
-            .context("failed to start docker container")?;
-        if !output.status.success() {
-            // `docker run` can leave a created (but not started) container behind
-            // when startup fails after the container is created (e.g. a port
-            // collision). Remove it by name so we do not leak it.
-            let _ = self.remove_container(&container_name);
-            bail!("docker run failed:\n{}", command_output(&output));
-        }
-
-        let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let host_port = match resolve_published_port(&container_id) {
-            Ok(port) => port,
-            Err(err) => {
-                let _ = self.stop_container(&container_id);
-                return Err(err);
-            }
-        };
-        let address = format!("tcp://127.0.0.1:{host_port}");
-        if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
-            let hint = spec.rlmesh_package.skew_hint();
-            let report =
-                self.startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
-            let _ = self.stop_container(&container_id);
-            return Err(report);
-        }
-
-        Ok(StartedContainer {
-            container_id,
-            address,
-        })
+            .context("failed to invoke docker build")?,
+    };
+    if !output.status.success() {
+        bail!("docker build failed:\n{}", command_output(&output));
     }
 
-    pub fn stop_container(&self, container_id: &str) -> Result<()> {
-        let Some(state) = inspect_container_state(container_id)? else {
-            return Ok(());
-        };
+    let image_id = inspect_image_id(image_tag)?
+        .ok_or_else(|| anyhow!("docker build completed but image id was not found"))?;
+    Ok(BuildArtifact { image_id })
+}
 
-        if state.status == "running" {
-            self.stop_running_container(container_id)?;
-        }
-        self.remove_container(container_id)
-    }
-
-    /// Best-effort reap of orphaned rlmesh-owned containers.
-    ///
-    /// Only containers whose recorded owner process is gone are removed; current
-    /// process containers are excluded and individual Docker failures are skipped.
-    pub fn reap_orphaned_containers(&self) -> Result<Vec<String>> {
-        let candidates = list_owned_containers()?;
-        let self_pid = std::process::id();
-        let self_pid_namespace = current_pid_namespace_id();
-        let mut reaped = Vec::new();
-        for candidate in candidates {
-            // Never reap our own containers, even if a pid-reuse coincidence
-            // were to make the liveness check ambiguous.
-            if candidate.owner_pid == Some(self_pid) {
-                continue;
-            }
-            let owner_liveness = candidate
-                .owner_pid
-                .map_or(OwnerPidLiveness::Unknown, |pid| {
-                    owner_pid_liveness(
-                        pid,
-                        candidate.owner_pid_namespace.as_deref(),
-                        self_pid_namespace.as_deref(),
-                    )
-                });
-            if !is_orphan(&candidate.status, candidate.owner_pid, owner_liveness) {
-                continue;
-            }
-            if self.stop_container(&candidate.id).is_ok() {
-                reaped.push(candidate.id);
-            }
-        }
-        Ok(reaped)
-    }
-
-    fn stop_running_container(&self, container_id: &str) -> Result<()> {
-        let output = Command::new("docker")
-            .args(["stop", container_id])
-            .output()
-            .context("failed to stop docker container")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such container") {
-                return Ok(());
-            }
-            bail!("docker stop failed: {}", stderr.trim());
-        }
-        Ok(())
-    }
-
-    fn remove_container(&self, container_id: &str) -> Result<()> {
-        let output = Command::new("docker")
-            .args(["rm", container_id])
-            .output()
-            .context("failed to remove docker container")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("No such container") || stderr.contains("No such object") {
-                return Ok(());
-            }
-            bail!("docker rm failed: {}", stderr.trim());
-        }
-        Ok(())
-    }
-
-    fn startup_failure_report(
-        &self,
-        container_id: &str,
-        container_name: &str,
-        cause: &anyhow::Error,
-        hint: Option<&str>,
-    ) -> anyhow::Error {
-        let state = match inspect_container_state(container_id) {
-            Ok(Some(state)) => state.summary(),
-            Ok(None) => "container state: unavailable (container not found)".to_string(),
-            Err(err) => format!("container state: unavailable ({err})"),
-        };
-        let logs = match self.container_logs(container_id) {
-            Ok(logs) if logs.trim().is_empty() => "container logs: <empty>".to_string(),
-            Ok(logs) => format!(
-                "container logs:\n{}",
-                tail_text(&logs, CONTAINER_LOG_TAIL_BYTES)
-            ),
-            Err(err) => format!("container logs: unavailable ({err})"),
-        };
-
-        anyhow!(format_startup_failure_report(
-            container_id,
-            container_name,
-            &cause.to_string(),
-            &state,
-            &logs,
-            hint,
+pub async fn run_container_async(
+    spec: &EffectiveSandboxSpec,
+    artifact: &BuildArtifact,
+) -> Result<StartedContainer> {
+    let container_name = format!("rlmesh-sandbox-{}-{}", spec.slug(), Uuid::new_v4().simple());
+    let bootstrap_json = render_bootstrap_json(spec)?;
+    let output = Command::new("docker")
+        .args(docker_run_args(
+            &container_name,
+            &artifact.image_id,
+            &bootstrap_json,
+            std::process::id(),
         ))
+        .output()
+        .context("failed to start docker container")?;
+    if !output.status.success() {
+        // `docker run` can leave a created (but not started) container behind
+        // when startup fails after the container is created (e.g. a port
+        // collision). Remove it by name so we do not leak it.
+        let _ = remove_container(&container_name);
+        bail!("docker run failed:\n{}", command_output(&output));
     }
 
-    fn container_logs(&self, container_id: &str) -> Result<String> {
-        let output = Command::new("docker")
-            .args(["logs", container_id])
-            .output()
-            .context("failed to read docker logs")?;
-        let mut logs = String::new();
-        logs.push_str(&String::from_utf8_lossy(&output.stdout));
-        if !output.stderr.is_empty() {
-            if !logs.is_empty() {
-                logs.push('\n');
-            }
-            logs.push_str(&String::from_utf8_lossy(&output.stderr));
+    let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let host_port = match resolve_published_port(&container_id) {
+        Ok(port) => port,
+        Err(err) => {
+            let _ = stop_container(&container_id);
+            return Err(err);
         }
-        Ok(logs)
+    };
+    let address = format!("tcp://127.0.0.1:{host_port}");
+    if let Err(err) = wait_for_ready(&address, &container_id, Duration::from_secs(30)).await {
+        let hint = spec.rlmesh_package.skew_hint();
+        let report = startup_failure_report(&container_id, &container_name, &err, hint.as_deref());
+        let _ = stop_container(&container_id);
+        return Err(report);
     }
 
-    fn write_build_context(&self, spec: &EffectiveSandboxSpec, tempdir: &TempDir) -> Result<()> {
-        if let Some(source_path) = spec.rlmesh_package.source_path() {
-            let filename = source_path
-                .file_name()
-                .ok_or_else(|| anyhow!("RLMesh wheel path must have a filename"))?;
-            let package_dir = tempdir.path().join("packages");
-            fs::create_dir_all(&package_dir)
-                .context("failed to create sandbox package build context")?;
-            fs::copy(source_path, package_dir.join(filename)).with_context(|| {
-                format!("failed to copy RLMesh wheel {}", source_path.display())
-            })?;
-        }
+    Ok(StartedContainer {
+        container_id,
+        address,
+    })
+}
 
-        if let ResolvedEnvironmentSourceRef::Hf(source) = &spec.resolved_source {
-            let EnvironmentSourceRef::Hf(requested_source) = &spec.requested_source else {
-                bail!("resolved HF source did not match requested source");
-            };
-            hf::materialize_source(
-                requested_source,
-                &source.resolved_revision,
-                &tempdir.path().join("source"),
-            )?;
-        }
+pub fn stop_container(container_id: &str) -> Result<()> {
+    let Some(state) = inspect_container_state(container_id)? else {
+        return Ok(());
+    };
 
-        let dockerfile = render_dockerfile(spec)?;
-        fs::write(tempdir.path().join("Dockerfile"), dockerfile)
-            .context("failed to write generated Dockerfile")?;
-        Ok(())
+    if state.status == "running" {
+        stop_running_container(container_id)?;
     }
+    remove_container(container_id)
+}
+
+/// Best-effort reap of orphaned rlmesh-owned containers.
+///
+/// Only containers whose recorded owner process is gone are removed; current
+/// process containers are excluded and individual Docker failures are skipped.
+pub fn reap_orphaned_containers() -> Result<Vec<String>> {
+    let candidates = list_owned_containers()?;
+    let self_pid = std::process::id();
+    let self_pid_namespace = current_pid_namespace_id();
+    let mut reaped = Vec::new();
+    for candidate in candidates {
+        // Never reap our own containers, even if a pid-reuse coincidence
+        // were to make the liveness check ambiguous.
+        if candidate.owner_pid == Some(self_pid) {
+            continue;
+        }
+        let owner_liveness = candidate
+            .owner_pid
+            .map_or(OwnerPidLiveness::Unknown, |pid| {
+                owner_pid_liveness(
+                    pid,
+                    candidate.owner_pid_namespace.as_deref(),
+                    self_pid_namespace.as_deref(),
+                )
+            });
+        if !is_orphan(&candidate.status, candidate.owner_pid, owner_liveness) {
+            continue;
+        }
+        if stop_container(&candidate.id).is_ok() {
+            reaped.push(candidate.id);
+        }
+    }
+    Ok(reaped)
+}
+
+fn stop_running_container(container_id: &str) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["stop", container_id])
+        .output()
+        .context("failed to stop docker container")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") {
+            return Ok(());
+        }
+        bail!("docker stop failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+fn remove_container(container_id: &str) -> Result<()> {
+    let output = Command::new("docker")
+        .args(["rm", container_id])
+        .output()
+        .context("failed to remove docker container")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("No such container") || stderr.contains("No such object") {
+            return Ok(());
+        }
+        bail!("docker rm failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+fn startup_failure_report(
+    container_id: &str,
+    container_name: &str,
+    cause: &anyhow::Error,
+    hint: Option<&str>,
+) -> anyhow::Error {
+    let state = match inspect_container_state(container_id) {
+        Ok(Some(state)) => state.summary(),
+        Ok(None) => "container state: unavailable (container not found)".to_string(),
+        Err(err) => format!("container state: unavailable ({err})"),
+    };
+    let logs = match container_logs(container_id) {
+        Ok(logs) if logs.trim().is_empty() => "container logs: <empty>".to_string(),
+        Ok(logs) => format!(
+            "container logs:\n{}",
+            tail_text(&logs, CONTAINER_LOG_TAIL_BYTES)
+        ),
+        Err(err) => format!("container logs: unavailable ({err})"),
+    };
+
+    anyhow!(format_startup_failure_report(
+        container_id,
+        container_name,
+        &cause.to_string(),
+        &state,
+        &logs,
+        hint,
+    ))
+}
+
+fn container_logs(container_id: &str) -> Result<String> {
+    let output = Command::new("docker")
+        .args(["logs", container_id])
+        .output()
+        .context("failed to read docker logs")?;
+    let mut logs = String::new();
+    logs.push_str(&String::from_utf8_lossy(&output.stdout));
+    if !output.stderr.is_empty() {
+        if !logs.is_empty() {
+            logs.push('\n');
+        }
+        logs.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(logs)
+}
+
+fn write_build_context(spec: &EffectiveSandboxSpec, tempdir: &TempDir) -> Result<()> {
+    if let Some(source_path) = spec.rlmesh_package.source_path() {
+        let filename = source_path
+            .file_name()
+            .ok_or_else(|| anyhow!("RLMesh wheel path must have a filename"))?;
+        let package_dir = tempdir.path().join("packages");
+        fs::create_dir_all(&package_dir)
+            .context("failed to create sandbox package build context")?;
+        fs::copy(source_path, package_dir.join(filename))
+            .with_context(|| format!("failed to copy RLMesh wheel {}", source_path.display()))?;
+    }
+
+    if let ResolvedEnvironmentSourceRef::Hf(source) = &spec.resolved_source {
+        let EnvironmentSourceRef::Hf(requested_source) = &spec.requested_source else {
+            bail!("resolved HF source did not match requested source");
+        };
+        hf::materialize_source(
+            requested_source,
+            &source.resolved_revision,
+            &tempdir.path().join("source"),
+        )?;
+    }
+
+    let dockerfile = render_dockerfile(spec)?;
+    fs::write(tempdir.path().join("Dockerfile"), dockerfile)
+        .context("failed to write generated Dockerfile")?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,9 +456,6 @@ fn render_dockerfile(spec: &EffectiveSandboxSpec) -> Result<String> {
     };
     let package_command = render_package_install_command(spec);
 
-    // The bootstrap payload is supplied at run time via the
-    // RLMESH_BOOTSTRAP_JSON env var (see docker_run_args), not COPY'd into the
-    // image, so runtime-only parameters never invalidate the image cache.
     Ok(format!(
         "# syntax=docker/dockerfile:1.7\n\n\
 FROM {}\n\n\
@@ -497,7 +476,11 @@ ENTRYPOINT [\"python\", \"-m\", \"rlmesh._bootstrap.sandbox_env\"]\n",
 }
 
 /// Serialize the bootstrap payload that is injected at run time via the
-/// `RLMESH_BOOTSTRAP_JSON` env var.
+/// `RLMESH_BOOTSTRAP_JSON` env var (see `docker_run_args`), rather than baked
+/// into the image at build time. This keeps runtime-only parameters (kwargs,
+/// num_envs, vectorization_mode, and similar settings) out of the image and
+/// its build hash, so changing one never rebuilds the image or invalidates
+/// the pip install layer.
 fn render_bootstrap_json(spec: &EffectiveSandboxSpec) -> Result<String> {
     serde_json::to_string(&BootstrapConfigFile {
         spec: BootstrapSpec::from_effective_spec(spec)?,
@@ -763,8 +746,6 @@ fn docker_run_args(
         ]);
     }
     args.extend([
-        // Deliver the bootstrap payload (runtime-only parameters) at run time
-        // so changing it never rebuilds the image.
         "--env".to_string(),
         format!("RLMESH_BOOTSTRAP_JSON={bootstrap_json}"),
         "--name".to_string(),
@@ -1088,8 +1069,6 @@ mod tests {
         assert!(dockerfile.contains("pygame"));
         assert!(dockerfile.contains("rlmesh._bootstrap.sandbox_env"));
         assert!(!dockerfile.contains("COPY source"));
-        // The bootstrap payload is delivered at run time, not baked into the
-        // image, so runtime-only parameter changes never invalidate the build.
         assert!(!dockerfile.contains("COPY bootstrap.json"));
         assert!(!dockerfile.contains("bootstrap.json"));
     }
@@ -1154,7 +1133,6 @@ mod tests {
     fn docker_run_args_publish_ephemeral_host_port() {
         let args = docker_run_args("rlmesh-sandbox-test", "sha256:abc", "{}", 4242);
 
-        // Docker assigns the host port atomically; we must not bake a fixed one in.
         assert!(args.iter().any(|arg| arg == "127.0.0.1:0:50051"));
         assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:4")));
     }

@@ -67,12 +67,13 @@ impl EncodingTransform for NoEncodings {
     }
 }
 
-/// An `episode_id -> V` map with the edge-driven per-episode lifecycle the
-/// stateful engine shares across its buffers: insert at episode START
-/// ([`seed`](Self::seed)), drop at END ([`evict`](Self::evict)), drop all on
-/// close ([`clear`](Self::clear)) — never on absence. [`FrameBuffers`] is a thin
-/// wrapper that adds only its value-specific access, so the lifecycle (and the
-/// keying rationale below) lives in exactly one place.
+/// Per-route, episode-keyed frame-history buffers:
+/// `episode_id -> placement-string -> rolling window` (window `maxlen = depth`).
+///
+/// The handler holds one of these per `route_key`, with an edge-driven
+/// lifecycle: an episode's entry appears lazily on first use and is dropped at
+/// episode END ([`evict`](Self::evict)) or on close ([`clear`](Self::clear)) —
+/// never on absence.
 ///
 /// The key is the `episode_id` (a UUIDv4), **not** the lane index:
 /// - autoreset reuses a lane's index across episodes, but `episode_id` is fresh
@@ -80,80 +81,19 @@ impl EncodingTransform for NoEncodings {
 /// - grouped predict can migrate an episode's slot index between groups, but
 ///   `episode_id` is stable, so the entry follows the episode, not the index.
 #[derive(Default)]
-struct EpisodeMap<V> {
-    inner: HashMap<String, V>,
-}
-
-impl<V: Default> EpisodeMap<V> {
-    fn new() -> Self {
-        Self {
-            inner: HashMap::new(),
-        }
-    }
-
-    /// Insert an episode's (default) entry at episode START. Returns `false` if
-    /// it was already present — a missed END the caller may assert on.
-    fn seed(&mut self, episode_id: &str) -> bool {
-        if self.inner.contains_key(episode_id) {
-            return false;
-        }
-        self.inner.insert(episode_id.to_owned(), V::default());
-        true
-    }
-
-    /// The entry for an episode, created lazily (default) if absent.
-    fn entry(&mut self, episode_id: &str) -> &mut V {
-        self.inner.entry(episode_id.to_owned()).or_default()
-    }
-
-    /// Drop an episode's entry at episode END or a close sweep.
-    fn evict(&mut self, episode_id: &str) {
-        self.inner.remove(episode_id);
-    }
-
-    /// Drop every episode's entry (session shutdown / route close).
-    fn clear(&mut self) {
-        self.inner.clear();
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-}
-
-/// Per-route, episode-keyed frame-history buffers.
-///
-/// The handler holds one of these per `route_key`. Lifecycle and episode-id
-/// keying are owned by `EpisodeMap`; `seed` at episode START, `evict` at END,
-/// `clear` on close.
-#[derive(Default)]
 pub struct FrameBuffers {
-    /// `episode_id -> placement-string -> rolling window` (window `maxlen = depth`).
-    inner: EpisodeMap<BTreeMap<String, VecDeque<Tensor>>>,
+    inner: HashMap<String, BTreeMap<String, VecDeque<Tensor>>>,
 }
 
 impl FrameBuffers {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            inner: EpisodeMap::new(),
-        }
-    }
-
-    /// Seed an episode's (empty) buffer set at episode START. Returns `false` if
-    /// the episode was already present — a missed END the handler asserts on
-    /// rather than silently re-padding.
-    pub fn seed(&mut self, episode_id: &str) -> bool {
-        self.inner.seed(episode_id)
+        Self::default()
     }
 
     /// Evict an episode's buffers at episode END or a close sweep.
     pub fn evict(&mut self, episode_id: &str) {
-        self.inner.evict(episode_id);
+        self.inner.remove(episode_id);
     }
 
     /// Drop every episode's buffers (session shutdown / route close).
@@ -161,20 +101,9 @@ impl FrameBuffers {
         self.inner.clear();
     }
 
-    /// Number of live episodes currently buffered.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
     /// The per-key window map for an episode, created lazily if absent.
     fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, VecDeque<Tensor>> {
-        self.inner.entry(episode_id)
+        self.inner.entry(episode_id.to_owned()).or_default()
     }
 }
 
@@ -596,20 +525,6 @@ mod tests {
             step3.to_contiguous_bytes().as_ref(),
             &[20, 21, 30, 31, 40, 41]
         );
-    }
-
-    #[test]
-    fn frame_buffers_seed_and_evict_are_edge_driven() {
-        let mut buffers = FrameBuffers::new();
-        assert!(buffers.is_empty());
-        assert!(buffers.seed("ep-a"));
-        assert!(!buffers.seed("ep-a")); // already present -> missed END signal
-        buffers.seed("ep-b");
-        assert_eq!(buffers.len(), 2);
-        buffers.evict("ep-a");
-        assert_eq!(buffers.len(), 1);
-        buffers.clear();
-        assert!(buffers.is_empty());
     }
 
     #[test]

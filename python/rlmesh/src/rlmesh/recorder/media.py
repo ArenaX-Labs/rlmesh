@@ -15,7 +15,7 @@ import shutil
 import tempfile
 from typing import TYPE_CHECKING
 
-from .constants import MEDIA_DIR
+from .constants import DEFAULT_FPS, DEFAULT_QUALITY, MEDIA_DIR
 from .frames import sanitize_part
 from .schema import MediaRef
 
@@ -30,8 +30,11 @@ class MediaStager:
     playback ``fps`` is stamped onto each recorded video's manifest row.
     """
 
-    def __init__(self, *, fps: int = 30, quality: int = 60) -> None:
+    def __init__(
+        self, *, fps: int = DEFAULT_FPS, quality: int = DEFAULT_QUALITY
+    ) -> None:
         self._dir: str | None = None
+        self._closed = False
         #: Playback rate stamped on recorded videos (read by the manifest row).
         self.fps = fps
         #: AV1 record quality, 1..=100 (higher is better/larger).
@@ -124,8 +127,14 @@ class MediaStager:
             fps=float(self.fps),
         )
 
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`cleanup` ran (staged assets, if any, are gone)."""
+        return self._closed
+
     def cleanup(self) -> None:
         """Remove the staging dir (staged videos). Idempotent."""
+        self._closed = True
         if self._dir is not None:
             shutil.rmtree(self._dir, ignore_errors=True)
             self._dir = None

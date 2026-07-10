@@ -980,7 +980,6 @@ mod tests {
             None,
         );
 
-        // No token -> rejected.
         let err = EnvService::handshake(
             &server,
             Request::new(handshake_request(
@@ -992,7 +991,6 @@ mod tests {
         .expect_err("missing token must be rejected");
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
-        // Wrong token -> rejected.
         let mut wrong = Request::new(handshake_request(
             PROTOCOL_GENERATION,
             &[CURRENT_WORKFLOW_EDITION],
@@ -1005,7 +1003,6 @@ mod tests {
             .expect_err("wrong token must be rejected");
         assert_eq!(err.code(), tonic::Code::Unauthenticated);
 
-        // Correct token -> accepted.
         let mut ok = Request::new(handshake_request(
             PROTOCOL_GENERATION,
             &[CURRENT_WORKFLOW_EDITION],
@@ -1021,7 +1018,6 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_without_token_is_unauthenticated_by_default() {
-        // A server with no configured token accepts unauthenticated requests.
         let server = GrpcEnvServer::new(ScriptedVectorEnv::handshake_only());
         let response = EnvService::handshake(
             &server,
@@ -1210,7 +1206,6 @@ mod tests {
         let first_res = first.await.unwrap();
         let second_res = second.await.unwrap();
 
-        // The first call returned a Timeout error to the client.
         assert!(matches!(
             first_res.kind,
             Some(join_response::Kind::Error(ref e))
@@ -1225,7 +1220,6 @@ mod tests {
             !overlap.load(Ordering::SeqCst),
             "two env.step calls overlapped against the same environment"
         );
-        // Both steps actually executed to completion in the env.
         assert_eq!(completed.load(Ordering::SeqCst), 2);
     }
 
@@ -1275,13 +1269,11 @@ mod tests {
             .expect("first join accepted")
             .into_inner();
 
-        // Second Join stream must be rejected.
         let (_tx2, rx2) = tokio::sync::mpsc::channel::<JoinRequest>(1);
         let second = client2.join(ReceiverStream::new(rx2)).await;
         let status = second.expect_err("second concurrent join must be rejected");
         assert_eq!(status.code(), tonic::Code::FailedPrecondition);
 
-        // After the first stream ends, a new Join is admitted again.
         drop(tx1);
         drop(first);
         let mut admitted = None;
@@ -1657,7 +1649,6 @@ mod tests {
             "out of range",
         );
         // Negative lanes are unrepresentable now that env_indices is uint32.
-        // Duplicate lane.
         expect_invalid(
             super::handle_env_request(reset(vec![0, 0], vec![]), env.clone(), tracker.clone())
                 .await,
@@ -1670,7 +1661,6 @@ mod tests {
             "seeds length",
         );
 
-        // A rejected partial reset must not have started any tracked episode.
         let tracker = tracker.lock().await;
         assert!(
             tracker.active_episode_id(0).is_none() && tracker.active_episode_id(1).is_none(),
@@ -2041,7 +2031,6 @@ mod tests {
         // s1 puts lane 1 into pending-autoreset.
         let _ = super::handle_env_request(step("s1"), env.clone(), tracker.clone()).await;
 
-        // Snapshot lane 0's episode id before the violating step.
         let lane0_before = {
             let t = tracker.lock().await;
             t.active_episode_id(0).map(|s| s.to_string())
@@ -2051,14 +2040,12 @@ mod tests {
             "lane 0 is active before the violating step"
         );
 
-        // s2 violates on lane 1; the whole step must error.
         let resp = super::handle_env_request(step("s2"), env.clone(), tracker.clone()).await;
         assert!(
             matches!(resp.kind, Some(join_response::Kind::Error(_))),
             "a violating step must return an error"
         );
 
-        // Lane 0 must not have been completed or rolled: same active episode.
         let t = tracker.lock().await;
         assert_eq!(
             t.lane_state(0),
@@ -2086,7 +2073,6 @@ mod tests {
         let env = Arc::new(Mutex::new(ScriptedVectorEnv::new(
             2,
             rlmesh_spaces::AutoresetMode::NextStep,
-            // terminated_mask has length 1 for a 2-lane env: partial width.
             vec![step_resp(vec![1.0, 1.0], vec![0], vec![0, 0])],
         )));
         let tracker = Arc::new(Mutex::new(super::super::episode::EpisodeTracker::new()));

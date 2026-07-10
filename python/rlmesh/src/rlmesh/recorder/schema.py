@@ -112,12 +112,15 @@ class EpisodeRecord:
 
     @property
     def succeeded(self) -> bool:
-        """Env-reported success, falling back to ``terminated`` when unreported.
+        """Whether this episode counts as a success, by the SDK doctrine.
 
-        Matches :attr:`rlmesh.RunResult.success_rate` semantics so an SDK metric and
-        an uploaded metric agree.
+        Delegates to the same function behind
+        :attr:`rlmesh.EpisodeResult.succeeded`, so an SDK metric and an
+        uploaded ``successRate`` cannot drift apart.
         """
-        return self.terminated if self.success is None else self.success
+        from .._models._eval import episode_succeeded
+
+        return episode_succeeded(success=self.success, terminated=self.terminated)
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-native episode record (SDK vocabulary; media only when present)."""

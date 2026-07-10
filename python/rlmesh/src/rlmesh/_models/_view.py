@@ -15,8 +15,54 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-# The pretty human-render source; always offered first when the env supports it.
-_RENDER = "render"
+#: The pretty human-render source label; always offered first when the env
+#: supports it. Public vocabulary: ``cameras=["render"]`` on the recorder and
+#: the viewer's source selector both name the env ``render()`` frame with it.
+RENDER_SOURCE = "render"
+
+
+@dataclass(frozen=True)
+class FrameSources:
+    """The frame sources one connected env offers, in display order.
+
+    The single discovery result shared by the live viewer and the recorder,
+    so the same env always yields the same camera vocabulary in the viewer
+    HUD and in an exported bundle.
+
+    Attributes:
+        roles: The env's declared image observation roles.
+        render_label: Label for the env ``render()`` source, or ``None`` when
+            the env exposes no rgb render mode. ``"render()"`` when a declared
+            role is itself named ``render`` (the role keeps the plain name).
+        render: Zero-arg thunk returning the ``render()`` frame, or ``None``.
+    """
+
+    roles: tuple[str, ...]
+    render_label: str | None
+    render: Callable[[], object] | None
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        """Every source label, render first -- the selector/camera vocabulary."""
+        head = (self.render_label,) if self.render_label is not None else ()
+        return head + self.roles
+
+
+def discover_frame_sources(contract: Any, client: Any) -> FrameSources:
+    """Discover the frame sources of a connected env (render + image roles).
+
+    The one place the render-vs-role name collision is resolved: a declared
+    image role named ``render`` keeps its plain name and the env ``render()``
+    source is labeled ``render()`` instead, so a role can never be shadowed.
+    """
+    from ._read import env_image_roles
+
+    roles = tuple(env_image_roles(contract))
+    render_mode = getattr(client, "render_mode", None)
+    if not (isinstance(render_mode, str) and "rgb" in render_mode.lower()):
+        return FrameSources(roles=roles, render_label=None, render=None)
+    label = f"{RENDER_SOURCE}()" if RENDER_SOURCE in roles else RENDER_SOURCE
+    return FrameSources(roles=roles, render_label=label, render=_resolve_render(client))
 
 
 @dataclass(frozen=True)
@@ -106,7 +152,7 @@ class ViewerDriver:
         self._pv: Any = None
         self._items: dict[str, Any] = {}
         self._render_ok = False
-        self._render_label = _RENDER
+        self._render_label = RENDER_SOURCE
         self._render_call: Callable[[], object] | None = None
         self._disabled = False
         self._quit = False
@@ -120,24 +166,17 @@ class ViewerDriver:
             return
         try:
             from ..adapters import Image
-            from ._read import env_image_roles
 
-            cameras = env_image_roles(contract)
-            for role in cameras:
+            discovered = discover_frame_sources(contract, client)
+            for role in discovered.roles:
                 self._items[role] = Image(role, layout="hwc")
 
-            render_mode = getattr(client, "render_mode", None)
-            self._render_ok = (
-                isinstance(render_mode, str) and "rgb" in render_mode.lower()
-            )
+            self._render_ok = discovered.render_label is not None
+            if discovered.render_label is not None:
+                self._render_label = discovered.render_label
+                self._render_call = discovered.render
 
-            if self._render_ok:
-                self._render_label = "render()" if _RENDER in cameras else _RENDER
-                self._render_call = _resolve_render(client)
-
-            sources: list[str] = (
-                [self._render_label] if self._render_ok else []
-            ) + cameras
+            sources = list(discovered.labels)
             if not sources:
                 warnings.warn(
                     "rlmesh view: env declares no image roles and has no rgb "

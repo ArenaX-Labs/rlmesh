@@ -161,19 +161,8 @@ pub fn parse_bind_target(addr: &str) -> Result<BindTarget, Error> {
     })
 }
 
-/// Validate a tcp/http authority and re-emit it as an `http://...` dial endpoint.
-pub fn normalize_endpoint(addr: &str) -> Result<String, Error> {
-    normalize_tcp_to_scheme(addr, "http://")
-}
-
 /// Validate a tcp/http authority and re-emit it as a `tcp://...` session address.
 pub fn normalize_tcp_session_address(addr: &str) -> Result<String, Error> {
-    normalize_tcp_to_scheme(addr, "tcp://")
-}
-
-/// Validate a tcp/http authority and re-emit it under `out_scheme`. An
-/// `http://` input is preserved verbatim when `out_scheme` is `http://`.
-fn normalize_tcp_to_scheme(addr: &str, out_scheme: &str) -> Result<String, Error> {
     let addr = addr.trim();
     if addr.is_empty() {
         return Err(TransportError::InvalidAddress("empty address".to_string()).into());
@@ -187,24 +176,18 @@ fn normalize_tcp_to_scheme(addr: &str, out_scheme: &str) -> Result<String, Error
         .into());
     }
 
-    if let Some(target) = addr.strip_prefix("tcp://") {
+    if let Some(target) = addr
+        .strip_prefix("tcp://")
+        .or_else(|| addr.strip_prefix("http://"))
+    {
         validate_tcp_authority(target)?;
-        return Ok(format!("{out_scheme}{target}"));
-    }
-
-    if let Some(target) = addr.strip_prefix("http://") {
-        validate_tcp_authority(target)?;
-        return Ok(if out_scheme == "http://" {
-            addr.to_string()
-        } else {
-            format!("{out_scheme}{target}")
-        });
+        return Ok(format!("tcp://{target}"));
     }
 
     reject_nontcp_scheme(addr)?;
 
     validate_tcp_authority(addr)?;
-    Ok(format!("{out_scheme}{addr}"))
+    Ok(format!("tcp://{addr}"))
 }
 
 /// Reject a leftover scheme on an address that should be a bare tcp authority:
@@ -289,31 +272,8 @@ fn normalize_unix_path(path: &str) -> Result<PathBuf, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BindTarget, normalize_endpoint, normalize_tcp_session_address, parse_bind_target,
-        parse_env_connect_target,
+        BindTarget, normalize_tcp_session_address, parse_bind_target, parse_env_connect_target,
     };
-
-    #[test]
-    fn endpoint_normalization_accepts_tcp_runtime_forms() {
-        assert_eq!(
-            normalize_endpoint("localhost:50051").unwrap(),
-            "http://localhost:50051"
-        );
-        assert_eq!(
-            normalize_endpoint("tcp://localhost:50051").unwrap(),
-            "http://localhost:50051"
-        );
-        assert_eq!(
-            normalize_endpoint("http://localhost:50051").unwrap(),
-            "http://localhost:50051"
-        );
-    }
-
-    #[test]
-    fn endpoint_normalization_rejects_unix_and_https() {
-        assert!(normalize_endpoint("unix:///tmp/rlmesh.sock").is_err());
-        assert!(normalize_endpoint("https://control-plane.example").is_err());
-    }
 
     #[test]
     fn tcp_session_normalization_uses_tcp_scheme() {
@@ -322,9 +282,19 @@ mod tests {
             "tcp://localhost:50052"
         );
         assert_eq!(
+            normalize_tcp_session_address("tcp://localhost:50052").unwrap(),
+            "tcp://localhost:50052"
+        );
+        assert_eq!(
             normalize_tcp_session_address("http://localhost:50052").unwrap(),
             "tcp://localhost:50052"
         );
+    }
+
+    #[test]
+    fn tcp_session_normalization_rejects_unix_and_https() {
+        assert!(normalize_tcp_session_address("unix:///tmp/rlmesh.sock").is_err());
+        assert!(normalize_tcp_session_address("https://control-plane.example").is_err());
     }
 
     #[test]

@@ -2,28 +2,36 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from importlib import import_module
-from pkgutil import iter_modules
-from typing import TypeVar, cast
+from typing import cast
+
+from rlmesh_system_fixtures.envs.counter import make_counter
+from rlmesh_system_fixtures.envs.image_grid import make_image_grid
+from rlmesh_system_fixtures.models.discrete import discrete_zero
+from rlmesh_system_fixtures.models.gymnasium import pendulum_zero_numpy
+from rlmesh_system_fixtures.models.image_grid import (
+    image_grid_numpy_action,
+    image_grid_torch_action,
+)
+from rlmesh_system_fixtures.models.mujoco import halfcheetah_zero_numpy
 
 EnvFactory = Callable[..., object]
 ModelFactory = Callable[[object], object]
-FixtureT = TypeVar("FixtureT", bound=Callable[..., object])
 
-_ENV_FIXTURES: dict[str, EnvFactory] = {}
-_MODEL_FIXTURES: dict[str, ModelFactory] = {}
-_DISCOVERED = False
+_ENV_FIXTURES: dict[str, EnvFactory] = {
+    "counter": make_counter,
+    "image-grid": make_image_grid,
+}
 
-
-def env_fixture(name: str) -> Callable[[FixtureT], FixtureT]:
-    return _register(name, _ENV_FIXTURES)
-
-
-def model_fixture(name: str) -> Callable[[FixtureT], FixtureT]:
-    return _register(name, _MODEL_FIXTURES)
+_MODEL_FIXTURES: dict[str, ModelFactory] = {
+    "discrete.zero": discrete_zero,
+    "gymnasium.pendulum_zero_numpy": pendulum_zero_numpy,
+    "image_grid.numpy_action": image_grid_numpy_action,
+    "image_grid.torch_action": image_grid_torch_action,
+    "mujoco.halfcheetah_zero_numpy": halfcheetah_zero_numpy,
+}
 
 
 def make_env(fixture: str, kwargs: dict[str, object] | None = None) -> object:
-    discover_fixtures()
     try:
         factory = _ENV_FIXTURES[fixture]
     except KeyError as exc:
@@ -37,7 +45,6 @@ def resolve_model(name_or_entrypoint: str) -> ModelFactory:
     if ":" in name_or_entrypoint:
         return cast(ModelFactory, resolve_dotted_entrypoint(name_or_entrypoint))
 
-    discover_fixtures()
     try:
         return _MODEL_FIXTURES[name_or_entrypoint]
     except KeyError as exc:
@@ -47,32 +54,11 @@ def resolve_model(name_or_entrypoint: str) -> ModelFactory:
 
 
 def list_env_fixtures() -> tuple[str, ...]:
-    discover_fixtures()
     return tuple(sorted(_ENV_FIXTURES))
 
 
 def list_model_fixtures() -> tuple[str, ...]:
-    discover_fixtures()
     return tuple(sorted(_MODEL_FIXTURES))
-
-
-def discover_fixtures() -> None:
-    global _DISCOVERED
-    if _DISCOVERED:
-        return
-    _DISCOVERED = True
-    import_fixture_modules("rlmesh_system_fixtures.envs")
-    import_fixture_modules("rlmesh_system_fixtures.models")
-
-
-def import_fixture_modules(package_name: str) -> None:
-    package = import_module(package_name)
-    package_path = getattr(package, "__path__", None)
-    if package_path is None:
-        return
-    for module in iter_modules(package_path, f"{package_name}."):
-        if not module.ispkg:
-            import_module(module.name)
 
 
 def resolve_dotted_entrypoint(entrypoint: str) -> object:
@@ -84,19 +70,6 @@ def resolve_dotted_entrypoint(entrypoint: str) -> object:
     for attribute in attribute_path.split("."):
         value = getattr(value, attribute)
     return value
-
-
-def _register(
-    name: str, registry: dict[str, Callable[..., object]]
-) -> Callable[[FixtureT], FixtureT]:
-    def decorator(func: FixtureT) -> FixtureT:
-        existing = registry.get(name)
-        if existing is not None and existing is not func:
-            raise ValueError(f"duplicate RLMesh system fixture {name!r}")
-        registry[name] = func
-        return func
-
-    return decorator
 
 
 def unknown_fixture_message(
