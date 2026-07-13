@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from rlmesh_system_fixtures.registry import env_fixture
-
 
 class ImageGridEnv:
     def __init__(self, width: int = 4, height: int = 3, channels: int = 3) -> None:
@@ -62,6 +60,5 @@ class ImageGridEnv:
         return {"state": state, "pixels": pixels}
 
 
-@env_fixture("image-grid")
 def make_image_grid(width: int = 4, height: int = 3, channels: int = 3) -> ImageGridEnv:
     return ImageGridEnv(width=width, height=height, channels=channels)

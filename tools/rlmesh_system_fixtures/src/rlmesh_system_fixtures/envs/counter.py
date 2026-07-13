@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rlmesh_system_fixtures.registry import env_fixture
-
 
 @dataclass
 class CounterEnv:
@@ -32,6 +30,5 @@ class CounterEnv:
         pass
 
 
-@env_fixture("counter")
 def make_counter(limit: int = 3) -> CounterEnv:
     return CounterEnv(limit=limit)

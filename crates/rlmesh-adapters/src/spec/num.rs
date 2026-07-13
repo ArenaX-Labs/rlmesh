@@ -88,37 +88,61 @@ pub(crate) fn de_bounded_count<'de, D: Deserializer<'de>>(
     Ok(value)
 }
 
+/// Shared optional-field plumbing behind the `de_opt_*` deserializers: `null` /
+/// absent -> `None`, a present value through `T::deserialize`. Each caller
+/// keeps its own domain-language `expecting` string.
+fn de_opt<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    deserializer: D,
+    expecting: &'static str,
+) -> Result<Option<T>, D::Error> {
+    struct OptVisitor<T> {
+        expecting: &'static str,
+        marker: std::marker::PhantomData<T>,
+    }
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for OptVisitor<T> {
+        type Value = Option<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str(self.expecting)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Option<T>, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Option<T>, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Option<T>, D::Error> {
+            T::deserialize(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(OptVisitor {
+        expecting,
+        marker: std::marker::PhantomData,
+    })
+}
+
+/// A count routed through [`de_count`], as a `Deserialize` impl so [`de_opt`]
+/// can drive it.
+struct Count(u32);
+
+impl<'de> Deserialize<'de> for Count {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        de_count(deserializer).map(Count)
+    }
+}
+
 /// Deserialize an optional count (`Option<u32>`): `null` / absent -> `None`,
 /// a present value through [`de_count`].
 pub(crate) fn de_opt_count<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<u32>, D::Error> {
-    struct OptCountVisitor;
-
-    impl<'de> Visitor<'de> for OptCountVisitor {
-        type Value = Option<u32>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a non-negative integer or null")
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Option<u32>, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Option<u32>, E> {
-            Ok(None)
-        }
-
-        fn visit_some<D: Deserializer<'de>>(
-            self,
-            deserializer: D,
-        ) -> Result<Option<u32>, D::Error> {
-            de_count(deserializer).map(Some)
-        }
-    }
-
-    deserializer.deserialize_option(OptCountVisitor)
+    de_opt::<Count, D>(deserializer, "a non-negative integer or null")
+        .map(|count| count.map(|Count(value)| value))
 }
 
 /// A single JSON number with a domain-friendly type error. serde's default
@@ -156,32 +180,8 @@ impl<'de> Deserialize<'de> for Number {
 pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<f64>, D::Error> {
-    struct OptNumberVisitor;
-
-    impl<'de> Visitor<'de> for OptNumberVisitor {
-        type Value = Option<f64>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a number or null")
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Option<f64>, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Option<f64>, E> {
-            Ok(None)
-        }
-
-        fn visit_some<D: Deserializer<'de>>(
-            self,
-            deserializer: D,
-        ) -> Result<Option<f64>, D::Error> {
-            Number::deserialize(deserializer).map(|Number(value)| Some(value))
-        }
-    }
-
-    deserializer.deserialize_option(OptNumberVisitor)
+    de_opt::<Number, D>(deserializer, "a number or null")
+        .map(|number| number.map(|Number(value)| value))
 }
 
 pub(crate) struct RangeVisitor;
@@ -237,32 +237,16 @@ impl<'de> Visitor<'de> for RangeVisitor {
 pub(crate) fn de_opt_range<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<(f64, f64)>, D::Error> {
-    struct OptRangeVisitor;
+    struct Range((f64, f64));
 
-    impl<'de> Visitor<'de> for OptRangeVisitor {
-        type Value = Option<(f64, f64)>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            formatter.write_str("a range [min, max] or null")
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Option<(f64, f64)>, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Option<(f64, f64)>, E> {
-            Ok(None)
-        }
-
-        fn visit_some<D: Deserializer<'de>>(
-            self,
-            deserializer: D,
-        ) -> Result<Option<(f64, f64)>, D::Error> {
-            deserializer.deserialize_seq(RangeVisitor).map(Some)
+    impl<'de> Deserialize<'de> for Range {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            deserializer.deserialize_seq(RangeVisitor).map(Range)
         }
     }
 
-    deserializer.deserialize_option(OptRangeVisitor)
+    de_opt::<Range, D>(deserializer, "a range [min, max] or null")
+        .map(|range| range.map(|Range(pair)| pair))
 }
 
 /// A single JSON integer (signed; `-1` = "infer") with a domain-friendly type

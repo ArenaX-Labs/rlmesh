@@ -18,8 +18,13 @@ publish = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg"] }
+rav1e = { workspace = true }
 tiny_http = "0.12"
 crossterm = "0.29"
+
+[dev-dependencies]
+re_mp4 = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

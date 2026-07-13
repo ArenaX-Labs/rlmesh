@@ -11,9 +11,11 @@
 mod frame;
 mod graphics;
 mod http;
+mod record;
 mod terminal;
 mod viewer;
 
 pub use frame::FrameFormat;
 pub use http::Hud;
+pub use record::{Stats, ThreadedVideoWriter, VideoWriter};
 pub use viewer::{Backend, Viewer};

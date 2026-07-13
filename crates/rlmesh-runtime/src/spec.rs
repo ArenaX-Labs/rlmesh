@@ -351,10 +351,14 @@ impl Default for RuntimeLimits {
 }
 
 impl RuntimeLimits {
+    /// Clamped-non-negative i64 milliseconds; the proto field is uint64, so
+    /// callers `.max(0) as u64` without losing information.
     pub fn env_step_timeout_ms(&self) -> i64 {
         duration_ms_i64(self.env_step_timeout)
     }
 
+    /// Clamped-non-negative i64 milliseconds; the proto field is uint64, so
+    /// callers `.max(0) as u64` without losing information.
     pub fn env_reset_timeout_ms(&self) -> i64 {
         duration_ms_i64(self.env_reset_timeout)
     }

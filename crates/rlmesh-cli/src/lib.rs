@@ -12,7 +12,7 @@
 //! `profile` manages the AWS-CLI-style
 //! named profiles those commands act on (each remembering its own platform and
 //! credential); and `registry login` authenticates docker with the platform's
-//! image registry (see [`platform`]).
+//! image registry.
 
 mod cli;
 mod platform;
@@ -20,12 +20,14 @@ mod style;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 use anyhow::Result;
 use clap::Parser;
 use clap::error::ErrorKind;
 use cli::{Cli, Command};
+
+pub use style::Style;
 
 pub async fn run_cli() -> Result<i32> {
     run_cli_with_args(std::env::args_os().skip(1).collect::<Vec<_>>()).await
@@ -34,13 +36,28 @@ pub async fn run_cli() -> Result<i32> {
 pub async fn run_cli_with_args(argv: Vec<OsString>) -> Result<i32> {
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    run_cli_with_writers(argv, &mut stdout, &mut stderr).await
+    let out_style = Style::for_terminal(stdout.is_terminal());
+    let err_style = Style::for_terminal(stderr.is_terminal());
+    run_cli_with_writers(argv, &mut stdout, &mut stderr, out_style, err_style).await
 }
 
-async fn run_cli_with_writers(
+/// Parse and dispatch a command, writing all output to the supplied sinks.
+///
+/// A command failure is rendered as a one-line `Error:` diagnostic on `stderr`
+/// plus a non-zero exit code, rather than propagated. The native binary would
+/// print a propagated error itself, but the embedded Python entrypoint would
+/// turn it into an uncaught `RuntimeError` traceback — so an expected nudge like
+/// "sign in first" would look like a crash. Both surfaces stay identical here.
+///
+/// `out_style`/`err_style` must describe the real sinks (`stdout`/`stderr`);
+/// build them with [`Style::for_terminal`] where the sink is known, since the
+/// injected writer need not be the process stream.
+pub async fn run_cli_with_writers(
     argv: Vec<OsString>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
+    out_style: Style,
+    err_style: Style,
 ) -> Result<i32> {
     let cli = match Cli::try_parse_from(std::iter::once(OsString::from("rlmesh")).chain(argv)) {
         Ok(cli) => cli,
@@ -56,7 +73,7 @@ async fn run_cli_with_writers(
 
     let result = match cli.command {
         Command::Version => version(stdout),
-        Command::Login(args) => platform::login(&args, stdout).await,
+        Command::Login(args) => platform::login(&args, stdout, out_style).await,
         Command::Logout(args) => platform::logout(&args, stdout),
         Command::Whoami(args) => platform::whoami(&args, stdout).await,
         Command::Registry(args) => match args.command {
@@ -70,15 +87,10 @@ async fn run_cli_with_writers(
         Command::Viewtest(args) => viewtest::run(&args, stderr),
     };
 
-    // Render a command failure as a clean one-line diagnostic and a non-zero
-    // exit code rather than letting it propagate. The native binary would print
-    // it itself, but the embedded Python entrypoint turns a propagated error
-    // into an uncaught `RuntimeError` traceback -- so an expected nudge like
-    // "sign in first" looks like a crash. Keep both surfaces identical here.
     match result {
         Ok(code) => Ok(code),
         Err(err) => {
-            let prefix = style::Style::stderr().red_bold("Error:");
+            let prefix = err_style.red_bold("Error:");
             writeln!(stderr, "{prefix} {err:#}")?;
             Ok(1)
         }
@@ -122,6 +134,8 @@ mod tests {
             args.iter().map(OsString::from).collect(),
             &mut stdout,
             &mut stderr,
+            Style::for_terminal(false),
+            Style::for_terminal(false),
         )
         .await
         .unwrap();

@@ -195,11 +195,6 @@ impl EffectiveSandboxSpec {
         let vectorization_mode = options.vectorization_mode;
         let resolved_source = resolve_source(&source).map_err(SandboxError::source_resolution)?;
 
-        // build_hash deliberately excludes runtime-only parameters (kwargs,
-        // num_envs, vectorization_mode): they are delivered to the container at
-        // `docker run` time via the bootstrap payload, never baked into the
-        // image, so changing them must not produce a new image tag or trigger a
-        // rebuild.
         let build_hash = build_hash(&BuildHashInput {
             schema_version: BOOTSTRAP_SCHEMA_VERSION,
             source: &resolved_source,
@@ -336,18 +331,16 @@ pub async fn start_env_async(
     options: SandboxOptions,
 ) -> std::result::Result<RunResult, SandboxError> {
     let spec = EffectiveSandboxSpec::resolve(source, options)?;
-    let docker = docker::DockerBackend;
     // Best-effort: sweep containers orphaned by a prior hard kill before
     // starting a new one. Label-keyed and env-agnostic, so this also reclaims
     // orphaned model containers. A reaper failure must never fail the start.
-    if let Err(err) = docker.reap_orphaned_containers() {
+    if let Err(err) = docker::reap_orphaned_containers() {
         tracing::debug!("orphan reap before sandbox start failed: {err:#}");
     }
-    let artifact = docker.ensure_image(&spec).map_err(|err| {
+    let artifact = docker::ensure_image(&spec).map_err(|err| {
         SandboxError::from_docker_op(err, |m| SandboxError::ImageBuild { message: m })
     })?;
-    let started = docker
-        .run_container_async(&spec, &artifact)
+    let started = docker::run_container_async(&spec, &artifact)
         .await
         .map_err(|err| {
             SandboxError::from_docker_op(err, |m| SandboxError::ContainerStartup { message: m })
@@ -363,8 +356,7 @@ pub async fn start_env_async(
 
 /// Stop and remove a sandbox container by id.
 pub fn stop_container(container_id: &str) -> std::result::Result<(), SandboxError> {
-    docker::DockerBackend
-        .stop_container(container_id)
+    docker::stop_container(container_id)
         .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 
@@ -374,8 +366,7 @@ pub fn stop_container(container_id: &str) -> std::result::Result<(), SandboxErro
 /// to call while other live rlmesh processes hold running sessions. Returns the
 /// ids that were removed.
 pub fn reap_orphaned_containers() -> std::result::Result<Vec<String>, SandboxError> {
-    docker::DockerBackend
-        .reap_orphaned_containers()
+    docker::reap_orphaned_containers()
         .map_err(|err| SandboxError::from_docker_op(err, |m| SandboxError::Docker { message: m }))
 }
 

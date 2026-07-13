@@ -44,6 +44,7 @@ __all__ = [
     "PyModelClient",
     "PyVectorEnvClient",
     "PyVectorEnvServer",
+    "PyVideoWriter",
     "PyViewer",
     "ROTATION_DIMS",
     "ServeOptions",
@@ -329,6 +330,29 @@ class PyVectorEnvServer:
     def start(self) -> None: ...
     def wait(self, timeout: typing.Optional[builtins.float] = None) -> builtins.bool: ...
     def shutdown(self) -> None: ...
+
+@typing.final
+class PyVideoWriter:
+    r"""
+    Native AV1 recorder: encodes HWC uint8 frames to an `.mp4` on a dedicated
+    encoder thread (no ffmpeg), built by the Python recorder and fed one
+    camera's frames per step. `write_frame` only copies the frame and queues
+    it, so the eval loop overlaps env stepping with encoding.
+    """
+    def __new__(cls, path: builtins.str, width: builtins.int, height: builtins.int, fps: builtins.int = ..., quality: builtins.int = ...) -> PyVideoWriter: ...
+    def write_frame(self, buf: builtins.bytes | builtins.bytearray | builtins.memoryview, width: builtins.int, height: builtins.int, channels: builtins.int) -> None:
+        r"""
+        Queue one contiguous HWC uint8 frame (`channels` = 1/3/4) for encoding.
+        
+        `buf` is any C-contiguous uint8 buffer (bytes, a flat memoryview, a
+        numpy array) -- read through the buffer protocol, so the only Python-side
+        copy is the one that hands the frame to the encoder thread. An encode
+        failure surfaces on a later call (or at `finish`), never silently.
+        """
+    def finish(self) -> tuple[builtins.int, builtins.int, builtins.int]:
+        r"""
+        Drain the encoder and finalize the file; returns `(frame_count, width, height)`.
+        """
 
 @typing.final
 class PyViewer:

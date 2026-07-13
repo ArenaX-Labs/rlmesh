@@ -73,6 +73,10 @@ chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"
 image = { version = "0.25", default-features = false }
 rand = "0.10"
+
+# Media (in-process AV1 recording; pure Rust, no ffmpeg / C toolchain)
+rav1e = { version = "0.8", default-features = false, features = ["threading"] }
+re_mp4 = "0.5"
 sha2 = "0.11"
 tempfile = "3"
 uuid = "1"

@@ -34,8 +34,8 @@ Value: TypeAlias = PrimitiveValue | Tensor | list["Value"] | tuple["Value", ...]
 "#
 );
 
-// The embedded `rlmesh` CLI is feature-gated (on by default) so a lean wheel
-// can opt out of linking `rlmesh-cli` via `--no-default-features`.
+/// Run the embedded `rlmesh` CLI. Feature-gated (on by default) so a lean
+/// wheel can opt out of linking `rlmesh-cli` via `--no-default-features`.
 #[cfg(feature = "cli")]
 #[cfg_attr(
     feature = "stub-gen",
@@ -48,15 +48,70 @@ def run_cli(args: list[str]) -> int: ...
 )]
 #[pyfunction]
 fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
+    let sys = py.import("sys")?;
+    let stdout_obj = sys.getattr("stdout")?.unbind();
+    let stderr_obj = sys.getattr("stderr")?.unbind();
+    let out_tty = stream_isatty(py, &stdout_obj);
+    let err_tty = stream_isatty(py, &stderr_obj);
+
     py.detach(|| {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let mut stdout = PyStream { stream: stdout_obj };
+        let mut stderr = PyStream { stream: stderr_obj };
         runtime
-            .block_on(rlmesh_cli::run_cli_with_args(
+            .block_on(rlmesh_cli::run_cli_with_writers(
                 args.into_iter().map(OsString::from).collect(),
+                &mut stdout,
+                &mut stderr,
+                rlmesh_cli::Style::for_terminal(out_tty),
+                rlmesh_cli::Style::for_terminal(err_tty),
             ))
             .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     })
+}
+
+/// Whether a Python file object is an interactive terminal, defaulting to
+/// `false` when it does not implement `isatty` (e.g. a capture buffer).
+#[cfg(feature = "cli")]
+fn stream_isatty(py: Python<'_>, stream: &Py<pyo3::PyAny>) -> bool {
+    stream
+        .call_method0(py, "isatty")
+        .and_then(|res| res.extract::<bool>(py))
+        .unwrap_or(false)
+}
+
+/// A `std::io::Write` sink that forwards to a Python file object (`sys.stdout`
+/// or `sys.stderr`), so the embedded CLI's output honors Python-level stream
+/// redirection (`contextlib.redirect_stderr`, pytest `capsys`, Jupyter kernel
+/// streams) instead of writing straight to the process file descriptor. Each
+/// write briefly reattaches the interpreter; the CLI writes whole lines
+/// infrequently, so per-write reattachment is not a hot path.
+#[cfg(feature = "cli")]
+struct PyStream {
+    stream: Py<pyo3::PyAny>,
+}
+
+#[cfg(feature = "cli")]
+impl std::io::Write for PyStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        Python::attach(|py| {
+            self.stream
+                .call_method1(py, "write", (text.as_ref(),))
+                .map_err(|err| std::io::Error::other(err.to_string()))
+        })?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Python::attach(|py| {
+            self.stream
+                .call_method0(py, "flush")
+                .map(|_| ())
+                .map_err(|err| std::io::Error::other(err.to_string()))
+        })
+    }
 }
 
 #[pymodule]
@@ -76,6 +131,7 @@ pub fn rlmesh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PyEnvClient>()?;
     m.add_class::<client::PyVectorEnvClient>()?;
     m.add_class::<viewer::PyViewer>()?;
+    m.add_class::<viewer::PyVideoWriter>()?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(run_cli, m)?)?;
     m.add_function(wrap_pyfunction!(peer_info::set_python_peer_info, m)?)?;
