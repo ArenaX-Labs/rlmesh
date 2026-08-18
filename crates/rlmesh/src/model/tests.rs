@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    AdapterContext, CloseParticipantRequest, EpisodeSeed, GroupedPredictRequest,
+    AdapterContext, CloseParticipantRequest, EpisodeInfo, GroupedPredictRequest,
     GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
     ResolveAdapterRequest, grouped_predict_result, join_request, join_response,
 };
@@ -302,8 +302,7 @@ async fn served_model_predict_mirrors_route_context() {
             kind: Some(join_request::Kind::Predict(PredictRequest {
                 context: Some(context.clone()),
                 observation: None,
-                episode_ids: vec!["episode-1".to_string()],
-                episode_seeds: vec![EpisodeSeed {
+                episode_info: vec![EpisodeInfo {
                     episode_id: "episode-1".to_string(),
                     seed: None,
                 }],
@@ -337,7 +336,7 @@ async fn served_model_predict_mirrors_route_context() {
 // test was removed in the C8 EnvSpec split. The model now receives only the
 // stable `EnvSpec` (no `num_envs`), so the resolved adapter no longer carries a
 // lane bound to clamp the batch against; the per-predict row count is taken from
-// the request's `episode_ids`. There is no contract-derived width to reject.
+// the request's `episode_info`. There is no contract-derived width to reject.
 #[tokio::test]
 async fn served_model_predict_uses_episode_id_count_as_lane_count() {
     let response = handle_model_request(
@@ -349,13 +348,12 @@ async fn served_model_predict_uses_episode_id_count_as_lane_count() {
                     request_id: "request-1".to_string(),
                 }),
                 observation: None,
-                episode_ids: vec!["episode-0".to_string(), "episode-1".to_string()],
-                episode_seeds: vec![
-                    EpisodeSeed {
+                episode_info: vec![
+                    EpisodeInfo {
                         episode_id: "episode-0".to_string(),
                         seed: None,
                     },
-                    EpisodeSeed {
+                    EpisodeInfo {
                         episode_id: "episode-1".to_string(),
                         seed: None,
                     },
@@ -444,8 +442,7 @@ fn grouped_member(env_id: &str, request_id: &str, episode_id: &str) -> PredictRe
             request_id: request_id.to_string(),
         }),
         observation: None,
-        episode_ids: vec![episode_id.to_string()],
-        episode_seeds: vec![EpisodeSeed {
+        episode_info: vec![EpisodeInfo {
             episode_id: episode_id.to_string(),
             seed: None,
         }],
@@ -1613,8 +1610,7 @@ fn predict_join_request(env_id: &str, request_id: &str, slow: bool) -> JoinReque
                 request_id: request_id.to_string(),
             }),
             observation: None,
-            episode_ids: vec![format!("ep-{env_id}-{request_id}{suffix}")],
-            episode_seeds: vec![EpisodeSeed {
+            episode_info: vec![EpisodeInfo {
                 episode_id: format!("ep-{env_id}-{request_id}{suffix}"),
                 seed: None,
             }],
@@ -1869,11 +1865,7 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
             request_id: request_id.to_string(),
         }),
         observation: None,
-        episode_ids: vec![format!(
-            "ep-{request_id}{}",
-            if slow { "-slow" } else { "" }
-        )],
-        episode_seeds: vec![EpisodeSeed {
+        episode_info: vec![EpisodeInfo {
             episode_id: format!("ep-{request_id}{}", if slow { "-slow" } else { "" }),
             seed: None,
         }],

@@ -3,7 +3,7 @@
 
 use prost::bytes::Bytes;
 use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeSeed, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
+    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
@@ -269,12 +269,12 @@ impl RouteState {
         observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
     ) -> PredictRequest {
-        let episode_ids = self.episode_ids();
-        let episode_seeds = episode_ids
-            .iter()
-            .map(|episode_id| EpisodeSeed {
-                episode_id: episode_id.clone(),
-                seed: self.seed_for_episode(episode_id),
+        let episode_info = self
+            .episode_ids()
+            .into_iter()
+            .map(|episode_id| {
+                let seed = self.seed_for_episode(&episode_id);
+                EpisodeInfo { episode_id, seed }
             })
             .collect();
         PredictRequest {
@@ -284,8 +284,7 @@ impl RouteState {
                 request_id: self.next_request_id(phase.as_str()),
             }),
             observation: observation.map(leaves_value),
-            episode_ids,
-            episode_seeds,
+            episode_info,
         }
     }
 

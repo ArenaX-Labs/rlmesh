@@ -3,8 +3,7 @@ use std::time::Instant;
 
 use rlmesh_grpc::wire::value_leaves;
 use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeSeed, ModelError, ModelErrorCode, PredictRequest, PredictResponse,
-    join_response,
+    AdapterContext, ModelError, ModelErrorCode, PredictRequest, PredictResponse, join_response,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
@@ -69,17 +68,21 @@ pub(super) fn model_observation_from_endpoint_request(
     let context = request
         .context
         .ok_or_else(|| Error::Internal("model request missing adapter context".to_string()))?;
-    // The self-describing batch: episode_ids ride the PredictRequest, not the
-    // context. Build the route context from both.
-    let episode_seeds = request.episode_seeds;
+    // The self-describing batch: episode_info rides the PredictRequest, not the
+    // context. Build the route context from it.
+    let (episode_ids, episode_seeds) = request
+        .episode_info
+        .into_iter()
+        .map(|info| (info.episode_id, info.seed))
+        .unzip();
     let route = ModelRouteContext {
         session_id: context.session_id,
         env_id: context.env_id,
         request_id: context.request_id,
-        episode_ids: request.episode_ids,
-        episode_seeds: episode_seeds.iter().map(|value| value.seed).collect(),
+        episode_ids,
+        episode_seeds,
     };
-    validate_predict_route(&route, &episode_seeds)?;
+    validate_predict_route(&route)?;
     let num_envs = route.episode_ids.len();
 
     Ok(ModelObservation {
@@ -143,7 +146,7 @@ pub(super) fn check_actions_conform(
     Ok(())
 }
 
-fn validate_predict_route(route: &ModelRouteContext, episode_seeds: &[EpisodeSeed]) -> Result<()> {
+fn validate_predict_route(route: &ModelRouteContext) -> Result<()> {
     if route.env_id.is_empty() {
         return Err(Error::Internal("model env_id is empty".to_string()));
     }
@@ -155,28 +158,12 @@ fn validate_predict_route(route: &ModelRouteContext, episode_seeds: &[EpisodeSee
             "model predict must include at least one episode_id".to_string(),
         ));
     }
-    if route.episode_seeds.len() != route.episode_ids.len() {
-        return Err(Error::Internal(format!(
-            "model predict episode_seeds length {} does not match episode_ids length {}",
-            route.episode_seeds.len(),
-            route.episode_ids.len()
-        )));
-    }
 
     let mut seen = HashSet::new();
     for (index, episode_id) in route.episode_ids.iter().enumerate() {
         if episode_id.is_empty() {
             return Err(Error::Internal(format!(
-                "model predict episode_ids[{index}] is empty"
-            )));
-        }
-        if episode_seeds
-            .get(index)
-            .map(|value| value.episode_id.as_str())
-            != Some(episode_id.as_str())
-        {
-            return Err(Error::Internal(format!(
-                "model predict episode_seeds[{index}].episode_id does not match episode_ids[{index}]"
+                "model predict episode_info[{index}].episode_id is empty"
             )));
         }
         if !seen.insert(episode_id.as_str()) {
@@ -201,6 +188,8 @@ impl From<&ModelRouteContext> for AdapterContext {
 
 #[cfg(test)]
 mod tests {
+    use rlmesh_proto::model::v1::EpisodeInfo;
+
     use super::*;
 
     fn unwrap_error(kind: join_response::Kind) -> ModelError {
@@ -255,7 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn model_observation_rejects_misaligned_episode_seed_metadata() {
+    fn model_observation_carries_episode_seed_from_episode_info() {
         let request = PredictRequest {
             context: Some(AdapterContext {
                 session_id: "s".to_string(),
@@ -263,11 +252,24 @@ mod tests {
                 request_id: "r".to_string(),
             }),
             observation: None,
-            episode_ids: vec!["ep-1".to_string()],
-            episode_seeds: vec![],
+            episode_info: vec![
+                EpisodeInfo {
+                    episode_id: "ep-1".to_string(),
+                    seed: Some(7),
+                },
+                EpisodeInfo {
+                    episode_id: "ep-2".to_string(),
+                    seed: None,
+                },
+            ],
         };
-        assert!(model_observation_from_endpoint_request(request).is_err());
+        let observation = model_observation_from_endpoint_request(request).unwrap();
+        assert_eq!(observation.route.episode_ids, ["ep-1", "ep-2"]);
+        assert_eq!(observation.route.episode_seeds, [Some(7), None]);
+    }
 
+    #[test]
+    fn model_observation_rejects_blank_episode_id_in_episode_info() {
         let request = PredictRequest {
             context: Some(AdapterContext {
                 session_id: "s".to_string(),
@@ -275,10 +277,9 @@ mod tests {
                 request_id: "r".to_string(),
             }),
             observation: None,
-            episode_ids: vec!["ep-1".to_string()],
-            episode_seeds: vec![EpisodeSeed {
-                episode_id: "ep-x".to_string(),
-                seed: Some(7),
+            episode_info: vec![EpisodeInfo {
+                episode_id: String::new(),
+                seed: None,
             }],
         };
         assert!(model_observation_from_endpoint_request(request).is_err());

@@ -29,7 +29,12 @@ pub trait PredictFn: Send + Sync {
     /// engine has already frame-stacked / customs'd / enc-shimmed the input.
     /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
     /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
-    fn predict(&self, model_input: Value) -> Result<Value>;
+    fn predict(
+        &self,
+        model_input: Value,
+        episode_id: &str,
+        episode_seed: Option<i64>,
+    ) -> Result<Value>;
 
     /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw
     /// actions (the leading axis is the chunk axis, unstacked by
@@ -43,8 +48,13 @@ pub trait PredictFn: Send + Sync {
     /// chunk; the engine executes a prefix of it (`split_chunk(...).take(h)`) and
     /// discards the rest, so a fixed-size head ignores the value and is correct
     /// either way. An autoregressive head may decode exactly `execution_horizon`
-    /// actions to avoid wasting decode on a longer natural chunk.
-    fn predict_chunk(&self, _model_input: Value, _execution_horizon: u32) -> Result<Option<Value>> {
+    fn predict_chunk(
+        &self,
+        _model_input: Value,
+        _execution_horizon: u32,
+        _episode_id: &str,
+        _episode_seed: Option<i64>,
+    ) -> Result<Option<Value>> {
         Ok(None)
     }
 

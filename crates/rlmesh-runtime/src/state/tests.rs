@@ -63,12 +63,11 @@ fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
 
     let request = state.predict_request(None, RequestPhase::ResetObservation);
 
-    assert_eq!(request.episode_ids, episode_ids);
-    assert_eq!(request.episode_seeds.len(), 2);
-    assert_eq!(request.episode_seeds[0].episode_id, "env-ep-a");
-    assert_eq!(request.episode_seeds[0].seed, Some(7));
-    assert_eq!(request.episode_seeds[1].episode_id, "env-ep-b");
-    assert_eq!(request.episode_seeds[1].seed, None);
+    assert_eq!(request.episode_info.len(), 2);
+    assert_eq!(request.episode_info[0].episode_id, "env-ep-a");
+    assert_eq!(request.episode_info[0].seed, Some(7));
+    assert_eq!(request.episode_info[1].episode_id, "env-ep-b");
+    assert_eq!(request.episode_info[1].seed, None);
 }
 
 fn test_session_spec() -> RuntimeSessionSpec {

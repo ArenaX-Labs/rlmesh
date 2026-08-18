@@ -52,21 +52,66 @@ def _served_handle(model: object) -> bool:
     )
 
 
-def _debatch(bridge: ValueBridge, batched_fn: Corner) -> Corner:
+def _accepts_context(fn: Corner, base_arity: int) -> bool:
+    """Whether ``fn``'s ``base_arity``-th positional parameter is a trailing ``context``.
+
+    E.g. ``predict(obs)`` has base_arity 1, ``predict_chunk(obs, horizon)`` has
+    base_arity 2 -- both may additionally accept a trailing context, but only
+    when that extra parameter is actually named ``context``: an unrelated extra
+    optional positional must NOT be mistaken for it. A genuinely variadic
+    ``*args`` is assumed to accept anything, including a context.
+    """
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    if any(p.kind is p.VAR_POSITIONAL for p in params):
+        return True
+    positional = [
+        p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) > base_arity and positional[base_arity].name == "context"
+
+
+def _debatch(
+    bridge: ValueBridge, batched_fn: Corner, *, arity: Literal[1, 2]
+) -> Corner:
     """Single-lane corner from a batched one: run a batch of one and unwrap.
 
     Wraps the lone observation into a 1-lane batch (``tree_stack``), calls the
-    batched corner, and peels lane 0 back off (``tree_unstack``). Trailing args --
-    positional or keyword -- pass straight through, so this turns ``predict_batch``
-    into ``predict`` and ``predict_chunk_batch`` into ``predict_chunk`` (whose
-    ``horizon`` the local Session passes by keyword).
+    batched corner, and peels lane 0 back off (``tree_unstack``). ``arity`` is
+    the derived corner's own fixed positional arity -- 1 turns ``predict_batch``
+    into ``predict(observation)``, 2 turns ``predict_chunk_batch`` into
+    ``predict_chunk(observation, horizon)`` -- built as a real fixed-arity
+    signature (not a generic ``*args`` passthrough) so a trailing context (see
+    :func:`_accepts_context`) only reaches ``batched_fn`` when its own
+    signature asks for one, rather than being mistaken for ``horizon``.
     """
+    if arity == 1:
 
-    def derived(observation: object, *rest: object, **rest_kw: object) -> object:
+        def derived_predict(observation: object, context: object = None) -> object:
+            fused = bridge.tree_stack([observation])
+            args = (
+                (fused, context)
+                if context is not None and _accepts_context(batched_fn, 1)
+                else (fused,)
+            )
+            return bridge.tree_unstack(batched_fn(*args), 1)[0]
+
+        return derived_predict
+
+    def derived_predict_chunk(
+        observation: object, horizon: object, context: object = None
+    ) -> object:
         fused = bridge.tree_stack([observation])
-        return bridge.tree_unstack(batched_fn(fused, *rest, **rest_kw), 1)[0]
+        args = (
+            (fused, horizon, context)
+            if context is not None and _accepts_context(batched_fn, 2)
+            else (fused, horizon)
+        )
+        return bridge.tree_unstack(batched_fn(*args), 1)[0]
 
-    return derived
+    return derived_predict_chunk
 
 
 def _first_frame(chunk: object) -> object:
@@ -103,11 +148,22 @@ def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
 
     Single: take the first frame (``_first_frame``, ``split_chunk`` semantics).
     Batched: the chunk leaves are ``[B, horizon, ...]``, so take frame 0 past the
-    batch axis (``leaf[:, 0]``), leaving non-array leaves (text) untouched.
+    batch axis (``leaf[:, 0]``), leaving non-array leaves (text) untouched. The
+    derived corner's own arity is always 1 (``observation`` [, ``context``]);
+    ``chunk_fn`` is the normalized ``(observation, horizon)`` contract, and a
+    trailing context (see :func:`_accepts_context`) only reaches it when its
+    own signature asks for one -- most catalog models author only
+    ``predict_chunk``, so this is the path their un-chunked ``predict()``
+    actually runs through.
     """
 
-    def derived(observation: object) -> object:
-        chunk = chunk_fn(observation, 1)
+    def derived(observation: object, context: object = None) -> object:
+        args = (
+            (observation, 1, context)
+            if context is not None and _accepts_context(chunk_fn, 2)
+            else (observation, 1)
+        )
+        chunk = chunk_fn(*args)
         if not batched:
             return _first_frame(chunk)
         return tree_map(
@@ -201,12 +257,12 @@ def _synthesize_corners(
 
     if pcb is not None:
         if pc is None:
-            pc = _debatch(bridge, pcb)
+            pc = _debatch(bridge, pcb, arity=2)
         if pb is None and can_dechunk:
             pb = _dechunk(pcb, batched=True)
     if p is None:
         if pb is not None:
-            p = _debatch(bridge, pb)
+            p = _debatch(bridge, pb, arity=1)
         elif pc is not None and can_dechunk:
             p = _dechunk(pc, batched=False)
     return p, pc, pb, pcb
@@ -604,29 +660,42 @@ class ModelBase(Generic[ObsT, ActT]):
             )
             return adapter.serve_route(bridge) if adapter is not None else None
 
-        def predict_neutral(observation: Value) -> Value:
+        def predict_neutral(
+            observation: Value, context: Mapping[str, Any] | None = None
+        ) -> Value:
             # The engine has already applied the adapter (declarative transform,
             # frame-stacking, customs, enc-shims) in Rust, so the obs handed here
             # is the final model input; bridge it into the framework, run the user
             # predict, and bridge the action back. A spec-less route hands the raw
-            # observation through the identical path (no adapter).
-            return bridge.encode(
-                raw_predict(cast(ObsT, self._to_device(bridge.decode(observation))))
-            )
+            # observation through the identical path (no adapter). ``context``
+            # (this episode's id/seed, on the direct single-episode path only --
+            # never on the batched corners) reaches the author's own predict()
+            # only when its signature declares a trailing ``context`` param.
+            decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
+            if context is not None and _accepts_context(raw_predict, 1):
+                action = cast("Corner", raw_predict)(decoded, context)
+            else:
+                action = raw_predict(decoded)
+            return bridge.encode(action)
 
         # The chunk corner, when the model defines one: identical bridging, but the
         # user returns a chunk (leading axis = chunk) the native engine splits.
         raw_predict_chunk = self._raw_predict_chunk
-        predict_chunk_neutral: Callable[[Value, int], Value] | None = None
+        predict_chunk_neutral: Callable[..., Value] | None = None
         if raw_predict_chunk is not None:
             chunk_fn = raw_predict_chunk
 
-            def _predict_chunk_neutral(observation: Value, horizon: int) -> Value:
-                return bridge.encode(
-                    chunk_fn(
-                        cast(ObsT, self._to_device(bridge.decode(observation))), horizon
-                    )
-                )
+            def _predict_chunk_neutral(
+                observation: Value,
+                horizon: int,
+                context: Mapping[str, Any] | None = None,
+            ) -> Value:
+                decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
+                if context is not None and _accepts_context(chunk_fn, 2):
+                    chunk = chunk_fn(decoded, horizon, context)
+                else:
+                    chunk = chunk_fn(decoded, horizon)
+                return bridge.encode(chunk)
 
             predict_chunk_neutral = _predict_chunk_neutral
 

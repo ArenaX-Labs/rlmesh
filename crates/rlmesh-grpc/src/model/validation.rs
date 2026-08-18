@@ -35,20 +35,21 @@ pub(super) fn validate_predict_route(request: &PredictRequest) -> Result<(), Grp
         .ok_or_else(|| decode_error("predict missing adapter context"))?;
     validate_route(context)?;
     // The self-describing batch: an ordered, non-empty, duplicate-free vector of
-    // per-row episode ids (replaces the old positional slots).
-    if request.episode_ids.is_empty() {
+    // per-row episode info (replaces the old positional slots).
+    if request.episode_info.is_empty() {
         return Err(decode_error(
             "model predict must include at least one episode_id",
         ));
     }
     let mut seen = HashSet::new();
-    for (index, episode_id) in request.episode_ids.iter().enumerate() {
+    for (index, episode_info) in request.episode_info.iter().enumerate() {
+        let episode_id = episode_info.episode_id.as_str();
         if episode_id.is_empty() {
             return Err(decode_error(format!(
-                "model predict episode_ids[{index}] is empty"
+                "model predict episode_info[{index}].episode_id is empty"
             )));
         }
-        if !seen.insert(episode_id.as_str()) {
+        if !seen.insert(episode_id) {
             return Err(decode_error(format!(
                 "model predict has duplicate episode_id {episode_id:?}"
             )));
@@ -64,7 +65,7 @@ pub(super) fn decode_error(message: impl Into<String>) -> GrpcError {
 
 #[cfg(test)]
 mod tests {
-    use rlmesh_proto::model::v1::{AdapterContext, PredictRequest};
+    use rlmesh_proto::model::v1::{AdapterContext, EpisodeInfo, PredictRequest};
 
     use super::validate_predict_route;
 
@@ -76,7 +77,10 @@ mod tests {
                 request_id: "request-1".to_string(),
             }),
             observation: None,
-            episode_ids: vec!["episode-1".to_string()],
+            episode_info: vec![EpisodeInfo {
+                episode_id: "episode-1".to_string(),
+                seed: None,
+            }],
         }
     }
 
@@ -88,7 +92,7 @@ mod tests {
     #[test]
     fn model_predict_request_rejects_empty_episode_ids() {
         let mut request = predict_request();
-        request.episode_ids.clear();
+        request.episode_info.clear();
 
         let err = validate_predict_route(&request).unwrap_err();
 
@@ -98,7 +102,7 @@ mod tests {
     #[test]
     fn model_predict_request_rejects_blank_episode_id() {
         let mut request = predict_request();
-        request.episode_ids[0].clear();
+        request.episode_info[0].episode_id.clear();
 
         let err = validate_predict_route(&request).unwrap_err();
 
@@ -108,7 +112,16 @@ mod tests {
     #[test]
     fn model_predict_request_rejects_duplicate_episode_id() {
         let mut request = predict_request();
-        request.episode_ids = vec!["dup".to_string(), "dup".to_string()];
+        request.episode_info = vec![
+            EpisodeInfo {
+                episode_id: "dup".to_string(),
+                seed: None,
+            },
+            EpisodeInfo {
+                episode_id: "dup".to_string(),
+                seed: None,
+            },
+        ];
 
         let err = validate_predict_route(&request).unwrap_err();
 

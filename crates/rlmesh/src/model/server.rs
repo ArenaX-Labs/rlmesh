@@ -1322,7 +1322,6 @@ mod tests {
                 env_id: env_id.to_owned(),
                 ..Default::default()
             }),
-            episode_seeds: vec![],
             ..Default::default()
         };
         let grouped = JoinRequest {

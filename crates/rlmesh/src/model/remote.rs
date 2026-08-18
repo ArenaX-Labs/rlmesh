@@ -4,7 +4,7 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
-    AdapterContext, EpisodeSeed, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
+    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
 };
 use rlmesh_proto::{SessionOffer, supported_workflow_editions};
 use uuid::Uuid;
@@ -273,7 +273,9 @@ impl RemoteModel {
             )
             .map_err(|error| Error::Internal(error.to_string()))?;
             // The wire carries no per-row reset flag; the reset boundary is the
-            // fresh episode id minted in reset(), which rides episode_ids below.
+            // fresh episode id minted in reset(), which rides episode_info below.
+            // This client has no seed concept (reset() takes none), so seed always
+            // rides unset.
             let request = PredictRequest {
                 context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
@@ -281,9 +283,8 @@ impl RemoteModel {
                     request_id: self.next_request_id(),
                 }),
                 observation: Some(observation_value),
-                episode_ids: vec![episode_id],
-                episode_seeds: vec![EpisodeSeed {
-                    episode_id: self.episode_id.clone().unwrap_or_default(),
+                episode_info: vec![EpisodeInfo {
+                    episode_id,
                     seed: None,
                 }],
             };

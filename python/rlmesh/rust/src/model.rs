@@ -83,18 +83,25 @@ impl PyPredict {
 }
 
 impl PredictFn for PyPredict {
-    fn predict(&self, model_input: Value) -> rlmesh::Result<Value> {
+    fn predict(&self, model_input: Value, episode_id: &str, episode_seed: Option<i64>) -> rlmesh::Result<Value> {
         Python::attach(|py| -> PyResult<Value> {
             // The assembled input is now a Value tree (a nested dict/list/leaf
             // matching the model spec's InputNode shape).
             let input = encode_value(py, &model_input)?;
-            let action = self.predict_fn.call1(py, (input,))?;
+            let context = episode_context_dict(py, episode_id, episode_seed)?;
+            let action = self.predict_fn.call1(py, (input, context))?;
             decode_value(action.bind(py))
         })
         .map_err(|err| RLMeshError::Internal(err.to_string()))
     }
 
-    fn predict_chunk(&self, model_input: Value, horizon: u32) -> rlmesh::Result<Option<Value>> {
+    fn predict_chunk(
+        &self,
+        model_input: Value,
+        horizon: u32,
+        episode_id: &str,
+        episode_seed: Option<i64>,
+    ) -> rlmesh::Result<Option<Value>> {
         let Some(predict_chunk_fn) = self.predict_chunk_fn.as_ref() else {
             return Ok(None);
         };
@@ -102,10 +109,11 @@ impl PredictFn for PyPredict {
             // The assembled input is a Value tree (dict/list/leaf matching the
             // model spec's InputNode shape), encoded as one Python argument.
             let input = encode_value(py, &model_input)?;
+            let context = episode_context_dict(py, episode_id, episode_seed)?;
             // `predict_chunk(observation, horizon)`: the model returns up to
             // `horizon` actions; its chunk's leading axis is the chunk axis, which
             // the native engine's `split_chunk` unstacks into per-step frames.
-            let chunk = predict_chunk_fn.call1(py, (input, horizon))?;
+            let chunk = predict_chunk_fn.call1(py, (input, horizon, context))?;
             decode_value(chunk.bind(py))
         })
         .map(Some)
@@ -172,7 +180,17 @@ impl PredictFn for PyPredict {
                     ));
                 }
             };
-            let action = self.predict_fn.call1(py, (obs,))?;
+            // Real context only for the single-episode case: a spec-less call
+            // with more than one lane fuses N episodes into one forward pass,
+            // same as the batched corners (see `PredictFn::predict_batch`).
+            let action = if observation.num_envs == 1 {
+                let episode_id = observation.route.episode_ids.first().map_or("", String::as_str);
+                let episode_seed = observation.route.episode_seeds.first().copied().flatten();
+                let context = episode_context_dict(py, episode_id, episode_seed)?;
+                self.predict_fn.call1(py, (obs, context))?
+            } else {
+                self.predict_fn.call1(py, (obs,))?
+            };
             let action_space = observation
                 .env_contract
                 .as_ref()
@@ -243,7 +261,11 @@ impl PredictFn for PyPredict {
                 )
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
-            let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32))?;
+            // Guaranteed exactly one lane by the num_envs == 1 check above.
+            let episode_id = observation.route.episode_ids.first().map_or("", String::as_str);
+            let episode_seed = observation.route.episode_seeds.first().copied().flatten();
+            let context = episode_context_dict(py, episode_id, episode_seed)?;
+            let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32, context))?;
             let chunk = chunk.bind(py);
             let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
             let frames = py_any_to_batched_space_values_with_backend(
@@ -300,12 +322,35 @@ fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
     None
 }
 
+/// The predict context handed to the single-episode corners (`predict`,
+/// `predict_chunk`, and the spec-less corners at `num_envs == 1`) as their
+/// trailing positional argument: `{"episode_id": str, "episode_seed": int |
+/// None}`. `predict_neutral` and friends (the Python SDK's native-worker glue)
+/// only forward it to the author's own callback when that callback's
+/// signature accepts a trailing context argument, so this is additive — an
+/// author who never asked for it never sees it. Never built for the batched
+/// corners (`predict_batch`/`predict_chunk_batch`, see [`call_batched`]) or a
+/// multi-lane spec-less call.
+fn episode_context_dict<'py>(
+    py: Python<'py>,
+    episode_id: &str,
+    episode_seed: Option<i64>,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("episode_id", episode_id)?;
+    dict.set_item("episode_seed", episode_seed)?;
+    Ok(dict)
+}
+
 /// Call a Python batched corner (`predict_batch` / `predict_chunk_batch`) with N
 /// assembled lane inputs and decode its N returned actions/chunks. The Python side
 /// receives a list of N neutral input dicts and returns a sequence of N actions
 /// (one per lane, in order); the model owns how it batches the forward pass. When
 /// `horizon` is `Some(h)` (the chunk-batch corner) it is passed as a second
-/// argument, so the model can size each chunk to the execution horizon.
+/// argument, so the model can size each chunk to the execution horizon. No
+/// episode context: N lanes fused into one forward pass (possibly from
+/// independent episodes) is the opposite of the single-episode case episode
+/// context is for.
 fn call_batched(
     fn_obj: &Py<PyAny>,
     inputs: Vec<Value>,
