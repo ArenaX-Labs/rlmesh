@@ -694,9 +694,7 @@ class Session(Generic[ObsT, ActT]):
             chunk_fn = self._predict_chunk
             horizon = self._horizon
 
-            def _replay(
-                obs: Any, context: Mapping[str, Any] | None = None
-            ) -> Any:
+            def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
                 replay_context = (
                     {"execution_horizon": horizon, **context}
                     if context is not None
