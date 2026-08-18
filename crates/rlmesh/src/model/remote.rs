@@ -4,7 +4,7 @@ use rlmesh_grpc::wire::{
     decode_batched_partial_values, encode_batched_partial_values, env_spec_to_proto,
 };
 use rlmesh_proto::model::v1::{
-    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
+    AdapterContext, EpisodeSeed, PredictRequest, ReleaseAdapterRequest, ResolveAdapterRequest,
 };
 use rlmesh_proto::{SessionOffer, supported_workflow_editions};
 use uuid::Uuid;
@@ -282,6 +282,10 @@ impl RemoteModel {
                 }),
                 observation: Some(observation_value),
                 episode_ids: vec![episode_id],
+                episode_seeds: vec![EpisodeSeed {
+                    episode_id: self.episode_id.clone().unwrap_or_default(),
+                    seed: None,
+                }],
             };
 
             let response = self.inner.predict(request).await.map_err(Error::from)?;

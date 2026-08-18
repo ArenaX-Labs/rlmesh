@@ -146,6 +146,46 @@ def test_backend_models_wire_their_own_remote_env() -> None:
         assert module.Model._remote_env_cls is module.RemoteEnv, module_name
 
 
+def test_session_predict_can_pass_optional_context_with_episode_seed() -> None:
+    import rlmesh
+    from rlmesh.numpy import Model
+
+    seen: list[dict[str, object]] = []
+
+    class Env:
+        observation_space = rlmesh.spaces.Discrete(3)
+        action_space = rlmesh.spaces.Discrete(2)
+
+        def __init__(self) -> None:
+            self.step_count = 0
+
+        def reset(
+            self, *, seed: int | None = None, options: dict[str, object] | None = None
+        ):
+            _ = seed, options
+            self.step_count = 0
+            return 0, {}
+
+        def step(self, action: object):
+            _ = action
+            self.step_count += 1
+            return 0, 1.0, self.step_count >= 1, False, {}
+
+        def close(self) -> None:
+            return None
+
+    def predict(observation: object, context: dict[str, object]) -> int:
+        seen.append({"observation": observation, **context})
+        return 0
+
+    result = Model(predict).run(Env(), seeds=[7, 8], max_episodes=2)
+
+    assert result.num_episodes == 2
+    assert [episode.seed for episode in result.episodes] == [7, 8]
+    assert [item["episode_seed"] for item in seen] == [7, 8]
+    assert [item["episode_seeds"] for item in seen] == [[7], [8]]
+
+
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:
     from typing import Any, cast
 

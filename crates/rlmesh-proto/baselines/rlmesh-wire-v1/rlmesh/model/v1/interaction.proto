@@ -62,6 +62,11 @@ message ResolveAdapterRequest {
 
 message ResolveAdapterResponse {}
 
+message EpisodeSeed {
+  string episode_id = 1;
+  optional int64 seed = 2;
+}
+
 // Observation sent from the runtime to the model.
 message PredictRequest {
   // Runtime adapter identity. Responses must mirror this context.
@@ -77,6 +82,7 @@ message PredictRequest {
   // by position-across-ticks. Length == the batch row count (num_envs). One id
   // for a single env. Minted by the runtime (UUIDv7); never repeats.
   repeated string episode_ids = 3;
+  repeated EpisodeSeed episode_seeds = 4;
 }
 
 message PredictResponse {

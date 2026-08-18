@@ -65,6 +65,16 @@ fn predict_request() -> model::v1::PredictRequest {
         context: Some(adapter_context()),
         observation: Some(space_value()),
         episode_ids: vec!["ep-1".to_string(), "ep-2".to_string()],
+        episode_seeds: vec![
+            model::v1::EpisodeSeed {
+                episode_id: "ep-1".to_string(),
+                seed: Some(7),
+            },
+            model::v1::EpisodeSeed {
+                episode_id: "ep-2".to_string(),
+                seed: None,
+            },
+        ],
     }
 }
 
@@ -113,7 +123,8 @@ fn model_predict_request_bytes_are_frozen() {
         &[
             10, 22, 10, 6, 115, 101, 115, 115, 45, 49, 18, 5, 101, 110, 118, 45, 49, 26, 5, 114,
             101, 113, 45, 49, 18, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5, 26, 4, 101, 112, 45, 49, 26, 4,
-            101, 112, 45, 50,
+            101, 112, 45, 50, 34, 8, 10, 4, 101, 112, 45, 49, 16, 7, 34, 6, 10, 4, 101, 112, 45,
+            50,
         ],
     );
 }
@@ -154,9 +165,10 @@ fn model_join_request_bytes_are_frozen() {
         "model.v1.JoinRequest",
         message.encode_to_vec(),
         &[
-            18, 47, 10, 22, 10, 6, 115, 101, 115, 115, 45, 49, 18, 5, 101, 110, 118, 45, 49, 26, 5,
+            18, 65, 10, 22, 10, 6, 115, 101, 115, 115, 45, 49, 18, 5, 101, 110, 118, 45, 49, 26, 5,
             114, 101, 113, 45, 49, 18, 9, 10, 3, 1, 2, 3, 10, 2, 4, 5, 26, 4, 101, 112, 45, 49, 26,
-            4, 101, 112, 45, 50, 42, 5, 114, 101, 113, 45, 49,
+            4, 101, 112, 45, 50, 34, 8, 10, 4, 101, 112, 45, 49, 16, 7, 34, 6, 10, 4, 101, 112, 45,
+            50, 42, 5, 114, 101, 113, 45, 49,
         ],
     );
 }

@@ -21,6 +21,8 @@ pub struct ModelRouteContext {
     pub request_id: String,
     /// Ordered per-row episode ids (length `== num_envs`).
     pub episode_ids: Vec<String>,
+    /// Ordered per-row explicit reset seeds aligned to `episode_ids`.
+    pub episode_seeds: Vec<Option<i64>>,
 }
 
 impl ModelRouteContext {
@@ -33,6 +35,11 @@ impl ModelRouteContext {
     /// The episode id of every row, in batch order.
     pub fn episode_ids(&self) -> Vec<String> {
         self.episode_ids.clone()
+    }
+
+    /// The explicit reset seed of every row, aligned to [`Self::episode_ids`].
+    pub fn episode_seeds(&self) -> Vec<Option<i64>> {
+        self.episode_seeds.clone()
     }
 }
 
@@ -65,6 +72,11 @@ impl ModelObservation {
     /// The episode id of every row (see [`ModelRouteContext::episode_ids`]).
     pub fn episode_ids(&self) -> Vec<String> {
         self.route.episode_ids()
+    }
+
+    /// The explicit reset seed of every row, aligned to [`Self::episode_ids`].
+    pub fn episode_seeds(&self) -> Vec<Option<i64>> {
+        self.route.episode_seeds()
     }
 
     /// Validate the request carries everything a decode needs (observation, env

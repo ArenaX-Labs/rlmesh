@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    AdapterContext, CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse,
-    GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
+    AdapterContext, CloseParticipantRequest, EpisodeSeed, GroupedPredictRequest,
+    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
     ResolveAdapterRequest, grouped_predict_result, join_request, join_response,
 };
 use tokio::net::TcpListener;
@@ -303,6 +303,10 @@ async fn served_model_predict_mirrors_route_context() {
                 context: Some(context.clone()),
                 observation: None,
                 episode_ids: vec!["episode-1".to_string()],
+                episode_seeds: vec![EpisodeSeed {
+                    episode_id: "episode-1".to_string(),
+                    seed: None,
+                }],
             })),
             request_id: "request-1".to_string(),
         },
@@ -346,6 +350,16 @@ async fn served_model_predict_uses_episode_id_count_as_lane_count() {
                 }),
                 observation: None,
                 episode_ids: vec!["episode-0".to_string(), "episode-1".to_string()],
+                episode_seeds: vec![
+                    EpisodeSeed {
+                        episode_id: "episode-0".to_string(),
+                        seed: None,
+                    },
+                    EpisodeSeed {
+                        episode_id: "episode-1".to_string(),
+                        seed: None,
+                    },
+                ],
             })),
             request_id: "request-1".to_string(),
         },
@@ -431,6 +445,10 @@ fn grouped_member(env_id: &str, request_id: &str, episode_id: &str) -> PredictRe
         }),
         observation: None,
         episode_ids: vec![episode_id.to_string()],
+        episode_seeds: vec![EpisodeSeed {
+            episode_id: episode_id.to_string(),
+            seed: None,
+        }],
     }
 }
 
@@ -1596,6 +1614,10 @@ fn predict_join_request(env_id: &str, request_id: &str, slow: bool) -> JoinReque
             }),
             observation: None,
             episode_ids: vec![format!("ep-{env_id}-{request_id}{suffix}")],
+            episode_seeds: vec![EpisodeSeed {
+                episode_id: format!("ep-{env_id}-{request_id}{suffix}"),
+                seed: None,
+            }],
         })),
         request_id: request_id.to_string(),
     }
@@ -1851,6 +1873,10 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
             "ep-{request_id}{}",
             if slow { "-slow" } else { "" }
         )],
+        episode_seeds: vec![EpisodeSeed {
+            episode_id: format!("ep-{request_id}{}", if slow { "-slow" } else { "" }),
+            seed: None,
+        }],
     };
 
     let c1 = Arc::clone(&client);

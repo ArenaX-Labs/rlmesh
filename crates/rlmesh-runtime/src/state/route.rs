@@ -3,7 +3,7 @@
 
 use prost::bytes::Bytes;
 use rlmesh_proto::model::v1::{
-    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
+    AdapterContext, EpisodeSeed, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
@@ -195,6 +195,10 @@ impl RouteState {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
+        let episode_seeds = episode_ids
+            .iter()
+            .map(|episode_id| self.seed_for_episode(episode_id))
+            .collect::<Vec<_>>();
         let episode_record_ids = self
             .slots
             .iter()
@@ -210,6 +214,7 @@ impl RouteState {
             episode_id: episode_ids.first().cloned().unwrap_or_default(),
             episode_record_id: episode_record_ids.first().cloned().unwrap_or_default(),
             episode_ids,
+            episode_seeds,
             episode_record_ids,
             step: primary.map_or(0, |slot| slot.step),
             env_index: primary.map_or(0, |slot| slot.env_index),
@@ -255,12 +260,23 @@ impl RouteState {
         self.records.record_for(episode_id).cloned()
     }
 
+    pub(crate) fn seed_for_episode(&self, episode_id: &str) -> Option<i64> {
+        self.seed_by_episode.get(episode_id).copied()
+    }
+
     pub(crate) fn predict_request(
         &mut self,
         observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
     ) -> PredictRequest {
         let episode_ids = self.episode_ids();
+        let episode_seeds = episode_ids
+            .iter()
+            .map(|episode_id| EpisodeSeed {
+                episode_id: episode_id.clone(),
+                seed: self.seed_for_episode(episode_id),
+            })
+            .collect();
         PredictRequest {
             context: Some(AdapterContext {
                 session_id: self.session_id().to_string(),
@@ -269,6 +285,7 @@ impl RouteState {
             }),
             observation: observation.map(leaves_value),
             episode_ids,
+            episode_seeds,
         }
     }
 

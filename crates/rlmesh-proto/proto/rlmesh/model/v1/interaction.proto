@@ -62,6 +62,14 @@ message ResolveAdapterRequest {
 
 message ResolveAdapterResponse {}
 
+// Per-row seed metadata aligned to `PredictRequest.episode_ids`. `seed` is
+// unset when the episode was not started with an explicit seed; present for
+// every explicitly seeded episode, including a genuine seed of 0.
+message EpisodeSeed {
+  string episode_id = 1;
+  optional int64 seed = 2;
+}
+
 // Observation sent from the runtime to the model.
 message PredictRequest {
   // Runtime adapter identity. Responses must mirror this context.
@@ -77,6 +85,11 @@ message PredictRequest {
   // by position-across-ticks. Length == the batch row count (num_envs). One id
   // for a single env. Minted by the runtime (UUIDv7); never repeats.
   repeated string episode_ids = 3;
+
+  // Ordered per-row seed metadata, aligned to `episode_ids`. Unseeded episodes
+  // still appear here with `seed` unset, preserving position and distinguishing
+  // "unset" from an explicit seed of 0.
+  repeated EpisodeSeed episode_seeds = 4;
 }
 
 message PredictResponse {

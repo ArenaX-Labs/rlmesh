@@ -13,6 +13,7 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
+import inspect
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
@@ -296,7 +297,7 @@ def _summarize_payload(payload: Any) -> str:
 
 
 def _predict_step(
-    predict: Callable[[Any], Any],
+    predict: Callable[..., Any],
     obs: Any,
     adapter: Any,
     instruction: str | None,
@@ -304,6 +305,7 @@ def _predict_step(
     env_bridge: ValueBridge | None,
     model_bridge: ValueBridge | None,
     device: object | None,
+    context: Mapping[str, Any] | None = None,
 ) -> Any:
     """Assemble one observation into the model payload and call ``predict``.
 
@@ -335,7 +337,7 @@ def _predict_step(
             value: Any = [instruction] if placement.as_list else instruction
             payload = tree_set(payload, placement.segments, value)
     try:
-        return predict(payload)
+        return _call_predict_with_optional_context(predict, payload, context)
     except Exception as exc:
         kind = "adapter-assembled" if adapter is not None else "spec-less (raw obs)"
         note = f"{kind} model input: {_summarize_payload(payload)}"
@@ -343,6 +345,36 @@ def _predict_step(
         if add_note is not None:
             add_note(note)
         raise
+
+
+def _accepts_predict_context(predict: Callable[..., Any]) -> bool:
+    """Whether ``predict`` can accept an optional second positional context."""
+    try:
+        signature = inspect.signature(predict)
+    except (TypeError, ValueError):
+        return False
+
+    positional = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional += 1
+    return positional >= 2
+
+
+def _call_predict_with_optional_context(
+    predict: Callable[..., Any],
+    payload: Any,
+    context: Mapping[str, Any] | None,
+) -> Any:
+    """Call ``predict(payload)`` or ``predict(payload, context)`` compatibly."""
+    if context is not None and _accepts_predict_context(predict):
+        return predict(payload, context)
+    return predict(payload)
 
 
 class Session(Generic[ObsT, ActT]):
@@ -662,8 +694,17 @@ class Session(Generic[ObsT, ActT]):
             chunk_fn = self._predict_chunk
             horizon = self._horizon
 
-            def _replay(obs: Any) -> Any:
-                return chunk_fn(obs, horizon)
+            def _replay(
+                obs: Any, context: Mapping[str, Any] | None = None
+            ) -> Any:
+                replay_context = (
+                    {"execution_horizon": horizon, **context}
+                    if context is not None
+                    else {"execution_horizon": horizon}
+                )
+                return _call_predict_with_optional_context(
+                    chunk_fn, obs, replay_context
+                )
 
             replay_fn = cast("Callable[[Any], Any]", _replay)
         else:
@@ -674,6 +715,24 @@ class Session(Generic[ObsT, ActT]):
         # forward cost rather than a near-zero queue pop.
         def _forward() -> Any:
             t0 = time.perf_counter()
+            predict_context = {
+                "episode_index": self._ep_index,
+                "episode_id": (
+                    self._last_info.get("episode_ids", [""])[0]
+                    if isinstance(self._last_info, Mapping)
+                    and self._last_info.get("episode_ids")
+                    else ""
+                ),
+                "episode_ids": (
+                    list(self._last_info.get("episode_ids", []))
+                    if isinstance(self._last_info, Mapping)
+                    else []
+                ),
+                "episode_seed": self._seed,
+                "episode_seeds": [self._seed],
+                "step": self._steps,
+                "num_envs": 1,
+            }
             out = _predict_step(
                 replay_fn,
                 observation,
@@ -683,6 +742,7 @@ class Session(Generic[ObsT, ActT]):
                 self._env_bridge,
                 model_bridge,
                 self._device,
+                predict_context,
             )
             self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
             return out

@@ -12,6 +12,7 @@ fn route_state_tracks_slot_episode_records() {
 
     assert_eq!(started.len(), 2);
     assert_eq!(state.snapshot().episode_ids, ["env-ep-a", "env-ep-b"]);
+    assert_eq!(state.snapshot().episode_seeds, [None, None]);
     assert_eq!(
         state.snapshot().episode_record_ids,
         ["ep-000001", "ep-000002"]
@@ -48,6 +49,26 @@ fn request_ids_do_not_collide_across_sibling_envs() {
     );
     assert_eq!(id_a, "env-a:reset:000001");
     assert_eq!(id_b, "env-b:reset:000001");
+}
+
+#[test]
+fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
+    let mut spec = test_session_spec();
+    spec.num_envs = 2;
+    let mut state = RouteState::new(&spec);
+    let episode_ids = vec!["env-ep-a".to_string(), "env-ep-b".to_string()];
+
+    state.start_episodes(episode_ids.clone(), false);
+    state.note_episode_seeds(&episode_ids, &[7]);
+
+    let request = state.predict_request(None, RequestPhase::ResetObservation);
+
+    assert_eq!(request.episode_ids, episode_ids);
+    assert_eq!(request.episode_seeds.len(), 2);
+    assert_eq!(request.episode_seeds[0].episode_id, "env-ep-a");
+    assert_eq!(request.episode_seeds[0].seed, Some(7));
+    assert_eq!(request.episode_seeds[1].episode_id, "env-ep-b");
+    assert_eq!(request.episode_seeds[1].seed, None);
 }
 
 fn test_session_spec() -> RuntimeSessionSpec {
