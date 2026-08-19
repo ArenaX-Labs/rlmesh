@@ -63,6 +63,8 @@ struct Pieces {
     #[serde(default)]
     model_spec: Option<Value>,
     #[serde(default)]
+    corners: Option<Value>,
+    #[serde(default)]
     params: Option<Value>,
     #[serde(default)]
     variants: Option<Value>,
@@ -77,6 +79,7 @@ impl Pieces {
     fn check_kind(&self, kind: Kind) -> Result<(), EnvelopeError> {
         let offender = match kind {
             Kind::Env if self.model_spec.is_some() => Some("model_spec"),
+            Kind::Env if self.corners.is_some() => Some("corners"),
             Kind::Model if self.env_spec.is_some() => Some("env_spec"),
             Kind::Model if self.env_tags.is_some() => Some("env_tags"),
             _ => None,
@@ -111,7 +114,9 @@ struct EnvEnvelope {
 }
 
 /// The serialized model form. `model_spec` is always present (may be `null`); env
-/// spaces/tags never appear on a model envelope.
+/// spaces/tags never appear on a model envelope. `corners` lists the predict
+/// corners the model actually defines (e.g. `["predict_chunk",
+/// "predict_chunk_batch"]`) so batching support is introspected, never declared.
 #[derive(Debug, Serialize)]
 struct ModelEnvelope {
     schema_version: u32,
@@ -121,6 +126,8 @@ struct ModelEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     target: Option<Value>,
     model_spec: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    corners: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     params: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -191,6 +198,7 @@ pub fn build_describe_envelope(
             generated_at,
             target: pieces.target,
             model_spec: pieces.model_spec.unwrap_or(Value::Null),
+            corners: pieces.corners,
             params: pieces.params,
             variants: pieces.variants,
             runtime: pieces.runtime,

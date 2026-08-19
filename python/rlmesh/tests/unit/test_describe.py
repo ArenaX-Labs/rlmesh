@@ -224,6 +224,18 @@ def test_model_envelope_omits_spaces() -> None:
     assert model["model_spec"] is None
 
 
+class _BatchedModel(rlmesh.Model):
+    def predict_chunk_batch(self, observations: object) -> object:
+        return observations
+
+
+def test_model_envelope_lists_defined_corners() -> None:
+    assert rlmesh.describe(_TinyModel)["corners"] == ["predict"]
+    # only the authored corner, not the synthesized ones.
+    assert rlmesh.describe(_BatchedModel)["corners"] == ["predict_chunk_batch"]
+    assert "corners" not in rlmesh.describe(_CamArmFactory)
+
+
 def test_classmethod_matches_function() -> None:
     assert _CamArmFactory.describe() == rlmesh.describe(_CamArmFactory)
     assert _TinyModel.describe() == rlmesh.describe(_TinyModel)

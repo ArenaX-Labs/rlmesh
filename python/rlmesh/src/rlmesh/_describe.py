@@ -32,8 +32,10 @@ Emitted shape (env)::
         "runtime": {...},               # PeerInfo: python/framework versions, os, arch
     }
 
-A model envelope drops ``env_spec``/``env_tags`` and carries
-``model_spec`` instead. Every gathered piece is best-effort: a failure to build
+A model envelope drops ``env_spec``/``env_tags`` and carries ``model_spec``
+plus ``corners`` (the predict corners the class defines, e.g.
+``["predict_chunk_batch"]`` -- the introspected source of truth for batching
+support) instead. Every gathered piece is best-effort: a failure to build
 the env, read a spec, or run an enumeration becomes an ``"error"`` badge, never a
 crash -- the artifact is always emitted.
 """
@@ -114,7 +116,32 @@ def _gather(
         pieces["env_spec"] = _env_spec(obj, spec, target, catalog_fn)
     else:
         pieces["model_spec"] = _model_spec(obj)
+        corners = _corners(obj)
+        if corners:
+            pieces["corners"] = corners
     return pieces
+
+
+def _corners(obj: object) -> list[str]:
+    """The predict corners the model class actually defines.
+
+    Introspected, not declared, so a packaging claim like ``supportsBatching``
+    can be checked against the code that ships. Identity-compared against
+    ``ModelBase`` (imported lazily -- a module-level import would cycle through
+    the describe classmethods); a duck-typed policy falls back to attribute
+    presence.
+    """
+    from ._models.base import PREDICT_CORNERS, ModelBase
+
+    cls: type = obj if isinstance(obj, type) else type(obj)
+    base = cast("type", ModelBase)
+    if issubclass(cls, base):
+        return [
+            name
+            for name in PREDICT_CORNERS
+            if getattr(cls, name, None) is not getattr(base, name)
+        ]
+    return [name for name in PREDICT_CORNERS if callable(getattr(cls, name, None))]
 
 
 def _kind_and_method(obj: object, kind: str | None) -> tuple[str, str]:
