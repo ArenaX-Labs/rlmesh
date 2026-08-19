@@ -21,7 +21,6 @@ from . import spaces as spaces
 from . import specs as specs
 from . import types as types
 from ._authoring import EnvFactory
-from ._describe import describe, describe_json
 from ._metadata import sanitize_metadata
 from ._models import (
     NO_ADAPTER,
@@ -71,6 +70,18 @@ __doc__ = _rlmesh.__doc__
 # python-hosted env/model peer reports its real runtime for debugging. Advisory
 # only and best-effort; never raises.
 _register_python_peer_info()
+
+
+# describe/describe_json load lazily (PEP 562): an eager `from ._describe
+# import ...` here puts rlmesh._describe in sys.modules during the package
+# import that `python -m rlmesh._describe` performs first, so runpy would then
+# execute a second copy as __main__ and warn about unpredictable behaviour.
+def __getattr__(name):
+    if name in ("describe", "describe_json"):
+        from . import _describe
+
+        return getattr(_describe, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

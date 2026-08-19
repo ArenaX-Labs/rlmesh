@@ -1,111 +1,115 @@
-//! The `rlmesh` command-line binary.
-//!
-//! [`run_cli`] parses argv with clap and dispatches the available subcommands:
-//! `version` reports this build's version, its workflow edition (the
-//! commit-stamped build identity, so two builds sharing a package version stay
-//! distinguishable), and the distribution it shipped in (read from the
-//! `RLMESH_CLI_DISTRIBUTION` environment variable, defaulting to `standalone`)
-//! so a wheel- or container-bundled CLI can identify how it was packaged;
-//! `login`/`logout` sign in to and out of a managed platform via the OAuth
-//! device flow; `whoami` reports the active profile's platform and sign-in
-//! state, verifying a stored credential against the platform when one exists;
-//! `profile` manages the AWS-CLI-style
-//! named profiles those commands act on (each remembering its own platform and
-//! credential); and `registry login` authenticates docker with the platform's
-//! image registry.
-
+mod auth;
 mod cli;
-mod platform;
-mod style;
+mod config;
+mod helpers;
+mod profile;
+mod registry;
+mod render;
 mod viewtest;
 
 use std::ffi::{OsStr, OsString};
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 
 use anyhow::Result;
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{ColorChoice, CommandFactory, FromArgMatches};
 use cli::{Cli, Command};
+use config::ProfileStore;
+use render::{Style, write_error, write_heading, write_key_value};
 
-pub use style::Style;
-
-pub async fn run_cli() -> Result<i32> {
-    run_cli_with_args(std::env::args_os().skip(1).collect::<Vec<_>>()).await
-}
-
-pub async fn run_cli_with_args(argv: Vec<OsString>) -> Result<i32> {
-    let mut stdout = io::stdout();
-    let mut stderr = io::stderr();
-    let out_style = Style::for_terminal(stdout.is_terminal());
-    let err_style = Style::for_terminal(stderr.is_terminal());
-    run_cli_with_writers(argv, &mut stdout, &mut stderr, out_style, err_style).await
-}
-
-/// Parse and dispatch a command, writing all output to the supplied sinks.
-///
-/// A command failure is rendered as a one-line `Error:` diagnostic on `stderr`
-/// plus a non-zero exit code, rather than propagated. The native binary would
-/// print a propagated error itself, but the embedded Python entrypoint would
-/// turn it into an uncaught `RuntimeError` traceback — so an expected nudge like
-/// "sign in first" would look like a crash. Both surfaces stay identical here.
-///
-/// `out_style`/`err_style` must describe the real sinks (`stdout`/`stderr`);
-/// build them with [`Style::for_terminal`] where the sink is known, since the
-/// injected writer need not be the process stream.
-pub async fn run_cli_with_writers(
+pub async fn run_cli(
     argv: Vec<OsString>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
-    out_style: Style,
-    err_style: Style,
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
 ) -> Result<i32> {
-    let cli = match Cli::try_parse_from(std::iter::once(OsString::from("rlmesh")).chain(argv)) {
+    let stdout_style = Style::for_terminal(stdout_is_terminal);
+    let stderr_style = Style::for_terminal(stderr_is_terminal);
+    let command = Cli::command().color(ColorChoice::Never);
+    let cli = match command
+        .try_get_matches_from(std::iter::once(OsString::from("rlmesh")).chain(argv))
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
-        Err(err) => {
-            let exit_code = err.exit_code();
-            match err.kind() {
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => write!(stdout, "{err}")?,
-                _ => write!(stderr, "{err}")?,
+        Err(error) => {
+            let exit_code = error.exit_code();
+            match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => write!(stdout, "{error}")?,
+                _ => write!(stderr, "{error}")?,
             }
             return Ok(exit_code);
         }
     };
 
+    let mut profiles = match &cli.command {
+        Command::Version | Command::Viewtest(_) => None,
+        _ => match ProfileStore::load() {
+            Ok(profiles) => Some(profiles),
+            Err(error) => {
+                write_error(stderr, stderr_style, &error)?;
+                return Ok(1);
+            }
+        },
+    };
+
     let result = match cli.command {
-        Command::Version => version(stdout),
-        Command::Login(args) => platform::login(&args, stdout, out_style).await,
-        Command::Logout(args) => platform::logout(&args, stdout),
-        Command::Whoami(args) => platform::whoami(&args, stdout).await,
+        Command::Version => version(stdout, stdout_style),
+        Command::Login(args) => {
+            auth::login(profile_store(&mut profiles), &args, stdout, stdout_style).await
+        }
+        Command::Logout(args) => {
+            auth::logout(profile_store(&mut profiles), &args, stdout, stdout_style)
+        }
+        Command::Whoami(args) => {
+            auth::whoami(profile_store(&mut profiles), &args, stdout, stdout_style).await
+        }
         Command::Registry(args) => match args.command {
-            cli::RegistryCommand::Login(args) => platform::registry_login(&args, stdout).await,
+            cli::RegistryCommand::Login(args) => {
+                registry::registry_login(profile_store(&mut profiles), &args, stdout, stdout_style)
+                    .await
+            }
         },
         Command::Profile(args) => match args.command {
-            cli::ProfileCommand::List => platform::profile_list(stdout),
-            cli::ProfileCommand::Use { name } => platform::profile_use(&name, stdout),
-            cli::ProfileCommand::Remove { name } => platform::profile_remove(&name, stdout),
+            cli::ProfileCommand::List => {
+                profile::profile_list(profile_store(&mut profiles), stdout, stdout_style)
+            }
+            cli::ProfileCommand::Use { name } => {
+                profile::profile_use(profile_store(&mut profiles), &name, stdout, stdout_style)
+            }
+            cli::ProfileCommand::Remove { name } => {
+                profile::profile_remove(profile_store(&mut profiles), &name, stdout, stdout_style)
+            }
         },
-        Command::Viewtest(args) => viewtest::run(&args, stderr),
+        Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| ()),
     };
 
     match result {
-        Ok(code) => Ok(code),
-        Err(err) => {
-            let prefix = err_style.red_bold("Error:");
-            writeln!(stderr, "{prefix} {err:#}")?;
+        Ok(()) => Ok(0),
+        Err(error) => {
+            write_error(stderr, stderr_style, &error)?;
             Ok(1)
         }
     }
 }
 
-fn version(stdout: &mut impl Write) -> Result<i32> {
-    writeln!(stdout, "rlmesh-cli {}", env!("CARGO_PKG_VERSION"))?;
-    writeln!(
+fn profile_store(profiles: &mut Option<ProfileStore>) -> &mut ProfileStore {
+    profiles
+        .as_mut()
+        .expect("profile command has profile state")
+}
+
+fn version(stdout: &mut impl Write, style: Style) -> Result<()> {
+    write_heading(stdout, style, "RLMesh CLI")?;
+    write_key_value(stdout, style, "Version", env!("CARGO_PKG_VERSION"))?;
+    write_key_value(
         stdout,
-        "edition: {}",
-        rlmesh_proto::CURRENT_WORKFLOW_EDITION
+        style,
+        "Edition",
+        rlmesh_proto::CURRENT_WORKFLOW_EDITION,
     )?;
-    writeln!(stdout, "distribution: {}", cli_distribution())?;
-    Ok(0)
+    write_key_value(stdout, style, "Distribution", &cli_distribution())?;
+    Ok(())
 }
 
 fn cli_distribution() -> String {
@@ -125,17 +129,16 @@ fn cli_distribution_from(value: Option<OsString>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     async fn run_for_test(args: &[&str]) -> (i32, String, String) {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let code = run_cli_with_writers(
+        let code = run_cli(
             args.iter().map(OsString::from).collect(),
             &mut stdout,
             &mut stderr,
-            Style::for_terminal(false),
-            Style::for_terminal(false),
+            false,
+            false,
         )
         .await
         .unwrap();
@@ -178,12 +181,20 @@ mod tests {
 
         assert_eq!(code, 0);
         assert!(stderr.is_empty());
-        assert!(stdout.contains(concat!("rlmesh-cli ", env!("CARGO_PKG_VERSION"))));
-        assert!(stdout.contains(&format!(
-            "edition: {}",
-            rlmesh_proto::CURRENT_WORKFLOW_EDITION
-        )));
-        assert!(stdout.contains("distribution: "));
+        assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+        assert!(stdout.contains(rlmesh_proto::CURRENT_WORKFLOW_EDITION));
+        assert!(stdout.contains("Distribution"));
+        assert!(!stdout.contains('\x1b'));
+    }
+
+    #[tokio::test]
+    async fn invalid_command_is_plain_and_goes_to_stderr() {
+        let (code, stdout, stderr) = run_for_test(&["not-a-command"]).await;
+
+        assert_eq!(code, 2);
+        assert!(stdout.is_empty());
+        assert!(stderr.contains("unrecognized subcommand"));
+        assert!(!stderr.contains('\x1b'));
     }
 
     #[test]

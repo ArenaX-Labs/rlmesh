@@ -24,7 +24,7 @@ pub enum Command {
     Whoami(ProfileArgs),
     /// Authenticate container tooling with the platform's image registry.
     Registry(RegistryArgs),
-    /// Manage named platform profiles (like AWS CLI profiles).
+    /// Manage named platform profiles.
     Profile(ProfileCommandArgs),
     /// Smoke-test the terminal/HTTP renderer with synthetic frames (diagnostic).
     #[command(hide = true)]
@@ -58,7 +58,7 @@ pub struct RegistryArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum RegistryCommand {
-    /// Log docker in to the platform's image registry using the stored API key.
+    /// Log Docker in to the platform's image registry using the current session.
     Login(ProfileArgs),
 }
 

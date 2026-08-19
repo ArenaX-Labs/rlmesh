@@ -330,6 +330,14 @@ run = [
 ]
 
 # ──────────────────────────────────────────────
+# Build
+# ──────────────────────────────────────────────
+[tasks."develop"]
+description = "Build python bindings for local development"
+dir = "{{ config_root }}/python/rlmesh"
+run = "maturin develop"
+
+# ──────────────────────────────────────────────
 # Release wheels
 # ──────────────────────────────────────────────
 # Full release matrix contains 14 wheels total:

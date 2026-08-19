@@ -30,10 +30,7 @@ required-features = ["stub-gen"]
 [features]
 default = ["cli"]
 abi3-py311 = ["pyo3/abi3-py311"]
-# Bundles the embedded `rlmesh` CLI (the `_rlmesh.run_cli` entrypoint) into the
-# extension.
 cli = ["dep:rlmesh-cli"]
-# Links pyo3-stub-gen for dev-time `_rlmesh.pyi` generation.
 stub-gen = ["dep:pyo3-stub-gen"]
 
 [dependencies]
