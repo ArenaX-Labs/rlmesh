@@ -34,8 +34,10 @@ PredictFn = Callable[[ObsT], ActT]
 Corner = Callable[..., object]
 
 #: The four predict corners, ordered general -> specific. A model overrides any
-#: subset; :func:`_synthesize_corners` derives the rest.
+#: subset; :func:`_synthesize_corners` derives the rest. PREDICT_CORNERS is the
+#: introspection-facing name (describe reports which corners a model defines).
 _CORNERS = ("predict", "predict_chunk", "predict_batch", "predict_chunk_batch")
+PREDICT_CORNERS = _CORNERS
 
 
 def _served_handle(model: object) -> bool:

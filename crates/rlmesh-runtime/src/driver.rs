@@ -163,6 +163,14 @@ const SRC_RESET: Source = Source {
     op: "env.reset",
     component: "env",
 };
+const SRC_TRANSFORM_OBS: Source = Source {
+    op: "runner.transform_observation",
+    component: "runner",
+};
+const SRC_TRANSFORM_ACTION: Source = Source {
+    op: "runner.transform_action",
+    component: "runner",
+};
 
 /// Drives one ready model/env session through its `reset -> predict -> step`
 /// loop. Inert until a `run*` method is awaited.
@@ -439,7 +447,7 @@ where
         let mut reset_event =
             self.observation_event(state, state.snapshot(), true, reset_observation.clone());
         let transformed_reset_observation = self
-            .invoke_transform_observation(reset_event.clone())
+            .invoke_transform_observation(telemetry, reset_event.clone())
             .await?;
         reset_event.observation = transformed_reset_observation.clone();
         reset_msg.observation = transformed_reset_observation.map(leaves_value);
@@ -540,7 +548,9 @@ where
                 action_space: Arc::clone(&self.action_space),
                 action: Some(model_action),
             };
-            action_event.action = self.invoke_transform_action(action_event.clone()).await?;
+            action_event.action = self
+                .invoke_transform_action(telemetry, action_event.clone())
+                .await?;
             fan_out_event!(self, action_received, action_event.clone());
 
             let step_timeout = self.spec.limits.env_step_timeout;
@@ -822,7 +832,7 @@ where
             let mut outgoing_observation_event =
                 self.observation_event(state, state.snapshot(), is_reset_msg, next_obs);
             let transformed_observation = self
-                .invoke_transform_observation(outgoing_observation_event.clone())
+                .invoke_transform_observation(telemetry, outgoing_observation_event.clone())
                 .await?;
             outgoing_observation_event.observation = transformed_observation.clone();
             obs_msg.observation = transformed_observation.map(leaves_value);
@@ -1051,9 +1061,17 @@ where
 
     async fn invoke_transform_action(
         &self,
+        telemetry: &Mutex<Aggregator>,
         event: ActionReceivedEvent,
     ) -> Result<Option<Vec<Bytes>>, RuntimeError> {
-        match self.hooks.transform_action(event).await {
+        let started = Instant::now();
+        let result = self.hooks.transform_action(event).await;
+        lock_agg(telemetry).record(Sample::dur(
+            SRC_TRANSFORM_ACTION,
+            metrics::RPC_TOTAL,
+            started.elapsed(),
+        ));
+        match result {
             Ok(action) => Ok(action),
             Err(err) => {
                 tracing::warn!("runtime hook transform_action failed: {err}");
@@ -1064,9 +1082,17 @@ where
 
     async fn invoke_transform_observation(
         &self,
+        telemetry: &Mutex<Aggregator>,
         event: ObservationEmittedEvent,
     ) -> Result<Option<Vec<Bytes>>, RuntimeError> {
-        match self.hooks.transform_observation(event).await {
+        let started = Instant::now();
+        let result = self.hooks.transform_observation(event).await;
+        lock_agg(telemetry).record(Sample::dur(
+            SRC_TRANSFORM_OBS,
+            metrics::RPC_TOTAL,
+            started.elapsed(),
+        ));
+        match result {
             Ok(observation) => Ok(observation),
             Err(err) => {
                 tracing::warn!("runtime hook transform_observation failed: {err}");
