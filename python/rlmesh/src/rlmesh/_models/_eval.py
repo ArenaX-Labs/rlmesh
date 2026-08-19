@@ -648,7 +648,10 @@ class Session(Generic[ObsT, ActT]):
         self._end_episode()
         obs, info = reset_env(self._client, seed)
         if self._model_client is not None:
-            self._model_client.reset()  # mark a reset boundary on the served route
+            # Mark a reset boundary on the served route; the seed rides too, as
+            # the served model's context["episode_seed"] on every predict of
+            # this episode.
+            self._model_client.reset(seed)
         else:
             if self._adapter is not None:
                 self._adapter.reset()

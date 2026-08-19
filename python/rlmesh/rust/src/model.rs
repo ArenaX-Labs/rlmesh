@@ -730,7 +730,7 @@ class PyModelClient:
     def env_id(self) -> str: ...
     def observation_space(self) -> Space: ...
     def action_space(self) -> Space: ...
-    def reset(self) -> None: ...
+    def reset(self, seed: int | None = None) -> None: ...
     def predict(self, observation: Value) -> Value: ...
     def close(self) -> None: ...
 "#
@@ -830,9 +830,12 @@ impl PyModelClient {
         Ok(make_space(py, &self.action_space)?.into_any().unbind())
     }
 
-    /// Begin a new episode (next predict marks a reset boundary).
-    fn reset(&mut self) {
-        self.inner.reset();
+    /// Begin a new episode (next predict marks a reset boundary). `seed` (the
+    /// explicit reset seed, if any) rides on every predict of the episode as
+    /// the served model's `context["episode_seed"]`.
+    #[pyo3(signature = (seed=None))]
+    fn reset(&mut self, seed: Option<i64>) {
+        self.inner.reset(seed);
     }
 
     fn predict(&mut self, py: Python<'_>, observation: Py<PyAny>) -> PyResult<Py<PyAny>> {

@@ -21,7 +21,7 @@ use crate::{ConnectAddress, Error, Result, spaces};
 ///
 /// ```ignore
 /// let mut obs = env.reset(reset_req).await?.observations.remove(0);
-/// model.reset();
+/// model.reset(None);
 /// loop {
 ///     let action = model.predict(obs).await?;
 ///     let step = env.step(StepRequest { actions: vec![action], ..Default::default() }).await?;
@@ -59,6 +59,10 @@ pub struct RemoteModel {
     /// RPC fires only once it empties. Flushed on `reset` — the only episode
     /// boundary this client can observe.
     replay_buffer: std::collections::VecDeque<spaces::SpaceValue>,
+    /// The explicit seed the current episode was reset with, if any — set by
+    /// [`reset`](Self::reset), rides on every `predict` of this episode, and is
+    /// advisory context for the served model (not consumed by this client).
+    seed: Option<i64>,
     /// The env edition this session runs at: the floor — the highest edition env,
     /// model, AND this runtime all support. Sent to the model in `ResolveAdapter`
     /// as AUTHORITATIVE over its own (pairwise) handshake result.
@@ -187,6 +191,7 @@ impl RemoteModel {
             episode_id: None,
             execution_horizon: 1,
             replay_buffer: std::collections::VecDeque::new(),
+            seed: None,
             selected_workflow_edition,
         })
     }
@@ -226,11 +231,17 @@ impl RemoteModel {
     /// signalled to the policy when you call `reset()`; a `predict()` after a
     /// finished episode without an intervening `reset()` continues the prior
     /// episode rather than starting a new one.
-    pub fn reset(&mut self) {
+    ///
+    /// `seed` is the explicit seed this episode was reset with, if any — rides
+    /// on every `predict` of this episode as advisory context for the served
+    /// model (its `predict`/`predict_chunk` `context` argument), mirroring the
+    /// seed you pass to the paired [`RemoteEnv::reset`](crate::RemoteEnv::reset).
+    pub fn reset(&mut self, seed: Option<i64>) {
         // The client is the local id authority for the direct path: mint a fresh
         // UUIDv7 per episode (never repeats, time-ordered). The new id is itself
         // the reset boundary on the wire.
         self.episode_id = Some(crate::mint_id());
+        self.seed = seed;
         // Drop any un-replayed chunk tail: a new episode re-plans from its first
         // observation. This is the only flush point — the client cannot observe the
         // server's episode end, so a stale tail would otherwise bleed across the
@@ -273,9 +284,8 @@ impl RemoteModel {
             )
             .map_err(|error| Error::Internal(error.to_string()))?;
             // The wire carries no per-row reset flag; the reset boundary is the
-            // fresh episode id minted in reset(), which rides episode_info below.
-            // This client has no seed concept (reset() takes none), so seed always
-            // rides unset.
+            // fresh episode id minted in reset(), which rides episode_info below,
+            // alongside the seed that same reset() call was given (if any).
             let request = PredictRequest {
                 context: Some(AdapterContext {
                     session_id: self.session_id.clone(),
@@ -285,7 +295,7 @@ impl RemoteModel {
                 observation: Some(observation_value),
                 episode_info: vec![EpisodeInfo {
                     episode_id,
-                    seed: None,
+                    seed: self.seed,
                 }],
             };
 
