@@ -19,6 +19,27 @@ pub(crate) fn normalize_base_url(raw: &str) -> String {
     format!("{scheme}://{value}")
 }
 
+/// Rejects a platform-advertised OAuth endpoint unless it is https (or http
+/// to a loopback host, for dev servers): these URLs come from an unsigned
+/// /v1/info document and receive device codes and refresh tokens.
+pub(crate) fn require_trusted_endpoint(url: &str, what: &str) -> Result<()> {
+    let value = url.trim();
+    let is_https = value
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
+    let is_local_http = value
+        .get(..7)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+        && is_loopback_host(&value[7..]);
+
+    if is_https || is_local_http {
+        return Ok(());
+    }
+    bail!(
+        "the platform advertised a non-https {what} ({value}); refusing to send credentials to it"
+    )
+}
+
 fn has_http_scheme(value: &str) -> bool {
     ["http://", "https://"].iter().any(|scheme| {
         value
@@ -58,6 +79,11 @@ fn extract_host(authority: &str) -> &str {
 }
 
 pub(crate) fn http_client() -> Result<reqwest::Client> {
+    // reqwest is built with `rustls-no-provider` to keep aws-lc-rs (and its
+    // cmake/C toolchain requirement) out of clean builds; ring must therefore
+    // be installed as the process-wide provider before building a client.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
@@ -113,7 +139,10 @@ fn error_message(body: &str) -> String {
         .ok()
         .map(|body| body.error.message)
         .filter(|message| !message.is_empty())
-        .unwrap_or_else(|| body.chars().take(300).collect())
+        .unwrap_or_else(|| body.to_owned())
+        .chars()
+        .take(300)
+        .collect()
 }
 
 #[cfg(test)]
@@ -142,5 +171,26 @@ mod tests {
             error_message(r#"{"error":{"message":"not allowed"}}"#),
             "not allowed"
         );
+    }
+
+    #[test]
+    fn truncates_huge_server_messages() {
+        let huge = "x".repeat(10_000);
+        assert_eq!(error_message(&huge).chars().count(), 300);
+        assert_eq!(
+            error_message(&format!(r#"{{"error":{{"message":"{huge}"}}}}"#))
+                .chars()
+                .count(),
+            300
+        );
+    }
+
+    #[test]
+    fn trusts_only_https_or_loopback_endpoints() {
+        assert!(require_trusted_endpoint("https://id.example.com/token", "token endpoint").is_ok());
+        assert!(require_trusted_endpoint("http://localhost:3000/token", "token endpoint").is_ok());
+        assert!(require_trusted_endpoint("http://127.0.0.1/token", "token endpoint").is_ok());
+        assert!(require_trusted_endpoint("http://id.example.com/token", "token endpoint").is_err());
+        assert!(require_trusted_endpoint("ftp://id.example.com/token", "token endpoint").is_err());
     }
 }

@@ -1,6 +1,8 @@
 use crate::cli::{LoginArgs, ProfileArgs};
-use crate::config::{CredentialStatus, Credentials, Identity, ProfileStore, ResolvedProfile};
-use crate::helpers::{expect_json, get_json, http_client};
+use crate::config::{
+    CredentialStatus, CredentialStorage, Credentials, Identity, ProfileStore, ResolvedProfile,
+};
+use crate::helpers::{expect_json, get_json, http_client, require_trusted_endpoint};
 use crate::render::{Style, write_heading, write_key_value};
 
 use anyhow::{Context, Result, bail};
@@ -56,6 +58,11 @@ async fn fetch_auth_config(client: &reqwest::Client, platform_url: &str) -> Resu
         "fetching sign-in configuration",
     )
     .await?;
+    require_trusted_endpoint(
+        &info.auth.device_authorization_endpoint,
+        "device authorization endpoint",
+    )?;
+    require_trusted_endpoint(&info.auth.token_endpoint, "token endpoint")?;
     Ok(info.auth)
 }
 
@@ -137,6 +144,7 @@ struct AuthUser {
 
 #[derive(Deserialize)]
 struct TokenDenial {
+    #[serde(default)]
     error: String,
     #[serde(default)]
     error_description: String,
@@ -144,11 +152,12 @@ struct TokenDenial {
 
 impl TokenDenial {
     fn detail(&self) -> String {
-        if self.error_description.trim().is_empty() {
+        let detail = if self.error_description.trim().is_empty() {
             self.error.clone()
         } else {
             format!("{}: {}", self.error, self.error_description)
-        }
+        };
+        detail.chars().take(300).collect()
     }
 }
 
@@ -181,6 +190,7 @@ struct MeOrganization {
     id: Option<String>,
     #[serde(default)]
     name: String,
+    #[serde(default)]
     provider_id: String,
 }
 
@@ -265,7 +275,7 @@ pub async fn login(
         Ok(identity) => Some(identity),
         Err(_) => login.identity,
     };
-    profiles.record_login(&profile, identity, &login.credentials)?;
+    let storage = profiles.record_login(&profile, identity, &login.credentials)?;
 
     writeln!(stdout)?;
     writeln!(
@@ -273,6 +283,16 @@ pub async fn login(
         "{}",
         style.success(&format!("Signed in as profile {:?}", profile.name))
     )?;
+    if let CredentialStorage::File(path) = storage {
+        writeln!(
+            stdout,
+            "  {}",
+            style.muted(&format!(
+                "No usable OS keychain; credentials stored in {} (mode 0600)",
+                path.display()
+            ))
+        )?;
+    }
     writeln!(stdout, "  {}", style.muted("Next: rlmesh registry login"))?;
     Ok(())
 }
@@ -401,11 +421,13 @@ async fn poll_for_token(
             return Ok(token.into_login_result());
         }
 
-        let denial: TokenDenial = serde_json::from_str(&body).with_context(|| {
-            format!("token endpoint returned HTTP {status} with an invalid response")
-        })?;
+        // A gateway's HTML 502/429 page mid-poll must not abort a sign-in
+        // the user is busy approving; the expiry deadline bounds the loop.
+        let Ok(denial) = serde_json::from_str::<TokenDenial>(&body) else {
+            continue;
+        };
         match denial.error.as_str() {
-            "authorization_pending" => {
+            "" | "authorization_pending" => {
                 if style.interactive() {
                     write!(progress, ".")?;
                     progress.flush()?;
@@ -460,34 +482,7 @@ pub async fn whoami(
     let mut verification = None;
 
     if status == CredentialStatus::SignedIn {
-        let client = http_client()?;
-        match refresh_session(&client, profiles, &profile).await {
-            Ok(session) => {
-                identity = session.identity;
-                let platform = profile
-                    .platform_url
-                    .as_deref()
-                    .expect("session refresh requires a platform");
-                match fetch_identity(
-                    &client,
-                    platform,
-                    &session.credentials.access_token,
-                    identity.as_ref(),
-                )
-                .await
-                {
-                    Ok(current_identity) => {
-                        if identity.as_ref() != Some(&current_identity) {
-                            profiles.update_identity(&profile.name, current_identity.clone())?;
-                        }
-                        identity = Some(current_identity);
-                        verification = Some(Ok(()));
-                    }
-                    Err(error) => verification = Some(Err(error)),
-                }
-            }
-            Err(error) => verification = Some(Err(error)),
-        }
+        verification = Some(verify_session(profiles, &profile, &mut identity).await);
     }
 
     write_heading(stdout, style, "Authentication")?;
@@ -535,6 +530,63 @@ pub async fn whoami(
     Ok(())
 }
 
+/// Verifies the stored session against /v1/me, updating the cached identity.
+///
+/// The stored access token is tried first: refresh tokens are single-use
+/// server-side, so a read-only status command must not rotate the session
+/// unless the access token has actually stopped working.
+async fn verify_session(
+    profiles: &mut ProfileStore,
+    profile: &ResolvedProfile,
+    identity: &mut Option<Identity>,
+) -> Result<()> {
+    let platform = profile
+        .platform_url
+        .as_deref()
+        .with_context(|| format!("profile {:?} has no configured platform", profile.name))?
+        .to_owned();
+    let credentials = profiles.credentials(&profile.name)?.with_context(|| {
+        format!(
+            "profile {:?} is not signed in; run `{}`",
+            profile.name,
+            profile.login_hint()
+        )
+    })?;
+    let client = http_client()?;
+
+    let access_token = match fetch_identity(
+        &client,
+        &platform,
+        &credentials.access_token,
+        identity.as_ref(),
+    )
+    .await
+    {
+        Ok(current) => return record_identity(profiles, profile, identity, current),
+        Err(_) => {
+            let session = refresh_session(&client, profiles, profile).await?;
+            *identity = session.identity;
+            session.credentials.access_token
+        }
+    };
+
+    let current = fetch_identity(&client, &platform, &access_token, identity.as_ref()).await?;
+    record_identity(profiles, profile, identity, current)
+}
+
+fn record_identity(
+    profiles: &mut ProfileStore,
+    profile: &ResolvedProfile,
+    identity: &mut Option<Identity>,
+    current: Identity,
+) -> Result<()> {
+    if identity.as_ref() != Some(&current) {
+        profiles.update_identity(&profile.name, current.clone())?;
+    }
+    *identity = Some(current);
+    Ok(())
+}
+
 async fn fetch_identity(
     client: &reqwest::Client,
     platform: &str,
@@ -564,7 +616,12 @@ async fn fetch_identity(
         organization_id: organization
             .as_ref()
             .and_then(|org| org.id.clone())
-            .or_else(|| organization.as_ref().map(|org| org.provider_id.clone()))
+            .or_else(|| {
+                organization
+                    .as_ref()
+                    .map(|org| org.provider_id.clone())
+                    .filter(|id| !id.is_empty())
+            })
             .unwrap_or_default(),
         organization_name: organization.map(|org| org.name).unwrap_or_default(),
     })

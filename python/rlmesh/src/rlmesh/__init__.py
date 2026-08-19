@@ -13,6 +13,11 @@ if _sys.byteorder != "little":
 
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _package_version
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._describe import describe as describe
+    from ._describe import describe_json as describe_json
 
 from . import _rlmesh as _rlmesh
 from . import adapters as adapters
@@ -76,7 +81,7 @@ _register_python_peer_info()
 # import ...` here puts rlmesh._describe in sys.modules during the package
 # import that `python -m rlmesh._describe` performs first, so runpy would then
 # execute a second copy as __main__ and warn about unpredictable behaviour.
-def __getattr__(name):
+def __getattr__(name: str) -> object:
     if name in ("describe", "describe_json"):
         from . import _describe
 

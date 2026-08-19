@@ -60,7 +60,9 @@ impl Config {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+// Lenient on missing fields so a config written by an older CLI still loads.
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(default)]
 pub struct Identity {
     pub user_id: String,
     pub email: String,
@@ -83,6 +85,12 @@ impl fmt::Debug for Credentials {
             .field("refresh_token", &"[REDACTED]")
             .finish()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialStorage {
+    Keychain,
+    File(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +210,7 @@ impl ProfileStore {
         profile: &ResolvedProfile,
         identity: Option<Identity>,
         credentials: &Credentials,
-    ) -> Result<()> {
+    ) -> Result<CredentialStorage> {
         let platform_url = profile
             .platform_url
             .clone()
@@ -224,7 +232,7 @@ impl ProfileStore {
     }
 
     pub fn replace_credentials(&mut self, profile: &str, credentials: &Credentials) -> Result<()> {
-        self.credentials.save(profile, credentials)
+        self.credentials.save(profile, credentials).map(|_| ())
     }
 
     pub fn update_identity(&mut self, profile: &str, identity: Identity) -> Result<()> {
@@ -280,14 +288,14 @@ impl CredentialsStore {
         })
     }
 
-    fn save(&mut self, profile: &str, credentials: &Credentials) -> Result<()> {
+    fn save(&mut self, profile: &str, credentials: &Credentials) -> Result<CredentialStorage> {
         if let Ok(entry) = keyring::Entry::new(APP_NAME, profile) {
             let payload = serde_json::to_string(credentials).context("serializing credentials")?;
             if entry.set_password(&payload).is_ok() {
                 self.remove_file_credentials(profile)?;
                 self.cached_credentials
                     .insert(profile.to_owned(), credentials.clone());
-                return Ok(());
+                return Ok(CredentialStorage::Keychain);
             }
 
             let _ = entry.delete_credential();
@@ -296,12 +304,29 @@ impl CredentialsStore {
         self.save_file_credentials(profile, credentials)?;
         self.cached_credentials
             .insert(profile.to_owned(), credentials.clone());
-        Ok(())
+        Ok(CredentialStorage::File(self.file.clone()))
     }
 
     fn get(&mut self, profile: &str) -> Result<Option<Credentials>> {
         if let Some(credentials) = self.cached_credentials.get(profile) {
             return Ok(Some(credentials.clone()));
+        }
+
+        // The keychain wins over the file fallback: `save` writes the
+        // keychain and only then removes the file entry, so a file entry that
+        // outlives a failed removal is stale. A payload that doesn't parse
+        // (an older CLI's schema) reads as signed out rather than failing
+        // every profile-touching command; other keychain failures (locked
+        // keychain, denied prompt) fall through to the file.
+        if let Ok(entry) = keyring::Entry::new(APP_NAME, profile)
+            && let Ok(payload) = entry.get_password()
+        {
+            let credentials = serde_json::from_str::<Credentials>(&payload).ok();
+            if let Some(credentials) = &credentials {
+                self.cached_credentials
+                    .insert(profile.to_owned(), credentials.clone());
+            }
+            return Ok(credentials);
         }
 
         let credentials_by_profile = self.read_credentials_file()?;
@@ -311,22 +336,7 @@ impl CredentialsStore {
             return Ok(Some(credentials.clone()));
         }
 
-        let Ok(entry) = keyring::Entry::new(APP_NAME, profile) else {
-            return Ok(None);
-        };
-
-        match entry.get_password() {
-            Ok(payload) => {
-                let credentials: Credentials = serde_json::from_str(&payload)
-                    .context("parsing credentials from OS keychain")?;
-                self.cached_credentials
-                    .insert(profile.to_owned(), credentials.clone());
-                Ok(Some(credentials))
-            }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(anyhow!(err))
-                .with_context(|| format!("reading keychain credentials for profile {profile:?}")),
-        }
+        Ok(None)
     }
 
     fn delete(&mut self, profile: &str) -> Result<bool> {
@@ -460,18 +470,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     }
 
     drop(file);
-
-    #[cfg(windows)]
-    {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("replacing existing file {}", path.display()));
-            }
-        }
-    }
 
     fs::rename(&temporary, path).with_context(|| format!("writing {}", path.display()))
 }
