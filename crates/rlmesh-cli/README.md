@@ -16,10 +16,10 @@ cargo install rlmesh-cli --version 0.1.0
 # Sign in with the browser-based device flow
 rlmesh login
 
-# Inspect the current session
+# Inspect the current session (exits nonzero unless signed in and verified)
 rlmesh whoami
 
-# Authenticate Docker with the platform registry
+# Register the rlmesh credential helper for the platform registry
 rlmesh registry login
 
 # List and switch between platform profiles
@@ -31,6 +31,8 @@ rlmesh version
 ```
 
 Run `rlmesh --help` or `rlmesh <command> --help` for the complete command reference.
+
+`rlmesh registry login` registers the bundled `docker-credential-rlmesh` helper for the platform's registry host, so docker requests a fresh short-lived token from the CLI on every pull and push instead of storing a static password.
 
 ## Status
 

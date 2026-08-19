@@ -20,7 +20,8 @@ pub enum Command {
     Login(LoginArgs),
     /// Delete the stored credential for a profile.
     Logout(ProfileArgs),
-    /// Show the active profile, its platform, and sign-in state.
+    /// Show the active profile, its platform, and sign-in state (exits
+    /// nonzero unless signed in with a verified session).
     Whoami(ProfileArgs),
     /// Authenticate container tooling with the platform's image registry.
     Registry(RegistryArgs),
@@ -60,6 +61,16 @@ pub struct RegistryArgs {
 pub enum RegistryCommand {
     /// Log Docker in to the platform's image registry using the current session.
     Login(ProfileArgs),
+    /// Docker credential-helper protocol endpoint (invoked by docker as
+    /// docker-credential-rlmesh, not by hand).
+    #[command(hide = true)]
+    CredentialHelper(CredentialHelperArgs),
+}
+
+/// The docker credential-helper operation, per its get/store/erase protocol.
+#[derive(Args, Debug)]
+pub struct CredentialHelperArgs {
+    pub operation: String,
 }
 
 /// Named-profile management subcommands.

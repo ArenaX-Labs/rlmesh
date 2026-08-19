@@ -54,12 +54,14 @@ pub async fn run_cli(
     };
 
     let result = match cli.command {
-        Command::Version => version(stdout, stdout_style),
+        Command::Version => version(stdout, stdout_style).map(|()| 0),
         Command::Login(args) => {
-            auth::login(profile_store(&mut profiles), &args, stdout, stdout_style).await
+            auth::login(profile_store(&mut profiles), &args, stdout, stdout_style)
+                .await
+                .map(|()| 0)
         }
         Command::Logout(args) => {
-            auth::logout(profile_store(&mut profiles), &args, stdout, stdout_style)
+            auth::logout(profile_store(&mut profiles), &args, stdout, stdout_style).map(|()| 0)
         }
         Command::Whoami(args) => {
             auth::whoami(profile_store(&mut profiles), &args, stdout, stdout_style).await
@@ -68,27 +70,67 @@ pub async fn run_cli(
             cli::RegistryCommand::Login(args) => {
                 registry::registry_login(profile_store(&mut profiles), &args, stdout, stdout_style)
                     .await
+                    .map(|()| 0)
+            }
+            cli::RegistryCommand::CredentialHelper(args) => {
+                registry::credential_helper(profile_store(&mut profiles), &args, stdout).await
             }
         },
         Command::Profile(args) => match args.command {
             cli::ProfileCommand::List => {
                 profile::profile_list(profile_store(&mut profiles), stdout, stdout_style)
+                    .map(|()| 0)
             }
             cli::ProfileCommand::Use { name } => {
                 profile::profile_use(profile_store(&mut profiles), &name, stdout, stdout_style)
+                    .map(|()| 0)
             }
             cli::ProfileCommand::Remove { name } => {
                 profile::profile_remove(profile_store(&mut profiles), &name, stdout, stdout_style)
+                    .map(|()| 0)
             }
         },
-        Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| ()),
+        Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
     };
 
     match result {
-        Ok(()) => Ok(0),
+        Ok(code) => Ok(code),
         Err(error) => {
             write_error(stderr, stderr_style, &error)?;
             Ok(1)
+        }
+    }
+}
+
+/// Terminal entrypoint shared by the `rlmesh` and `docker-credential-rlmesh`
+/// binaries; `prefix` routes the latter to its subcommand.
+pub async fn run_terminal(prefix: &[&str]) -> i32 {
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let stdout_is_terminal = std::io::IsTerminal::is_terminal(&stdout);
+    let stderr_is_terminal = std::io::IsTerminal::is_terminal(&stderr);
+
+    let argv = prefix
+        .iter()
+        .map(OsString::from)
+        .chain(std::env::args_os().skip(1))
+        .collect();
+    match run_cli(
+        argv,
+        &mut stdout,
+        &mut stderr,
+        stdout_is_terminal,
+        stderr_is_terminal,
+    )
+    .await
+    {
+        Ok(code) => code,
+        Err(error) => {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("Error: {error:#}");
+            }
+            1
         }
     }
 }

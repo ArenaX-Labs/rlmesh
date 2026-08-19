@@ -77,5 +77,11 @@ def _ensure_distribution_marker(
     environ.setdefault(_DISTRIBUTION_ENV, distribution)
 
 
+def credential_helper_main(argv: list[str] | None = None) -> int:
+    """Docker credential-helper entrypoint (installed as docker-credential-rlmesh)."""
+    argv = sys.argv[1:] if argv is None else argv
+    return main(["registry", "credential-helper", *argv])
+
+
 if __name__ == "__main__":
     sys.exit(main())

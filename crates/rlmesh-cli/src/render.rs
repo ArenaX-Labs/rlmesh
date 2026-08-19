@@ -219,14 +219,14 @@ mod tests {
                     "dev".to_owned(),
                     Profile {
                         platform_url: Some("http://localhost:3000".to_owned()),
-                        identity: None,
+                        ..Profile::default()
                     },
                 ),
                 (
                     "production".to_owned(),
                     Profile {
                         platform_url: Some("https://api.rlmesh.dev".to_owned()),
-                        identity: None,
+                        ..Profile::default()
                     },
                 ),
             ]),

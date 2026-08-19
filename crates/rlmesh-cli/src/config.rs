@@ -18,6 +18,9 @@ pub struct Profile {
     pub platform_url: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_host: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Identity>,
 }
 
@@ -233,6 +236,41 @@ impl ProfileStore {
 
     pub fn replace_credentials(&mut self, profile: &str, credentials: &Credentials) -> Result<()> {
         self.credentials.save(profile, credentials).map(|_| ())
+    }
+
+    pub fn set_registry_host(&mut self, profile: &str, host: &str) -> Result<()> {
+        let configured_profile = self
+            .config
+            .profiles
+            .get_mut(profile)
+            .with_context(|| format!("no profile named {profile:?}"))?;
+        configured_profile.registry_host = Some(host.to_owned());
+        self.config.save()
+    }
+
+    /// Finds the profile registered for a registry host, preferring the
+    /// default profile when several point at the same registry.
+    pub fn resolve_registry(&self, host: &str) -> Option<ResolvedProfile> {
+        let mut names = self
+            .config
+            .profiles
+            .iter()
+            .filter(|(_, profile)| profile.registry_host.as_deref() == Some(host))
+            .map(|(name, _)| name.as_str());
+
+        let first = names.next()?;
+        let name = std::iter::once(first)
+            .chain(names)
+            .find(|name| self.config.is_effective_default(name))
+            .unwrap_or(first);
+        Some(self.resolve(Some(name)))
+    }
+
+    pub fn registry_profiles(&self) -> impl Iterator<Item = &Profile> {
+        self.config
+            .profiles
+            .values()
+            .filter(|profile| profile.registry_host.is_some())
     }
 
     pub fn update_identity(&mut self, profile: &str, identity: Identity) -> Result<()> {
@@ -496,7 +534,7 @@ mod tests {
                 "staging".to_owned(),
                 Profile {
                     platform_url: Some("staging.example.com/".to_owned()),
-                    identity: None,
+                    ..Profile::default()
                 },
             )]),
         };
@@ -582,6 +620,7 @@ mod tests {
                 "default".to_owned(),
                 Profile {
                     platform_url: Some(DEFAULT_PLATFORM_URL.to_owned()),
+                    registry_host: None,
                     identity: Some(Identity {
                         user_id: "user_123".to_owned(),
                         email: "dev@example.com".to_owned(),

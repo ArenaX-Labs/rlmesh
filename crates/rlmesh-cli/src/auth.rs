@@ -81,6 +81,9 @@ struct DeviceAuthorization {
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
+    // A missing refresh token degrades the login to Incomplete instead of
+    // failing after the user already approved in the browser.
+    #[serde(default)]
     refresh_token: String,
     #[serde(default)]
     organization_id: Option<String>,
@@ -470,12 +473,13 @@ pub fn logout(
     Ok(())
 }
 
+/// Exits 0 only for a signed-in, verified session, so scripts can gate on it.
 pub async fn whoami(
     profiles: &mut ProfileStore,
     args: &ProfileArgs,
     stdout: &mut impl Write,
     style: Style,
-) -> Result<()> {
+) -> Result<i32> {
     let profile = profiles.resolve(args.profile.as_deref());
     let status = profiles.credential_status(&profile.name)?;
     let mut identity = profile.identity.clone();
@@ -512,6 +516,7 @@ pub async fn whoami(
         write_key_value(stdout, style, "Organization", &identity.organization_id)?;
     }
 
+    let healthy = matches!(verification, Some(Ok(())));
     if let Some(verification) = verification {
         let value = match verification {
             Ok(()) => style.green("✓ verified"),
@@ -527,7 +532,7 @@ pub async fn whoami(
         )?;
     }
 
-    Ok(())
+    Ok(if healthy { 0 } else { 1 })
 }
 
 /// Verifies the stored session against /v1/me, updating the cached identity.
