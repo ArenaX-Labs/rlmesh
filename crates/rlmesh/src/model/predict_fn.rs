@@ -7,6 +7,7 @@
 //! cross via these traits, which a binding (PyO3, or any future language)
 //! implements; a pure-Rust model implements them with no host runtime at all.
 
+use super::types::EpisodeInfo;
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{CustomTransform, EncodingTransform, ResolvedAdapter, Value};
 
@@ -29,7 +30,11 @@ pub trait PredictFn: Send + Sync {
     /// engine has already frame-stacked / customs'd / enc-shimmed the input.
     /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
     /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
-    fn predict(&self, model_input: Value) -> Result<Value>;
+    ///
+    /// `episode` is this lane's episode identity and explicit reset seed. On
+    /// the fused grouped path (lanes from independent episodes batched into one
+    /// forward) there is no single-episode identity: `episode` is `None`.
+    fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> Result<Value>;
 
     /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw
     /// actions (the leading axis is the chunk axis, unstacked by
@@ -44,7 +49,15 @@ pub trait PredictFn: Send + Sync {
     /// discards the rest, so a fixed-size head ignores the value and is correct
     /// either way. An autoregressive head may decode exactly `execution_horizon`
     /// actions to avoid wasting decode on a longer natural chunk.
-    fn predict_chunk(&self, _model_input: Value, _execution_horizon: u32) -> Result<Option<Value>> {
+    ///
+    /// `episode` follows the same contract as [`predict`](Self::predict):
+    /// real identity per lane, `None` on the fused grouped path.
+    fn predict_chunk(
+        &self,
+        _model_input: Value,
+        _execution_horizon: u32,
+        _episode: Option<&EpisodeInfo>,
+    ) -> Result<Option<Value>> {
         Ok(None)
     }
 

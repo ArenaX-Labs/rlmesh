@@ -672,7 +672,10 @@ mod tests {
                 request_id: request_id.to_string(),
             }),
             observation: None,
-            episode_ids: vec![episode.to_string()],
+            episode_info: vec![rlmesh_proto::model::v1::EpisodeInfo {
+                episode_id: episode.to_string(),
+                seed: None,
+            }],
         }
     }
 

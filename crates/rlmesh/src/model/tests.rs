@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
-    AdapterContext, CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse,
-    GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
-    ResolveAdapterRequest, grouped_predict_result, join_request, join_response,
+    AdapterContext, CloseParticipantRequest, EpisodeInfo, GroupedPredictRequest,
+    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest,
+    ReleaseAdapterRequest, ResolveAdapterRequest, grouped_predict_result, join_request,
+    join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -302,7 +303,10 @@ async fn served_model_predict_mirrors_route_context() {
             kind: Some(join_request::Kind::Predict(PredictRequest {
                 context: Some(context.clone()),
                 observation: None,
-                episode_ids: vec!["episode-1".to_string()],
+                episode_info: vec![EpisodeInfo {
+                    episode_id: "episode-1".to_string(),
+                    seed: None,
+                }],
             })),
             request_id: "request-1".to_string(),
         },
@@ -333,7 +337,7 @@ async fn served_model_predict_mirrors_route_context() {
 // test was removed in the C8 EnvSpec split. The model now receives only the
 // stable `EnvSpec` (no `num_envs`), so the resolved adapter no longer carries a
 // lane bound to clamp the batch against; the per-predict row count is taken from
-// the request's `episode_ids`. There is no contract-derived width to reject.
+// the request's `episode_info`. There is no contract-derived width to reject.
 #[tokio::test]
 async fn served_model_predict_uses_episode_id_count_as_lane_count() {
     let response = handle_model_request(
@@ -345,7 +349,16 @@ async fn served_model_predict_uses_episode_id_count_as_lane_count() {
                     request_id: "request-1".to_string(),
                 }),
                 observation: None,
-                episode_ids: vec!["episode-0".to_string(), "episode-1".to_string()],
+                episode_info: vec![
+                    EpisodeInfo {
+                        episode_id: "episode-0".to_string(),
+                        seed: None,
+                    },
+                    EpisodeInfo {
+                        episode_id: "episode-1".to_string(),
+                        seed: None,
+                    },
+                ],
             })),
             request_id: "request-1".to_string(),
         },
@@ -430,7 +443,10 @@ fn grouped_member(env_id: &str, request_id: &str, episode_id: &str) -> PredictRe
             request_id: request_id.to_string(),
         }),
         observation: None,
-        episode_ids: vec![episode_id.to_string()],
+        episode_info: vec![EpisodeInfo {
+            episode_id: episode_id.to_string(),
+            seed: None,
+        }],
     }
 }
 
@@ -1182,7 +1198,7 @@ async fn remote_model_connects_resets_and_predicts() {
         )
     };
 
-    model.reset();
+    model.reset(None);
     // SmokeModel returns the raw action byte vec![0]; it decodes against the
     // contract's Uint8 Box action space.
     let action = model.predict(observe()).await.unwrap();
@@ -1249,7 +1265,7 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     );
 
     // The route configures (the pinned edition is accepted by the served model).
-    model.reset();
+    model.reset(None);
     let action = model
         .predict(spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
@@ -1413,9 +1429,9 @@ async fn two_remote_models_in_one_process_use_distinct_env_keys() {
         .await
         .unwrap();
 
-    first.reset();
+    first.reset(None);
     first.predict(observe()).await.unwrap();
-    second.reset();
+    second.reset(None);
     second.predict(observe()).await.unwrap();
 
     let recorded = keys.lock().await.clone();
@@ -1595,7 +1611,10 @@ fn predict_join_request(env_id: &str, request_id: &str, slow: bool) -> JoinReque
                 request_id: request_id.to_string(),
             }),
             observation: None,
-            episode_ids: vec![format!("ep-{env_id}-{request_id}{suffix}")],
+            episode_info: vec![EpisodeInfo {
+                episode_id: format!("ep-{env_id}-{request_id}{suffix}"),
+                seed: None,
+            }],
         })),
         request_id: request_id.to_string(),
     }
@@ -1847,10 +1866,10 @@ async fn public_client_predict_concurrent_demuxes_overlapping_predicts() {
             request_id: request_id.to_string(),
         }),
         observation: None,
-        episode_ids: vec![format!(
-            "ep-{request_id}{}",
-            if slow { "-slow" } else { "" }
-        )],
+        episode_info: vec![EpisodeInfo {
+            episode_id: format!("ep-{request_id}{}", if slow { "-slow" } else { "" }),
+            seed: None,
+        }],
     };
 
     let c1 = Arc::clone(&client);

@@ -9,7 +9,7 @@ import "rlmesh/spaces/v1/value.proto";
 //
 // An adapter is the resolved model-side context for one connected env container
 // (single OR vector env), keyed by `env_id`. Predict requests carry an ordered
-// `episode_ids` vector (see PredictRequest) when the observation/action payload
+// `episode_info` vector (see PredictRequest) when the observation/action payload
 // is batched; the lane/slot positional index is no longer a wire concept.
 message AdapterContext {
   // Correlation only; OSS does not key on it (the managed layer owns session
@@ -62,6 +62,18 @@ message ResolveAdapterRequest {
 
 message ResolveAdapterResponse {}
 
+// Per-row episode identity and seed metadata: the self-describing batch. Row
+// `i` of the batched observation belongs to `episode_info[i]`, decided per
+// tick. The model keys all per-episode state (frame-stack buffers) by
+// `episode_id`, never by position-across-ticks. `seed` is unset when the
+// episode was not started with an explicit seed; present for every explicitly
+// seeded episode, including a genuine seed of 0.
+message EpisodeInfo {
+  // Minted by the runtime (UUIDv7); never repeats.
+  string episode_id = 1;
+  optional int64 seed = 2;
+}
+
 // Observation sent from the runtime to the model.
 message PredictRequest {
   // Runtime adapter identity. Responses must mirror this context.
@@ -71,17 +83,14 @@ message PredictRequest {
   // already batched over all rows (the batch axis lives INSIDE the SpaceValue).
   rlmesh.spaces.v1.SpaceValue observation = 2;
 
-  // Ordered per-row episode ids: the self-describing batch. Row `i` of the
-  // batched observation belongs to episode `episode_ids[i]`, decided per tick.
-  // The model keys all per-episode state (frame-stack buffers) by this id, never
-  // by position-across-ticks. Length == the batch row count (num_envs). One id
-  // for a single env. Minted by the runtime (UUIDv7); never repeats.
-  repeated string episode_ids = 3;
+  // Ordered per-row episode identity and seed metadata. Length == the batch
+  // row count (num_envs). One entry for a single env.
+  repeated EpisodeInfo episode_info = 3;
 }
 
 message PredictResponse {
   // Adapter identity copied from the request this action answers. Actions
-  // inherit the request's `episode_ids` order positionally.
+  // inherit the request's `episode_info` order positionally.
   AdapterContext context = 1;
 
   // Ordered action frames for this predict: actions[0] is THIS step, actions[1..]

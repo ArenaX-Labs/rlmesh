@@ -21,6 +21,7 @@ The files:
 - `eval.py`: connect a client and step with sampled actions.
 - `eval_many.py`: one evaluator across multiple endpoints.
 - `model.py`: run a tiny model worker against an endpoint.
+- `seeded_model.py`: run a local loop and print per-episode seed context.
 
 To copy outside the repo, install the published package:
 

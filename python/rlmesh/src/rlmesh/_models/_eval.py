@@ -34,6 +34,7 @@ from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
 from ._resolve import reject_vector_env, resolve_adapter
 from ._view import ViewerDriver, resolve_view
+from .base import accepts_context
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
@@ -296,7 +297,7 @@ def _summarize_payload(payload: Any) -> str:
 
 
 def _predict_step(
-    predict: Callable[[Any], Any],
+    predict: Callable[..., Any],
     obs: Any,
     adapter: Any,
     instruction: str | None,
@@ -304,6 +305,7 @@ def _predict_step(
     env_bridge: ValueBridge | None,
     model_bridge: ValueBridge | None,
     device: object | None,
+    context: Mapping[str, Any] | None = None,
 ) -> Any:
     """Assemble one observation into the model payload and call ``predict``.
 
@@ -335,6 +337,8 @@ def _predict_step(
             value: Any = [instruction] if placement.as_list else instruction
             payload = tree_set(payload, placement.segments, value)
     try:
+        if context is not None:
+            return predict(payload, context)
         return predict(payload)
     except Exception as exc:
         kind = "adapter-assembled" if adapter is not None else "spec-less (raw obs)"
@@ -397,6 +401,7 @@ class Session(Generic[ObsT, ActT]):
     _steps: int
     _reward: float
     _last_info: Mapping[str, Any]
+    _replay_fn: Callable[..., Any] | None
     _model_ms: float
     _env_ms: float
     _sps: float
@@ -472,6 +477,8 @@ class Session(Generic[ObsT, ActT]):
         self._text_placements = ()
         self._horizon = 1
         self._replay = ChunkReplay(1)
+        self._replay_fn = None
+        self._takes_context = False
         self._terminated = False
         self._truncated = False
         self._steps = 0
@@ -588,6 +595,13 @@ class Session(Generic[ObsT, ActT]):
             return "success"
         return "failure" if self._terminated else "timeout"
 
+    def _episode_id(self) -> str:
+        """This episode's runtime-minted id, when the env's reset info carried one."""
+        episode_ids = self._last_info.get("episode_ids")
+        if episode_ids:
+            return str(episode_ids[0])
+        return ""
+
     def _end_episode(self) -> None:
         """Fire the local model's `on_episode_end` once for the currently-open episode.
 
@@ -616,7 +630,10 @@ class Session(Generic[ObsT, ActT]):
         self._end_episode()
         obs, info = reset_env(self._client, seed)
         if self._model_client is not None:
-            self._model_client.reset()  # mark a reset boundary on the served route
+            # Mark a reset boundary on the served route; the seed rides too, as
+            # the served model's context["episode_seed"] on every predict of
+            # this episode.
+            self._model_client.reset(seed)
         else:
             if self._adapter is not None:
                 self._adapter.reset()
@@ -658,22 +675,40 @@ class Session(Generic[ObsT, ActT]):
         # and replays one step at a time -- otherwise through single-step predict.
         # The horizon goes in positionally: the corner was normalized to the internal
         # (obs, horizon) contract, so a model that ignores it still binds cleanly.
-        if self._horizon > 1 and self._predict_chunk is not None:
-            chunk_fn = self._predict_chunk
-            horizon = self._horizon
+        # The corner and its context acceptance are properties of the session
+        # (corners and horizon are fixed once connected), sniffed on the first
+        # predict rather than per step -- this is the hot path.
+        if self._replay_fn is None:
+            if self._horizon > 1 and self._predict_chunk is not None:
+                chunk_fn = self._predict_chunk
+                horizon = self._horizon
+                self._takes_context = accepts_context(chunk_fn, 2)
 
-            def _replay(obs: Any) -> Any:
-                return chunk_fn(obs, horizon)
+                def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
+                    if context is not None:
+                        return chunk_fn(obs, horizon, context)
+                    return chunk_fn(obs, horizon)
 
-            replay_fn = cast("Callable[[Any], Any]", _replay)
-        else:
-            replay_fn = cast("Callable[[Any], Any]", self._predict)
+                self._replay_fn = cast("Callable[..., Any]", _replay)
+            else:
+                self._replay_fn = cast("Callable[..., Any]", self._predict)
+                self._takes_context = accepts_context(self._replay_fn, 1)
+        replay_fn = self._replay_fn
+        takes_context = self._takes_context
 
         # Time the forward inside the replay thunk so model_ms records only on steps
         # that re-plan (the thunk is skipped while a chunk replays), keeping it a true
         # forward cost rather than a near-zero queue pop.
         def _forward() -> Any:
             t0 = time.perf_counter()
+            # The same context contract the served path's native worker hands a
+            # model: this episode's identity and explicit reset seed, nothing
+            # positional or path-specific.
+            predict_context = (
+                {"episode_id": self._episode_id(), "episode_seed": self._seed}
+                if takes_context
+                else None
+            )
             out = _predict_step(
                 replay_fn,
                 observation,
@@ -683,6 +718,7 @@ class Session(Generic[ObsT, ActT]):
                 self._env_bridge,
                 model_bridge,
                 self._device,
+                predict_context,
             )
             self._model_ms = _ema(self._model_ms, (time.perf_counter() - t0) * 1000.0)
             return out

@@ -5,12 +5,25 @@ use rlmesh_grpc::wire::Bytes;
 use crate::spaces;
 use crate::{Error, Result};
 
+/// One row's episode identity: the runtime-minted id (UUIDv7, never repeats)
+/// and the explicit seed the episode was reset with, if any. Mirrors the wire's
+/// `EpisodeInfo` row, so identity and seed cannot fall out of alignment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EpisodeInfo {
+    /// Minted by the runtime (UUIDv7); never repeats.
+    pub episode_id: String,
+    /// The explicit reset seed; `None` when the episode was not explicitly
+    /// seeded (a genuine seed of 0 is `Some(0)`).
+    pub seed: Option<i64>,
+}
+
 /// Routing metadata attached to a [`ModelObservation`].
 ///
 /// Identifies the env (adapter) the request belongs to and the ordered per-row
-/// episode ids — the self-describing batch. Row `i` of the batched observation
-/// belongs to `episode_ids[i]`. There is no positional lane/slot concept; the
-/// model keys all per-episode state by `episode_id`, never by position.
+/// episode identity — the self-describing batch. Row `i` of the batched
+/// observation belongs to `episodes[i]`. There is no positional lane/slot
+/// concept; the model keys all per-episode state by `episode_id`, never by
+/// position.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelRouteContext {
     /// Identifier of the session this request belongs to (correlation only).
@@ -19,20 +32,26 @@ pub struct ModelRouteContext {
     pub env_id: String,
     /// Identifier of this individual request.
     pub request_id: String,
-    /// Ordered per-row episode ids (length `== num_envs`).
-    pub episode_ids: Vec<String>,
+    /// Ordered per-row episode identity (length `== num_envs`).
+    pub episodes: Vec<EpisodeInfo>,
 }
 
 impl ModelRouteContext {
     /// The first row's episode id, or `""` if the batch is empty. The natural
     /// choice for single-env handlers.
     pub fn primary_episode_id(&self) -> &str {
-        self.episode_ids.first().map(String::as_str).unwrap_or("")
+        self.episodes
+            .first()
+            .map(|episode| episode.episode_id.as_str())
+            .unwrap_or("")
     }
 
     /// The episode id of every row, in batch order.
     pub fn episode_ids(&self) -> Vec<String> {
-        self.episode_ids.clone()
+        self.episodes
+            .iter()
+            .map(|episode| episode.episode_id.clone())
+            .collect()
     }
 }
 
@@ -49,7 +68,7 @@ pub struct ModelObservation {
     pub observation: Option<Vec<Bytes>>,
     /// Routing/episode metadata for this request.
     pub route: ModelRouteContext,
-    /// Number of rows (sub-environments) in this batch (`== route.episode_ids.len()`).
+    /// Number of rows (sub-environments) in this batch (`== route.episodes.len()`).
     pub num_envs: usize,
     /// The env contract (spaces/metadata) for decoding the observation. Shared
     /// (`Arc`) so the per-predict hot path clones a refcount, not the contract.

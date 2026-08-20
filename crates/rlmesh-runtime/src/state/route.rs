@@ -3,7 +3,7 @@
 
 use prost::bytes::Bytes;
 use rlmesh_proto::model::v1::{
-    AdapterContext, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
+    AdapterContext, EpisodeInfo, PredictRequest, ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 
@@ -112,12 +112,6 @@ impl RouteState {
         for (episode_id, seed) in episode_ids.iter().zip(seeds) {
             self.seed_by_episode.insert(episode_id.clone(), *seed);
         }
-    }
-
-    /// The explicit seed `episode_id` was reset with, if any (drained: each
-    /// episode completes once).
-    pub(crate) fn take_episode_seed(&mut self, episode_id: &str) -> Option<i64> {
-        self.seed_by_episode.remove(episode_id)
     }
 
     /// Record one completed episode's summary (completion order) for the
@@ -255,12 +249,23 @@ impl RouteState {
         self.records.record_for(episode_id).cloned()
     }
 
+    pub(crate) fn seed_for_episode(&self, episode_id: &str) -> Option<i64> {
+        self.seed_by_episode.get(episode_id).copied()
+    }
+
     pub(crate) fn predict_request(
         &mut self,
         observation: Option<Vec<Bytes>>,
         phase: RequestPhase,
     ) -> PredictRequest {
-        let episode_ids = self.episode_ids();
+        let episode_info = self
+            .episode_ids()
+            .into_iter()
+            .map(|episode_id| {
+                let seed = self.seed_for_episode(&episode_id);
+                EpisodeInfo { episode_id, seed }
+            })
+            .collect();
         PredictRequest {
             context: Some(AdapterContext {
                 session_id: self.session_id().to_string(),
@@ -268,7 +273,7 @@ impl RouteState {
                 request_id: self.next_request_id(phase.as_str()),
             }),
             observation: observation.map(leaves_value),
-            episode_ids,
+            episode_info,
         }
     }
 
@@ -316,14 +321,18 @@ impl RouteState {
             let episode_record_id = record_ids.get(index).cloned().unwrap_or_default();
             // Did this lane's episode id flip? A NEXT_STEP autoreset rolls the id
             // on a single lane at t+1; only that lane's step counter must reset.
-            let rolled = {
-                let previous_id = slot
-                    .episode
-                    .as_ref()
-                    .map(|episode| episode.episode_id.as_str())
-                    .unwrap_or("");
-                !episode_id.is_empty() && episode_id != previous_id
-            };
+            let previous_id = slot
+                .episode
+                .as_ref()
+                .map(|episode| episode.episode_id.clone())
+                .unwrap_or_default();
+            let rolled = !episode_id.is_empty() && episode_id != previous_id;
+            if rolled && !previous_id.is_empty() {
+                // The outgoing episode's seed is dropped only when its lane
+                // rolls (never at completion emit), so the completion
+                // iteration's final predict still reports it.
+                self.seed_by_episode.remove(&previous_id);
+            }
             slot.episode = if episode_id.is_empty() {
                 None
             } else {

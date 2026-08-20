@@ -68,16 +68,24 @@ pub(super) fn model_observation_from_endpoint_request(
     let context = request
         .context
         .ok_or_else(|| Error::Internal("model request missing adapter context".to_string()))?;
-    // The self-describing batch: episode_ids ride the PredictRequest, not the
-    // context. Build the route context from both.
+    // The self-describing batch: episode_info rides the PredictRequest, not the
+    // context. Build the route context from it.
+    let episodes = request
+        .episode_info
+        .into_iter()
+        .map(|info| crate::model::types::EpisodeInfo {
+            episode_id: info.episode_id,
+            seed: info.seed,
+        })
+        .collect();
     let route = ModelRouteContext {
         session_id: context.session_id,
         env_id: context.env_id,
         request_id: context.request_id,
-        episode_ids: request.episode_ids,
+        episodes,
     };
     validate_predict_route(&route)?;
-    let num_envs = route.episode_ids.len();
+    let num_envs = route.episodes.len();
 
     Ok(ModelObservation {
         observation: value_leaves(request.observation.as_ref()).map(<[_]>::to_vec),
@@ -147,17 +155,18 @@ fn validate_predict_route(route: &ModelRouteContext) -> Result<()> {
     if route.request_id.is_empty() {
         return Err(Error::Internal("model request_id is empty".to_string()));
     }
-    if route.episode_ids.is_empty() {
+    if route.episodes.is_empty() {
         return Err(Error::Internal(
             "model predict must include at least one episode_id".to_string(),
         ));
     }
 
     let mut seen = HashSet::new();
-    for (index, episode_id) in route.episode_ids.iter().enumerate() {
+    for (index, episode) in route.episodes.iter().enumerate() {
+        let episode_id = &episode.episode_id;
         if episode_id.is_empty() {
             return Err(Error::Internal(format!(
-                "model predict episode_ids[{index}] is empty"
+                "model predict episode_info[{index}].episode_id is empty"
             )));
         }
         if !seen.insert(episode_id.as_str()) {
@@ -182,6 +191,8 @@ impl From<&ModelRouteContext> for AdapterContext {
 
 #[cfg(test)]
 mod tests {
+    use rlmesh_proto::model::v1::EpisodeInfo;
+
     use super::*;
 
     fn unwrap_error(kind: join_response::Kind) -> ModelError {
@@ -233,5 +244,55 @@ mod tests {
         // A genuine internal fault is never reported as recoverable.
         let internal = unwrap_error(model_error_from_error(&Error::Internal("boom".to_string())));
         assert!(!internal.is_recoverable);
+    }
+
+    #[test]
+    fn model_observation_carries_episode_seed_from_episode_info() {
+        let request = PredictRequest {
+            context: Some(AdapterContext {
+                session_id: "s".to_string(),
+                env_id: "e".to_string(),
+                request_id: "r".to_string(),
+            }),
+            observation: None,
+            episode_info: vec![
+                EpisodeInfo {
+                    episode_id: "ep-1".to_string(),
+                    seed: Some(7),
+                },
+                EpisodeInfo {
+                    episode_id: "ep-2".to_string(),
+                    seed: None,
+                },
+            ],
+        };
+        let observation = model_observation_from_endpoint_request(request).unwrap();
+        assert_eq!(observation.route.episode_ids(), ["ep-1", "ep-2"]);
+        assert_eq!(
+            observation
+                .route
+                .episodes
+                .iter()
+                .map(|episode| episode.seed)
+                .collect::<Vec<_>>(),
+            [Some(7), None]
+        );
+    }
+
+    #[test]
+    fn model_observation_rejects_blank_episode_id_in_episode_info() {
+        let request = PredictRequest {
+            context: Some(AdapterContext {
+                session_id: "s".to_string(),
+                env_id: "e".to_string(),
+                request_id: "r".to_string(),
+            }),
+            observation: None,
+            episode_info: vec![EpisodeInfo {
+                episode_id: String::new(),
+                seed: None,
+            }],
+        };
+        assert!(model_observation_from_endpoint_request(request).is_err());
     }
 }

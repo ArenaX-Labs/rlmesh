@@ -996,7 +996,7 @@ where
                 .unwrap_or_default();
             // Proto env_index is uint32; events are i32/i64.
             let env_index = i32::try_from(completed.env_index).unwrap_or(i32::MAX);
-            let seed = state.take_episode_seed(&completed.episode_id);
+            let seed = state.seed_for_episode(&completed.episode_id);
             if self.spec.max_episodes.is_some() {
                 state.record_episode_summary(crate::spec::EpisodeSummary {
                     episode_index: record.as_ref().map_or(0, |record| record.index),

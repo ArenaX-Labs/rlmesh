@@ -17,7 +17,7 @@ pub use local::{EnvClientRuntimeEnv, ModelHandlerRuntimeModel};
 pub use predict_fn::{PredictFn, RouteConfig, RouteResolver};
 pub use remote::RemoteModel;
 pub use server::BoundModelServer;
-pub use types::{ModelObservation, ModelRouteContext};
+pub use types::{EpisodeInfo, ModelObservation, ModelRouteContext};
 pub use worker::{ModelWorker, RunLocalOptions, ServeModelOptions};
 
 #[cfg(test)]
