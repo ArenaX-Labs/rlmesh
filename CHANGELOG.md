@@ -19,7 +19,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Read-only observation inspection: `Session.reader()`/`Session.read()` extract any role from a raw observation through the model's adapter, and `Session.observation_roles()`/`EnvTags.observation_roles` list the roles an env declares.
 - PyTorch and JAX end to end: environments served with framework tensors (`EnvServer(env, framework="torch", device="cuda:0")`), `rlmesh.torch` and `rlmesh.jax` factory, model, and sandbox classes, and DLPack-native `Tensor` transport with zero-copy NumPy, Torch, and JAX backends.
 - Isolated sandboxes: rebuild an environment identically in a container (`SandboxEnv` with grouped `SandboxBuild`/`SandboxRuntime` config, including `SandboxRuntime.user` for writable bind mounts) or run a prebuilt image. A bare tagless image name resolves against local Docker images and never silently falls into a source build.
-- Declared construction parameters: `EnvFactory.params = ParamSpec(Param(...))` validates `make()` arguments, `enumerate_variants()` lists a factory's concrete sub-environments, and `describe()`/`describe_json()`/`python -m rlmesh._describe` emit a JSON metadata envelope without constructing anything; a model envelope reports the predict `corners` the class actually defines.
+- Declared construction parameters: `EnvFactory.params = ParamSpec(Param(...))` validates `make()` arguments, `enumerate_variants()` lists a factory's concrete sub-environments, and `describe()`/`describe_json()`/`python -m rlmesh._describe` emit a JSON metadata envelope without constructing anything; a model envelope reports the predict `corners` the class actually defines, and `python -m rlmesh._describe --check IMAGE` validates a built image's rlmesh labels locally, the way the platform probe will, before pushing.
 - A live debug viewer: pass `view="terminal"`, `view="http:9000"`, or `view="both"` to `run()`/`session()`, or configure `rlmesh.View(...)`. It is best-effort and never breaks an eval.
 - Record eval runs to a portable bundle for upload: `rlmesh.Recorder` accumulates per-episode metrics with `add()` (from any `RunResult`) or `capture()` (live `RunHooks` on the session path) and writes an `rlmesh.result.v1` folder or zip with `export()`. On the session path it records the same sources the live viewer offers -- the env's `render()` frame plus every declared image role -- each to its own AV1 `.mp4`, encoded in process (pure Rust, no ffmpeg or extra dependency; `Recorder(fps=, quality=)` set playback rate and size/fidelity); env-produced video files are carried into the bundle by path. Capture is best-effort: a source that fails to read or encode is dropped with a warning and never aborts the eval.
 - `rlmesh.sanitize_metadata()` coerces a third-party sim's rich `info` objects into wire-safe metadata, and connection failures name the address and the likely fix instead of a bare transport error.
@@ -29,6 +29,18 @@ The first release. RLMesh connects models to environments across process, depend
 - Managed-platform sign-in from the CLI: `rlmesh login` (device flow), `rlmesh logout`, `rlmesh whoami`, and `rlmesh registry login` (registers the bundled `docker-credential-rlmesh` helper, so docker fetches a fresh short-lived token per pull/push), with named profiles (`rlmesh profile use`/`list`/`remove`, `--profile`, `RLMESH_PROFILE`) and credentials held in the OS keychain.
 - Build identity: `rlmesh.__build__` and `rlmesh version` report the commit-stamped workflow edition, so two builds sharing a package version stay distinguishable.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
+
+## [0.1.0-rc.5] - 2026-08-20
+
+### Added
+
+- `python -m rlmesh._describe --check IMAGE` validates a built image's rlmesh labels locally, the way the platform probe will, before pushing: the describe envelope must parse cleanly with no `error` badges, and packaged checkpoint declarations must be well-formed (DNS-label names, a `uri` per entry, a single default). Failures exit nonzero, so it can gate a push in CI.
+- `RLMESH_ALLOW_REMOTE_SHUTDOWN=1` opts a served environment into honoring the remote `shutdown` RPC, so an orchestrator that queues env workloads can tell a finished worker to exit and free its slot. The variable can only enable remote shutdown, never disable a programmatic `allow_remote_shutdown=True`.
+- Driver telemetry records each loop iteration's wall clock (`runner.round`), bracketing the full predict -> step -> transform body, so subtracting the per-op rows yields the driver's own residual overhead.
+
+### Changed
+
+- Batched leaf-slab encode and decode on the wire parallelizes past 64KB, speeding up large batched observation and action payloads.
 
 ## [0.1.0-rc.4] - 2026-08-19
 
@@ -58,5 +70,6 @@ The first release. RLMesh connects models to environments across process, depend
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
+[0.1.0-rc.5]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.3
