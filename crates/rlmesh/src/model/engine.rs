@@ -17,7 +17,7 @@ use rlmesh_adapters::v1::{
 
 use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
-use super::types::ModelObservation;
+use super::types::{EpisodeInfo, ModelObservation};
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
 use crate::{Error, Result};
 
@@ -167,7 +167,7 @@ fn assemble_route_inputs(
     entry: &mut RouteEntry,
     observation: &ModelObservation,
 ) -> Result<Vec<Value>> {
-    let episode_ids = &observation.route.episode_ids;
+    let episodes = &observation.route.episodes;
     let num_envs = observation.num_envs;
 
     // The wire contract requires every predict request to carry a decodable
@@ -185,15 +185,15 @@ fn assemble_route_inputs(
 
     let mut inputs: Vec<Value> = Vec::with_capacity(num_envs);
     for (index, lane) in decoded.iter().enumerate() {
-        let episode_id = episode_ids
+        let episode_id = episodes
             .get(index)
-            .map(String::as_str)
+            .map(|episode| episode.episode_id.as_str())
             .filter(|id| !id.is_empty())
             .ok_or_else(|| {
                 Error::model(format!(
                     "predict request lane {index} has no episode_id (num_envs={num_envs}, \
-                     episode_ids={}); every lane must carry a non-empty episode_id",
-                    episode_ids.len()
+                     episodes={}); every lane must carry a non-empty episode_id",
+                    episodes.len()
                 ))
             })?;
         let raw = space_value_to_obs_map(lane, &config.observation_space, &referenced)?;
@@ -223,16 +223,15 @@ fn assemble_route_inputs(
 /// [`bucket_fuses`] proved identical, so grouping can never change which model
 /// function runs.
 ///
-/// `episode_ids`/`episode_seeds` are row-aligned with `inputs` for the
-/// per-lane corners (`predict`/`predict_chunk`) — pass `&[]` when the caller
-/// has no real single-episode identity to give (the grouped-fused path, whose
-/// lanes may span independent episodes/routes fused for throughput). The
-/// batched corners never see them at all (see `PredictFn::predict_batch`).
+/// `episodes` is row-aligned with `inputs` for the per-lane corners
+/// (`predict`/`predict_chunk`) — pass `&[]` when the caller has no real
+/// single-episode identity to give (the grouped-fused path, whose lanes may
+/// span independent episodes/routes fused for throughput). The batched
+/// corners never see it at all (see `PredictFn::predict_batch`).
 fn dispatch_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
-    episode_ids: &[String],
-    episode_seeds: &[Option<i64>],
+    episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
 ) -> Result<Vec<Vec<Value>>> {
@@ -258,10 +257,8 @@ fn dispatch_corners(
             .into_iter()
             .enumerate()
             .map(|(index, input)| -> Result<Vec<Value>> {
-                let episode_id = episode_ids.get(index).map(String::as_str).unwrap_or("");
-                let episode_seed = episode_seeds.get(index).copied().flatten();
                 let chunk = predict
-                    .predict_chunk(input, horizon, episode_id, episode_seed)?
+                    .predict_chunk(input, horizon, episodes.get(index))?
                     .ok_or_else(|| {
                         Error::model(
                             "model reports a chunk corner (has_chunk) but predict_chunk \
@@ -288,9 +285,7 @@ fn dispatch_corners(
             .into_iter()
             .enumerate()
             .map(|(index, input)| -> Result<Vec<Value>> {
-                let episode_id = episode_ids.get(index).map(String::as_str).unwrap_or("");
-                let episode_seed = episode_seeds.get(index).copied().flatten();
-                Ok(vec![predict.predict(input, episode_id, episode_seed)?])
+                Ok(vec![predict.predict(input, episodes.get(index))?])
             })
             .collect::<Result<Vec<_>>>()
     }
@@ -301,21 +296,13 @@ fn dispatch_corners(
 fn dispatch_route_corners(
     predict: &Arc<dyn PredictFn>,
     inputs: Vec<Value>,
-    episode_ids: &[String],
-    episode_seeds: &[Option<i64>],
+    episodes: &[EpisodeInfo],
     horizon: u32,
     num_envs: usize,
 ) -> Result<Vec<Vec<Value>>> {
     let input_summary = inputs_summary(&inputs);
-    dispatch_corners(
-        predict,
-        inputs,
-        episode_ids,
-        episode_seeds,
-        horizon,
-        num_envs,
-    )
-    .map_err(|err| annotate_predict_error(err, &input_summary))
+    dispatch_corners(predict, inputs, episodes, horizon, num_envs)
+        .map_err(|err| annotate_predict_error(err, &input_summary))
 }
 
 /// Whether a bucket of grouped lanes at `horizon` may fuse into one batched
@@ -403,8 +390,7 @@ fn predict_route(
     let lane_raw_steps = dispatch_route_corners(
         predict,
         inputs,
-        &observation.route.episode_ids,
-        &observation.route.episode_seeds,
+        &observation.route.episodes,
         config.execution_horizon,
         num_envs,
     )?;
@@ -449,8 +435,7 @@ fn predict_grouped_fused(
     struct Prepared {
         index: usize,
         inputs: Vec<Value>,
-        episode_ids: Vec<String>,
-        episode_seeds: Vec<Option<i64>>,
+        episodes: Vec<EpisodeInfo>,
         config: Arc<RouteConfig>,
         num_envs: usize,
     }
@@ -475,8 +460,7 @@ fn predict_grouped_fused(
                         prepared.push(Prepared {
                             index,
                             inputs,
-                            episode_ids: observation.route.episode_ids,
-                            episode_seeds: observation.route.episode_seeds,
+                            episodes: observation.route.episodes,
                             config,
                             num_envs,
                         });
@@ -517,7 +501,7 @@ fn predict_grouped_fused(
                 flat.extend(group.inputs);
             }
             let total = flat.len();
-            match dispatch_corners(predict, flat, &[], &[], horizon, total) {
+            match dispatch_corners(predict, flat, &[], horizon, total) {
                 Ok(all_frames) => {
                     let mut frames = all_frames.into_iter();
                     for group in fused {
@@ -546,8 +530,7 @@ fn predict_grouped_fused(
                     dispatch_route_corners(
                         predict,
                         group.inputs,
-                        &group.episode_ids,
-                        &group.episode_seeds,
+                        &group.episodes,
                         horizon,
                         group.num_envs,
                     )
@@ -607,15 +590,23 @@ fn probe_model_internal_state(predict: &Arc<dyn PredictFn>, config: &RouteConfig
     let a = assemble(PROBE_SEED_A, "probe-a")?;
     let b = assemble(PROBE_SEED_B, "probe-b")?;
     // The model's own back-to-back nondeterminism floor (GPU/dropout noise).
+    let probe_a = EpisodeInfo {
+        episode_id: "probe-a".to_string(),
+        seed: None,
+    };
+    let probe_b = EpisodeInfo {
+        episode_id: "probe-b".to_string(),
+        seed: None,
+    };
     let floor = rlmesh_adapters::v1::value_max_abs_diff(
-        &predict.predict(a.clone(), "probe-a", None)?,
-        &predict.predict(a.clone(), "probe-a", None)?,
+        &predict.predict(a.clone(), Some(&probe_a))?,
+        &predict.predict(a.clone(), Some(&probe_a))?,
     )
     .unwrap_or(f64::INFINITY);
     // Replay A around an intervening, distinct B: drift beyond the floor is state.
-    let before = predict.predict(a.clone(), "probe-a", None)?;
-    let _ = predict.predict(b, "probe-b", None)?;
-    let after = predict.predict(a, "probe-a", None)?;
+    let before = predict.predict(a.clone(), Some(&probe_a))?;
+    let _ = predict.predict(b, Some(&probe_b))?;
+    let after = predict.predict(a, Some(&probe_a))?;
     let delta = rlmesh_adapters::v1::value_max_abs_diff(&before, &after).unwrap_or(0.0);
     if delta > (floor * PROBE_TOLERANCE).max(PROBE_ATOL) {
         return Err(Error::model(
@@ -980,12 +971,7 @@ mod fused_predict_tests {
     }
 
     impl PredictFn for CountingPredict {
-        fn predict(
-            &self,
-            _model_input: Value,
-            _episode_id: &str,
-            _episode_seed: Option<i64>,
-        ) -> Result<Value> {
+        fn predict(&self, _model_input: Value, _episode: Option<&EpisodeInfo>) -> Result<Value> {
             self.predict_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Value::Number(0.0))
         }
@@ -1004,8 +990,7 @@ mod fused_predict_tests {
             &self,
             _model_input: Value,
             _horizon: u32,
-            _episode_id: &str,
-            _episode_seed: Option<i64>,
+            _episode: Option<&EpisodeInfo>,
         ) -> Result<Option<Value>> {
             self.chunk_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Some(self.native_chunk_value()))
@@ -1049,7 +1034,7 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(5), &[], &[], 4, 5).expect("frames");
+        let frames = dispatch_route_corners(&predict, lanes(5), &[], 4, 5).expect("frames");
 
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1065,7 +1050,7 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(3), &[], &[], 1, 3).expect("frames");
+        let frames = dispatch_route_corners(&predict, lanes(3), &[], 1, 3).expect("frames");
 
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(counting.chunk_batch_calls.load(Ordering::SeqCst), 0);
@@ -1080,7 +1065,7 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, true, false, 10, false);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let frames = dispatch_route_corners(&predict, lanes(3), &[], &[], 4, 3).expect("frames");
+        let frames = dispatch_route_corners(&predict, lanes(3), &[], 4, 3).expect("frames");
 
         assert_eq!(counting.chunk_calls.load(Ordering::SeqCst), 3);
         assert_eq!(counting.batch_calls.load(Ordering::SeqCst), 0);
@@ -1095,8 +1080,7 @@ mod fused_predict_tests {
         let counting = CountingPredict::new(true, false, true, 10, true);
         let predict: Arc<dyn PredictFn> = Arc::clone(&counting) as Arc<dyn PredictFn>;
 
-        let error =
-            dispatch_route_corners(&predict, lanes(4), &[], &[], 4, 4).expect_err("short fails");
+        let error = dispatch_route_corners(&predict, lanes(4), &[], 4, 4).expect_err("short fails");
 
         assert!(
             error.to_string().contains("lanes"),
@@ -1169,7 +1153,10 @@ mod fused_predict_tests {
                 observation: None,
                 route: ModelRouteContext {
                     env_id: format!("env-{index}"),
-                    episode_ids: vec![format!("ep-{index}")],
+                    episodes: vec![EpisodeInfo {
+                        episode_id: format!("ep-{index}"),
+                        seed: None,
+                    }],
                     ..Default::default()
                 },
                 num_envs: 1,
@@ -1314,17 +1301,14 @@ mod fused_route_tests {
     }
 
     impl PredictFn for EchoModel {
-        fn predict(
-            &self,
-            model_input: Value,
-            episode_id: &str,
-            episode_seed: Option<i64>,
-        ) -> Result<Value> {
+        fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> Result<Value> {
             self.predict_calls.fetch_add(1, Ordering::SeqCst);
-            self.episodes_seen
-                .lock()
-                .expect("episodes_seen poisoned")
-                .push((episode_id.to_string(), episode_seed));
+            if let Some(episode) = episode {
+                self.episodes_seen
+                    .lock()
+                    .expect("episodes_seen poisoned")
+                    .push((episode.episode_id.clone(), episode.seed));
+            }
             Ok(action_value(state_number(&model_input)))
         }
 
@@ -1340,8 +1324,7 @@ mod fused_route_tests {
             &self,
             model_input: Value,
             _horizon: u32,
-            _episode_id: &str,
-            _episode_seed: Option<i64>,
+            _episode: Option<&EpisodeInfo>,
         ) -> Result<Option<Value>> {
             self.chunk_calls.fetch_add(1, Ordering::SeqCst);
             let state = state_number(&model_input);
@@ -1431,9 +1414,12 @@ mod fused_route_tests {
             observation: Some(wire.leaves),
             route: ModelRouteContext {
                 env_id: env_id.to_string(),
-                episode_ids: values
+                episodes: values
                     .iter()
-                    .map(|value| format!("{env_id}-ep-{value}"))
+                    .map(|value| EpisodeInfo {
+                        episode_id: format!("{env_id}-ep-{value}"),
+                        seed: None,
+                    })
                     .collect(),
                 ..Default::default()
             },
@@ -1457,8 +1443,10 @@ mod fused_route_tests {
             observation: Some(wire.leaves),
             route: ModelRouteContext {
                 env_id: env_id.to_string(),
-                episode_ids: vec![episode_id.to_string()],
-                episode_seeds: vec![seed],
+                episodes: vec![EpisodeInfo {
+                    episode_id: episode_id.to_string(),
+                    seed,
+                }],
                 ..Default::default()
             },
             num_envs: 1,

@@ -129,7 +129,7 @@ pub use env::{
 };
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
-    AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, ModelHandler,
+    AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, ModelHandler,
     ModelHandlerRuntimeModel, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelWorker,
     PredictFn, PredictFrames, RemoteModel, RouteConfig, RouteResolver, RunLocalOptions,
     ServeModelOptions,

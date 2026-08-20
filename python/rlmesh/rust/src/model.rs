@@ -5,9 +5,9 @@ use pyo3_stub_gen::derive::{gen_methods_from_python, gen_stub_pyclass};
 #[cfg(feature = "stub-gen")]
 use pyo3_stub_gen::inventory::submit;
 use rlmesh::{
-    AdaptedModelHandler, BindAddress, ConnectAddress, Error as RLMeshError, ModelObservation,
-    ModelWorker, PredictFn, RemoteModel, RouteConfig, RouteResolver, RunLocalOptions,
-    ServeModelOptions,
+    AdaptedModelHandler, BindAddress, ConnectAddress, EpisodeInfo, Error as RLMeshError,
+    ModelObservation, ModelWorker, PredictFn, RemoteModel, RouteConfig, RouteResolver,
+    RunLocalOptions, ServeModelOptions,
 };
 use rlmesh_adapters::v1::Value;
 use rlmesh_spaces::{EnvContract, SpaceValue, spaces::SpaceSpec};
@@ -83,17 +83,12 @@ impl PyPredict {
 }
 
 impl PredictFn for PyPredict {
-    fn predict(
-        &self,
-        model_input: Value,
-        episode_id: &str,
-        episode_seed: Option<i64>,
-    ) -> rlmesh::Result<Value> {
+    fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> rlmesh::Result<Value> {
         Python::attach(|py| -> PyResult<Value> {
             // The assembled input is now a Value tree (a nested dict/list/leaf
             // matching the model spec's InputNode shape).
             let input = encode_value(py, &model_input)?;
-            let context = episode_context_dict(py, episode_id, episode_seed)?;
+            let context = episode_context_dict(py, episode)?;
             let action = self.predict_fn.call1(py, (input, context))?;
             decode_value(action.bind(py))
         })
@@ -104,8 +99,7 @@ impl PredictFn for PyPredict {
         &self,
         model_input: Value,
         horizon: u32,
-        episode_id: &str,
-        episode_seed: Option<i64>,
+        episode: Option<&EpisodeInfo>,
     ) -> rlmesh::Result<Option<Value>> {
         let Some(predict_chunk_fn) = self.predict_chunk_fn.as_ref() else {
             return Ok(None);
@@ -114,7 +108,7 @@ impl PredictFn for PyPredict {
             // The assembled input is a Value tree (dict/list/leaf matching the
             // model spec's InputNode shape), encoded as one Python argument.
             let input = encode_value(py, &model_input)?;
-            let context = episode_context_dict(py, episode_id, episode_seed)?;
+            let context = episode_context_dict(py, episode)?;
             // `predict_chunk(observation, horizon)`: the model returns up to
             // `horizon` actions; its chunk's leading axis is the chunk axis, which
             // the native engine's `split_chunk` unstacks into per-step frames.
@@ -189,13 +183,7 @@ impl PredictFn for PyPredict {
             // with more than one lane fuses N episodes into one forward pass,
             // same as the batched corners (see `PredictFn::predict_batch`).
             let action = if observation.num_envs == 1 {
-                let episode_id = observation
-                    .route
-                    .episode_ids
-                    .first()
-                    .map_or("", String::as_str);
-                let episode_seed = observation.route.episode_seeds.first().copied().flatten();
-                let context = episode_context_dict(py, episode_id, episode_seed)?;
+                let context = episode_context_dict(py, observation.route.episodes.first())?;
                 self.predict_fn.call1(py, (obs, context))?
             } else {
                 self.predict_fn.call1(py, (obs,))?
@@ -271,13 +259,7 @@ impl PredictFn for PyPredict {
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
             // Guaranteed exactly one lane by the num_envs == 1 check above.
-            let episode_id = observation
-                .route
-                .episode_ids
-                .first()
-                .map_or("", String::as_str);
-            let episode_seed = observation.route.episode_seeds.first().copied().flatten();
-            let context = episode_context_dict(py, episode_id, episode_seed)?;
+            let context = episode_context_dict(py, observation.route.episodes.first())?;
             let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32, context))?;
             let chunk = chunk.bind(py);
             let frames_len = leading_axis_len(chunk).unwrap_or(horizon);
@@ -346,12 +328,16 @@ fn leading_axis_len(value: &Bound<'_, PyAny>) -> Option<usize> {
 /// multi-lane spec-less call.
 fn episode_context_dict<'py>(
     py: Python<'py>,
-    episode_id: &str,
-    episode_seed: Option<i64>,
+    episode: Option<&EpisodeInfo>,
 ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
     let dict = pyo3::types::PyDict::new(py);
-    dict.set_item("episode_id", episode_id)?;
-    dict.set_item("episode_seed", episode_seed)?;
+    dict.set_item(
+        "episode_id",
+        episode
+            .map(|episode| episode.episode_id.as_str())
+            .unwrap_or(""),
+    )?;
+    dict.set_item("episode_seed", episode.and_then(|episode| episode.seed))?;
     Ok(dict)
 }
 

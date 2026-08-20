@@ -7,6 +7,7 @@
 //! cross via these traits, which a binding (PyO3, or any future language)
 //! implements; a pure-Rust model implements them with no host runtime at all.
 
+use super::types::EpisodeInfo;
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{CustomTransform, EncodingTransform, ResolvedAdapter, Value};
 
@@ -30,16 +31,10 @@ pub trait PredictFn: Send + Sync {
     /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
     /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
     ///
-    /// `episode_id`/`episode_seed` are this lane's episode identity and
-    /// explicit reset seed. On the fused grouped path (lanes from independent
-    /// episodes batched into one forward) there is no single-episode identity:
-    /// `episode_id` is `""` and `episode_seed` is `None`.
-    fn predict(
-        &self,
-        model_input: Value,
-        episode_id: &str,
-        episode_seed: Option<i64>,
-    ) -> Result<Value>;
+    /// `episode` is this lane's episode identity and explicit reset seed. On
+    /// the fused grouped path (lanes from independent episodes batched into one
+    /// forward) there is no single-episode identity: `episode` is `None`.
+    fn predict(&self, model_input: Value, episode: Option<&EpisodeInfo>) -> Result<Value>;
 
     /// Single-sample CHUNK corner: one assembled model input → a *chunk* of raw
     /// actions (the leading axis is the chunk axis, unstacked by
@@ -55,15 +50,13 @@ pub trait PredictFn: Send + Sync {
     /// either way. An autoregressive head may decode exactly `execution_horizon`
     /// actions to avoid wasting decode on a longer natural chunk.
     ///
-    /// `episode_id`/`episode_seed` follow the same contract as
-    /// [`predict`](Self::predict): real identity per lane, `""`/`None` on the
-    /// fused grouped path.
+    /// `episode` follows the same contract as [`predict`](Self::predict):
+    /// real identity per lane, `None` on the fused grouped path.
     fn predict_chunk(
         &self,
         _model_input: Value,
         _execution_horizon: u32,
-        _episode_id: &str,
-        _episode_seed: Option<i64>,
+        _episode: Option<&EpisodeInfo>,
     ) -> Result<Option<Value>> {
         Ok(None)
     }
