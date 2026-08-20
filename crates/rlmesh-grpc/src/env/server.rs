@@ -144,6 +144,13 @@ impl<E: Environment> GrpcEnvServer<E> {
         serve_options: ServeOptions,
         activity_tx: Option<mpsc::UnboundedSender<IdleActivity>>,
     ) -> Self {
+        // Every env-server entry point (Rust facade, Python bindings, tests)
+        // funnels through here, so the deployment-level opt-in applies
+        // uniformly to served environments.
+        let serve_options = crate::lifecycle::apply_remote_shutdown_opt_in(
+            serve_options,
+            std::env::var_os(crate::lifecycle::ALLOW_REMOTE_SHUTDOWN_ENV),
+        );
         let token = serve_options.token.clone().unwrap_or_default();
         Self {
             env,

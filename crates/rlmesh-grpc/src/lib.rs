@@ -48,5 +48,5 @@ pub(crate) fn configure_endpoint(
 pub use connect::{ConnectOptions, retry_connect};
 pub use env::{EnvClient, EnvHandshake};
 pub use floor::env_floor;
-pub use lifecycle::{DEFAULT_PREDICT_CONCURRENCY, ServeOptions};
+pub use lifecycle::{ALLOW_REMOTE_SHUTDOWN_ENV, DEFAULT_PREDICT_CONCURRENCY, ServeOptions};
 pub use model::ModelClient;
