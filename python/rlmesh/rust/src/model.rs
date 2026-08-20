@@ -83,7 +83,12 @@ impl PyPredict {
 }
 
 impl PredictFn for PyPredict {
-    fn predict(&self, model_input: Value, episode_id: &str, episode_seed: Option<i64>) -> rlmesh::Result<Value> {
+    fn predict(
+        &self,
+        model_input: Value,
+        episode_id: &str,
+        episode_seed: Option<i64>,
+    ) -> rlmesh::Result<Value> {
         Python::attach(|py| -> PyResult<Value> {
             // The assembled input is now a Value tree (a nested dict/list/leaf
             // matching the model spec's InputNode shape).
@@ -184,7 +189,11 @@ impl PredictFn for PyPredict {
             // with more than one lane fuses N episodes into one forward pass,
             // same as the batched corners (see `PredictFn::predict_batch`).
             let action = if observation.num_envs == 1 {
-                let episode_id = observation.route.episode_ids.first().map_or("", String::as_str);
+                let episode_id = observation
+                    .route
+                    .episode_ids
+                    .first()
+                    .map_or("", String::as_str);
                 let episode_seed = observation.route.episode_seeds.first().copied().flatten();
                 let context = episode_context_dict(py, episode_id, episode_seed)?;
                 self.predict_fn.call1(py, (obs, context))?
@@ -262,7 +271,11 @@ impl PredictFn for PyPredict {
             })?;
             let obs = space_value_to_py_neutral(py, lane, observation_space)?;
             // Guaranteed exactly one lane by the num_envs == 1 check above.
-            let episode_id = observation.route.episode_ids.first().map_or("", String::as_str);
+            let episode_id = observation
+                .route
+                .episode_ids
+                .first()
+                .map_or("", String::as_str);
             let episode_seed = observation.route.episode_seeds.first().copied().flatten();
             let context = episode_context_dict(py, episode_id, episode_seed)?;
             let chunk = predict_chunk_fn.call1(py, (obs, horizon as u32, context))?;

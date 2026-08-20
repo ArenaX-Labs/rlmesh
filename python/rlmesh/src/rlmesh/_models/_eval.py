@@ -13,7 +13,6 @@ names :class:`Session` resolves as module globals: connection/contract synthesis
 
 from __future__ import annotations
 
-import inspect
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
@@ -35,6 +34,7 @@ from ._instruction import TextPlacement, text_placements, tree_set
 from ._read import Reader, resolve_read_adapter
 from ._resolve import reject_vector_env, resolve_adapter
 from ._view import ViewerDriver, resolve_view
+from .base import accepts_context
 
 if TYPE_CHECKING:
     from rlmesh._rlmesh import PyModelClient
@@ -337,7 +337,9 @@ def _predict_step(
             value: Any = [instruction] if placement.as_list else instruction
             payload = tree_set(payload, placement.segments, value)
     try:
-        return _call_predict_with_optional_context(predict, payload, context)
+        if context is not None:
+            return predict(payload, context)
+        return predict(payload)
     except Exception as exc:
         kind = "adapter-assembled" if adapter is not None else "spec-less (raw obs)"
         note = f"{kind} model input: {_summarize_payload(payload)}"
@@ -345,36 +347,6 @@ def _predict_step(
         if add_note is not None:
             add_note(note)
         raise
-
-
-def _accepts_predict_context(predict: Callable[..., Any]) -> bool:
-    """Whether ``predict`` can accept an optional second positional context."""
-    try:
-        signature = inspect.signature(predict)
-    except (TypeError, ValueError):
-        return False
-
-    positional = 0
-    for parameter in signature.parameters.values():
-        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
-            return True
-        if parameter.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            positional += 1
-    return positional >= 2
-
-
-def _call_predict_with_optional_context(
-    predict: Callable[..., Any],
-    payload: Any,
-    context: Mapping[str, Any] | None,
-) -> Any:
-    """Call ``predict(payload)`` or ``predict(payload, context)`` compatibly."""
-    if context is not None and _accepts_predict_context(predict):
-        return predict(payload, context)
-    return predict(payload)
 
 
 class Session(Generic[ObsT, ActT]):
@@ -620,6 +592,13 @@ class Session(Generic[ObsT, ActT]):
             return "success"
         return "failure" if self._terminated else "timeout"
 
+    def _episode_id(self) -> str:
+        """This episode's runtime-minted id, when the env's reset info carried one."""
+        episode_ids = self._last_info.get("episode_ids")
+        if episode_ids:
+            return str(episode_ids[0])
+        return ""
+
     def _end_episode(self) -> None:
         """Fire the local model's `on_episode_end` once for the currently-open episode.
 
@@ -696,44 +675,33 @@ class Session(Generic[ObsT, ActT]):
         if self._horizon > 1 and self._predict_chunk is not None:
             chunk_fn = self._predict_chunk
             horizon = self._horizon
+            # Context acceptance is a property of the callable, sniffed once
+            # here rather than per step (this is the hot path).
+            takes_context = accepts_context(chunk_fn, 2)
 
             def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
-                replay_context = (
-                    {"execution_horizon": horizon, **context}
-                    if context is not None
-                    else {"execution_horizon": horizon}
-                )
-                return _call_predict_with_optional_context(
-                    chunk_fn, obs, replay_context
-                )
+                if context is not None:
+                    return chunk_fn(obs, horizon, context)
+                return chunk_fn(obs, horizon)
 
-            replay_fn = cast("Callable[[Any], Any]", _replay)
+            replay_fn = cast("Callable[..., Any]", _replay)
         else:
-            replay_fn = cast("Callable[[Any], Any]", self._predict)
+            replay_fn = cast("Callable[..., Any]", self._predict)
+            takes_context = accepts_context(replay_fn, 1)
 
         # Time the forward inside the replay thunk so model_ms records only on steps
         # that re-plan (the thunk is skipped while a chunk replays), keeping it a true
         # forward cost rather than a near-zero queue pop.
         def _forward() -> Any:
             t0 = time.perf_counter()
-            predict_context = {
-                "episode_index": self._ep_index,
-                "episode_id": (
-                    self._last_info.get("episode_ids", [""])[0]
-                    if isinstance(self._last_info, Mapping)
-                    and self._last_info.get("episode_ids")
-                    else ""
-                ),
-                "episode_ids": (
-                    list(self._last_info.get("episode_ids", []))
-                    if isinstance(self._last_info, Mapping)
-                    else []
-                ),
-                "episode_seed": self._seed,
-                "episode_seeds": [self._seed],
-                "step": self._steps,
-                "num_envs": 1,
-            }
+            # The same context contract the served path's native worker hands a
+            # model: this episode's identity and explicit reset seed, nothing
+            # positional or path-specific.
+            predict_context = (
+                {"episode_id": self._episode_id(), "episode_seed": self._seed}
+                if takes_context
+                else None
+            )
             out = _predict_step(
                 replay_fn,
                 observation,

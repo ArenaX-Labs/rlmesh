@@ -12,7 +12,6 @@ fn route_state_tracks_slot_episode_records() {
 
     assert_eq!(started.len(), 2);
     assert_eq!(state.snapshot().episode_ids, ["env-ep-a", "env-ep-b"]);
-    assert_eq!(state.snapshot().episode_seeds, [None, None]);
     assert_eq!(
         state.snapshot().episode_record_ids,
         ["ep-000001", "ep-000002"]

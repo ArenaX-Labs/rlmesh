@@ -195,10 +195,6 @@ impl RouteState {
                     .unwrap_or_default()
             })
             .collect::<Vec<_>>();
-        let episode_seeds = episode_ids
-            .iter()
-            .map(|episode_id| self.seed_for_episode(episode_id))
-            .collect::<Vec<_>>();
         let episode_record_ids = self
             .slots
             .iter()
@@ -214,7 +210,6 @@ impl RouteState {
             episode_id: episode_ids.first().cloned().unwrap_or_default(),
             episode_record_id: episode_record_ids.first().cloned().unwrap_or_default(),
             episode_ids,
-            episode_seeds,
             episode_record_ids,
             step: primary.map_or(0, |slot| slot.step),
             env_index: primary.map_or(0, |slot| slot.env_index),

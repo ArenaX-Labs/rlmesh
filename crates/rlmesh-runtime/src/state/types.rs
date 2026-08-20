@@ -36,7 +36,6 @@ pub(crate) struct RouteSnapshot {
     pub(crate) episode_id: String,
     pub(crate) episode_record_id: String,
     pub(crate) episode_ids: Vec<String>,
-    pub(crate) episode_seeds: Vec<Option<i64>>,
     pub(crate) episode_record_ids: Vec<String>,
     pub(crate) step: i64,
     pub(crate) env_index: i32,

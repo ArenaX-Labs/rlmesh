@@ -85,7 +85,7 @@ message PredictRequest {
 
   // Ordered per-row episode identity and seed metadata. Length == the batch
   // row count (num_envs). One entry for a single env.
-  repeated EpisodeInfo episode_info = 4;
+  repeated EpisodeInfo episode_info = 3;
 }
 
 message PredictResponse {

@@ -6,8 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use rlmesh_proto::model::v1::{
     AdapterContext, CloseParticipantRequest, EpisodeInfo, GroupedPredictRequest,
-    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest, ReleaseAdapterRequest,
-    ResolveAdapterRequest, grouped_predict_result, join_request, join_response,
+    GroupedPredictResponse, GroupedPredictResult, JoinRequest, PredictRequest,
+    ReleaseAdapterRequest, ResolveAdapterRequest, grouped_predict_result, join_request,
+    join_response,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
@@ -1197,7 +1198,7 @@ async fn remote_model_connects_resets_and_predicts() {
         )
     };
 
-    model.reset();
+    model.reset(None);
     // SmokeModel returns the raw action byte vec![0]; it decodes against the
     // contract's Uint8 Box action space.
     let action = model.predict(observe()).await.unwrap();
@@ -1264,7 +1265,7 @@ async fn remote_model_reconciles_three_way_floor_and_pins_route() {
     );
 
     // The route configures (the pinned edition is accepted by the served model).
-    model.reset();
+    model.reset(None);
     let action = model
         .predict(spaces::SpaceValue::Box(
             spaces::Tensor::from_vec(vec![5], vec![1], spaces::DType::Uint8).unwrap(),
@@ -1428,9 +1429,9 @@ async fn two_remote_models_in_one_process_use_distinct_env_keys() {
         .await
         .unwrap();
 
-    first.reset();
+    first.reset(None);
     first.predict(observe()).await.unwrap();
-    second.reset();
+    second.reset(None);
     second.predict(observe()).await.unwrap();
 
     let recorded = keys.lock().await.clone();

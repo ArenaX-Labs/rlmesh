@@ -29,6 +29,11 @@ pub trait PredictFn: Send + Sync {
     /// engine has already frame-stacked / customs'd / enc-shimmed the input.
     /// The input is a `Value` tree (a `Map`/`List`/leaf payload), matching the
     /// model spec's `InputNode` shape — a bare tensor, a dict, or a tuple.
+    ///
+    /// `episode_id`/`episode_seed` are this lane's episode identity and
+    /// explicit reset seed. On the fused grouped path (lanes from independent
+    /// episodes batched into one forward) there is no single-episode identity:
+    /// `episode_id` is `""` and `episode_seed` is `None`.
     fn predict(
         &self,
         model_input: Value,
@@ -48,6 +53,11 @@ pub trait PredictFn: Send + Sync {
     /// chunk; the engine executes a prefix of it (`split_chunk(...).take(h)`) and
     /// discards the rest, so a fixed-size head ignores the value and is correct
     /// either way. An autoregressive head may decode exactly `execution_horizon`
+    /// actions to avoid wasting decode on a longer natural chunk.
+    ///
+    /// `episode_id`/`episode_seed` follow the same contract as
+    /// [`predict`](Self::predict): real identity per lane, `""`/`None` on the
+    /// fused grouped path.
     fn predict_chunk(
         &self,
         _model_input: Value,

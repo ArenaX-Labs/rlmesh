@@ -183,7 +183,7 @@ def test_session_predict_can_pass_optional_context_with_episode_seed() -> None:
     assert result.num_episodes == 2
     assert [episode.seed for episode in result.episodes] == [7, 8]
     assert [item["episode_seed"] for item in seen] == [7, 8]
-    assert [item["episode_seeds"] for item in seen] == [[7], [8]]
+    assert all(isinstance(item["episode_id"], str) for item in seen)
 
 
 def test_reject_vector_env_rejects_num_envs_gt_one() -> None:

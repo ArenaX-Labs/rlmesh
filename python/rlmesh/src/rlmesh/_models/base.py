@@ -54,7 +54,7 @@ def _served_handle(model: object) -> bool:
     )
 
 
-def _accepts_context(fn: Corner, base_arity: int) -> bool:
+def accepts_context(fn: Corner, base_arity: int) -> bool:
     """Whether ``fn``'s ``base_arity``-th positional parameter is a trailing ``context``.
 
     E.g. ``predict(obs)`` has base_arity 1, ``predict_chunk(obs, horizon)`` has
@@ -86,17 +86,16 @@ def _debatch(
     into ``predict(observation)``, 2 turns ``predict_chunk_batch`` into
     ``predict_chunk(observation, horizon)`` -- built as a real fixed-arity
     signature (not a generic ``*args`` passthrough) so a trailing context (see
-    :func:`_accepts_context`) only reaches ``batched_fn`` when its own
+    :func:`accepts_context`) only reaches ``batched_fn`` when its own
     signature asks for one, rather than being mistaken for ``horizon``.
     """
+    takes_context = accepts_context(batched_fn, arity)
     if arity == 1:
 
         def derived_predict(observation: object, context: object = None) -> object:
             fused = bridge.tree_stack([observation])
             args = (
-                (fused, context)
-                if context is not None and _accepts_context(batched_fn, 1)
-                else (fused,)
+                (fused, context) if context is not None and takes_context else (fused,)
             )
             return bridge.tree_unstack(batched_fn(*args), 1)[0]
 
@@ -108,7 +107,7 @@ def _debatch(
         fused = bridge.tree_stack([observation])
         args = (
             (fused, horizon, context)
-            if context is not None and _accepts_context(batched_fn, 2)
+            if context is not None and takes_context
             else (fused, horizon)
         )
         return bridge.tree_unstack(batched_fn(*args), 1)[0]
@@ -153,16 +152,17 @@ def _dechunk(chunk_fn: Corner, *, batched: bool) -> Corner:
     batch axis (``leaf[:, 0]``), leaving non-array leaves (text) untouched. The
     derived corner's own arity is always 1 (``observation`` [, ``context``]);
     ``chunk_fn`` is the normalized ``(observation, horizon)`` contract, and a
-    trailing context (see :func:`_accepts_context`) only reaches it when its
+    trailing context (see :func:`accepts_context`) only reaches it when its
     own signature asks for one -- most catalog models author only
     ``predict_chunk``, so this is the path their un-chunked ``predict()``
     actually runs through.
     """
+    takes_context = accepts_context(chunk_fn, 2)
 
     def derived(observation: object, context: object = None) -> object:
         args = (
             (observation, 1, context)
-            if context is not None and _accepts_context(chunk_fn, 2)
+            if context is not None and takes_context
             else (observation, 1)
         )
         chunk = chunk_fn(*args)
@@ -662,6 +662,8 @@ class ModelBase(Generic[ObsT, ActT]):
             )
             return adapter.serve_route(bridge) if adapter is not None else None
 
+        raw_predict_takes_context = accepts_context(raw_predict, 1)
+
         def predict_neutral(
             observation: Value, context: Mapping[str, Any] | None = None
         ) -> Value:
@@ -674,7 +676,7 @@ class ModelBase(Generic[ObsT, ActT]):
             # never on the batched corners) reaches the author's own predict()
             # only when its signature declares a trailing ``context`` param.
             decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
-            if context is not None and _accepts_context(raw_predict, 1):
+            if context is not None and raw_predict_takes_context:
                 action = cast("Corner", raw_predict)(decoded, context)
             else:
                 action = raw_predict(decoded)
@@ -686,6 +688,7 @@ class ModelBase(Generic[ObsT, ActT]):
         predict_chunk_neutral: Callable[..., Value] | None = None
         if raw_predict_chunk is not None:
             chunk_fn = raw_predict_chunk
+            chunk_fn_takes_context = accepts_context(chunk_fn, 2)
 
             def _predict_chunk_neutral(
                 observation: Value,
@@ -693,7 +696,7 @@ class ModelBase(Generic[ObsT, ActT]):
                 context: Mapping[str, Any] | None = None,
             ) -> Value:
                 decoded = cast(ObsT, self._to_device(bridge.decode(observation)))
-                if context is not None and _accepts_context(chunk_fn, 2):
+                if context is not None and chunk_fn_takes_context:
                     chunk = chunk_fn(decoded, horizon, context)
                 else:
                     chunk = chunk_fn(decoded, horizon)

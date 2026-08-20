@@ -449,6 +449,8 @@ fn predict_grouped_fused(
     struct Prepared {
         index: usize,
         inputs: Vec<Value>,
+        episode_ids: Vec<String>,
+        episode_seeds: Vec<Option<i64>>,
         config: Arc<RouteConfig>,
         num_envs: usize,
     }
@@ -473,6 +475,8 @@ fn predict_grouped_fused(
                         prepared.push(Prepared {
                             index,
                             inputs,
+                            episode_ids: observation.route.episode_ids,
+                            episode_seeds: observation.route.episode_seeds,
                             config,
                             num_envs,
                         });
@@ -534,13 +538,16 @@ fn predict_grouped_fused(
                 }
             }
         } else {
+            // Each non-fused group is exactly one route, so its row-aligned
+            // episode identity travels with it — the same dispatch a direct
+            // predict of that route would run.
             for group in groups {
                 results[group.index] = Some(
                     dispatch_route_corners(
                         predict,
                         group.inputs,
-                        &[],
-                        &[],
+                        &group.episode_ids,
+                        &group.episode_seeds,
                         horizon,
                         group.num_envs,
                     )

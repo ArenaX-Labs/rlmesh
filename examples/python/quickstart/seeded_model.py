@@ -32,9 +32,8 @@ def predict(observation, context):
     print(
         "model predict "
         f"observation={observation.tolist()} "
-        f"episode_seed={context['episode_seed']} "
-        f"episode_seeds={context['episode_seeds']} "
-        f"step={context['step']}"
+        f"episode_id={context['episode_id'] or '<unset>'} "
+        f"episode_seed={context['episode_seed']}"
     )
     return 0
 
