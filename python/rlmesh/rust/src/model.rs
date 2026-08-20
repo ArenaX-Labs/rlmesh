@@ -179,15 +179,16 @@ impl PredictFn for PyPredict {
                     ));
                 }
             };
-            // Real context only for the single-episode case: a spec-less call
+            // Real identity only for the single-episode case: a spec-less call
             // with more than one lane fuses N episodes into one forward pass,
-            // same as the batched corners (see `PredictFn::predict_batch`).
-            let action = if observation.num_envs == 1 {
-                let context = episode_context_dict(py, observation.route.episodes.first())?;
-                self.predict_fn.call1(py, (obs, context))?
-            } else {
-                self.predict_fn.call1(py, (obs,))?
-            };
+            // same as the batched corners (see `PredictFn::predict_batch`), so
+            // it carries the empty-identity context — the argument itself is
+            // always delivered, matching every other path.
+            let episode = (observation.num_envs == 1)
+                .then(|| observation.route.episodes.first())
+                .flatten();
+            let context = episode_context_dict(py, episode)?;
+            let action = self.predict_fn.call1(py, (obs, context))?;
             let action_space = observation
                 .env_contract
                 .as_ref()

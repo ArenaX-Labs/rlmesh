@@ -114,12 +114,6 @@ impl RouteState {
         }
     }
 
-    /// The explicit seed `episode_id` was reset with, if any (drained: each
-    /// episode completes once).
-    pub(crate) fn take_episode_seed(&mut self, episode_id: &str) -> Option<i64> {
-        self.seed_by_episode.remove(episode_id)
-    }
-
     /// Record one completed episode's summary (completion order) for the
     /// session report.
     pub(crate) fn record_episode_summary(&mut self, summary: EpisodeSummary) {
@@ -327,14 +321,18 @@ impl RouteState {
             let episode_record_id = record_ids.get(index).cloned().unwrap_or_default();
             // Did this lane's episode id flip? A NEXT_STEP autoreset rolls the id
             // on a single lane at t+1; only that lane's step counter must reset.
-            let rolled = {
-                let previous_id = slot
-                    .episode
-                    .as_ref()
-                    .map(|episode| episode.episode_id.as_str())
-                    .unwrap_or("");
-                !episode_id.is_empty() && episode_id != previous_id
-            };
+            let previous_id = slot
+                .episode
+                .as_ref()
+                .map(|episode| episode.episode_id.clone())
+                .unwrap_or_default();
+            let rolled = !episode_id.is_empty() && episode_id != previous_id;
+            if rolled && !previous_id.is_empty() {
+                // The outgoing episode's seed is dropped only when its lane
+                // rolls (never at completion emit), so the completion
+                // iteration's final predict still reports it.
+                self.seed_by_episode.remove(&previous_id);
+            }
             slot.episode = if episode_id.is_empty() {
                 None
             } else {

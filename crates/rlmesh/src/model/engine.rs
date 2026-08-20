@@ -1532,6 +1532,31 @@ mod fused_route_tests {
     }
 
     #[tokio::test]
+    async fn grouped_non_fused_predict_carries_each_routes_episode_identity() {
+        let echo = EchoModel::new_single_lane();
+        let (mut handler, contracts) = spec_handler(
+            Arc::clone(&echo) as Arc<dyn PredictFn>,
+            &[("env-a", 1), ("env-b", 1)],
+            1,
+        )
+        .await;
+
+        let results = handler
+            .predict_grouped(vec![
+                single_obs_with_episode("env-a", 1.0, "ep-a", Some(7), &contracts[0]),
+                single_obs_with_episode("env-b", 2.0, "ep-b", None, &contracts[1]),
+            ])
+            .await;
+
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(echo.batch_calls.load(Ordering::SeqCst), 0, "must not fuse");
+        assert_eq!(
+            echo.episodes_seen.lock().expect("poisoned").as_slice(),
+            [("ep-a".to_string(), Some(7)), ("ep-b".to_string(), None)],
+        );
+    }
+
+    #[tokio::test]
     async fn fused_grouped_predict_runs_one_forward_and_splits_actions_per_group() {
         let echo = EchoModel::new(false, false);
         let (mut handler, contracts) = spec_handler(

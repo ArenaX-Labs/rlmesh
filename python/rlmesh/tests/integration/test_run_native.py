@@ -188,3 +188,32 @@ def test_run_rejects_session_only_knobs() -> None:
         _model().run(CountEnv(), hooks=rlmesh.RunHooks())
     with pytest.raises(ValueError, match=r"session\(\)\.run"):
         _model().run(CountEnv(), instruction="pick up the cube")
+
+
+def test_session_served_env_context_carries_stable_episode_identity() -> None:
+    from rlmesh.numpy import Model
+
+    seen: list[dict[str, Any]] = []
+
+    def predict(observation: Any, context: dict[str, Any]) -> Any:
+        seen.append(dict(context))
+        return np.zeros(2, np.float32)
+
+    try:
+        server = rlmesh.EnvServer(CountEnv(episode_len=3), host="127.0.0.1", port=0)
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+    server.start()
+    try:
+        with Model(predict).session(server.address) as sess:
+            sess.run(seeds=[7], max_episodes=1)
+    finally:
+        server.shutdown()
+
+    assert len(seen) == 3
+    episode_ids = {str(context["episode_id"]) for context in seen}
+    assert len(episode_ids) == 1, f"episode_id changed mid-episode: {seen}"
+    assert all(episode_ids), f"episode_id blank on some step: {seen}"
+    assert [context["episode_seed"] for context in seen] == [7, 7, 7]

@@ -401,6 +401,7 @@ class Session(Generic[ObsT, ActT]):
     _steps: int
     _reward: float
     _last_info: Mapping[str, Any]
+    _replay_fn: Callable[..., Any] | None
     _model_ms: float
     _env_ms: float
     _sps: float
@@ -476,6 +477,8 @@ class Session(Generic[ObsT, ActT]):
         self._text_placements = ()
         self._horizon = 1
         self._replay = ChunkReplay(1)
+        self._replay_fn = None
+        self._takes_context = False
         self._terminated = False
         self._truncated = False
         self._steps = 0
@@ -672,22 +675,26 @@ class Session(Generic[ObsT, ActT]):
         # and replays one step at a time -- otherwise through single-step predict.
         # The horizon goes in positionally: the corner was normalized to the internal
         # (obs, horizon) contract, so a model that ignores it still binds cleanly.
-        if self._horizon > 1 and self._predict_chunk is not None:
-            chunk_fn = self._predict_chunk
-            horizon = self._horizon
-            # Context acceptance is a property of the callable, sniffed once
-            # here rather than per step (this is the hot path).
-            takes_context = accepts_context(chunk_fn, 2)
+        # The corner and its context acceptance are properties of the session
+        # (corners and horizon are fixed once connected), sniffed on the first
+        # predict rather than per step -- this is the hot path.
+        if self._replay_fn is None:
+            if self._horizon > 1 and self._predict_chunk is not None:
+                chunk_fn = self._predict_chunk
+                horizon = self._horizon
+                self._takes_context = accepts_context(chunk_fn, 2)
 
-            def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
-                if context is not None:
-                    return chunk_fn(obs, horizon, context)
-                return chunk_fn(obs, horizon)
+                def _replay(obs: Any, context: Mapping[str, Any] | None = None) -> Any:
+                    if context is not None:
+                        return chunk_fn(obs, horizon, context)
+                    return chunk_fn(obs, horizon)
 
-            replay_fn = cast("Callable[..., Any]", _replay)
-        else:
-            replay_fn = cast("Callable[..., Any]", self._predict)
-            takes_context = accepts_context(replay_fn, 1)
+                self._replay_fn = cast("Callable[..., Any]", _replay)
+            else:
+                self._replay_fn = cast("Callable[..., Any]", self._predict)
+                self._takes_context = accepts_context(self._replay_fn, 1)
+        replay_fn = self._replay_fn
+        takes_context = self._takes_context
 
         # Time the forward inside the replay thunk so model_ms records only on steps
         # that re-plan (the thunk is skipped while a chunk replays), keeping it a true

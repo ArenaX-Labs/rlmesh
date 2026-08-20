@@ -84,33 +84,22 @@ def _debatch(
     batched corner, and peels lane 0 back off (``tree_unstack``). ``arity`` is
     the derived corner's own fixed positional arity -- 1 turns ``predict_batch``
     into ``predict(observation)``, 2 turns ``predict_chunk_batch`` into
-    ``predict_chunk(observation, horizon)`` -- built as a real fixed-arity
-    signature (not a generic ``*args`` passthrough) so a trailing context (see
-    :func:`accepts_context`) only reaches ``batched_fn`` when its own
-    signature asks for one, rather than being mistaken for ``horizon``.
+    ``predict_chunk(observation, horizon)``. The derived corner declares no
+    ``context`` parameter: batched corners never receive episode context
+    (their lanes may span independent episodes), so deriving a single-lane
+    corner from one cannot make a context appear.
     """
-    takes_context = accepts_context(batched_fn, arity)
     if arity == 1:
 
-        def derived_predict(observation: object, context: object = None) -> object:
+        def derived_predict(observation: object) -> object:
             fused = bridge.tree_stack([observation])
-            args = (
-                (fused, context) if context is not None and takes_context else (fused,)
-            )
-            return bridge.tree_unstack(batched_fn(*args), 1)[0]
+            return bridge.tree_unstack(batched_fn(fused), 1)[0]
 
         return derived_predict
 
-    def derived_predict_chunk(
-        observation: object, horizon: object, context: object = None
-    ) -> object:
+    def derived_predict_chunk(observation: object, horizon: object) -> object:
         fused = bridge.tree_stack([observation])
-        args = (
-            (fused, horizon, context)
-            if context is not None and takes_context
-            else (fused, horizon)
-        )
-        return bridge.tree_unstack(batched_fn(*args), 1)[0]
+        return bridge.tree_unstack(batched_fn(fused, horizon), 1)[0]
 
     return derived_predict_chunk
 

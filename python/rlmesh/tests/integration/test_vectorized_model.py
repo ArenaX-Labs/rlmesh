@@ -103,3 +103,30 @@ def test_vectorized_numpy_model_splits_stacked_action() -> None:
     np.testing.assert_allclose(
         env.seen_actions[0], np.full((2, 2), 0.5, dtype=np.float32)
     )
+
+
+def test_vectorized_spec_less_predict_receives_empty_identity_context() -> None:
+    from rlmesh import numpy as rlmesh_numpy
+
+    env = BoxVectorEnv()
+    server = _serve_env(env)
+
+    contexts: list[dict[str, Any]] = []
+
+    def predict(observation: Any, context: dict[str, Any]) -> Any:
+        contexts.append(dict(context))
+        return np.full((env.num_envs, 2), 0.5, dtype=np.float32)
+
+    try:
+        rlmesh_numpy.Model(predict)._run_local_for_episodes(
+            server.address, max_episodes=1
+        )
+    finally:
+        server.shutdown()
+
+    assert contexts, "served policy predict was never called"
+    # A multi-lane spec-less call fuses N episodes into one forward, so the
+    # context carries the empty identity -- but the argument is always delivered.
+    assert all(
+        context == {"episode_id": "", "episode_seed": None} for context in contexts
+    )

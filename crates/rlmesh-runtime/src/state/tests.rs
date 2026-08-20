@@ -69,6 +69,23 @@ fn predict_request_includes_seed_metadata_aligned_to_episode_ids() {
     assert_eq!(request.episode_info[1].seed, None);
 }
 
+#[test]
+fn episode_seed_survives_completion_until_the_lane_rolls() {
+    let mut state = RouteState::new(&test_session_spec());
+    state.start_episodes(vec!["ep-a".to_string()], false);
+    state.note_episode_seeds(&["ep-a".to_string()], &[7]);
+
+    // Completion emit reads the seed non-destructively: the same iteration
+    // still builds the terminal predict for this episode id.
+    state.complete_episode("ep-a");
+    let request = state.predict_request(None, RequestPhase::StepObservation);
+    assert_eq!(request.episode_info[0].seed, Some(7));
+
+    // The lane rolling to a fresh id is what retires the seed.
+    state.observe_episode_ids(vec!["ep-b".to_string()]);
+    assert_eq!(state.seed_for_episode("ep-a"), None);
+}
+
 fn test_session_spec() -> RuntimeSessionSpec {
     RuntimeSessionSpec {
         session_id: "session".to_string(),

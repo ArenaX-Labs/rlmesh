@@ -453,6 +453,9 @@ client_class!(PyEnvClient, "env_client", {
             None => py.None().bind(py).clone(),
         };
         let info = info_to_pydict(py, result.info.as_ref())?;
+        if !info.contains("episode_ids")? {
+            info.set_item("episode_ids", result.episode_ids.to_vec())?;
+        }
         if (terminated || truncated) && !info.contains("completed_episodes")? {
             info.set_item("completed_episodes", 1)?;
         }
