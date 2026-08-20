@@ -289,3 +289,68 @@ def test_importing_the_describe_module_path_no_longer_shadows_the_function() -> 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("rlmesh.describe")
     assert callable(rlmesh.describe)
+
+
+def _valid_describe(kind: str = "model") -> str:
+    import json
+
+    return json.dumps({"schema_version": 1, "kind": kind})
+
+
+def test_check_labels_flags_the_push_blockers() -> None:
+    from rlmesh._describe import DESCRIBE_LABEL, PACKAGE_LABEL, check_labels
+
+    # No labels at all: browsable-but-inert on the platform.
+    failures, _ = check_labels(None)
+    assert any(DESCRIBE_LABEL in message for message in failures)
+
+    # Valid describe alone passes.
+    failures, warnings = check_labels({DESCRIBE_LABEL: _valid_describe()})
+    assert failures == [] and warnings == []
+
+    # Broken JSON, wrong version, and unknown kind all fail.
+    assert check_labels({DESCRIBE_LABEL: "{nope"})[0]
+    assert check_labels({DESCRIBE_LABEL: '{"schema_version":2,"kind":"model"}'})[0]
+    assert check_labels({DESCRIBE_LABEL: '{"schema_version":1,"kind":"thing"}'})[0]
+
+    # Package label: bad checkpoints fail (the platform would drop them).
+    labels = {
+        DESCRIBE_LABEL: _valid_describe(),
+        PACKAGE_LABEL: '{"schemaVersion":1,"checkpoints":[{"name":"Bad_Name","uri":"hf://x"}]}',
+    }
+    failures, _ = check_labels(labels)
+    assert any("DNS label" in message for message in failures)
+    labels[PACKAGE_LABEL] = '{"schemaVersion":1,"checkpoints":[{"name":"ok"}]}'
+    failures, _ = check_labels(labels)
+    assert any("no uri" in message for message in failures)
+
+
+def test_check_labels_surfaces_badges_and_soft_claims_as_warnings() -> None:
+    import json
+
+    from rlmesh._describe import DESCRIBE_LABEL, PACKAGE_LABEL, check_labels
+
+    describe = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "env",
+            "env_spec": {"error": "sapien needs a GPU"},
+            "variants": {"catalog": [{"id": "a", "error": "unbuildable"}]},
+        }
+    )
+    package = json.dumps(
+        {
+            "schemaVersion": 1,
+            "checkpoints": [
+                {"name": "a", "uri": "hf://x", "default": True},
+                {"name": "b", "uri": "hf://y", "default": True},
+            ],
+        }
+    )
+    failures, warnings = check_labels(
+        {DESCRIBE_LABEL: describe, PACKAGE_LABEL: package}
+    )
+    assert failures == []
+    assert any("env_spec" in message for message in warnings)
+    assert any("catalog['a']" in message for message in warnings)
+    assert any("default checkpoints" in message for message in warnings)

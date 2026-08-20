@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, cast
 
@@ -497,11 +498,180 @@ def _as_callable(obj: object) -> Callable[..., object]:
     return obj
 
 
+# ---- image label check (--check) -------------------------------------------
+
+#: OCI config labels the managed platform's probe reads off a pushed image.
+DESCRIBE_LABEL = "dev.rlmesh.describe"
+PACKAGE_LABEL = "dev.rlmesh.package"
+
+#: The platform drops checkpoints whose name can't be a workload reference
+#: (DNS label); mirror its pattern so the failure happens before the push.
+_CHECKPOINT_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+def check_labels(
+    labels: Mapping[str, str] | None,
+) -> tuple[list[str], list[str]]:
+    """Validate an image's rlmesh labels the way the platform probe will.
+
+    Returns ``(failures, warnings)``: a failure means the push will land as
+    not-runnable (or with claims the platform rejects); a warning is a badge or
+    a claim the platform will trim.
+    """
+    failures: list[str] = []
+    warnings: list[str] = []
+    labels = labels or {}
+
+    raw = labels.get(DESCRIBE_LABEL, "")
+    if not raw:
+        failures.append(
+            f"no {DESCRIBE_LABEL} label: the image will be browsable but not "
+            "runnable. Bake one in (python -m rlmesh._describe at build time)."
+        )
+    else:
+        _check_describe(raw, failures, warnings)
+
+    raw = labels.get(PACKAGE_LABEL, "")
+    if raw:
+        _check_package(raw, failures, warnings)
+    return failures, warnings
+
+
+def _check_describe(raw: str, failures: list[str], warnings: list[str]) -> None:
+    try:
+        envelope = cast("dict[str, Any]", json.loads(raw))
+    except ValueError:
+        failures.append(f"{DESCRIBE_LABEL} is not valid JSON")
+        return
+    if envelope.get("schema_version") != 1:
+        failures.append(
+            f"{DESCRIBE_LABEL} schema_version "
+            f"{envelope.get('schema_version')!r} is not the supported version 1"
+        )
+    if envelope.get("kind") not in ("env", "model"):
+        failures.append(
+            f"{DESCRIBE_LABEL} kind {envelope.get('kind')!r} is not 'env' or 'model'"
+        )
+    for path, badge in _describe_badges(envelope):
+        warnings.append(f"{DESCRIBE_LABEL} {path}: {badge}")
+
+
+def _describe_badges(envelope: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Best-effort ``error`` badges the gatherer left in the envelope."""
+    out: list[tuple[str, str]] = []
+    for key in ("env_spec", "env_tags", "model_spec"):
+        value = envelope.get(key)
+        if isinstance(value, Mapping) and "error" in value:
+            badge = cast("Mapping[str, object]", value)["error"]
+            out.append((key, str(badge)))
+    variants_raw = envelope.get("variants")
+    if isinstance(variants_raw, Mapping):
+        variants = cast("Mapping[str, object]", variants_raw)
+        for key in ("catalog_error", "variations_error"):
+            if key in variants:
+                out.append((f"variants.{key}", str(variants[key])))
+        catalog = variants.get("catalog")
+        if isinstance(catalog, list):
+            for entry in cast("list[object]", catalog):
+                if isinstance(entry, Mapping) and "error" in entry:
+                    entry_map = cast("Mapping[str, object]", entry)
+                    out.append(
+                        (
+                            f"variants.catalog[{entry_map.get('id')!r}]",
+                            str(entry_map["error"]),
+                        )
+                    )
+    return out
+
+
+def _check_package(raw: str, failures: list[str], warnings: list[str]) -> None:
+    try:
+        package = cast("dict[str, Any]", json.loads(raw))
+    except ValueError:
+        failures.append(f"{PACKAGE_LABEL} is not valid JSON")
+        return
+    if not isinstance(cast("object", package), dict):
+        failures.append(f"{PACKAGE_LABEL} must be a JSON object")
+        return
+    if package.get("schemaVersion") != 1:
+        failures.append(
+            f"{PACKAGE_LABEL} schemaVersion {package.get('schemaVersion')!r} is "
+            "not the supported version 1 (the platform will ignore the label)"
+        )
+    checkpoints = package.get("checkpoints")
+    if isinstance(checkpoints, list):
+        defaults = 0
+        for entry in cast("list[object]", checkpoints):
+            if not isinstance(entry, Mapping):
+                failures.append(f"{PACKAGE_LABEL} checkpoints entries must be objects")
+                continue
+            entry_map = cast("Mapping[str, object]", entry)
+            name = entry_map.get("name")
+            if (
+                not isinstance(name, str)
+                or len(name) > 63
+                or not _CHECKPOINT_NAME.match(name)
+            ):
+                failures.append(
+                    f"{PACKAGE_LABEL} checkpoint name {name!r} is not a DNS label; "
+                    "the platform will drop it"
+                )
+            if not entry_map.get("uri"):
+                failures.append(
+                    f"{PACKAGE_LABEL} checkpoint {name!r} has no uri; "
+                    "the platform will drop it"
+                )
+            if entry_map.get("default"):
+                defaults += 1
+        if defaults > 1:
+            warnings.append(
+                f"{PACKAGE_LABEL} declares {defaults} default checkpoints; "
+                "the platform uses the first"
+            )
+
+
+def _docker_labels(image: str) -> Mapping[str, str] | None:
+    import subprocess  # lazy: only the --check path shells out
+
+    result = subprocess.run(
+        ["docker", "inspect", image, "--format", "{{json .Config.Labels}}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"docker inspect {image} failed: {result.stderr.strip() or 'is docker running?'}"
+        )
+    return cast("Mapping[str, str] | None", json.loads(result.stdout))
+
+
+def _run_check(image: str) -> int:
+    try:
+        labels = _docker_labels(image)
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}")
+        return 1
+    failures, warnings = check_labels(labels)
+    for message in failures:
+        print(f"FAIL: {message}")
+    for message in warnings:
+        print(f"warn: {message}")
+    if not failures:
+        print(f"ok: {image} labels will probe as runnable")
+    return 1 if failures else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Resolve ``--env``/``--model`` and print (or write) the metadata envelope."""
     parser = argparse.ArgumentParser(prog="python -m rlmesh._describe")
     parser.add_argument("--env", help="module:Class for an environment factory")
     parser.add_argument("--model", help="module:Class for a model")
+    parser.add_argument(
+        "--check",
+        metavar="IMAGE",
+        help="validate a built image's rlmesh labels the way the platform probe "
+        "will, before pushing",
+    )
     parser.add_argument(
         "--out", help="write the envelope to this file instead of stdout"
     )
@@ -511,6 +681,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="optional RFC-3339 timestamp to stamp (omit for a reproducible artifact)",
     )
     args = parser.parse_args(argv)
+
+    if args.check:
+        if args.env or args.model:
+            parser.error("--check takes an image, not --env/--model")
+        return _run_check(args.check)
 
     if bool(args.env) == bool(args.model):
         parser.error("provide exactly one of --env or --model")
