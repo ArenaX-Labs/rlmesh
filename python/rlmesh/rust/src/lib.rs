@@ -60,12 +60,12 @@ fn run_cli(py: Python<'_>, args: Vec<String>) -> PyResult<i32> {
         let mut stdout = PyStream { stream: stdout_obj };
         let mut stderr = PyStream { stream: stderr_obj };
         runtime
-            .block_on(rlmesh_cli::run_cli_with_writers(
+            .block_on(rlmesh_cli::run_cli(
                 args.into_iter().map(OsString::from).collect(),
                 &mut stdout,
                 &mut stderr,
-                rlmesh_cli::Style::for_terminal(out_tty),
-                rlmesh_cli::Style::for_terminal(err_tty),
+                out_tty,
+                err_tty,
             ))
             .map_err(|err| PyRuntimeError::new_err(format!("{err:#}")))
     })

@@ -89,14 +89,16 @@ pyo3-stub-gen-derive = "0.23"
 
 # CLI
 clap = "4.6"
-keyring = { version = "3", features = [
-  "apple-native",
-  "windows-native",
-  "sync-secret-service",
-  "vendored",
+dirs = "6"
+keyring = "4.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "logging",
+  "std",
+  "tls12",
 ] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-toml = "0.9"
+toml = "1.1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -109,9 +111,5 @@ unimplemented = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 
-# Defense-in-depth: keep release builds consistent with dev/test (which check
-# overflow by default) so a silent integer wraparound can't fabricate a wrong
-# result in a frozen-contract system. The load-bearing guards are the explicit
-# checked_add sites; this is the backstop. One-line revert if a hot path needs it.
 [profile.release]
 overflow-checks = true

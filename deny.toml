@@ -38,6 +38,8 @@ allow = [
   "Unicode-3.0",
 ]
 exceptions = [
+  # dirs uses option-ext for cross-platform OS directory lookups.
+  { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
   # pyo3-stub-gen pulls Unicode name data through rustpython-parser for stub checks.
   { crate = "unicode_names2@1.3.0", allow = ["Unicode-DFS-2016"] },
 ]
