@@ -171,6 +171,13 @@ const SRC_TRANSFORM_ACTION: Source = Source {
     op: "runner.transform_action",
     component: "runner",
 };
+// Wall clock of one full predict -> step -> transform loop iteration.
+// Consumers subtract the per-op rows to get the driver's own residual, so it
+// must bracket the whole loop body, not just the RPCs.
+const SRC_ROUND: Source = Source {
+    op: "runner.round",
+    component: "runner",
+};
 
 /// Drives one ready model/env session through its `reset -> predict -> step`
 /// loop. Inert until a `run*` method is awaited.
@@ -466,6 +473,7 @@ where
             std::collections::VecDeque::new();
 
         loop {
+            let round_started = Instant::now();
             if cancellation.is_cancelled() {
                 return Err(self.cancelled_error(state, state.snapshot().step));
             }
@@ -675,6 +683,14 @@ where
                 .max_episodes
                 .is_some_and(|limit| state.total_episodes() >= limit as i64)
             {
+                // The final iteration exits here instead of the loop bottom;
+                // its round (predict + step + transforms) is complete, so
+                // record it before snapshotting or the last round is lost.
+                lock_agg(telemetry).record(Sample::dur(
+                    SRC_ROUND,
+                    metrics::RPC_TOTAL,
+                    round_started.elapsed(),
+                ));
                 let release_request = state.release_adapter_request("completed requested episodes");
                 self.shutdown_terminal_route(
                     state,
@@ -842,6 +858,11 @@ where
             fan_out_event!(self, observation_emitted, outgoing_observation_event);
 
             pending_observation_msg = obs_msg;
+            lock_agg(telemetry).record(Sample::dur(
+                SRC_ROUND,
+                metrics::RPC_TOTAL,
+                round_started.elapsed(),
+            ));
         }
     }
 

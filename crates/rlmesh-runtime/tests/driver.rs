@@ -60,6 +60,21 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
             "model.predict {metric} recorded",
         );
     }
+    // Each completed loop iteration records its wall clock, and it bounds the
+    // per-op time it contains.
+    let round = report
+        .telemetry
+        .rows
+        .iter()
+        .find(|row| row.source.op == "runner.round" && row.metric.name == "rpc.total")
+        .expect("runner.round rpc.total recorded");
+    assert_eq!(round.count, 1);
+    assert!(
+        round.avg >= predict_rpc.avg,
+        "round wall ({}) must cover the predict RPC it contains ({})",
+        round.avg,
+        predict_rpc.avg,
+    );
     assert!(env.closed.load(Ordering::SeqCst));
     assert!(model.closed.load(Ordering::SeqCst));
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 1);
