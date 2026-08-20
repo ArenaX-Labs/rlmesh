@@ -12,6 +12,7 @@
 //! on decode, never recovered by division.**
 
 use prost::bytes::Bytes;
+use rayon::prelude::*;
 use rlmesh_spaces as native;
 use rlmesh_spaces::{SpaceKind, SpaceSpec, SpaceValue};
 
@@ -19,6 +20,11 @@ use crate::error::ProtocolError;
 
 use super::codec::tensor_wire_bytes;
 use super::scalars::{decode_int_sequence, encode_int_sequence};
+
+/// Slab codecs fan out across leaves/lanes only past this many total bytes —
+/// image-bearing batches win multi-core decode, while small control-vector
+/// payloads keep the zero-overhead sequential path.
+const PARALLEL_SLAB_MIN_BYTES: usize = 64 * 1024;
 
 /// Encode a single typed value into one `Bytes` per canonical leaf.
 pub fn encode_leaves(value: &SpaceValue, spec: &SpaceSpec) -> Result<Vec<Bytes>, ProtocolError> {
@@ -61,35 +67,51 @@ pub fn encode_leaf_slab(
         .collect::<Result<Vec<_>, _>>()
         .map_err(structural_encode)?;
 
-    specs
-        .iter()
-        .enumerate()
-        .map(|(p, &leaf_spec)| {
-            let column = lanes.iter().map(|lane| lane[p]);
-            if matches!(leaf_spec.spec.as_ref(), Some(SpaceKind::Text(_))) {
-                encode_text_slab(column, lanes.len())
-            } else {
-                // Each lane MUST contribute exactly `stride` bytes. A fixed-stride
-                // slab carries no per-lane framing, so a wrong-arity/shape lane
-                // would otherwise be silently re-sliced across lane boundaries on
-                // decode (the aggregate length can still match when sizes
-                // compensate). Reject it here rather than corrupt the batch.
-                let stride = leaf_stride(leaf_spec)?;
-                let mut buf = Vec::with_capacity(stride.saturating_mul(lanes.len()));
-                for (lane, leaf_value) in column.enumerate() {
-                    let leaf = encode_leaf(leaf_value, leaf_spec)?;
-                    if leaf.len() != stride {
-                        return Err(ProtocolError::LengthMismatch(format!(
-                            "batch lane {lane} leaf: got {} bytes, expected stride {stride}",
-                            leaf.len()
-                        )));
-                    }
-                    buf.extend_from_slice(&leaf);
+    let encode_column = |(p, leaf_spec): (usize, &SpaceSpec)| -> Result<Bytes, ProtocolError> {
+        let column = lanes.iter().map(|lane| lane[p]);
+        if matches!(leaf_spec.spec.as_ref(), Some(SpaceKind::Text(_))) {
+            encode_text_slab(column, lanes.len())
+        } else {
+            // Each lane MUST contribute exactly `stride` bytes. A fixed-stride
+            // slab carries no per-lane framing, so a wrong-arity/shape lane
+            // would otherwise be silently re-sliced across lane boundaries on
+            // decode (the aggregate length can still match when sizes
+            // compensate). Reject it here rather than corrupt the batch.
+            let stride = leaf_stride(leaf_spec)?;
+            let mut buf = Vec::with_capacity(stride.saturating_mul(lanes.len()));
+            for (lane, leaf_value) in column.enumerate() {
+                let leaf = encode_leaf(leaf_value, leaf_spec)?;
+                if leaf.len() != stride {
+                    return Err(ProtocolError::LengthMismatch(format!(
+                        "batch lane {lane} leaf: got {} bytes, expected stride {stride}",
+                        leaf.len()
+                    )));
                 }
-                Ok(Bytes::from(buf))
+                buf.extend_from_slice(&leaf);
             }
-        })
-        .collect()
+            Ok(Bytes::from(buf))
+        }
+    };
+    let estimated_bytes = specs
+        .iter()
+        .map(|&leaf_spec| leaf_stride(leaf_spec).unwrap_or(0))
+        .sum::<usize>()
+        .saturating_mul(values.len());
+    if estimated_bytes >= PARALLEL_SLAB_MIN_BYTES && specs.len() > 1 {
+        specs
+            .par_iter()
+            .copied()
+            .enumerate()
+            .map(encode_column)
+            .collect()
+    } else {
+        specs
+            .iter()
+            .copied()
+            .enumerate()
+            .map(encode_column)
+            .collect()
+    }
 }
 
 /// Split each leaf slab into `n` lanes and reassemble `n` typed values.
@@ -106,14 +128,26 @@ pub fn decode_leaf_slab(
             specs.len()
         )));
     }
+    let total_bytes: usize = leaves.iter().map(|slab| slab.len()).sum();
+    let columns: Vec<Vec<SpaceValue>> = if total_bytes >= PARALLEL_SLAB_MIN_BYTES && specs.len() > 1
+    {
+        leaves
+            .par_iter()
+            .zip(specs.par_iter())
+            .map(|(slab, &leaf_spec)| decode_leaf_column(slab, leaf_spec, n))
+            .collect::<Result<_, _>>()?
+    } else {
+        leaves
+            .iter()
+            .zip(&specs)
+            .map(|(slab, &leaf_spec)| decode_leaf_column(slab, leaf_spec, n))
+            .collect::<Result<_, _>>()?
+    };
     // per_lane[lane] collects this lane's leaf value for each leaf position.
     let mut per_lane: Vec<Vec<SpaceValue>> =
         (0..n).map(|_| Vec::with_capacity(specs.len())).collect();
-    for (slab, &leaf_spec) in leaves.iter().zip(&specs) {
-        for (lane, value) in decode_leaf_column(slab, leaf_spec, n)?
-            .into_iter()
-            .enumerate()
-        {
+    for column in columns {
+        for (lane, value) in column.into_iter().enumerate() {
             per_lane[lane].push(value);
         }
     }
@@ -227,6 +261,13 @@ fn decode_leaf_column(
     if stride == 0 {
         // Zero-numel leaf: every lane is an empty leaf; N comes from the carrier.
         return (0..n).map(|_| decode_leaf(&[], spec)).collect();
+    }
+    if slab.len() >= PARALLEL_SLAB_MIN_BYTES && n > 1 {
+        // Chunks are exact: slab.len() == stride * n was validated above.
+        return slab
+            .par_chunks(stride)
+            .map(|chunk| decode_leaf(chunk, spec))
+            .collect();
     }
     slab.chunks_exact(stride)
         .map(|chunk| decode_leaf(chunk, spec))

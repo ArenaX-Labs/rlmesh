@@ -421,3 +421,59 @@ fn float_to_int_rejects_two_pow_63_boundary() {
     assert_eq!(float_to_int(below).unwrap(), below as i64);
     assert_eq!(float_to_int(i64::MIN as f64).unwrap(), i64::MIN);
 }
+
+#[test]
+fn large_image_batch_roundtrips_identically_through_parallel_slab_paths() {
+    // Two 120KB image leaves x 3 lanes crosses PARALLEL_SLAB_MIN_BYTES on both
+    // the per-leaf-column and per-lane fan-outs; the parallel paths must stay
+    // byte-identical to the sequential codec (asserted via typed equality and
+    // encode determinism against a second encode of the same input).
+    let image = |seed: u8| {
+        let raw: Vec<u8> = (0..200 * 200 * 3)
+            .map(|i| ((i as u64 * 31 + seed as u64) % 256) as u8)
+            .collect();
+        SpaceValue::Box(Tensor::from_vec(raw, vec![200, 200, 3], DType::Uint8).unwrap())
+    };
+    let space = DictSpaceBuilder::new()
+        .insert(
+            "agentview",
+            BoxSpaceBuilder::scalar(0.0, 255.0, vec![200, 200, 3])
+                .dtype(DType::Uint8)
+                .build()
+                .unwrap(),
+        )
+        .insert(
+            "wrist",
+            BoxSpaceBuilder::scalar(0.0, 255.0, vec![200, 200, 3])
+                .dtype(DType::Uint8)
+                .build()
+                .unwrap(),
+        )
+        .insert("choice", DiscreteBuilder::new(7).build().unwrap())
+        .build()
+        .unwrap();
+    let lane = |seed: u8| {
+        SpaceValue::Dict(
+            [
+                ("agentview".to_string(), image(seed)),
+                ("wrist".to_string(), image(seed.wrapping_add(1))),
+                (
+                    "choice".to_string(),
+                    SpaceValue::Discrete(i64::from(seed % 7)),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    };
+    let values = vec![lane(1), lane(2), lane(3)];
+
+    let payload = encode_batched_partial_values(&values, &space).unwrap();
+    let payload_again = encode_batched_partial_values(&values, &space).unwrap();
+    assert_eq!(
+        payload, payload_again,
+        "parallel encode must be deterministic"
+    );
+    let decoded = decode_batched_partial_values(Some(&payload), &space, values.len()).unwrap();
+    assert_eq!(decoded, values, "parallel decode must reproduce every lane");
+}

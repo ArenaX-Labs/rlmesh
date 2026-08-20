@@ -2814,6 +2814,7 @@ dependencies = [
  "hyper-util",
  "proptest",
  "prost",
+ "rayon",
  "rlmesh-proto",
  "rlmesh-spaces",
  "thiserror",

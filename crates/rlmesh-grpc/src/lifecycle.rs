@@ -17,6 +17,33 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Deployment-level opt-in that lets a served environment honor the remote
+/// `shutdown` RPC ("1"/"true", case-insensitive). Orchestrators that queue env
+/// workloads (e.g. the managed platform's workload admission) set this on env
+/// containers so a finished worker can be told to exit and free its slot. The
+/// variable can only enable remote shutdown, never disable an explicit
+/// programmatic `allow_remote_shutdown: true`.
+pub const ALLOW_REMOTE_SHUTDOWN_ENV: &str = "RLMESH_ALLOW_REMOTE_SHUTDOWN";
+
+/// Whether an [`ALLOW_REMOTE_SHUTDOWN_ENV`] value opts into remote shutdown.
+pub(crate) fn remote_shutdown_opt_in(value: Option<std::ffi::OsString>) -> bool {
+    value
+        .as_deref()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .is_some_and(|value| value.eq_ignore_ascii_case("1") || value.eq_ignore_ascii_case("true"))
+}
+
+/// Fold an [`ALLOW_REMOTE_SHUTDOWN_ENV`] reading into serve options: the
+/// opt-in can only enable remote shutdown, never disable it.
+pub(crate) fn apply_remote_shutdown_opt_in(
+    mut options: ServeOptions,
+    value: Option<std::ffi::OsString>,
+) -> ServeOptions {
+    options.allow_remote_shutdown = options.allow_remote_shutdown || remote_shutdown_opt_in(value);
+    options
+}
+
 /// Transport lifecycle policy shared by the env and model servers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServeOptions {
@@ -316,5 +343,43 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err, timeout);
+    }
+
+    #[test]
+    fn remote_shutdown_opt_in_parses_one_and_true_only() {
+        use std::ffi::OsString;
+        for on in ["1", "true", "TRUE", " True "] {
+            assert!(
+                remote_shutdown_opt_in(Some(OsString::from(on))),
+                "{on:?} must opt in"
+            );
+        }
+        for off in ["", "0", "false", "yes", "on"] {
+            assert!(
+                !remote_shutdown_opt_in(Some(OsString::from(off))),
+                "{off:?} must not opt in"
+            );
+        }
+        assert!(!remote_shutdown_opt_in(None));
+    }
+
+    #[test]
+    fn apply_remote_shutdown_opt_in_only_enables() {
+        use std::ffi::OsString;
+
+        let defaults = ServeOptions::default();
+        assert!(!apply_remote_shutdown_opt_in(defaults.clone(), None).allow_remote_shutdown);
+        assert!(
+            apply_remote_shutdown_opt_in(defaults.clone(), Some(OsString::from("1")))
+                .allow_remote_shutdown
+        );
+        // The opt-in never disables an explicit allow.
+        let explicit = ServeOptions {
+            allow_remote_shutdown: true,
+            ..ServeOptions::default()
+        };
+        assert!(
+            apply_remote_shutdown_opt_in(explicit, Some(OsString::from("0"))).allow_remote_shutdown
+        );
     }
 }
