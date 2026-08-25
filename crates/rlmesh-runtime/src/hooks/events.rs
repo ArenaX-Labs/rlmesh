@@ -125,6 +125,7 @@ pub struct StepCompletedEvent {
     pub step: i64,
     pub env_index: i32,
     pub rewards: Vec<f64>,
+    pub infos: Option<MetaMap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

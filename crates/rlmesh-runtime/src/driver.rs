@@ -615,6 +615,7 @@ where
                     step: step_snapshot.step,
                     env_index: step_snapshot.env_index,
                     rewards: step_ok.response.rewards.clone(),
+                    infos: step_ok.response.infos.clone(),
                 }
             );
 
