@@ -28,6 +28,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Self-explanatory predict failures: when a model's `predict` raises, the error is annotated with the adapter-assembled input signature (key → dtype/shape), both in local `run()` loops and across the wire from a served model, so a shape mismatch names what the model was actually handed.
 - Managed-platform sign-in from the CLI: `rlmesh login` (device flow), `rlmesh logout`, `rlmesh whoami`, and `rlmesh registry login` (registers the bundled `docker-credential-rlmesh` helper, so docker fetches a fresh short-lived token per pull/push), with named profiles (`rlmesh profile use`/`list`/`remove`, `--profile`, `RLMESH_PROFILE`) and credentials held in the OS keychain.
 - Build identity: `rlmesh.__build__` and `rlmesh version` report the commit-stamped workflow edition, so two builds sharing a package version stay distinguishable.
+- Runtime hook events `ObservationEmittedEvent` and `ActionReceivedEvent` carry `raw_observation` / `raw_action` alongside the transformed payload, so hooks can record both the pre- and post-transform leaves per step.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
 
 ## [0.1.0-rc.5] - 2026-08-20

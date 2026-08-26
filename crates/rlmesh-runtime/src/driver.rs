@@ -554,7 +554,8 @@ where
                 step: action_step,
                 env_index: predict_snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
-                action: Some(model_action),
+                action: Some(model_action.clone()),
+                raw_action: Some(model_action),
             };
             action_event.action = self
                 .invoke_transform_action(telemetry, action_event.clone())
@@ -1141,6 +1142,7 @@ where
             is_reset,
             num_envs: self.spec.num_envs as u32,
             observation_space: Arc::clone(&self.observation_space),
+            raw_observation: observation.clone(),
             observation,
         }
     }

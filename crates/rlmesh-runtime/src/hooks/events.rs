@@ -114,6 +114,9 @@ pub struct ActionReceivedEvent {
     /// `wire::leaves_to_blob` — plain concatenation loses the leaf
     /// boundaries, which cannot be recovered for variable-length leaves.
     pub action: Option<Vec<Bytes>>,
+    /// The model's action before `transform_action` ran; equals `action` when no
+    /// transform changed it.
+    pub raw_action: Option<Vec<Bytes>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +151,9 @@ pub struct ObservationEmittedEvent {
     /// `wire::leaves_to_blob` — plain concatenation loses the leaf
     /// boundaries, which cannot be recovered for variable-length leaves.
     pub observation: Option<Vec<Bytes>>,
+    /// The env's observation before `transform_observation` ran; equals
+    /// `observation` when no transform changed it.
+    pub raw_observation: Option<Vec<Bytes>>,
 }
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.

@@ -499,11 +499,18 @@ async fn observation_emitted_always_carries_transformed_payload() {
     assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
     // Every emitted observation must be the transformed payload the model
     // actually received, i.e. carry the marker byte.
-    for (_, bytes) in &emitted {
+    for emitted in &emitted {
+        let (bytes, raw) = (&emitted.observation, &emitted.raw_observation);
         assert_eq!(
             bytes.first().copied(),
             Some(MARKER),
             "observation_emitted exposed pre-transform bytes: {bytes:?}"
+        );
+        assert_ne!(bytes, raw);
+        assert_eq!(
+            &bytes[1..],
+            raw.as_slice(),
+            "raw_observation must be the pre-transform bytes"
         );
     }
     // The model received exactly these transformed observations.
@@ -516,7 +523,7 @@ async fn observation_emitted_always_carries_transformed_payload() {
         seen,
         emitted
             .iter()
-            .map(|(_, bytes)| bytes.clone())
+            .map(|emitted| emitted.observation.clone())
             .collect::<Vec<_>>()
     );
 }
@@ -710,6 +717,12 @@ impl RuntimeModel for TestModel {
     }
 }
 
+#[derive(Debug, Clone)]
+struct EmittedObservation {
+    observation: Vec<u8>,
+    raw_observation: Vec<u8>,
+}
+
 #[derive(Default)]
 struct RecordingHooks {
     actions: AtomicUsize,
@@ -719,8 +732,7 @@ struct RecordingHooks {
     // When set, transform_observation prepends this marker byte to every
     // observation it forwards to the model.
     observation_marker: Option<u8>,
-    // Records (is_reset, observation_bytes) for every observation_emitted hook.
-    emitted_observations: Mutex<Vec<(bool, Vec<u8>)>>,
+    emitted_observations: Mutex<Vec<EmittedObservation>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
@@ -770,15 +782,19 @@ impl RuntimeHooks for RecordingHooks {
         &self,
         event: rlmesh_runtime::ObservationEmittedEvent,
     ) -> Result<(), HookError> {
-        let bytes = event
-            .observation
-            .and_then(|leaves| leaves.into_iter().next())
-            .map(|leaf| leaf.to_vec())
-            .unwrap_or_default();
+        let first_leaf = |leaves: Option<Vec<Bytes>>| {
+            leaves
+                .and_then(|leaves| leaves.into_iter().next())
+                .map(|leaf| leaf.to_vec())
+                .unwrap_or_default()
+        };
         self.emitted_observations
             .lock()
             .expect("emitted observation recorder lock poisoned")
-            .push((event.is_reset, bytes));
+            .push(EmittedObservation {
+                observation: first_leaf(event.observation),
+                raw_observation: first_leaf(event.raw_observation),
+            });
         Ok(())
     }
 
