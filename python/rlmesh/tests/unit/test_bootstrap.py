@@ -109,7 +109,7 @@ def test_make_gym_environment_prefers_make_vec() -> None:
 
 
 def test_make_gym_environment_uses_vector_class_fallback() -> None:
-    from rlmesh._bootstrap.gym_support import make_gym_environment
+    from rlmesh._bootstrap.gym_support import EpisodeSeedEnv, make_gym_environment
 
     class AsyncVectorEnv:
         def __init__(self, factories: list[Callable[[], object]]) -> None:
@@ -134,7 +134,9 @@ def test_make_gym_environment_uses_vector_class_fallback() -> None:
     )
 
     assert isinstance(env, AsyncVectorEnv)
-    assert env.envs == [
+    lanes = cast("list[EpisodeSeedEnv]", env.envs)
+    assert all(isinstance(lane, EpisodeSeedEnv) for lane in lanes)
+    assert [lane._env for lane in lanes] == [
         ("VectorEnv-v0", {"seeded": True}),
         ("VectorEnv-v0", {"seeded": True}),
     ]
@@ -496,6 +498,21 @@ def test_vectorize_rejects_unknown_mode() -> None:
 
     with pytest.raises(ValueError, match="vectorization_mode"):
         vectorize(lambda: object(), 2, "Async")
+
+
+def test_episode_seed_env_seeds_autoreset_rolls_deterministically() -> None:
+    from rlmesh._bootstrap.gym_support import EpisodeSeedEnv
+
+    class Env:
+        def reset(self, *, seed: int | None = None, options: object = None):
+            return seed, {}
+
+    env = EpisodeSeedEnv(Env())
+    assert env.reset(seed=7) == (7, {"seed": 7})
+    rolls = [env.reset() for _ in range(2)]
+    assert rolls == [(8, {"seed": 8}), (9, {"seed": 9})]
+    assert env.reset(seed=7) == (7, {"seed": 7})
+    assert env.reset() == (8, {"seed": 8})
 
 
 def test_expect_vectorization_mode_none_means_auto() -> None:

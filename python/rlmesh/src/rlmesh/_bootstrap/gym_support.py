@@ -6,7 +6,48 @@ import importlib
 import inspect
 from collections.abc import Callable, Mapping
 from types import ModuleType
-from typing import cast
+from typing import Any, cast
+
+
+class EpisodeSeedEnv:
+    """Seed autoreset rolls and report every episode's seed as ``info["seed"]``.
+
+    A gym vector env rolls a finished lane with a bare ``reset()``, so the seed of
+    every episode after the first is unknowable to the caller. This wrapper (one
+    per lane) derives it as ``base + ordinal`` from the lane's last explicit seed,
+    keeping the result in the non-negative ``i64`` range the wire carries.
+    """
+
+    def __init__(self, env: Any) -> None:
+        self._env = env
+        self._base: int | None = None
+        self._ordinal = 0
+
+    def reset(self, *, seed: int | None = None, **kwargs: Any) -> object:
+        if seed is not None:
+            self._base, self._ordinal = seed, 0
+        elif self._base is not None:
+            self._ordinal += 1
+            seed = (self._base + self._ordinal) % (1 << 63)
+        result: object = self._env.reset(seed=seed, **kwargs)
+        info = _reset_info(result)
+        if seed is not None and info is not None:
+            info.setdefault("seed", seed)
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._env, name)
+
+
+def _reset_info(result: object) -> dict[str, Any] | None:
+    """The info dict of a gym ``(obs, info)`` reset result, else ``None``."""
+    if isinstance(result, tuple):
+        items = cast("tuple[Any, ...]", result)
+        if len(items) == 2 and isinstance(items[1], dict):
+            return cast("dict[str, Any]", items[1])
+    return None
 
 
 def make_gym_environment(
@@ -67,7 +108,9 @@ def vectorize(
         vector_cls = getattr(vector_module, cls_name, None) if vector_module else None
         if callable(vector_cls):
             factory = cast("Callable[[list[Callable[[], object]]], object]", vector_cls)
-            return factory([make_one for _ in range(num_envs)])
+            return factory(
+                [lambda: EpisodeSeedEnv(make_one()) for _ in range(num_envs)]
+            )
     raise ValueError(
         f"no gym vector env support available for {cls_name}; install gymnasium/gym"
     )
