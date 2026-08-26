@@ -17,7 +17,7 @@ use rlmesh_proto::env::v1::{
 use rlmesh_proto::model::v1::{
     PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
 };
-use rlmesh_proto::spaces::v1::{SpaceSpec, SpaceValue};
+use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, SpaceValue, meta_value};
 use rlmesh_runtime::{
     ActionReceivedEvent, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
     RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeSessionSpec,
@@ -78,6 +78,20 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
     assert!(env.closed.load(Ordering::SeqCst));
     assert!(model.closed.load(Ordering::SeqCst));
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *hooks.step_infos.lock().unwrap(),
+        vec![Some(info_map("phase", "step"))]
+    );
+    assert_eq!(
+        hooks
+            .emitted_observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|emitted| emitted.infos.clone())
+            .collect::<Vec<_>>(),
+        vec![Some(info_map("phase", "reset"))]
+    );
     assert_eq!(hooks.ended.load(Ordering::SeqCst), 1);
 }
 
@@ -600,7 +614,7 @@ impl RuntimeEnv for TestEnv {
         Ok(RuntimeEnvReset {
             response: ResetResponse {
                 observation: Some(leaves_value(payload([1]))),
-                infos: None,
+                infos: Some(info_map("phase", "reset")),
             },
             endpoint_total_ns: None,
         })
@@ -620,7 +634,7 @@ impl RuntimeEnv for TestEnv {
                 rewards: vec![1.0],
                 terminated_mask: vec![u8::from(terminal)],
                 truncated_mask: vec![0],
-                infos: None,
+                infos: Some(info_map("phase", "step")),
                 completed_episodes: terminal
                     .then(|| EpisodeMetadata {
                         episode_id,
@@ -717,10 +731,23 @@ impl RuntimeModel for TestModel {
     }
 }
 
+fn info_map(key: &str, value: &str) -> MetaMap {
+    MetaMap {
+        entries: [(
+            key.to_string(),
+            MetaValue {
+                kind: Some(meta_value::Kind::Text(value.to_string())),
+            },
+        )]
+        .into(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct EmittedObservation {
     observation: Vec<u8>,
     raw_observation: Vec<u8>,
+    infos: Option<MetaMap>,
 }
 
 #[derive(Default)]
@@ -733,6 +760,7 @@ struct RecordingHooks {
     // observation it forwards to the model.
     observation_marker: Option<u8>,
     emitted_observations: Mutex<Vec<EmittedObservation>>,
+    step_infos: Mutex<Vec<Option<MetaMap>>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
@@ -794,7 +822,19 @@ impl RuntimeHooks for RecordingHooks {
             .push(EmittedObservation {
                 observation: first_leaf(event.observation),
                 raw_observation: first_leaf(event.raw_observation),
+                infos: event.infos,
             });
+        Ok(())
+    }
+
+    async fn step_completed(
+        &self,
+        event: rlmesh_runtime::StepCompletedEvent,
+    ) -> Result<(), HookError> {
+        self.step_infos
+            .lock()
+            .expect("step info recorder lock poisoned")
+            .push(event.infos);
         Ok(())
     }
 

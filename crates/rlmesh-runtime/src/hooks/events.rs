@@ -128,6 +128,7 @@ pub struct StepCompletedEvent {
     pub step: i64,
     pub env_index: i32,
     pub rewards: Vec<f64>,
+    pub infos: Option<MetaMap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -154,6 +155,9 @@ pub struct ObservationEmittedEvent {
     /// The env's observation before `transform_observation` ran; equals
     /// `observation` when no transform changed it.
     pub raw_observation: Option<Vec<Bytes>>,
+    /// The env's reset infos when `is_reset`; step infos ride on
+    /// `StepCompletedEvent` instead.
+    pub infos: Option<MetaMap>,
 }
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.
