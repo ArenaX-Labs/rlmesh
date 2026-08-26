@@ -34,6 +34,15 @@ The first release. RLMesh connects models to environments across process, depend
 - Gym vector envs served with `num_envs > 1` report each autoreset episode's seed as `info["seed"]`, derived from the lane's last explicit seed, on both the registry `make_vec` path and the factory fan-out path.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
 
+## [0.1.0-rc.6] - 2026-08-26
+
+### Added
+
+- Runtime hook events `ObservationEmittedEvent` and `ActionReceivedEvent` carry `raw_observation` / `raw_action` alongside the transformed payload, so hooks can record both the pre- and post-transform leaves per step.
+- `StepCompletedEvent` and reset `ObservationEmittedEvent`s carry the env's per-step / reset `infos` map, so hooks see dense rewards, success flags, and task diagnostics as they happen rather than only `final_info` at episode end. Under `NEXT_STEP` autoreset the roll step's `infos` land on the new episode's first `ObservationEmittedEvent`, not on the old episode's `StepCompletedEvent`.
+- `EpisodeStartedEvent` and `EpisodeCompletedEvent` carry the episode's `seed` (`None` when the runtime sent no per-episode seed, e.g. an env-owned `NEXT_STEP` autoreset), so hooks can record it from episode start.
+- Gym vector envs served with `num_envs > 1` report each autoreset episode's seed as `info["seed"]`, derived from the lane's last explicit seed, on both the registry `make_vec` path and the factory fan-out path.
+
 ## [0.1.0-rc.5] - 2026-08-20
 
 ### Added
@@ -74,6 +83,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Batched and chunked prediction now works in local `run()` evals. `run()` drives the same native runtime loop as a served model, so `predict_batch`, `predict_chunk`, and `predict_chunk_batch` activate locally instead of only on the served wire path.
 
 [0.1.0]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0
+[0.1.0-rc.6]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.6
 [0.1.0-rc.5]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.5
 [0.1.0-rc.4]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.4
 [0.1.0-rc.3]: https://github.com/ArenaX-Labs/rlmesh/releases/tag/v0.1.0-rc.3
