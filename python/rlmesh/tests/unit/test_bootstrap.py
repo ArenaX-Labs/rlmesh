@@ -81,7 +81,7 @@ def test_load_environment_falls_back_to_gym_for_missing_env(
 
 
 def test_make_gym_environment_prefers_make_vec() -> None:
-    from rlmesh._bootstrap.gym_support import make_gym_environment
+    from rlmesh._bootstrap.gym_support import episode_seed_env, make_gym_environment
 
     gymnasium = ModuleType("gymnasium")
 
@@ -104,8 +104,45 @@ def test_make_gym_environment_prefers_make_vec() -> None:
 
     assert env == (
         "VectorEnv-v0",
-        {"num_envs": 3, "foo": "bar", "vectorization_mode": "async"},
+        {
+            "num_envs": 3,
+            "foo": "bar",
+            "vectorization_mode": "async",
+            "wrappers": [episode_seed_env],
+        },
     )
+
+
+def test_make_vec_lanes_get_gym_seed_wrapper() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh._bootstrap.gym_support import make_gym_environment
+
+    env = make_gym_environment(
+        gymnasium,
+        env_id="CartPole-v1",
+        kwargs={},
+        num_envs=2,
+        vectorization_mode="sync",
+    )
+    lane = cast("Any", env).envs[0]
+    assert isinstance(lane, gymnasium.Wrapper)
+    assert lane.reset(seed=7)[1]["seed"] == 7
+    assert lane.reset()[1]["seed"] == 8
+
+
+def test_make_vec_auto_mode_keeps_native_vector_entry_point() -> None:
+    gymnasium = pytest.importorskip("gymnasium")
+    from rlmesh._bootstrap.gym_support import make_gym_environment
+
+    env = make_gym_environment(
+        gymnasium,
+        env_id="CartPole-v1",
+        kwargs={},
+        num_envs=2,
+        vectorization_mode=None,
+    )
+    assert not hasattr(env, "envs")
+    assert cast("Any", env).num_envs == 2
 
 
 def test_make_gym_environment_uses_vector_class_fallback() -> None:

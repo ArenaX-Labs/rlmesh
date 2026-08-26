@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 from collections.abc import Callable, Mapping
@@ -16,29 +17,75 @@ class EpisodeSeedEnv:
     every episode after the first is unknowable to the caller. This wrapper (one
     per lane) derives it as ``base + ordinal`` from the lane's last explicit seed,
     keeping the result in the non-negative ``i64`` range the wire carries.
+
+    Duck-typed proxy for any env with ``reset``; :func:`episode_seed_env` picks a
+    real ``gym.Wrapper`` subclass instead when the lane is a ``gym.Env``.
     """
 
     def __init__(self, env: Any) -> None:
         self._env = env
-        self._base: int | None = None
-        self._ordinal = 0
+        self._seeds = _EpisodeSeeds()
 
     def reset(self, *, seed: int | None = None, **kwargs: Any) -> object:
-        if seed is not None:
-            self._base, self._ordinal = seed, 0
-        elif self._base is not None:
-            self._ordinal += 1
-            seed = (self._base + self._ordinal) % (1 << 63)
-        result: object = self._env.reset(seed=seed, **kwargs)
-        info = _reset_info(result)
-        if seed is not None and info is not None:
-            info.setdefault("seed", seed)
-        return result
+        return _seeded_reset(self._seeds, self._env.reset, seed, kwargs)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
         return getattr(self._env, name)
+
+
+def episode_seed_env(env: Any) -> Any:
+    """Wrap one lane in the seed wrapper matching its kind (see ``EpisodeSeedEnv``)."""
+    for module in import_gym_modules():
+        env_cls = getattr(module, "Env", None)
+        wrapper_cls = getattr(module, "Wrapper", None)
+        if isinstance(wrapper_cls, type) and isinstance(env_cls, type):
+            if isinstance(env, env_cls):
+                return _gym_episode_seed_env(wrapper_cls)(env)
+    return EpisodeSeedEnv(env)
+
+
+@functools.cache
+def _gym_episode_seed_env(wrapper_cls: type[Any]) -> type[Any]:
+    class GymEpisodeSeedEnv(wrapper_cls):
+        def __init__(self, env: Any) -> None:
+            super().__init__(env)  # pyright: ignore[reportUnknownMemberType]
+            self._seeds = _EpisodeSeeds()
+
+        def reset(self, *, seed: int | None = None, **kwargs: Any) -> Any:
+            return _seeded_reset(self._seeds, self.env.reset, seed, kwargs)
+
+    return GymEpisodeSeedEnv
+
+
+class _EpisodeSeeds:
+    def __init__(self) -> None:
+        self._base: int | None = None
+        self._ordinal = 0
+
+    def resolve(self, seed: int | None) -> int | None:
+        if seed is not None:
+            self._base, self._ordinal = seed, 0
+            return seed
+        if self._base is None:
+            return None
+        self._ordinal += 1
+        return (self._base + self._ordinal) % (1 << 63)
+
+
+def _seeded_reset(
+    seeds: _EpisodeSeeds,
+    reset: Callable[..., object],
+    seed: int | None,
+    kwargs: Mapping[str, Any],
+) -> object:
+    seed = seeds.resolve(seed)
+    result = reset(seed=seed, **kwargs)
+    info = _reset_info(result)
+    if seed is not None and info is not None:
+        info.setdefault("seed", seed)
+    return result
 
 
 def _reset_info(result: object) -> dict[str, Any] | None:
@@ -69,6 +116,12 @@ def make_gym_environment(
         make_vec_kwargs: dict[str, object] = {"num_envs": num_envs, **env_kwargs}
         if vectorization_mode is not None:
             make_vec_kwargs["vectorization_mode"] = vectorization_mode
+        # gymnasium rejects per-env wrappers when its auto mode picks a native
+        # vector entry point; those envs roll lanes internally, seed unreported.
+        if vectorization_mode is not None or not _has_vector_entry_point(
+            gym_module, env_id
+        ):
+            make_vec_kwargs["wrappers"] = [episode_seed_env]
         return make_vec(env_id, **make_vec_kwargs)
 
     return vectorize(
@@ -109,11 +162,18 @@ def vectorize(
         if callable(vector_cls):
             factory = cast("Callable[[list[Callable[[], object]]], object]", vector_cls)
             return factory(
-                [lambda: EpisodeSeedEnv(make_one()) for _ in range(num_envs)]
+                [lambda: episode_seed_env(make_one()) for _ in range(num_envs)]
             )
     raise ValueError(
         f"no gym vector env support available for {cls_name}; install gymnasium/gym"
     )
+
+
+def _has_vector_entry_point(gym_module: object, env_id: str) -> bool:
+    spec = getattr(gym_module, "spec", None)
+    if not callable(spec):
+        return False
+    return getattr(spec(env_id), "vector_entry_point", None) is not None
 
 
 def import_gym_modules() -> list[ModuleType]:
