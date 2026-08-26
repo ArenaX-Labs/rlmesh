@@ -451,8 +451,13 @@ where
 
         let mut reset_msg =
             state.predict_request(reset_observation.clone(), RequestPhase::ResetObservation);
-        let mut reset_event =
-            self.observation_event(state, state.snapshot(), true, reset_observation.clone());
+        let mut reset_event = self.observation_event(
+            state,
+            state.snapshot(),
+            true,
+            reset_observation.clone(),
+            reset_ok.response.infos.clone(),
+        );
         let transformed_reset_observation = self
             .invoke_transform_observation(telemetry, reset_event.clone())
             .await?;
@@ -554,7 +559,8 @@ where
                 step: action_step,
                 env_index: predict_snapshot.env_index,
                 action_space: Arc::clone(&self.action_space),
-                action: Some(model_action),
+                action: Some(model_action.clone()),
+                raw_action: Some(model_action),
             };
             action_event.action = self
                 .invoke_transform_action(telemetry, action_event.clone())
@@ -604,6 +610,10 @@ where
 
             state.record_step(&step_ok.response.rewards);
             let step_snapshot = state.snapshot();
+            // On an autoreset roll this response carries the NEW episode's reset
+            // observation + infos, which belong on its observation event below,
+            // not on the old episode's step.
+            let rolled = !pending_roll.is_empty();
             fan_out_event!(
                 self,
                 step_completed,
@@ -615,6 +625,11 @@ where
                     step: step_snapshot.step,
                     env_index: step_snapshot.env_index,
                     rewards: step_ok.response.rewards.clone(),
+                    infos: if rolled {
+                        None
+                    } else {
+                        step_ok.response.infos.clone()
+                    },
                 }
             );
 
@@ -726,7 +741,7 @@ where
             // Mode-aware next observation. The reflexive "any lane completed =>
             // reset the whole vector" trigger is gone. That was the category
             // error that cut healthy lanes short.
-            let (next_obs, phase, is_reset_msg) = match self.autoreset_mode() {
+            let (next_obs, phase, is_reset_msg, reset_infos) = match self.autoreset_mode() {
                 // NEXT_STEP (and the unreachable SAME_STEP): the env auto-resets a
                 // done lane itself and the rolled episode ids already arrived via
                 // observe_episode_ids above. The driver is purely observational;
@@ -735,6 +750,11 @@ where
                     step_observation.clone(),
                     RequestPhase::StepObservation,
                     false,
+                    if rolled {
+                        step_ok.response.infos.clone()
+                    } else {
+                        None
+                    },
                 ),
                 // DISABLED (and the single-env default): the env does not
                 // autoreset, so restart the lanes that just completed. When every
@@ -762,6 +782,7 @@ where
                             step_observation.clone(),
                             RequestPhase::StepObservation,
                             false,
+                            None,
                         )
                     } else {
                         reset_generation += 1;
@@ -839,14 +860,24 @@ where
                             state.observe_episode_ids(full)
                         };
                         self.invoke_started_episodes(state, started_episodes).await;
-                        (next_obs, RequestPhase::ResetObservation, true)
+                        (
+                            next_obs,
+                            RequestPhase::ResetObservation,
+                            true,
+                            reset_ok.response.infos.clone(),
+                        )
                     }
                 }
             };
 
             let mut obs_msg = state.predict_request(next_obs.clone(), phase);
-            let mut outgoing_observation_event =
-                self.observation_event(state, state.snapshot(), is_reset_msg, next_obs);
+            let mut outgoing_observation_event = self.observation_event(
+                state,
+                state.snapshot(),
+                is_reset_msg,
+                next_obs,
+                reset_infos,
+            );
             let transformed_observation = self
                 .invoke_transform_observation(telemetry, outgoing_observation_event.clone())
                 .await?;
@@ -942,6 +973,7 @@ where
                     episode_index: record.index,
                     env_index: record.env_index,
                     started_from_auto_reset: record.started_from_auto_reset,
+                    seed: state.seed_for_episode(&episode.episode_id),
                 }
             );
         }
@@ -1049,6 +1081,7 @@ where
                     duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
                         / 1_000_000,
                     final_info: completed.final_info.clone(),
+                    seed,
                 }
             );
         }
@@ -1128,6 +1161,7 @@ where
         snapshot: RouteSnapshot,
         is_reset: bool,
         observation: Option<Vec<Bytes>>,
+        infos: Option<rlmesh_proto::spaces::v1::MetaMap>,
     ) -> ObservationEmittedEvent {
         ObservationEmittedEvent {
             session_id: state.session_id().to_string(),
@@ -1141,7 +1175,9 @@ where
             is_reset,
             num_envs: self.spec.num_envs as u32,
             observation_space: Arc::clone(&self.observation_space),
+            raw_observation: observation.clone(),
             observation,
+            infos,
         }
     }
 }

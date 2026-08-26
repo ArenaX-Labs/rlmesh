@@ -17,7 +17,7 @@ use rlmesh_proto::env::v1::{
 use rlmesh_proto::model::v1::{
     PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
 };
-use rlmesh_proto::spaces::v1::{SpaceSpec, SpaceValue};
+use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, SpaceValue, meta_value};
 use rlmesh_runtime::{
     ActionReceivedEvent, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
     RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeSessionSpec,
@@ -78,6 +78,20 @@ async fn driver_runs_one_episode_and_closes_terminal_route() {
     assert!(env.closed.load(Ordering::SeqCst));
     assert!(model.closed.load(Ordering::SeqCst));
     assert_eq!(hooks.actions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *hooks.step_infos.lock().unwrap(),
+        vec![Some(info_map("phase", "step"))]
+    );
+    assert_eq!(
+        hooks
+            .emitted_observations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|emitted| emitted.infos.clone())
+            .collect::<Vec<_>>(),
+        vec![Some(info_map("phase", "reset"))]
+    );
     assert_eq!(hooks.ended.load(Ordering::SeqCst), 1);
 }
 
@@ -340,11 +354,12 @@ async fn driver_threads_deterministic_reset_seeds() {
 
     let first_env = TestEnv::default();
     let first_model = TestModel::default();
+    let first_hooks = Arc::new(RecordingHooks::default());
     RuntimeDriver::new(
         spec.clone(),
         first_env.clone(),
         first_model,
-        Arc::new(RecordingHooks::default()),
+        first_hooks.clone(),
     )
     .run()
     .await
@@ -378,6 +393,10 @@ async fn driver_threads_deterministic_reset_seeds() {
     assert_eq!(first_seeds[0].len(), 1);
     assert_eq!(first_seeds[1].len(), 1);
     assert_ne!(first_seeds[0], first_seeds[1]);
+    // Both episode events carry the seed the episode was reset with.
+    let seeded: Vec<Option<i64>> = first_seeds.iter().map(|seeds| Some(seeds[0])).collect();
+    assert_eq!(*first_hooks.started_seeds.lock().unwrap(), seeded);
+    assert_eq!(*first_hooks.completed_seeds.lock().unwrap(), seeded);
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -499,11 +518,18 @@ async fn observation_emitted_always_carries_transformed_payload() {
     assert_eq!(emitted.len(), 2, "emitted: {emitted:?}");
     // Every emitted observation must be the transformed payload the model
     // actually received, i.e. carry the marker byte.
-    for (_, bytes) in &emitted {
+    for emitted in &emitted {
+        let (bytes, raw) = (&emitted.observation, &emitted.raw_observation);
         assert_eq!(
             bytes.first().copied(),
             Some(MARKER),
             "observation_emitted exposed pre-transform bytes: {bytes:?}"
+        );
+        assert_ne!(bytes, raw);
+        assert_eq!(
+            &bytes[1..],
+            raw.as_slice(),
+            "raw_observation must be the pre-transform bytes"
         );
     }
     // The model received exactly these transformed observations.
@@ -516,7 +542,7 @@ async fn observation_emitted_always_carries_transformed_payload() {
         seen,
         emitted
             .iter()
-            .map(|(_, bytes)| bytes.clone())
+            .map(|emitted| emitted.observation.clone())
             .collect::<Vec<_>>()
     );
 }
@@ -593,7 +619,7 @@ impl RuntimeEnv for TestEnv {
         Ok(RuntimeEnvReset {
             response: ResetResponse {
                 observation: Some(leaves_value(payload([1]))),
-                infos: None,
+                infos: Some(info_map("phase", "reset")),
             },
             endpoint_total_ns: None,
         })
@@ -613,7 +639,7 @@ impl RuntimeEnv for TestEnv {
                 rewards: vec![1.0],
                 terminated_mask: vec![u8::from(terminal)],
                 truncated_mask: vec![0],
-                infos: None,
+                infos: Some(info_map("phase", "step")),
                 completed_episodes: terminal
                     .then(|| EpisodeMetadata {
                         episode_id,
@@ -710,6 +736,26 @@ impl RuntimeModel for TestModel {
     }
 }
 
+fn info_map(key: &str, value: &str) -> MetaMap {
+    MetaMap {
+        entries: [(
+            key.to_string(),
+            MetaValue {
+                kind: Some(meta_value::Kind::Text(value.to_string())),
+            },
+        )]
+        .into(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EmittedObservation {
+    episode_ids: Vec<String>,
+    observation: Vec<u8>,
+    raw_observation: Vec<u8>,
+    infos: Option<MetaMap>,
+}
+
 #[derive(Default)]
 struct RecordingHooks {
     actions: AtomicUsize,
@@ -719,8 +765,10 @@ struct RecordingHooks {
     // When set, transform_observation prepends this marker byte to every
     // observation it forwards to the model.
     observation_marker: Option<u8>,
-    // Records (is_reset, observation_bytes) for every observation_emitted hook.
-    emitted_observations: Mutex<Vec<(bool, Vec<u8>)>>,
+    emitted_observations: Mutex<Vec<EmittedObservation>>,
+    step_infos: Mutex<Vec<Option<MetaMap>>>,
+    started_seeds: Mutex<Vec<Option<i64>>>,
+    completed_seeds: Mutex<Vec<Option<i64>>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
@@ -770,15 +818,54 @@ impl RuntimeHooks for RecordingHooks {
         &self,
         event: rlmesh_runtime::ObservationEmittedEvent,
     ) -> Result<(), HookError> {
-        let bytes = event
-            .observation
-            .and_then(|leaves| leaves.into_iter().next())
-            .map(|leaf| leaf.to_vec())
-            .unwrap_or_default();
+        let first_leaf = |leaves: Option<Vec<Bytes>>| {
+            leaves
+                .and_then(|leaves| leaves.into_iter().next())
+                .map(|leaf| leaf.to_vec())
+                .unwrap_or_default()
+        };
         self.emitted_observations
             .lock()
             .expect("emitted observation recorder lock poisoned")
-            .push((event.is_reset, bytes));
+            .push(EmittedObservation {
+                episode_ids: event.episode_ids,
+                observation: first_leaf(event.observation),
+                raw_observation: first_leaf(event.raw_observation),
+                infos: event.infos,
+            });
+        Ok(())
+    }
+
+    async fn step_completed(
+        &self,
+        event: rlmesh_runtime::StepCompletedEvent,
+    ) -> Result<(), HookError> {
+        self.step_infos
+            .lock()
+            .expect("step info recorder lock poisoned")
+            .push(event.infos);
+        Ok(())
+    }
+
+    async fn episode_started(
+        &self,
+        event: rlmesh_runtime::EpisodeStartedEvent,
+    ) -> Result<(), HookError> {
+        self.started_seeds
+            .lock()
+            .expect("started seed recorder lock poisoned")
+            .push(event.seed);
+        Ok(())
+    }
+
+    async fn episode_completed(
+        &self,
+        event: rlmesh_runtime::EpisodeCompletedEvent,
+    ) -> Result<(), HookError> {
+        self.completed_seeds
+            .lock()
+            .expect("completed seed recorder lock poisoned")
+            .push(event.seed);
         Ok(())
     }
 
@@ -906,9 +993,11 @@ impl RuntimeEnv for VectorTestEnv {
         let mut rewards = vec![1.0; n];
         let mut terminated_mask = vec![0u8; n];
         let mut completed_episodes = Vec::new();
+        let mut rolled = false;
 
         for lane in 0..n {
             if self.pending_autoreset[lane] {
+                rolled = true;
                 // t+1: the env auto-resets this lane and delivers the fresh obs of
                 // a new episode (step 0, reward 0, terminated=false). It adopts the
                 // rolled id the runtime pushed for this lane.
@@ -941,7 +1030,7 @@ impl RuntimeEnv for VectorTestEnv {
                 rewards,
                 terminated_mask,
                 truncated_mask: vec![0u8; n],
-                infos: None,
+                infos: Some(info_map("phase", if rolled { "roll" } else { "step" })),
                 completed_episodes,
                 env_indices: vec![],
             },
@@ -1020,6 +1109,41 @@ async fn next_step_vector_env_completes_lanes_independently_without_whole_vector
     assert_eq!(
         model.predicts.load(Ordering::SeqCst) as i64,
         report.total_steps
+    );
+}
+
+#[tokio::test]
+async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
+    // Both lanes complete at step 1 and roll at step 2. The step-2 response is
+    // the new episodes' reset observation + infos: those infos belong on the
+    // post-roll observation event (the new episodes' first observation), not on
+    // the step event still attributed to the old episodes.
+    let env = VectorTestEnv::new(vec![1, 1]);
+    let hooks = Arc::new(RecordingHooks::default());
+    RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *hooks.step_infos.lock().unwrap(),
+        vec![
+            Some(info_map("phase", "step")),
+            None,
+            Some(info_map("phase", "step")),
+        ]
+    );
+    let emitted = hooks.emitted_observations.lock().unwrap();
+    assert_eq!(
+        emitted.iter().map(|e| e.infos.clone()).collect::<Vec<_>>(),
+        vec![None, None, Some(info_map("phase", "roll"))]
+    );
+    assert!(
+        emitted[2]
+            .episode_ids
+            .iter()
+            .all(|id| !emitted[1].episode_ids.contains(id)),
+        "post-roll observation carries the new episode ids"
     );
 }
 

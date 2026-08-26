@@ -77,6 +77,7 @@ pub struct EpisodeStartedEvent {
     pub episode_index: i64,
     pub env_index: i32,
     pub started_from_auto_reset: bool,
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +94,7 @@ pub struct EpisodeCompletedEvent {
     pub truncated: bool,
     pub duration_ms: i64,
     pub final_info: Option<MetaMap>,
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +116,9 @@ pub struct ActionReceivedEvent {
     /// `wire::leaves_to_blob` — plain concatenation loses the leaf
     /// boundaries, which cannot be recovered for variable-length leaves.
     pub action: Option<Vec<Bytes>>,
+    /// The model's action before `transform_action` ran; equals `action` when no
+    /// transform changed it.
+    pub raw_action: Option<Vec<Bytes>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +130,7 @@ pub struct StepCompletedEvent {
     pub step: i64,
     pub env_index: i32,
     pub rewards: Vec<f64>,
+    pub infos: Option<MetaMap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +154,12 @@ pub struct ObservationEmittedEvent {
     /// `wire::leaves_to_blob` — plain concatenation loses the leaf
     /// boundaries, which cannot be recovered for variable-length leaves.
     pub observation: Option<Vec<Bytes>>,
+    /// The env's observation before `transform_observation` ran; equals
+    /// `observation` when no transform changed it.
+    pub raw_observation: Option<Vec<Bytes>>,
+    /// The env's reset infos when `is_reset`; step infos ride on
+    /// `StepCompletedEvent` instead.
+    pub infos: Option<MetaMap>,
 }
 
 /// A live telemetry snapshot tagged with the route/session it belongs to.
