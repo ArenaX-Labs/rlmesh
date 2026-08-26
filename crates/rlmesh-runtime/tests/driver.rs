@@ -354,11 +354,12 @@ async fn driver_threads_deterministic_reset_seeds() {
 
     let first_env = TestEnv::default();
     let first_model = TestModel::default();
+    let first_hooks = Arc::new(RecordingHooks::default());
     RuntimeDriver::new(
         spec.clone(),
         first_env.clone(),
         first_model,
-        Arc::new(RecordingHooks::default()),
+        first_hooks.clone(),
     )
     .run()
     .await
@@ -392,6 +393,10 @@ async fn driver_threads_deterministic_reset_seeds() {
     assert_eq!(first_seeds[0].len(), 1);
     assert_eq!(first_seeds[1].len(), 1);
     assert_ne!(first_seeds[0], first_seeds[1]);
+    // Both episode events carry the seed the episode was reset with.
+    let seeded: Vec<Option<i64>> = first_seeds.iter().map(|seeds| Some(seeds[0])).collect();
+    assert_eq!(*first_hooks.started_seeds.lock().unwrap(), seeded);
+    assert_eq!(*first_hooks.completed_seeds.lock().unwrap(), seeded);
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -761,6 +766,8 @@ struct RecordingHooks {
     observation_marker: Option<u8>,
     emitted_observations: Mutex<Vec<EmittedObservation>>,
     step_infos: Mutex<Vec<Option<MetaMap>>>,
+    started_seeds: Mutex<Vec<Option<i64>>>,
+    completed_seeds: Mutex<Vec<Option<i64>>>,
     // Counts of live telemetry snapshots streamed via on_telemetry, by horizon.
     telemetry_windows: AtomicUsize,
     telemetry_sessions: AtomicUsize,
@@ -835,6 +842,28 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("step info recorder lock poisoned")
             .push(event.infos);
+        Ok(())
+    }
+
+    async fn episode_started(
+        &self,
+        event: rlmesh_runtime::EpisodeStartedEvent,
+    ) -> Result<(), HookError> {
+        self.started_seeds
+            .lock()
+            .expect("started seed recorder lock poisoned")
+            .push(event.seed);
+        Ok(())
+    }
+
+    async fn episode_completed(
+        &self,
+        event: rlmesh_runtime::EpisodeCompletedEvent,
+    ) -> Result<(), HookError> {
+        self.completed_seeds
+            .lock()
+            .expect("completed seed recorder lock poisoned")
+            .push(event.seed);
         Ok(())
     }
 

@@ -77,6 +77,7 @@ pub struct EpisodeStartedEvent {
     pub episode_index: i64,
     pub env_index: i32,
     pub started_from_auto_reset: bool,
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +94,7 @@ pub struct EpisodeCompletedEvent {
     pub truncated: bool,
     pub duration_ms: i64,
     pub final_info: Option<MetaMap>,
+    pub seed: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

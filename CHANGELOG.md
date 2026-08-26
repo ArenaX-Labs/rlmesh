@@ -30,6 +30,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Build identity: `rlmesh.__build__` and `rlmesh version` report the commit-stamped workflow edition, so two builds sharing a package version stay distinguishable.
 - Runtime hook events `ObservationEmittedEvent` and `ActionReceivedEvent` carry `raw_observation` / `raw_action` alongside the transformed payload, so hooks can record both the pre- and post-transform leaves per step.
 - `StepCompletedEvent` and reset `ObservationEmittedEvent`s carry the env's per-step / reset `infos` map, so hooks see dense rewards, success flags, and task diagnostics as they happen rather than only `final_info` at episode end.
+- `EpisodeStartedEvent` and `EpisodeCompletedEvent` carry the episode's `seed` (`None` when the runtime sent no per-episode seed, e.g. an env-owned `NEXT_STEP` autoreset), so hooks can record it from episode start.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
 
 ## [0.1.0-rc.5] - 2026-08-20

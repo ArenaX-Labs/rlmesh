@@ -961,6 +961,7 @@ where
                     episode_index: record.index,
                     env_index: record.env_index,
                     started_from_auto_reset: record.started_from_auto_reset,
+                    seed: state.seed_for_episode(&episode.episode_id),
                 }
             );
         }
@@ -1068,6 +1069,7 @@ where
                     duration_ms: (completed.end_timestamp_ns - completed.start_timestamp_ns).max(0)
                         / 1_000_000,
                     final_info: completed.final_info.clone(),
+                    seed,
                 }
             );
         }
