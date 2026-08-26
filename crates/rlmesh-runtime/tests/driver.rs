@@ -750,6 +750,7 @@ fn info_map(key: &str, value: &str) -> MetaMap {
 
 #[derive(Debug, Clone)]
 struct EmittedObservation {
+    episode_ids: Vec<String>,
     observation: Vec<u8>,
     raw_observation: Vec<u8>,
     infos: Option<MetaMap>,
@@ -827,6 +828,7 @@ impl RuntimeHooks for RecordingHooks {
             .lock()
             .expect("emitted observation recorder lock poisoned")
             .push(EmittedObservation {
+                episode_ids: event.episode_ids,
                 observation: first_leaf(event.observation),
                 raw_observation: first_leaf(event.raw_observation),
                 infos: event.infos,
@@ -991,9 +993,11 @@ impl RuntimeEnv for VectorTestEnv {
         let mut rewards = vec![1.0; n];
         let mut terminated_mask = vec![0u8; n];
         let mut completed_episodes = Vec::new();
+        let mut rolled = false;
 
         for lane in 0..n {
             if self.pending_autoreset[lane] {
+                rolled = true;
                 // t+1: the env auto-resets this lane and delivers the fresh obs of
                 // a new episode (step 0, reward 0, terminated=false). It adopts the
                 // rolled id the runtime pushed for this lane.
@@ -1026,7 +1030,7 @@ impl RuntimeEnv for VectorTestEnv {
                 rewards,
                 terminated_mask,
                 truncated_mask: vec![0u8; n],
-                infos: None,
+                infos: Some(info_map("phase", if rolled { "roll" } else { "step" })),
                 completed_episodes,
                 env_indices: vec![],
             },
@@ -1105,6 +1109,41 @@ async fn next_step_vector_env_completes_lanes_independently_without_whole_vector
     assert_eq!(
         model.predicts.load(Ordering::SeqCst) as i64,
         report.total_steps
+    );
+}
+
+#[tokio::test]
+async fn next_step_roll_attributes_reset_infos_to_the_new_episode() {
+    // Both lanes complete at step 1 and roll at step 2. The step-2 response is
+    // the new episodes' reset observation + infos: those infos belong on the
+    // post-roll observation event (the new episodes' first observation), not on
+    // the step event still attributed to the old episodes.
+    let env = VectorTestEnv::new(vec![1, 1]);
+    let hooks = Arc::new(RecordingHooks::default());
+    RuntimeDriver::new(vector_spec(2, 4), env, TestModel::default(), hooks.clone())
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        *hooks.step_infos.lock().unwrap(),
+        vec![
+            Some(info_map("phase", "step")),
+            None,
+            Some(info_map("phase", "step")),
+        ]
+    );
+    let emitted = hooks.emitted_observations.lock().unwrap();
+    assert_eq!(
+        emitted.iter().map(|e| e.infos.clone()).collect::<Vec<_>>(),
+        vec![None, None, Some(info_map("phase", "roll"))]
+    );
+    assert!(
+        emitted[2]
+            .episode_ids
+            .iter()
+            .all(|id| !emitted[1].episode_ids.contains(id)),
+        "post-roll observation carries the new episode ids"
     );
 }
 

@@ -610,6 +610,10 @@ where
 
             state.record_step(&step_ok.response.rewards);
             let step_snapshot = state.snapshot();
+            // On an autoreset roll this response carries the NEW episode's reset
+            // observation + infos, which belong on its observation event below,
+            // not on the old episode's step.
+            let rolled = !pending_roll.is_empty();
             fan_out_event!(
                 self,
                 step_completed,
@@ -621,7 +625,11 @@ where
                     step: step_snapshot.step,
                     env_index: step_snapshot.env_index,
                     rewards: step_ok.response.rewards.clone(),
-                    infos: step_ok.response.infos.clone(),
+                    infos: if rolled {
+                        None
+                    } else {
+                        step_ok.response.infos.clone()
+                    },
                 }
             );
 
@@ -742,7 +750,11 @@ where
                     step_observation.clone(),
                     RequestPhase::StepObservation,
                     false,
-                    None,
+                    if rolled {
+                        step_ok.response.infos.clone()
+                    } else {
+                        None
+                    },
                 ),
                 // DISABLED (and the single-env default): the env does not
                 // autoreset, so restart the lanes that just completed. When every
