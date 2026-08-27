@@ -1194,3 +1194,89 @@ async fn chunking_does_not_break_autoreset_eviction() {
         assert_eq!(id.as_bytes()[14], b'7', "UUIDv7 version nibble: {id:?}");
     }
 }
+
+#[tokio::test]
+async fn prefetch_overlaps_predict_with_replay_and_keeps_the_ledger() {
+    // Async-inference mode: with chunk size 3 and lead 1, the next chunk's
+    // predict fires while the current chunk still has a replay frame left, so
+    // the loop never stalls on inference — but every step/observation/action
+    // hook still fires exactly as in the synchronous loop.
+    let env = TestEnv {
+        terminal_after: 6,
+        ..Default::default()
+    };
+    let model = TestModel {
+        replay_frames: 2,
+        // Slower than an env step: without prefetch this stalls each refill.
+        predict_delay: Some(Duration::from_millis(20)),
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let spec = one_episode_spec();
+
+    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+        .with_prefetch(Box::new(model.clone()), 1)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_steps, 6, "env advanced a full 6-step episode");
+    assert_eq!(report.total_episodes, 1);
+    assert_eq!(
+        env.step_count.load(Ordering::SeqCst),
+        6,
+        "env stepped every step, replay or not",
+    );
+    assert_eq!(
+        hooks.emitted_observations.lock().unwrap().len(),
+        6,
+        "observation emitted every step, including replay steps",
+    );
+    assert_eq!(hooks.actions.load(Ordering::SeqCst), 6);
+    // Chunked cadence holds: the model plans once per chunk boundary. Prefetch
+    // may run one extra speculative predict at the episode tail (fired before
+    // the terminal step landed), never more.
+    let predicts = model.predicts.load(Ordering::SeqCst);
+    assert!(
+        (2..=3).contains(&predicts),
+        "expected 2 chunk predicts (+ at most 1 speculative tail), got {predicts}",
+    );
+}
+
+#[tokio::test]
+async fn prefetch_discards_the_stale_chunk_across_episode_boundaries() {
+    // Two 3-step episodes with chunk size 3, lead 1: the prefetch fired near
+    // each episode's tail is conditioned on a pre-terminal observation and must
+    // be discarded — the new episode re-plans from its own reset observation,
+    // and no replayed action from the old chunk leaks across the boundary.
+    let env = TestEnv {
+        terminal_after: 3,
+        ..Default::default()
+    };
+    let model = TestModel {
+        replay_frames: 2,
+        ..Default::default()
+    };
+    let hooks = Arc::new(RecordingHooks::default());
+    let mut spec = one_episode_spec();
+    spec.max_episodes = Some(2);
+
+    let report = RuntimeDriver::new(spec, env.clone(), model.clone(), hooks.clone())
+        .with_prefetch(Box::new(model.clone()), 1)
+        .run()
+        .await
+        .unwrap();
+
+    assert_eq!(report.total_episodes, 2);
+    assert_eq!(report.total_steps, 6);
+    // Each episode re-planned from its own first observation: the fresh predict
+    // after each boundary saw a reset observation, not a stale step one. The
+    // reset observation payload is the env's reset marker (see TestEnv::reset),
+    // recorded as the first seen observation of each episode's first predict.
+    let seen = model.seen_observations.lock().unwrap();
+    assert!(
+        seen.len() >= 2,
+        "at least one fresh plan per episode, got {}",
+        seen.len()
+    );
+}

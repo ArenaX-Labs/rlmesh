@@ -16,7 +16,7 @@ use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
 };
 use rlmesh_proto::model::v1::{
-    PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
+    AdapterContext, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
 };
 use rlmesh_proto::spaces::v1::SpaceValue;
 use tokio_util::sync::CancellationToken;
@@ -186,6 +186,18 @@ pub struct RuntimeDriver<E, M> {
     spec: RuntimeSessionSpec,
     env: E,
     model: M,
+    /// Async-inference mode: a second model handle predicts the next chunk in
+    /// the background while the current chunk's replay frames execute. Opt-in
+    /// via [`with_prefetch`](RuntimeDriver::with_prefetch); `None` keeps the
+    /// benchmark-faithful predict-then-step loop. Boxed so the background task
+    /// owns a `'static` handle without constraining `M` (borrowed drivers stay
+    /// legal).
+    prefetch_model: Option<Box<dyn RuntimeModel + Send>>,
+    /// Fire the background predict when this many replay frames remain (0 =
+    /// prefetch off). The prefetched chunk is conditioned on the observation
+    /// current at fire time, so it is up to `prefetch_lead` steps stale —
+    /// deployment-realistic async semantics, not the benchmark loop.
+    prefetch_lead: u32,
     hooks: Arc<dyn RuntimeHooks>,
     cancellation_reason: String,
     /// Action/observation space specs shared into every per-step hook event.
@@ -205,12 +217,27 @@ where
             spec,
             env,
             model,
+            prefetch_model: None,
+            prefetch_lead: 0,
             hooks,
             cancellation_reason: DEFAULT_CANCELLATION_REASON.to_string(),
             // Filled from the validated spec at run time; default until then.
             action_space: Arc::default(),
             observation_space: Arc::default(),
         }
+    }
+
+    /// Enable async inference: predict the next action chunk on `model` while
+    /// the current chunk's replay frames execute, firing when `lead` frames
+    /// remain. The prefetched chunk sees an observation up to `lead` steps
+    /// stale, so results are NOT comparable to the synchronous loop — callers
+    /// must label runs accordingly. `lead == 0` leaves prefetch off.
+    pub fn with_prefetch(mut self, model: Box<dyn RuntimeModel + Send>, lead: u32) -> Self {
+        if lead > 0 {
+            self.prefetch_model = Some(model);
+            self.prefetch_lead = lead;
+        }
+        self
     }
 
     /// Reset seeds for the lanes a reset restarts: explicit `episode_seeds`
@@ -477,6 +504,14 @@ where
         let mut replay_buffer: std::collections::VecDeque<Vec<Bytes>> =
             std::collections::VecDeque::new();
 
+        // In-flight background predict (async-inference mode): the join handle
+        // returns the prefetch model handle so it can be reused, plus the
+        // predict result. `stale` marks a prefetch conditioned on an
+        // observation from before an episode boundary; its result is discarded
+        // (one wasted forward per boundary) and the loop re-plans fresh.
+        let mut prefetch_inflight: Option<PrefetchInflight> = None;
+        let mut prefetch_stale = false;
+
         loop {
             let round_started = Instant::now();
             if cancellation.is_cancelled() {
@@ -492,24 +527,72 @@ where
             // so a replay step still feeds the observation ledger.
             if replay_buffer.is_empty() {
                 let predict_timeout = self.spec.limits.model_predict_timeout;
-                let expected_context = pending_observation_msg.context.clone();
-                let predict_request_bytes = pending_observation_msg.encoded_len() as u64;
-                let predict_started = Instant::now();
-                let action_msg = await_runtime_operation(
-                    cancellation,
-                    predict_timeout,
-                    RuntimeError::operation_timeout(
-                        state.env_id(),
-                        state.model_component_id(),
-                        "model.predict",
-                        predict_snapshot.step,
+                // Consume the in-flight background predict first: fresh, it IS
+                // this refill (near-zero experienced wait); stale (an episode
+                // boundary passed since it fired), recover the handle, discard
+                // the result, and re-plan synchronously from the current
+                // observation.
+                let mut prefetched: Option<(RuntimeModelPrediction, Option<AdapterContext>, u64)> =
+                    None;
+                if let Some(inflight) = prefetch_inflight.take() {
+                    let step = predict_snapshot.step;
+                    let (model, result) = await_runtime_operation(
+                        cancellation,
                         predict_timeout,
-                    ),
-                    self.cancelled_error(state, predict_snapshot.step),
-                    self.model.predict(pending_observation_msg),
-                )
-                .await?;
-                let predict_rpc = predict_started.elapsed();
+                        RuntimeError::operation_timeout(
+                            state.env_id(),
+                            state.model_component_id(),
+                            "model.predict",
+                            step,
+                            predict_timeout,
+                        ),
+                        self.cancelled_error(state, step),
+                        join_prefetch(inflight.join, state.model_component_id()),
+                    )
+                    .await?;
+                    self.prefetch_model = Some(model);
+                    if !prefetch_stale {
+                        prefetched =
+                            Some((result?, inflight.expected_context, inflight.request_bytes));
+                    }
+                }
+                prefetch_stale = false;
+                let (action_msg, expected_context, predict_request_bytes, predict_rpc) =
+                    match prefetched {
+                        Some((chunk, context, bytes)) => {
+                            // Experienced wait only: the inference ran behind
+                            // the replay frames, so rpc.total records what the
+                            // loop actually stalled, while endpoint totals keep
+                            // the true inference cost.
+                            (chunk, context, bytes, Duration::ZERO)
+                        }
+                        None => {
+                            let expected_context = pending_observation_msg.context.clone();
+                            let predict_request_bytes =
+                                pending_observation_msg.encoded_len() as u64;
+                            let predict_started = Instant::now();
+                            let action_msg = await_runtime_operation(
+                                cancellation,
+                                predict_timeout,
+                                RuntimeError::operation_timeout(
+                                    state.env_id(),
+                                    state.model_component_id(),
+                                    "model.predict",
+                                    predict_snapshot.step,
+                                    predict_timeout,
+                                ),
+                                self.cancelled_error(state, predict_snapshot.step),
+                                self.model.predict(pending_observation_msg),
+                            )
+                            .await?;
+                            (
+                                action_msg,
+                                expected_context,
+                                predict_request_bytes,
+                                predict_started.elapsed(),
+                            )
+                        }
+                    };
                 if action_msg.response.context != expected_context {
                     let request_id = expected_context
                         .as_ref()
@@ -671,6 +754,10 @@ where
             // next step (receding horizon on reset). No-op when not chunking.
             if !completed_episodes.is_empty() {
                 replay_buffer.clear();
+                // A background predict in flight was conditioned on an
+                // observation from the ended episode; its chunk must not leak
+                // into the new one.
+                prefetch_stale = true;
             }
 
             // Under NEXT_STEP, a lane that completed this step (t) autoresets at
@@ -889,6 +976,29 @@ where
             fan_out_event!(self, observation_emitted, outgoing_observation_event);
 
             pending_observation_msg = obs_msg;
+
+            // Async-inference mode: with `prefetch_lead` (or fewer) replay
+            // frames left, predict the next chunk in the background from the
+            // observation just built — up to `lead` steps stale by the time it
+            // applies, which is the documented async trade.
+            if self.prefetch_lead > 0
+                && prefetch_inflight.is_none()
+                && replay_buffer.len() <= self.prefetch_lead as usize
+                && let Some(mut model) = self.prefetch_model.take()
+            {
+                let request = pending_observation_msg.clone();
+                let expected_context = request.context.clone();
+                let request_bytes = request.encoded_len() as u64;
+                let join = tokio::spawn(async move {
+                    let result = model.predict(request).await;
+                    (model, result)
+                });
+                prefetch_inflight = Some(PrefetchInflight {
+                    join,
+                    expected_context,
+                    request_bytes,
+                });
+            }
             lock_agg(telemetry).record(Sample::dur(
                 SRC_ROUND,
                 metrics::RPC_TOTAL,
@@ -1212,6 +1322,31 @@ fn deterministic_reset_seed(
     hash = update(hash, &[0xfc]);
     hash = update(hash, &(env_index as u64).to_le_bytes());
     (hash & i64::MAX as u64) as i64
+}
+
+/// An in-flight background predict (async-inference mode): the spawned task
+/// hands the prefetch model handle back alongside its result so the handle is
+/// reused across chunks.
+type PrefetchOutcome = (
+    Box<dyn RuntimeModel + Send>,
+    Result<RuntimeModelPrediction, RuntimeError>,
+);
+
+struct PrefetchInflight {
+    join: tokio::task::JoinHandle<PrefetchOutcome>,
+    expected_context: Option<AdapterContext>,
+    request_bytes: u64,
+}
+
+async fn join_prefetch(
+    join: tokio::task::JoinHandle<PrefetchOutcome>,
+    model_component_id: &str,
+) -> Result<PrefetchOutcome, RuntimeError> {
+    join.await.map_err(|error| {
+        RuntimeError::Protocol(format!(
+            "model endpoint {model_component_id}: background predict task failed: {error}"
+        ))
+    })
 }
 
 async fn await_runtime_operation<T, F>(
