@@ -713,6 +713,7 @@ async fn handle_env_request<E: Environment>(
         decode_ns: EndpointPhases::reported(phases.decode_ns),
         user_ns: EndpointPhases::reported(phases.user_ns),
         encode_ns: EndpointPhases::reported(phases.encode_ns),
+        lane_skew_ns: EndpointPhases::reported(phases.lane_skew_ns),
         request_id,
     };
     tracing::debug!(

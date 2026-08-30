@@ -429,7 +429,7 @@ pub mod model {
 ///
 /// Zero is "not measured": a peer built before these fields existed sends none
 /// of them, and a reader sees this default. `queue_ns`/`in_flight` are model-only
-/// (the env server handles one request at a time).
+/// (the env server handles one request at a time); `lane_skew_ns` is env-only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EndpointPhases {
     /// Decoding the request off the wire.
@@ -442,6 +442,9 @@ pub struct EndpointPhases {
     pub queue_ns: u64,
     /// Requests holding a concurrency slot when the handler started (>= 1).
     pub in_flight: u32,
+    /// Straggler skew across a vector env's lanes for this op — see
+    /// [`lane_skew_ns`]. Env-only, and zero when the env does not time its lanes.
+    pub lane_skew_ns: u64,
 }
 
 impl EndpointPhases {
@@ -473,11 +476,13 @@ impl EndpointPhases {
     /// encode accumulate down the stack and `user_ns` narrows to the innermost
     /// work; an inner layer that measures nothing leaves the whole call there.
     pub fn nest(decode_ns: u64, call_ns: u64, encode_ns: u64, inner: Self) -> Self {
+        // Lane skew is the inner env's alone; an outer layer never measures it.
         if inner.user_ns == 0 {
             return Self {
                 decode_ns,
                 user_ns: call_ns,
                 encode_ns,
+                lane_skew_ns: inner.lane_skew_ns,
                 ..Self::default()
             };
         }
@@ -485,6 +490,7 @@ impl EndpointPhases {
             decode_ns: decode_ns.saturating_add(inner.decode_ns),
             user_ns: inner.user_ns,
             encode_ns: encode_ns.saturating_add(inner.encode_ns),
+            lane_skew_ns: inner.lane_skew_ns,
             ..Self::default()
         }
     }
@@ -495,6 +501,7 @@ impl EndpointPhases {
             decode_ns: response.decode_ns.unwrap_or(0),
             user_ns: response.user_ns.unwrap_or(0),
             encode_ns: response.encode_ns.unwrap_or(0),
+            lane_skew_ns: response.lane_skew_ns.unwrap_or(0),
             ..Self::default()
         }
     }
@@ -507,6 +514,7 @@ impl EndpointPhases {
             encode_ns: response.encode_ns.unwrap_or(0),
             queue_ns: response.queue_ns.unwrap_or(0),
             in_flight: response.in_flight.unwrap_or(0),
+            ..Self::default()
         }
     }
 }
@@ -514,6 +522,32 @@ impl EndpointPhases {
 /// Nanoseconds elapsed since `started_at`, saturating instead of wrapping.
 pub fn elapsed_ns(started_at: std::time::Instant) -> u64 {
     started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
+/// Straggler skew across a vector env's lanes for one op: how much longer the
+/// slowest lane took than the median lane, in nanoseconds.
+///
+/// One scalar per op, so a 32-lane env costs one metric rather than 32 series,
+/// and the aggregator's p50/p95/p99 over it answer how often and how badly a
+/// single lane gates the batch the other lanes ride in. A shifted-but-even
+/// vector reads zero; one bad lane among healthy ones reads its full excess.
+///
+/// `lane_ns` is reordered in place and never grown — pass a scratch buffer the
+/// env keeps across steps. Fewer than two lanes have nothing to compare and
+/// read zero. The median is the lower one for an even lane count, so a
+/// two-lane vector still reports its straggler.
+pub fn lane_skew_ns(lane_ns: &mut [u64]) -> u64 {
+    if lane_ns.len() < 2 {
+        return 0;
+    }
+    let (_, median, slower) = lane_ns.select_nth_unstable((lane_ns.len() - 1) / 2);
+    let median = *median;
+    slower
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(median)
+        .saturating_sub(median)
 }
 
 #[cfg(test)]
@@ -565,8 +599,17 @@ mod tests {
                 encode_ns: 30,
                 queue_ns: 40,
                 in_flight: 3,
+                lane_skew_ns: 0,
             }
         );
+
+        // Lane skew rides the env response only.
+        let skewed = env::v1::JoinResponse {
+            endpoint_total_ns: Some(1_000),
+            lane_skew_ns: Some(880),
+            ..Default::default()
+        };
+        assert_eq!(EndpointPhases::from_env_response(&skewed).lane_skew_ns, 880);
 
         // An unmeasured phase is left off the wire rather than sent as a zero.
         assert_eq!(EndpointPhases::reported(0), None);
@@ -605,6 +648,44 @@ mod tests {
                 ..EndpointPhases::default()
             }
         );
+    }
+
+    #[test]
+    fn lane_skew_is_the_slowest_lane_over_the_median_one() {
+        use super::lane_skew_ns;
+
+        // One straggler among healthy lanes: its full excess over a typical lane.
+        assert_eq!(lane_skew_ns(&mut [10, 10, 10, 10, 10, 10, 10, 900]), 890);
+        // An evenly slow vector is not a straggler — the whole distribution moved,
+        // which `endpoint.user` already shows.
+        assert_eq!(lane_skew_ns(&mut [900; 8]), 0);
+        // Two lanes compare against the faster one, so the straggler still reads.
+        assert_eq!(lane_skew_ns(&mut [10, 100]), 90);
+        // A lane faster than its peers is not skew.
+        assert_eq!(lane_skew_ns(&mut [1, 100, 100, 100]), 0);
+        // Nothing to compare.
+        assert_eq!(lane_skew_ns(&mut [42]), 0);
+        assert_eq!(lane_skew_ns(&mut []), 0);
+    }
+
+    #[test]
+    fn nesting_keeps_the_inner_envs_lane_skew() {
+        use super::EndpointPhases;
+
+        let measured = EndpointPhases {
+            user_ns: 5,
+            lane_skew_ns: 77,
+            ..EndpointPhases::default()
+        };
+        assert_eq!(EndpointPhases::nest(1, 10, 2, measured).lane_skew_ns, 77);
+
+        // An env that times its lanes but reports no split of its own still gets
+        // the skew through.
+        let skew_only = EndpointPhases {
+            lane_skew_ns: 77,
+            ..EndpointPhases::default()
+        };
+        assert_eq!(EndpointPhases::nest(1, 10, 2, skew_only).lane_skew_ns, 77);
     }
 
     fn offer(editions: &[&str]) -> Vec<String> {

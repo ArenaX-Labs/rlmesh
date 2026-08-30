@@ -1499,6 +1499,7 @@ fn record_op(
         (metrics::ENDPOINT_USER, peer.phases.user_ns),
         (metrics::ENDPOINT_ENCODE, peer.phases.encode_ns),
         (metrics::PREDICT_QUEUE, peer.phases.queue_ns),
+        (metrics::LANE_SKEW, peer.phases.lane_skew_ns),
     ] {
         if ns != 0 {
             agg.record(Sample::dur(src, metric, Duration::from_nanos(ns)));

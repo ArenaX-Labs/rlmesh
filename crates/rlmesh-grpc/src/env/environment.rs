@@ -1,11 +1,11 @@
 //! Environment trait for environments served over RLMesh gRPC.
 
 use async_trait::async_trait;
-pub use rlmesh_proto::EndpointPhases;
 pub use rlmesh_proto::env::v1::{
     CloseEnvsResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
 };
+pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
 
 use crate::error::{EnvError, EnvErrorCode};

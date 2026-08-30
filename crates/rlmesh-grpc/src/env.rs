@@ -12,7 +12,7 @@ mod wire;
 pub use client::{EnvClient, EnvHandshake};
 pub use environment::{
     CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
-    ResetResponse, StepRequest, StepResponse,
+    ResetResponse, StepRequest, StepResponse, lane_skew_ns,
 };
 pub use server::{GrpcEnvServer, env_service, env_service_from_shared, serve};
 

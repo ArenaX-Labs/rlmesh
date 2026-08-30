@@ -600,6 +600,7 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
             encode_ns: 1_000_000,
             queue_ns: 4_000_000,
             in_flight: 7,
+            lane_skew_ns: 0,
         },
         ..TestModel::default()
     };
@@ -636,6 +637,41 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
 }
 
 #[tokio::test]
+async fn a_straggler_lane_records_its_skew_over_the_median_lane() {
+    // A vector env timing its own lanes stamps one dispersion scalar per step,
+    // so a single slow lane among healthy ones is visible without a series per
+    // lane. The env is otherwise silent: skew does not depend on a phase split.
+    let env = TestEnv {
+        phases: EndpointPhases {
+            lane_skew_ns: 8_000_000,
+            ..EndpointPhases::default()
+        },
+        ..TestEnv::default()
+    };
+
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let skew = |op: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .find(|row| row.metric.name == "lane.skew" && row.source.op == op)
+    };
+    assert_eq!(skew("env.step").expect("env.step lane.skew").avg, 8.0);
+    // Only the env reports lanes.
+    assert!(skew("model.predict").is_none());
+}
+
+#[tokio::test]
 async fn a_peer_that_reports_no_phases_records_only_the_total() {
     // An older peer stamps `endpoint_total_ns` and nothing else: the phase fields
     // arrive absent, decode to zero, and record no rows at all.
@@ -667,6 +703,7 @@ async fn a_peer_that_reports_no_phases_records_only_the_total() {
         "endpoint.encode",
         "predict.queue",
         "predict.in_flight",
+        "lane.skew",
     ] {
         assert!(!recorded(metric), "{metric} must stay unrecorded");
     }

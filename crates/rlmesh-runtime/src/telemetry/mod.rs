@@ -76,6 +76,11 @@ pub mod metrics {
     /// Lanes fused into the model forward this predict rode in (1 = unfused;
     /// recorded only when the transport reports it — grouped/coalesced predicts).
     pub const GROUP_SIZE: Metric = Metric::count("group.size");
+    /// How much longer a vector env's slowest lane took than its median lane on
+    /// this op — the straggler cost the whole batch pays, which the `env.step`
+    /// aggregate only blurs. One dispersion sample per op, never a series per
+    /// lane; recorded only for an env that times its own lanes.
+    pub const LANE_SKEW: Metric = Metric::duration("lane.skew");
 
     /// The cardinality allowlist — derived from the catalog, not a second table.
     pub const ALL: &[Metric] = &[
@@ -89,6 +94,7 @@ pub mod metrics {
         REQUEST_BYTES,
         RESPONSE_BYTES,
         GROUP_SIZE,
+        LANE_SKEW,
     ];
 }
 
