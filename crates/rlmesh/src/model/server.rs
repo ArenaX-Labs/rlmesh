@@ -398,6 +398,14 @@ pub(super) struct Admission {
 }
 
 impl Admission {
+    /// Slot depth alone, for a path that never reached a handler to be timed.
+    fn depth_only(self) -> EndpointPhases {
+        EndpointPhases {
+            in_flight: self.in_flight,
+            ..EndpointPhases::default()
+        }
+    }
+
     /// A dispatch with no read loop above it, so nothing to report but the clock.
     #[cfg(test)]
     pub(super) fn now() -> Self {
@@ -468,16 +476,12 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     if let Some(route_setup) = route_setup.as_deref()
                         && let Err(error) = route_setup.release_adapter(&env_id).await
                     {
-                        return JoinResponse {
-                            kind: Some(model_error(error.to_string())),
-                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
-                            decode_ns: None,
-                            user_ns: None,
-                            encode_ns: None,
-                            queue_ns: None,
-                            in_flight: None,
+                        return model_join_response(
+                            Some(model_error(error.to_string())),
+                            started_at,
+                            admission.depth_only(),
                             request_id,
-                        };
+                        );
                     }
                     Some(join_response::Kind::ReleaseAdapter(
                         ReleaseAdapterResponse {},
@@ -494,16 +498,12 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             if let Some(route_setup) = route_setup.as_deref() {
                 for env_id in &env_ids {
                     if let Err(error) = route_setup.release_adapter(env_id).await {
-                        return JoinResponse {
-                            kind: Some(model_error_from_error(&error)),
-                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
-                            decode_ns: None,
-                            user_ns: None,
-                            encode_ns: None,
-                            queue_ns: None,
-                            in_flight: None,
+                        return model_join_response(
+                            Some(model_error_from_error(&error)),
+                            started_at,
+                            admission.depth_only(),
                             request_id,
-                        };
+                        );
                     }
                 }
             }
@@ -521,6 +521,18 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     };
     phases.in_flight = admission.in_flight;
 
+    model_join_response(kind, started_at, phases, request_id)
+}
+
+/// Build the response envelope: the endpoint-local total, whatever of its split
+/// was measured, and the correlation id. An unmeasured phase is left off the
+/// wire, so a handler that reports nothing looks exactly as it always did.
+fn model_join_response(
+    kind: Option<join_response::Kind>,
+    started_at: Instant,
+    phases: EndpointPhases,
+    request_id: String,
+) -> JoinResponse {
     JoinResponse {
         kind,
         endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
