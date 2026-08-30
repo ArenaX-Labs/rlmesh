@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::TcpListenerStream;
 
-use super::server::{ModelRouteConfig, handle_model_request};
+use super::server::{Admission, ModelRouteConfig, handle_model_request};
 use super::*;
 use crate::{BindAddress, ConnectAddress, Result, ServeOptions, spaces};
 
@@ -285,6 +285,7 @@ async fn served_model_resolve_adapter_requires_env_spec() {
         })),
         None,
         Arc::new(Mutex::new(HashMap::new())),
+        Admission::now(),
     )
     .await;
 
@@ -322,6 +323,7 @@ async fn served_model_predict_mirrors_route_context() {
                 floor: None,
             },
         )]))),
+        Admission::now(),
     )
     .await;
 
@@ -374,6 +376,7 @@ async fn served_model_predict_uses_episode_id_count_as_lane_count() {
                 floor: None,
             },
         )]))),
+        Admission::now(),
     )
     .await;
 
@@ -503,6 +506,7 @@ async fn grouped_predict_processes_each_group_against_its_own_route() {
         Arc::clone(&handler),
         None,
         Arc::clone(&configs),
+        Admission::now(),
     )
     .await;
 
@@ -605,6 +609,7 @@ async fn grouped_predict_carries_each_groups_own_chunk_frames() {
         Arc::clone(&handler),
         None,
         Arc::clone(&configs),
+        Admission::now(),
     )
     .await;
 
@@ -659,6 +664,7 @@ async fn grouped_predict_isolates_a_single_group_failure() {
         Arc::clone(&handler),
         None,
         Arc::clone(&configs),
+        Admission::now(),
     )
     .await;
 
@@ -757,6 +763,7 @@ async fn served_model_release_adapter_tears_down_only_its_env() {
         })),
         Some(Arc::clone(&route_setup)),
         Arc::clone(&route_configs),
+        Admission::now(),
     )
     .await;
 
@@ -808,6 +815,7 @@ async fn served_model_close_releases_every_adapter() {
         })),
         Some(Arc::clone(&route_setup)),
         Arc::clone(&route_configs),
+        Admission::now(),
     )
     .await;
 
@@ -2041,6 +2049,7 @@ async fn grouped_predict_carries_chunk_replay_frames() {
         Arc::clone(&handler),
         None,
         Arc::clone(&configs),
+        Admission::now(),
     )
     .await;
 
