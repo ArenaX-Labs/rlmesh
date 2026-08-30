@@ -428,6 +428,11 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                         return JoinResponse {
                             kind: Some(model_error(error.to_string())),
                             endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+                            decode_ns: None,
+                            user_ns: None,
+                            encode_ns: None,
+                            queue_ns: None,
+                            in_flight: None,
                             request_id,
                         };
                     }
@@ -449,6 +454,11 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                         return JoinResponse {
                             kind: Some(model_error_from_error(&error)),
                             endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+                            decode_ns: None,
+                            user_ns: None,
+                            encode_ns: None,
+                            queue_ns: None,
+                            in_flight: None,
                             request_id,
                         };
                     }
@@ -470,6 +480,11 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     JoinResponse {
         kind,
         endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+        decode_ns: None,
+        user_ns: None,
+        encode_ns: None,
+        queue_ns: None,
+        in_flight: None,
         request_id,
     }
 }

@@ -705,6 +705,9 @@ async fn handle_env_request<E: Environment>(
                 .as_nanos()
                 .min(u128::from(u64::MAX)) as u64,
         ),
+        decode_ns: None,
+        user_ns: None,
+        encode_ns: None,
         request_id,
     };
     tracing::debug!(

@@ -424,6 +424,60 @@ pub mod model {
     }
 }
 
+/// The endpoint-local split of `JoinResponse.endpoint_total_ns` (ns), plus the
+/// pre-handler wait and slot depth a pipelining model endpoint reports.
+///
+/// Zero is "not measured": a peer built before these fields existed sends none
+/// of them, and a reader sees this default. `queue_ns`/`in_flight` are model-only
+/// (the env server handles one request at a time).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EndpointPhases {
+    /// Decoding the request off the wire.
+    pub decode_ns: u64,
+    /// The env or model implementation's own work, user code included.
+    pub user_ns: u64,
+    /// Encoding the response onto the wire.
+    pub encode_ns: u64,
+    /// Wait before the handler ran: concurrency permit, route gate, handler lock.
+    pub queue_ns: u64,
+    /// Requests holding a concurrency slot when the handler started (>= 1).
+    pub in_flight: u32,
+}
+
+impl EndpointPhases {
+    /// Wire form of a measurement: an unmeasured (zero) phase is left off the
+    /// message rather than sent as a `0` a reader cannot tell from silence.
+    pub fn reported(ns: u64) -> Option<u64> {
+        (ns != 0).then_some(ns)
+    }
+
+    /// Read the split an env peer stamped; all-zero for a peer that sends none.
+    pub fn from_env_response(response: &env::v1::JoinResponse) -> Self {
+        Self {
+            decode_ns: response.decode_ns.unwrap_or(0),
+            user_ns: response.user_ns.unwrap_or(0),
+            encode_ns: response.encode_ns.unwrap_or(0),
+            ..Self::default()
+        }
+    }
+
+    /// Read the split a model peer stamped; all-zero for a peer that sends none.
+    pub fn from_model_response(response: &model::v1::JoinResponse) -> Self {
+        Self {
+            decode_ns: response.decode_ns.unwrap_or(0),
+            user_ns: response.user_ns.unwrap_or(0),
+            encode_ns: response.encode_ns.unwrap_or(0),
+            queue_ns: response.queue_ns.unwrap_or(0),
+            in_flight: response.in_flight.unwrap_or(0),
+        }
+    }
+}
+
+/// Nanoseconds elapsed since `started_at`, saturating instead of wrapping.
+pub fn elapsed_ns(started_at: std::time::Instant) -> u64 {
+    started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
