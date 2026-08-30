@@ -451,6 +451,44 @@ impl EndpointPhases {
         (ns != 0).then_some(ns)
     }
 
+    /// Build a split from measured phase durations, saturating at `u64::MAX` ns.
+    pub fn from_durations(
+        decode: std::time::Duration,
+        user: std::time::Duration,
+        encode: std::time::Duration,
+    ) -> Self {
+        fn ns(duration: std::time::Duration) -> u64 {
+            duration.as_nanos().min(u128::from(u64::MAX)) as u64
+        }
+        Self {
+            decode_ns: ns(decode),
+            user_ns: ns(user),
+            encode_ns: ns(encode),
+            ..Self::default()
+        }
+    }
+
+    /// Fold an inner layer's own split into this layer's decode/call/encode
+    /// measurement. The inner split replaces the opaque call, so decode and
+    /// encode accumulate down the stack and `user_ns` narrows to the innermost
+    /// work; an inner layer that measures nothing leaves the whole call there.
+    pub fn nest(decode_ns: u64, call_ns: u64, encode_ns: u64, inner: Self) -> Self {
+        if inner.user_ns == 0 {
+            return Self {
+                decode_ns,
+                user_ns: call_ns,
+                encode_ns,
+                ..Self::default()
+            };
+        }
+        Self {
+            decode_ns: decode_ns.saturating_add(inner.decode_ns),
+            user_ns: inner.user_ns,
+            encode_ns: encode_ns.saturating_add(inner.encode_ns),
+            ..Self::default()
+        }
+    }
+
     /// Read the split an env peer stamped; all-zero for a peer that sends none.
     pub fn from_env_response(response: &env::v1::JoinResponse) -> Self {
         Self {

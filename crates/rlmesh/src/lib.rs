@@ -122,9 +122,9 @@ pub mod spaces;
 
 pub use address::{BindAddress, ConnectAddress};
 pub use env::{
-    BoundEnvServer, CloseRequest, CloseResult, Env, EnvServer, EpisodeMetadata, RemoteEnv,
-    RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest,
-    StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
+    BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
+    RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,
+    StepRequest, StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
     VectorResetResult, VectorStepRequest, VectorStepResult,
 };
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};

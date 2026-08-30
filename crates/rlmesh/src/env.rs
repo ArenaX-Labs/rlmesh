@@ -8,6 +8,7 @@ mod wire;
 use async_trait::async_trait;
 
 use crate::spaces;
+pub use rlmesh_proto::EndpointPhases;
 
 pub use client::{RemoteEnv, RemoteVectorEnv};
 pub use server::{BoundEnvServer, EnvServer, VectorEnvServer};
@@ -61,6 +62,17 @@ pub trait Env: Send + Sync {
         &mut self,
         req: CloseRequest,
     ) -> std::result::Result<CloseResult, spaces::EnvRuntimeError>;
+
+    /// The phase split of the op just completed, cleared by the read.
+    ///
+    /// Override it to report where an op's time went — decoding the request into
+    /// the shape your code wants, your own work, encoding the result — and the
+    /// server stamps the split on the response beside `endpoint_total_ns`. The
+    /// default measures nothing, and the layer above then reports the whole call
+    /// as `user_ns`.
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        EndpointPhases::default()
+    }
 }
 
 /// A vectorized environment: one implementation steps `num_envs`
@@ -125,4 +137,15 @@ pub trait VectorEnv: Send + Sync {
         &mut self,
         req: CloseRequest,
     ) -> std::result::Result<VectorCloseResult, spaces::EnvRuntimeError>;
+
+    /// The phase split of the op just completed, cleared by the read.
+    ///
+    /// Override it to report where an op's time went — decoding the request into
+    /// the shape your code wants, your own work, encoding the result — and the
+    /// server stamps the split on the response beside `endpoint_total_ns`. The
+    /// default measures nothing, and the layer above then reports the whole call
+    /// as `user_ns`.
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        EndpointPhases::default()
+    }
 }

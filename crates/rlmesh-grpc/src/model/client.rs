@@ -598,6 +598,7 @@ mod tests {
             request_id: request_id.to_string(),
             kind: Some(join_response::Kind::Predict(PredictResponse::default())),
             endpoint_total_ns: None,
+            ..Default::default()
         }
     }
 
@@ -709,6 +710,7 @@ mod tests {
                     GroupedPredictResponse::default(),
                 )),
                 endpoint_total_ns: None,
+                ..Default::default()
             },
         );
 
@@ -758,6 +760,7 @@ mod tests {
                     GroupedPredictResponse::default(),
                 )),
                 endpoint_total_ns: None,
+                ..Default::default()
             },
         );
 

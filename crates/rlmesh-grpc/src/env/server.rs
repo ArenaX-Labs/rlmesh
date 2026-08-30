@@ -11,8 +11,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::env::Environment;
 use crate::env::episode::{EpisodeTracker, LaneState};
+use crate::env::{EndpointPhases, Environment};
 use crate::error::EnvError;
 use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
@@ -421,6 +421,7 @@ async fn handle_env_request<E: Environment>(
 ) -> JoinResponse {
     let request_id = req.request_id.clone();
     let endpoint_started = Instant::now();
+    let mut phases = EndpointPhases::default();
 
     let kind = match req.kind {
         Some(join_request::Kind::Reset(reset_req)) => {
@@ -469,6 +470,8 @@ async fn handle_env_request<E: Environment>(
                     run_env_op_with_deadline(env.reset(reset_req), timeout_ms, "env.reset").await
                 }
             };
+
+            phases = env.take_last_phases();
 
             match result {
                 Ok(ok) => {
@@ -527,6 +530,7 @@ async fn handle_env_request<E: Environment>(
                 let pushed_ids = step_req.episode_ids.clone();
                 let result =
                     run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
+                phases = env.take_last_phases();
 
                 match result {
                     Ok(mut ok) => {
@@ -639,6 +643,7 @@ async fn handle_env_request<E: Environment>(
             let timeout_ms = render_req.timeout_ms;
             let result =
                 run_env_op_with_deadline(env.render(render_req), timeout_ms, "env.render").await;
+            phases = env.take_last_phases();
 
             match result {
                 Ok(ok) => {
@@ -705,9 +710,9 @@ async fn handle_env_request<E: Environment>(
                 .as_nanos()
                 .min(u128::from(u64::MAX)) as u64,
         ),
-        decode_ns: None,
-        user_ns: None,
-        encode_ns: None,
+        decode_ns: EndpointPhases::reported(phases.decode_ns),
+        user_ns: EndpointPhases::reported(phases.user_ns),
+        encode_ns: EndpointPhases::reported(phases.encode_ns),
         request_id,
     };
     tracing::debug!(

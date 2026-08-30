@@ -11,8 +11,8 @@ mod wire;
 
 pub use client::{EnvClient, EnvHandshake};
 pub use environment::{
-    CloseEnvsResponse, Environment, RenderRequest, RenderResponse, ResetRequest, ResetResponse,
-    StepRequest, StepResponse,
+    CloseEnvsResponse, EndpointPhases, Environment, RenderRequest, RenderResponse, ResetRequest,
+    ResetResponse, StepRequest, StepResponse,
 };
 pub use server::{GrpcEnvServer, env_service, env_service_from_shared, serve};
 

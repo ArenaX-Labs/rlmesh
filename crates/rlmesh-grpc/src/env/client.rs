@@ -714,6 +714,7 @@ mod tests {
                 request_id: "abandoned".to_string(),
                 kind: Some(join_response::Kind::Step(StepResponse::default())),
                 endpoint_total_ns: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -722,6 +723,7 @@ mod tests {
                 request_id: "target".to_string(),
                 kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
                 endpoint_total_ns: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -805,6 +807,7 @@ mod tests {
                 request_id: "grpc-req-1".to_string(),
                 kind: Some(join_response::Kind::Close(CloseEnvsResponse::default())),
                 endpoint_total_ns: None,
+                ..Default::default()
             }))
             .await
             .unwrap();

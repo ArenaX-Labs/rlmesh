@@ -123,16 +123,10 @@ impl ProfileCollector {
         self.enabled
     }
 
+    /// Time a phase. Always clocked, whether or not this collector is enabled:
+    /// the endpoint stamps the phase split on every response, and only the
+    /// summary log is opt-in.
     pub fn start(self: &Arc<Self>, phase: &'static str) -> PhaseGuard {
-        if !self.enabled {
-            return PhaseGuard {
-                collector: Arc::clone(self),
-                phase,
-                start: None,
-                bytes: 0,
-                recorded: true,
-            };
-        }
         PhaseGuard {
             collector: Arc::clone(self),
             phase,
@@ -179,7 +173,6 @@ pub struct PhaseGuard {
 impl PhaseGuard {
     pub fn finish(mut self, bytes: usize) -> Duration {
         let Some(start) = self.start else {
-            // Profiling disabled: nothing to record.
             self.recorded = true;
             return Duration::ZERO;
         };
