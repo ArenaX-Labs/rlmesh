@@ -589,6 +589,8 @@ mod tests {
         env_contract: spaces::EnvContract,
         last_render_request: Option<RenderRequest>,
         closes: Option<Arc<AtomicUsize>>,
+        // The split this env reports for its own work, as a Python-backed env does.
+        phases: EndpointPhases,
     }
 
     impl DummyEnv {
@@ -618,6 +620,7 @@ mod tests {
                 env_contract,
                 last_render_request: None,
                 closes,
+                phases: EndpointPhases::default(),
             }
         }
     }
@@ -712,6 +715,59 @@ mod tests {
                 final_episodes: vec![],
             })
         }
+
+        fn take_last_phases(&mut self) -> EndpointPhases {
+            std::mem::take(&mut self.phases)
+        }
+    }
+
+    fn step_request(adapter: &WireEnvAdapter<DummyEnv>) -> ProtoStepRequest {
+        let actions = vec![
+            spaces::SpaceValue::Discrete(1),
+            spaces::SpaceValue::Discrete(2),
+        ];
+        ProtoStepRequest {
+            action: Some(
+                encode_batched_partial_values(&actions, adapter.inner.action_space()).unwrap(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn step_reports_the_wire_split_of_an_env_that_measures_nothing() {
+        let mut adapter = WireEnvAdapter::new(DummyEnv::new());
+        let request = step_request(&adapter);
+        adapter.step(request).await.unwrap();
+
+        let phases = adapter.take_last_phases();
+        assert!(phases.decode_ns > 0, "wire decode is measured");
+        assert!(phases.encode_ns > 0, "wire encode is measured");
+        // Nothing inside reported a split, so the whole call reads as user time.
+        assert!(phases.user_ns > 0);
+        // The split is drained by the read: the server stamps it exactly once.
+        assert_eq!(adapter.take_last_phases(), EndpointPhases::default());
+    }
+
+    #[tokio::test]
+    async fn step_folds_the_envs_own_split_into_the_wire_one() {
+        let mut env = DummyEnv::new();
+        env.phases = EndpointPhases {
+            decode_ns: 100,
+            user_ns: 5_000,
+            encode_ns: 200,
+            ..EndpointPhases::default()
+        };
+        let mut adapter = WireEnvAdapter::new(env);
+        let request = step_request(&adapter);
+        adapter.step(request).await.unwrap();
+
+        let phases = adapter.take_last_phases();
+        // User time narrows to what the env itself reported; its conversion costs
+        // join the wire codec on either side.
+        assert_eq!(phases.user_ns, 5_000);
+        assert!(phases.decode_ns > 100);
+        assert!(phases.encode_ns > 200);
     }
 
     /// Reserve an ephemeral TCP port and free it, so a server can rebind it.
