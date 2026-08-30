@@ -21,8 +21,11 @@ pub fn init_tracing(process_role: &'static str) {
     }
 }
 
+/// Whether the phase-summary log is on. `RLMESH_PROFILE` also names the CLI's
+/// credential profile, so it only opts in when it reads as a boolean —
+/// `RLMESH_PROFILE=staging` selects a profile and enables nothing.
 pub fn profiling_enabled() -> bool {
-    env_flag("RLMESH_PROFILE")
+    env_flag("RLMESH_PROFILE_PHASES") || env_flag("RLMESH_PROFILE")
 }
 
 fn env_flag(name: &str) -> bool {
