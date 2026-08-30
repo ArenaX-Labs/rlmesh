@@ -1,5 +1,5 @@
 use rlmesh_proto::{
-    capabilities,
+    EndpointPhases, capabilities,
     core::v1::{ShutdownRequest as CoreShutdownRequest, ShutdownResponse as CoreShutdownResponse},
     model::v1::{
         CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse, JoinRequest,
@@ -53,6 +53,9 @@ pub struct ModelClient {
     /// nested per-step telemetry message was replaced by this hot scalar
     /// (`JoinResponse.endpoint_total_ns`).
     last_endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration, plus its queue wait and slot depth,
+    /// cleared by the read.
+    last_phases: EndpointPhases,
     server_capabilities: HashMap<String, String>,
     /// The model's offered workflow editions, learned at handshake. Feeds the
     /// three-way session-floor reconciliation.
@@ -84,6 +87,7 @@ impl ModelClient {
             pending: Default::default(),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
             server_capabilities: HashMap::new(),
             server_supported_editions: Vec::new(),
         })
@@ -111,6 +115,12 @@ impl ModelClient {
     /// Join response, if any (`JoinResponse.endpoint_total_ns`).
     pub fn take_last_endpoint_total_ns(&mut self) -> Option<u64> {
         self.last_endpoint_total_ns.take()
+    }
+
+    /// The peer's split of that duration, plus the queue wait and slot depth a
+    /// pipelining endpoint reports; all-zero for a peer that reports none.
+    pub fn take_last_phases(&mut self) -> EndpointPhases {
+        std::mem::take(&mut self.last_phases)
     }
 
     /// Whether the server advertised that it pipelines Join-stream predicts
@@ -197,6 +207,7 @@ impl ModelClient {
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_model_response(&response);
         match response.kind {
             Some(join_response::Kind::ResolveAdapter(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
@@ -221,6 +232,7 @@ impl ModelClient {
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_model_response(&response);
 
         match response.kind {
             Some(join_response::Kind::Predict(predict)) => Ok(predict),
@@ -251,6 +263,7 @@ impl ModelClient {
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_model_response(&response);
         match response.kind {
             Some(join_response::Kind::ResetAdapter(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
@@ -283,6 +296,7 @@ impl ModelClient {
             })
             .await?;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_model_response(&response);
         match response.kind {
             Some(join_response::Kind::ReleaseAdapter(_)) => Ok(()),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
@@ -323,6 +337,7 @@ impl ModelClient {
             .await
             .map_err(|_| GrpcError::Timeout(timeout))??;
         self.last_endpoint_total_ns = response.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_model_response(&response);
         self.state = ClientState::Closed;
 
         match response.kind {
@@ -577,6 +592,7 @@ mod tests {
             pending: Arc::clone(&pending),
             request_counter: Arc::new(AtomicU64::new(0)),
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
             server_capabilities: HashMap::new(),
             server_supported_editions: Vec::new(),
         };

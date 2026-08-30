@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use rlmesh_grpc::wire::{
     encode_batched_partial_values, env_contract_from_proto, env_contract_to_proto,
 };
+use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
 use rlmesh_runtime::{
     NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
@@ -126,6 +127,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
         Ok(RuntimeEnvReset {
             response,
             endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
+            phases: self.inner.take_last_phases(),
         })
     }
 
@@ -145,6 +147,7 @@ impl RuntimeEnv for EnvClientRuntimeEnv {
         Ok(RuntimeEnvStep {
             response,
             endpoint_total_ns: self.inner.take_last_endpoint_total_ns(),
+            phases: self.inner.take_last_phases(),
         })
     }
 
@@ -240,6 +243,7 @@ where
                 route,
             }),
             endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
             group_size: None,
         })
     }

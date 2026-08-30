@@ -22,6 +22,7 @@ pub use hooks::{
     RuntimeEnvContext, RuntimeHooks, SessionEndedEvent, SessionFailedEvent, SessionStartedEvent,
     StepCompletedEvent, TelemetrySnapshotEvent,
 };
+pub use rlmesh_proto::EndpointPhases;
 pub use spec::{RuntimeLimits, RuntimeReport, RuntimeSessionSpec};
 
 /// Protocol types used by the runtime public API.

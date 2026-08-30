@@ -524,6 +524,89 @@ mod tests {
         supported_workflow_editions,
     };
 
+    #[test]
+    fn phases_from_a_peer_that_stamps_nothing_read_back_as_zero() {
+        use super::{EndpointPhases, env, model};
+
+        // An older peer sends neither the split nor the queue scalars.
+        let env_response = env::v1::JoinResponse {
+            endpoint_total_ns: Some(1_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            EndpointPhases::from_env_response(&env_response),
+            EndpointPhases::default()
+        );
+
+        let model_response = model::v1::JoinResponse {
+            endpoint_total_ns: Some(1_000),
+            ..Default::default()
+        };
+        assert_eq!(
+            EndpointPhases::from_model_response(&model_response),
+            EndpointPhases::default()
+        );
+
+        // A peer that does stamp them reads back verbatim.
+        let stamped = model::v1::JoinResponse {
+            endpoint_total_ns: Some(1_000),
+            decode_ns: Some(10),
+            user_ns: Some(20),
+            encode_ns: Some(30),
+            queue_ns: Some(40),
+            in_flight: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(
+            EndpointPhases::from_model_response(&stamped),
+            EndpointPhases {
+                decode_ns: 10,
+                user_ns: 20,
+                encode_ns: 30,
+                queue_ns: 40,
+                in_flight: 3,
+            }
+        );
+
+        // An unmeasured phase is left off the wire rather than sent as a zero.
+        assert_eq!(EndpointPhases::reported(0), None);
+        assert_eq!(EndpointPhases::reported(7), Some(7));
+    }
+
+    #[test]
+    fn nesting_folds_an_inner_split_into_the_outer_one() {
+        use super::EndpointPhases;
+
+        // An inner layer that measures nothing leaves the whole call as user time.
+        assert_eq!(
+            EndpointPhases::nest(1, 10, 2, EndpointPhases::default()),
+            EndpointPhases {
+                decode_ns: 1,
+                user_ns: 10,
+                encode_ns: 2,
+                ..EndpointPhases::default()
+            }
+        );
+
+        // One that does splits the call: its own decode/encode join this layer's,
+        // and user narrows to the innermost work.
+        let inner = EndpointPhases {
+            decode_ns: 3,
+            user_ns: 5,
+            encode_ns: 2,
+            ..EndpointPhases::default()
+        };
+        assert_eq!(
+            EndpointPhases::nest(1, 10, 2, inner),
+            EndpointPhases {
+                decode_ns: 4,
+                user_ns: 5,
+                encode_ns: 4,
+                ..EndpointPhases::default()
+            }
+        );
+    }
+
     fn offer(editions: &[&str]) -> Vec<String> {
         editions.iter().map(|edition| edition.to_string()).collect()
     }

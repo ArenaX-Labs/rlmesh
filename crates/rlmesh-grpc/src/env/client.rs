@@ -17,7 +17,7 @@ use rlmesh_proto::env::v1::{
     RenderRequest, RenderResponse, ResetRequest, ResetResponse, ShutdownRequest, StepRequest,
     StepResponse, env_service_client::EnvServiceClient, join_request, join_response,
 };
-use rlmesh_proto::{negotiate_workflow_edition, supported_workflow_editions};
+use rlmesh_proto::{EndpointPhases, negotiate_workflow_edition, supported_workflow_editions};
 
 use crate::error::{ClientError, Error as GrpcError, ProtocolError, TransportError};
 use crate::helpers::address::parse_env_connect_target;
@@ -77,6 +77,8 @@ pub struct EnvClient {
     /// nested per-step telemetry message was replaced by this hot scalar
     /// (`JoinResponse.endpoint_total_ns`).
     last_endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration, cleared by the read.
+    last_phases: EndpointPhases,
 }
 
 impl EnvClient {
@@ -142,6 +144,7 @@ impl EnvClient {
             response_rx: None,
             request_counter: 0,
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
         })
     }
 
@@ -172,6 +175,11 @@ impl EnvClient {
     /// Join response, if any (`JoinResponse.endpoint_total_ns`).
     pub fn take_last_endpoint_total_ns(&mut self) -> Option<u64> {
         self.last_endpoint_total_ns.take()
+    }
+
+    /// The peer's split of that duration; all-zero for a peer that reports none.
+    pub fn take_last_phases(&mut self) -> EndpointPhases {
+        std::mem::take(&mut self.last_phases)
     }
 
     /// Perform the handshake RPC. The Join bidi stream (the env's exclusive
@@ -272,6 +280,7 @@ impl EnvClient {
 
         let res = self.send_on_stream(env_req).await?;
         self.last_endpoint_total_ns = res.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_env_response(&res);
 
         match res.kind {
             Some(join_response::Kind::Reset(ok)) => Ok(ok),
@@ -301,6 +310,7 @@ impl EnvClient {
 
         let res = self.send_on_stream(env_req).await?;
         self.last_endpoint_total_ns = res.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_env_response(&res);
 
         match res.kind {
             Some(join_response::Kind::Step(ok)) => Ok(ok),
@@ -330,6 +340,7 @@ impl EnvClient {
 
         let res = self.send_on_stream(env_req).await?;
         self.last_endpoint_total_ns = res.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_env_response(&res);
 
         match res.kind {
             Some(join_response::Kind::Render(ok)) => Ok(ok),
@@ -374,6 +385,7 @@ impl EnvClient {
 
         let res = self.send_on_stream(env_req).await?;
         self.last_endpoint_total_ns = res.endpoint_total_ns;
+        self.last_phases = EndpointPhases::from_env_response(&res);
         self.close_local();
 
         match res.kind {
@@ -707,6 +719,7 @@ mod tests {
             response_rx: Some(response_rx),
             request_counter: 0,
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
         };
 
         response_tx
@@ -754,6 +767,7 @@ mod tests {
             response_rx: Some(response_rx),
             request_counter: 0,
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
         };
 
         // The response pump propagates a transport Status (e.g. a response that
@@ -800,6 +814,7 @@ mod tests {
             response_rx: Some(response_rx),
             request_counter: 0,
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
         };
 
         response_tx
@@ -837,6 +852,7 @@ mod tests {
             response_rx: None,
             request_counter: 0,
             last_endpoint_total_ns: None,
+            last_phases: EndpointPhases::default(),
         };
 
         let response = client.close().await.unwrap();

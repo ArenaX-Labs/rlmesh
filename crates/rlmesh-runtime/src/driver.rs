@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use prost::{Message, bytes::Bytes};
+use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
@@ -53,6 +54,8 @@ pub struct RuntimeEnvReset {
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`
     /// (replaces the old nested per-step telemetry message).
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration; all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
 }
 
 /// The env's step reply plus the endpoint-local op duration the peer stamped.
@@ -60,6 +63,8 @@ pub struct RuntimeEnvStep {
     pub response: StepResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration; all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
 }
 
 /// The model's predict reply plus the endpoint-local op duration the peer stamped.
@@ -67,10 +72,21 @@ pub struct RuntimeModelPrediction {
     pub response: PredictResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration, plus its queue wait and slot depth;
+    /// all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
     /// Lanes fused into the model forward this predict rode in (1 = a lone
     /// predict). `None` when the transport does not group predicts; recorded
     /// as the `group.size` telemetry metric when present.
     pub group_size: Option<u64>,
+}
+
+/// What a peer reported about its own handling of one op, as recorded beside the
+/// driver's own RPC timing.
+pub(crate) struct PeerReport {
+    pub(crate) endpoint_total_ns: Option<u64>,
+    pub(crate) phases: EndpointPhases,
+    pub(crate) group_size: Option<u64>,
 }
 
 /// The environment side of a route: reset and step over the wire, plus close.
@@ -443,10 +459,13 @@ where
             telemetry,
             SRC_RESET,
             reset_latency,
-            reset_ok.endpoint_total_ns,
+            PeerReport {
+                endpoint_total_ns: reset_ok.endpoint_total_ns,
+                phases: reset_ok.phases,
+                group_size: None,
+            },
             reset_request_bytes,
             reset_ok.response.encoded_len() as u64,
-            None,
         );
         fan_out_event!(
             self,
@@ -607,10 +626,13 @@ where
                     telemetry,
                     SRC_PREDICT,
                     predict_rpc,
-                    action_msg.endpoint_total_ns,
+                    PeerReport {
+                        endpoint_total_ns: action_msg.endpoint_total_ns,
+                        phases: action_msg.phases,
+                        group_size: action_msg.group_size,
+                    },
                     predict_request_bytes,
                     action_msg.response.encoded_len() as u64,
-                    action_msg.group_size,
                 );
                 if action_msg.response.actions.is_empty() {
                     return Err(RuntimeError::Protocol(format!(
@@ -684,10 +706,13 @@ where
                 telemetry,
                 SRC_STEP,
                 step_rpc,
-                step_ok.endpoint_total_ns,
+                PeerReport {
+                    endpoint_total_ns: step_ok.endpoint_total_ns,
+                    phases: step_ok.phases,
+                    group_size: None,
+                },
                 step_request_bytes,
                 step_ok.response.encoded_len() as u64,
-                None,
             );
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
 
@@ -926,10 +951,13 @@ where
                             telemetry,
                             SRC_RESET,
                             inloop_reset_started.elapsed(),
-                            reset_ok.endpoint_total_ns,
+                            PeerReport {
+                                endpoint_total_ns: reset_ok.endpoint_total_ns,
+                                phases: reset_ok.phases,
+                                group_size: None,
+                            },
                             reset_request_bytes,
                             reset_ok.response.encoded_len() as u64,
-                            None,
                         );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
@@ -1442,32 +1470,50 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Record the per-op telemetry samples — RPC latency, the optional
-/// endpoint-local duration the peer stamped, request + response wire bytes, and
-/// the optional fused-group size a grouping transport reported — under a single
+/// Record the per-op telemetry samples — RPC latency, what the peer reported
+/// about its own handling, and request + response wire bytes — under a single
 /// lock. Every driver op (predict, step, reset) records this same shape, so
 /// they all route through here.
+///
+/// An unreported phase is zero and records nothing, so an older peer that stamps
+/// only `endpoint_total_ns` produces exactly the rows it always did.
 fn record_op(
     telemetry: &Mutex<Aggregator>,
     src: Source,
     rpc: Duration,
-    endpoint_total_ns: Option<u64>,
+    peer: PeerReport,
     request_bytes: u64,
     response_bytes: u64,
-    group_size: Option<u64>,
 ) {
     let mut agg = lock_agg(telemetry);
     agg.record(Sample::dur(src, metrics::RPC_TOTAL, rpc));
-    if let Some(ns) = endpoint_total_ns {
+    if let Some(ns) = peer.endpoint_total_ns {
         agg.record(Sample::dur(
             src,
             metrics::ENDPOINT_TOTAL,
             Duration::from_nanos(ns),
         ));
     }
+    for (metric, ns) in [
+        (metrics::ENDPOINT_DECODE, peer.phases.decode_ns),
+        (metrics::ENDPOINT_USER, peer.phases.user_ns),
+        (metrics::ENDPOINT_ENCODE, peer.phases.encode_ns),
+        (metrics::PREDICT_QUEUE, peer.phases.queue_ns),
+    ] {
+        if ns != 0 {
+            agg.record(Sample::dur(src, metric, Duration::from_nanos(ns)));
+        }
+    }
+    if peer.phases.in_flight != 0 {
+        agg.record(Sample::count(
+            src,
+            metrics::PREDICT_IN_FLIGHT,
+            u64::from(peer.phases.in_flight),
+        ));
+    }
     agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
     agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));
-    if let Some(group) = group_size {
+    if let Some(group) = peer.group_size {
         agg.record(Sample::count(src, metrics::GROUP_SIZE, group));
     }
 }

@@ -59,6 +59,20 @@ pub mod metrics {
     pub const RPC_TOTAL: Metric = Metric::duration("rpc.total");
     pub const REQUEST_BYTES: Metric = Metric::bytes("request.bytes");
     pub const RESPONSE_BYTES: Metric = Metric::bytes("response.bytes");
+    /// The split of [`ENDPOINT_TOTAL`] a peer reports: wire decode of the
+    /// request, the env/model implementation's own work, wire encode of the
+    /// response. Recorded only for a peer that stamps them, so their absence
+    /// means an older peer, not a zero cost.
+    pub const ENDPOINT_DECODE: Metric = Metric::duration("endpoint.decode");
+    pub const ENDPOINT_USER: Metric = Metric::duration("endpoint.user");
+    pub const ENDPOINT_ENCODE: Metric = Metric::duration("endpoint.encode");
+    /// Wait at a model endpoint before the predict handler ran (concurrency
+    /// permit, route gate, handler lock) — the pipelining cost a client cannot
+    /// otherwise tell from a slow forward.
+    pub const PREDICT_QUEUE: Metric = Metric::duration("predict.queue");
+    /// Requests holding a slot at the model endpoint when this predict was
+    /// admitted (>= 1); the depth an embedder sizes `predict_concurrency` against.
+    pub const PREDICT_IN_FLIGHT: Metric = Metric::count("predict.in_flight");
     /// Lanes fused into the model forward this predict rode in (1 = unfused;
     /// recorded only when the transport reports it — grouped/coalesced predicts).
     pub const GROUP_SIZE: Metric = Metric::count("group.size");
@@ -66,6 +80,11 @@ pub mod metrics {
     /// The cardinality allowlist — derived from the catalog, not a second table.
     pub const ALL: &[Metric] = &[
         ENDPOINT_TOTAL,
+        ENDPOINT_DECODE,
+        ENDPOINT_USER,
+        ENDPOINT_ENCODE,
+        PREDICT_QUEUE,
+        PREDICT_IN_FLIGHT,
         RPC_TOTAL,
         REQUEST_BYTES,
         RESPONSE_BYTES,
