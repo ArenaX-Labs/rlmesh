@@ -243,12 +243,14 @@ where
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
+        // Read the stream in its own task so a backlogged request's arrival is
+        // stamped when it comes off the wire, not after the previous request got
+        // a permit — the dispatch loop below blocks on the semaphore, and stamping
+        // there makes `queue_ns` under-report exactly at saturation. The channel
+        // caps read-ahead at `concurrency` decoded requests beyond the permits.
+        let (read_tx, mut read_rx) =
+            tokio::sync::mpsc::channel::<(JoinRequest, Instant)>(concurrency);
         tokio::spawn(async move {
-            // Per-route tail of completion signals, kept bounded across the
-            // stream's lifetime even as it cycles fresh route keys per episode.
-            // See [`RouteTails`] for the ordering and reaping invariants.
-            let mut route_tails = RouteTails::new();
-
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
                     Ok(request) => request,
@@ -257,7 +259,20 @@ where
                         break;
                     }
                 };
-                let arrived_at = Instant::now();
+                let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
+                if read_tx.send((request, Instant::now())).await.is_err() || close_after {
+                    break;
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            // Per-route tail of completion signals, kept bounded across the
+            // stream's lifetime even as it cycles fresh route keys per episode.
+            // See [`RouteTails`] for the ordering and reaping invariants.
+            let mut route_tails = RouteTails::new();
+
+            while let Some((request, arrived_at)) = read_rx.recv().await {
                 let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
                 let route_key = join_request_route_key(&request);
 
