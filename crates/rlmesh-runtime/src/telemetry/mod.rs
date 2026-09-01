@@ -66,12 +66,13 @@ pub mod metrics {
     pub const ENDPOINT_DECODE: Metric = Metric::duration("endpoint.decode");
     pub const ENDPOINT_USER: Metric = Metric::duration("endpoint.user");
     pub const ENDPOINT_ENCODE: Metric = Metric::duration("endpoint.encode");
-    /// Wait at a model endpoint before the predict handler ran (concurrency
-    /// permit, route gate, handler lock) — the pipelining cost a client cannot
-    /// otherwise tell from a slow forward.
-    pub const PREDICT_QUEUE: Metric = Metric::duration("predict.queue");
+    /// Wait at the endpoint before the op's handler ran — at a model the
+    /// concurrency permit, route gate, and handler lock; at an env the env
+    /// lock — the queueing cost a client cannot otherwise tell from a slow op.
+    pub const ENDPOINT_QUEUE: Metric = Metric::duration("endpoint.queue");
     /// Requests holding a slot at the model endpoint when this predict was
-    /// admitted (>= 1); the depth an embedder sizes `predict_concurrency` against.
+    /// dispatched to its handler (>= 1): slot occupancy, not parallelism — the
+    /// handler lock runs them one at a time.
     pub const PREDICT_IN_FLIGHT: Metric = Metric::count("predict.in_flight");
     /// Adapter work inside the predict handler's own time (obs assembly +
     /// action apply) — a sub-span of `endpoint.user`, so the model's own
@@ -80,8 +81,9 @@ pub mod metrics {
     pub const PREDICT_ADAPTER: Metric = Metric::duration("predict.adapter");
     /// Episodes whose frame-stack windows the model endpoint's adapter engine
     /// held when the predict was stamped, across all its routes — the state
-    /// that grows with concurrent episodes and shrinks on episode-end GC.
-    /// A route with no stacked inputs holds none.
+    /// that grows with concurrent episodes and shrinks on episode-end GC. A
+    /// measured zero is recorded (that is the eviction working); a handler
+    /// that keeps no such accounting records nothing.
     pub const HELD_EPISODES: Metric = Metric::count("held.episodes");
     /// Bytes those held frame-stack windows occupy.
     pub const HELD_BYTES: Metric = Metric::bytes("held.bytes");
@@ -91,7 +93,8 @@ pub mod metrics {
     /// How much longer a vector env's slowest lane took than its median lane on
     /// this op — the straggler cost the whole batch pays, which the `env.step`
     /// aggregate only blurs. One dispersion sample per op, never a series per
-    /// lane; recorded only for an env that times its own lanes.
+    /// lane; recorded only for an env that times its own lanes, including its
+    /// zeros, so the percentiles say how often a straggler appears.
     pub const LANE_SKEW: Metric = Metric::duration("lane.skew");
 
     /// The cardinality allowlist — derived from the catalog, not a second table.
@@ -100,7 +103,7 @@ pub mod metrics {
         ENDPOINT_DECODE,
         ENDPOINT_USER,
         ENDPOINT_ENCODE,
-        PREDICT_QUEUE,
+        ENDPOINT_QUEUE,
         PREDICT_IN_FLIGHT,
         PREDICT_ADAPTER,
         HELD_EPISODES,

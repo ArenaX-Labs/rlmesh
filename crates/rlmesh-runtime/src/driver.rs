@@ -576,7 +576,30 @@ where
                     .await?;
                     let join_wait = join_started.elapsed();
                     self.prefetch_model = Some(model);
-                    if !prefetch_stale {
+                    if prefetch_stale {
+                        // The chunk is discarded, but the loop still stalled
+                        // joining it and the endpoint still ran a forward:
+                        // record both rather than let the cost vanish into
+                        // the round residual.
+                        match result {
+                            Ok(discarded) => record_op(
+                                telemetry,
+                                SRC_PREDICT,
+                                join_wait,
+                                PeerReport {
+                                    endpoint_total_ns: discarded.endpoint_total_ns,
+                                    phases: discarded.phases,
+                                    group_size: discarded.group_size,
+                                },
+                                inflight.request_bytes,
+                                discarded.response.encoded_len() as u64,
+                            ),
+                            Err(error) => tracing::warn!(
+                                error = %error,
+                                "stale prefetch predict failed; re-planning from the current observation"
+                            ),
+                        }
+                    } else {
                         prefetched = Some((
                             result?,
                             inflight.expected_context,
@@ -1509,13 +1532,21 @@ fn record_op(
         (metrics::ENDPOINT_DECODE, peer.phases.decode_ns),
         (metrics::ENDPOINT_USER, peer.phases.user_ns),
         (metrics::ENDPOINT_ENCODE, peer.phases.encode_ns),
-        (metrics::PREDICT_QUEUE, peer.phases.queue_ns),
+        (metrics::ENDPOINT_QUEUE, peer.phases.queue_ns),
         (metrics::PREDICT_ADAPTER, peer.phases.adapter_ns),
-        (metrics::LANE_SKEW, peer.phases.lane_skew_ns),
     ] {
         if ns != 0 {
             agg.record(Sample::dur(src, metric, Duration::from_nanos(ns)));
         }
+    }
+    // Gauges: a measured zero is a sample (an even vector, an emptied engine),
+    // only an unmeasuring peer records nothing.
+    if let Some(ns) = peer.phases.lane_skew_ns {
+        agg.record(Sample::dur(
+            src,
+            metrics::LANE_SKEW,
+            Duration::from_nanos(ns),
+        ));
     }
     if peer.phases.in_flight != 0 {
         agg.record(Sample::count(
@@ -1524,19 +1555,15 @@ fn record_op(
             u64::from(peer.phases.in_flight),
         ));
     }
-    if peer.phases.held_episodes != 0 {
+    if let Some(episodes) = peer.phases.held_episodes {
         agg.record(Sample::count(
             src,
             metrics::HELD_EPISODES,
-            u64::from(peer.phases.held_episodes),
+            u64::from(episodes),
         ));
     }
-    if peer.phases.held_state_bytes != 0 {
-        agg.record(Sample::bytes(
-            src,
-            metrics::HELD_BYTES,
-            peer.phases.held_state_bytes,
-        ));
+    if let Some(bytes) = peer.phases.held_state_bytes {
+        agg.record(Sample::bytes(src, metrics::HELD_BYTES, bytes));
     }
     agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
     agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));

@@ -601,9 +601,9 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
             queue_ns: 4_000_000,
             in_flight: 7,
             adapter_ns: 2_000_000,
-            held_episodes: 5,
-            held_state_bytes: 6_000_000,
-            lane_skew_ns: 0,
+            held_episodes: Some(5),
+            held_state_bytes: Some(6_000_000),
+            lane_skew_ns: None,
         },
         ..TestModel::default()
     };
@@ -634,7 +634,7 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     assert_eq!(avg("env.step", "endpoint.encode"), 2.0);
     assert_eq!(avg("model.predict", "endpoint.total"), 5.0);
     assert_eq!(avg("model.predict", "endpoint.user"), 3.0);
-    assert_eq!(avg("model.predict", "predict.queue"), 4.0);
+    assert_eq!(avg("model.predict", "endpoint.queue"), 4.0);
     // The adapter's share of the handler's own work: forward = user - adapter.
     assert_eq!(avg("model.predict", "predict.adapter"), 2.0);
     // Held state gauges: an episode count and raw bytes, not durations.
@@ -651,7 +651,7 @@ async fn a_straggler_lane_records_its_skew_over_the_median_lane() {
     // lane. The env is otherwise silent: skew does not depend on a phase split.
     let env = TestEnv {
         phases: EndpointPhases {
-            lane_skew_ns: 8_000_000,
+            lane_skew_ns: Some(8_000_000),
             ..EndpointPhases::default()
         },
         ..TestEnv::default()
@@ -677,6 +677,50 @@ async fn a_straggler_lane_records_its_skew_over_the_median_lane() {
     assert_eq!(skew("env.step").expect("env.step lane.skew").avg, 8.0);
     // Only the env reports lanes.
     assert!(skew("model.predict").is_none());
+}
+
+#[tokio::test]
+async fn a_measured_zero_gauge_is_a_sample_not_an_absence() {
+    // An even vector has zero skew and an engine that just evicted holds zero
+    // episodes: both are real observations the percentiles need, unlike a peer
+    // that never measures (which records nothing, see the test below).
+    let env = TestEnv {
+        phases: EndpointPhases {
+            lane_skew_ns: Some(0),
+            ..EndpointPhases::default()
+        },
+        ..TestEnv::default()
+    };
+    let model = TestModel {
+        phases: EndpointPhases {
+            held_episodes: Some(0),
+            held_state_bytes: Some(0),
+            ..EndpointPhases::default()
+        },
+        ..TestModel::default()
+    };
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let row = |op: &str, metric: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .find(|row| row.source.op == op && row.metric.name == metric)
+            .unwrap_or_else(|| panic!("{op} {metric} recorded"))
+    };
+    assert_eq!(row("env.step", "lane.skew").avg, 0.0);
+    assert!(row("env.step", "lane.skew").count > 0);
+    assert_eq!(row("model.predict", "held.episodes").avg, 0.0);
+    assert_eq!(row("model.predict", "held.bytes").avg, 0.0);
 }
 
 #[tokio::test]
@@ -709,7 +753,7 @@ async fn a_peer_that_reports_no_phases_records_only_the_total() {
         "endpoint.decode",
         "endpoint.user",
         "endpoint.encode",
-        "predict.queue",
+        "endpoint.queue",
         "predict.in_flight",
         "predict.adapter",
         "held.episodes",
