@@ -1,8 +1,8 @@
 # Release Process
 
-RLMesh is published manually from a maintainer's machine. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in {doc}`versioning`.
+RLMesh is versioned, gated, and tagged from a maintainer's machine; pushing the tag hands off to CI (`.github/workflows/release.yml`), which builds the wheel matrix on Linux and macOS runners and publishes everything. SemVer is the source of truth (`Cargo.toml [workspace.package].version`); the PEP 440 spelling for PyPI is derived from it. The version contract is in {doc}`versioning`.
 
-The mechanical steps are scripted. You still own the changelog prose and the version number. The two irreversible actions, pushing the tag and publishing to the registries, never run without you asking.
+The mechanical steps are scripted. You still own the changelog prose and the version number. The one irreversible action, pushing the tag, never runs without you asking.
 
 ## One-command flow
 
@@ -10,18 +10,18 @@ The mechanical steps are scripted. You still own the changelog prose and the ver
 # Curate the changelog first (see below), then:
 python scripts/release.py X.Y.Z --dry-run   # bump + full gate; no commit, tag, or publish
 python scripts/release.py X.Y.Z             # also commit and tag vX.Y.Z (does NOT push)
-git push origin HEAD --tags                 # you push, after reviewing
-python scripts/release.py X.Y.Z --publish   # crates.io + PyPI + GitHub Release
+git push origin HEAD --tags                 # you push; CI does the rest
 ```
 
 `release.py` refuses to proceed if the working tree is dirty, the `vX.Y.Z` tag already exists, the changelog still has `<!-- DRAFT -->` markers, or there is no `## [X.Y.Z]` changelog section.
 
+The tag push triggers the release workflow: Linux/Windows wheels build on a Linux runner and macOS wheels on a macOS runner (each system-tested against the built artifacts), then a publish job validates the assembled 14-wheel matrix and ships crates.io, PyPI, and the GitHub Release. The publish jobs are idempotent — re-running the workflow after a partial failure skips already-published crates and an existing Release, and PyPI skips duplicate files.
+
 ## Prerequisites
 
-- crates.io publish access to the nine `rlmesh*` crates and PyPI access to `rlmesh`.
-- `gh` authenticated for the GitHub Release.
-- Publish tokens available (for example via `fnox`): `CARGO_REGISTRY_TOKEN`, `PYPI_TOKEN`.
-- A build host that can produce uploadable wheels (see Wheels).
+- Nothing local: no publish tokens. crates.io and PyPI both authenticate via OIDC trusted publishing scoped to `release.yml` and the `release` GitHub environment; the GitHub Release uses the workflow's own token.
+- One-time registry setup: a trusted publisher configured on the PyPI `rlmesh` project and on each of the nine `rlmesh*` crates (repository `ArenaX-Labs/rlmesh`, workflow `release.yml`, environment `release`), plus the `release` environment created in the repository settings (add required reviewers there if you want a manual approval gate before publish).
+- Break-glass local publish, from the tagged commit: no single host builds the full wheel matrix anymore, so first assemble `python/rlmesh/dist` from the release run's artifacts (`gh run download <run-id> -p 'wheels-*'`, then move the `.whl` files in) or build each half on its own host without re-running `release:python:prepare` in between (it wipes dist). Then `python scripts/release.py X.Y.Z --publish-crates` (needs `CARGO_REGISTRY_TOKEN`) and `--github-release` (needs `gh` auth); wheels would need a manual `twine upload`.
 
 ## Curate the changelog
 
@@ -49,16 +49,16 @@ One unscoped annotated tag per release: `vX.Y.Z`. The legacy `rust/v*` and `pyth
 
 ## Wheels
 
-RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are host-specific:
+RLMesh publishes wheels only; do not build or upload an sdist. Wheel builds are host-specific, and CI runs both halves in parallel:
 
-- macOS (`mise run release:python:wheels:macos`) builds the full macOS, Linux, and Windows matrix.
+- macOS (`mise run release:python:wheels:macos`) builds the macOS arm64 and x86_64 wheels.
 - Linux (`mise run release:python:wheels:linux`) builds the Linux and Windows subset.
 
-`python scripts/check_python_wheels.py python/rlmesh/dist` validates ABI/platform tags and payload contents. Release validation rejects plain `linux_*` tags; uploadable Linux wheels use `manylinux` or `musllinux`. Confirm license payloads with `mise run release:artifacts:licenses` before uploading.
+`python scripts/check_python_wheels.py python/rlmesh/dist` validates ABI/platform tags and payload contents. Release validation rejects plain `linux_*` tags; uploadable Linux wheels use `manylinux` or `musllinux`. The publish job validates license payloads (`release:artifacts:licenses`) over the merged wheel matrix and freshly packaged crates before anything uploads.
 
 ## Publish order
 
-`release.py --publish` publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-viewer`, `rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then uploads the wheels with `maturin`, then cuts the GitHub Release. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
+The publish job runs `release.py --publish-crates`, which publishes the crates in dependency order (`rlmesh-proto`, `rlmesh-spaces`, `rlmesh-viewer`, `rlmesh-adapters`, `rlmesh-cli`, `rlmesh-runtime`, `rlmesh-grpc`, `rlmesh-sandbox`, `rlmesh`), then uploads the wheels to PyPI, then cuts the GitHub Release via `release.py --github-release`. `cargo publish` waits for each crate to appear in the index before the next one builds, so the ordered run is safe to leave unattended.
 
 ## GitHub Releases
 

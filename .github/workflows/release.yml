@@ -1,0 +1,139 @@
+name: Release
+
+# Tag push vX.Y.Z -> build the full wheel matrix (Linux + macOS runners), system-test
+# the built artifacts on each platform, then publish: crates.io + PyPI via OIDC
+# trusted publishing, and the GitHub Release. workflow_dispatch on a tag re-runs it;
+# the ref guard keeps branch dispatches from burning the wheel matrix for nothing.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  wheels-linux:
+    name: Linux + Windows wheels
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: depot-ubuntu-24.04-8
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+        with:
+          python: "true"
+
+      - name: Build Linux and Windows release wheels
+        run: mise run --skip-tools release:python:wheels:linux
+
+      - name: System tests against built wheels
+        run: mise run --skip-tools test:system
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-linux
+          path: python/rlmesh/dist/*.whl
+          if-no-files-found: error
+
+      - name: Minimize uv cache
+        if: always()
+        run: uv cache prune --ci
+
+  wheels-macos:
+    name: macOS wheels
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: depot-macos-latest
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+        with:
+          python: "true"
+
+      - name: Build macOS release wheels
+        run: mise run --skip-tools release:python:wheels:macos
+
+      - name: System tests against built wheels
+        run: mise run --skip-tools test:system
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos
+          path: python/rlmesh/dist/*.whl
+          if-no-files-found: error
+
+      - name: Minimize uv cache
+        if: always()
+        run: uv cache prune --ci
+
+  publish:
+    name: Publish crates.io + PyPI + GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: depot-ubuntu-24.04-4
+    needs: [wheels-linux, wheels-macos]
+    environment: release
+    permissions:
+      contents: write # GitHub Release
+      id-token: write # OIDC trusted publishing (crates.io + PyPI)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
+
+      - name: Download wheel matrix
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: python/rlmesh/dist
+
+      - name: Package crates
+        run: mise run --skip-tools release:rust:package
+
+      - name: Validate release artifact licenses
+        run: mise run --skip-tools release:artifacts:licenses
+
+      - name: Authenticate to crates.io
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@v1.0.5
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+          RLMESH_RELEASE_BUILD: "1"
+        run: python scripts/release.py "${GITHUB_REF_NAME#v}" --publish-crates
+
+      - name: Publish wheels to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.2
+        with:
+          packages-dir: python/rlmesh/dist
+          skip-existing: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release.py "${GITHUB_REF_NAME#v}" --github-release

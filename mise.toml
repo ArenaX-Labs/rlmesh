@@ -340,7 +340,9 @@ run = "maturin develop"
 # ──────────────────────────────────────────────
 # Release wheels
 # ──────────────────────────────────────────────
-# Full release matrix contains 14 wheels total:
+# Full release matrix contains 14 wheels total, built by CI on tag push
+# (.github/workflows/release.yml): macOS wheels on a macOS runner, Linux/Windows
+# on a Linux runner.
 #   Python:  cp310-cp310 and cp311-abi3 for each platform
 #   macOS:   arm64, x86_64
 #   Linux:   glibc (x86_64, aarch64), musl (x86_64, aarch64)
@@ -349,22 +351,24 @@ run = "maturin develop"
 [tasks."release:python:wheels"]
 description = "Build release Python wheels supported by the current host"
 env = { RLMESH_RELEASE_BUILD = "1" }
-run = "case \"$(uname -s)\" in Darwin) mise run release:python:wheels:macos ;; Linux) mise run release:python:wheels:linux ;; *) echo 'unsupported release wheel host; use macOS for the full wheel matrix or Linux for Linux/Windows wheels' >&2; exit 1 ;; esac"
+run = "case \"$(uname -s)\" in Darwin) mise run release:python:wheels:macos ;; Linux) mise run release:python:wheels:linux ;; *) echo 'unsupported release wheel host; use macOS for macOS wheels or Linux for Linux/Windows wheels' >&2; exit 1 ;; esac"
 
 [tasks."release:python:clean"]
 description = "Remove previously built Python wheels before a release wheel build"
 run = "rm -f python/rlmesh/dist/rlmesh-*.whl"
 
 [tasks."release:python:wheels:macos"]
-description = "On macOS, prepare and build the full macOS/Linux/Windows wheel matrix"
+description = "On macOS, prepare and build the macOS arm64/x86_64 wheels"
+env = { RLMESH_RELEASE_BUILD = "1" }
 run = [
   "test \"$(uname -s)\" = Darwin || { echo 'macOS wheels require a macOS host with Xcode Command Line Tools (xcrun)' >&2; exit 1; }",
   "mise run release:python:prepare",
-  "status=0; for task in release:python:build:macos-all release:python:build:linux-all release:python:build:windows-all; do mise run \"$task\" || status=1; done; mise run release:python:check:all || status=1; exit $status",
+  "status=0; mise run release:python:build:macos-all || status=1; mise run release:python:check:macos || status=1; exit $status",
 ]
 
 [tasks."release:python:wheels:linux"]
 description = "On Linux, prepare and build the Linux/Windows cross-build wheel matrix"
+env = { RLMESH_RELEASE_BUILD = "1" }
 run = [
   "test \"$(uname -s)\" = Linux || { echo 'Linux and Windows release wheels should be built from a Linux host' >&2; exit 1; }",
   "mise run release:python:prepare",
@@ -392,13 +396,13 @@ run = "status=0; for target in linux-x86 linux-arm linux-musl-x86 linux-musl-arm
 description = "Build Zig-backed Windows x86_64 wheels"
 run = "mise run build:python:wheel windows"
 
-[tasks."release:python:check:all"]
-description = "Strictly validate the complete macOS/Linux/Windows release wheel matrix"
-run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set all"
-
 [tasks."release:python:check:linux-windows"]
 description = "Strictly validate the Linux/Windows release wheel matrix"
 run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set linux-windows"
+
+[tasks."release:python:check:macos"]
+description = "Strictly validate the macOS release wheel matrix"
+run = "python scripts/check_python_wheels.py python/rlmesh/dist --platform-set macos"
 
 [tasks."release:rust:package"]
 description = "Verify Rust crate packages without publishing"
