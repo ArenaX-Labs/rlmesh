@@ -241,8 +241,10 @@ message JoinResponse {
   // handler-lock portion.
   optional uint64 queue_ns = 14;
 
-  // Requests holding a concurrency slot on this endpoint when the handler
-  // started, including this one.
+  // Requests holding a concurrency slot on this endpoint when this request
+  // was dispatched to its handler (after its per-route gate), including this
+  // one. Slot occupancy, not parallelism: the handler lock runs them one at a
+  // time.
   optional uint32 in_flight = 15;
 
   // Adapter work inside the handler's own time (ns): observation assembly plus
@@ -253,8 +255,8 @@ message JoinResponse {
 
   // Engine-held per-episode adapter state when this response was stamped:
   // episodes with live frame-stack windows across the endpoint's routes, and
-  // the bytes those windows hold. Absent from a handler that holds none (a
-  // route with no stacked inputs holds no windows).
+  // the bytes those windows hold. Absent from a handler that keeps no such
+  // accounting; a measured `0` (nothing held right now) is sent as `0`.
   optional uint32 held_episodes = 17;
   optional uint64 held_state_bytes = 18;
 }

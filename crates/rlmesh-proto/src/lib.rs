@@ -427,9 +427,12 @@ pub mod model {
 /// The endpoint-local split of `JoinResponse.endpoint_total_ns` (ns), plus the
 /// pre-handler wait and slot depth a pipelining model endpoint reports.
 ///
-/// Zero is "not measured": a peer built before these fields existed sends none
-/// of them, and a reader sees this default. `queue_ns`/`in_flight` are model-only
-/// (the env server handles one request at a time); `lane_skew_ns` is env-only.
+/// A zero duration is "not measured": a peer built before these fields existed
+/// sends none of them, and a reader sees this default. The gauges are `Option`
+/// because for them a measured zero is a real sample (an even vector has zero
+/// skew; an engine that just evicted holds zero episodes) that must stay
+/// distinguishable from a peer that never measures. `in_flight` is model-only;
+/// `lane_skew_ns` is env-only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EndpointPhases {
     /// Decoding the request off the wire.
@@ -438,22 +441,27 @@ pub struct EndpointPhases {
     pub user_ns: u64,
     /// Encoding the response onto the wire.
     pub encode_ns: u64,
-    /// Wait before the handler ran: concurrency permit, route gate, handler lock.
+    /// Wait before the handler ran. Model: concurrency permit, route gate,
+    /// handler lock. Env: the env lock, which serializes ops on one env.
     pub queue_ns: u64,
     /// Adapter work inside `user_ns` (observation assembly + action apply) —
     /// a sub-span, not additive: the model's own forward is `user_ns -
     /// adapter_ns`. Model-only, and zero for a spec-less route.
     pub adapter_ns: u64,
     /// Episodes whose frame-stack windows the endpoint's adapter engine held
-    /// when the response was stamped, across all routes. Model-only.
-    pub held_episodes: u32,
-    /// Bytes those held frame-stack windows occupy. Model-only.
-    pub held_state_bytes: u64,
-    /// Requests holding a concurrency slot when the handler started (>= 1).
+    /// when the response was stamped, across all routes. Model-only; `None`
+    /// from a handler that keeps no such accounting.
+    pub held_episodes: Option<u32>,
+    /// Bytes those held frame-stack windows occupy. Model-only; `None` from a
+    /// handler that keeps no such accounting.
+    pub held_state_bytes: Option<u64>,
+    /// Requests holding a concurrency slot when this request was dispatched to
+    /// its handler (>= 1): slot occupancy, not parallelism.
     pub in_flight: u32,
     /// Straggler skew across a vector env's lanes for this op — see
-    /// [`lane_skew_ns`]. Env-only, and zero when the env does not time its lanes.
-    pub lane_skew_ns: u64,
+    /// [`lane_skew_ns`]. Env-only; `None` from an env that does not time its
+    /// lanes, `Some(0)` from one whose lanes were even.
+    pub lane_skew_ns: Option<u64>,
 }
 
 impl EndpointPhases {
@@ -485,14 +493,23 @@ impl EndpointPhases {
     /// outer ones, and `user_ns` keeps the rest of the call — the inner user
     /// work plus whatever it cost to reach it (GIL wait, adapter overhead) —
     /// so the phases still sum to this layer's whole measurement. An inner
-    /// layer that measures nothing leaves the whole call as user time.
+    /// layer that measures nothing, or whose wire share does not even fit
+    /// inside the measured call, leaves the whole call as user time.
     pub fn nest(decode_ns: u64, call_ns: u64, encode_ns: u64, inner: Self) -> Self {
         // Lane skew is the inner env's alone; an outer layer never measures it.
+        let inner_wire = inner.decode_ns.saturating_add(inner.encode_ns);
+        if inner_wire > call_ns {
+            return Self {
+                decode_ns,
+                user_ns: call_ns,
+                encode_ns,
+                lane_skew_ns: inner.lane_skew_ns,
+                ..Self::default()
+            };
+        }
         Self {
             decode_ns: decode_ns.saturating_add(inner.decode_ns),
-            user_ns: call_ns
-                .saturating_sub(inner.decode_ns)
-                .saturating_sub(inner.encode_ns),
+            user_ns: call_ns - inner_wire,
             encode_ns: encode_ns.saturating_add(inner.encode_ns),
             lane_skew_ns: inner.lane_skew_ns,
             ..Self::default()
@@ -505,7 +522,8 @@ impl EndpointPhases {
             decode_ns: response.decode_ns.unwrap_or(0),
             user_ns: response.user_ns.unwrap_or(0),
             encode_ns: response.encode_ns.unwrap_or(0),
-            lane_skew_ns: response.lane_skew_ns.unwrap_or(0),
+            queue_ns: response.queue_ns.unwrap_or(0),
+            lane_skew_ns: response.lane_skew_ns,
             ..Self::default()
         }
     }
@@ -519,8 +537,8 @@ impl EndpointPhases {
             queue_ns: response.queue_ns.unwrap_or(0),
             in_flight: response.in_flight.unwrap_or(0),
             adapter_ns: response.adapter_ns.unwrap_or(0),
-            held_episodes: response.held_episodes.unwrap_or(0),
-            held_state_bytes: response.held_state_bytes.unwrap_or(0),
+            held_episodes: response.held_episodes,
+            held_state_bytes: response.held_state_bytes,
             ..Self::default()
         }
     }
@@ -610,9 +628,9 @@ mod tests {
                 queue_ns: 40,
                 in_flight: 3,
                 adapter_ns: 15,
-                held_episodes: 5,
-                held_state_bytes: 6_000,
-                lane_skew_ns: 0,
+                held_episodes: Some(5),
+                held_state_bytes: Some(6_000),
+                lane_skew_ns: None,
             }
         );
 
@@ -622,7 +640,19 @@ mod tests {
             lane_skew_ns: Some(880),
             ..Default::default()
         };
-        assert_eq!(EndpointPhases::from_env_response(&skewed).lane_skew_ns, 880);
+        assert_eq!(
+            EndpointPhases::from_env_response(&skewed).lane_skew_ns,
+            Some(880)
+        );
+        // A measured zero (an even vector) is a sample, not an absence.
+        let even = env::v1::JoinResponse {
+            lane_skew_ns: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            EndpointPhases::from_env_response(&even).lane_skew_ns,
+            Some(0)
+        );
 
         // An unmeasured phase is left off the wire rather than sent as a zero.
         assert_eq!(EndpointPhases::reported(0), None);
@@ -674,6 +704,18 @@ mod tests {
                 ..EndpointPhases::default()
             }
         );
+
+        // An inner split whose wire share does not fit inside the measured call
+        // is inconsistent; folding it would break the sum, so none of it folds.
+        assert_eq!(
+            EndpointPhases::nest(1, 4, 2, inner),
+            EndpointPhases {
+                decode_ns: 1,
+                user_ns: 4,
+                encode_ns: 2,
+                ..EndpointPhases::default()
+            }
+        );
     }
 
     #[test]
@@ -700,18 +742,24 @@ mod tests {
 
         let measured = EndpointPhases {
             user_ns: 5,
-            lane_skew_ns: 77,
+            lane_skew_ns: Some(77),
             ..EndpointPhases::default()
         };
-        assert_eq!(EndpointPhases::nest(1, 10, 2, measured).lane_skew_ns, 77);
+        assert_eq!(
+            EndpointPhases::nest(1, 10, 2, measured).lane_skew_ns,
+            Some(77)
+        );
 
         // An env that times its lanes but reports no split of its own still gets
         // the skew through.
         let skew_only = EndpointPhases {
-            lane_skew_ns: 77,
+            lane_skew_ns: Some(77),
             ..EndpointPhases::default()
         };
-        assert_eq!(EndpointPhases::nest(1, 10, 2, skew_only).lane_skew_ns, 77);
+        assert_eq!(
+            EndpointPhases::nest(1, 10, 2, skew_only).lane_skew_ns,
+            Some(77)
+        );
     }
 
     fn offer(editions: &[&str]) -> Vec<String> {
