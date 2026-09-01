@@ -1524,6 +1524,20 @@ fn record_op(
             u64::from(peer.phases.in_flight),
         ));
     }
+    if peer.phases.held_episodes != 0 {
+        agg.record(Sample::count(
+            src,
+            metrics::HELD_EPISODES,
+            u64::from(peer.phases.held_episodes),
+        ));
+    }
+    if peer.phases.held_state_bytes != 0 {
+        agg.record(Sample::bytes(
+            src,
+            metrics::HELD_BYTES,
+            peer.phases.held_state_bytes,
+        ));
+    }
     agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
     agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));
     if let Some(group) = peer.group_size {

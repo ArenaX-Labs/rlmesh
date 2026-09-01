@@ -17,7 +17,7 @@ use rlmesh_adapters::v1::{
     FrameBuffers, ObsPlan, Value, apply_actions, assemble_obs, space_value_to_obs_map, split_chunk,
 };
 
-use super::handler::{ModelHandler, ModelRouteSetup, PredictFrames};
+use super::handler::{HeldState, ModelHandler, ModelRouteSetup, PredictFrames};
 use super::predict_fn::{PredictFn, RouteConfig, RouteResolver};
 use super::types::{EpisodeInfo, ModelObservation};
 use crate::spaces::{EnvContract, SpaceKind, SpaceValue};
@@ -32,12 +32,42 @@ use crate::{Error, Result};
 struct RouteEntry {
     config: Arc<RouteConfig>,
     buffers: FrameBuffers,
+    /// This route's slot in the shared held-state cells (see [`HeldCells`]).
+    held: Arc<HeldCells>,
+}
+
+impl RouteEntry {
+    /// Publish this route's held frame-stack state to its lock-free cells.
+    fn publish_held(&self) {
+        self.held
+            .episodes
+            .store(self.buffers.episodes() as u64, Ordering::Relaxed);
+        self.held
+            .bytes
+            .store(self.buffers.state_bytes(), Ordering::Relaxed);
+    }
+}
+
+/// Lock-free cells a route publishes its held frame-stack state into (from
+/// under its entry lock), so the endpoint total sums without touching entry
+/// locks that may be held across a model forward.
+#[derive(Default)]
+struct HeldCells {
+    episodes: AtomicU64,
+    bytes: AtomicU64,
+}
+
+/// One resolved route in the map: its state (under the per-route lock) and the
+/// held-state cells published from inside that lock, readable without it.
+struct RouteSlot {
+    entry: Arc<Mutex<RouteEntry>>,
+    held: Arc<HeldCells>,
 }
 
 /// `route_key -> route state`. The outer lock is held only to look up/insert a
 /// route; the per-route [`Mutex`] is what predict holds across its (blocking)
 /// per-lane loop, so configuring one route never blocks predict on another.
-type Routes = Arc<Mutex<HashMap<String, Arc<Mutex<RouteEntry>>>>>;
+type Routes = Arc<Mutex<HashMap<String, RouteSlot>>>;
 
 /// `env_id -> execution horizon` for SPEC-LESS routes (no [`RouteEntry`]): the
 /// horizon is pinned at `ResolveAdapter` like a spec'd route's, but there is no
@@ -77,7 +107,7 @@ impl AdaptedModelHandler {
             .lock()
             .expect("routes map poisoned")
             .get(env_id)
-            .cloned()
+            .map(|slot| Arc::clone(&slot.entry))
     }
 
     /// The horizon pinned for a spec-less route (1 = no chunking / never pinned).
@@ -178,6 +208,7 @@ fn assemble_route_inputs(
     let started = Instant::now();
     let result = assemble_route_inputs_inner(entry, observation);
     adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
+    entry.publish_held();
     result
 }
 
@@ -194,7 +225,9 @@ fn assemble_route_inputs_inner(
     // always decoded below.
     observation.ensure_decodable()?;
 
-    let RouteEntry { config, buffers } = entry;
+    let RouteEntry {
+        config, buffers, ..
+    } = entry;
     let referenced = obs_keys(config);
     let customs: &dyn rlmesh_adapters::v1::CustomTransform = config.customs.as_ref();
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
@@ -726,6 +759,16 @@ impl ModelHandler for AdaptedModelHandler {
         self.adapter_ns.swap(0, Ordering::Relaxed)
     }
 
+    fn held_state(&self) -> HeldState {
+        let routes = self.routes.lock().expect("routes map poisoned");
+        let mut held = HeldState::default();
+        for slot in routes.values() {
+            held.episodes += slot.held.episodes.load(Ordering::Relaxed);
+            held.bytes += slot.held.bytes.load(Ordering::Relaxed);
+        }
+        held
+    }
+
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {
         let resolver = self.resolver.clone()?;
         Some(Arc::new(AdaptedRouteSetup {
@@ -750,6 +793,7 @@ impl ModelHandler for AdaptedModelHandler {
                     guard.buffers.evict(episode_id);
                 }
             }
+            guard.publish_held();
         }
         // Surface the episode-end edge to the model's own hook (one call per
         // ended episode), e.g. to reset a single-env model's recurrent state. An
@@ -772,9 +816,10 @@ impl ModelHandler for AdaptedModelHandler {
 
     async fn on_close(&mut self) -> Result<()> {
         // Drop every route's per-episode state as the authoritative shutdown sweep.
-        for entry in self.routes.lock().expect("routes map poisoned").values() {
-            let mut guard = entry.lock().expect("route entry poisoned");
+        for slot in self.routes.lock().expect("routes map poisoned").values() {
+            let mut guard = slot.entry.lock().expect("route entry poisoned");
             guard.buffers.clear();
+            guard.publish_held();
         }
         let predict = Arc::clone(&self.predict);
         tokio::task::spawn_blocking(move || predict.on_close())
@@ -881,14 +926,16 @@ impl ModelRouteSetup for AdaptedRouteSetup {
         } else {
             config
         };
+        let held = Arc::new(HeldCells::default());
         let entry = Arc::new(Mutex::new(RouteEntry {
             config: Arc::new(config),
             buffers: FrameBuffers::new(),
+            held: Arc::clone(&held),
         }));
         self.routes
             .lock()
             .expect("routes map poisoned")
-            .insert(env_id.to_string(), entry);
+            .insert(env_id.to_string(), RouteSlot { entry, held });
         Ok(())
     }
 

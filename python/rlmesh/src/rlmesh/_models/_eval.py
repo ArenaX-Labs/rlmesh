@@ -150,7 +150,10 @@ class TelemetryRow:
     model endpoint before its handler ran; ``predict.adapter`` the RLMesh
     adapter work (observation assembly + action apply) inside the handler's
     own time, so the model's own forward is ``endpoint.user`` minus it;
-    ``runner.round`` one full
+    ``held.episodes`` / ``held.bytes`` the per-episode frame-stack state the
+    adapter engine was holding when the predict was stamped (what grows with
+    concurrent episodes and shrinks on episode-end GC); ``runner.round`` one
+    full
     predict -> step -> transform loop iteration (subtract the per-op rows for
     the driver's own residual). A metric a peer never stamps produces no row.
 

@@ -57,6 +57,17 @@ pub struct PredictFrames {
     pub replay: Vec<Vec<spaces::SpaceValue>>,
 }
 
+/// Engine-held per-episode adapter state at a model endpoint, as stamped on
+/// predict responses: episodes with live frame-stack windows and the bytes
+/// those windows hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldState {
+    /// Episodes with live frame-stack windows across all routes.
+    pub episodes: u64,
+    /// Bytes those windows hold.
+    pub bytes: u64,
+}
+
 /// User policy plus episode lifecycle hooks.
 ///
 /// Implement [`predict`](ModelHandler::predict) to map an observation to encoded
@@ -139,6 +150,14 @@ pub trait ModelHandler: Send {
             results.push(self.predict_chunked(observation).await);
         }
         results
+    }
+
+    /// Engine-held per-episode adapter state (frame-stack windows) at this
+    /// endpoint, summed across routes — the state that grows with concurrent
+    /// episodes and shrinks on episode-end GC. Zero-default for a handler
+    /// that holds none.
+    fn held_state(&self) -> HeldState {
+        HeldState::default()
     }
 
     /// Adapter time (obs assembly + action apply) inside the last

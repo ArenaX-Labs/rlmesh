@@ -101,6 +101,23 @@ impl FrameBuffers {
         self.inner.clear();
     }
 
+    /// Number of episodes currently holding frame windows.
+    #[must_use]
+    pub fn episodes(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Total bytes held across every episode's frame windows.
+    #[must_use]
+    pub fn state_bytes(&self) -> u64 {
+        self.inner
+            .values()
+            .flat_map(|windows| windows.values())
+            .flatten()
+            .map(|tensor| tensor.nbytes() as u64)
+            .sum()
+    }
+
     /// The per-key window map for an episode, created lazily if absent.
     fn episode(&mut self, episode_id: &str) -> &mut BTreeMap<String, VecDeque<Tensor>> {
         self.inner.entry(episode_id.to_owned()).or_default()
@@ -489,6 +506,27 @@ mod tests {
             dtype,
             spec: None,
         }
+    }
+
+    #[test]
+    fn frame_buffers_report_held_episodes_and_bytes() {
+        let mut buffers = FrameBuffers::new();
+        assert_eq!((buffers.episodes(), buffers.state_bytes()), (0, 0));
+
+        buffers
+            .episode("ep-1")
+            .insert("image".to_owned(), VecDeque::from([frame(1), frame(2)]));
+        buffers
+            .episode("ep-2")
+            .insert("image".to_owned(), VecDeque::from([frame(3)]));
+        assert_eq!(buffers.episodes(), 2);
+        // Three 2-byte uint8 frames held across the two episodes.
+        assert_eq!(buffers.state_bytes(), 6);
+
+        buffers.evict("ep-1");
+        assert_eq!((buffers.episodes(), buffers.state_bytes()), (1, 2));
+        buffers.clear();
+        assert_eq!((buffers.episodes(), buffers.state_bytes()), (0, 0));
     }
 
     #[test]

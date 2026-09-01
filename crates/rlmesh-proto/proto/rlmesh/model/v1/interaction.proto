@@ -250,4 +250,11 @@ message JoinResponse {
   // own forward is `user_ns - adapter_ns`. Absent from a spec-less route or a
   // handler that does not measure it.
   optional uint64 adapter_ns = 16;
+
+  // Engine-held per-episode adapter state when this response was stamped:
+  // episodes with live frame-stack windows across the endpoint's routes, and
+  // the bytes those windows hold. Absent from a handler that holds none (a
+  // route with no stacked inputs holds no windows).
+  optional uint32 held_episodes = 17;
+  optional uint64 held_state_bytes = 18;
 }

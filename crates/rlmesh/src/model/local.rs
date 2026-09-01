@@ -243,9 +243,14 @@ where
                 route,
             }),
             endpoint_total_ns: None,
-            phases: EndpointPhases {
-                adapter_ns: self.handler.take_adapter_ns(),
-                ..EndpointPhases::default()
+            phases: {
+                let held = self.handler.held_state();
+                EndpointPhases {
+                    adapter_ns: self.handler.take_adapter_ns(),
+                    held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
+                    held_state_bytes: held.bytes,
+                    ..EndpointPhases::default()
+                }
             },
             group_size: None,
         })

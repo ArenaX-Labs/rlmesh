@@ -557,6 +557,8 @@ fn model_join_response(
         queue_ns: EndpointPhases::reported(phases.queue_ns),
         in_flight: (phases.in_flight != 0).then_some(phases.in_flight),
         adapter_ns: EndpointPhases::reported(phases.adapter_ns),
+        held_episodes: (phases.held_episodes != 0).then_some(phases.held_episodes),
+        held_state_bytes: EndpointPhases::reported(phases.held_state_bytes),
         request_id,
     }
 }
@@ -801,6 +803,7 @@ async fn handle_predict<H: ModelHandler + 'static>(
         let frames = handler.predict_chunked(observation).await?;
         let user_ns = elapsed_ns(call_started);
         let adapter_ns = handler.take_adapter_ns();
+        let held = handler.held_state();
 
         let encode_started = Instant::now();
         let response = finish_predict(frames, num_envs, &action_space, route)?;
@@ -810,6 +813,8 @@ async fn handle_predict<H: ModelHandler + 'static>(
             encode_ns: elapsed_ns(encode_started),
             queue_ns,
             adapter_ns,
+            held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
+            held_state_bytes: held.bytes,
             ..EndpointPhases::default()
         };
         Ok((response, phases))
@@ -887,6 +892,7 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     let mut frames = handler.predict_grouped(batch).await.into_iter();
     let user_ns = elapsed_ns(call_started);
     let adapter_ns = handler.take_adapter_ns();
+    let held = handler.held_state();
 
     let encode_started = Instant::now();
     let results = finishers
@@ -922,6 +928,8 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
             encode_ns: elapsed_ns(encode_started),
             queue_ns,
             adapter_ns,
+            held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
+            held_state_bytes: held.bytes,
             ..EndpointPhases::default()
         },
     )

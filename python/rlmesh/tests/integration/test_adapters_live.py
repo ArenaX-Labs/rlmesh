@@ -424,6 +424,36 @@ def test_served_spec_model_resolves_adapter_at_configure_route() -> None:
     assert tuple(env_obj.last_action.shape) == (7,)
 
 
+def test_local_stacked_run_reports_held_state_telemetry() -> None:
+    pytest.importorskip("numpy")
+
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=8, width=8, stack=2),
+        },
+        output=adapt.Action(
+            adapt.Actuator(adapt.ACTION_DELTA_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_DELTA_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    )
+    tagged = adapt.tag(TinyArmEnv(), _tags())
+
+    def predict(payload: dict[str, Any]) -> Any:
+        import numpy as np
+
+        return np.zeros(spec.output.dim, dtype=np.float32)
+
+    result = Model(predict, spec=spec).run(tagged, max_episodes=1)
+
+    # A stacked route holds per-episode frame windows: the engine's held-state
+    # gauges reach the run telemetry end to end.
+    rows = {r.metric: r for r in result.telemetry if r.op == "model.predict"}
+    assert rows["held.episodes"].avg >= 1.0
+    assert rows["held.bytes"].avg > 0.0
+    assert rows["held.bytes"].unit == "bytes"
+
+
 def test_served_frame_stacking_adapter_stacks_per_episode() -> None:
     """A served frame-stacking (stateful) spec'd model end-to-end.
 

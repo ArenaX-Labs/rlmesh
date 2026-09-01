@@ -444,6 +444,11 @@ pub struct EndpointPhases {
     /// a sub-span, not additive: the model's own forward is `user_ns -
     /// adapter_ns`. Model-only, and zero for a spec-less route.
     pub adapter_ns: u64,
+    /// Episodes whose frame-stack windows the endpoint's adapter engine held
+    /// when the response was stamped, across all routes. Model-only.
+    pub held_episodes: u32,
+    /// Bytes those held frame-stack windows occupy. Model-only.
+    pub held_state_bytes: u64,
     /// Requests holding a concurrency slot when the handler started (>= 1).
     pub in_flight: u32,
     /// Straggler skew across a vector env's lanes for this op — see
@@ -514,6 +519,8 @@ impl EndpointPhases {
             queue_ns: response.queue_ns.unwrap_or(0),
             in_flight: response.in_flight.unwrap_or(0),
             adapter_ns: response.adapter_ns.unwrap_or(0),
+            held_episodes: response.held_episodes.unwrap_or(0),
+            held_state_bytes: response.held_state_bytes.unwrap_or(0),
             ..Self::default()
         }
     }
@@ -590,6 +597,8 @@ mod tests {
             queue_ns: Some(40),
             in_flight: Some(3),
             adapter_ns: Some(15),
+            held_episodes: Some(5),
+            held_state_bytes: Some(6_000),
             ..Default::default()
         };
         assert_eq!(
@@ -601,6 +610,8 @@ mod tests {
                 queue_ns: 40,
                 in_flight: 3,
                 adapter_ns: 15,
+                held_episodes: 5,
+                held_state_bytes: 6_000,
                 lane_skew_ns: 0,
             }
         );

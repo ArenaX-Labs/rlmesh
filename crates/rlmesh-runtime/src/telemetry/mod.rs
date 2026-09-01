@@ -78,6 +78,13 @@ pub mod metrics {
     /// forward is `endpoint.user` minus this. Recorded only for a handler
     /// that measures it (the adapter engine); zero for a spec-less route.
     pub const PREDICT_ADAPTER: Metric = Metric::duration("predict.adapter");
+    /// Episodes whose frame-stack windows the model endpoint's adapter engine
+    /// held when the predict was stamped, across all its routes — the state
+    /// that grows with concurrent episodes and shrinks on episode-end GC.
+    /// A route with no stacked inputs holds none.
+    pub const HELD_EPISODES: Metric = Metric::count("held.episodes");
+    /// Bytes those held frame-stack windows occupy.
+    pub const HELD_BYTES: Metric = Metric::bytes("held.bytes");
     /// Lanes fused into the model forward this predict rode in (1 = unfused;
     /// recorded only when the transport reports it — grouped/coalesced predicts).
     pub const GROUP_SIZE: Metric = Metric::count("group.size");
@@ -96,6 +103,8 @@ pub mod metrics {
         PREDICT_QUEUE,
         PREDICT_IN_FLIGHT,
         PREDICT_ADAPTER,
+        HELD_EPISODES,
+        HELD_BYTES,
         RPC_TOTAL,
         REQUEST_BYTES,
         RESPONSE_BYTES,
