@@ -39,6 +39,9 @@ jobs:
       - name: System tests against built wheels
         run: mise run --skip-tools test:system
 
+      - name: Remove system-test venvs before the Rust cache walks target/
+        run: mise run --skip-tools test:system:clean
+
       - name: Upload wheels
         uses: actions/upload-artifact@v7
         with:
@@ -73,6 +76,9 @@ jobs:
 
       - name: System tests against built wheels
         run: mise run --skip-tools test:system
+
+      - name: Remove system-test venvs before the Rust cache walks target/
+        run: mise run --skip-tools test:system:clean
 
       - name: Upload wheels
         uses: actions/upload-artifact@v7
