@@ -472,23 +472,18 @@ impl EndpointPhases {
     }
 
     /// Fold an inner layer's own split into this layer's decode/call/encode
-    /// measurement. The inner split replaces the opaque call, so decode and
-    /// encode accumulate down the stack and `user_ns` narrows to the innermost
-    /// work; an inner layer that measures nothing leaves the whole call there.
+    /// measurement. The inner layer's decode and encode accumulate into the
+    /// outer ones, and `user_ns` keeps the rest of the call — the inner user
+    /// work plus whatever it cost to reach it (GIL wait, adapter overhead) —
+    /// so the phases still sum to this layer's whole measurement. An inner
+    /// layer that measures nothing leaves the whole call as user time.
     pub fn nest(decode_ns: u64, call_ns: u64, encode_ns: u64, inner: Self) -> Self {
         // Lane skew is the inner env's alone; an outer layer never measures it.
-        if inner.user_ns == 0 {
-            return Self {
-                decode_ns,
-                user_ns: call_ns,
-                encode_ns,
-                lane_skew_ns: inner.lane_skew_ns,
-                ..Self::default()
-            };
-        }
         Self {
             decode_ns: decode_ns.saturating_add(inner.decode_ns),
-            user_ns: inner.user_ns,
+            user_ns: call_ns
+                .saturating_sub(inner.decode_ns)
+                .saturating_sub(inner.encode_ns),
             encode_ns: encode_ns.saturating_add(inner.encode_ns),
             lane_skew_ns: inner.lane_skew_ns,
             ..Self::default()
@@ -632,7 +627,7 @@ mod tests {
         );
 
         // One that does splits the call: its own decode/encode join this layer's,
-        // and user narrows to the innermost work.
+        // and user keeps the remainder of the call.
         let inner = EndpointPhases {
             decode_ns: 3,
             user_ns: 5,
@@ -644,6 +639,19 @@ mod tests {
             EndpointPhases {
                 decode_ns: 4,
                 user_ns: 5,
+                encode_ns: 4,
+                ..EndpointPhases::default()
+            }
+        );
+
+        // A call longer than the inner layer's own accounting (GIL wait, adapter
+        // overhead) keeps the residual in user, so the phases still sum to this
+        // layer's whole measurement: 1 + 14 + 2 == 4 + 9 + 4.
+        assert_eq!(
+            EndpointPhases::nest(1, 14, 2, inner),
+            EndpointPhases {
+                decode_ns: 4,
+                user_ns: 9,
                 encode_ns: 4,
                 ..EndpointPhases::default()
             }

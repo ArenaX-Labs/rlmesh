@@ -763,9 +763,10 @@ mod tests {
         adapter.step(request).await.unwrap();
 
         let phases = adapter.take_last_phases();
-        // User time narrows to what the env itself reported; its conversion costs
-        // join the wire codec on either side.
-        assert_eq!(phases.user_ns, 5_000);
+        // User time keeps the env's own report plus the real cost of reaching it
+        // (the residual the adapter measured around the call); the env's
+        // conversion costs join the wire codec on either side.
+        assert!(phases.user_ns >= 5_000);
         assert!(phases.decode_ns > 100);
         assert!(phases.encode_ns > 200);
     }
