@@ -154,10 +154,10 @@ pub trait ModelHandler: Send {
 
     /// Engine-held per-episode adapter state (frame-stack windows) at this
     /// endpoint, summed across routes — the state that grows with concurrent
-    /// episodes and shrinks on episode-end GC. Zero-default for a handler
-    /// that holds none.
-    fn held_state(&self) -> HeldState {
-        HeldState::default()
+    /// episodes and shrinks on episode-end GC. `None` for a handler that keeps
+    /// no such accounting; `Some` with zeros when it does and holds nothing.
+    fn held_state(&self) -> Option<HeldState> {
+        None
     }
 
     /// Adapter time (obs assembly + action apply) inside the last

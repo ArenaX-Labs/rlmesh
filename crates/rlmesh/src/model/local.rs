@@ -1,12 +1,12 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use rlmesh_grpc::wire::{
     encode_batched_partial_values, env_contract_from_proto, env_contract_to_proto,
 };
-use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::model::v1::{PredictRequest, ResetAdapterRequest};
+use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_runtime::{
     NoopRuntimeHooks, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep, RuntimeError,
     RuntimeModel, RuntimeModelPrediction, RuntimeReport, RuntimeSessionSpec,
@@ -201,6 +201,9 @@ where
         &mut self,
         request: PredictRequest,
     ) -> std::result::Result<RuntimeModelPrediction, rlmesh_runtime::RuntimeError> {
+        // The same decode / handler / encode split the served endpoint stamps,
+        // so a local run's telemetry supports the same attribution.
+        let started = Instant::now();
         let mut observation = model_observation_from_endpoint_request(request)
             .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
         let route = observation.route.clone();
@@ -213,11 +216,17 @@ where
                 Error::model("model route contract missing action space"),
             )
         })?;
-        let PredictFrames { actions, replay } = self
-            .handler
-            .predict_chunked(observation)
-            .await
-            .map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let decode_ns = elapsed_ns(started);
+        let call_started = Instant::now();
+        let frames = self.handler.predict_chunked(observation).await;
+        let user_ns = elapsed_ns(call_started);
+        // Drain the adapter share even for a failed forward, or its time leaks
+        // into the next predict's `adapter_ns`.
+        let adapter_ns = self.handler.take_adapter_ns();
+        let held = self.handler.held_state();
+        let PredictFrames { actions, replay } =
+            frames.map_err(|err| rlmesh_runtime::RuntimeError::model_rpc("local-model", err))?;
+        let encode_started = Instant::now();
         if actions.len() != num_envs {
             return Err(rlmesh_runtime::RuntimeError::model_rpc(
                 "local-model",
@@ -237,20 +246,21 @@ where
         let mut wire_actions = Vec::with_capacity(1 + replay_frames.len());
         wire_actions.push(frame0);
         wire_actions.extend(replay_frames);
+        let encode_ns = elapsed_ns(encode_started);
         Ok(RuntimeModelPrediction {
             response: model_action_to_endpoint_response(ModelAction {
                 actions: wire_actions,
                 route,
             }),
-            endpoint_total_ns: None,
-            phases: {
-                let held = self.handler.held_state();
-                EndpointPhases {
-                    adapter_ns: self.handler.take_adapter_ns(),
-                    held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
-                    held_state_bytes: held.bytes,
-                    ..EndpointPhases::default()
-                }
+            endpoint_total_ns: Some(elapsed_ns(started)),
+            phases: EndpointPhases {
+                decode_ns,
+                user_ns,
+                encode_ns,
+                adapter_ns,
+                held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
+                held_state_bytes: held.map(|held| held.bytes),
+                ..EndpointPhases::default()
             },
             group_size: None,
         })

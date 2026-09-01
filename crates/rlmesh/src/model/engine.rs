@@ -759,14 +759,14 @@ impl ModelHandler for AdaptedModelHandler {
         self.adapter_ns.swap(0, Ordering::Relaxed)
     }
 
-    fn held_state(&self) -> HeldState {
+    fn held_state(&self) -> Option<HeldState> {
         let routes = self.routes.lock().expect("routes map poisoned");
         let mut held = HeldState::default();
         for slot in routes.values() {
             held.episodes += slot.held.episodes.load(Ordering::Relaxed);
             held.bytes += slot.held.bytes.load(Ordering::Relaxed);
         }
-        held
+        Some(held)
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {

@@ -591,6 +591,9 @@ mod tests {
         closes: Option<Arc<AtomicUsize>>,
         // The split this env reports for its own work, as a Python-backed env does.
         phases: EndpointPhases,
+        // Real time each step spends inside the env, so a reported split is
+        // contained in a measured call regardless of build profile.
+        step_delay: Duration,
     }
 
     impl DummyEnv {
@@ -621,6 +624,7 @@ mod tests {
                 last_render_request: None,
                 closes,
                 phases: EndpointPhases::default(),
+                step_delay: Duration::ZERO,
             }
         }
     }
@@ -667,6 +671,7 @@ mod tests {
             &mut self,
             req: StepRequest,
         ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
+            std::thread::sleep(self.step_delay);
             Ok(StepResult {
                 observations: req
                     .actions
@@ -758,15 +763,17 @@ mod tests {
             encode_ns: 200,
             ..EndpointPhases::default()
         };
+        env.step_delay = Duration::from_millis(1);
         let mut adapter = WireEnvAdapter::new(env);
         let request = step_request(&adapter);
         adapter.step(request).await.unwrap();
 
         let phases = adapter.take_last_phases();
-        // User time keeps the env's own report plus the real cost of reaching it
-        // (the residual the adapter measured around the call); the env's
-        // conversion costs join the wire codec on either side.
-        assert!(phases.user_ns >= 5_000);
+        // User time is the measured call (>= the 1ms the env really spent) minus
+        // the env's own wire share, so it keeps the env's report plus the real
+        // cost of reaching it; the env's conversion costs join the wire codec on
+        // either side.
+        assert!(phases.user_ns >= 1_000_000 - 300);
         assert!(phases.decode_ns > 100);
         assert!(phases.encode_ns > 200);
     }

@@ -243,13 +243,14 @@ where
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
-        // Read the stream in its own task so a backlogged request's arrival is
+        // Read the stream in its own task so the next request's arrival is
         // stamped when it comes off the wire, not after the previous request got
         // a permit — the dispatch loop below blocks on the semaphore, and stamping
-        // there makes `queue_ns` under-report exactly at saturation. The channel
-        // caps read-ahead at `concurrency` decoded requests beyond the permits.
-        let (read_tx, mut read_rx) =
-            tokio::sync::mpsc::channel::<(JoinRequest, Instant)>(concurrency);
+        // there makes `queue_ns` under-report exactly at saturation. Capacity 1:
+        // one decoded request is held ahead of the permits and nothing further
+        // is pulled off the stream, so h2 flow control keeps back-pressuring
+        // undecoded frames as before. Deeper backlog still waits unstamped.
+        let (read_tx, mut read_rx) = tokio::sync::mpsc::channel::<(JoinRequest, Instant)>(1);
         tokio::spawn(async move {
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
@@ -305,12 +306,6 @@ where
                     Ok(permit) => permit,
                     Err(_) => break,
                 };
-                // Slots taken once this request holds one; free of extra state
-                // because the semaphore already counts them.
-                let admission = Admission {
-                    arrived_at,
-                    in_flight: (concurrency - semaphore.available_permits()) as u32,
-                };
 
                 if let Some(activity_tx) = &activity_tx {
                     let _ = activity_tx.send(IdleActivity::Started);
@@ -324,6 +319,7 @@ where
                 let route_setup = route_setup.clone();
                 let route_configs = Arc::clone(&route_configs);
                 let tx = tx.clone();
+                let semaphore = Arc::clone(&semaphore);
 
                 tokio::spawn(async move {
                     let _permit = permit;
@@ -331,6 +327,12 @@ where
                     // Wait for predecessors so the handler critical section runs in
                     // per-route arrival order (or, for Close, after every route).
                     gate.wait().await;
+                    // Slots taken as this request is dispatched; free of extra
+                    // state because the semaphore already counts them.
+                    let admission = Admission {
+                        arrived_at,
+                        in_flight: (concurrency - semaphore.available_permits()) as u32,
+                    };
 
                     let response = handle_model_request(
                         request,
@@ -402,10 +404,10 @@ where
     }
 }
 
-/// What the Join read loop knows before a request's handler runs: when it came
-/// off the stream, and how many slots the endpoint had taken when it was
-/// admitted. Both ride to the response so a client can see queueing it cannot
-/// otherwise distinguish from a slow handler.
+/// What the Join loop knows before a request's handler runs: when it came off
+/// the stream, and how many slots the endpoint had taken when it was dispatched.
+/// Both ride to the response so a client can see queueing it cannot otherwise
+/// distinguish from a slow handler.
 #[derive(Clone, Copy)]
 pub(super) struct Admission {
     arrived_at: Instant,
@@ -557,8 +559,8 @@ fn model_join_response(
         queue_ns: EndpointPhases::reported(phases.queue_ns),
         in_flight: (phases.in_flight != 0).then_some(phases.in_flight),
         adapter_ns: EndpointPhases::reported(phases.adapter_ns),
-        held_episodes: (phases.held_episodes != 0).then_some(phases.held_episodes),
-        held_state_bytes: EndpointPhases::reported(phases.held_state_bytes),
+        held_episodes: phases.held_episodes,
+        held_state_bytes: phases.held_state_bytes,
         request_id,
     }
 }
@@ -785,9 +787,12 @@ async fn handle_predict<H: ModelHandler + 'static>(
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
     arrived_at: Instant,
 ) -> (Option<join_response::Kind>, EndpointPhases) {
+    // Phases are filled in as they are measured so a failing request still
+    // reports what it waited and worked, not a blank.
+    let mut phases = EndpointPhases::default();
     let result = async {
         let mut handler = handler.lock().await;
-        let queue_ns = elapsed_ns(arrived_at);
+        phases.queue_ns = elapsed_ns(arrived_at);
 
         let decode_started = Instant::now();
         let prepared = prepare_predict_locked(request, &route_configs).await?;
@@ -797,35 +802,28 @@ async fn handle_predict<H: ModelHandler + 'static>(
             num_envs,
             route,
         } = prepared;
-        let decode_ns = elapsed_ns(decode_started);
+        phases.decode_ns = elapsed_ns(decode_started);
 
         let call_started = Instant::now();
-        let frames = handler.predict_chunked(observation).await?;
-        let user_ns = elapsed_ns(call_started);
-        let adapter_ns = handler.take_adapter_ns();
+        let frames = handler.predict_chunked(observation).await;
+        phases.user_ns = elapsed_ns(call_started);
+        // Drain the adapter share even for a failed forward, or its time leaks
+        // into the next request's `adapter_ns`.
+        phases.adapter_ns = handler.take_adapter_ns();
         let held = handler.held_state();
+        phases.held_episodes = held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32);
+        phases.held_state_bytes = held.map(|held| held.bytes);
+        let frames = frames?;
 
         let encode_started = Instant::now();
         let response = finish_predict(frames, num_envs, &action_space, route)?;
-        let phases = EndpointPhases {
-            decode_ns,
-            user_ns,
-            encode_ns: elapsed_ns(encode_started),
-            queue_ns,
-            adapter_ns,
-            held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
-            held_state_bytes: held.bytes,
-            ..EndpointPhases::default()
-        };
-        Ok((response, phases))
+        phases.encode_ns = elapsed_ns(encode_started);
+        Ok(response)
     }
     .await;
     match result {
-        Ok((response, phases)) => (Some(join_response::Kind::Predict(response)), phases),
-        Err(error) => (
-            Some(model_error_from_error(&error)),
-            EndpointPhases::default(),
-        ),
+        Ok(response) => (Some(join_response::Kind::Predict(response)), phases),
+        Err(error) => (Some(model_error_from_error(&error)), phases),
     }
 }
 
@@ -928,8 +926,8 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
             encode_ns: elapsed_ns(encode_started),
             queue_ns,
             adapter_ns,
-            held_episodes: held.episodes.min(u64::from(u32::MAX)) as u32,
-            held_state_bytes: held.bytes,
+            held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
+            held_state_bytes: held.map(|held| held.bytes),
             ..EndpointPhases::default()
         },
     )
