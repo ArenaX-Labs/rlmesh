@@ -1,0 +1,53 @@
+name: Setup toolchain
+description: Shared mise + Rust cache bootstrap for every workflow job
+
+inputs:
+  python:
+    description: Also cache uv and sync the Python dev environment
+    default: "false"
+  rust-components:
+    description: Also install rustfmt/clippy for the pinned toolchain
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Scope mise to repository config
+      shell: bash
+      run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
+
+    - name: Install mise
+      uses: jdx/mise-action@v4.1.0
+      with:
+        version: 2026.6.12
+        install: true
+        install_args: --locked
+        cache_key: >-
+          {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{ hashFiles('mise.lock') }}
+
+        cache: true
+
+    - name: Install Rust components
+      if: inputs.rust-components == 'true'
+      shell: bash
+      run: rustup component add --toolchain 1.96.0 rustfmt clippy
+
+    - name: Cache Rust artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          . -> target
+
+    - name: Cache uv packages
+      if: inputs.python == 'true'
+      uses: actions/cache@v5
+      with:
+        path: /tmp/.uv-cache
+        key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+        restore-keys: |
+          uv-${{ runner.os }}-
+
+    - name: Sync Python environment
+      if: inputs.python == 'true'
+      shell: bash
+      run: mise run --skip-tools setup:python
