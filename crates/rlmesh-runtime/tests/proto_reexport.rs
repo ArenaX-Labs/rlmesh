@@ -31,6 +31,7 @@ impl rlmesh_runtime::RuntimeEnv for NoopEnv {
         Ok(rlmesh_runtime::RuntimeEnvReset {
             response: Default::default(),
             endpoint_total_ns: None,
+            phases: Default::default(),
         })
     }
 
@@ -41,6 +42,7 @@ impl rlmesh_runtime::RuntimeEnv for NoopEnv {
         Ok(rlmesh_runtime::RuntimeEnvStep {
             response: Default::default(),
             endpoint_total_ns: None,
+            phases: Default::default(),
         })
     }
 }

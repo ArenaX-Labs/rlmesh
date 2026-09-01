@@ -19,8 +19,9 @@ use rlmesh_proto::model::v1::{
 };
 use rlmesh_proto::spaces::v1::{MetaMap, MetaValue, SpaceSpec, SpaceValue, meta_value};
 use rlmesh_runtime::{
-    ActionReceivedEvent, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset, RuntimeEnvStep,
-    RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction, RuntimeSessionSpec,
+    ActionReceivedEvent, EndpointPhases, HookError, RuntimeDriver, RuntimeEnv, RuntimeEnvReset,
+    RuntimeEnvStep, RuntimeError, RuntimeHooks, RuntimeModel, RuntimeModelPrediction,
+    RuntimeSessionSpec,
 };
 
 #[tokio::test]
@@ -579,6 +580,190 @@ async fn shutdown_enforces_service_close_timeout_on_hung_model() {
     assert!(!model.closed.load(Ordering::SeqCst));
 }
 
+#[tokio::test]
+async fn peer_reported_phases_land_in_the_session_snapshot() {
+    let env = TestEnv {
+        endpoint_total_ns: Some(9_000_000),
+        phases: EndpointPhases {
+            decode_ns: 1_000_000,
+            user_ns: 6_000_000,
+            encode_ns: 2_000_000,
+            ..EndpointPhases::default()
+        },
+        ..TestEnv::default()
+    };
+    let model = TestModel {
+        endpoint_total_ns: Some(5_000_000),
+        phases: EndpointPhases {
+            decode_ns: 1_000_000,
+            user_ns: 3_000_000,
+            encode_ns: 1_000_000,
+            queue_ns: 4_000_000,
+            in_flight: 7,
+            adapter_ns: 2_000_000,
+            held_episodes: Some(5),
+            held_state_bytes: Some(6_000_000),
+            lane_skew_ns: None,
+        },
+        ..TestModel::default()
+    };
+
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let avg = |op: &str, metric: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .find(|row| row.source.op == op && row.metric.name == metric)
+            .unwrap_or_else(|| panic!("{op} {metric} recorded"))
+            .avg
+    };
+
+    // Durations are reported in ms, so the split reads back as the peer stamped it.
+    assert_eq!(avg("env.step", "endpoint.decode"), 1.0);
+    assert_eq!(avg("env.step", "endpoint.user"), 6.0);
+    assert_eq!(avg("env.step", "endpoint.encode"), 2.0);
+    assert_eq!(avg("model.predict", "endpoint.total"), 5.0);
+    assert_eq!(avg("model.predict", "endpoint.user"), 3.0);
+    assert_eq!(avg("model.predict", "endpoint.queue"), 4.0);
+    // The adapter's share of the handler's own work: forward = user - adapter.
+    assert_eq!(avg("model.predict", "predict.adapter"), 2.0);
+    // Held state gauges: an episode count and raw bytes, not durations.
+    assert_eq!(avg("model.predict", "held.episodes"), 5.0);
+    assert_eq!(avg("model.predict", "held.bytes"), 6_000_000.0);
+    // Slot depth is a count, not a duration.
+    assert_eq!(avg("model.predict", "predict.in_flight"), 7.0);
+}
+
+#[tokio::test]
+async fn a_straggler_lane_records_its_skew_over_the_median_lane() {
+    // A vector env timing its own lanes stamps one dispersion scalar per step,
+    // so a single slow lane among healthy ones is visible without a series per
+    // lane. The env is otherwise silent: skew does not depend on a phase split.
+    let env = TestEnv {
+        phases: EndpointPhases {
+            lane_skew_ns: Some(8_000_000),
+            ..EndpointPhases::default()
+        },
+        ..TestEnv::default()
+    };
+
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let skew = |op: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .find(|row| row.metric.name == "lane.skew" && row.source.op == op)
+    };
+    assert_eq!(skew("env.step").expect("env.step lane.skew").avg, 8.0);
+    // Only the env reports lanes.
+    assert!(skew("model.predict").is_none());
+}
+
+#[tokio::test]
+async fn a_measured_zero_gauge_is_a_sample_not_an_absence() {
+    // An even vector has zero skew and an engine that just evicted holds zero
+    // episodes: both are real observations the percentiles need, unlike a peer
+    // that never measures (which records nothing, see the test below).
+    let env = TestEnv {
+        phases: EndpointPhases {
+            lane_skew_ns: Some(0),
+            ..EndpointPhases::default()
+        },
+        ..TestEnv::default()
+    };
+    let model = TestModel {
+        phases: EndpointPhases {
+            held_episodes: Some(0),
+            held_state_bytes: Some(0),
+            ..EndpointPhases::default()
+        },
+        ..TestModel::default()
+    };
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        model,
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let row = |op: &str, metric: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .find(|row| row.source.op == op && row.metric.name == metric)
+            .unwrap_or_else(|| panic!("{op} {metric} recorded"))
+    };
+    assert_eq!(row("env.step", "lane.skew").avg, 0.0);
+    assert!(row("env.step", "lane.skew").count > 0);
+    assert_eq!(row("model.predict", "held.episodes").avg, 0.0);
+    assert_eq!(row("model.predict", "held.bytes").avg, 0.0);
+}
+
+#[tokio::test]
+async fn a_peer_that_reports_no_phases_records_only_the_total() {
+    // An older peer stamps `endpoint_total_ns` and nothing else: the phase fields
+    // arrive absent, decode to zero, and record no rows at all.
+    let env = TestEnv {
+        endpoint_total_ns: Some(9_000_000),
+        ..TestEnv::default()
+    };
+    let report = RuntimeDriver::new(
+        one_episode_spec(),
+        env,
+        TestModel::default(),
+        Arc::new(RecordingHooks::default()),
+    )
+    .run()
+    .await
+    .unwrap();
+
+    let recorded = |metric: &str| {
+        report
+            .telemetry
+            .rows
+            .iter()
+            .any(|row| row.metric.name == metric)
+    };
+    assert!(recorded("endpoint.total"));
+    for metric in [
+        "endpoint.decode",
+        "endpoint.user",
+        "endpoint.encode",
+        "endpoint.queue",
+        "predict.in_flight",
+        "predict.adapter",
+        "held.episodes",
+        "held.bytes",
+        "lane.skew",
+    ] {
+        assert!(!recorded(metric), "{metric} must stay unrecorded");
+    }
+}
+
 #[derive(Clone)]
 struct TestEnv {
     closed: Arc<AtomicBool>,
@@ -588,6 +773,9 @@ struct TestEnv {
     // reset and echoes it back in completed_episodes (never mints its own).
     current_episode: Arc<Mutex<String>>,
     terminal_after: usize,
+    // What this env claims to have spent on each op, as a peer would stamp it.
+    endpoint_total_ns: Option<u64>,
+    phases: EndpointPhases,
 }
 
 impl Default for TestEnv {
@@ -598,6 +786,8 @@ impl Default for TestEnv {
             reset_seeds: Arc::new(Mutex::new(Vec::new())),
             current_episode: Arc::new(Mutex::new(String::new())),
             terminal_after: 1,
+            endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
         }
     }
 }
@@ -621,7 +811,8 @@ impl RuntimeEnv for TestEnv {
                 observation: Some(leaves_value(payload([1]))),
                 infos: Some(info_map("phase", "reset")),
             },
-            endpoint_total_ns: None,
+            endpoint_total_ns: self.endpoint_total_ns,
+            phases: self.phases,
         })
     }
 
@@ -652,7 +843,8 @@ impl RuntimeEnv for TestEnv {
                     .collect(),
                 env_indices: vec![],
             },
-            endpoint_total_ns: None,
+            endpoint_total_ns: self.endpoint_total_ns,
+            phases: self.phases,
         })
     }
 
@@ -678,6 +870,10 @@ struct TestModel {
     // Simulates a release_adapter impl that blocks (e.g. an RPC on a hung
     // connection) without honoring the supplied timeout.
     release_adapter_hangs: bool,
+    // What this model claims to have spent on each predict, as a peer would
+    // stamp it.
+    endpoint_total_ns: Option<u64>,
+    phases: EndpointPhases,
 }
 
 #[async_trait]
@@ -709,7 +905,8 @@ impl RuntimeModel for TestModel {
                 context: request.context,
                 actions,
             },
-            endpoint_total_ns: None,
+            endpoint_total_ns: self.endpoint_total_ns,
+            phases: self.phases,
             group_size: None,
         })
     }
@@ -985,6 +1182,7 @@ impl RuntimeEnv for VectorTestEnv {
                 infos: None,
             },
             endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
         })
     }
 
@@ -1035,6 +1233,7 @@ impl RuntimeEnv for VectorTestEnv {
                 env_indices: vec![],
             },
             endpoint_total_ns: None,
+            phases: EndpointPhases::default(),
         })
     }
 

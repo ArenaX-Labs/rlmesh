@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use prost::{Message, bytes::Bytes};
+use rlmesh_proto::EndpointPhases;
 use rlmesh_proto::core::v1::AutoresetMode;
 use rlmesh_proto::env::v1::{
     EpisodeMetadata, ResetRequest, ResetResponse, StepRequest, StepResponse,
@@ -53,6 +54,8 @@ pub struct RuntimeEnvReset {
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`
     /// (replaces the old nested per-step telemetry message).
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration; all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
 }
 
 /// The env's step reply plus the endpoint-local op duration the peer stamped.
@@ -60,6 +63,8 @@ pub struct RuntimeEnvStep {
     pub response: StepResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration; all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
 }
 
 /// The model's predict reply plus the endpoint-local op duration the peer stamped.
@@ -67,10 +72,21 @@ pub struct RuntimeModelPrediction {
     pub response: PredictResponse,
     /// Endpoint-local op duration (ns) from `JoinResponse.endpoint_total_ns`.
     pub endpoint_total_ns: Option<u64>,
+    /// The peer's split of that duration, plus its queue wait and slot depth;
+    /// all-zero from a peer that sends none.
+    pub phases: EndpointPhases,
     /// Lanes fused into the model forward this predict rode in (1 = a lone
     /// predict). `None` when the transport does not group predicts; recorded
     /// as the `group.size` telemetry metric when present.
     pub group_size: Option<u64>,
+}
+
+/// What a peer reported about its own handling of one op, as recorded beside the
+/// driver's own RPC timing.
+pub(crate) struct PeerReport {
+    pub(crate) endpoint_total_ns: Option<u64>,
+    pub(crate) phases: EndpointPhases,
+    pub(crate) group_size: Option<u64>,
 }
 
 /// The environment side of a route: reset and step over the wire, plus close.
@@ -443,10 +459,13 @@ where
             telemetry,
             SRC_RESET,
             reset_latency,
-            reset_ok.endpoint_total_ns,
+            PeerReport {
+                endpoint_total_ns: reset_ok.endpoint_total_ns,
+                phases: reset_ok.phases,
+                group_size: None,
+            },
             reset_request_bytes,
             reset_ok.response.encoded_len() as u64,
-            None,
         );
         fan_out_event!(
             self,
@@ -532,10 +551,15 @@ where
                 // boundary passed since it fired), recover the handle, discard
                 // the result, and re-plan synchronously from the current
                 // observation.
-                let mut prefetched: Option<(RuntimeModelPrediction, Option<AdapterContext>, u64)> =
-                    None;
+                let mut prefetched: Option<(
+                    RuntimeModelPrediction,
+                    Option<AdapterContext>,
+                    u64,
+                    Duration,
+                )> = None;
                 if let Some(inflight) = prefetch_inflight.take() {
                     let step = predict_snapshot.step;
+                    let join_started = Instant::now();
                     let (model, result) = await_runtime_operation(
                         cancellation,
                         predict_timeout,
@@ -550,21 +574,50 @@ where
                         join_prefetch(inflight.join, state.model_component_id()),
                     )
                     .await?;
+                    let join_wait = join_started.elapsed();
                     self.prefetch_model = Some(model);
-                    if !prefetch_stale {
-                        prefetched =
-                            Some((result?, inflight.expected_context, inflight.request_bytes));
+                    if prefetch_stale {
+                        // The chunk is discarded, but the loop still stalled
+                        // joining it and the endpoint still ran a forward:
+                        // record both rather than let the cost vanish into
+                        // the round residual.
+                        match result {
+                            Ok(discarded) => record_op(
+                                telemetry,
+                                SRC_PREDICT,
+                                join_wait,
+                                PeerReport {
+                                    endpoint_total_ns: discarded.endpoint_total_ns,
+                                    phases: discarded.phases,
+                                    group_size: discarded.group_size,
+                                },
+                                inflight.request_bytes,
+                                discarded.response.encoded_len() as u64,
+                            ),
+                            Err(error) => tracing::warn!(
+                                error = %error,
+                                "stale prefetch predict failed; re-planning from the current observation"
+                            ),
+                        }
+                    } else {
+                        prefetched = Some((
+                            result?,
+                            inflight.expected_context,
+                            inflight.request_bytes,
+                            join_wait,
+                        ));
                     }
                 }
                 prefetch_stale = false;
                 let (action_msg, expected_context, predict_request_bytes, predict_rpc) =
                     match prefetched {
-                        Some((chunk, context, bytes)) => {
+                        Some((chunk, context, bytes, join_wait)) => {
                             // Experienced wait only: the inference ran behind
-                            // the replay frames, so rpc.total records what the
-                            // loop actually stalled, while endpoint totals keep
-                            // the true inference cost.
-                            (chunk, context, bytes, Duration::ZERO)
+                            // the replay frames, so rpc.total records just the
+                            // stall joining it — near zero when the lead was
+                            // enough, the uncovered remainder when it wasn't —
+                            // while endpoint totals keep the true inference cost.
+                            (chunk, context, bytes, join_wait)
                         }
                         None => {
                             let expected_context = pending_observation_msg.context.clone();
@@ -607,10 +660,13 @@ where
                     telemetry,
                     SRC_PREDICT,
                     predict_rpc,
-                    action_msg.endpoint_total_ns,
+                    PeerReport {
+                        endpoint_total_ns: action_msg.endpoint_total_ns,
+                        phases: action_msg.phases,
+                        group_size: action_msg.group_size,
+                    },
                     predict_request_bytes,
                     action_msg.response.encoded_len() as u64,
-                    action_msg.group_size,
                 );
                 if action_msg.response.actions.is_empty() {
                     return Err(RuntimeError::Protocol(format!(
@@ -684,10 +740,13 @@ where
                 telemetry,
                 SRC_STEP,
                 step_rpc,
-                step_ok.endpoint_total_ns,
+                PeerReport {
+                    endpoint_total_ns: step_ok.endpoint_total_ns,
+                    phases: step_ok.phases,
+                    group_size: None,
+                },
                 step_request_bytes,
                 step_ok.response.encoded_len() as u64,
-                None,
             );
             let step_observation = value_leaves(step_ok.response.observation.as_ref())?;
 
@@ -926,10 +985,13 @@ where
                             telemetry,
                             SRC_RESET,
                             inloop_reset_started.elapsed(),
-                            reset_ok.endpoint_total_ns,
+                            PeerReport {
+                                endpoint_total_ns: reset_ok.endpoint_total_ns,
+                                phases: reset_ok.phases,
+                                group_size: None,
+                            },
                             reset_request_bytes,
                             reset_ok.response.encoded_len() as u64,
-                            None,
                         );
                         let next_obs = value_leaves(reset_ok.response.observation.as_ref())?;
                         // Whole-vector reset starts every lane; a partial reset
@@ -1442,32 +1504,70 @@ fn lock_agg(telemetry: &Mutex<Aggregator>) -> MutexGuard<'_, Aggregator> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Record the per-op telemetry samples — RPC latency, the optional
-/// endpoint-local duration the peer stamped, request + response wire bytes, and
-/// the optional fused-group size a grouping transport reported — under a single
+/// Record the per-op telemetry samples — RPC latency, what the peer reported
+/// about its own handling, and request + response wire bytes — under a single
 /// lock. Every driver op (predict, step, reset) records this same shape, so
 /// they all route through here.
+///
+/// An unreported phase is zero and records nothing, so an older peer that stamps
+/// only `endpoint_total_ns` produces exactly the rows it always did.
 fn record_op(
     telemetry: &Mutex<Aggregator>,
     src: Source,
     rpc: Duration,
-    endpoint_total_ns: Option<u64>,
+    peer: PeerReport,
     request_bytes: u64,
     response_bytes: u64,
-    group_size: Option<u64>,
 ) {
     let mut agg = lock_agg(telemetry);
     agg.record(Sample::dur(src, metrics::RPC_TOTAL, rpc));
-    if let Some(ns) = endpoint_total_ns {
+    if let Some(ns) = peer.endpoint_total_ns {
         agg.record(Sample::dur(
             src,
             metrics::ENDPOINT_TOTAL,
             Duration::from_nanos(ns),
         ));
     }
+    for (metric, ns) in [
+        (metrics::ENDPOINT_DECODE, peer.phases.decode_ns),
+        (metrics::ENDPOINT_USER, peer.phases.user_ns),
+        (metrics::ENDPOINT_ENCODE, peer.phases.encode_ns),
+        (metrics::ENDPOINT_QUEUE, peer.phases.queue_ns),
+        (metrics::PREDICT_ADAPTER, peer.phases.adapter_ns),
+    ] {
+        if ns != 0 {
+            agg.record(Sample::dur(src, metric, Duration::from_nanos(ns)));
+        }
+    }
+    // Gauges: a measured zero is a sample (an even vector, an emptied engine),
+    // only an unmeasuring peer records nothing.
+    if let Some(ns) = peer.phases.lane_skew_ns {
+        agg.record(Sample::dur(
+            src,
+            metrics::LANE_SKEW,
+            Duration::from_nanos(ns),
+        ));
+    }
+    if peer.phases.in_flight != 0 {
+        agg.record(Sample::count(
+            src,
+            metrics::PREDICT_IN_FLIGHT,
+            u64::from(peer.phases.in_flight),
+        ));
+    }
+    if let Some(episodes) = peer.phases.held_episodes {
+        agg.record(Sample::count(
+            src,
+            metrics::HELD_EPISODES,
+            u64::from(episodes),
+        ));
+    }
+    if let Some(bytes) = peer.phases.held_state_bytes {
+        agg.record(Sample::bytes(src, metrics::HELD_BYTES, bytes));
+    }
     agg.record(Sample::bytes(src, metrics::REQUEST_BYTES, request_bytes));
     agg.record(Sample::bytes(src, metrics::RESPONSE_BYTES, response_bytes));
-    if let Some(group) = group_size {
+    if let Some(group) = peer.group_size {
         agg.record(Sample::count(src, metrics::GROUP_SIZE, group));
     }
 }

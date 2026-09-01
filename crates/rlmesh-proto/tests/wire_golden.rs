@@ -181,6 +181,7 @@ fn model_join_response_bytes_are_frozen() {
         )),
         request_id: "req-1".to_string(),
         endpoint_total_ns: Some(1234),
+        ..Default::default()
     };
     assert_frozen(
         "model.v1.JoinResponse",

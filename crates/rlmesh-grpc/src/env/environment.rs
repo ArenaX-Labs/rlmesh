@@ -5,6 +5,7 @@ pub use rlmesh_proto::env::v1::{
     CloseEnvsResponse, RenderRequest, RenderResponse, ResetRequest, ResetResponse, StepRequest,
     StepResponse,
 };
+pub use rlmesh_proto::{EndpointPhases, lane_skew_ns};
 use rlmesh_spaces::{EnvContract, spaces::SpaceSpec};
 
 use crate::error::{EnvError, EnvErrorCode};
@@ -67,4 +68,11 @@ pub trait Environment: Send + Sync {
 
     /// Close the environment or vector.
     async fn close(&mut self) -> Result<CloseEnvsResponse, EnvError>;
+
+    /// The phase split of the op just completed, cleared by the read. The server
+    /// stamps it beside `endpoint_total_ns` so a consumer can tell wire cost from
+    /// env work without a profiler. The default measures nothing.
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        EndpointPhases::default()
+    }
 }

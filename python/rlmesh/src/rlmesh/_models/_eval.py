@@ -49,6 +49,7 @@ __all__ = [
     "RunResult",
     "Session",
     "StepEvent",
+    "TelemetryRow",
     "resolve_adapter",
 ]
 
@@ -138,10 +139,58 @@ class EpisodeResult:
 
 
 @dataclass(frozen=True)
+class TelemetryRow:
+    """One aggregated metric series from a :meth:`Model.run` eval.
+
+    The runtime aggregates every measurement per ``(op, component, metric)``
+    over the whole run. ``rpc.total`` is the client-observed round trip of an
+    op; ``endpoint.total`` the peer's own handling wall, split by
+    ``endpoint.decode`` / ``endpoint.user`` / ``endpoint.encode``;
+    ``endpoint.queue`` the wait before the op's handler ran (the model's
+    permit, gate, and handler lock; the env's lock) and ``predict.in_flight``
+    the model endpoint's slot occupancy at dispatch; ``predict.adapter`` the RLMesh
+    adapter work (observation assembly + action apply) inside the handler's
+    own time, so the model's own forward is ``endpoint.user`` minus it;
+    ``held.episodes`` / ``held.bytes`` the per-episode frame-stack state the
+    adapter engine was holding when the predict was stamped (what grows with
+    concurrent episodes and shrinks on episode-end GC; a zero is a real sample);
+    ``lane.skew`` a vector env's straggler dispersion, only from an env that
+    times its own lanes; ``runner.round`` one full
+    predict -> step -> transform loop iteration (subtract the per-op rows for
+    the driver's own residual). A metric a peer never stamps produces no row.
+
+    Attributes:
+        op: The measured operation (e.g. ``model.predict``, ``env.step``).
+        component: Who produced the sample (``model``, ``env``, ``runner``).
+        metric: The metric name (e.g. ``rpc.total``, ``endpoint.user``).
+        unit: What the values measure: ``ms``, ``bytes``, or ``count``.
+        count: Samples aggregated into this row.
+        avg: Mean value, in :attr:`unit`.
+        p50: Median value, in :attr:`unit`.
+        p95: 95th-percentile value, in :attr:`unit`.
+        p99: 99th-percentile value, in :attr:`unit`.
+    """
+
+    op: str
+    component: str
+    metric: str
+    unit: str
+    count: int
+    avg: float
+    p50: float
+    p95: float
+    p99: float
+
+
+@dataclass(frozen=True)
 class RunResult:
     """The result of a :meth:`Model.run` eval."""
 
     episodes: tuple[EpisodeResult, ...] = ()
+    #: The run's aggregated timing/size telemetry, one :class:`TelemetryRow`
+    #: per measured series. Populated by :meth:`Model.run`'s native loop;
+    #: empty on the :meth:`Session.run` path.
+    telemetry: tuple[TelemetryRow, ...] = ()
 
     @property
     def num_episodes(self) -> int:
@@ -184,6 +233,41 @@ class RunResult:
             )
         succeeded = sum(1 for e in self.episodes if e.succeeded)
         return succeeded / len(self.episodes)
+
+    def format_telemetry(self) -> str:
+        """The :attr:`telemetry` rows as an aligned text table.
+
+        One line per row -- op, metric, unit, count, avg/p50/p95/p99 -- so
+        ``print(result.format_telemetry())`` answers where a run's time went
+        (model forward, env step, serialization, queueing) without a profiler.
+        """
+        if not self.telemetry:
+            return "(no telemetry: populated by Model.run's native loop)"
+        header = ("op", "metric", "unit", "count", "avg", "p50", "p95", "p99")
+        rows = [
+            (
+                r.op,
+                r.metric,
+                r.unit,
+                str(r.count),
+                f"{r.avg:.2f}",
+                f"{r.p50:.2f}",
+                f"{r.p95:.2f}",
+                f"{r.p99:.2f}",
+            )
+            for r in self.telemetry
+        ]
+        widths = [
+            max(len(h), *(len(row[i]) for row in rows)) for i, h in enumerate(header)
+        ]
+
+        def line(cells: tuple[str, ...]) -> str:
+            return "  ".join(
+                cell.ljust(width) if i < 3 else cell.rjust(width)
+                for i, (cell, width) in enumerate(zip(cells, widths, strict=True))
+            )
+
+        return "\n".join([line(header), *(line(row) for row in rows)])
 
     def __repr__(self) -> str:
         return (

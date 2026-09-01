@@ -375,6 +375,44 @@ fn call_batched(
     .map_err(|err| RLMeshError::Internal(err.to_string()))
 }
 
+/// The in-process run's report as a Python dict: `episodes` (the per-episode
+/// summaries) and `telemetry` (the session metric aggregate).
+fn report_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
+    let out = pyo3::types::PyDict::new(py);
+    out.set_item("episodes", report_episodes_to_py(py, report)?)?;
+    out.set_item("telemetry", report_telemetry_to_py(py, report)?)?;
+    Ok(out.into_any().unbind())
+}
+
+/// The session telemetry aggregate as a `list[dict]`: one row per
+/// (op, component, metric) with count/avg/p50/p95/p99 in the metric's unit
+/// (`ms` for durations), keys matching the SDK's `TelemetryRow` fields.
+fn report_telemetry_to_py(py: Python<'_>, report: &rlmesh::RuntimeReport) -> PyResult<Py<PyAny>> {
+    use rlmesh::telemetry::Kind;
+    let rows = pyo3::types::PyList::empty(py);
+    for row in &report.telemetry.rows {
+        let entry = pyo3::types::PyDict::new(py);
+        entry.set_item("op", row.source.op)?;
+        entry.set_item("component", row.source.component)?;
+        entry.set_item("metric", row.metric.name)?;
+        entry.set_item(
+            "unit",
+            match row.metric.kind {
+                Kind::Duration => "ms",
+                Kind::Bytes => "bytes",
+                Kind::Count => "count",
+            },
+        )?;
+        entry.set_item("count", row.count)?;
+        entry.set_item("avg", row.avg)?;
+        entry.set_item("p50", row.p50)?;
+        entry.set_item("p95", row.p95)?;
+        entry.set_item("p99", row.p99)?;
+        rows.append(entry)?;
+    }
+    Ok(rows.into_any().unbind())
+}
+
 /// The in-process run's per-episode results as a Python `list[dict]` (keys
 /// matching the SDK's `EpisodeResult` fields), from the runtime report's
 /// episode summaries. `predict_ms`/`step_ms` carry the report's SESSION-mean
@@ -629,7 +667,7 @@ impl PyModel {
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        report_episodes_to_py(py, &report)
+        report_to_py(py, &report)
     }
 
     #[pyo3(signature = (env_address, max_episodes, execution_horizon=1, seeds=None, max_episode_steps=None, max_episode_seconds=None, close_env=false))]
@@ -671,7 +709,7 @@ impl PyModel {
 
         let _ = total_guard.finish(0);
         self.profiler.log_summary_once();
-        report_episodes_to_py(py, &report)
+        report_to_py(py, &report)
     }
 
     #[pyo3(signature = (address, options=None))]
@@ -713,8 +751,8 @@ import typing
 
 class PyModel:
     def __init__(self, predict_fn: collections.abc.Callable[[Value], Value], configure_fn: collections.abc.Callable[[EnvContract], object] | None = None, on_episode_end: collections.abc.Callable[[], None] | None = None, on_close: collections.abc.Callable[[], None] | None = None, predict_chunk_fn: collections.abc.Callable[[Value, int], Value] | None = None, predict_batch_fn: collections.abc.Callable[[list[Value]], list[Value]] | None = None, predict_chunk_batch_fn: collections.abc.Callable[[list[Value], int], list[Value]] | None = None, allow_fusion: bool = True) -> None: ...
-    def run_local(self, env_address: str, execution_horizon: int = 1) -> list[dict[str, typing.Any]]: ...
-    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> list[dict[str, typing.Any]]: ...
+    def run_local(self, env_address: str, execution_horizon: int = 1) -> dict[str, typing.Any]: ...
+    def run_local_for_episodes(self, env_address: str, max_episodes: int, execution_horizon: int = 1, seeds: list[int] | None = None, max_episode_steps: int | None = None, max_episode_seconds: float | None = None, close_env: bool = False) -> dict[str, typing.Any]: ...
     def serve(self, address: str, options: ServeOptions | None = None) -> None: ...
 "#
     }

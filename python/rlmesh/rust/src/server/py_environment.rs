@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rlmesh::{
-    Env as RLMeshEnv, VectorCloseResult as EnvCloseResult, VectorEnv as RLMeshVectorEnv,
-    VectorResetRequest as EnvResetRequest, VectorResetResult as EnvResetResult,
-    VectorStepRequest as EnvStepRequest, VectorStepResult as EnvStepResult,
+    EndpointPhases, Env as RLMeshEnv, VectorCloseResult as EnvCloseResult,
+    VectorEnv as RLMeshVectorEnv, VectorResetRequest as EnvResetRequest,
+    VectorResetResult as EnvResetResult, VectorStepRequest as EnvStepRequest,
+    VectorStepResult as EnvStepResult,
 };
 use rlmesh_grpc::error::{EnvError, EnvErrorCode};
 use rlmesh_spaces::errors::EnvRuntimeError;
@@ -20,6 +21,7 @@ use rlmesh_spaces::{
 };
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::conversion::{
     derive_autoreset_mode, encode_render_png, extract_optional_meta_attr, extract_render_mode,
@@ -101,6 +103,8 @@ pub struct PyEnvironment {
     uses_vector_api: bool,
     /// Per-process profiling summary
     profiler: Arc<ProfileCollector>,
+    /// Phase split of the last op, drained by the wire layer for the response.
+    last_phases: EndpointPhases,
     /// Serving-side validation policy for observation/action range deviations.
     policy: ValidationPolicy,
     /// Conformance-warning dedup: `(kind, path)` already reported this session.
@@ -230,6 +234,7 @@ impl PyEnvironment {
                 num_envs,
                 uses_vector_api,
                 profiler,
+                last_phases: EndpointPhases::default(),
                 policy: validation_policy_from_env(),
                 warned: HashSet::new(),
                 value_backend: if native_values {
@@ -361,7 +366,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
 
-        let (observation, mut info) = spawn_py(
+        let (observation, mut info, phases) = spawn_py(
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -375,7 +380,7 @@ impl PyEnvironment {
 
                 let call_guard = profiler.start("server.reset.python_call");
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
-                let _ = call_guard.finish(0);
+                let user = call_guard.finish(0);
 
                 let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
@@ -386,7 +391,7 @@ impl PyEnvironment {
                     &observation_space,
                     value_backend,
                 )?;
-                let _ = encode_guard.finish(native_value_size(&observation));
+                let encode = encode_guard.finish(native_value_size(&observation));
 
                 let info = if info.is_none() {
                     None
@@ -394,11 +399,16 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok((observation, info))
+                Ok((
+                    observation,
+                    info,
+                    EndpointPhases::from_durations(Duration::ZERO, user, encode),
+                ))
             },
             internal_env_err,
         )
         .await?;
+        self.last_phases = phases;
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
 
@@ -445,7 +455,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
 
-        let (observation, reward, terminated, truncated, mut info) = spawn_py(
+        let (observation, reward, terminated, truncated, mut info, phases) = spawn_py(
             "step",
             move |py| {
                 let env_ref = env.bind(py);
@@ -458,11 +468,11 @@ impl PyEnvironment {
                     }
                     None => py.None(),
                 };
-                let _ = decode_guard.finish(action_size);
+                let decode = decode_guard.finish(action_size);
 
                 let call_guard = profiler.start("server.step.python_call");
                 let result = env_ref.call_method1("step", (action.bind(py),))?;
-                let _ = call_guard.finish(0);
+                let user = call_guard.finish(0);
 
                 let (obs, reward, terminated, truncated, info) =
                     normalize_single_step_result(result)?;
@@ -474,7 +484,7 @@ impl PyEnvironment {
                     &observation_space,
                     value_backend,
                 )?;
-                let _ = encode_guard.finish(native_value_size(&observation));
+                let encode = encode_guard.finish(native_value_size(&observation));
 
                 let info = if info.is_none() {
                     None
@@ -482,11 +492,19 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok((observation, reward, terminated, truncated, info))
+                Ok((
+                    observation,
+                    reward,
+                    terminated,
+                    truncated,
+                    info,
+                    EndpointPhases::from_durations(decode, user, encode),
+                ))
             },
             internal_env_err,
         )
         .await?;
+        self.last_phases = phases;
         let _ = total_guard
             .finish(native_value_size(&observation) + info.as_ref().map(|m| m.len()).unwrap_or(0));
 
@@ -529,28 +547,32 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        let result = spawn_py(
+        let (result, phases) = spawn_py(
             "render",
             move |py| {
                 let env_ref = env.bind(py);
                 if env_ref.hasattr("render")? {
                     let call_guard = profiler.start("server.render.python_call");
                     let frame = env_ref.call_method0("render")?;
-                    let _ = call_guard.finish(0);
+                    let user = call_guard.finish(0);
 
                     let encode_guard = profiler.start("server.render.encode_frame");
                     let encoded = encode_render_png(py, &frame)?;
                     let encoded_len = encoded.as_ref().map(|raw| raw.len()).unwrap_or(0);
-                    let _ = encode_guard.finish(encoded_len);
-                    return Ok(encoded);
+                    let encode = encode_guard.finish(encoded_len);
+                    return Ok((
+                        encoded,
+                        EndpointPhases::from_durations(Duration::ZERO, user, encode),
+                    ));
                 }
 
-                Ok(None)
+                Ok((None, EndpointPhases::default()))
             },
             internal_env_err,
         )
         .await?;
 
+        self.last_phases = phases;
         let frame_bytes = result.as_ref().map(|raw| raw.len()).unwrap_or(0);
         let _ = total_guard.finish(frame_bytes);
 
@@ -602,7 +624,7 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
 
-        let (observations, mut info, obs_bytes) = spawn_py(
+        let (observations, mut info, obs_bytes, phases) = spawn_py(
             "reset",
             move |py| {
                 let env_ref = env.bind(py);
@@ -620,7 +642,7 @@ impl PyEnvironment {
 
                 let call_guard = profiler.start("server.reset.python_call");
                 let result = env_ref.call_method("reset", (), Some(&kwargs))?;
-                let _ = call_guard.finish(0);
+                let user = call_guard.finish(0);
 
                 let (obs, info) = normalize_reset_result(py, result, &observation_space)?;
 
@@ -633,7 +655,7 @@ impl PyEnvironment {
                     value_backend,
                 )?;
                 let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
-                let _ = encode_guard.finish(obs_bytes);
+                let encode = encode_guard.finish(obs_bytes);
 
                 let info = if info.is_none() {
                     None
@@ -641,11 +663,17 @@ impl PyEnvironment {
                     Some(py_any_to_meta_map(&info)?)
                 };
 
-                Ok((observations, info, obs_bytes))
+                Ok((
+                    observations,
+                    info,
+                    obs_bytes,
+                    EndpointPhases::from_durations(Duration::ZERO, user, encode),
+                ))
             },
             EnvRuntimeError::Runtime,
         )
         .await?;
+        self.last_phases = phases;
         let _ = total_guard.finish(obs_bytes);
 
         let mut warnings = Vec::new();
@@ -701,69 +729,79 @@ impl PyEnvironment {
         let profiler = Arc::clone(&self.profiler);
         let value_backend = self.value_backend;
 
-        let (observations, rewards, terminated, truncated, mut info, action_bytes, obs_bytes) =
-            spawn_py(
-                "step",
-                move |py| {
-                    let env_ref = env.bind(py);
+        let (
+            observations,
+            rewards,
+            terminated,
+            truncated,
+            mut info,
+            action_bytes,
+            obs_bytes,
+            phases,
+        ) = spawn_py(
+            "step",
+            move |py| {
+                let env_ref = env.bind(py);
 
-                    let decode_guard = profiler.start("server.step.decode_action");
-                    // Under Native a Python framework bridge owns the conversion, so
-                    // fuse the N lanes into one `(N, *shape)` native Tensor (the path
-                    // the model's batched corner uses) instead of handing back a
-                    // Python list of N per-lane values: `bridge.decode` then yields a
-                    // single `{key: tensor[N, ...]}` batch. (Non-array leaves such as
-                    // Discrete still arrive as a list of N -- same as the model.)
-                    let action = if matches!(value_backend, ValueBackend::Native) {
-                        batched_space_values_to_py_neutral(py, &actions, &action_space)?
-                    } else {
-                        batched_space_values_to_py_with_backend(
-                            py,
-                            &actions,
-                            &action_space,
-                            value_backend,
-                        )?
-                    };
-                    let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
-                    let _ = decode_guard.finish(action_bytes);
-
-                    let call_guard = profiler.start("server.step.python_call");
-                    let result = env_ref.call_method1("step", (&action,))?;
-                    let _ = call_guard.finish(0);
-
-                    let (obs, rewards, terminated, truncated, info) =
-                        normalize_vector_step_result(result, num_envs)?;
-
-                    let encode_guard = profiler.start("server.step.encode_obs");
-                    let observations = py_any_to_batched_space_values_with_backend(
+                let decode_guard = profiler.start("server.step.decode_action");
+                // Under Native a Python framework bridge owns the conversion, so
+                // fuse the N lanes into one `(N, *shape)` native Tensor (the path
+                // the model's batched corner uses) instead of handing back a
+                // Python list of N per-lane values: `bridge.decode` then yields a
+                // single `{key: tensor[N, ...]}` batch. (Non-array leaves such as
+                // Discrete still arrive as a list of N -- same as the model.)
+                let action = if matches!(value_backend, ValueBackend::Native) {
+                    batched_space_values_to_py_neutral(py, &actions, &action_space)?
+                } else {
+                    batched_space_values_to_py_with_backend(
                         py,
-                        &obs,
-                        &observation_space,
-                        num_envs,
+                        &actions,
+                        &action_space,
                         value_backend,
-                    )?;
-                    let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
-                    let _ = encode_guard.finish(obs_bytes);
+                    )?
+                };
+                let action_bytes = actions.iter().map(native_value_size).sum::<usize>();
+                let decode = decode_guard.finish(action_bytes);
 
-                    let info = if info.is_none() {
-                        None
-                    } else {
-                        Some(py_any_to_meta_map(&info)?)
-                    };
+                let call_guard = profiler.start("server.step.python_call");
+                let result = env_ref.call_method1("step", (&action,))?;
+                let user = call_guard.finish(0);
 
-                    Ok((
-                        observations,
-                        rewards,
-                        terminated,
-                        truncated,
-                        info,
-                        action_bytes,
-                        obs_bytes,
-                    ))
-                },
-                EnvRuntimeError::Runtime,
-            )
-            .await?;
+                let (obs, rewards, terminated, truncated, info) =
+                    normalize_vector_step_result(result, num_envs)?;
+
+                let encode_guard = profiler.start("server.step.encode_obs");
+                let observations = py_any_to_batched_space_values_with_backend(
+                    py,
+                    &obs,
+                    &observation_space,
+                    num_envs,
+                    value_backend,
+                )?;
+                let obs_bytes = observations.iter().map(native_value_size).sum::<usize>();
+                let encode = encode_guard.finish(obs_bytes);
+
+                let info = if info.is_none() {
+                    None
+                } else {
+                    Some(py_any_to_meta_map(&info)?)
+                };
+
+                Ok((
+                    observations,
+                    rewards,
+                    terminated,
+                    truncated,
+                    info,
+                    action_bytes,
+                    obs_bytes,
+                    EndpointPhases::from_durations(decode, user, encode),
+                ))
+            },
+            EnvRuntimeError::Runtime,
+        )
+        .await?;
+        self.last_phases = phases;
         let _ = total_guard.finish(action_bytes + obs_bytes);
 
         for observation in &observations {
@@ -799,7 +837,7 @@ impl PyEnvironment {
         let env = Python::attach(|py| self.env.clone_ref(py));
         let profiler = Arc::clone(&self.profiler);
 
-        let result = spawn_py(
+        let (result, phases) = spawn_py(
             "render",
             move |py| {
                 let env_ref = env.bind(py);
@@ -807,21 +845,25 @@ impl PyEnvironment {
                 if env_ref.hasattr("render")? {
                     let call_guard = profiler.start("server.render.python_call");
                     let frame = env_ref.call_method0("render")?;
-                    let _ = call_guard.finish(0);
+                    let user = call_guard.finish(0);
 
                     let encode_guard = profiler.start("server.render.encode_frame");
                     let encoded = encode_render_png(py, &frame)?;
                     let encoded_len = encoded.as_ref().map(|raw| raw.len()).unwrap_or(0);
-                    let _ = encode_guard.finish(encoded_len);
-                    return Ok(encoded);
+                    let encode = encode_guard.finish(encoded_len);
+                    return Ok((
+                        encoded,
+                        EndpointPhases::from_durations(Duration::ZERO, user, encode),
+                    ));
                 }
 
-                Ok(None)
+                Ok((None, EndpointPhases::default()))
             },
             EnvRuntimeError::Runtime,
         )
         .await?;
 
+        self.last_phases = phases;
         let frame_bytes = result.as_ref().map(|raw| raw.len()).unwrap_or(0);
         let _ = total_guard.finish(frame_bytes);
 
@@ -917,6 +959,10 @@ impl RLMeshEnv for PySingleEnv {
             .await
             .map_err(env_error_to_runtime_error)
     }
+
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        std::mem::take(&mut self.0.last_phases)
+    }
 }
 
 #[async_trait]
@@ -951,5 +997,9 @@ impl RLMeshVectorEnv for PyVectorEnv {
 
     async fn close(&mut self, req: CloseRequest) -> Result<EnvCloseResult, EnvRuntimeError> {
         self.0.close_vector(req).await
+    }
+
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        std::mem::take(&mut self.0.last_phases)
     }
 }

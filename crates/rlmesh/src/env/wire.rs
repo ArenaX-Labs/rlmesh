@@ -17,8 +17,10 @@ use super::types::{
 };
 use super::{Env, VectorEnv};
 use crate::spaces;
+use rlmesh_proto::{EndpointPhases, elapsed_ns};
 use rlmesh_spaces::spaces::{PolicyOutcome, ValidationPolicy};
 use std::collections::{BTreeMap, HashSet};
+use std::time::Instant;
 
 /// Reserved info-map key carrying value-conformance warnings (2026.06 edition).
 const CONFORMANCE_WARNING_KEY: &str = "rlmesh.conformance.warning";
@@ -78,6 +80,9 @@ pub struct WireEnvAdapter<E> {
     policy: ValidationPolicy,
     /// Conformance-warning dedup: `(kind, path)` already reported this session.
     warned: HashSet<(String, String)>,
+    /// Wire decode/encode around the last op, folded with the inner env's own
+    /// split. Read (and cleared) by the server when it stamps the response.
+    last_phases: EndpointPhases,
 }
 
 /// Internal adapter bridging a scalar [`Env`] to the vectorized wire layer.
@@ -171,6 +176,10 @@ impl<E: Env> VectorEnv for ScalarEnvAdapter<E> {
             final_episodes: vec![],
         })
     }
+
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        self.inner.take_last_phases()
+    }
 }
 
 impl<E> WireEnvAdapter<E> {
@@ -181,6 +190,7 @@ impl<E> WireEnvAdapter<E> {
             inner,
             policy: validation_policy_from_env(),
             warned: HashSet::new(),
+            last_phases: EndpointPhases::default(),
         }
     }
 }
@@ -208,6 +218,14 @@ impl<E: VectorEnv> WireEnvAdapter<E> {
             observation: Some(observations),
             infos: result.info.as_ref().map(meta_map_to_proto),
         })
+    }
+
+    /// Fold this layer's wire decode/encode around the inner env's own split and
+    /// hold it for the server to stamp.
+    fn record_phases(&mut self, decode_ns: u64, call_ns: u64, encode_started: Instant) {
+        let encode_ns = elapsed_ns(encode_started);
+        let inner = self.inner.take_last_phases();
+        self.last_phases = EndpointPhases::nest(decode_ns, call_ns, encode_ns, inner);
     }
 
     /// Validate one observation or action against its declared space under the
@@ -272,19 +290,29 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         &mut self,
         req: ProtoResetRequest,
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
+        self.last_phases = EndpointPhases::default();
+        let decode_started = Instant::now();
+        let request = VectorResetRequest {
+            seeds: req.seeds,
+            options: req.options.map(meta_map_from_proto),
+            // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
+            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+            env_indices: proto_env_indices_to_native(req.env_indices),
+        };
+        let decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
         let result = self
             .inner
-            .reset(VectorResetRequest {
-                seeds: req.seeds,
-                options: req.options.map(meta_map_from_proto),
-                // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
-                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-                env_indices: proto_env_indices_to_native(req.env_indices),
-            })
+            .reset(request)
             .await
             .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
 
-        self.encode_reset_response(result)
+        let encode_started = Instant::now();
+        let response = self.encode_reset_response(result)?;
+        self.record_phases(decode_ns, call_ns, encode_started);
+        Ok(response)
     }
 
     /// Partial / per-lane reset: forward the requested lane indices to the inner
@@ -295,25 +323,37 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
         &mut self,
         req: ProtoResetRequest,
     ) -> std::result::Result<ProtoResetResponse, EnvError> {
+        self.last_phases = EndpointPhases::default();
+        let decode_started = Instant::now();
+        let request = VectorResetRequest {
+            seeds: req.seeds,
+            options: req.options.map(meta_map_from_proto),
+            // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
+            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+            env_indices: proto_env_indices_to_native(req.env_indices),
+        };
+        let decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
         let result = self
             .inner
-            .reset_subset(VectorResetRequest {
-                seeds: req.seeds,
-                options: req.options.map(meta_map_from_proto),
-                // Proto timeout_ms/env_indices are uint64/uint32; native is i64/i32.
-                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-                env_indices: proto_env_indices_to_native(req.env_indices),
-            })
+            .reset_subset(request)
             .await
             .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
 
-        self.encode_reset_response(result)
+        let encode_started = Instant::now();
+        let response = self.encode_reset_response(result)?;
+        self.record_phases(decode_ns, call_ns, encode_started);
+        Ok(response)
     }
 
     async fn step(
         &mut self,
         req: ProtoStepRequest,
     ) -> std::result::Result<ProtoStepResponse, EnvError> {
+        self.last_phases = EndpointPhases::default();
+        let decode_started = Instant::now();
         // N is authoritative (num_envs); a wrong-width/count action is a client
         // fault, so a decode failure maps to InvalidAction (not Internal).
         let num_envs = self.inner.num_envs();
@@ -327,6 +367,9 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             self.enforce(action, "action", &mut warnings)?;
         }
 
+        let decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
         let mut result = self
             .inner
             .step(VectorStepRequest {
@@ -336,7 +379,9 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             })
             .await
             .map_err(gym_error_to_env_error)?;
+        let call_ns = elapsed_ns(call_started);
 
+        let encode_started = Instant::now();
         let env_count = self.inner.num_envs();
         validate_count(&result.observations, env_count, "observations")?;
         validate_count(&result.terminated, env_count, "terminated values")?;
@@ -352,7 +397,7 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
             encode_batched_partial_values(&result.observations, self.inner.observation_space())
                 .map_err(protocol_error_to_env_error)?;
 
-        Ok(ProtoStepResponse {
+        let response = ProtoStepResponse {
             observation: Some(observations),
             rewards: result.rewards,
             terminated_mask: result.terminated.into_iter().map(u8::from).collect(),
@@ -365,23 +410,38 @@ impl<E: VectorEnv> Environment for WireEnvAdapter<E> {
                 .collect::<std::result::Result<Vec<_>, _>>()?,
             // Full-width response; partial-width is reserved-but-deferred.
             env_indices: Vec::new(),
-        })
+        };
+        self.record_phases(decode_ns, call_ns, encode_started);
+        Ok(response)
     }
 
     async fn render(
         &mut self,
         req: ProtoRenderRequest,
     ) -> std::result::Result<ProtoRenderResponse, EnvError> {
+        self.last_phases = EndpointPhases::default();
+        let request = RenderRequest {
+            env_index: render_env_index(&req.env_indices)?,
+            // Proto timeout_ms is uint64; native is i64.
+            timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
+        };
+
+        let call_started = Instant::now();
         let result = self
             .inner
-            .render(RenderRequest {
-                env_index: render_env_index(&req.env_indices)?,
-                // Proto timeout_ms is uint64; native is i64.
-                timeout_ms: i64::try_from(req.timeout_ms).unwrap_or(i64::MAX),
-            })
+            .render(request)
             .await
             .map_err(gym_error_to_env_error)?;
-        Ok(render_result_to_proto(&result))
+        let call_ns = elapsed_ns(call_started);
+
+        let encode_started = Instant::now();
+        let response = render_result_to_proto(&result);
+        self.record_phases(0, call_ns, encode_started);
+        Ok(response)
+    }
+
+    fn take_last_phases(&mut self) -> EndpointPhases {
+        std::mem::take(&mut self.last_phases)
     }
 
     async fn close(&mut self) -> std::result::Result<ProtoCloseResponse, EnvError> {
@@ -529,6 +589,11 @@ mod tests {
         env_contract: spaces::EnvContract,
         last_render_request: Option<RenderRequest>,
         closes: Option<Arc<AtomicUsize>>,
+        // The split this env reports for its own work, as a Python-backed env does.
+        phases: EndpointPhases,
+        // Real time each step spends inside the env, so a reported split is
+        // contained in a measured call regardless of build profile.
+        step_delay: Duration,
     }
 
     impl DummyEnv {
@@ -558,6 +623,8 @@ mod tests {
                 env_contract,
                 last_render_request: None,
                 closes,
+                phases: EndpointPhases::default(),
+                step_delay: Duration::ZERO,
             }
         }
     }
@@ -604,6 +671,7 @@ mod tests {
             &mut self,
             req: StepRequest,
         ) -> std::result::Result<StepResult, spaces::EnvRuntimeError> {
+            std::thread::sleep(self.step_delay);
             Ok(StepResult {
                 observations: req
                     .actions
@@ -652,6 +720,62 @@ mod tests {
                 final_episodes: vec![],
             })
         }
+
+        fn take_last_phases(&mut self) -> EndpointPhases {
+            std::mem::take(&mut self.phases)
+        }
+    }
+
+    fn step_request(adapter: &WireEnvAdapter<DummyEnv>) -> ProtoStepRequest {
+        let actions = vec![
+            spaces::SpaceValue::Discrete(1),
+            spaces::SpaceValue::Discrete(2),
+        ];
+        ProtoStepRequest {
+            action: Some(
+                encode_batched_partial_values(&actions, adapter.inner.action_space()).unwrap(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn step_reports_the_wire_split_of_an_env_that_measures_nothing() {
+        let mut adapter = WireEnvAdapter::new(DummyEnv::new());
+        let request = step_request(&adapter);
+        adapter.step(request).await.unwrap();
+
+        let phases = adapter.take_last_phases();
+        assert!(phases.decode_ns > 0, "wire decode is measured");
+        assert!(phases.encode_ns > 0, "wire encode is measured");
+        // Nothing inside reported a split, so the whole call reads as user time.
+        assert!(phases.user_ns > 0);
+        // The split is drained by the read: the server stamps it exactly once.
+        assert_eq!(adapter.take_last_phases(), EndpointPhases::default());
+    }
+
+    #[tokio::test]
+    async fn step_folds_the_envs_own_split_into_the_wire_one() {
+        let mut env = DummyEnv::new();
+        env.phases = EndpointPhases {
+            decode_ns: 100,
+            user_ns: 5_000,
+            encode_ns: 200,
+            ..EndpointPhases::default()
+        };
+        env.step_delay = Duration::from_millis(1);
+        let mut adapter = WireEnvAdapter::new(env);
+        let request = step_request(&adapter);
+        adapter.step(request).await.unwrap();
+
+        let phases = adapter.take_last_phases();
+        // User time is the measured call (>= the 1ms the env really spent) minus
+        // the env's own wire share, so it keeps the env's report plus the real
+        // cost of reaching it; the env's conversion costs join the wire codec on
+        // either side.
+        assert!(phases.user_ns >= 1_000_000 - 300);
+        assert!(phases.decode_ns > 100);
+        assert!(phases.encode_ns > 200);
     }
 
     /// Reserve an ephemeral TCP port and free it, so a server can rebind it.

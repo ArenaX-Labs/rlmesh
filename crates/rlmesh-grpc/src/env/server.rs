@@ -11,8 +11,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::env::Environment;
 use crate::env::episode::{EpisodeTracker, LaneState};
+use crate::env::{EndpointPhases, Environment};
 use crate::error::EnvError;
 use crate::lifecycle::{ActivityFinishedGuard, IdleActivity, ServeOptions, ShutdownTrigger};
 use crate::wire::spaces::env_contract_to_proto;
@@ -421,10 +421,14 @@ async fn handle_env_request<E: Environment>(
 ) -> JoinResponse {
     let request_id = req.request_id.clone();
     let endpoint_started = Instant::now();
+    let mut phases = EndpointPhases::default();
+    // One env serves its ops one at a time: the lock wait is this op's queue.
+    let lock_wait = |started: Instant| rlmesh_proto::elapsed_ns(started);
 
     let kind = match req.kind {
         Some(join_request::Kind::Reset(reset_req)) => {
             let mut env = env.lock().await;
+            let queue_ns = lock_wait(endpoint_started);
 
             let num_envs = env.num_envs();
             // Record the seed honestly: an empty seeds vector means the
@@ -470,6 +474,9 @@ async fn handle_env_request<E: Environment>(
                 }
             };
 
+            phases = env.take_last_phases();
+            phases.queue_ns = queue_ns;
+
             match result {
                 Ok(ok) => {
                     let mut tracker = episode_tracker.lock().await;
@@ -505,6 +512,7 @@ async fn handle_env_request<E: Environment>(
         }
         Some(join_request::Kind::Step(step_req)) => {
             let mut env = env.lock().await;
+            let queue_ns = lock_wait(endpoint_started);
             let num_envs = env.num_envs();
             let autoreset_mode = env.env_contract().autoreset_mode;
 
@@ -527,6 +535,8 @@ async fn handle_env_request<E: Environment>(
                 let pushed_ids = step_req.episode_ids.clone();
                 let result =
                     run_env_op_with_deadline(env.step(step_req), timeout_ms, "env.step").await;
+                phases = env.take_last_phases();
+                phases.queue_ns = queue_ns;
 
                 match result {
                     Ok(mut ok) => {
@@ -635,10 +645,13 @@ async fn handle_env_request<E: Environment>(
         }
         Some(join_request::Kind::Render(render_req)) => {
             let mut env = env.lock().await;
+            let queue_ns = lock_wait(endpoint_started);
 
             let timeout_ms = render_req.timeout_ms;
             let result =
                 run_env_op_with_deadline(env.render(render_req), timeout_ms, "env.render").await;
+            phases = env.take_last_phases();
+            phases.queue_ns = queue_ns;
 
             match result {
                 Ok(ok) => {
@@ -705,6 +718,11 @@ async fn handle_env_request<E: Environment>(
                 .as_nanos()
                 .min(u128::from(u64::MAX)) as u64,
         ),
+        decode_ns: EndpointPhases::reported(phases.decode_ns),
+        user_ns: EndpointPhases::reported(phases.user_ns),
+        encode_ns: EndpointPhases::reported(phases.encode_ns),
+        queue_ns: EndpointPhases::reported(phases.queue_ns),
+        lane_skew_ns: phases.lane_skew_ns,
         request_id,
     };
     tracing::debug!(

@@ -21,8 +21,8 @@ use rlmesh_proto::model::v1::{
     model_service_server::{ModelService as ModelServiceTrait, ModelServiceServer},
 };
 use rlmesh_proto::{
-    capabilities, capability_map, evaluate_handshake, generation_mismatch_message, peer_info,
-    supported_workflow_editions,
+    EndpointPhases, capabilities, capability_map, elapsed_ns, evaluate_handshake,
+    generation_mismatch_message, peer_info, supported_workflow_editions,
 };
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::StreamExt;
@@ -243,12 +243,15 @@ where
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<JoinResponse, Status>>(64);
 
+        // Read the stream in its own task so the next request's arrival is
+        // stamped when it comes off the wire, not after the previous request got
+        // a permit — the dispatch loop below blocks on the semaphore, and stamping
+        // there makes `queue_ns` under-report exactly at saturation. Capacity 1:
+        // one decoded request is held ahead of the permits and nothing further
+        // is pulled off the stream, so h2 flow control keeps back-pressuring
+        // undecoded frames as before. Deeper backlog still waits unstamped.
+        let (read_tx, mut read_rx) = tokio::sync::mpsc::channel::<(JoinRequest, Instant)>(1);
         tokio::spawn(async move {
-            // Per-route tail of completion signals, kept bounded across the
-            // stream's lifetime even as it cycles fresh route keys per episode.
-            // See [`RouteTails`] for the ordering and reaping invariants.
-            let mut route_tails = RouteTails::new();
-
             while let Some(request_result) = request_stream.next().await {
                 let request = match request_result {
                     Ok(request) => request,
@@ -257,6 +260,20 @@ where
                         break;
                     }
                 };
+                let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
+                if read_tx.send((request, Instant::now())).await.is_err() || close_after {
+                    break;
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            // Per-route tail of completion signals, kept bounded across the
+            // stream's lifetime even as it cycles fresh route keys per episode.
+            // See [`RouteTails`] for the ordering and reaping invariants.
+            let mut route_tails = RouteTails::new();
+
+            while let Some((request, arrived_at)) = read_rx.recv().await {
                 let close_after = matches!(request.kind, Some(join_request::Kind::Close(_)));
                 let route_key = join_request_route_key(&request);
 
@@ -302,6 +319,7 @@ where
                 let route_setup = route_setup.clone();
                 let route_configs = Arc::clone(&route_configs);
                 let tx = tx.clone();
+                let semaphore = Arc::clone(&semaphore);
 
                 tokio::spawn(async move {
                     let _permit = permit;
@@ -309,9 +327,21 @@ where
                     // Wait for predecessors so the handler critical section runs in
                     // per-route arrival order (or, for Close, after every route).
                     gate.wait().await;
+                    // Slots taken as this request is dispatched; free of extra
+                    // state because the semaphore already counts them.
+                    let admission = Admission {
+                        arrived_at,
+                        in_flight: (concurrency - semaphore.available_permits()) as u32,
+                    };
 
-                    let response =
-                        handle_model_request(request, handler, route_setup, route_configs).await;
+                    let response = handle_model_request(
+                        request,
+                        handler,
+                        route_setup,
+                        route_configs,
+                        admission,
+                    )
+                    .await;
 
                     // Release successors on this request's route(s) *before* sending
                     // the response, so per-route ordering does not depend on the
@@ -374,24 +404,62 @@ where
     }
 }
 
+/// What the Join loop knows before a request's handler runs: when it came off
+/// the stream, and how many slots the endpoint had taken when it was dispatched.
+/// Both ride to the response so a client can see queueing it cannot otherwise
+/// distinguish from a slow handler.
+#[derive(Clone, Copy)]
+pub(super) struct Admission {
+    arrived_at: Instant,
+    in_flight: u32,
+}
+
+impl Admission {
+    /// Slot depth alone, for a path that never reached a handler to be timed.
+    fn depth_only(self) -> EndpointPhases {
+        EndpointPhases {
+            in_flight: self.in_flight,
+            ..EndpointPhases::default()
+        }
+    }
+
+    /// A dispatch with no read loop above it, so nothing to report but the clock.
+    #[cfg(test)]
+    pub(super) fn now() -> Self {
+        Self {
+            arrived_at: Instant::now(),
+            in_flight: 0,
+        }
+    }
+}
+
 pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
     request: JoinRequest,
     handler: Arc<Mutex<H>>,
     route_setup: Option<Arc<dyn ModelRouteSetup>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
+    admission: Admission,
 ) -> JoinResponse {
     let request_id = request.request_id.clone();
     let started_at = Instant::now();
+
+    let mut phases = EndpointPhases::default();
 
     let kind = match request.kind {
         Some(join_request::Kind::ResolveAdapter(request)) => {
             handle_resolve_adapter(request, route_setup.as_deref(), route_configs).await
         }
         Some(join_request::Kind::Predict(request)) => {
-            handle_predict(request, handler, route_configs).await
+            let (kind, measured) =
+                handle_predict(request, handler, route_configs, admission.arrived_at).await;
+            phases = measured;
+            kind
         }
         Some(join_request::Kind::GroupedPredict(request)) => {
-            handle_grouped_predict(request, handler, route_configs).await
+            let (kind, measured) =
+                handle_grouped_predict(request, handler, route_configs, admission.arrived_at).await;
+            phases = measured;
+            kind
         }
         Some(join_request::Kind::ResetAdapter(request)) => {
             // Explicit GC (R2): evict the named episodes' per-episode adapter
@@ -425,11 +493,12 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
                     if let Some(route_setup) = route_setup.as_deref()
                         && let Err(error) = route_setup.release_adapter(&env_id).await
                     {
-                        return JoinResponse {
-                            kind: Some(model_error(error.to_string())),
-                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+                        return model_join_response(
+                            Some(model_error(error.to_string())),
+                            started_at,
+                            admission.depth_only(),
                             request_id,
-                        };
+                        );
                     }
                     Some(join_response::Kind::ReleaseAdapter(
                         ReleaseAdapterResponse {},
@@ -446,11 +515,12 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             if let Some(route_setup) = route_setup.as_deref() {
                 for env_id in &env_ids {
                     if let Err(error) = route_setup.release_adapter(env_id).await {
-                        return JoinResponse {
-                            kind: Some(model_error_from_error(&error)),
-                            endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+                        return model_join_response(
+                            Some(model_error_from_error(&error)),
+                            started_at,
+                            admission.depth_only(),
                             request_id,
-                        };
+                        );
                     }
                 }
             }
@@ -466,10 +536,31 @@ pub(super) async fn handle_model_request<H: ModelHandler + 'static>(
             debug_info: String::new(),
         })),
     };
+    phases.in_flight = admission.in_flight;
 
+    model_join_response(kind, started_at, phases, request_id)
+}
+
+/// Build the response envelope: the endpoint-local total, whatever of its split
+/// was measured, and the correlation id. An unmeasured phase is left off the
+/// wire, so a handler that reports nothing looks exactly as it always did.
+fn model_join_response(
+    kind: Option<join_response::Kind>,
+    started_at: Instant,
+    phases: EndpointPhases,
+    request_id: String,
+) -> JoinResponse {
     JoinResponse {
         kind,
         endpoint_total_ns: Some(model_endpoint_total_ns(started_at)),
+        decode_ns: EndpointPhases::reported(phases.decode_ns),
+        user_ns: EndpointPhases::reported(phases.user_ns),
+        encode_ns: EndpointPhases::reported(phases.encode_ns),
+        queue_ns: EndpointPhases::reported(phases.queue_ns),
+        in_flight: (phases.in_flight != 0).then_some(phases.in_flight),
+        adapter_ns: EndpointPhases::reported(phases.adapter_ns),
+        held_episodes: phases.held_episodes,
+        held_state_bytes: phases.held_state_bytes,
         request_id,
     }
 }
@@ -694,9 +785,16 @@ async fn handle_predict<H: ModelHandler + 'static>(
     request: PredictRequest,
     handler: Arc<Mutex<H>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
-) -> Option<join_response::Kind> {
+    arrived_at: Instant,
+) -> (Option<join_response::Kind>, EndpointPhases) {
+    // Phases are filled in as they are measured so a failing request still
+    // reports what it waited and worked, not a blank.
+    let mut phases = EndpointPhases::default();
     let result = async {
         let mut handler = handler.lock().await;
+        phases.queue_ns = elapsed_ns(arrived_at);
+
+        let decode_started = Instant::now();
         let prepared = prepare_predict_locked(request, &route_configs).await?;
         let PreparedPredict {
             observation,
@@ -704,14 +802,29 @@ async fn handle_predict<H: ModelHandler + 'static>(
             num_envs,
             route,
         } = prepared;
-        let frames = handler.predict_chunked(observation).await?;
-        finish_predict(frames, num_envs, &action_space, route)
+        phases.decode_ns = elapsed_ns(decode_started);
+
+        let call_started = Instant::now();
+        let frames = handler.predict_chunked(observation).await;
+        phases.user_ns = elapsed_ns(call_started);
+        // Drain the adapter share even for a failed forward, or its time leaks
+        // into the next request's `adapter_ns`.
+        phases.adapter_ns = handler.take_adapter_ns();
+        let held = handler.held_state();
+        phases.held_episodes = held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32);
+        phases.held_state_bytes = held.map(|held| held.bytes);
+        let frames = frames?;
+
+        let encode_started = Instant::now();
+        let response = finish_predict(frames, num_envs, &action_space, route)?;
+        phases.encode_ns = elapsed_ns(encode_started);
+        Ok(response)
     }
     .await;
-    Some(match result {
-        Ok(response) => join_response::Kind::Predict(response),
-        Err(error) => model_error_from_error(&error),
-    })
+    match result {
+        Ok(response) => (Some(join_response::Kind::Predict(response)), phases),
+        Err(error) => (Some(model_error_from_error(&error)), phases),
+    }
 }
 
 /// Process a control-plane-grouped predict: one request carrying N groups, each
@@ -726,7 +839,8 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     request: GroupedPredictRequest,
     handler: Arc<Mutex<H>>,
     route_configs: Arc<Mutex<HashMap<String, ModelRouteConfig>>>,
-) -> Option<join_response::Kind> {
+    arrived_at: Instant,
+) -> (Option<join_response::Kind>, EndpointPhases) {
     // A finished group is either a prepare-time failure to report verbatim, or a
     // prepared group awaiting its slice of the batched predict's actions.
     enum Finisher {
@@ -739,7 +853,9 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
     }
 
     let mut handler = handler.lock().await;
+    let queue_ns = elapsed_ns(arrived_at);
 
+    let decode_started = Instant::now();
     // Prepare every group under the lock (per-env adapter lookup). A group whose
     // env adapter is unresolved (or otherwise fails to prepare) records its own
     // error and is excluded from the batched predict.
@@ -765,11 +881,18 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
         }
     }
 
+    let decode_ns = elapsed_ns(decode_started);
+
     // One batched predict over the prepared observations. The default
     // `predict_grouped` runs them sequentially; a fusing handler overrides it to
     // run a single forward pass. Results align 1:1 and in order with `batch`.
+    let call_started = Instant::now();
     let mut frames = handler.predict_grouped(batch).await.into_iter();
+    let user_ns = elapsed_ns(call_started);
+    let adapter_ns = handler.take_adapter_ns();
+    let held = handler.held_state();
 
+    let encode_started = Instant::now();
     let results = finishers
         .into_iter()
         .map(|finisher| {
@@ -793,9 +916,21 @@ async fn handle_grouped_predict<H: ModelHandler + 'static>(
         })
         .collect();
 
-    Some(join_response::Kind::GroupedPredict(
-        GroupedPredictResponse { results },
-    ))
+    (
+        Some(join_response::Kind::GroupedPredict(
+            GroupedPredictResponse { results },
+        )),
+        EndpointPhases {
+            decode_ns,
+            user_ns,
+            encode_ns: elapsed_ns(encode_started),
+            queue_ns,
+            adapter_ns,
+            held_episodes: held.map(|held| held.episodes.min(u64::from(u32::MAX)) as u32),
+            held_state_bytes: held.map(|held| held.bytes),
+            ..EndpointPhases::default()
+        },
+    )
 }
 
 /// Wrap one group's outcome into a `GroupedPredictResult`, reusing the single-
@@ -1371,6 +1506,7 @@ mod tests {
             Arc::clone(&server.handler),
             server.route_setup.clone(),
             Arc::clone(&server.route_configs),
+            Admission::now(),
         )
         .await;
 

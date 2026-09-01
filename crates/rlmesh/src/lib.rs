@@ -122,20 +122,22 @@ pub mod spaces;
 
 pub use address::{BindAddress, ConnectAddress};
 pub use env::{
-    BoundEnvServer, CloseRequest, CloseResult, Env, EnvServer, EpisodeMetadata, RemoteEnv,
-    RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult, StepRequest,
-    StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
+    BoundEnvServer, CloseRequest, CloseResult, EndpointPhases, Env, EnvServer, EpisodeMetadata,
+    RemoteEnv, RemoteVectorEnv, RenderRequest, RenderResult, ResetRequest, ResetResult,
+    StepRequest, StepResult, VectorCloseResult, VectorEnv, VectorEnvServer, VectorResetRequest,
     VectorResetResult, VectorStepRequest, VectorStepResult,
 };
 pub use error::{EnvironmentError, Error, ErrorCode, ModelError, Result};
 pub use model::{
-    AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, ModelHandler,
-    ModelHandlerRuntimeModel, ModelObservation, ModelRouteContext, ModelRouteSetup, ModelWorker,
-    PredictFn, PredictFrames, RemoteModel, RouteConfig, RouteResolver, RunLocalOptions,
-    ServeModelOptions,
+    AdaptedModelHandler, BoundModelServer, EnvClientRuntimeEnv, EpisodeInfo, HeldState,
+    ModelHandler, ModelHandlerRuntimeModel, ModelObservation, ModelRouteContext, ModelRouteSetup,
+    ModelWorker, PredictFn, PredictFrames, RemoteModel, RouteConfig, RouteResolver,
+    RunLocalOptions, ServeModelOptions,
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::RuntimeReport;
+#[doc(no_inline)]
+pub use rlmesh_runtime::telemetry;
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 pub use tokio_util::sync::CancellationToken;

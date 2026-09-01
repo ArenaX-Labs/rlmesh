@@ -228,4 +228,35 @@ message JoinResponse {
   // value, no nested framing, no string), carrying per-step timing without a
   // nested message. `optional` preserves "no timing available" vs "0 ns".
   optional uint64 endpoint_total_ns = 6;
+
+  // Split of `endpoint_total_ns` (ns): wire decode of the request, the handler's
+  // own work, wire encode of the response. Absent from a peer that does not
+  // measure them.
+  optional uint64 decode_ns = 11;
+  optional uint64 user_ns = 12;
+  optional uint64 encode_ns = 13;
+
+  // Wait before this request's handler ran: concurrency permit, per-route
+  // ordering gate, and handler lock. Overlaps `endpoint_total_ns` by the
+  // handler-lock portion.
+  optional uint64 queue_ns = 14;
+
+  // Requests holding a concurrency slot on this endpoint when this request
+  // was dispatched to its handler (after its per-route gate), including this
+  // one. Slot occupancy, not parallelism: the handler lock runs them one at a
+  // time.
+  optional uint32 in_flight = 15;
+
+  // Adapter work inside the handler's own time (ns): observation assembly plus
+  // action apply. A sub-span of `user_ns`, not additive with it -- the model's
+  // own forward is `user_ns - adapter_ns`. Absent from a spec-less route or a
+  // handler that does not measure it.
+  optional uint64 adapter_ns = 16;
+
+  // Engine-held per-episode adapter state when this response was stamped:
+  // episodes with live frame-stack windows across the endpoint's routes, and
+  // the bytes those windows hold. Absent from a handler that keeps no such
+  // accounting; a measured `0` (nothing held right now) is sent as `0`.
+  optional uint32 held_episodes = 17;
+  optional uint64 held_state_bytes = 18;
 }

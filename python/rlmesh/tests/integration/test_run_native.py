@@ -77,9 +77,34 @@ def test_run_seeds_set_episode_count_and_echo_on_result() -> None:
     assert all(e.predict_ms > 0.0 and e.step_ms > 0.0 for e in result.episodes)
 
 
+def test_run_surfaces_the_session_telemetry_aggregate() -> None:
+    env = CountEnv(episode_len=3)
+    try:
+        result = _model().run(env, seeds=[7])
+    except ConnectionError as exc:
+        if "Operation not permitted" in str(exc):
+            pytest.skip("local tcp bind is not permitted in this environment")
+        raise
+
+    series = {(row.op, row.metric) for row in result.telemetry}
+    assert ("model.predict", "rpc.total") in series
+    assert ("env.step", "rpc.total") in series
+    assert ("runner.round", "rpc.total") in series
+    for row in result.telemetry:
+        assert row.count > 0
+        assert row.unit in ("ms", "bytes", "count")
+        assert row.avg >= 0.0 and row.p50 <= row.p95 <= row.p99
+    # The formatter renders one aligned line per row plus a header.
+    table = result.format_telemetry()
+    assert len(table.splitlines()) == len(result.telemetry) + 1
+    assert table.splitlines()[0].split()[:2] == ["op", "metric"]
+
+
 def test_run_empty_seeds_returns_an_empty_result() -> None:
     result = _model().run(CountEnv(), seeds=[])
     assert result.num_episodes == 0
+    assert result.telemetry == ()
+    assert "no telemetry" in result.format_telemetry()
 
 
 def test_run_reports_the_envs_success_signal() -> None:
