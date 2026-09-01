@@ -243,7 +243,10 @@ where
                 route,
             }),
             endpoint_total_ns: None,
-            phases: EndpointPhases::default(),
+            phases: EndpointPhases {
+                adapter_ns: self.handler.take_adapter_ns(),
+                ..EndpointPhases::default()
+            },
             group_size: None,
         })
     }

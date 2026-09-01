@@ -206,6 +206,10 @@ def test_adapted_model_runs_against_local_tagged_env() -> None:
     assert captured["keys"] == ["image", "instruction", "state"]
     assert env_obj.last_action is not None
     assert tuple(env_obj.last_action.shape) == (7,)
+    # A spec'd route measures its adapter work (obs assembly + action apply):
+    # the engine's split reaches the run telemetry end to end.
+    adapter_rows = [r for r in result.telemetry if r.metric == "predict.adapter"]
+    assert adapter_rows and adapter_rows[0].avg > 0.0
 
 
 @pytest.mark.parametrize(

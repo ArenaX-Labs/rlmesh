@@ -8,7 +8,9 @@
 //! and serves it; a pure-Rust model does the same with no host runtime.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use rlmesh_adapters::v1::{
@@ -49,6 +51,10 @@ pub struct AdaptedModelHandler {
     resolver: Option<Arc<dyn RouteResolver>>,
     routes: Routes,
     spec_less_horizons: SpecLessHorizons,
+    /// Adapter time (obs assembly + action apply) accumulated by the current
+    /// predict-family call, drained per request via `take_adapter_ns`. Shared
+    /// (`Arc`) because the work runs on `spawn_blocking` threads.
+    adapter_ns: Arc<AtomicU64>,
 }
 
 impl AdaptedModelHandler {
@@ -61,6 +67,7 @@ impl AdaptedModelHandler {
             resolver,
             routes: Arc::new(Mutex::new(HashMap::new())),
             spec_less_horizons: Arc::new(Mutex::new(HashMap::new())),
+            adapter_ns: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -164,6 +171,17 @@ fn annotate_predict_error(err: Error, summary: &str) -> Error {
 /// not silently fall back to a shared "" buffer (which would cross-contaminate
 /// lanes) if any other producer violates that.
 fn assemble_route_inputs(
+    entry: &mut RouteEntry,
+    observation: &ModelObservation,
+    adapter_ns: &AtomicU64,
+) -> Result<Vec<Value>> {
+    let started = Instant::now();
+    let result = assemble_route_inputs_inner(entry, observation);
+    adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
+    result
+}
+
+fn assemble_route_inputs_inner(
     entry: &mut RouteEntry,
     observation: &ModelObservation,
 ) -> Result<Vec<Value>> {
@@ -330,6 +348,18 @@ fn finish_route_frames(
     config: &RouteConfig,
     lane_raw_steps: Vec<Vec<Value>>,
     num_envs: usize,
+    adapter_ns: &AtomicU64,
+) -> Result<PredictFrames> {
+    let started = Instant::now();
+    let result = finish_route_frames_inner(config, lane_raw_steps, num_envs);
+    adapter_ns.fetch_add(rlmesh_proto::elapsed_ns(started), Ordering::Relaxed);
+    result
+}
+
+fn finish_route_frames_inner(
+    config: &RouteConfig,
+    lane_raw_steps: Vec<Vec<Value>>,
+    num_envs: usize,
 ) -> Result<PredictFrames> {
     let encodings: &dyn rlmesh_adapters::v1::EncodingTransform = config.encodings.as_ref();
     let mut frame0 = Vec::with_capacity(num_envs);
@@ -380,11 +410,12 @@ fn predict_route(
     entry: &Arc<Mutex<RouteEntry>>,
     predict: &Arc<dyn PredictFn>,
     observation: ModelObservation,
+    adapter_ns: &AtomicU64,
 ) -> Result<PredictFrames> {
     let num_envs = observation.num_envs;
     let (inputs, config) = {
         let mut guard = entry.lock().expect("route entry poisoned");
-        let inputs = assemble_route_inputs(&mut guard, &observation)?;
+        let inputs = assemble_route_inputs(&mut guard, &observation, adapter_ns)?;
         (inputs, Arc::clone(&guard.config))
     };
     let lane_raw_steps = dispatch_route_corners(
@@ -394,7 +425,7 @@ fn predict_route(
         config.execution_horizon,
         num_envs,
     )?;
-    finish_route_frames(&config, lane_raw_steps, num_envs)
+    finish_route_frames(&config, lane_raw_steps, num_envs, adapter_ns)
 }
 
 /// One grouped predict group's serving lane, classified once (on the async
@@ -431,6 +462,7 @@ fn predict_grouped_fused(
     lanes: Vec<GroupLane>,
     observations: Vec<ModelObservation>,
     predict: &Arc<dyn PredictFn>,
+    adapter_ns: &AtomicU64,
 ) -> Vec<Result<PredictFrames>> {
     struct Prepared {
         index: usize,
@@ -451,7 +483,7 @@ fn predict_grouped_fused(
                 let num_envs = observation.num_envs;
                 let assembled = {
                     let mut guard = entry.lock().expect("route entry poisoned");
-                    assemble_route_inputs(&mut guard, &observation)
+                    assemble_route_inputs(&mut guard, &observation, adapter_ns)
                         .map(|inputs| (inputs, Arc::clone(&guard.config)))
                 };
                 match assembled {
@@ -511,6 +543,7 @@ fn predict_grouped_fused(
                             &group.config,
                             group_frames,
                             group.num_envs,
+                            adapter_ns,
                         ));
                     }
                 }
@@ -534,7 +567,9 @@ fn predict_grouped_fused(
                         horizon,
                         group.num_envs,
                     )
-                    .and_then(|raw| finish_route_frames(&group.config, raw, group.num_envs)),
+                    .and_then(|raw| {
+                        finish_route_frames(&group.config, raw, group.num_envs, adapter_ns)
+                    }),
                 );
             }
         }
@@ -633,13 +668,14 @@ impl ModelHandler for AdaptedModelHandler {
             1
         };
         let predict = Arc::clone(&self.predict);
+        let adapter_ns = Arc::clone(&self.adapter_ns);
         // Decode + frame-stack + the model's predict are CPU/host work; run them
         // off the async worker so concurrent (pipelined) requests on other routes
         // are not stalled. A spec'd route runs the per-lane engine loop (emitting
         // chunk frames); a spec-less route takes the preserved batched raw path
         // (chunked through the model's chunk corner when a horizon was pinned).
         tokio::task::spawn_blocking(move || match entry {
-            Some(entry) => predict_route(&entry, &predict, observation),
+            Some(entry) => predict_route(&entry, &predict, observation, &adapter_ns),
             None => predict.predict_spec_less_chunked(observation, spec_less_horizon),
         })
         .await
@@ -672,15 +708,22 @@ impl ModelHandler for AdaptedModelHandler {
             })
             .collect();
         let predict = Arc::clone(&self.predict);
+        let adapter_ns = Arc::clone(&self.adapter_ns);
         let group_count = observations.len();
-        tokio::task::spawn_blocking(move || predict_grouped_fused(lanes, observations, &predict))
-            .await
-            .unwrap_or_else(|err| {
-                let message = format!("grouped predict task panicked: {err}");
-                (0..group_count)
-                    .map(|_| Err(Error::Internal(message.clone())))
-                    .collect()
-            })
+        tokio::task::spawn_blocking(move || {
+            predict_grouped_fused(lanes, observations, &predict, &adapter_ns)
+        })
+        .await
+        .unwrap_or_else(|err| {
+            let message = format!("grouped predict task panicked: {err}");
+            (0..group_count)
+                .map(|_| Err(Error::Internal(message.clone())))
+                .collect()
+        })
+    }
+
+    fn take_adapter_ns(&mut self) -> u64 {
+        self.adapter_ns.swap(0, Ordering::Relaxed)
     }
 
     fn route_setup(&self) -> Option<Arc<dyn ModelRouteSetup>> {

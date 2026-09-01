@@ -141,6 +141,15 @@ pub trait ModelHandler: Send {
         results
     }
 
+    /// Adapter time (obs assembly + action apply) inside the last
+    /// predict-family call, in nanoseconds — the share of the handler's own
+    /// work that was RLMesh adapter transform rather than the model's forward.
+    /// Read-and-clear: the caller drains it once per request. Defaults to `0`
+    /// for a handler that does not measure it.
+    fn take_adapter_ns(&mut self) -> u64 {
+        0
+    }
+
     /// Per-route setup invoked at `ResolveAdapter`, before any `predict` on the
     /// route. Returns a cheaply-cloned, independently-synchronized handle (or
     /// `None` for no per-route setup), obtained once when serving begins so the

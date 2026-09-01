@@ -440,6 +440,10 @@ pub struct EndpointPhases {
     pub encode_ns: u64,
     /// Wait before the handler ran: concurrency permit, route gate, handler lock.
     pub queue_ns: u64,
+    /// Adapter work inside `user_ns` (observation assembly + action apply) —
+    /// a sub-span, not additive: the model's own forward is `user_ns -
+    /// adapter_ns`. Model-only, and zero for a spec-less route.
+    pub adapter_ns: u64,
     /// Requests holding a concurrency slot when the handler started (>= 1).
     pub in_flight: u32,
     /// Straggler skew across a vector env's lanes for this op — see
@@ -509,6 +513,7 @@ impl EndpointPhases {
             encode_ns: response.encode_ns.unwrap_or(0),
             queue_ns: response.queue_ns.unwrap_or(0),
             in_flight: response.in_flight.unwrap_or(0),
+            adapter_ns: response.adapter_ns.unwrap_or(0),
             ..Self::default()
         }
     }
@@ -584,6 +589,7 @@ mod tests {
             encode_ns: Some(30),
             queue_ns: Some(40),
             in_flight: Some(3),
+            adapter_ns: Some(15),
             ..Default::default()
         };
         assert_eq!(
@@ -594,6 +600,7 @@ mod tests {
                 encode_ns: 30,
                 queue_ns: 40,
                 in_flight: 3,
+                adapter_ns: 15,
                 lane_skew_ns: 0,
             }
         );

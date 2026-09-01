@@ -600,6 +600,7 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
             encode_ns: 1_000_000,
             queue_ns: 4_000_000,
             in_flight: 7,
+            adapter_ns: 2_000_000,
             lane_skew_ns: 0,
         },
         ..TestModel::default()
@@ -632,6 +633,8 @@ async fn peer_reported_phases_land_in_the_session_snapshot() {
     assert_eq!(avg("model.predict", "endpoint.total"), 5.0);
     assert_eq!(avg("model.predict", "endpoint.user"), 3.0);
     assert_eq!(avg("model.predict", "predict.queue"), 4.0);
+    // The adapter's share of the handler's own work: forward = user - adapter.
+    assert_eq!(avg("model.predict", "predict.adapter"), 2.0);
     // Slot depth is a count, not a duration.
     assert_eq!(avg("model.predict", "predict.in_flight"), 7.0);
 }
@@ -703,6 +706,7 @@ async fn a_peer_that_reports_no_phases_records_only_the_total() {
         "endpoint.encode",
         "predict.queue",
         "predict.in_flight",
+        "predict.adapter",
         "lane.skew",
     ] {
         assert!(!recorded(metric), "{metric} must stay unrecorded");

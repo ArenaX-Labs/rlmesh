@@ -73,6 +73,11 @@ pub mod metrics {
     /// Requests holding a slot at the model endpoint when this predict was
     /// admitted (>= 1); the depth an embedder sizes `predict_concurrency` against.
     pub const PREDICT_IN_FLIGHT: Metric = Metric::count("predict.in_flight");
+    /// Adapter work inside the predict handler's own time (obs assembly +
+    /// action apply) — a sub-span of `endpoint.user`, so the model's own
+    /// forward is `endpoint.user` minus this. Recorded only for a handler
+    /// that measures it (the adapter engine); zero for a spec-less route.
+    pub const PREDICT_ADAPTER: Metric = Metric::duration("predict.adapter");
     /// Lanes fused into the model forward this predict rode in (1 = unfused;
     /// recorded only when the transport reports it — grouped/coalesced predicts).
     pub const GROUP_SIZE: Metric = Metric::count("group.size");
@@ -90,6 +95,7 @@ pub mod metrics {
         ENDPOINT_ENCODE,
         PREDICT_QUEUE,
         PREDICT_IN_FLIGHT,
+        PREDICT_ADAPTER,
         RPC_TOTAL,
         REQUEST_BYTES,
         RESPONSE_BYTES,

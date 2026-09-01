@@ -244,4 +244,10 @@ message JoinResponse {
   // Requests holding a concurrency slot on this endpoint when the handler
   // started, including this one.
   optional uint32 in_flight = 15;
+
+  // Adapter work inside the handler's own time (ns): observation assembly plus
+  // action apply. A sub-span of `user_ns`, not additive with it -- the model's
+  // own forward is `user_ns - adapter_ns`. Absent from a spec-less route or a
+  // handler that does not measure it.
+  optional uint64 adapter_ns = 16;
 }

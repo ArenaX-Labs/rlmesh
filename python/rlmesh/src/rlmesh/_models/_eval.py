@@ -147,7 +147,10 @@ class TelemetryRow:
     op; ``endpoint.total`` the peer's own handling wall, split by
     ``endpoint.decode`` / ``endpoint.user`` / ``endpoint.encode``;
     ``predict.queue`` / ``predict.in_flight`` the wait and slot depth at the
-    model endpoint before its handler ran; ``runner.round`` one full
+    model endpoint before its handler ran; ``predict.adapter`` the RLMesh
+    adapter work (observation assembly + action apply) inside the handler's
+    own time, so the model's own forward is ``endpoint.user`` minus it;
+    ``runner.round`` one full
     predict -> step -> transform loop iteration (subtract the per-op rows for
     the driver's own residual). A metric a peer never stamps produces no row.
 
