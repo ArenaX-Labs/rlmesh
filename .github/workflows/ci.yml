@@ -17,7 +17,7 @@ concurrency:
 jobs:
   fast:
     name: Fast Checks
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-8
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
 
@@ -27,39 +27,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Scope mise to repository config
-        run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
-
-      - name: Install mise
-        uses: jdx/mise-action@v4.1.0
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
         with:
-          version: 2026.6.12
-          install: true
-          install_args: --locked
-          cache_key: >-
-            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{ hashFiles('mise.lock') }}
-
-          cache: true
-
-      - name: Install Rust components
-        run: rustup component add --toolchain 1.96.0 rustfmt clippy
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
-
-      - name: Cache uv packages
-        uses: actions/cache@v5
-        with:
-          path: /tmp/.uv-cache
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
-          restore-keys: |
-            uv-${{ runner.os }}-
-
-      - name: Sync Python environment
-        run: mise run --skip-tools setup:python
+          python: "true"
+          rust-components: "true"
 
       - name: Static checks
         run: mise run --skip-tools check
@@ -85,7 +57,7 @@ jobs:
 
   package:
     name: Rust Package Verification
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04-4
     needs: fast
     if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
@@ -95,28 +67,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Scope mise to repository config
-        run: echo "MISE_IGNORED_CONFIG_PATHS=$HOME/.config/mise/config.toml" >> "$GITHUB_ENV"
-
-      - name: Install mise
-        uses: jdx/mise-action@v4.1.0
+      - name: Setup toolchain
+        uses: ./.github/actions/setup
         with:
-          version: 2026.6.12
-          install: true
-          install_args: --locked
-          cache_key: >-
-            {{cache_key_prefix}}-{{platform}}-{{version}}-{{install_args_hash}}-${{ hashFiles('mise.lock') }}
-
-          cache: true
-
-      - name: Install Rust components
-        run: rustup component add --toolchain 1.96.0 rustfmt clippy
-
-      - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            . -> target
+          rust-components: "true"
 
       - name: Rust package verification
         run: mise run --skip-tools release:rust:package

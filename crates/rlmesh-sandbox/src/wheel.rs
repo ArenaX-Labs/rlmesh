@@ -157,7 +157,7 @@ fn select_local_rlmesh_wheel(dist_dir: &Path, base_image: &str) -> Result<PathBu
         .map(|(_, _, path)| path)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "rlmesh_package='local' could not find a compatible Linux RLMesh wheel in {}; build one with `mise run release:python:wheels` or pass an explicit wheel path",
+                "rlmesh_package='local' could not find a compatible Linux RLMesh wheel in {}; build one on a Linux host with `mise run release:python:wheels:linux` or pass an explicit wheel path",
                 dist_dir.display()
             )
         })
