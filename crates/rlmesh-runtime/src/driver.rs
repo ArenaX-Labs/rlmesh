@@ -551,10 +551,15 @@ where
                 // boundary passed since it fired), recover the handle, discard
                 // the result, and re-plan synchronously from the current
                 // observation.
-                let mut prefetched: Option<(RuntimeModelPrediction, Option<AdapterContext>, u64)> =
-                    None;
+                let mut prefetched: Option<(
+                    RuntimeModelPrediction,
+                    Option<AdapterContext>,
+                    u64,
+                    Duration,
+                )> = None;
                 if let Some(inflight) = prefetch_inflight.take() {
                     let step = predict_snapshot.step;
+                    let join_started = Instant::now();
                     let (model, result) = await_runtime_operation(
                         cancellation,
                         predict_timeout,
@@ -569,21 +574,27 @@ where
                         join_prefetch(inflight.join, state.model_component_id()),
                     )
                     .await?;
+                    let join_wait = join_started.elapsed();
                     self.prefetch_model = Some(model);
                     if !prefetch_stale {
-                        prefetched =
-                            Some((result?, inflight.expected_context, inflight.request_bytes));
+                        prefetched = Some((
+                            result?,
+                            inflight.expected_context,
+                            inflight.request_bytes,
+                            join_wait,
+                        ));
                     }
                 }
                 prefetch_stale = false;
                 let (action_msg, expected_context, predict_request_bytes, predict_rpc) =
                     match prefetched {
-                        Some((chunk, context, bytes)) => {
+                        Some((chunk, context, bytes, join_wait)) => {
                             // Experienced wait only: the inference ran behind
-                            // the replay frames, so rpc.total records what the
-                            // loop actually stalled, while endpoint totals keep
-                            // the true inference cost.
-                            (chunk, context, bytes, Duration::ZERO)
+                            // the replay frames, so rpc.total records just the
+                            // stall joining it — near zero when the lead was
+                            // enough, the uncovered remainder when it wasn't —
+                            // while endpoint totals keep the true inference cost.
+                            (chunk, context, bytes, join_wait)
                         }
                         None => {
                             let expected_context = pending_observation_msg.context.clone();
