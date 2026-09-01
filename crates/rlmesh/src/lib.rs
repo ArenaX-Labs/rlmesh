@@ -136,6 +136,8 @@ pub use model::{
 };
 #[doc(no_inline)]
 pub use rlmesh_runtime::RuntimeReport;
+#[doc(no_inline)]
+pub use rlmesh_runtime::telemetry;
 pub use serve_options::ServeOptions;
 pub use spaces::{EnvContract, EnvRuntimeError, RenderFrame, SpaceSpec, SpaceValue};
 pub use tokio_util::sync::CancellationToken;

@@ -17,6 +17,7 @@ from ._eval import (
     RunResult,
     Session,
     StepEvent,
+    TelemetryRow,
 )
 from ._read import Reader
 from ._view import View
@@ -31,6 +32,7 @@ __all__ = [
     "RunResult",
     "Session",
     "StepEvent",
+    "TelemetryRow",
     "View",
     "run",
     "session",

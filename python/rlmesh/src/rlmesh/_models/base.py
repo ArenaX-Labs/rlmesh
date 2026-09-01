@@ -798,7 +798,11 @@ class ModelBase(Generic[ObsT, ActT]):
         ``trust_entrypoints`` override applies to this run only. On the
         result, each episode's ``predict_ms`` / ``step_ms`` carry the run's
         session-mean op latencies (the runtime aggregates timing per op, not
-        per episode).
+        per episode), and ``RunResult.telemetry`` carries the full aggregate --
+        every measured op/metric series with count and avg/p50/p95/p99
+        (``print(result.format_telemetry())`` for a table) -- so a slow run can
+        be attributed to the model forward, the env step, serialization, or
+        queueing without a profiler.
 
         The Session-only knobs -- ``hooks``, ``instruction``, ``view`` -- are
         not part of this loop; use :meth:`session` and
@@ -839,7 +843,7 @@ class ModelBase(Generic[ObsT, ActT]):
         if trust_entrypoints is not None:
             self._trust_entrypoints = trust_entrypoints
         try:
-            episodes = self._run_native(
+            report = self._run_native(
                 env_or_address,
                 max_episodes=max_episodes,
                 seeds=seeds,
@@ -850,7 +854,7 @@ class ModelBase(Generic[ObsT, ActT]):
             )
         finally:
             self._trust_entrypoints = previous_trust
-        from ._eval import EpisodeResult, RunResult
+        from ._eval import EpisodeResult, RunResult, TelemetryRow
 
         return RunResult(
             episodes=tuple(
@@ -866,8 +870,9 @@ class ModelBase(Generic[ObsT, ActT]):
                     predict_ms=episode["predict_ms"],
                     step_ms=episode["step_ms"],
                 )
-                for episode in episodes
-            )
+                for episode in report["episodes"]
+            ),
+            telemetry=tuple(TelemetryRow(**row) for row in report["telemetry"]),
         )
 
     def _run_native(
@@ -880,8 +885,8 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_seconds: float | None,
         close_env: bool,
         execution_horizon: int,
-    ) -> list[dict[str, Any]]:
-        """Normalize the env target, drive the native loop, return the episodes.
+    ) -> dict[str, Any]:
+        """Normalize the env target, drive the native loop, return the report.
 
         Target handling follows :func:`~rlmesh._models._connect.classify_env_target`
         (the same precedence ``session()`` uses): a bare address is dialed; a
@@ -1032,13 +1037,12 @@ class ModelBase(Generic[ObsT, ActT]):
 
     def _run_local(
         self, env_address: str, *, execution_horizon: int = 1
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Native worker loop against a remote env, until the env ends.
 
-        Returns the runtime report's per-episode summaries (one dict per
-        completed episode, ``EpisodeResult``-shaped keys). Telemetry is
-        surfaced on the serving runtime via its ``on_telemetry`` hook, not
-        returned here. Drives vectorized (``num_envs > 1``) envs through the
+        Returns the runtime report as ``{"episodes", "telemetry"}``: one
+        ``EpisodeResult``-shaped dict per completed episode, plus the session
+        metric aggregate (``TelemetryRow``-shaped dicts). Drives vectorized (``num_envs > 1``) envs through the
         native engine: the route resolves at connect (adapter + batched
         predict corners), and ``execution_horizon`` (> 1) enables action
         chunking exactly as the served path's ``ResolveAdapter`` pin does.
@@ -1055,12 +1059,11 @@ class ModelBase(Generic[ObsT, ActT]):
         max_episode_steps: int | None = None,
         max_episode_seconds: float | None = None,
         close_env: bool = False,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Native worker loop against a remote env for a fixed episode count.
 
-        Returns the per-episode summaries; see :meth:`_run_local` for the
-        shape, where telemetry is surfaced, and what ``execution_horizon``
-        does. ``seeds`` / the episode caps mirror :meth:`run` (explicit seeds
+        Returns the report; see :meth:`_run_local` for the shape and what
+        ``execution_horizon`` does. ``seeds`` / the episode caps mirror :meth:`run` (explicit seeds
         and caps need runtime-owned resets, i.e. autoreset disabled).
         """
         return self._install_worker().run_local_for_episodes(
