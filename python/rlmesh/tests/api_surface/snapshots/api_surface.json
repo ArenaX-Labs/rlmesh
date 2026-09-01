@@ -26,6 +26,7 @@
       "ServeOptions",
       "Session",
       "StepEvent",
+      "TelemetryRow",
       "Tensor",
       "Variant",
       "Vector",
@@ -521,6 +522,10 @@
             "kind": "attribute",
             "signature": "episodes: tuple[EpisodeResult, ...]"
           },
+          "format_telemetry": {
+            "kind": "function",
+            "signature": "format_telemetry()"
+          },
           "mean_reward": {
             "kind": "property",
             "signature": "property mean_reward: float"
@@ -533,12 +538,16 @@
             "kind": "property",
             "signature": "property success_rate: float"
           },
+          "telemetry": {
+            "kind": "attribute",
+            "signature": "telemetry: tuple[TelemetryRow, ...]"
+          },
           "total_steps": {
             "kind": "property",
             "signature": "property total_steps: int"
           }
         },
-        "signature": "RunResult(episodes: tuple[EpisodeResult, ...] = ())",
+        "signature": "RunResult(episodes: tuple[EpisodeResult, ...] = (), telemetry: tuple[TelemetryRow, ...] = ())",
         "stability": "Stable"
       },
       "SandboxBuild": {
@@ -899,6 +908,49 @@
           }
         },
         "signature": "StepEvent(episode: int, seed: int | None, step: int, observation: Any, action: Any, reward: float, terminated: bool, truncated: bool, info: Mapping[str, Any], predict_ms: float, step_ms: float, read: Callable[[object], object])",
+        "stability": "Stable"
+      },
+      "TelemetryRow": {
+        "kind": "class",
+        "members": {
+          "avg": {
+            "kind": "attribute",
+            "signature": "avg: float"
+          },
+          "component": {
+            "kind": "attribute",
+            "signature": "component: str"
+          },
+          "count": {
+            "kind": "attribute",
+            "signature": "count: int"
+          },
+          "metric": {
+            "kind": "attribute",
+            "signature": "metric: str"
+          },
+          "op": {
+            "kind": "attribute",
+            "signature": "op: str"
+          },
+          "p50": {
+            "kind": "attribute",
+            "signature": "p50: float"
+          },
+          "p95": {
+            "kind": "attribute",
+            "signature": "p95: float"
+          },
+          "p99": {
+            "kind": "attribute",
+            "signature": "p99: float"
+          },
+          "unit": {
+            "kind": "attribute",
+            "signature": "unit: str"
+          }
+        },
+        "signature": "TelemetryRow(op: str, component: str, metric: str, unit: str, count: int, avg: float, p50: float, p95: float, p99: float)",
         "stability": "Stable"
       },
       "Tensor": {

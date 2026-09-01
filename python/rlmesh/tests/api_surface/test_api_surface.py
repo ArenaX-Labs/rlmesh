@@ -30,6 +30,7 @@ def test_root_namespace_is_small() -> None:
         "ServeOptions",
         "Session",
         "StepEvent",
+        "TelemetryRow",
         "Tensor",
         "Variant",
         "Vector",
