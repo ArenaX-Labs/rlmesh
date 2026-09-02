@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
  "rlmesh-adapters",
@@ -2777,7 +2777,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-adapters"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "image",
  "rlmesh-spaces",
@@ -2788,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-cli"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "anyhow",
  "clap",
@@ -2806,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-grpc"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
  "futures",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-proto"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "prost",
  "prost-types",
@@ -2840,7 +2840,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-python"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
  "image",
@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-runtime"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "async-trait",
  "prost",
@@ -2885,7 +2885,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-sandbox"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "anyhow",
  "rlmesh-grpc",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-spaces"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "chacha20",
  "half",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "rlmesh-viewer"
-version = "0.1.0-rc.7"
+version = "0.1.0-rc.8"
 dependencies = [
  "crossterm",
  "image",
