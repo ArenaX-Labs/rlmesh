@@ -45,6 +45,22 @@ impl Config {
         }
     }
 
+    /// Points docker's credential helper for `host` at `profile`. One host maps
+    /// to one profile, so the most recent `registry login` wins.
+    fn set_registry_host(&mut self, profile: &str, host: &str) -> Result<()> {
+        if !self.profiles.contains_key(profile) {
+            bail!("no profile named {profile:?}");
+        }
+        for (name, configured_profile) in &mut self.profiles {
+            if name == profile {
+                configured_profile.registry_host = Some(host.to_owned());
+            } else if configured_profile.registry_host.as_deref() == Some(host) {
+                configured_profile.registry_host = None;
+            }
+        }
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<()> {
         let path = config_path()?;
         let text = toml::to_string_pretty(self).context("serializing config")?;
@@ -185,7 +201,7 @@ impl ProfileStore {
             None => profile
                 .platform_url
                 .take()
-                .or_else(|| profile.is_default.then(|| DEFAULT_PLATFORM_URL.to_owned())),
+                .or_else(|| Some(DEFAULT_PLATFORM_URL.to_owned())),
         };
 
         if profile.platform_url.as_deref().is_none_or(str::is_empty) {
@@ -239,31 +255,16 @@ impl ProfileStore {
     }
 
     pub fn set_registry_host(&mut self, profile: &str, host: &str) -> Result<()> {
-        let configured_profile = self
-            .config
-            .profiles
-            .get_mut(profile)
-            .with_context(|| format!("no profile named {profile:?}"))?;
-        configured_profile.registry_host = Some(host.to_owned());
+        self.config.set_registry_host(profile, host)?;
         self.config.save()
     }
 
-    /// Finds the profile registered for a registry host, preferring the
-    /// default profile when several point at the same registry.
     pub fn resolve_registry(&self, host: &str) -> Option<ResolvedProfile> {
-        let mut names = self
-            .config
+        self.config
             .profiles
             .iter()
-            .filter(|(_, profile)| profile.registry_host.as_deref() == Some(host))
-            .map(|(name, _)| name.as_str());
-
-        let first = names.next()?;
-        let name = std::iter::once(first)
-            .chain(names)
-            .find(|name| self.config.is_effective_default(name))
-            .unwrap_or(first);
-        Some(self.resolve(Some(name)))
+            .find(|(_, profile)| profile.registry_host.as_deref() == Some(host))
+            .map(|(name, _)| self.resolve(Some(name)))
     }
 
     pub fn registry_profiles(&self) -> impl Iterator<Item = &Profile> {
@@ -558,10 +559,17 @@ mod tests {
     }
 
     #[test]
-    fn named_profile_does_not_inherit_the_hosted_platform() {
+    fn every_profile_defaults_to_the_hosted_platform() {
         let store = store_with(Config::default());
 
-        assert!(store.resolve_login(Some("staging"), None).is_err());
+        assert_eq!(
+            store
+                .resolve_login(Some("bench"), None)
+                .unwrap()
+                .platform_url
+                .as_deref(),
+            Some(DEFAULT_PLATFORM_URL)
+        );
         assert_eq!(
             store
                 .resolve_login(None, None)
@@ -637,5 +645,36 @@ mod tests {
         assert!(text.contains("user_123"));
         assert!(!text.contains("access_token"));
         assert!(!text.contains("refresh_token"));
+    }
+
+    #[test]
+    fn registry_host_moves_to_the_latest_profile() {
+        let mut store = store_with(Config {
+            default_profile: Some("default".to_owned()),
+            profiles: BTreeMap::from([
+                ("default".to_owned(), Profile::default()),
+                ("bench".to_owned(), Profile::default()),
+            ]),
+        });
+        store
+            .config
+            .set_registry_host("default", "registry.rlmesh.dev")
+            .unwrap();
+        store
+            .config
+            .set_registry_host("bench", "registry.rlmesh.dev")
+            .unwrap();
+
+        assert_eq!(
+            store.resolve_registry("registry.rlmesh.dev").unwrap().name,
+            "bench"
+        );
+        assert!(store.config.profiles["default"].registry_host.is_none());
+        assert!(
+            store
+                .config
+                .set_registry_host("missing", "registry.rlmesh.dev")
+                .is_err()
+        );
     }
 }

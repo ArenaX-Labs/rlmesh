@@ -90,6 +90,22 @@ pub async fn run_cli(
                     .map(|()| 0)
             }
         },
+        Command::Org(args) => match args.command {
+            cli::OrgCommand::List(args) => {
+                auth::org_list(profile_store(&mut profiles), &args, stdout, stdout_style)
+                    .await
+                    .map(|()| 0)
+            }
+            cli::OrgCommand::Switch { id, profile } => auth::org_switch(
+                profile_store(&mut profiles),
+                &id,
+                &profile,
+                stdout,
+                stdout_style,
+            )
+            .await
+            .map(|()| 0),
+        },
         Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
     };
 

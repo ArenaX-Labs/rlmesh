@@ -27,6 +27,8 @@ pub enum Command {
     Registry(RegistryArgs),
     /// Manage named platform profiles.
     Profile(ProfileCommandArgs),
+    /// List the organizations you belong to, or switch the active one.
+    Org(OrgArgs),
     /// Smoke-test the terminal/HTTP renderer with synthetic frames (diagnostic).
     #[command(hide = true)]
     Viewtest(ViewtestArgs),
@@ -71,6 +73,25 @@ pub enum RegistryCommand {
 #[derive(Args, Debug)]
 pub struct CredentialHelperArgs {
     pub operation: String,
+}
+
+/// Organization subcommands.
+#[derive(Args, Debug)]
+pub struct OrgArgs {
+    #[command(subcommand)]
+    pub command: OrgCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OrgCommand {
+    /// List the organizations the signed-in user belongs to.
+    List(ProfileArgs),
+    /// Make an organization the profile's active one (WorkOS org id, org_...).
+    Switch {
+        id: String,
+        #[command(flatten)]
+        profile: ProfileArgs,
+    },
 }
 
 /// Named-profile management subcommands.

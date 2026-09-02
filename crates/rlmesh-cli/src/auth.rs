@@ -122,14 +122,18 @@ struct RefreshTokenRequest<'a> {
     client_id: &'a str,
     grant_type: &'static str,
     refresh_token: &'a str,
+    /// WorkOS switches the session's active organization when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    organization_id: Option<&'a str>,
 }
 
 impl<'a> RefreshTokenRequest<'a> {
-    fn new(client_id: &'a str, refresh_token: &'a str) -> Self {
+    fn new(client_id: &'a str, refresh_token: &'a str, organization_id: Option<&'a str>) -> Self {
         Self {
             client_id,
             grant_type: "refresh_token",
             refresh_token,
+            organization_id,
         }
     }
 }
@@ -172,6 +176,107 @@ struct LoginResult {
 pub(crate) struct RefreshedSession {
     pub credentials: Credentials,
     pub identity: Option<Identity>,
+}
+
+#[derive(Deserialize)]
+struct MeOrganizationsResponse {
+    organizations: Vec<MeMembership>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MeMembership {
+    #[serde(default)]
+    name: String,
+    provider_id: String,
+    #[serde(default)]
+    registry_namespace: String,
+    active: bool,
+}
+
+pub async fn org_list(
+    profiles: &mut ProfileStore,
+    args: &ProfileArgs,
+    stdout: &mut impl Write,
+    style: Style,
+) -> Result<()> {
+    let profile = profiles.resolve(args.profile.as_deref());
+    let client = http_client()?;
+    let session = refresh_session(&client, profiles, &profile).await?;
+    let platform = profile.platform_url.as_deref().unwrap_or_default();
+    let response: MeOrganizationsResponse = get_json(
+        &client,
+        &format!("{platform}/v1/me/organizations"),
+        Some(&session.credentials.access_token),
+        "listing organizations",
+    )
+    .await?;
+
+    write_heading(stdout, style, "Organizations")?;
+    for org in response.organizations {
+        let marker = if org.active {
+            style.green("●")
+        } else {
+            " ".to_owned()
+        };
+        let namespace = if org.registry_namespace.is_empty() {
+            style.muted("not provisioned")
+        } else {
+            style.muted(&format!("registry {}", org.registry_namespace))
+        };
+        writeln!(
+            stdout,
+            "  {marker} {} {}  {namespace}",
+            style.bold(&org.name),
+            org.provider_id
+        )?;
+    }
+    writeln!(stdout)?;
+    writeln!(
+        stdout,
+        "  Switch with {}.",
+        style.bold("rlmesh org switch <org_id>")
+    )?;
+    Ok(())
+}
+
+pub async fn org_switch(
+    profiles: &mut ProfileStore,
+    id: &str,
+    args: &ProfileArgs,
+    stdout: &mut impl Write,
+    style: Style,
+) -> Result<()> {
+    let profile = profiles.resolve(args.profile.as_deref());
+    let client = http_client()?;
+    let session = refresh_session_in(&client, profiles, &profile, Some(id)).await?;
+    let platform = profile.platform_url.as_deref().unwrap_or_default();
+    let identity = fetch_identity(
+        &client,
+        platform,
+        &session.credentials.access_token,
+        session.identity.as_ref(),
+    )
+    .await?;
+    if identity.organization_id != id {
+        bail!(
+            "the platform kept {:?} active; is {id:?} an organization you belong to?",
+            identity.organization_id
+        );
+    }
+    profiles.update_identity(&profile.name, identity.clone())?;
+
+    let name = if identity.organization_name.is_empty() {
+        id.to_owned()
+    } else {
+        format!("{} ({id})", identity.organization_name)
+    };
+    writeln!(
+        stdout,
+        "{}",
+        style.success(&format!("Profile {:?} now uses {name}", profile.name))
+    )?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -305,6 +410,15 @@ pub(crate) async fn refresh_session(
     profiles: &mut ProfileStore,
     profile: &ResolvedProfile,
 ) -> Result<RefreshedSession> {
+    refresh_session_in(client, profiles, profile, None).await
+}
+
+async fn refresh_session_in(
+    client: &reqwest::Client,
+    profiles: &mut ProfileStore,
+    profile: &ResolvedProfile,
+    organization_id: Option<&str>,
+) -> Result<RefreshedSession> {
     let platform = profile
         .platform_url
         .as_deref()
@@ -330,6 +444,7 @@ pub(crate) async fn refresh_session(
         .form(&RefreshTokenRequest::new(
             &auth_config.cli.client_id,
             &credentials.refresh_token,
+            organization_id,
         ))
         .send()
         .await
@@ -687,7 +802,8 @@ mod tests {
     #[test]
     fn refresh_request_uses_the_workos_contract() {
         let request =
-            serde_json::to_value(RefreshTokenRequest::new("client_123", "refresh_123")).unwrap();
+            serde_json::to_value(RefreshTokenRequest::new("client_123", "refresh_123", None))
+                .unwrap();
 
         assert_eq!(request["client_id"], "client_123");
         assert_eq!(request["grant_type"], "refresh_token");
