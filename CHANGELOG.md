@@ -26,7 +26,7 @@ The first release. RLMesh connects models to environments across process, depend
 - Client timeouts: `RemoteEnv`, `RemoteVectorEnv`, and `RemoteModel` accept `connect_timeout_seconds` and `request_timeout_seconds`, so a hung peer fails with a `TimeoutError` instead of blocking forever.
 - Fail-loud argument handling: a parameter that cannot be honored (`instruction=` on a served model, an unknown `vectorization_mode`, a conflicting CLI flag) raises with a directive error instead of being silently ignored.
 - Self-explanatory predict failures: when a model's `predict` raises, the error is annotated with the adapter-assembled input signature (key → dtype/shape), both in local `run()` loops and across the wire from a served model, so a shape mismatch names what the model was actually handed.
-- Managed-platform sign-in from the CLI: `rlmesh login` (device flow), `rlmesh logout`, `rlmesh whoami`, and `rlmesh registry login` (registers the bundled `docker-credential-rlmesh` helper, so docker fetches a fresh short-lived token per pull/push), with named profiles (`rlmesh profile use`/`list`/`remove`, `--profile`, `RLMESH_PROFILE`) and credentials held in the OS keychain.
+- Managed-platform sign-in from the CLI: `rlmesh login` (device flow), `rlmesh logout`, `rlmesh whoami`, and `rlmesh registry login` (registers the bundled `docker-credential-rlmesh` helper, so docker fetches a fresh short-lived token per pull/push), with named profiles (`rlmesh profile use`/`list`/`remove`, `--profile`, `RLMESH_PROFILE`) and credentials held in the OS keychain. `rlmesh org list` and `rlmesh org switch` show the organizations the account belongs to and change the profile's active one.
 - Build identity: `rlmesh.__build__` and `rlmesh version` report the commit-stamped workflow edition, so two builds sharing a package version stay distinguishable.
 - Runtime hook events `ObservationEmittedEvent` and `ActionReceivedEvent` carry `raw_observation` / `raw_action` alongside the transformed payload, so hooks can record both the pre- and post-transform leaves per step.
 - `StepCompletedEvent` and reset `ObservationEmittedEvent`s carry the env's per-step / reset `infos` map, so hooks see dense rewards, success flags, and task diagnostics as they happen rather than only `final_info` at episode end. Under `NEXT_STEP` autoreset the roll step's `infos` land on the new episode's first `ObservationEmittedEvent`, not on the old episode's `StepCompletedEvent`.
@@ -39,6 +39,17 @@ The first release. RLMesh connects models to environments across process, depend
 - A `lane_skew_ns` scalar on the env response and a matching `lane.skew` metric, for a vector env that times its own lanes: its slowest lane minus its median lane, one series no matter how many lanes it runs, so one pathologically slow lane can show up in p95/p99 instead of merely blurring the `env.step` aggregate. No in-tree env stamps it yet (the built-in Gymnasium vectorization hands the lane loop to Gymnasium), so the series stays empty until a lane-timing env does; a Rust `VectorEnv` can compute it with `rlmesh::env::lane_skew_ns` over a scratch buffer of per-lane durations.
 - Async inference in the Rust runtime driver: `RuntimeDriver::with_prefetch(model, lead)` predicts the next action chunk on a second model handle while the current chunk's replay frames execute, firing when `lead` frames remain. The prefetched chunk is conditioned on an observation up to `lead` steps stale, so runs reflect deployment-realistic async timing and are not comparable to the synchronous predict-then-step loop; a chunk prefetched across an episode boundary is discarded. Opt-in and Rust-only for now; the Python API does not expose it yet.
 - Negotiated workflow editions content-pinned to the sealed `2026.06` edition spec, exact-match `rlmesh-wire-v1` protocol generation, and a per-lane `NEXT_STEP` autoreset contract for vector environments.
+
+## [0.1.0-rc.8] - 2026-09-02
+
+### Added
+
+- `rlmesh org list` and `rlmesh org switch <org_id>` for accounts that belong to several organizations: the listing marks the active one and each organization's registry namespace (or that it is not provisioned yet), and the switch re-issues the profile's session against the new organization, failing loudly with the organization the platform kept active if it did not take.
+
+### Changed
+
+- `rlmesh registry login` now hands a registry host to the profile that logged in most recently, and releases it from any profile that held it before, so `docker-credential-rlmesh` follows the latest login instead of preferring whichever claimant happened to be the default profile.
+- Every named profile falls back to the hosted platform URL, so `rlmesh login --profile bench` works without configuring `platform_url` first. Previously only the default profile inherited it and a named profile failed to resolve a platform.
 
 ## [0.1.0-rc.7] - 2026-09-01
 
