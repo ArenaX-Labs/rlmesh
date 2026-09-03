@@ -3155,6 +3155,86 @@
       }
     }
   },
+  "rlmesh.platform": {
+    "exports": [
+      "Client",
+      "PlatformError",
+      "scenario_tasks"
+    ],
+    "objects": {
+      "Client": {
+        "kind": "class",
+        "members": {
+          "cancel": {
+            "kind": "function",
+            "signature": "cancel(eval_id: str) -> dict[str, Any]"
+          },
+          "evaluation": {
+            "kind": "function",
+            "signature": "evaluation(eval_id: str) -> dict[str, Any]"
+          },
+          "evaluations": {
+            "kind": "function",
+            "signature": "evaluations(*, status: str | None = None, tags: Mapping[str, str] | None = None, q: str | None = None, limit: int = 100) -> Iterator[dict[str, Any]]"
+          },
+          "get": {
+            "kind": "function",
+            "signature": "get(path: str, **query: Any) -> Any"
+          },
+          "metrics": {
+            "kind": "function",
+            "signature": "metrics(eval_id: str) -> dict[str, Any]"
+          },
+          "patch": {
+            "kind": "function",
+            "signature": "patch(path: str, body: Mapping[str, Any]) -> Any"
+          },
+          "post": {
+            "kind": "function",
+            "signature": "post(path: str, body: Mapping[str, Any] | None = None) -> Any"
+          },
+          "preview": {
+            "kind": "function",
+            "signature": "preview(request: Mapping[str, Any]) -> dict[str, Any]"
+          },
+          "scores": {
+            "kind": "function",
+            "signature": "scores(eval_id: str, *, group_by: str = 'task') -> dict[str, Any]"
+          },
+          "submit": {
+            "kind": "function",
+            "signature": "submit(request: Mapping[str, Any]) -> dict[str, Any]"
+          },
+          "url": {
+            "kind": "property",
+            "signature": "property url: str"
+          },
+          "wait": {
+            "kind": "function",
+            "signature": "wait(eval_id: str, *, poll_seconds: float = 15.0, timeout: float | None = None, progress: bool = True) -> dict[str, Any]"
+          }
+        },
+        "signature": "Client(*, profile: str | None = None, url: str | None = None, token: str | None = None)",
+        "stability": "Experimental"
+      },
+      "PlatformError": {
+        "kind": "class",
+        "members": {
+          "status": {
+            "kind": "attribute",
+            "signature": "status"
+          }
+        },
+        "signature": "PlatformError(status: int, message: str)",
+        "stability": "Experimental"
+      },
+      "scenario_tasks": {
+        "kind": "function",
+        "signature": "scenario_tasks(env: str, scenario: str, *, tasks: int | list[int] | None = None, task_ids: list[str] | None = None, episodes: int = 10, seed: int = 0, workers: int = 1) -> list[dict[str, Any]]",
+        "stability": "Experimental"
+      }
+    }
+  },
   "rlmesh.spaces": {
     "exports": [
       "Box",

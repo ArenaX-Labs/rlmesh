@@ -29,6 +29,10 @@ pub enum Command {
     Profile(ProfileCommandArgs),
     /// List the organizations you belong to, or switch the active one.
     Org(OrgArgs),
+    /// Print a fresh access token for scripts: `Authorization: Bearer $(rlmesh token)`.
+    Token(TokenArgs),
+    /// Submit, list, watch, and cancel evaluations on the signed-in platform.
+    Eval(EvalArgs),
     /// Smoke-test the terminal/HTTP renderer with synthetic frames (diagnostic).
     #[command(hide = true)]
     Viewtest(ViewtestArgs),
@@ -109,6 +113,82 @@ pub enum ProfileCommand {
     Use { name: String },
     /// Delete a profile: its stored credential and its config entry.
     Remove { name: String },
+}
+
+/// Flags for `rlmesh token`.
+#[derive(Args, Debug)]
+pub struct TokenArgs {
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Print `{"platform", "token"}` instead of the bare token.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Evaluation subcommands.
+#[derive(Args, Debug)]
+pub struct EvalArgs {
+    #[command(subcommand)]
+    pub command: EvalCommand,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EvalCommand {
+    /// Submit an evaluation request (JSON file, or `-` for stdin).
+    Submit(EvalSubmitArgs),
+    /// List evaluations, newest first.
+    List(EvalListArgs),
+    /// Print one evaluation as JSON.
+    Get(EvalIdArgs),
+    /// Poll an evaluation until it finishes; exits nonzero unless it completed.
+    Wait(EvalIdArgs),
+    /// Cancel a running evaluation.
+    Cancel(EvalIdArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct EvalSubmitArgs {
+    /// Path to the request JSON (`-` reads stdin).
+    pub request: String,
+    /// Validate and size the request without launching it.
+    #[arg(long)]
+    pub preview: bool,
+    /// Block until the evaluation finishes.
+    #[arg(long)]
+    pub wait: bool,
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Print the raw API response.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EvalListArgs {
+    /// Filter by status (queued, running, completed, failed, cancelled, ...).
+    #[arg(long)]
+    pub status: Option<String>,
+    /// Filter by tag as key:value; repeatable, every pair must match.
+    #[arg(long = "tag", value_name = "KEY:VALUE")]
+    pub tags: Vec<String>,
+    /// Case-insensitive substring match on the evaluation name.
+    #[arg(long)]
+    pub q: Option<String>,
+    #[arg(long, default_value_t = 25)]
+    pub limit: u32,
+    #[command(flatten)]
+    pub profile: ProfileArgs,
+    /// Print the raw API response.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct EvalIdArgs {
+    /// Evaluation id (eval_...).
+    pub id: String,
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 }
 
 /// Flags for the hidden `viewtest` diagnostic.

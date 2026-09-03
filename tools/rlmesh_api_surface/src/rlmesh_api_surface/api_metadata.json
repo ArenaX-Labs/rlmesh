@@ -89,7 +89,8 @@
     "rlmesh.params",
     "rlmesh.spaces",
     "rlmesh.types",
-    "rlmesh.specs"
+    "rlmesh.specs",
+    "rlmesh.platform"
   ],
   "modules": {
     "rlmesh": {
@@ -145,6 +146,12 @@
       "stability": "Experimental",
       "status": "Experimental.",
       "title": "rlmesh.jax"
+    },
+    "rlmesh.platform": {
+      "description": "Submit and read evaluations on a managed RLMesh platform through the signed-in CLI.",
+      "stability": "Experimental",
+      "status": "Experimental.",
+      "title": "rlmesh.platform"
     }
   },
   "exports": {

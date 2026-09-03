@@ -2,6 +2,7 @@ mod auth;
 mod cli;
 mod config;
 mod helpers;
+mod platform;
 mod profile;
 mod registry;
 mod render;
@@ -105,6 +106,32 @@ pub async fn run_cli(
             )
             .await
             .map(|()| 0),
+        },
+        Command::Token(args) => platform::token(profile_store(&mut profiles), &args, stdout)
+            .await
+            .map(|()| 0),
+        Command::Eval(args) => match args.command {
+            cli::EvalCommand::Submit(args) => {
+                platform::submit(profile_store(&mut profiles), &args, stdout, stdout_style).await
+            }
+            cli::EvalCommand::List(args) => {
+                platform::list(profile_store(&mut profiles), &args, stdout, stdout_style)
+                    .await
+                    .map(|()| 0)
+            }
+            cli::EvalCommand::Get(args) => {
+                platform::get(profile_store(&mut profiles), &args, stdout)
+                    .await
+                    .map(|()| 0)
+            }
+            cli::EvalCommand::Wait(args) => {
+                platform::wait(profile_store(&mut profiles), &args, stdout, stdout_style).await
+            }
+            cli::EvalCommand::Cancel(args) => {
+                platform::cancel(profile_store(&mut profiles), &args, stdout, stdout_style)
+                    .await
+                    .map(|()| 0)
+            }
         },
         Command::Viewtest(args) => viewtest::run(&args, stderr).map(|_| 0),
     };
@@ -219,13 +246,13 @@ mod tests {
         assert!(stdout.contains("registry"));
         assert!(stdout.contains("profile"));
         assert!(stdout.contains("whoami"));
+        assert!(stdout.contains("token"));
+        assert!(stdout.contains("eval"));
         assert!(!stdout.contains("viewer"));
 
         let mut command = cli::Cli::command();
         let subcommands: Vec<&str> = command.get_subcommands().map(|c| c.get_name()).collect();
-        for command_name in [
-            "auth", "init", "doctor", "probe", "build", "catalog", "eval",
-        ] {
+        for command_name in ["auth", "init", "doctor", "probe", "build", "catalog"] {
             assert!(!subcommands.contains(&command_name), "{command_name}");
         }
 

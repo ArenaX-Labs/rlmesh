@@ -28,7 +28,7 @@ anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 dirs = { workspace = true }
 keyring = { workspace = true }
-reqwest = { workspace = true, features = ["form", "json"] }
+reqwest = { workspace = true, features = ["form", "json", "query"] }
 rlmesh-proto = { workspace = true }
 rustls = { workspace = true }
 rlmesh-viewer = { workspace = true }

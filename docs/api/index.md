@@ -12,6 +12,7 @@ know what you want to call and need the precise surface; the user-guide pages co
 - {doc}`adapters`: declarative model-to-environment IO layer for mapping a model's observations and actions to an environment's spaces.
 - {doc}`serving`: the env server, the serving helpers, and the remote client classes.
 - {doc}`sandbox`: experimental Docker-backed sandbox sessions.
+- {doc}`platform`: experimental client for submitting and reading evaluations on a managed platform.
 
 ## Framework Backends
 
@@ -27,5 +28,6 @@ models
 adapters
 serving
 sandbox
+platform
 backends
 ```

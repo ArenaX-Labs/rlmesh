@@ -76,6 +76,7 @@ user-guide/serving-environments
 user-guide/remote-clients
 user-guide/backends
 user-guide/sandbox
+user-guide/platform
 ```
 
 ```{toctree}
