@@ -41,6 +41,14 @@ use super::wire::{join_request_kind_name, model_error_to_grpc_error};
 /// [`predict_concurrent`](Self::predict_concurrent), which takes `&self` and may
 /// be called from multiple tasks concurrently. The matching server advertises
 /// the `rlmesh.model.concurrent_predict.v1` capability when it pipelines.
+/// A grouped predict reply with the server-side timing of that batch.
+#[derive(Debug)]
+pub struct GroupedPredictOutcome {
+    pub response: GroupedPredictResponse,
+    pub endpoint_total_ns: Option<u64>,
+    pub phases: EndpointPhases,
+}
+
 pub struct ModelClient {
     address: String,
     client: ModelServiceClient<tonic::transport::Channel>,
@@ -436,6 +444,17 @@ impl ModelClient {
         &self,
         request: GroupedPredictRequest,
     ) -> Result<GroupedPredictResponse, GrpcError> {
+        Ok(self.grouped_predict_with_timing(request).await?.response)
+    }
+
+    /// `grouped_predict` plus the envelope's own timing. Grouped calls may be
+    /// in flight concurrently on one stream, so their timing is returned with
+    /// the reply it belongs to rather than parked in `take_last_*`, which is
+    /// how a batched predict used to lose the server's numbers entirely.
+    pub async fn grouped_predict_with_timing(
+        &self,
+        request: GroupedPredictRequest,
+    ) -> Result<GroupedPredictOutcome, GrpcError> {
         self.ensure_ready()?;
         if request.groups.is_empty() {
             return Err(decode_error(
@@ -454,8 +473,14 @@ impl ModelClient {
                 request_id,
             })
             .await?;
+        let endpoint_total_ns = response.endpoint_total_ns;
+        let phases = EndpointPhases::from_model_response(&response);
         match response.kind {
-            Some(join_response::Kind::GroupedPredict(grouped)) => Ok(grouped),
+            Some(join_response::Kind::GroupedPredict(grouped)) => Ok(GroupedPredictOutcome {
+                response: grouped,
+                endpoint_total_ns,
+                phases,
+            }),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "GroupedPredictResponse".to_string(),
@@ -732,6 +757,37 @@ mod tests {
 
         let response = send.await.unwrap().unwrap();
         assert!(response.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn grouped_predict_returns_the_envelope_timing_with_the_reply() {
+        let (client, mut request_rx, pending) = ready_client();
+        let send = tokio::spawn(async move {
+            client
+                .grouped_predict_with_timing(GroupedPredictRequest {
+                    groups: vec![valid_member("group-0", "ep-0")],
+                })
+                .await
+        });
+        let sent = request_rx.recv().await.unwrap();
+        deliver(
+            &pending,
+            &sent.request_id,
+            JoinResponse {
+                request_id: sent.request_id.clone(),
+                kind: Some(join_response::Kind::GroupedPredict(
+                    GroupedPredictResponse::default(),
+                )),
+                endpoint_total_ns: Some(15_000_000),
+                user_ns: Some(12_000_000),
+                queue_ns: Some(1_000_000),
+                ..Default::default()
+            },
+        );
+        let outcome = send.await.unwrap().unwrap();
+        assert_eq!(outcome.endpoint_total_ns, Some(15_000_000));
+        assert_eq!(outcome.phases.user_ns, 12_000_000);
+        assert_eq!(outcome.phases.queue_ns, 1_000_000);
     }
 
     #[tokio::test]
