@@ -253,6 +253,18 @@
     "rlmesh.adapters.ACTION_DELTA_ROT_2": {
       "description": "Second-arm variant of ACTION_DELTA_ROT (action/delta_eef_rot_2)."
     },
+    "rlmesh.adapters.ACTION_EEF_POS": {
+      "description": "Action role for an absolute end-effector position target (action/eef_pos)."
+    },
+    "rlmesh.adapters.ACTION_EEF_POS_2": {
+      "description": "Second-arm variant of ACTION_EEF_POS (action/eef_pos_2)."
+    },
+    "rlmesh.adapters.ACTION_EEF_ROT": {
+      "description": "Action role for an absolute end-effector rotation target (action/eef_rot)."
+    },
+    "rlmesh.adapters.ACTION_EEF_ROT_2": {
+      "description": "Second-arm variant of ACTION_EEF_ROT (action/eef_rot_2)."
+    },
     "rlmesh.adapters.ACTION_GRIPPER": {
       "description": "Action role for a gripper command (action/gripper)."
     },

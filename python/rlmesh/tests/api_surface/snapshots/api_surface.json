@@ -1146,6 +1146,10 @@
       "ACTION_DELTA_POS_2",
       "ACTION_DELTA_ROT",
       "ACTION_DELTA_ROT_2",
+      "ACTION_EEF_POS",
+      "ACTION_EEF_POS_2",
+      "ACTION_EEF_ROT",
+      "ACTION_EEF_ROT_2",
       "ACTION_GRIPPER",
       "ACTION_GRIPPER_2",
       "ACTION_JOINT_POS",
@@ -1219,6 +1223,26 @@
       "ACTION_DELTA_ROT_2": {
         "kind": "type alias",
         "signature": "ACTION_DELTA_ROT_2 = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_POS": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_POS = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_POS_2": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_POS_2 = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_ROT": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_ROT = str",
+        "stability": "Stable"
+      },
+      "ACTION_EEF_ROT_2": {
+        "kind": "type alias",
+        "signature": "ACTION_EEF_ROT_2 = str",
         "stability": "Stable"
       },
       "ACTION_GRIPPER": {

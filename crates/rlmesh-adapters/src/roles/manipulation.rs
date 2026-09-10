@@ -28,6 +28,15 @@ pub const ACTION_DELTA_POS_2: &str = "action/delta_eef_pos_2";
 pub const ACTION_DELTA_ROT_2: &str = "action/delta_eef_rot_2";
 pub const ACTION_GRIPPER_2: &str = "action/gripper_2";
 
+/// Absolute end-effector targets, for policies trained on controller goals
+/// rather than per-step deltas (X-VLA, RoboTwin's `ee` action type). The env
+/// runs its Cartesian controller in absolute mode and receives the target
+/// verbatim; the frame is the env's `proprio/eef_*` frame.
+pub const ACTION_EEF_POS: &str = "action/eef_pos";
+pub const ACTION_EEF_ROT: &str = "action/eef_rot";
+pub const ACTION_EEF_POS_2: &str = "action/eef_pos_2";
+pub const ACTION_EEF_ROT_2: &str = "action/eef_rot_2";
+
 /// Manipulation role table. `eef_pos`/`delta_eef_pos` are 3-D Cartesian
 /// (`Fixed(3)`); rotations defer to their encoding (`ByEncoding`); gripper widths
 /// vary by embodiment (`Variable`). The `_2` series mirrors the first arm.
@@ -96,5 +105,25 @@ pub const ROLES: &[RoleDef] = &[
         name: ACTION_GRIPPER_2,
         dim: DimLaw::Variable,
         doc: "second-arm gripper command",
+    },
+    RoleDef {
+        name: ACTION_EEF_POS,
+        dim: DimLaw::Fixed(3),
+        doc: "absolute Cartesian end-effector position target",
+    },
+    RoleDef {
+        name: ACTION_EEF_ROT,
+        dim: DimLaw::ByEncoding,
+        doc: "absolute end-effector rotation target",
+    },
+    RoleDef {
+        name: ACTION_EEF_POS_2,
+        dim: DimLaw::Fixed(3),
+        doc: "second-arm absolute position target",
+    },
+    RoleDef {
+        name: ACTION_EEF_ROT_2,
+        dim: DimLaw::ByEncoding,
+        doc: "second-arm absolute rotation target",
     },
 ];

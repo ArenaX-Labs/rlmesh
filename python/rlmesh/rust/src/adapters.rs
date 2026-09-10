@@ -130,6 +130,10 @@ const WIRE_CONSTANTS: &[(&str, &str)] = &[
         roles::manipulation::ACTION_DELTA_ROT_2,
     ),
     ("ACTION_GRIPPER_2", roles::manipulation::ACTION_GRIPPER_2),
+    ("ACTION_EEF_POS", roles::manipulation::ACTION_EEF_POS),
+    ("ACTION_EEF_ROT", roles::manipulation::ACTION_EEF_ROT),
+    ("ACTION_EEF_POS_2", roles::manipulation::ACTION_EEF_POS_2),
+    ("ACTION_EEF_ROT_2", roles::manipulation::ACTION_EEF_ROT_2),
 ];
 
 /// Stub-only declarations for the wire constants that [`register_constants`]
@@ -163,6 +167,10 @@ mod stub_constants {
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_POS_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_DELTA_ROT_2", String);
     pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_GRIPPER_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_POS_2", String);
+    pyo3_stub_gen::module_variable!("rlmesh._rlmesh", "ACTION_EEF_ROT_2", String);
     pyo3_stub_gen::module_variable!(
         "rlmesh._rlmesh",
         "ROTATION_DIMS",

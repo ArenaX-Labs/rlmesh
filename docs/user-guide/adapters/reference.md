@@ -26,6 +26,8 @@ Role strings carry a feature-kind prefix (`image/`, `proprio/`, `text/`, `action
 | `ACTION_DELTA_POS` | `action/delta_eef_pos` | manipulation | `action/`  | 3 (Cartesian delta)                 |
 | `ACTION_DELTA_ROT` | `action/delta_eef_rot` | manipulation | `action/`  | width follows the rotation encoding |
 | `ACTION_GRIPPER`   | `action/gripper`       | manipulation | `action/`  | 1                                   |
+| `ACTION_EEF_POS`   | `action/eef_pos`       | manipulation | `action/`  | 3 (absolute Cartesian target)       |
+| `ACTION_EEF_ROT`   | `action/eef_rot`       | manipulation | `action/`  | width follows the rotation encoding |
 
 You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator); a _registered_ role with a fixed canonical width then **validates** that declared `dim` (e.g. `eef_pos` must be 3-D, a mismatch is a resolve error); it never supplies it. Rotation widths follow the declared encoding (see [Vocabularies](#vocabularies)).
 
@@ -33,7 +35,7 @@ You always pin widths explicitly (`dim`/`index` on a part, `dim` on an actuator)
 
 ### Bimanual roles
 
-Every manipulation role has a `_2` variant for the second arm: `EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`. The first (or only) arm uses the unsuffixed role; the second arm uses `_2`. A single-arm environment never declares `_2`, so a model part targeting it zero-fills on the observation side and drops the extra dims on the action side.
+Every manipulation role has a `_2` variant for the second arm: `EEF_POS_2`, `EEF_ROT_2`, `GRIPPER_POS_2`, `ACTION_DELTA_POS_2`, `ACTION_DELTA_ROT_2`, `ACTION_GRIPPER_2`, `ACTION_EEF_POS_2`, `ACTION_EEF_ROT_2`. The first (or only) arm uses the unsuffixed role; the second arm uses `_2`. A single-arm environment never declares `_2`, so a model part targeting it zero-fills on the observation side and drops the extra dims on the action side.
 
 ## Vocabularies
 

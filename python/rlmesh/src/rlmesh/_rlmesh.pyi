@@ -13,6 +13,10 @@ __all__ = [
     "ACTION_DELTA_POS_2",
     "ACTION_DELTA_ROT",
     "ACTION_DELTA_ROT_2",
+    "ACTION_EEF_POS",
+    "ACTION_EEF_POS_2",
+    "ACTION_EEF_ROT",
+    "ACTION_EEF_ROT_2",
     "ACTION_GRIPPER",
     "ACTION_GRIPPER_2",
     "ACTION_JOINT_POS",
@@ -77,6 +81,10 @@ ACTION_DELTA_POS: builtins.str
 ACTION_DELTA_POS_2: builtins.str
 ACTION_DELTA_ROT: builtins.str
 ACTION_DELTA_ROT_2: builtins.str
+ACTION_EEF_POS: builtins.str
+ACTION_EEF_POS_2: builtins.str
+ACTION_EEF_ROT: builtins.str
+ACTION_EEF_ROT_2: builtins.str
 ACTION_GRIPPER: builtins.str
 ACTION_GRIPPER_2: builtins.str
 ACTION_JOINT_POS: builtins.str

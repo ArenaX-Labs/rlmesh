@@ -106,6 +106,10 @@ def _install_native_docs_stub() -> None:
         "ACTION_DELTA_POS_2": "action/delta_eef_pos_2",
         "ACTION_DELTA_ROT_2": "action/delta_eef_rot_2",
         "ACTION_GRIPPER_2": "action/gripper_2",
+        "ACTION_EEF_POS": "action/eef_pos",
+        "ACTION_EEF_ROT": "action/eef_rot",
+        "ACTION_EEF_POS_2": "action/eef_pos_2",
+        "ACTION_EEF_ROT_2": "action/eef_rot_2",
     }
     for name, value in adapter_constants.items():
         setattr(native, name, value)

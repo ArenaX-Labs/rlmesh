@@ -3009,3 +3009,50 @@ def test_serve_route_rejects_colliding_custom_placements():
     adapter = resolve(env, spec)
     with pytest.raises(ValueError, match="colliding route keys"):
         adapter.serve_route(_numpy_bridge)
+
+
+ABS_LIBERO_ENV = Env(
+    tags=adapt.EnvTags(
+        observation=LIBERO_ENV.tags.observation,
+        action=adapt.Action(
+            adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+            adapt.Actuator(adapt.ACTION_EEF_ROT, dim=3, encoding="axis_angle"),
+            adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, range=(-1.0, 1.0)),
+        ),
+    ),
+    obs_space=LIBERO_ENV.obs_space,
+    action_space=box(7),
+)
+
+ABS_TARGET_MODEL = adapt.ModelSpec(
+    input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64)},
+    output=adapt.Action(
+        adapt.Actuator(adapt.ACTION_EEF_POS, dim=3),
+        adapt.Actuator(adapt.ACTION_EEF_ROT, dim=6, encoding="rot6d"),
+        adapt.Actuator(adapt.ACTION_GRIPPER, dim=1, binary=True, threshold=0.5),
+    ),
+)
+
+
+def test_absolute_eef_target_passes_through_with_rotation_conversion():
+    adapter = resolve(ABS_LIBERO_ENV, ABS_TARGET_MODEL)
+    # Column-concat rot6d of R = [[1,0,0],[0,0,-1],[0,1,0]], a +90deg turn about x.
+    r6d = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    out = adapter.transform_action(
+        np.array([0.3, -0.1, 1.2, *r6d, 0.9], dtype=np.float32)
+    )
+    assert out.shape == (7,)
+    np.testing.assert_allclose(
+        out[:3], [0.3, -0.1, 1.2], atol=1e-6
+    )  # no clip, no scale
+    np.testing.assert_allclose(out[3:6], [np.pi / 2, 0.0, 0.0], atol=1e-5)
+    assert out[6] == 1.0
+
+
+def test_absolute_eef_roles_are_registered_with_fixed_position_width():
+    bad = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, height=64, width=64)},
+        output=adapt.Action(adapt.Actuator(adapt.ACTION_EEF_POS, dim=2)),
+    )
+    with pytest.raises(Exception, match="3-D by convention"):
+        resolve(ABS_LIBERO_ENV, bad)
