@@ -109,8 +109,9 @@ action per row. `zeros_for(SpaceRef)` builds the neutral action for _any_ space,
 so a policy never has to switch on the kind to get started.
 
 `ValueRef` reads all seven value kinds and `SpaceRef` walks a space spec (bounds,
-`n`/`start`, text limits, `nvec`, dict/tuple children); `Value`'s constructors
-build all seven, honoring the C constructors' all-or-nothing ownership.
+`n`/`start`, text limits + charset, `nvec`, dict/tuple children by key or by
+index); `Value`'s constructors build all seven, honoring the C constructors'
+all-or-nothing ownership.
 
 Every fallible call returns `Result<T>` (`Status` is `Result<void>`): a capi call
 has already recorded its message on the thread, and `Error::from_last(status)`
@@ -120,8 +121,9 @@ out of a `Result`-returning function.
 
 `run_local` returns a `RunReport`; `serve` takes a `ServeOptions` (owned token,
 `std::chrono` timeouts). `Model::cancel()` is the one member callable while
-`run_local` / `serve` blocks — including from another thread. Never destroy a
-`Model` from inside its own callback.
+`run_local` / `serve` blocks — including from another thread; a cancelled
+`serve` returns cleanly, a cancelled `run_local` fails with
+`Error::is_cancelled()`. Never destroy a `Model` from inside its own callback.
 
 ## Tasks
 

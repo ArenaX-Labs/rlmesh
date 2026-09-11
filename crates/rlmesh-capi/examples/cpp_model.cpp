@@ -54,6 +54,10 @@ int main(int argc, char** argv) {
   std::printf("connecting to %s ...\n", address.c_str());
   auto report = model->run_local(address, options);
   if (!report) {
+    // This example never cancels, but a host that does (a Ctrl-C handler calling
+    // Model::cancel from another thread) lands here: a cancelled run is a clean
+    // stop with no report, not a failure.
+    if (report.error().is_cancelled()) return 0;
     std::fprintf(stderr, "run failed: %s\n", report.error().message().c_str());
     return 1;
   }

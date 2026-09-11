@@ -343,6 +343,29 @@ pub unsafe extern "C" fn rlmesh_value_dict_get(
     })
 }
 
+/// Borrow a `Dict`'s `index`-th child in sorted key order -- the same order as
+/// `rlmesh_value_dict_key`, so `key(i)` names `get_at(i)`. NULL for any other
+/// kind or an out-of-range index.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_value_dict_get_at(
+    value: *const RlmeshValue,
+    index: usize,
+) -> *const RlmeshValue {
+    guard_value(std::ptr::null(), || {
+        // SAFETY: per the ABI contract `value` is NULL or a live handle, and
+        // `RlmeshValue` is `repr(transparent)` over `SpaceValue`.
+        match unsafe { value.cast::<SpaceValue>().as_ref() } {
+            // `BTreeMap::values` walks the same sorted key order as `keys`.
+            Some(SpaceValue::Dict(map)) => {
+                map.values().nth(index).map_or(std::ptr::null(), |child| {
+                    (child as *const SpaceValue).cast()
+                })
+            }
+            _ => std::ptr::null(),
+        }
+    })
+}
+
 /// Borrow a `Dict`'s `index`-th key in sorted order: `*out_len` UTF-8 bytes, NOT
 /// NUL-terminated, valid while `value` lives. Pair with `rlmesh_value_len` to
 /// iterate a dict (its keys are otherwise undiscoverable from C).

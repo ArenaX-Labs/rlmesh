@@ -22,6 +22,7 @@ pub enum RlmeshStatus {
     Transport = 5,
     Timeout = 6,
     Panic = 7,
+    Cancelled = 8,
     Internal = 99,
 }
 

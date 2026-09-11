@@ -15,17 +15,18 @@ use crate::abi::status::{RlmeshStatus, rlmesh_last_error_is_recoverable};
 use crate::spaces::{
     RlmeshContract, RlmeshSpaceSpec, rlmesh_contract_num_envs, rlmesh_contract_observation_space,
     rlmesh_space_box_bounds, rlmesh_space_copy_nvec, rlmesh_space_copy_shape,
-    rlmesh_space_dict_get, rlmesh_space_dict_key, rlmesh_space_discrete_n, rlmesh_space_len,
-    rlmesh_space_text_length, rlmesh_space_tuple_get, rlmesh_space_type,
+    rlmesh_space_dict_get, rlmesh_space_dict_get_at, rlmesh_space_dict_key,
+    rlmesh_space_discrete_n, rlmesh_space_len, rlmesh_space_text_charset, rlmesh_space_text_length,
+    rlmesh_space_tuple_get, rlmesh_space_type,
 };
 use crate::value::dtype::RlmeshDType;
 use crate::value::handle::{
     RlmeshValue, RlmeshValueKind, rlmesh_value_array_len, rlmesh_value_as_discrete,
     rlmesh_value_as_tensor, rlmesh_value_as_text, rlmesh_value_box, rlmesh_value_copy_multi_binary,
     rlmesh_value_copy_multi_discrete, rlmesh_value_dict, rlmesh_value_dict_get,
-    rlmesh_value_dict_key, rlmesh_value_discrete, rlmesh_value_free, rlmesh_value_kind,
-    rlmesh_value_len, rlmesh_value_multi_binary, rlmesh_value_multi_discrete, rlmesh_value_text,
-    rlmesh_value_tuple, rlmesh_value_tuple_get,
+    rlmesh_value_dict_get_at, rlmesh_value_dict_key, rlmesh_value_discrete, rlmesh_value_free,
+    rlmesh_value_kind, rlmesh_value_len, rlmesh_value_multi_binary, rlmesh_value_multi_discrete,
+    rlmesh_value_text, rlmesh_value_tuple, rlmesh_value_tuple_get,
 };
 use crate::value::tensor::{RlmeshTensor, rlmesh_tensor_release};
 
@@ -453,6 +454,17 @@ fn dict_keys_are_discoverable_by_index() {
         unsafe { rlmesh_value_dict_key(dict, 2, &mut ptr, &mut len) },
         RlmeshStatus::InvalidArgument
     );
+    // The children walk the SAME order, so key(i) names get_at(i) with no
+    // NUL-terminated copy of the key in between.
+    assert_eq!(discrete_at(unsafe { rlmesh_value_dict_get_at(dict, 0) }), 2);
+    assert_eq!(discrete_at(unsafe { rlmesh_value_dict_get_at(dict, 1) }), 1);
+    assert!(unsafe { rlmesh_value_dict_get_at(dict, 2) }.is_null());
+    // Wrong kind and NULL both read as "no such child".
+    let tuple_children: [*mut RlmeshValue; 1] = [rlmesh_value_discrete(1)];
+    let tuple = unsafe { rlmesh_value_tuple(tuple_children.as_ptr(), 1) };
+    assert!(unsafe { rlmesh_value_dict_get_at(tuple, 0) }.is_null());
+    assert!(unsafe { rlmesh_value_dict_get_at(std::ptr::null(), 0) }.is_null());
+    unsafe { rlmesh_value_free(tuple) };
     unsafe { rlmesh_value_free(dict) };
 }
 
@@ -684,6 +696,22 @@ fn discrete_text_and_nvec_expose_what_an_action_needs() {
         RlmeshStatus::Ok
     );
     assert_eq!((min, max), (1, 16));
+    // An empty charset means "any character", and reads back as 0 bytes rather
+    // than an error.
+    assert_eq!(read_charset(spec_ptr(&text)), "");
+    let pinned = TextBuilder::new(4)
+        .charset("ab")
+        .build()
+        .expect("valid text spec");
+    assert_eq!(read_charset(spec_ptr(&pinned)), "ab");
+    let mut charset_ptr: *const c_char = std::ptr::null();
+    let mut charset_len = 0usize;
+    assert_eq!(
+        unsafe {
+            rlmesh_space_text_charset(spec_ptr(&discrete), &mut charset_ptr, &mut charset_len)
+        },
+        RlmeshStatus::InvalidValue
+    );
 
     let multi = SpaceSpec {
         shape: vec![3],
@@ -761,6 +789,18 @@ fn composite_spaces_are_walkable_from_c() {
         unsafe { rlmesh_space_type(rlmesh_space_tuple_get(extra, 1)) },
         RlmeshValueKind::Text
     );
+    // Children by index walk the SAME declaration order as the keys, so key(i)
+    // names get_at(i) without copying the key into a NUL-terminated buffer.
+    assert_eq!(
+        unsafe { rlmesh_space_type(rlmesh_space_dict_get_at(root, 0)) },
+        RlmeshValueKind::Box
+    );
+    assert_eq!(unsafe { rlmesh_space_dict_get_at(root, 1) }, unsafe {
+        rlmesh_space_dict_get(root, c"extra".as_ptr())
+    });
+    assert!(unsafe { rlmesh_space_dict_get_at(root, 2) }.is_null());
+    assert!(unsafe { rlmesh_space_dict_get_at(extra, 0) }.is_null());
+    assert!(unsafe { rlmesh_space_dict_get_at(std::ptr::null(), 0) }.is_null());
     // Absent key, out-of-range index and wrong kind all read as "no such child".
     assert!(unsafe { rlmesh_space_dict_get(root, c"nope".as_ptr()) }.is_null());
     assert!(unsafe { rlmesh_space_tuple_get(extra, 2) }.is_null());
@@ -821,6 +861,32 @@ fn read_key(value: *const RlmeshValue, index: usize) -> String {
     );
     let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
     String::from_utf8(bytes.to_vec()).expect("utf-8 key")
+}
+
+/// A borrowed `Discrete` child's value (the child must exist).
+fn discrete_at(value: *const RlmeshValue) -> i64 {
+    assert!(!value.is_null(), "dict child missing");
+    let mut out = 0i64;
+    assert_eq!(
+        unsafe { rlmesh_value_as_discrete(value, &mut out) },
+        RlmeshStatus::Ok
+    );
+    out
+}
+
+/// A Text space's charset, as a `String` over the borrowed bytes.
+fn read_charset(spec: *const RlmeshSpaceSpec) -> String {
+    let mut ptr: *const c_char = std::ptr::null();
+    let mut len = 0usize;
+    assert_eq!(
+        unsafe { rlmesh_space_text_charset(spec, &mut ptr, &mut len) },
+        RlmeshStatus::Ok
+    );
+    if len == 0 {
+        return String::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), len) };
+    String::from_utf8(bytes.to_vec()).expect("utf-8 charset")
 }
 
 /// The `index`-th dict key of a space spec.

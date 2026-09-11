@@ -192,6 +192,22 @@ pub unsafe extern "C" fn rlmesh_space_dict_get(
     })
 }
 
+/// Borrow a `Dict` space's `index`-th child in declaration order -- the same
+/// order as `rlmesh_space_dict_key`, so `key(i)` names `get_at(i)`. NULL for any
+/// other kind or an out-of-range index.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_dict_get_at(
+    spec: *const RlmeshSpaceSpec,
+    index: usize,
+) -> *const RlmeshSpaceSpec {
+    guard_value(std::ptr::null(), || {
+        match spec_ref(spec).map(|spec| &spec.spec) {
+            Some(Some(SpaceKind::Dict(dict))) => child_ptr(dict.spaces.get(index)),
+            _ => std::ptr::null(),
+        }
+    })
+}
+
 /// Borrow a `Dict` space's `index`-th key: `*out_len` UTF-8 bytes, NOT
 /// NUL-terminated, valid while `spec` lives. Keys are in declaration order,
 /// parallel to the children.
@@ -280,6 +296,23 @@ pub unsafe extern "C" fn rlmesh_space_text_length(
         write_opt(out_min, text.min_length);
         write_opt(out_max, text.max_length);
         Ok(())
+    })
+}
+
+/// Borrow a `Text` space's charset: `*out_len` UTF-8 bytes, NOT NUL-terminated,
+/// valid while `spec` lives. An empty charset means any character is allowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rlmesh_space_text_charset(
+    spec: *const RlmeshSpaceSpec,
+    out_ptr: *mut *const c_char,
+    out_len: *mut usize,
+) -> RlmeshStatus {
+    guard(|| {
+        let Some(SpaceKind::Text(text)) = &spec_ref(spec).ok_or_else(null_spec)?.spec else {
+            return Err(CapiError::invalid_value("space is not Text"));
+        };
+        write_out(out_ptr, text.charset.as_ptr().cast::<c_char>())?;
+        write_out(out_len, text.charset.len())
     })
 }
 

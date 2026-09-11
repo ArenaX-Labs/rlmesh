@@ -537,7 +537,16 @@ pub unsafe extern "C" fn rlmesh_model_run_local(
                     .run_local_cancellable_async(run, cancel)
                     .await
             })
-            .map_err(CapiError::from)?;
+            .map_err(|err| {
+                let mut err = CapiError::from(err);
+                // The core flattens a cancelled run to `Error::Internal` (the
+                // driver's typed `RouteCancelled` is gone by then), so the token
+                // we handed it is the typed signal -- not the message text.
+                if model.cancel.is_cancelled() {
+                    err.status = RlmeshStatus::Cancelled;
+                }
+                err
+            })?;
         if let Some(out) = unsafe { out_report.as_mut() } {
             *out = run_report(&report);
         }
@@ -638,8 +647,8 @@ pub unsafe extern "C" fn rlmesh_model_serve(
 /// runs (each returns at once). Create a new model to run again.
 ///
 /// A cancelled `rlmesh_model_serve` returns `RLMESH_OK` after the close hook; a
-/// cancelled `rlmesh_model_run_local` returns an error naming the cancellation,
-/// since it has no report to give.
+/// cancelled `rlmesh_model_run_local` -- this one, or any later one on the
+/// handle -- returns `RLMESH_ERR_CANCELLED`, since it has no report to give.
 ///
 /// # Safety
 /// `model` must be NULL or a live handle that is not being freed concurrently.
@@ -826,14 +835,30 @@ mod tests {
     }
 
     /// Writes a probe-sized row 0 then declines: the capi must free what was
-    /// written (the probe allocation must not outlive the call).
+    /// written (the probe allocation must not outlive the call). Only the leak
+    /// test uses this one -- `PROBE_LIVE` is process-wide, so a second test
+    /// declining in parallel would land inside its before/after window.
     unsafe extern "C" fn half_then_fail(
         _: *mut c_void,
         _: *const RlmeshObservation,
         out: *mut *mut RlmeshValue,
     ) -> c_int {
-        let tensor = Tensor::from_vec(vec![0u8; PROBE], vec![PROBE as i64], DType::Uint8)
-            .expect("probe tensor");
+        unsafe { decline_after_row(out, PROBE) }
+    }
+
+    /// The same decline with an ordinary-sized row, for the tests that assert the
+    /// message and status rather than the free.
+    unsafe extern "C" fn decline_with_a_row(
+        _: *mut c_void,
+        _: *const RlmeshObservation,
+        out: *mut *mut RlmeshValue,
+    ) -> c_int {
+        unsafe { decline_after_row(out, 8) }
+    }
+
+    unsafe fn decline_after_row(out: *mut *mut RlmeshValue, size: usize) -> c_int {
+        let tensor =
+            Tensor::from_vec(vec![0u8; size], vec![size as i64], DType::Uint8).expect("row tensor");
         unsafe { *out = owned(SpaceValue::Box(tensor)) };
         unsafe { rlmesh_callback_set_error(c"nope".as_ptr(), true) };
         RlmeshStatus::Model as c_int
@@ -919,7 +944,7 @@ mod tests {
 
     #[tokio::test]
     async fn predict_decline_surfaces_message_and_recoverability() {
-        let err = handler(half_then_fail)
+        let err = handler(decline_with_a_row)
             .predict(discrete_observation(&[1, 2]))
             .await
             .expect_err("decline must error");
@@ -1210,7 +1235,6 @@ mod tests {
         let status =
             unsafe { rlmesh_model_run_local(model, address.as_ptr(), &options, &mut report) };
         assert_eq!(status, RlmeshStatus::Ok, "{}", last_error_message());
-        unsafe { rlmesh_model_free(model) };
 
         assert_eq!(report.total_episodes, 3);
         assert_eq!(report.total_steps, 3);
@@ -1226,6 +1250,26 @@ mod tests {
             *env.seeds.lock().expect("seed log"),
             vec![Some(11), Some(22), Some(33)]
         );
+
+        // Cancellation is terminal, and says so with its own status: the next run
+        // on this handle stops at once rather than reporting a generic internal
+        // error a caller would have to string-match.
+        unsafe { rlmesh_model_cancel(model) };
+        let cancelled = unsafe {
+            rlmesh_model_run_local(
+                model,
+                address.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(
+            cancelled,
+            RlmeshStatus::Cancelled,
+            "{}",
+            last_error_message()
+        );
+        unsafe { rlmesh_model_free(model) };
     }
 
     #[test]
@@ -1234,7 +1278,7 @@ mod tests {
         // a C decline must arrive as RLMESH_ERR_MODEL with its own message.
         let env = EnvHarness::start();
         let vtable = RlmeshModelVtable {
-            predict: Some(half_then_fail),
+            predict: Some(decline_with_a_row),
             ..full_vtable()
         };
         let model = new_model(&vtable, std::ptr::null_mut());

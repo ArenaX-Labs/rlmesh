@@ -61,6 +61,7 @@ typedef enum RlmeshStatus {
   RLMESH_ERR_TRANSPORT = 5,
   RLMESH_ERR_TIMEOUT = 6,
   RLMESH_ERR_PANIC = 7,
+  RLMESH_ERR_CANCELLED = 8,
   RLMESH_ERR_INTERNAL = 99
 } RlmeshStatus;
 
@@ -163,7 +164,11 @@ RLMESH_API RlmeshStatus rlmesh_value_as_text(const RlmeshValue* value, const cha
                                              size_t* out_len);
 
 /* MultiBinary / MultiDiscrete: constructed from / copied into a caller buffer.
- * A copy into a NULL `out` is OK when the value is empty, an error otherwise. */
+ * A copy into a NULL `out` is OK when the value is empty, an error otherwise.
+ * The element count is the space's shape flattened row-major: `n` for the usual
+ * MultiBinary([n]) / MultiDiscrete(nvec), the product of the dims for a
+ * multi-dimensional one (both spaces allow any rank >= 1). MultiBinary carries
+ * no `n` of its own — see rlmesh_space_copy_shape below. */
 RLMESH_API RlmeshValue* rlmesh_value_multi_discrete(const int64_t* data, size_t n);
 RLMESH_API RlmeshValue* rlmesh_value_multi_binary(const uint8_t* data, size_t n);
 /* Element count into `*out`; RLMESH_ERR_INVALID_VALUE for any other kind. */
@@ -185,6 +190,11 @@ RLMESH_API const RlmeshValue* rlmesh_value_dict_get(const RlmeshValue* value, co
  * iterate a dict (its keys are otherwise undiscoverable from C). */
 RLMESH_API RlmeshStatus rlmesh_value_dict_key(const RlmeshValue* value, size_t index,
                                               const char** out_ptr, size_t* out_len);
+/* The `index`-th dict child, in the SAME sorted-key order as
+ * rlmesh_value_dict_key — so key(i) names get_at(i). Iterating a dict this way
+ * needs no NUL-terminated copy of each key. NULL when `value` is not a Dict or
+ * `index` is out of range. */
+RLMESH_API const RlmeshValue* rlmesh_value_dict_get_at(const RlmeshValue* value, size_t index);
 
 /* The composite constructors take ownership of (and free) each child value on
  * success. On failure (NULL return) they take ownership of NOTHING: every child
@@ -230,6 +240,11 @@ RLMESH_API const RlmeshSpaceSpec* rlmesh_space_dict_get(const RlmeshSpaceSpec* s
  * `*out_len` UTF-8 bytes, NOT NUL-terminated, valid while `spec` lives. */
 RLMESH_API RlmeshStatus rlmesh_space_dict_key(const RlmeshSpaceSpec* spec, size_t index,
                                               const char** out_ptr, size_t* out_len);
+/* The `index`-th dict child, in the SAME declaration order as
+ * rlmesh_space_dict_key — so key(i) names get_at(i). NULL when `spec` is not a
+ * Dict or `index` is out of range. */
+RLMESH_API const RlmeshSpaceSpec* rlmesh_space_dict_get_at(const RlmeshSpaceSpec* spec,
+                                                           size_t index);
 
 /* Leaf parameters. `rlmesh_space_box_bounds` reports the `index`-th element's
  * inclusive bounds in row-major order (a uniform bound broadcasts; an undeclared
@@ -242,7 +257,16 @@ RLMESH_API RlmeshStatus rlmesh_space_discrete_n(const RlmeshSpaceSpec* spec, int
                                                 int64_t* out_start);
 RLMESH_API RlmeshStatus rlmesh_space_text_length(const RlmeshSpaceSpec* spec, int64_t* out_min,
                                                  int64_t* out_max);
-/* One category count per element of the shape, row-major (capacity `cap`). */
+/* A Text space's allowed characters: `*out_len` UTF-8 bytes, NOT NUL-terminated,
+ * valid while `spec` lives. An EMPTY charset means any character is allowed. */
+RLMESH_API RlmeshStatus rlmesh_space_text_charset(const RlmeshSpaceSpec* spec, const char** out_ptr,
+                                                  size_t* out_len);
+/* One category count per element of the shape, row-major (capacity `cap`).
+ * A MultiBinary space has no such table and no `n` field of its own: its
+ * dimensions live entirely in the shape (rlmesh_space_ndim /
+ * rlmesh_space_copy_shape), so MultiBinary([n]) reads as shape `[n]` and a
+ * value for it carries exactly `n` elements — the shape's row-major element
+ * count, for a multi-dimensional MultiBinary too. */
 RLMESH_API RlmeshStatus rlmesh_space_copy_nvec(const RlmeshSpaceSpec* spec, int64_t* out,
                                                size_t cap);
 
@@ -416,7 +440,8 @@ RLMESH_API RlmeshStatus rlmesh_model_serve(RlmeshModel* model, const char* bind_
  *
  * Cancellation is terminal for the handle: a cancelled model refuses further
  * runs. A cancelled serve returns RLMESH_OK after running on_close; a cancelled
- * run_local returns an error naming the cancellation (it has no report to give). */
+ * run_local (this one, or any later one on the handle) returns
+ * RLMESH_ERR_CANCELLED, since it has no report to give. */
 RLMESH_API void rlmesh_model_cancel(RlmeshModel* model);
 
 /* Free a model handle. NULL is a no-op. Must NOT be called from inside one of

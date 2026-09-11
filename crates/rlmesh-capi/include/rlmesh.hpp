@@ -51,6 +51,8 @@ class Error {
   RlmeshStatus code() const { return code_; }
   const std::string& message() const { return message_; }
   bool is_recoverable() const { return recoverable_; }
+  /// The run/serve was stopped by `Model::cancel()` — a clean stop, not a fault.
+  bool is_cancelled() const { return code_ == RLMESH_ERR_CANCELLED; }
 
  private:
   RlmeshStatus code_;
@@ -331,6 +333,14 @@ class ValueRef {
     return ValueRef(child);
   }
 
+  /// Dict child `index`, in the same sorted key order as `key(index)`; nullopt
+  /// when this is not a Dict or `index` is out of range.
+  std::optional<ValueRef> at_key(size_t index) const {
+    const RlmeshValue* child = rlmesh_value_dict_get_at(ptr_, index);
+    if (child == nullptr) return std::nullopt;
+    return ValueRef(child);
+  }
+
   /// Every (key, child) of a Dict, in sorted key order.
   Result<std::vector<std::pair<std::string_view, ValueRef>>> items() const {
     auto count = size();
@@ -340,7 +350,7 @@ class ValueRef {
     for (size_t i = 0; i < *count; ++i) {
       auto name = key(i);
       if (!name) return name.error();
-      std::optional<ValueRef> child = get(std::string(*name));
+      std::optional<ValueRef> child = at_key(i);
       if (!child) return Error(RLMESH_ERR_INVALID_VALUE, "dict child missing for a reported key");
       out.emplace_back(*name, *child);
     }
@@ -535,6 +545,17 @@ class SpaceRef {
     return out;
   }
 
+  /// A Text space's allowed characters (borrowed, NOT NUL-terminated); empty
+  /// means any character is allowed.
+  Result<std::string_view> charset() const {
+    const char* data = nullptr;
+    size_t len = 0;
+    if (RlmeshStatus status = rlmesh_space_text_charset(ptr_, &data, &len); status != RLMESH_OK) {
+      return Error::from_last(status);
+    }
+    return std::string_view(data, len);
+  }
+
   /// A MultiDiscrete space's per-element category counts (row-major).
   Result<std::vector<int64_t>> nvec() const {
     auto count = numel();
@@ -581,6 +602,14 @@ class SpaceRef {
     return SpaceRef(child);
   }
 
+  /// Dict child `index`, in the same declaration order as `key(index)`; nullopt
+  /// when this is not a Dict or `index` is out of range.
+  std::optional<SpaceRef> at_key(size_t index) const {
+    const RlmeshSpaceSpec* child = rlmesh_space_dict_get_at(ptr_, index);
+    if (child == nullptr) return std::nullopt;
+    return SpaceRef(child);
+  }
+
   /// Every (key, child) of a Dict space, in declaration order.
   Result<std::vector<std::pair<std::string_view, SpaceRef>>> items() const {
     auto count = size();
@@ -590,7 +619,7 @@ class SpaceRef {
     for (size_t i = 0; i < *count; ++i) {
       auto name = key(i);
       if (!name) return name.error();
-      std::optional<SpaceRef> child = get(std::string(*name));
+      std::optional<SpaceRef> child = at_key(i);
       if (!child) return Error(RLMESH_ERR_INVALID_VALUE, "dict space child missing for a key");
       out.emplace_back(*name, *child);
     }
@@ -657,8 +686,9 @@ inline bool store_scalar(uint8_t* dst, RlmeshDType dtype, double scalar) {
 
 /// A neutral value for ANY space — the "do nothing" action a model can always
 /// produce: Box zeros clamped into each element's bounds, Discrete `start`,
-/// Text the shortest legal string, MultiBinary / MultiDiscrete zeros, Dict and
-/// Tuple recursed.
+/// Text the shortest legal string (built from the charset when the space pins
+/// one), MultiBinary / MultiDiscrete zeros — one per element of the shape, so
+/// `n` for MultiBinary([n]) — and Dict / Tuple recursed.
 inline Result<Value> zeros_for(SpaceRef space) {
   switch (space.kind()) {
     case RLMESH_VALUE_BOX: {
@@ -691,7 +721,24 @@ inline Result<Value> zeros_for(SpaceRef space) {
       auto length = space.text_length();
       if (!length) return length.error();
       size_t min = length->min > 0 ? static_cast<size_t>(length->min) : 0;
-      return Value::text(std::string(min, 'a'));
+      auto allowed = space.charset();
+      if (!allowed) return allowed.error();
+      // Lengths are counted in characters, so repeat one CHARACTER: the charset's
+      // first (its bytes up to the next UTF-8 lead byte), or 'a' when the charset
+      // is empty and every character is legal.
+      std::string_view fill = "a";
+      if (!allowed->empty()) {
+        size_t bytes = 1;
+        while (bytes < allowed->size() &&
+               (static_cast<unsigned char>((*allowed)[bytes]) & 0xC0U) == 0x80U) {
+          ++bytes;
+        }
+        fill = allowed->substr(0, bytes);
+      }
+      std::string text;
+      text.reserve(min * fill.size());
+      for (size_t i = 0; i < min; ++i) text.append(fill);
+      return Value::text(text);
     }
     case RLMESH_VALUE_MULTI_BINARY: {
       auto count = space.numel();

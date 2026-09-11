@@ -18,6 +18,7 @@ rlmesh::Result<int64_t> results(rlmesh::ValueRef value) {
   (void)error.code();
   (void)error.message();
   (void)error.is_recoverable();
+  (void)error.is_cancelled();
   (void)rlmesh::Error::from_last(RLMESH_ERR_INTERNAL).code();
 
   rlmesh::Status status = rlmesh::ok();
@@ -71,6 +72,7 @@ rlmesh::Status read_value(rlmesh::ValueRef value) {
   auto key = value.key(0);
   if (!key) return key.error();
   (void)value.get("field");
+  (void)value.at_key(0);
   auto items = value.items();
   if (!items) return items.error();
   return rlmesh::ok();
@@ -147,6 +149,8 @@ rlmesh::Status read_space(rlmesh::SpaceRef space) {
   if (!length) return length.error();
   (void)length->min;
   (void)length->max;
+  auto charset = space.charset();
+  if (!charset) return charset.error();
   auto nvec = space.nvec();
   if (!nvec) return nvec.error();
   auto size = space.size();
@@ -155,6 +159,7 @@ rlmesh::Status read_space(rlmesh::SpaceRef space) {
   auto key = space.key(0);
   if (!key) return key.error();
   (void)space.get("field");
+  (void)space.at_key(0);
   auto items = space.items();
   if (!items) return items.error();
   auto zeros = rlmesh::zeros_for(space);
