@@ -28,6 +28,13 @@ pub struct StatePiece {
     /// Target value range (the model component's).
     pub dst_range: Option<(f64, f64)>,
     pub zero_fill: bool,
+    /// Resolved output width of this piece, when statically known (`None` when
+    /// the env feature declares no width and nothing else fixes it). A
+    /// host-side custom encoding addresses its own slice of a multi-part state
+    /// by these widths, and `apply_state` asserts every piece against its width
+    /// so a runtime value of another width is a loud error rather than a
+    /// silently shifted layout.
+    pub width: Option<u32>,
 }
 
 /// Resolved instructions for one model state input.
@@ -37,6 +44,8 @@ pub struct StatePlan {
     pub placement: NodePath,
     pub pieces: Vec<StatePiece>,
     pub pad_to: Option<u32>,
+    /// Assembled width before `pad_to`, when every piece's width is known.
+    pub native_width: Option<u32>,
     pub dtype: String,
     pub reshape: Option<Vec<i64>>,
     pub container: StateContainer,

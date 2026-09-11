@@ -489,6 +489,10 @@ impl From<Advisory> for PyAdvisory {
     }
 }
 
+/// One state input's resolved layout: its placement path, the width each
+/// declared part contributes, and the assembled leaf's width.
+type StateLayout = (Py<PyList>, Vec<u32>, u32);
+
 /// A resolved adapter plan handle backed by the `rlmesh-adapters` core.
 #[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(module = "rlmesh._rlmesh", name = "AdapterPlan", frozen)]
@@ -552,6 +556,48 @@ impl PyAdapterPlan {
             })
             .map(|(placement, transform)| {
                 Ok((path_segments_to_py(py, placement)?, transform.clone()))
+            })
+            .collect()
+    }
+
+    /// `(segments, part_widths, width)` per resolved state input, plan order.
+    ///
+    /// `segments` is the state leaf's structured placement path (as in
+    /// [`custom_inputs`](Self::custom_inputs)), `part_widths` the resolved width
+    /// each declared part contributes in order, and `width` the assembled
+    /// leaf's width (its `pad_to` when it pads). A host-side custom encoding
+    /// reads and writes exactly its own slice of the leaf, whose offset is the
+    /// sum of the widths before it — env-dependent, so it is knowable only
+    /// here, after resolve. A state whose widths are not all statically known
+    /// is omitted (nothing can be addressed inside it).
+    #[gen_stub(override_return_type(
+        type_repr = "builtins.list[tuple[builtins.list[builtins.str | builtins.int], \
+                     builtins.list[builtins.int], builtins.int]]",
+        imports = ("builtins")
+    ))]
+    fn state_layouts<'py>(&self, py: Python<'py>) -> PyResult<Vec<StateLayout>> {
+        self.adapter
+            .obs_plans
+            .iter()
+            .filter_map(|plan| match plan {
+                ObsPlan::State(state) => Some(state),
+                _ => None,
+            })
+            .filter_map(|state| {
+                let native_width = state.native_width?;
+                let widths: Vec<u32> = state
+                    .pieces
+                    .iter()
+                    .map(|piece| piece.width)
+                    .collect::<Option<_>>()?;
+                Some((
+                    &state.placement,
+                    widths,
+                    state.pad_to.unwrap_or(native_width),
+                ))
+            })
+            .map(|(placement, widths, width)| {
+                Ok((path_segments_to_py(py, placement)?, widths, width))
             })
             .collect()
     }

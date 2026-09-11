@@ -112,6 +112,20 @@ pub(super) fn apply_state(
         {
             map_range(&mut value, src, dst)?;
         }
+        // The resolved widths are the state's layout: a host-side custom
+        // encoding slices itself out of the assembled vector by them. A runtime
+        // value of another width would shift every later piece, so say so here
+        // instead of handing the model a quietly re-laid-out state.
+        if let Some(width) = piece.width
+            && value.len() != width as usize
+        {
+            return Err(ApplyError::new(format!(
+                "state piece '{}' resolved to {width} dims but the runtime \
+                 observation yields {}",
+                piece.source,
+                value.len()
+            )));
+        }
         state.extend(value);
     }
     if let Some(pad_to) = plan.pad_to {
@@ -162,8 +176,10 @@ mod tests {
                 src_range: Some((0.0, 255.0)),
                 dst_range: Some((-1.0, 1.0)),
                 zero_fill: false,
+                width: Some(3),
             }],
             pad_to: None,
+            native_width: Some(3),
             dtype: "float32".to_owned(),
             reshape: None,
             container: StateContainer::Array,
@@ -209,8 +225,10 @@ mod tests {
                 src_range: None,
                 dst_range: None,
                 zero_fill: false,
+                width: Some(1),
             }],
             pad_to: None,
+            native_width: Some(1),
             dtype: "float32".to_owned(),
             reshape: None,
             container: StateContainer::Array,

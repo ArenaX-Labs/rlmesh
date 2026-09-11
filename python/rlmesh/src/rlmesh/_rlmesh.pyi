@@ -174,6 +174,19 @@ class AdapterPlan:
         native `NodePath` — no placement string for the caller to re-parse. An
         empty segment list is the root (a bare-leaf payload).
         """
+    def state_layouts(self) -> builtins.list[tuple[builtins.list[builtins.str | builtins.int], builtins.list[builtins.int], builtins.int]]:
+        r"""
+        `(segments, part_widths, width)` per resolved state input, plan order.
+        
+        `segments` is the state leaf's structured placement path (as in
+        [`custom_inputs`](Self::custom_inputs)), `part_widths` the resolved width
+        each declared part contributes in order, and `width` the assembled
+        leaf's width (its `pad_to` when it pads). A host-side custom encoding
+        reads and writes exactly its own slice of the leaf, whose offset is the
+        sum of the widths before it — env-dependent, so it is knowable only
+        here, after resolve. A state whose widths are not all statically known
+        is omitted (nothing can be addressed inside it).
+        """
     def transform_obs(self, raw_obs: typing.Any) -> typing.Any:
         r"""
         Apply the observation plans to a canonical value-tree observation map.

@@ -106,26 +106,15 @@ pub(super) fn plan_state(
     let at = quoted(&placement.to_string());
     let mut pieces: Vec<StatePiece> = Vec::with_capacity(model_input.components.len());
     for component in &model_input.components {
-        // A custom encoding resolves structurally to its `base` here, but it can
-        // only ever *run* as a sole, always-present host-side repack: a
-        // multi-part concat places it at an env-dependent offset the shim cannot
-        // pin, and an absent optional part has no zero form of the custom
-        // packing. Reject both at this platform door rather than admit a spec
-        // that provably cannot resolve where the arm lives.
+        // A custom encoding resolves structurally to its `base` here and the
+        // host-side repack runs on its own slice, addressed by the resolved
+        // piece widths this plan records — so it may sit at any offset of a
+        // multi-part concat. What it can never be is absent: an optional part
+        // the env does not declare has no zero form of the custom packing.
         let is_custom = component
             .encoding
             .as_ref()
             .is_some_and(|encoding| encoding.custom().is_some());
-        if is_custom && model_input.components.len() > 1 {
-            return Err(err(
-                ErrorCode::Unsupported,
-                format!(
-                    "state role {}: a custom encoding must be the sole part of its input; a \
-                     multi-part concat's offsets are env-dependent",
-                    quoted(&component.role)
-                ),
-            ));
-        }
         if is_custom && component.optional {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -142,17 +131,19 @@ pub(super) fn plan_state(
             // role the env genuinely lacks falls through to the optional branch.
             super::reject_referenced_unknown(&component.role, &placement, unknown_roles)?;
             if component.optional {
+                let fill_width = zero_fill_width(component, &at)?;
                 pieces.push(StatePiece {
                     source: NodePath::root(),
                     src_offset: None,
                     src_dim: None,
                     src_encoding: None,
                     dst_encoding: None,
-                    dim: Some(zero_fill_width(component, &at)?),
+                    dim: Some(fill_width),
                     index: None,
                     src_range: None,
                     dst_range: None,
                     zero_fill: true,
+                    width: Some(fill_width),
                 });
                 continue;
             }
@@ -181,12 +172,19 @@ pub(super) fn plan_state(
                             ),
                         ));
                     }
-                    if component.dim.is_some() || component.index.is_some() {
+                    // The repack preserves the base width, so an index (one
+                    // element) never fits; a dim is legal exactly when it
+                    // restates that width, which is how a concat part declares
+                    // its own slice.
+                    let base_dims = custom.base().dims();
+                    if component.index.is_some()
+                        || component.dim.is_some_and(|dim| dim != base_dims)
+                    {
                         return Err(err(
                             ErrorCode::Unsupported,
                             format!(
-                                "state role {}: a custom encoding cannot also set dim or index \
-                                 (they would change its width)",
+                                "state role {}: a custom encoding keeps its base width; drop \
+                                 index and set dim to {base_dims} or omit it",
                                 quoted(&component.role)
                             ),
                         ));
@@ -260,6 +258,14 @@ pub(super) fn plan_state(
                 ));
             }
         }
+        // The piece's resolved output width, when statically known: an index
+        // keeps one element, a dim truncates to it, otherwise the source width
+        // (the converted width when a rotation conversion reshapes it) stands.
+        let width = match (component.index, component.dim) {
+            (Some(_), _) => Some(1),
+            (_, Some(dim)) => Some(dim),
+            (None, None) => source_width,
+        };
         pieces.push(StatePiece {
             source: env_state.source.clone(),
             src_offset: env_state.slice_offset,
@@ -275,12 +281,19 @@ pub(super) fn plan_state(
             src_range: env_state.range,
             dst_range: component.range,
             zero_fill: false,
+            width,
         });
     }
+    // Known only when every piece's width is (and no pathological spec overflows
+    // the sum): a host-side shim can address a slice only in that case.
+    let native_width = pieces.iter().try_fold(0u32, |total, piece| {
+        piece.width.and_then(|width| total.checked_add(width))
+    });
     Ok(StatePlan {
         placement,
         pieces,
         pad_to: model_input.pad_to,
+        native_width,
         dtype: model_input.dtype.clone(),
         reshape: model_input.reshape.clone(),
         container: model_input.container,
