@@ -35,6 +35,11 @@ pub(super) fn apply_image(
     if plan.flip {
         image = flip_180(&image)?;
     }
+    // Before the crop/resize: a training pipeline that stored JPEGs encoded the
+    // camera frame it was handed, then cropped and resized the decoded result.
+    if let Some(quality) = plan.jpeg_quality {
+        image = jpeg_roundtrip(&image, quality)?;
+    }
     // A `slice` crop is an integer center cut taken before the resize; a `zoom`
     // crop is the fractional box the resize itself samples through, so it rides
     // along into `fit_resize` instead of costing a second resampling pass.
@@ -201,6 +206,66 @@ pub fn swap_rb(tensor: &Tensor) -> Result<Tensor, ApplyError> {
         indices.extend([pixel * 3 + 2, pixel * 3 + 1, pixel * 3]);
     }
     Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
+}
+
+/// Encode an HWC 8-bit RGB frame as JPEG at `quality` and decode it back
+/// (`jpeg_quality`), reproducing the codec artifacts a model trained on stored
+/// JPEGs saw.
+///
+/// The profile is part of the v1 contract, because a different one is a
+/// different picture: **baseline sequential, 4:2:0 chroma subsampling with
+/// box-averaged (libjpeg `h2v2_downsample`) chroma, the standard IJG
+/// quantization tables scaled by `quality`, and the standard IJG Huffman
+/// tables** -- what TensorFlow's `encode_jpeg` and Pillow's `save(..., "JPEG")`
+/// write by default. Encoding is `jpeg-encoder` (pinned exactly); decoding is
+/// the `image` crate's JPEG reader, so only one codec is vendored.
+///
+/// A 3-channel op: JPEG's subsampling is defined on YCbCr, which a grayscale or
+/// RGBA frame has no equivalent of, so a wrong-shaped frame fails loudly
+/// (resolution rejects it first -- see `resolver::image`).
+pub fn jpeg_roundtrip(tensor: &Tensor, quality: u8) -> Result<Tensor, ApplyError> {
+    let encoded = jpeg_encode(tensor, quality)?;
+    let decoded = image::load_from_memory_with_format(&encoded, image::ImageFormat::Jpeg)
+        .map_err(|err| ApplyError::new(format!("could not decode the jpeg image: {err}")))?;
+    Ok(value::tensor_from_u8(
+        tensor.shape().to_vec(),
+        decoded.to_rgb8().into_raw(),
+    ))
+}
+
+/// The encode half of [`jpeg_roundtrip`] (split out so the profile itself can
+/// be asserted against the encoded stream's headers).
+fn jpeg_encode(tensor: &Tensor, quality: u8) -> Result<Vec<u8>, ApplyError> {
+    let (height, width, channels) = image_dims(tensor)?;
+    if channels != 3 {
+        return Err(ApplyError::new(format!(
+            "jpeg_quality needs a 3-channel image, got {channels} channel(s)"
+        )));
+    }
+    // JPEG's frame header carries 16-bit dimensions; a larger frame has no
+    // encoding, so say so rather than truncating the cast.
+    let (Ok(encoded_width), Ok(encoded_height)) = (u16::try_from(width), u16::try_from(height))
+    else {
+        return Err(ApplyError::new(format!(
+            "jpeg_quality cannot encode a {height}x{width} frame; JPEG dimensions are 16-bit"
+        )));
+    };
+    let pixels = value::u8_pixels(tensor)?;
+    let mut encoded: Vec<u8> = Vec::new();
+    let mut encoder = jpeg_encoder::Encoder::new(&mut encoded, quality);
+    // The crate picks 4:4:4 above quality 90; upstream (libjpeg, and so
+    // TensorFlow and Pillow) subsamples at every quality, so pin it.
+    encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+    encoder.set_chroma_subsampling_method(jpeg_encoder::ChromaSubsamplingMethod::Average);
+    encoder
+        .encode(
+            &pixels,
+            encoded_width,
+            encoded_height,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .map_err(|err| ApplyError::new(format!("could not jpeg-encode the image: {err}")))?;
+    Ok(encoded)
 }
 
 /// Transpose an image between `hwc` and `chw` layouts (any dtype).
@@ -1084,6 +1149,112 @@ mod tests {
         }
     }
 
+    /// A natural-looking frame: two smooth gradients plus a few hard edges.
+    /// Deliberately not noise -- JPEG is tuned for photographic content, and
+    /// white noise would put the PSNR floor somewhere that says nothing about
+    /// what a camera frame survives.
+    fn natural_frame(height: usize, width: usize) -> Tensor {
+        let mut pixels = Vec::with_capacity(height * width * 3);
+        for row in 0..height {
+            for col in 0..width {
+                let (y, x) = (row as f64 / height as f64, col as f64 / width as f64);
+                // Luma-dominant, like a photograph: the channels vary together
+                // with a mild constant tint, so the chroma planes stay smooth.
+                let luma = 30.0 + 190.0 * (0.6 * x + 0.4 * y);
+                let mut rgb = [luma * 1.02, luma * 0.96, luma * 0.88];
+                // A bright block and a dark bar: the ringing cases a gradient
+                // alone would never exercise.
+                if row > height / 3 && row < height * 2 / 3 && col > width / 4 && col < width / 2 {
+                    rgb = [236.0, 231.0, 214.0];
+                }
+                if col > width * 3 / 4 && col < width * 3 / 4 + width / 16 {
+                    rgb = [26.0, 25.0, 22.0];
+                }
+                pixels.extend(rgb.map(|channel| channel.round().clamp(0.0, 255.0) as u8));
+            }
+        }
+        value::tensor_from_u8(value::shape_i64(&[height, width, 3]), pixels)
+    }
+
+    /// Peak signal-to-noise ratio, in dB, between two equal-shaped 8-bit frames.
+    fn psnr(left: &Tensor, right: &Tensor) -> f64 {
+        let (left, right) = (
+            value::u8_pixels(left).expect("pixels"),
+            value::u8_pixels(right).expect("pixels"),
+        );
+        let squared: f64 = left
+            .iter()
+            .zip(&right)
+            .map(|(a, b)| (f64::from(*a) - f64::from(*b)).powi(2))
+            .sum();
+        let mse = squared / left.len() as f64;
+        if mse == 0.0 {
+            return f64::INFINITY;
+        }
+        10.0 * (255.0f64.powi(2) / mse).log10()
+    }
+
+    #[test]
+    fn jpeg_encodes_a_baseline_4_2_0_frame() {
+        // The profile IS the contract -- another engine reproducing the vectors
+        // has to write the same stream shape -- so assert it on the bytes, not
+        // on a crate default that could move under a patch bump. Walk the
+        // markers to SOF0 (0xFFC0, baseline sequential; a progressive stream
+        // would be 0xFFC2) and read its per-component sampling factors.
+        let encoded = jpeg_encode(&natural_frame(32, 32), 95).expect("encode");
+        assert_eq!(&encoded[..2], &[0xFF, 0xD8], "not a JPEG (missing SOI)");
+        let mut at = 2;
+        let sof = loop {
+            assert_eq!(encoded[at], 0xFF, "desynced at byte {at}");
+            let marker = encoded[at + 1];
+            let length = usize::from(u16::from_be_bytes([encoded[at + 2], encoded[at + 3]]));
+            assert_ne!(marker, 0xC2, "progressive SOF2, expected baseline SOF0");
+            if marker == 0xC0 {
+                break &encoded[at + 4..at + 2 + length];
+            }
+            at += 2 + length;
+        };
+        // SOF0 payload: precision, height, width, component count, then three
+        // bytes per component (id, sampling factors packed 4:4, quant table).
+        assert_eq!(sof[0], 8, "expected 8-bit samples");
+        assert_eq!(sof[5], 3, "expected 3 components");
+        let factors: Vec<(u8, u8)> = sof[6..]
+            .chunks(3)
+            .map(|component| (component[1] >> 4, component[1] & 0x0F))
+            .collect();
+        // 4:2:0 -- luma 2x2, both chroma planes 1x1 (half resolution on each
+        // axis). This is the whole reason for the pinned encoder: 4:4:4 would
+        // read (1, 1) for every component and could not match the upstream
+        // anchor.
+        assert_eq!(factors, vec![(2, 2), (1, 1), (1, 1)], "expected 4:2:0");
+    }
+
+    #[test]
+    fn jpeg_roundtrip_at_q95_stays_above_the_psnr_floor() {
+        // q95 is the value the training pipelines use; a round-trip that lost
+        // more than this would be a different picture, not a codec artifact.
+        let frame = natural_frame(64, 64);
+        let out = jpeg_roundtrip(&frame, 95).expect("roundtrip");
+        assert_eq!(out.shape(), frame.shape());
+        let quality95 = psnr(&frame, &out);
+        assert!(quality95 >= 35.0, "q95 PSNR {quality95} dB below the floor");
+        // ... and the dial really is a dial: q10 is visibly worse.
+        let coarse = psnr(&frame, &jpeg_roundtrip(&frame, 10).expect("roundtrip"));
+        assert!(coarse < quality95, "q10 {coarse} dB not worse than q95");
+    }
+
+    #[test]
+    fn jpeg_roundtrip_rejects_a_non_three_channel_frame() {
+        // JPEG subsampling is defined on YCbCr; a grayscale or RGBA frame has
+        // no such thing. Resolution rejects it first -- this is the backstop.
+        let gray = value::tensor_from_u8(vec![2, 2, 1], vec![0, 64, 128, 255]);
+        let error = jpeg_roundtrip(&gray, 95).expect_err("3-channel only");
+        assert!(
+            error.to_string().contains("needs a 3-channel image"),
+            "got: {error}"
+        );
+    }
+
     #[test]
     fn normalize_default_range_is_the_unit_interval() {
         let image = value::tensor_from_u8(vec![1, 2, 1], vec![0, 255]);
@@ -1121,6 +1292,7 @@ mod tests {
             zero_fill: Some((2, 2, 3)),
             fill: 0,
             crop: None,
+            jpeg_quality: None,
             swap_rb: false,
             render: None,
             role_rebound: None,
@@ -1159,6 +1331,7 @@ mod tests {
             zero_fill: Some((2, 2, 3)),
             fill: 128,
             crop: None,
+            jpeg_quality: None,
             swap_rb: false,
             render: None,
             role_rebound: None,

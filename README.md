@@ -95,3 +95,8 @@ RLMesh is licensed under either of:
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+The declared `Image.jpeg_quality` round-trip encodes through the `jpeg-encoder`
+crate, whose tables come from the Independent JPEG Group's reference
+implementation: this software is based in part on the work of the Independent
+JPEG Group.

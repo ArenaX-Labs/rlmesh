@@ -42,6 +42,13 @@ exceptions = [
   { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
   # pyo3-stub-gen pulls Unicode name data through rustpython-parser for stub checks.
   { crate = "unicode_names2@1.3.0", allow = ["Unicode-DFS-2016"] },
+  # jpeg-encoder writes the declared `Image.jpeg_quality` round-trip. Its
+  # quantization and Huffman tables are the Independent JPEG Group's, so it is
+  # "(MIT OR Apache-2.0) AND IJG"; the IJG terms are permissive and ask only for
+  # an acknowledgment, which README.md and the wheel's THIRD_PARTY_NOTICES.md
+  # carry. The alternative was a 4:4:4-only encoder that cannot match the
+  # upstream 4:2:0 anchor.
+  { crate = "jpeg-encoder@0.7.1", allow = ["IJG"] },
 ]
 
 [bans]

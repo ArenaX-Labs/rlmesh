@@ -155,22 +155,30 @@ pub(super) fn plan_image(
         (None, None) => None,
     };
     let swap_rb = model_input.channel_order == "bgr";
-    // The swap is a 3-channel op; a grayscale or RGBA feed would silently get
-    // its bytes reordered (or fail per-step in apply), so reject it here.
-    if swap_rb
-        && let Some(channels) = model_input
-            .channels
-            .or(Some(env_image.channels))
-            .filter(|&c| c != 0)
+    // Both are 3-channel ops -- there is no red/blue pair, and no YCbCr to
+    // subsample, in a grayscale or RGBA frame. A wrong-shaped feed would
+    // silently get its bytes reordered (or fail per-step in apply), so reject
+    // it here.
+    if let Some(channels) = model_input
+        .channels
+        .or(Some(env_image.channels))
+        .filter(|&c| c != 0)
         && channels != 3
     {
-        return Err(err(
-            ErrorCode::Unsupported,
-            format!(
-                "model input {at}: channel_order \"bgr\" needs a 3-channel image, \
-                 got {channels} channel(s)"
-            ),
-        ));
+        for (declared, what) in [
+            (swap_rb, "channel_order \"bgr\""),
+            (model_input.jpeg_quality.is_some(), "jpeg_quality"),
+        ] {
+            if declared {
+                return Err(err(
+                    ErrorCode::Unsupported,
+                    format!(
+                        "model input {at}: {what} needs a 3-channel image, \
+                         got {channels} channel(s)"
+                    ),
+                ));
+            }
+        }
     }
     let crop = crop_plan(model_input, &at, env_image)?;
     let fit = resolve_fit(model_input, &at, env_image, size, crop.as_ref())?;
@@ -191,6 +199,7 @@ pub(super) fn plan_image(
         zero_fill: None,
         fill: model_input.fill.unwrap_or(0),
         crop,
+        jpeg_quality: model_input.jpeg_quality,
         swap_rb,
         render,
         role_rebound,
@@ -276,9 +285,11 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
         fill: model_input.fill.unwrap_or(0),
-        // A synthesized frame is one flat level: cropping or swapping its
-        // channels cannot change a pixel, so neither step is planned.
+        // A synthesized frame is one flat level: cropping, re-encoding, or
+        // swapping its channels cannot change a pixel, so none of the three
+        // steps is planned.
         crop: None,
+        jpeg_quality: None,
         swap_rb: false,
         // There is no camera here to assert anything about: a zero-filled frame
         // is synthesized by the adapter, not rendered by the env.
@@ -457,6 +468,7 @@ mod image_resolve_tests {
             crop: None,
             crop_area: None,
             crop_mode: "zoom".to_owned(),
+            jpeg_quality: None,
             channel_order: "rgb".to_owned(),
             render: None,
             unknown: Default::default(),

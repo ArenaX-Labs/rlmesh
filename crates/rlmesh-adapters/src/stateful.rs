@@ -762,6 +762,7 @@ mod tests {
                 zero_fill: None,
                 fill: 0,
                 crop: None,
+                jpeg_quality: None,
                 swap_rb: false,
                 render: None,
                 role_rebound: None,

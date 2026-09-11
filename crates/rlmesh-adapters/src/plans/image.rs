@@ -65,6 +65,10 @@ pub struct ImagePlan {
     /// Raw 8-bit level the zero-filled frame is filled with (`0` = black, the
     /// default). Only meaningful when `zero_fill` is `Some`.
     pub fill: u8,
+    /// JPEG quality to round-trip the upright frame through before the crop
+    /// and resize, reproducing the codec artifacts the model was trained on;
+    /// `None` for an untouched frame.
+    pub jpeg_quality: Option<u8>,
     /// The center box to keep before (or as part of) the resize; `None` for
     /// the whole frame.
     pub crop: Option<CropPlan>,

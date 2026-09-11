@@ -73,6 +73,10 @@ tracing-subscriber = "0.3"
 chacha20 = { version = "0.10", features = ["rng"] }
 half = "2"
 image = { version = "0.25", default-features = false }
+# JPEG *encoder* only (decoding rides the `image` crate's zune-jpeg). Pinned
+# exactly: the declared jpeg round-trip is a pixel contract, so a patch bump
+# that retunes the encoder is a vector change, not a dependency update.
+jpeg-encoder = "=0.7.1"
 rand = "0.10"
 
 # Media (in-process AV1 recording; pure Rust, no ffmpeg / C toolchain)

@@ -263,6 +263,26 @@ pub(crate) fn de_opt_count_pair<'de, D: Deserializer<'de>>(
     Ok(pair)
 }
 
+/// Deserialize an optional JPEG quality (`Option<u8>`) on the IJG `1..=100`
+/// scale, routed through [`de_count`] so a negative or float literal still
+/// reads in domain language. `0` is not a quality and anything past `100` is
+/// off the scale the encoder is written on, so both are rejected at the wire
+/// boundary rather than surfacing as a clamp nobody declared.
+pub(crate) fn de_opt_jpeg_quality<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u8>, D::Error> {
+    let quality = de_opt::<Count, D>(deserializer, "a jpeg quality in 1..=100 or null")
+        .map(|count| count.map(|Count(value)| value))?;
+    if let Some(value) = quality
+        && !(1..=100).contains(&value)
+    {
+        return Err(de::Error::custom(format!(
+            "jpeg_quality must be between 1 and 100, got {value}"
+        )));
+    }
+    Ok(quality.map(|value| value as u8))
+}
+
 /// Deserialize an optional fraction in `(0, 1]` (the image `crop` /
 /// `crop_area` box), routed through [`Number`] so a wrong-typed value still
 /// reads `a number`. `0` (keep nothing) and anything past the whole frame are

@@ -180,6 +180,9 @@ fn describe_image(plan: &ImagePlan) -> String {
     if plan.flip {
         steps.push("flip 180".to_owned());
     }
+    if let Some(quality) = plan.jpeg_quality {
+        steps.push(format!("jpeg q{quality}"));
+    }
     if let Some(crop) = &plan.crop {
         let mut step = if crop.slice {
             format!("crop {:.3} (slice)", crop.fraction)

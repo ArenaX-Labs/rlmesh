@@ -254,6 +254,21 @@ pub struct Image {
     /// older cores instead of a parse failure. Omitted at the default.
     #[serde(default = "default_zoom", skip_serializing_if = "is_zoom")]
     pub crop_mode: String,
+    /// Quality of a JPEG round-trip applied to the upright frame *before* the
+    /// crop and resize, on the IJG `1..=100` scale (`95` is the usual training
+    /// value). A *declaration*, not a request: training pipelines that stored
+    /// their frames as JPEG fed the model the codec's artifacts, so the adapter
+    /// reproduces them rather than handing the model a cleaner frame than it was
+    /// trained on. Baseline sequential, 4:2:0 box-averaged chroma, standard IJG
+    /// tables -- the profile is pinned by the v1 conformance vectors. Needs a
+    /// 3-channel image. Additive over the pinned wire format (omitted when
+    /// unset).
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_jpeg_quality",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub jpeg_quality: Option<u8>,
     /// Channel order the model was trained on, one of [`CHANNEL_ORDERS`].
     /// `"bgr"` swaps red and blue after the spatial ops and before the
     /// dtype cast, and needs a 3-channel image. A constrained string, like
@@ -443,7 +458,14 @@ mod tests {
         );
         // Byte parity with every spec written before these fields existed.
         let wire = serde_json::to_string(&input).unwrap();
-        for field in ["crop", "crop_area", "crop_mode", "channel_order"] {
+        assert_eq!(img.jpeg_quality, None);
+        for field in [
+            "crop",
+            "crop_area",
+            "crop_mode",
+            "channel_order",
+            "jpeg_quality",
+        ] {
             assert!(!wire.contains(field), "{field} leaked into {wire}");
         }
     }
@@ -479,6 +501,28 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn jpeg_quality_round_trips_and_is_bounded_to_the_ijg_scale() {
+        let input = image(r#", "jpeg_quality": 95"#);
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!(img.jpeg_quality, Some(95));
+        assert!(
+            serde_json::to_string(&input)
+                .unwrap()
+                .contains("\"jpeg_quality\":95")
+        );
+        // `0` is not a quality and `101` is off the IJG scale; both are rejected
+        // at the codec door rather than clamped somewhere in apply.
+        for bad in ["0", "101"] {
+            let json =
+                format!(r#"{{"type": "image", "role": "image/primary", "jpeg_quality": {bad}}}"#);
+            let err = serde_json::from_str::<ModelLeaf>(&json).expect_err("bounds");
+            assert!(err.to_string().contains("between 1 and 100"), "got: {err}");
+        }
     }
 
     #[test]
