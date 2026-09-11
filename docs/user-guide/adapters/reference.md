@@ -215,28 +215,29 @@ spec = adapt.ModelSpec(
 
 {class}`~rlmesh.adapters.Image`: a camera input. Every field:
 
-| Field                   | Default      | What it does                                                                  | When to use                                                    |
-| ----------------------- | ------------ | ----------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `role` (1st positional) | --           | match an env image                                                            | always                                                         |
-| `size`                  | `None`       | sugar that sets `height` **and** `width`                                      | square targets (pass `size` _or_ `height`/`width`, not both)   |
-| `height`                | `None`       | target height (keep env height if `None`)                                     | non-square target                                              |
-| `width`                 | `None`       | target width                                                                  | non-square target                                              |
-| `layout`                | `"hwc"`      | axis order the model wants                                                    | the model wants `chw`                                          |
-| `channels`              | `None`       | channel count the model wants (3 RGB, 1 gray)                                 | make a channel mismatch an error instead of silent             |
-| `dtype`                 | `"uint8"`    | NumPy dtype of the result                                                     | the model wants floats                                         |
-| `normalize`             | `False`      | map 8-bit pixels: `True` → `[0,1]`, or a `(low, high)` pair → that range      | scale `[0,255]`; a pair for signed inputs, e.g. `(-1.0, 1.0)`  |
-| `lead_dims`             | `0`          | leading singleton axes to add                                                 | the model wants a batch/time axis                              |
-| `upside_down`           | `False`      | the model was trained on 180°-rotated frames                                  | training-time flip                                             |
-| `resample`              | `"bilinear"` | resize filter: `bilinear`, `bilinear_aa`, `bicubic_aa`, `lanczos3_aa`, `area` | match the training pipeline                                    |
-| `allow_upscale`         | `False`      | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                |
-| `fit`                   | `None`       | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                             |
-| `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
-| `fill`                  | `None`       | fill value for the blank frame (requires `optional=True`)                     | non-black fill                                                 |
-| `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
-| `crop`                  | `None`       | side fraction of the frame a center crop keeps, in `(0, 1]`                   | the training pipeline center-cropped                           |
-| `crop_area`             | `None`       | the same crop as an **area** fraction (side = its square root)                | "a 90% center crop" (`crop_area=0.9` → side `0.949`)           |
-| `crop_mode`             | `"zoom"`     | how the box is taken: `zoom` (resample the box) or `slice` (integer cut)      | match how the training pipeline cropped                        |
-| `channel_order`         | `"rgb"`      | channel order the model wants; `bgr` swaps red and blue                       | a model trained on OpenCV-ordered frames                       |
+| Field                   | Default      | What it does                                                                  | When to use                                                         |
+| ----------------------- | ------------ | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `role` (1st positional) | --           | match an env image                                                            | always                                                              |
+| `size`                  | `None`       | sugar that sets `height` **and** `width`                                      | square targets (pass `size` _or_ `height`/`width`, not both)        |
+| `height`                | `None`       | target height (keep env height if `None`)                                     | non-square target                                                   |
+| `width`                 | `None`       | target width                                                                  | non-square target                                                   |
+| `layout`                | `"hwc"`      | axis order the model wants                                                    | the model wants `chw`                                               |
+| `channels`              | `None`       | channel count the model wants (3 RGB, 1 gray)                                 | make a channel mismatch an error instead of silent                  |
+| `dtype`                 | `"uint8"`    | NumPy dtype of the result                                                     | the model wants floats                                              |
+| `normalize`             | `False`      | map 8-bit pixels: `True` → `[0,1]`, or a `(low, high)` pair → that range      | scale `[0,255]`; a pair for signed inputs, e.g. `(-1.0, 1.0)`       |
+| `lead_dims`             | `0`          | leading singleton axes to add                                                 | the model wants a batch/time axis                                   |
+| `upside_down`           | `False`      | the model was trained on 180°-rotated frames                                  | training-time flip                                                  |
+| `resample`              | `"bilinear"` | resize filter: `bilinear`, `bilinear_aa`, `bicubic_aa`, `lanczos3_aa`, `area` | match the training pipeline                                         |
+| `allow_upscale`         | `False`      | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                     |
+| `fit`                   | `None`       | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                                  |
+| `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`)      |
+| `fill`                  | `None`       | fill value for the blank frame (requires `optional=True`)                     | non-black fill                                                      |
+| `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))           |
+| `crop`                  | `None`       | side fraction of the frame a center crop keeps, in `(0, 1]`                   | the training pipeline center-cropped                                |
+| `crop_area`             | `None`       | the same crop as an **area** fraction (side = its square root)                | "a 90% center crop" (`crop_area=0.9` → side `0.949`)                |
+| `crop_mode`             | `"zoom"`     | how the box is taken: `zoom` (resample the box) or `slice` (integer cut)      | match how the training pipeline cropped                             |
+| `channel_order`         | `"rgb"`      | channel order the model wants; `bgr` swaps red and blue                       | a model trained on OpenCV-ordered frames                            |
+| `render`                | `None`       | assert the camera renders at this size (square `int` or `(h, w)`)             | the model needs the env's camera dial moved (see [Render](#render)) |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
 
@@ -256,6 +257,18 @@ adapt.Image(adapt.IMAGE_PRIMARY, size=448, crop=2 / 3, crop_mode="slice", allow_
 ```
 
 `crop` and `crop_area` are the same box said two ways, so setting both is an error rather than a silent precedence rule. Because the crop is what the resize actually reads, `allow_upscale` measures the target against the _box_, not the camera: cropping a 480×480 camera to 320×320 and asking for 448×448 is an upscale and needs the opt-in.
+
+#### Render
+
+`render` is the one field that is **not** about the frame the model receives — it is about the frame the environment produces. It is an _assertion_: the adapter never resizes a camera to reach it. Declare the resolution your model was trained against (`render=448`, or `render=(480, 640)`), and two things follow.
+
+Before the run, the platform reads every `render` on the spec and binds the environment's camera dial from it — the `renderParams` label an environment package publishes, which names the `make` kwargs that set camera height and width (`{height: cam_height, width: cam_width}`) plus the size the env renders at by default. An environment that publishes no `renderParams` has no dial to bind; a model that must run there drops `render` and declares `size` instead, paying for a resize.
+
+At resolve, the adapter checks the camera it actually bound really does render at that size, and fails with `RenderMismatch` if it does not. So a dial that silently did not move is loud and pre-step, not a quiet accuracy loss. The check follows the camera, not the role: if the lone-camera fallback bound your input to an env camera under another role, the assertion is made against _that_ camera. It is skipped only when there is nothing to compare against — an observation space that does not pin the camera's resolution, or an `optional` input the env did not provide at all (a zero-filled frame is synthesized by the adapter, not rendered by the env). `describe` prints a checked assertion as the first image step, `render 448x448`.
+
+One camera size, one source. When a model asserts `render`, that assertion is the only thing allowed to set the camera dial for that pairing: pinning `cam_height`/`cam_width` by hand as environment params alongside it is refused rather than silently fighting the binding. When no model asserts anything, a pairing may still pin the dial as an ordinary protocol param.
+
+Perturbations that speak in pixels (a shift in `dx`/`dy`, say) are scaled by the ratio of the bound render size to the environment's default, so a perturbation preset keeps meaning the same physical displacement when a model moves the dial.
 
 ### State
 
