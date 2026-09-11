@@ -22,6 +22,8 @@ from .vocabularies import (
     ImageLayout,
     Resample,
     RotationEncoding,
+    StackPad,
+    StackSpec,
 )
 
 ObsTransform: TypeAlias = Callable[[Mapping[str, Any]], Any]
@@ -119,6 +121,21 @@ class Image:
         channel_order: Channel order the model was trained on. ``"bgr"`` swaps
             red and blue after the spatial ops and before the dtype cast, and
             needs a 3-channel image.
+        offsets: The frame window ``stack`` gathers, as non-positive offsets
+            from the current step -- oldest first, ending at ``0``.
+            ``(-6, -4, -2, 0)`` is "every second frame of the last seven".
+            ``None`` (the default) is the contiguous window ``stack`` already
+            describes. ``offsets`` and ``stack`` are never inferred from each
+            other: both are declared and they must agree (``len(offsets) ==
+            stack``), and the window may span at most 128 consecutive frames.
+        stride: Convenience for an evenly spaced window -- ``stack=4,
+            stride=2`` is ``offsets=(-6, -4, -2, 0)``. Pass ``stride`` or
+            ``offsets``, not both.
+        stack_pad: What fills the window before the episode has produced
+            enough frames: ``"first"`` (the default) replicates the first
+            observed frame, ``"black"`` a raw 8-bit ``0`` frame pushed through
+            this input's pipeline -- so under ``normalize=(-1.0, 1.0)`` a black
+            pad frame is ``-1.0``, not ``0.0``. Requires ``stack > 1``.
         render: The camera resolution this model was trained against, as a
             square ``int`` or an ``(height, width)`` pair (each axis 1-4096).
             An *assertion*, not a request: the adapter never resizes a camera
@@ -151,9 +168,14 @@ class Image:
     jpeg_quality: int | None = field(default=None, kw_only=True)
     channel_order: ChannelOrder = field(default="rgb", kw_only=True)
     render: int | tuple[int, int] | None = field(default=None, kw_only=True)
+    offsets: StackSpec | None = field(default=None, kw_only=True)
+    stack_pad: StackPad = field(default="first", kw_only=True)
     size: InitVar[int | None] = None
+    # Kw-only like the fields it sugars, so the positional signature stays
+    # exactly what specs were written against.
+    stride: InitVar[int | None] = field(default=None, kw_only=True)
 
-    def __post_init__(self, size: int | None) -> None:
+    def __post_init__(self, size: int | None, stride: int | None) -> None:
         # size= is construction sugar (sets both height and width). The
         # non-negative bounds (height/width/lead_dims) and the stack 1..=64 bound
         # are enforced by the Rust codec at serialize/normalize (u32 + de_stack).
@@ -214,6 +236,27 @@ class Image:
                         f"and 4096, got {value}"
                     )
             object.__setattr__(self, "render", render)
+        # stride= is construction sugar for an evenly spaced window; offsets is
+        # the general form. Declaring both leaves no honest precedence rule.
+        # The window LAW (non-positive, increasing, ending at 0, agreeing with
+        # stack, within the span ceiling) is enforced once, by the Rust resolver,
+        # so both engines can only ever say the same thing about it.
+        if stride is not None:
+            if self.offsets is not None:
+                raise ValueError(
+                    f"Image {self.role!r}: pass stride=, or offsets=, not both"
+                )
+            if stride < 1:
+                raise ValueError(
+                    f"Image {self.role!r}: stride must be >= 1, got {stride}"
+                )
+            object.__setattr__(
+                self,
+                "offsets",
+                tuple(-(self.stack - 1 - step) * stride for step in range(self.stack)),
+            )
+        elif self.offsets is not None:
+            object.__setattr__(self, "offsets", tuple(int(v) for v in self.offsets))
         if self.fill is not None and not self.optional:
             raise ValueError(
                 f"Image {self.role!r}: fill only applies to an optional camera; "

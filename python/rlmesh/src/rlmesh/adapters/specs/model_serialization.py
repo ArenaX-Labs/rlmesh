@@ -149,6 +149,12 @@ def _image_to_dict(item: Image) -> dict[str, Any]:
     # widened the square-int shorthand.
     if item.render is not None:
         image["render"] = list(cast("tuple[int, int]", item.render))
+    # The declared frame window; a contiguous stack stays off the wire so every
+    # spec written before offsets existed is byte-identical.
+    if item.offsets is not None:
+        image["offsets"] = list(item.offsets)
+    if item.stack_pad != "first":
+        image["stack_pad"] = item.stack_pad
     return image
 
 
@@ -346,6 +352,10 @@ def model_leaf_from_dict(data: Mapping[str, Any]) -> ModelLeaf:
             render=None
             if (render := data.get("render")) is None
             else (int(render[0]), int(render[1])),
+            offsets=None
+            if (offsets := data.get("offsets")) is None
+            else tuple(int(offset) for offset in offsets),
+            stack_pad=data.get("stack_pad", "first"),
         )
     if kind == "state":
         reshape = data.get("reshape")

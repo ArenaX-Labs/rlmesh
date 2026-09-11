@@ -50,6 +50,15 @@ CropMode: TypeAlias = Literal["zoom", "slice"]
 # ``"bgr"`` swaps red and blue after the spatial ops (a 3-channel image only).
 ChannelOrder: TypeAlias = Literal["rgb", "bgr"]
 
+# A frame-history window: non-positive offsets from the current step, oldest
+# first and ending at ``0`` ((-6, -4, -2, 0) is "every second frame of the last
+# seven"). ``stride=`` is construction sugar for an evenly spaced one.
+StackSpec: TypeAlias = tuple[int, ...]
+# What fills a frame window before an episode has produced enough steps:
+# ``"first"`` replicates the first frame, ``"black"`` is a raw 8-bit 0 frame
+# pushed through the plan (so under ``normalize=(-1, 1)`` it lands on -1.0).
+StackPad: TypeAlias = Literal["first", "black"]
+
 __all__ = [
     "CHANNEL_ORDERS",
     "CROP_MODES",
@@ -64,4 +73,6 @@ __all__ = [
     "Reference",
     "Resample",
     "RotationEncoding",
+    "StackPad",
+    "StackSpec",
 ]

@@ -40,6 +40,8 @@ from .vocabularies import (
     Reference,
     Resample,
     RotationEncoding,
+    StackPad,
+    StackSpec,
 )
 
 __all__ = [
@@ -71,6 +73,8 @@ __all__ = [
     "RotationEncoding",
     "RotationTransform",
     "Split",
+    "StackPad",
+    "StackSpec",
     "State",
     "StateTag",
     "Text",

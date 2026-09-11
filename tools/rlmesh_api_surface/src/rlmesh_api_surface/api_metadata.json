@@ -382,6 +382,12 @@
     "rlmesh.adapters.RotationTransform": {
       "description": "An in-process callable repacking a rotation block for a CustomEncoding."
     },
+    "rlmesh.adapters.StackPad": {
+      "description": "Frame-window padding vocabulary: replicate the first frame, or pad black."
+    },
+    "rlmesh.adapters.StackSpec": {
+      "description": "A declared frame window: non-positive frame offsets from the current step."
+    },
     "rlmesh.spaces.MultiBinary": {
       "stability": "Experimental"
     },
