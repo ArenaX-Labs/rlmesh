@@ -746,7 +746,9 @@ def test_image_resize_layout_and_normalize():
     assert float(pixels.min()) >= 0.0
 
 
-def _resized(env: Env, image: np.ndarray, height: int, width: int, resample: str):
+def _resized(
+    env: Env, image: np.ndarray, height: int, width: int, resample: adapt.Resample
+):
     """Our resize of `image`, as int16 so a comparison can go negative."""
     spec = adapt.ModelSpec(
         input={
@@ -790,7 +792,9 @@ def _anchor_images(height: int, width: int) -> dict[str, np.ndarray]:
         ("lanczos3_aa", "LANCZOS"),
     ],
 )
-def test_aa_resize_matches_pillow_within_one_step(resample: str, pil_filter: str):
+def test_aa_resize_matches_pillow_within_one_step(
+    resample: adapt.Resample, pil_filter: str
+):
     """The `_aa` kernels are PIL's, to one uint8 step, in both directions.
 
     The hard-edge image is the load-bearing case: cubic and Lanczos ring, and
@@ -831,7 +835,12 @@ def test_area_resize_matches_opencv_within_one_step():
 
 
 def _cropped(
-    env: Env, image: np.ndarray, height: int, width: int, resample: str, **crop: object
+    env: Env,
+    image: np.ndarray,
+    height: int,
+    width: int,
+    resample: adapt.Resample,
+    **crop: object,
 ):
     """Our crop+resize of `image`, as int16 so a comparison can go negative."""
     spec = adapt.ModelSpec(
@@ -860,7 +869,7 @@ def _cropped(
     ],
 )
 def test_zoom_crop_matches_pillow_box_resize_within_one_step(
-    resample: str, pil_filter: str
+    resample: adapt.Resample, pil_filter: str
 ):
     """A zoom crop is PIL's `Image.resize(size, box=...)`, to one uint8 step.
 
@@ -1148,7 +1157,10 @@ def test_bare_bicubic_and_lanczos3_are_not_resample_names():
         spec = adapt.ModelSpec(
             input={
                 "image": adapt.Image(
-                    role=adapt.IMAGE_PRIMARY, height=3, width=4, resample=name
+                    role=adapt.IMAGE_PRIMARY,
+                    height=3,
+                    width=4,
+                    resample=cast("adapt.Resample", name),
                 )
             },
             output=SMOLVLA.output,
@@ -4060,7 +4072,7 @@ def test_frame_and_reference_disagreement_is_a_hard_resolve_error() -> None:
     env = LIBERO_ENV._replace(
         tags=adapt.EnvTags(
             observation={
-                **LIBERO_ENV.tags.observation,
+                **cast("dict[str, Any]", LIBERO_ENV.tags.observation),
                 "robot0_eef_pos": adapt.StateTag(adapt.EEF_POS, frame="world"),
             },
             action=LIBERO_ACTION,

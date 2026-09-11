@@ -96,7 +96,7 @@ impl Attr {
 
 /// Whether a registered role's values are expressed in a reference frame.
 ///
-/// Validation only, and only at the opt-in [`FramePolicy::Require`] tier
+/// Validation only, and only at the opt-in [`FramePolicy::Require`](super::strict::FramePolicy::Require) tier
 /// (`crate::spec::FramePolicy`): nothing here supplies a frame, and a role
 /// that is `Frameless` still has any declared `frame` checked for agreement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
