@@ -735,16 +735,14 @@ mod tests {
         assert!(value_max_abs_diff(&Value::Number(1.0), &tensor(&[1.0])).is_none());
     }
 
-    #[test]
-    fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
-        use crate::apply::NoCustoms;
+    /// A pass-through (no resize/normalize) single-image adapter that stacks
+    /// `stack` consecutive frames. One literal, shared by the stacking tests, so
+    /// a new [`ImagePlan`] field lands in one place.
+    fn stacked_adapter(stack: u32) -> crate::plans::ResolvedAdapter {
         use crate::plans::{ActionPlan, ImagePlan, ObsPlan, ResolvedAdapter};
         use crate::spec::ImageLayout;
 
-        // A frame-stacking (depth-2) single-image adapter that passes the image
-        // through unchanged (no resize/flip/normalize), so the stacked bytes are
-        // exactly the input frames.
-        let adapter = ResolvedAdapter::new(
+        ResolvedAdapter::new(
             vec![ObsPlan::Image(ImagePlan {
                 placement: crate::path::NodePath::root().push_key("cam"),
                 source: crate::path::NodePath::root().push_key("cam"),
@@ -758,7 +756,7 @@ mod tests {
                 normalize: None,
                 lead_dims: 0,
                 src_range: Some((0.0, 255.0)),
-                stack: 2,
+                stack,
                 zero_fill: None,
                 fill: 0,
                 crop: None,
@@ -774,37 +772,106 @@ mod tests {
             },
             Vec::new(),
             Vec::new(),
+        )
+    }
+
+    /// A 1x1x3 uint8 frame whose every byte is `tag` — a per-step fingerprint.
+    fn tagged_obs(tag: u8) -> BTreeMap<String, Value> {
+        let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8)
+            .expect("tagged frame");
+        [("cam".to_owned(), Value::Tensor(image))]
+            .into_iter()
+            .collect()
+    }
+
+    /// The stacked `cam` tensor's shape and bytes out of an assembled payload.
+    fn cam_stack(payload: &Value) -> (Vec<i64>, Vec<u8>) {
+        let Value::Map(map) = payload else {
+            panic!("payload not a map: {payload:?}");
+        };
+        match map.get("cam").expect("cam present") {
+            Value::Tensor(tensor) => (
+                tensor.shape().to_vec(),
+                tensor.to_contiguous_bytes().into_owned(),
+            ),
+            other => panic!("cam not a tensor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn contiguous_stack_bytes_are_frozen() {
+        use crate::apply::NoCustoms;
+
+        // GOLDEN LOCK. A contiguous stack (no declared offsets, first-frame pad)
+        // is the behaviour every spec written before strided history depends on:
+        // oldest-first on a new leading axis, the start of an episode padded with
+        // copies of the first frame, a `maxlen = depth` sliding window. These
+        // bytes are the contract — the window internals may be rebuilt around
+        // them, but they may not move.
+        let adapter = stacked_adapter(3);
+        let mut buffers = FrameBuffers::new();
+        let step = |adapter: &ResolvedAdapter, tag: u8, buffers: &mut FrameBuffers| {
+            cam_stack(
+                &assemble_obs(
+                    adapter,
+                    &tagged_obs(tag),
+                    "ep",
+                    buffers,
+                    &NoCustoms,
+                    &NoEncodings,
+                )
+                .expect("assemble"),
+            )
+        };
+
+        // (depth, *frame) on a new leading axis.
+        assert_eq!(
+            step(&adapter, 10, &mut buffers),
+            (vec![3, 1, 1, 3], vec![10; 9])
         );
-        // A 1x1x3 image whose every byte is `tag` — a per-frame fingerprint.
-        let obs = |tag: u8| -> BTreeMap<String, Value> {
-            let image = Tensor::from_vec(vec![tag, tag, tag], vec![1, 1, 3], DType::Uint8).unwrap();
-            [("cam".to_owned(), Value::Tensor(image))]
-                .into_iter()
-                .collect()
-        };
-        let cam_bytes = |payload: &Value| -> Vec<u8> {
-            let Value::Map(map) = payload else {
-                panic!("payload not a map: {payload:?}");
-            };
-            match map.get("cam").unwrap() {
-                Value::Tensor(tensor) => {
-                    assert_eq!(tensor.shape(), &[2, 1, 1, 3]); // (depth, *frame)
-                    tensor.to_contiguous_bytes().into_owned()
-                }
-                other => panic!("cam not a tensor: {other:?}"),
-            }
-        };
+        // [f0, f0, f1]
+        assert_eq!(
+            step(&adapter, 11, &mut buffers).1,
+            vec![10, 10, 10, 10, 10, 10, 11, 11, 11]
+        );
+        // [f0, f1, f2]
+        assert_eq!(
+            step(&adapter, 12, &mut buffers).1,
+            vec![10, 10, 10, 11, 11, 11, 12, 12, 12]
+        );
+        // [f1, f2, f3] — the oldest frame is evicted at depth.
+        assert_eq!(
+            step(&adapter, 13, &mut buffers).1,
+            vec![11, 11, 11, 12, 12, 12, 13, 13, 13]
+        );
+        // [f2, f3, f4]
+        assert_eq!(
+            step(&adapter, 14, &mut buffers).1,
+            vec![12, 12, 12, 13, 13, 13, 14, 14, 14]
+        );
+    }
+
+    #[test]
+    fn assemble_obs_stacks_each_episode_independently_across_autoreset() {
+        use crate::apply::NoCustoms;
+
+        // A frame-stacking (depth-2) single-image adapter that passes the image
+        // through unchanged, so the stacked bytes are exactly the input frames.
+        let adapter = stacked_adapter(2);
         let stack =
             |adapter: &ResolvedAdapter, tag: u8, episode: &str, buffers: &mut FrameBuffers| {
-                assemble_obs(
+                let payload = assemble_obs(
                     adapter,
-                    &obs(tag),
+                    &tagged_obs(tag),
                     episode,
                     buffers,
                     &NoCustoms,
                     &NoEncodings,
                 )
-                .unwrap()
+                .unwrap();
+                let (shape, bytes) = cam_stack(&payload);
+                assert_eq!(shape, vec![2, 1, 1, 3]); // (depth, *frame)
+                bytes
             };
 
         // Two lanes (episodes ep-a, ep-b) share ONE FrameBuffers, keyed by
@@ -812,21 +879,15 @@ mod tests {
         let mut buffers = FrameBuffers::new();
 
         // Step 0: each episode first-frame-pads independently.
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 10, "ep-a", &mut buffers)),
-            vec![10; 6]
-        );
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 20, "ep-b", &mut buffers)),
-            vec![20; 6]
-        );
+        assert_eq!(stack(&adapter, 10, "ep-a", &mut buffers), vec![10; 6]);
+        assert_eq!(stack(&adapter, 20, "ep-b", &mut buffers), vec![20; 6]);
         // Step 1: each episode slides independently (no cross-contamination).
         assert_eq!(
-            cam_bytes(&stack(&adapter, 11, "ep-a", &mut buffers)),
+            stack(&adapter, 11, "ep-a", &mut buffers),
             vec![10, 10, 10, 11, 11, 11]
         );
         assert_eq!(
-            cam_bytes(&stack(&adapter, 21, "ep-b", &mut buffers)),
+            stack(&adapter, 21, "ep-b", &mut buffers),
             vec![20, 20, 20, 21, 21, 21]
         );
 
@@ -834,13 +895,10 @@ mod tests {
         // begins — the engine's per-lane reset edge.
         buffers.evict("ep-a");
         // The rolled lane first-frame-pads fresh: no leak from ep-a's history.
-        assert_eq!(
-            cam_bytes(&stack(&adapter, 30, "ep-c", &mut buffers)),
-            vec![30; 6]
-        );
+        assert_eq!(stack(&adapter, 30, "ep-c", &mut buffers), vec![30; 6]);
         // ...and the still-running lane B continues uncontaminated by either roll.
         assert_eq!(
-            cam_bytes(&stack(&adapter, 22, "ep-b", &mut buffers)),
+            stack(&adapter, 22, "ep-b", &mut buffers),
             vec![21, 21, 21, 22, 22, 22]
         );
     }
