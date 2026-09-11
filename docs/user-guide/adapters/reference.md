@@ -56,11 +56,13 @@ Rotation encodings are a closed set (a remote client must resolve a spec with no
 
 Other vocabularies:
 
-| Vocabulary   | Values                   | Default                             | Notes                               |
-| ------------ | ------------------------ | ----------------------------------- | ----------------------------------- |
-| Image layout | `hwc`, `chw`             | `hwc`                               | axis order of the stored image      |
-| Fit mode     | `stretch`, `crop`, `pad` | (none)                              | how to reconcile an aspect mismatch |
-| dtype        | any NumPy dtype name     | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`            |
+| Vocabulary    | Values                   | Default                             | Notes                               |
+| ------------- | ------------------------ | ----------------------------------- | ----------------------------------- |
+| Image layout  | `hwc`, `chw`             | `hwc`                               | axis order of the stored image      |
+| Fit mode      | `stretch`, `crop`, `pad` | (none)                              | how to reconcile an aspect mismatch |
+| Crop mode     | `zoom`, `slice`          | `zoom`                              | how a `crop` box is taken           |
+| Channel order | `rgb`, `bgr`             | `rgb`                               | channel order the model expects     |
+| dtype         | any NumPy dtype name     | `uint8` (image) / `float32` (state) | string, e.g. `"float32"`            |
 
 ### Frames and references
 
@@ -231,10 +233,29 @@ spec = adapt.ModelSpec(
 | `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
 | `fill`                  | `None`       | fill value for the blank frame (requires `optional=True`)                     | non-black fill                                                 |
 | `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
+| `crop`                  | `None`       | side fraction of the frame a center crop keeps, in `(0, 1]`                   | the training pipeline center-cropped                           |
+| `crop_area`             | `None`       | the same crop as an **area** fraction (side = its square root)                | "a 90% center crop" (`crop_area=0.9` → side `0.949`)           |
+| `crop_mode`             | `"zoom"`     | how the box is taken: `zoom` (resample the box) or `slice` (integer cut)      | match how the training pipeline cropped                        |
+| `channel_order`         | `"rgb"`      | channel order the model wants; `bgr` swaps red and blue                       | a model trained on OpenCV-ordered frames                       |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
 
 `resample` names are read by one rule: **un-suffixed is OpenCV/torch semantics, `_aa` is PIL's** (an antialiased filter whose support widens with the downscale factor). So `bilinear` is `cv2.INTER_LINEAR`, `bilinear_aa`/`bicubic_aa`/`lanczos3_aa` are PIL's `BILINEAR`/`BICUBIC`/`LANCZOS`, and `area` is `cv2.INTER_AREA`. Bare `bicubic` and `lanczos3` are not accepted: the two libraries' cubic kernels genuinely differ, so a spec has to say which one it trained against. Pick the one your preprocessing used — a PIL-trained policy fed OpenCV-resized frames is a real, silent accuracy loss.
+
+#### Pixel pipeline
+
+The image steps run in one fixed order, whatever order you write the fields in: **upright → crop → resize → channel swap → dtype** (then layout transpose and lead dims). Concretely: the frame is rotated 180° if the env and model disagree on `upside_down`, the `crop`/`crop_area` box is taken, the result is resized to `height`/`width` under `fit`/`resample`, `channel_order="bgr"` swaps red and blue, and `normalize`/`dtype` map the 8-bit pixels into the model's range.
+
+The two crop modes differ in where the box meets the resize. `crop_mode="zoom"` (the default) hands the _fractional_ box straight to the resampler, which samples it directly onto the target — one pass, no intermediate rounding, and the filter still reaches past the box edge into the neighbouring pixels. That is exactly Pillow's `Image.resize(size, box=...)`, which is what the conformance vectors pin it against. `crop_mode="slice"` instead cuts an _integer_ center box out first (`round(side × fraction)` pixels, the NumPy slice a training pipeline would write) and resizes that. Pick the one your preprocessing did:
+
+```python
+# "a 90% center crop, then resize to 224" -- one resample, PIL-style
+adapt.Image(adapt.IMAGE_PRIMARY, size=224, crop_area=0.9, resample="lanczos3_aa")
+# img[80:400, 80:400] then cv2.resize(..., (448, 448))
+adapt.Image(adapt.IMAGE_PRIMARY, size=448, crop=2 / 3, crop_mode="slice", allow_upscale=True)
+```
+
+`crop` and `crop_area` are the same box said two ways, so setting both is an error rather than a silent precedence rule. Because the crop is what the resize actually reads, `allow_upscale` measures the target against the _box_, not the camera: cropping a 480×480 camera to 320×320 and asking for 448×448 is an upscale and needs the opt-in.
 
 ### State
 
@@ -358,6 +379,8 @@ Each conversion the resolver can perform falls into one of four policies. **Sile
 | `allow_upscale`                        | OPT-IN        | target > env resolution; **absent → resolve error**                                 |
 | `channels` declared                    | OPT-IN        | declaring it turns a channel-count mismatch into a resolve error (silent otherwise) |
 | `optional` / `fill`                    | OPT-IN        | env lacks the camera/role; **absent → resolve error**                               |
+| `crop` / `crop_area`                   | SILENT        | declared; the box is a stated part of the model's preprocessing                     |
+| `channel_order="bgr"`                  | SILENT        | declared; **a non-3-channel camera → resolve error**                                |
 | Crop                                   | ADVISORY-WARN | `fit="crop"` chosen (pixels discarded)                                              |
 | Pad                                    | ADVISORY-WARN | `fit="pad"` chosen (border added)                                                   |
 | Zero-filled camera / state             | ADVISORY-WARN | an `optional` part filled because the env lacks the role                            |
@@ -407,6 +430,8 @@ Find the row that matches your model, then spec it:
 | a resized, normalized image          | `Image(IMAGE_PRIMARY, size=256, normalize=True)`                 |
 | channels-first                       | `Image(IMAGE_PRIMARY, size=256, layout="chw")`                   |
 | stacked frames                       | `Image(IMAGE_PRIMARY, size=256, stack=4)`                        |
+| a 90% center crop before the resize  | `Image(IMAGE_PRIMARY, size=224, crop_area=0.9)`                  |
+| a BGR-trained model                  | `Image(IMAGE_PRIMARY, size=224, channel_order="bgr")`            |
 | concatenated proprio with a rotation | `Concat(EEF_POS, State(EEF_ROT, encoding="rot6d"), GRIPPER_POS)` |
 | a binary gripper command             | `Actuator(ACTION_GRIPPER, dim=1, binary=True)`                   |
 | an optional second camera            | `Image(IMAGE_WRIST, size=256, channels=3, optional=True)`        |

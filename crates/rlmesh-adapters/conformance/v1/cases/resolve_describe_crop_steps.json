@@ -2,16 +2,11 @@
   "action_space": {
     "dtype": "float32",
     "kind": "box",
-    "shape": [
-      7
-    ]
+    "shape": [7]
   },
   "env_tags": {
     "action": {
-      "clip": [
-        -1.0,
-        1.0
-      ],
+      "clip": [-1.0, 1.0],
       "components": [
         {
           "binary": false,
@@ -31,10 +26,7 @@
           "binary": false,
           "dim": 1,
           "encoding": null,
-          "range": [
-            -1.0,
-            1.0
-          ],
+          "range": [-1.0, 1.0],
           "role": "action/gripper"
         }
       ]
@@ -111,10 +103,7 @@
           "binary": true,
           "dim": 1,
           "encoding": null,
-          "range": [
-            0.0,
-            1.0
-          ],
+          "range": [0.0, 1.0],
           "role": "action/gripper"
         }
       ]
@@ -125,27 +114,16 @@
       {
         "dtype": "uint8",
         "kind": "box",
-        "shape": [
-          8,
-          8,
-          3
-        ]
+        "shape": [8, 8, 3]
       },
       {
         "dtype": "uint8",
         "kind": "box",
-        "shape": [
-          12,
-          12,
-          3
-        ]
+        "shape": [12, 12, 3]
       }
     ],
     "dtype": "unspecified",
-    "keys": [
-      "cam",
-      "wrist"
-    ],
+    "keys": ["cam", "wrist"],
     "kind": "dict"
   }
 }

@@ -27,7 +27,7 @@ To add a case: write the inputs by hand (specs, observation, model_output) with 
 
 Cases with `"preserve_inputs": true` keep their spec documents verbatim across update runs. This is for defaults-pinning cases (e.g. `apply_minimal_spec_defaults`): their specs deliberately omit every optional field, so the expectations pin the missing-field defaults of every implementation — Python's `from_dict` and the core's serde must agree or the case fails on one side.
 
-The library parity anchors live in the Python suite (`test_aa_resize_matches_pillow_within_one_step`, skipped when Pillow is absent; `test_area_resize_matches_opencv_within_one_step`, skipped when OpenCV is absent), so they are checked continuously rather than only at authoring time.
+The library parity anchors live in the Python suite (`test_aa_resize_matches_pillow_within_one_step` and `test_zoom_crop_matches_pillow_box_resize_within_one_step`, skipped when Pillow is absent; `test_area_resize_matches_opencv_within_one_step`, skipped when OpenCV is absent), so they are checked continuously rather than only at authoring time.
 
 ## Resize algorithms
 
@@ -44,3 +44,16 @@ The names follow one rule: **un-suffixed is cv2/torch semantics, `_aa` is PIL se
 The `_aa` filters share one weight builder: per output pixel, `center = (i + 0.5) * scale`, filter stretched by `max(scale, 1)`, taps snapped to the nearest pixel centers, weights normalized to sum to 1. `"area"` uses the same builder with the box integrated over each source pixel (so a partly covered edge pixel gets exactly its coverage) and a filter stretch of `scale` in both directions.
 
 All of them are specified as: weights computed in float64, both passes in float64, the horizontal pass's output clipped to [0, 255] before the vertical pass — PIL's intermediate is an 8-bit image, so the negative lobes of the cubic and Lanczos kernels are clipped there, and a pipeline that clips only at the end drifts from Pillow by tens of levels on a hard edge — then one final round-half-to-even, clip to [0, 255], uint8. Resize apply cases use `atol: 1.0` (one uint8 step) to absorb cross-language rounding at ties; all other apply cases use `atol: 1e-6`.
+
+## Cropping
+
+`ImageInput.crop` (a side fraction) or `crop_area` (the same box as an area fraction, side = its square root) keeps a center box of the frame; declaring both is a resolve error, and each is bounded to `(0, 1]` at the wire. `crop_mode` says where the box meets the resize:
+
+- `"zoom"` (default) — the _fractional_ box is handed straight to the resampler above, which samples it onto the target in one pass. Anchored on PIL's `Image.resize(size, box=...)`: `center = box_start + (i + 0.5) * (box_end - box_start) / dst`, taps clamped to the **whole frame**, so the filter still reaches past the box edge exactly as Pillow's does.
+- `"slice"` — an _integer_ center box, `round(side * fraction)` pixels (clamped to at least 1), cut before the resize, which then sees only the cut.
+
+`allow_upscale` is measured against the box, not the camera: a crop is what the resize actually reads, so cropping past the target is an upscale.
+
+`channel_order = "bgr"` swaps red and blue after the spatial ops and before the dtype cast, and requires a 3-channel image. The full order is **upright → crop → resize → channel swap → normalize/dtype → layout → lead dims**.
+
+Crop and channel-order steps are reported by `describe` (`zoom 0.949 (crop 90.0% area)`, `crop 0.667 (slice) -> 320x320`, `bgr`) and carry **no advisory**: they are declared behavior, not a conversion the resolver chose.
