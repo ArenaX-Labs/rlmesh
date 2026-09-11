@@ -1,12 +1,18 @@
 //! Image operations used by resolved adapters.
 //!
-//! Resizing implements the two algorithms pinned by the v1 conformance
-//! vectors: `bilinear` (4-tap, half-pixel centers) and `bilinear_aa`
-//! (antialiased separable triangle filter, PIL-compatible within +-1
-//! uint8 step). Both compute in float64 with one final round-half-to-even
-//! like the reference. Pixels are carried in `rlmesh_spaces::Tensor`.
+//! Resizing implements the algorithms pinned by the v1 conformance vectors,
+//! named by one rule: an un-suffixed kernel has cv2/torch semantics, an `_aa`
+//! kernel has PIL semantics -- an antialiased filter whose support widens with
+//! the downscale factor. So `bilinear` is the 4-tap half-pixel-center sampler,
+//! `bilinear_aa`/`bicubic_aa`/`lanczos3_aa` are PIL's triangle, cubic
+//! (a = -0.5) and Lanczos-3 filters, and `area` is cv2's `INTER_AREA` average
+//! over each output pixel's source footprint. All compute in float64 with one
+//! final round-half-to-even like the reference, and all but `bilinear` share
+//! one weight builder. Pixels are carried in `rlmesh_spaces::Tensor`.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use rlmesh_spaces::{DType, Tensor};
 
@@ -218,18 +224,134 @@ fn resize_bilinear(tensor: &Tensor, height: usize, width: usize) -> Result<Tenso
     Ok(finish_pixels(blended, vec![height, width, channels]))
 }
 
-/// Per-output-pixel normalized triangle-filter weights, PIL-style.
-fn triangle_weights(src: usize, dst: usize) -> Vec<(usize, Vec<f64>)> {
-    let scale = src as f64 / dst as f64;
-    let filterscale = scale.max(1.0);
-    let support = filterscale;
-    (0..dst)
-        .map(|i| {
-            let center = (i as f64 + 0.5) * scale;
-            let lo = ((center - support + 0.5) as i64).max(0) as usize;
-            let hi = ((center + support + 0.5) as i64).min(src as i64) as usize;
+/// A resample filter shape. Naming rule for the wire names in [`RESAMPLES`]:
+/// un-suffixed = cv2/torch semantics, `_aa` = PIL semantics (the filter's
+/// support widens with the downscale factor, so decimation averages rather
+/// than point-samples).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Kernel {
+    /// PIL `BILINEAR`: triangle, support 1.
+    Triangle,
+    /// PIL `BICUBIC`: Keys cubic with a = -0.5, support 2.
+    Cubic,
+    /// PIL `LANCZOS`: windowed sinc, support 3.
+    Lanczos3,
+    /// cv2 `INTER_AREA`: box average over the output pixel's source footprint.
+    Area,
+}
+
+impl Kernel {
+    /// Filter half-width in its own (unwidened) units.
+    fn support(self) -> f64 {
+        match self {
+            Kernel::Area => 0.5,
+            Kernel::Triangle => 1.0,
+            Kernel::Cubic => 2.0,
+            Kernel::Lanczos3 => 3.0,
+        }
+    }
+
+    /// How far the filter is stretched for a source-to-output `scale`. PIL's
+    /// antialiased filters widen by the downscale factor and keep the unit
+    /// filter when upscaling; `area` is always the output pixel's footprint,
+    /// which is what makes cv2's `INTER_AREA` a plain average one way and a
+    /// two-tap coverage split the other.
+    fn filterscale(self, scale: f64) -> f64 {
+        match self {
+            Kernel::Area => scale,
+            _ => scale.max(1.0),
+        }
+    }
+
+    /// Weight of source pixel `tap` for an output pixel centered at `center`,
+    /// with the filter widened by `filterscale`.
+    fn weight(self, tap: usize, center: f64, filterscale: f64) -> f64 {
+        let tap = tap as f64;
+        let x = ((tap + 0.5 - center) / filterscale).abs();
+        match self {
+            // cv2 integrates the box over each source pixel instead of
+            // sampling it at the pixel center, so a partially covered edge
+            // pixel gets exactly its coverage as weight.
+            Kernel::Area => {
+                let (low, high) = (center - filterscale / 2.0, center + filterscale / 2.0);
+                (high.min(tap + 1.0) - low.max(tap)).max(0.0)
+            }
+            Kernel::Triangle => (1.0 - x).max(0.0),
+            Kernel::Cubic => {
+                const A: f64 = -0.5;
+                if x < 1.0 {
+                    ((A + 2.0) * x - (A + 3.0)) * x * x + 1.0
+                } else if x < 2.0 {
+                    (((x - 5.0) * x + 8.0) * x - 4.0) * A
+                } else {
+                    0.0
+                }
+            }
+            Kernel::Lanczos3 => {
+                fn sinc(x: f64) -> f64 {
+                    if x == 0.0 {
+                        1.0
+                    } else {
+                        let x = x * std::f64::consts::PI;
+                        x.sin() / x
+                    }
+                }
+                if x < 3.0 {
+                    sinc(x) * sinc(x / 3.0)
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+}
+
+/// One resample axis: `src` input pixels, the half-open source span
+/// `[start, end)` sampled from them, and `dst` output pixels. [`Roi::full`]
+/// samples the whole axis; a narrower span is the seam a crop resamples
+/// through without a separate pass.
+#[derive(Debug, Clone, Copy)]
+struct Roi {
+    src: usize,
+    start: f64,
+    end: f64,
+    dst: usize,
+}
+
+impl Roi {
+    fn full(src: usize, dst: usize) -> Self {
+        Roi {
+            src,
+            start: 0.0,
+            end: src as f64,
+            dst,
+        }
+    }
+}
+
+/// Per-output-pixel normalized filter weights, PIL-style: for each output
+/// pixel, the first source pixel it touches and the normalized weight of each
+/// pixel from there on.
+fn filter_weights(kernel: Kernel, support: f64, roi: Roi) -> Vec<(usize, Vec<f64>)> {
+    let scale = (roi.end - roi.start) / roi.dst as f64;
+    let filterscale = kernel.filterscale(scale);
+    let reach = support * filterscale;
+    (0..roi.dst)
+        .map(|out| {
+            let center = roi.start + (out as f64 + 0.5) * scale;
+            // PIL snaps the tap window to the nearest pixel centers; `area`
+            // needs every pixel the box touches, a partly covered one included.
+            let (low, high) = match kernel {
+                Kernel::Area => ((center - reach).floor(), (center + reach).ceil()),
+                _ => (
+                    (center - reach + 0.5).trunc(),
+                    (center + reach + 0.5).trunc(),
+                ),
+            };
+            let lo = (low as i64).clamp(0, roi.src as i64) as usize;
+            let hi = (high as i64).clamp(lo as i64, roi.src as i64) as usize;
             let mut row: Vec<f64> = (lo..hi)
-                .map(|tap| (1.0 - ((tap as f64 + 0.5 - center) / filterscale).abs()).max(0.0))
+                .map(|tap| kernel.weight(tap, center, filterscale))
                 .collect();
             let total: f64 = row.iter().sum();
             if total > 0.0 {
@@ -242,12 +364,43 @@ fn triangle_weights(src: usize, dst: usize) -> Vec<(usize, Vec<f64>)> {
         .collect()
 }
 
-/// Antialiased separable triangle-filter resize (PIL-compatible).
-fn resize_bilinear_aa(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
+/// One axis' memoized weights.
+type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
+
+thread_local! {
+    /// Weights depend only on the kernel and the two sizes, so a plan resizing
+    /// the same camera every step builds them once instead of once per frame
+    /// (a Lanczos-3 row is six taps of `sin` per output pixel). Thread-local
+    /// rather than a field on the plan: no locking on the per-lane apply path,
+    /// and the key covers the intermediate sizes `fit_resize` derives.
+    static WEIGHT_CACHE: RefCell<HashMap<(Kernel, usize, usize), AxisWeights>> =
+        RefCell::new(HashMap::new());
+}
+
+fn axis_weights(kernel: Kernel, src: usize, dst: usize) -> AxisWeights {
+    WEIGHT_CACHE.with_borrow_mut(|cache| {
+        Rc::clone(cache.entry((kernel, src, dst)).or_insert_with(|| {
+            Rc::new(filter_weights(
+                kernel,
+                kernel.support(),
+                Roi::full(src, dst),
+            ))
+        }))
+    })
+}
+
+/// Separable filtered resize: a horizontal pass then a vertical one, both in
+/// float64, with the per-axis weights taken from the cache.
+fn resize_filter(
+    tensor: &Tensor,
+    height: usize,
+    width: usize,
+    kernel: Kernel,
+) -> Result<Tensor, ApplyError> {
     let (src_height, src_width, channels) = image_dims(tensor)?;
     let data = value::u8_pixels(tensor)?;
-    let col_weights = triangle_weights(src_width, width);
-    let row_weights = triangle_weights(src_height, height);
+    let col_weights = axis_weights(kernel, src_width, width);
+    let row_weights = axis_weights(kernel, src_height, height);
 
     // Horizontal pass: (src_height, width, channels) in float64.
     let mut horizontal = vec![0.0f64; src_height * width * channels];
@@ -259,7 +412,13 @@ fn resize_bilinear_aa(tensor: &Tensor, height: usize, width: usize) -> Result<Te
                     acc += weight
                         * f64::from(data[(row * src_width + lo + offset) * channels + channel]);
                 }
-                horizontal[(row * width + out_col) * channels + channel] = acc;
+                // PIL's intermediate is an 8-bit image, so a filter with
+                // negative lobes (cubic, Lanczos) has its overshoot clipped
+                // here, not only at the end. Clipping the float64 intermediate
+                // to the same range reproduces that without also taking on
+                // PIL's intermediate rounding; non-negative filters
+                // (triangle, box) never reach the clamp.
+                horizontal[(row * width + out_col) * channels + channel] = acc.clamp(0.0, 255.0);
             }
         }
     }
@@ -279,6 +438,18 @@ fn resize_bilinear_aa(tensor: &Tensor, height: usize, width: usize) -> Result<Te
     }
     Ok(finish_pixels(blended, vec![height, width, channels]))
 }
+
+/// The resample algorithms `resize_image` accepts. Un-suffixed names have
+/// cv2/torch semantics, `_aa` names PIL's; bare `bicubic`/`lanczos3` are
+/// deliberately absent, so a spec naming one fails resolution rather than
+/// silently getting the other library's kernel.
+pub const RESAMPLES: [&str; 5] = [
+    "bilinear",
+    "bilinear_aa",
+    "bicubic_aa",
+    "lanczos3_aa",
+    "area",
+];
 
 /// Resize an HWC uint8 image with the declared resample algorithm.
 pub fn resize_image(
@@ -300,7 +471,10 @@ pub fn resize_image(
     }
     match resample {
         "bilinear" => resize_bilinear(tensor, height, width),
-        "bilinear_aa" => resize_bilinear_aa(tensor, height, width),
+        "bilinear_aa" => resize_filter(tensor, height, width, Kernel::Triangle),
+        "bicubic_aa" => resize_filter(tensor, height, width, Kernel::Cubic),
+        "lanczos3_aa" => resize_filter(tensor, height, width, Kernel::Lanczos3),
+        "area" => resize_filter(tensor, height, width, Kernel::Area),
         other => Err(ApplyError::new(format!("unsupported resample {other:?}"))),
     }
 }
@@ -510,6 +684,154 @@ mod tests {
     fn invalid_encoded_image_bytes_are_rejected() {
         let err = decode_image(&Value::Bytes(b"not an image".to_vec()), None).unwrap_err();
         assert!(err.message.contains("could not decode image bytes"));
+    }
+
+    /// Every kernel in the public vocabulary, paired with its filter shape
+    /// (`bilinear` has none -- it is the 4-tap sampler, not a filter).
+    const FILTER_KERNELS: [(&str, Kernel); 4] = [
+        ("bilinear_aa", Kernel::Triangle),
+        ("bicubic_aa", Kernel::Cubic),
+        ("lanczos3_aa", Kernel::Lanczos3),
+        ("area", Kernel::Area),
+    ];
+
+    #[test]
+    fn every_named_resample_resizes() {
+        // RESAMPLES is the resolver's accept-set; a name in it that resize
+        // rejects would pass resolution and then fail per frame at serve time.
+        let image = value::tensor_from_u8(vec![4, 4, 1], (0u8..16).collect());
+        for name in RESAMPLES {
+            resize_image(&image, 2, 3, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        assert!(resize_image(&image, 2, 3, "bicubic").is_err());
+        assert!(resize_image(&image, 2, 3, "lanczos3").is_err());
+    }
+
+    #[test]
+    fn filter_weights_sum_to_one() {
+        // Weights are a normalized partition of unity, so a resize can never
+        // change an image's overall level -- the property the constant-image
+        // test below observes end to end.
+        for (name, kernel) in FILTER_KERNELS {
+            for (src, dst) in [(8usize, 3usize), (3, 8), (7, 7), (256, 224), (1, 5), (5, 1)] {
+                for (out, (lo, row)) in
+                    filter_weights(kernel, kernel.support(), Roi::full(src, dst))
+                        .iter()
+                        .enumerate()
+                {
+                    let total: f64 = row.iter().sum();
+                    assert!(
+                        (total - 1.0).abs() < 1e-12,
+                        "{name} {src}->{dst} out {out}: weights sum to {total}"
+                    );
+                    assert!(
+                        lo + row.len() <= src,
+                        "{name} {src}->{dst}: tap past the edge"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_constant_image_resamples_to_the_same_constant() {
+        // Partition-of-unity weights in, one rounded value out: no kernel may
+        // ring, darken an edge, or drop a tap on a flat field.
+        for name in RESAMPLES {
+            for (src, dst) in [(8usize, 3usize), (3, 8), (16, 5), (5, 16)] {
+                let side = src as i64;
+                let image = value::tensor_from_u8(vec![side, side, 3], vec![137; src * src * 3]);
+                let out = resize_image(&image, dst as u32, dst as u32, name).expect("resize");
+                assert_eq!(out.shape(), &[dst as i64, dst as i64, 3]);
+                assert!(
+                    out.to_contiguous_bytes().as_ref().iter().all(|&b| b == 137),
+                    "{name} {src}->{dst} did not stay constant"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_identity_resize_is_byte_identical() {
+        let image = value::tensor_from_u8(vec![4, 5, 3], (0u8..60).collect());
+        for name in RESAMPLES {
+            let out = resize_image(&image, 4, 5, name).expect("resize");
+            assert_eq!(
+                out.to_contiguous_bytes().as_ref(),
+                image.to_contiguous_bytes().as_ref(),
+                "{name} changed an identity resize"
+            );
+        }
+    }
+
+    #[test]
+    fn area_downscale_averages_the_source_block() {
+        // cv2 INTER_AREA at an integer ratio is a plain block mean: the 2x2
+        // blocks of a 4x4 ramp average to 2.5, 4.5, 10.5, 12.5.
+        let image = value::tensor_from_u8(vec![4, 4, 1], (0u8..16).collect());
+        let out = resize_image(&image, 2, 2, "area").expect("resize");
+        // round-half-to-even on .5 ties: 2.5 -> 2, 4.5 -> 4, 10.5 -> 10, 12.5 -> 12.
+        assert_eq!(out.to_contiguous_bytes().as_ref(), [2u8, 4, 10, 12]);
+    }
+
+    #[test]
+    fn area_upscale_splits_by_footprint_coverage() {
+        // cv2 INTER_AREA upscaling is not the widened filter the `_aa` kernels
+        // use: each output pixel covers a sub-pixel span, so a 2x doubling is
+        // pure replication, not interpolation.
+        let image = value::tensor_from_u8(vec![1, 2, 1], vec![0, 200]);
+        let out = resize_image(&image, 1, 4, "area").expect("resize");
+        assert_eq!(out.to_contiguous_bytes().as_ref(), [0u8, 0, 200, 200]);
+    }
+
+    #[test]
+    fn widened_support_is_what_separates_aa_from_plain_bilinear() {
+        // The naming rule, made falsifiable: on a 4x downscale the `_aa`
+        // triangle's support widens to cover the whole source span, while
+        // plain bilinear keeps sampling two taps per axis at 1.5 and 5.5 --
+        // so a bright pixel at the edge survives in one and vanishes in the
+        // other.
+        let mut pixels = vec![0u8; 8];
+        pixels[0] = 255;
+        let image = value::tensor_from_u8(vec![1, 8, 1], pixels);
+        let plain = resize_image(&image, 1, 2, "bilinear").expect("resize");
+        let aa = resize_image(&image, 1, 2, "bilinear_aa").expect("resize");
+        assert_eq!(plain.to_contiguous_bytes().as_ref(), [0u8, 0]);
+        assert!(aa.to_contiguous_bytes()[0] > 0);
+    }
+
+    #[test]
+    fn the_weight_cache_returns_the_same_weights_it_built() {
+        // Memoization must be keyed tightly enough that a second axis size
+        // cannot pick up the first one's weights.
+        let first = axis_weights(Kernel::Lanczos3, 256, 224);
+        let again = axis_weights(Kernel::Lanczos3, 256, 224);
+        assert_eq!(first.as_ref(), again.as_ref());
+        assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
+        let other = axis_weights(Kernel::Lanczos3, 256, 112);
+        assert_ne!(first.len(), other.len());
+    }
+
+    /// Bench gate for the kernels, run by hand: this crate has no criterion
+    /// harness, so the cost is reported rather than asserted.
+    ///
+    ///     cargo test -p rlmesh-adapters --release resample_kernel_timing -- --ignored --nocapture
+    #[test]
+    #[ignore = "timing, not correctness: run with --release --nocapture"]
+    #[allow(clippy::print_stdout, reason = "the point of the test is the report")]
+    fn resample_kernel_timing() {
+        // Two 256x256 cameras on each of 32 lanes, one step.
+        let image = value::tensor_from_u8(
+            vec![256, 256, 3],
+            (0..256 * 256 * 3).map(|i| (i % 251) as u8).collect(),
+        );
+        for name in RESAMPLES {
+            let started = std::time::Instant::now();
+            for _ in 0..2 * 32 {
+                resize_image(&image, 224, 224, name).expect("resize");
+            }
+            println!("{name}: 64 x 256^2 -> 224^2 in {:?}", started.elapsed());
+        }
     }
 
     #[test]

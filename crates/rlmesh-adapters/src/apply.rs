@@ -22,6 +22,7 @@ use rlmesh_spaces::Tensor;
 
 pub use crate::error::ApplyError;
 pub use geometry::{convert_rotation, convert_rotation_with};
+pub use image::RESAMPLES;
 pub use value::Value;
 
 use crate::plans::ResolvedAdapter;

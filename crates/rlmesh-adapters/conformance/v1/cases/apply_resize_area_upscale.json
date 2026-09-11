@@ -1,0 +1,146 @@
+{
+  "action_space": {
+    "dtype": "float32",
+    "kind": "box",
+    "shape": [7]
+  },
+  "env_tags": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "cam": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      }
+    }
+  },
+  "expect": {
+    "action": {
+      "data": [
+        -0.4000000059604645, -0.18333333730697632, 0.03333333507180214, 0.25, 0.46666666865348816,
+        0.6833333373069763, 1.0
+      ],
+      "dtype": "float32",
+      "kind": "array",
+      "shape": [7]
+    },
+    "atol": 1.0,
+    "payload": {
+      "data": [
+        0, 11, 22, 0, 11, 22, 33, 44, 55, 33, 44, 55, 66, 77, 88, 66, 77, 88, 99, 110, 121, 99, 110,
+        121, 0, 11, 22, 0, 11, 22, 33, 44, 55, 33, 44, 55, 66, 77, 88, 66, 77, 88, 99, 110, 121, 99,
+        110, 121, 132, 143, 154, 132, 143, 154, 165, 176, 187, 165, 176, 187, 198, 209, 220, 198,
+        209, 220, 231, 242, 6, 231, 242, 6, 132, 143, 154, 132, 143, 154, 165, 176, 187, 165, 176,
+        187, 198, 209, 220, 198, 209, 220, 231, 242, 6, 231, 242, 6, 17, 28, 39, 17, 28, 39, 50, 61,
+        72, 50, 61, 72, 83, 94, 105, 83, 94, 105, 116, 127, 138, 116, 127, 138, 17, 28, 39, 17, 28,
+        39, 50, 61, 72, 50, 61, 72, 83, 94, 105, 83, 94, 105, 116, 127, 138, 116, 127, 138
+      ],
+      "dtype": "uint8",
+      "kind": "array",
+      "shape": [6, 8, 3]
+    }
+  },
+  "kind": "apply",
+  "model_output": {
+    "data": [
+      -0.4000000059604645, -0.18333333730697632, 0.03333333507180214, 0.25, 0.46666666865348816,
+      0.6833333373069763, 0.8999999761581421
+    ],
+    "dtype": "float32",
+    "kind": "array",
+    "shape": [7]
+  },
+  "model_spec": {
+    "input": {
+      "allow_upscale": true,
+      "dtype": "uint8",
+      "height": 6,
+      "layout": "hwc",
+      "lead_dims": 0,
+      "normalize": false,
+      "resample": "area",
+      "role": "image/primary",
+      "type": "image",
+      "upside_down": false,
+      "width": 8
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "observation": {
+    "data": {
+      "cam": {
+        "data": [
+          0, 11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121, 132, 143, 154, 165, 176, 187, 198, 209,
+          220, 231, 242, 6, 17, 28, 39, 50, 61, 72, 83, 94, 105, 116, 127, 138
+        ],
+        "dtype": "uint8",
+        "kind": "array",
+        "shape": [3, 4, 3]
+      }
+    },
+    "kind": "map"
+  },
+  "observation_space": {
+    "children": [
+      {
+        "dtype": "uint8",
+        "kind": "box",
+        "shape": [3, 4, 3]
+      }
+    ],
+    "dtype": "unspecified",
+    "keys": ["cam"],
+    "kind": "dict"
+  }
+}

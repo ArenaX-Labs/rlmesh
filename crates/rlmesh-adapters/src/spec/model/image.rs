@@ -149,13 +149,14 @@ pub struct Image {
     pub lead_dims: u32,
     #[serde(default)]
     pub upside_down: bool,
-    /// Resize algorithm the model's training pipeline used. Defaults to
-    /// `"bilinear"` (the plain half-pixel-center bilinear that torch/OpenCV
-    /// pipelines use, which most trained policies match); set `"bilinear_aa"` for
-    /// the antialiased PIL filter. A constrained string (not an enum) so future
-    /// additive values degrade to a typed resolution error on older cores instead
-    /// of a parse failure. Always emitted, so the resolved filter is explicit on
-    /// the wire and never diverges by reader default.
+    /// Resize algorithm the model's training pipeline used, one of
+    /// [`RESAMPLES`](crate::v1::RESAMPLES). Un-suffixed names are torch/OpenCV
+    /// semantics, `_aa` names PIL's. Defaults to `"bilinear"` (the plain
+    /// half-pixel-center bilinear, which most trained policies match). A
+    /// constrained string (not an enum) so future additive values degrade to a
+    /// typed resolution error on older cores instead of a parse failure. Always
+    /// emitted, so the resolved filter is explicit on the wire and never
+    /// diverges by reader default.
     #[serde(default = "default_bilinear")]
     pub resample: String,
     /// Permit the resize to *upscale* (interpolate detail the env image does not

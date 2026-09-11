@@ -42,7 +42,7 @@ pub mod v1 {
 
     pub use crate::advisory::{Advisory, AdvisorySeverity};
     pub use crate::apply::{
-        ApplyError, CustomTransform, NoCustoms, SkipCustoms, Value, convert_rotation,
+        ApplyError, CustomTransform, NoCustoms, RESAMPLES, SkipCustoms, Value, convert_rotation,
         convert_rotation_with,
     };
     pub use crate::envelope::{EnvelopeError, Kind, build_describe_envelope};

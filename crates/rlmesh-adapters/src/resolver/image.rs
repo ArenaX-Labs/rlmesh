@@ -68,13 +68,13 @@ pub(super) fn plan_image(
             ),
         ));
     };
-    if model_input.resample != "bilinear" && model_input.resample != "bilinear_aa" {
+    if !crate::apply::RESAMPLES.contains(&model_input.resample.as_str()) {
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: unsupported resample {}; expected 'bilinear' or \
-             'bilinear_aa'",
-                quoted(&model_input.resample)
+                "model input {at}: unsupported resample {}; expected one of {:?}",
+                quoted(&model_input.resample),
+                crate::apply::RESAMPLES
             ),
         ));
     }
