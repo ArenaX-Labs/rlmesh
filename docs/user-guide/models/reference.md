@@ -8,12 +8,12 @@ For the concepts (the two construction styles, the spec, the lifecycle), start w
 
 A model implements one or more of four predict corners. They sit on a 2×2 lattice over a **batch** axis (one lane vs. all vectorized lanes fused into one forward) and a **chunk** axis (one action vs. a chunk of future actions per forward).
 
-| Corner                | Signature                                                | Receives                                 | Returns                     | Reach for it when                                             |
-| --------------------- | -------------------------------------------------------- | ---------------------------------------- | --------------------------- | ------------------------------------------------------------- |
-| `predict`             | `predict(observation)`                                   | one observation                          | one action                  | a simple per-step policy with nothing to chunk or batch       |
-| `predict_chunk`       | `predict_chunk(observation[, execution_horizon])`        | one observation                          | action chunk `[H, ...]`     | an ACT / diffusion / flow head that emits a chunk per forward |
-| `predict_batch`       | `predict_batch(observations)`                            | one fused observation, leaves `[N, ...]` | batched action `[N, ...]`   | a batched policy with one forward over all lanes              |
-| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon])` | one fused observation, leaves `[N, ...]` | batched chunk `[N, H, ...]` | a batched VLA / action-head policy (all four derive from it)  |
+| Corner                | Signature                                                           | Receives                                 | Returns                     | Reach for it when                                             |
+| --------------------- | ------------------------------------------------------------------- | ---------------------------------------- | --------------------------- | ------------------------------------------------------------- |
+| `predict`             | `predict(observation[, context])`                                   | one observation                          | one action                  | a simple per-step policy with nothing to chunk or batch       |
+| `predict_chunk`       | `predict_chunk(observation[, execution_horizon][, context])`        | one observation                          | action chunk `[H, ...]`     | an ACT / diffusion / flow head that emits a chunk per forward |
+| `predict_batch`       | `predict_batch(observations[, context])`                            | one fused observation, leaves `[N, ...]` | batched action `[N, ...]`   | a batched policy with one forward over all lanes              |
+| `predict_chunk_batch` | `predict_chunk_batch(observations[, execution_horizon][, context])` | one fused observation, leaves `[N, ...]` | batched chunk `[N, H, ...]` | a batched VLA / action-head policy (all four derive from it)  |
 
 On the chunk corners the leading axis of the return is the chunk axis. On the batch corners the leading axis is the batch axis; a chunk corner that is also batched returns the batch axis first, then the per-lane chunk axis (`[N, H, ...]`). A `predict` that subclasses `Model` and does not override one of these inherits a method that raises, so the runtime knows it is undefined.
 
@@ -46,9 +46,47 @@ the engine's `split_chunk`, so a model derived down to `predict` behaves the sam
 in-process or over the wire.
 ```
 
+## The predict context
+
+Every corner may declare a trailing parameter **named `context`** — the name is
+what the runtime matches on, so an unrelated extra optional parameter is never
+mistaken for it. A corner that does not declare one is never handed one and pays
+nothing: no store entry, no allocation.
+
+The per-lane corners receive one {class}`~rlmesh.types.PredictContext`; the
+batched corners receive a {data}`~rlmesh.types.BatchPredictContext` — a list with
+one entry per row, in batch order, because a fused batch may span independent
+episodes.
+
+| Key             | Type        | Meaning                                                                                      |
+| --------------- | ----------- | -------------------------------------------------------------------------------------------- |
+| `episode_id`    | `str`       | The episode's id, stable for its whole run. `""` for an anonymous lane with no identity.     |
+| `episode_seed`  | `int\|None` | The seed the episode was reset with, or `None` when it was not explicitly seeded.            |
+| `predict_index` | `int`       | Re-plan ordinal: how many predicts this episode has already had. Not the env step count.     |
+| `predict_seed`  | `int\|None` | Reproducible per-predict seed mixed from the two above; `None` when the episode has no seed. |
+| `state`         | `dict`      | Free per-episode slot, alive until the episode ends.                                         |
+
+`predict_index`, `predict_seed`, and `state` come from the model's own bounded
+episode store. Entries are dropped at the episode-end edge (the same edge that
+fires `reset`). If ends never arrive, the store still cannot grow without bound:
+past 4096 live episodes the least-recently-used entry is evicted **through the
+same end hook** — so a model that mirrors the store elsewhere is told either
+way — and a `RuntimeWarning` is raised.
+
+`rlmesh.predict_seed(episode_seed, predict_index)` is the mixing law itself
+(FNV-1a, masked to 32 bits), exported so a sampler can build its own generator.
+Local and served drives compute it from the same function, so a seeded policy
+reproduces across both.
+
+```{note}
+Seed **per predict**, not per episode. One served model fans several environments
+in, so episodes interleave and another episode's forward advances the same global
+generators between two of yours; a once-per-episode seed cannot reproduce.
+```
+
 ## The execution horizon
 
-`execution_horizon` is optional on the chunk corners and detected by arity. A corner with a single positional parameter (`predict_chunk(obs)`) is called without the horizon; a corner that declares a second positional parameter (`predict_chunk(obs, execution_horizon=1)`) receives it.
+`execution_horizon` is optional on the chunk corners and detected by arity, counting every positional parameter except a trailing `context`. A corner with a single positional parameter (`predict_chunk(obs)`, or `predict_chunk(obs, context)`) is called without the horizon; a corner that declares a second one (`predict_chunk(obs, execution_horizon=1)`) receives it.
 
 | Form                                      | Behavior                                                                                                                                                                                                                                               |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -145,11 +183,13 @@ The four lifecycle seams fire identically on the local loop and the served path.
 | Seam                          | Default | When it fires                                                                | Notes                                                                                                                                   |
 | ----------------------------- | ------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `load(**binding)`             | no-op   | once, during construction (subclass mode), before the native worker is built | Keep heavy imports here. On the served path the eager auto-load is suppressed and `load(**binding)` runs once with the resolved params. |
-| `reset()`                     | no-op   | at each episode boundary                                                     | Wired to the `on_episode_end` edge. Clear per-episode state here.                                                                       |
+| `reset([episode_id])`         | no-op   | when an episode ends                                                         | Wired to the `on_episode_end` edge, once per ended episode, naming it. Declare `episode_id` only if you key state by it.                |
 | `close()`                     | no-op   | at the end of a run                                                          | Wired to the `on_close` edge.                                                                                                           |
 | `on_episode_end` / `on_close` | none    | constructor callbacks                                                        | Override a subclass's `reset` / `close` (and a wrapped callable's), the only edges for a callable that cannot define methods.           |
 
 There is no episode-_begin_ hook. Per-episode state is lazy-seeded on the first `predict`, so a stateful model clears its state at episode _end_.
+
+The served path drives the edge from the explicit `ResetAdapter` op, which names every id that ended, so `reset` fires once per id. Locally the session mints an id per `reset()` and fires the same hook at the next reset (and at close). Either way the model's episode store drops that episode's entry first.
 
 Other construction inputs:
 
