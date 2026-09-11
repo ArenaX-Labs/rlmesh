@@ -54,6 +54,7 @@ __all__ = [
     "PyVectorEnvServer",
     "PyVideoWriter",
     "PyViewer",
+    "RESAMPLES",
     "ROTATION_DIMS",
     "ServeOptions",
     "Space",
@@ -114,6 +115,7 @@ INSTRUCTION: builtins.str
 JOINT_POS: builtins.str
 JOINT_VEL: builtins.str
 MODEL_METADATA_KEY: builtins.str
+RESAMPLES: builtins.list[builtins.str]
 ROTATION_DIMS: builtins.dict[builtins.str, builtins.int]
 __version__: builtins.str
 

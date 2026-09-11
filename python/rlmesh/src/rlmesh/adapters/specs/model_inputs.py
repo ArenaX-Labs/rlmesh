@@ -52,10 +52,15 @@ class Image:
             ends: the adapter rotates only when the env and model disagree, so an
             env that already renders upside-down pairs with a model that also
             sets ``upside_down`` and no rotation happens.
-        resample: Resize algorithm the model's training pipeline used:
-            ``"bilinear"`` (4-tap half-pixel-center bilinear, OpenCV/torch-
-            compatible; the default, which most trained policies match) or
-            ``"bilinear_aa"`` (antialiased triangle filter, PIL-compatible).
+        resample: Resize algorithm the model's training pipeline used. An
+            un-suffixed name has OpenCV/torch semantics, an ``_aa`` suffix has
+            PIL's (an antialiased filter whose support widens with the
+            downscale factor): ``"bilinear"`` (4-tap half-pixel-center
+            bilinear; the default, which most trained policies match),
+            ``"bilinear_aa"`` / ``"bicubic_aa"`` / ``"lanczos3_aa"`` (PIL's
+            ``BILINEAR`` / ``BICUBIC`` / ``LANCZOS``), or ``"area"``
+            (OpenCV ``INTER_AREA``). Bare ``"bicubic"``/``"lanczos3"`` are not
+            accepted -- name the library whose kernel you trained against.
         allow_upscale: Permit a target larger than the env's native resolution
             (interpolating detail that is not there). Off by default: an
             upscaling target is a resolve error unless this is set.

@@ -745,38 +745,106 @@ def test_image_resize_layout_and_normalize():
     assert float(pixels.min()) >= 0.0
 
 
-def test_bilinear_aa_resize_matches_pillow_within_one_step():
-    pil = pytest.importorskip("PIL.Image")
-    env = image_env(6, 8)
-    image = (
-        (np.arange(6 * 8 * 3, dtype=np.int64) * 7 % 251)
-        .astype(np.uint8)
-        .reshape(6, 8, 3)
+def _resized(env: Env, image: np.ndarray, height: int, width: int, resample: str):
+    """Our resize of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY,
+                height=height,
+                width=width,
+                # The upscale cases interpolate detail the env image does not
+                # have, which the resolver gates behind allow_upscale; these
+                # anchors deliberately exercise both directions.
+                allow_upscale=True,
+                fit="stretch",
+                resample=resample,
+            )
+        },
+        output=SMOLVLA.output,
     )
-    for height, width in ((3, 4), (12, 16)):
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+def _anchor_images(height: int, width: int) -> dict[str, np.ndarray]:
+    """A smooth ramp, white noise, and a hard edge (the ringing case)."""
+    edge = np.zeros((height, width, 3), np.uint8)
+    edge[:, : width // 2] = 255
+    return {
+        "ramp": (np.arange(height * width * 3, dtype=np.int64) * 7 % 251)
+        .astype(np.uint8)
+        .reshape(height, width, 3),
+        "noise": np.random.default_rng(7).integers(
+            0, 256, (height, width, 3), dtype=np.uint8
+        ),
+        "edge": edge,
+    }
+
+
+@pytest.mark.parametrize(
+    ("resample", "pil_filter"),
+    [
+        ("bilinear_aa", "BILINEAR"),
+        ("bicubic_aa", "BICUBIC"),
+        ("lanczos3_aa", "LANCZOS"),
+    ],
+)
+def test_aa_resize_matches_pillow_within_one_step(resample: str, pil_filter: str):
+    """The `_aa` kernels are PIL's, to one uint8 step, in both directions.
+
+    The hard-edge image is the load-bearing case: cubic and Lanczos ring, and
+    PIL clips that overshoot in its 8-bit intermediate between the two passes,
+    so a float64 pipeline that clips only at the end drifts by tens of levels.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    theirs_filter = getattr(pil.Resampling, pil_filter)
+    for src_height, src_width in ((6, 8), (32, 32)):
+        env = image_env(src_height, src_width)
+        for image in _anchor_images(src_height, src_width).values():
+            for height, width in ((3, 4), (12, 16), (src_height * 2, src_width * 2)):
+                ours = _resized(env, image, height, width, resample)
+                theirs = np.asarray(
+                    pil.fromarray(image).resize((width, height), theirs_filter),
+                    dtype=np.int16,
+                )
+                assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def test_area_resize_matches_opencv_within_one_step():
+    """`area` is cv2's INTER_AREA, to one uint8 step, in both directions.
+
+    Upscaling is the load-bearing half: INTER_AREA does not widen a filter the
+    way the `_aa` kernels do, it splits each output pixel's sub-pixel footprint
+    across the one or two source pixels it covers.
+    """
+    cv2 = pytest.importorskip("cv2")
+    for src_height, src_width in ((6, 8), (32, 32)):
+        env = image_env(src_height, src_width)
+        for image in _anchor_images(src_height, src_width).values():
+            for height, width in ((3, 4), (12, 16), (src_height * 2, src_width * 2)):
+                ours = _resized(env, image, height, width, "area")
+                theirs = cv2.resize(
+                    image, (width, height), interpolation=cv2.INTER_AREA
+                ).astype(np.int16)
+                assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def test_bare_bicubic_and_lanczos3_are_not_resample_names():
+    """The suffix rule is enforced, not just documented: an un-suffixed cubic
+    or Lanczos name would silently pick one library's kernel over the other's,
+    so resolution rejects both."""
+    env = image_env(6, 8)
+    for name in ("bicubic", "lanczos3"):
         spec = adapt.ModelSpec(
-            # (12, 16) upscales the 6x8 env image, which the resolver gates
-            # behind allow_upscale; this test deliberately exercises both
-            # directions of the bilinear-AA resize.
             input={
                 "image": adapt.Image(
-                    role=adapt.IMAGE_PRIMARY,
-                    height=height,
-                    width=width,
-                    allow_upscale=True,
-                    resample="bilinear_aa",  # this test pins the AA (PIL) filter
+                    role=adapt.IMAGE_PRIMARY, height=3, width=4, resample=name
                 )
             },
             output=SMOLVLA.output,
         )
-        ours = (
-            resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
-        )
-        theirs = np.asarray(
-            pil.fromarray(image).resize((width, height), pil.Resampling.BILINEAR),
-            dtype=np.int16,
-        )
-        assert int(np.abs(ours - theirs).max()) <= 1
+        with pytest.raises(adapt.AdapterResolutionError, match="unsupported resample"):
+            resolve(env, spec)
 
 
 def make_png(pixels: np.ndarray) -> bytes:

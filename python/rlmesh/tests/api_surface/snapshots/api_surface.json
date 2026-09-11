@@ -1913,7 +1913,7 @@
       },
       "Resample": {
         "kind": "type alias",
-        "signature": "Resample = Literal['bilinear', 'bilinear_aa']",
+        "signature": "Resample = Literal['bilinear', 'bilinear_aa', 'bicubic_aa', 'lanczos3_aa', 'area']",
         "stability": "Stable"
       },
       "Rotation": {
