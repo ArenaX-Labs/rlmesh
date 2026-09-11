@@ -233,6 +233,9 @@ spec = adapt.ModelSpec(
 | `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`)      |
 | `fill`                  | `None`       | fill value for the blank frame (requires `optional=True`)                     | non-black fill                                                      |
 | `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))           |
+| `stride`                | `None`       | sugar: an evenly spaced window (`stack=4, stride=2` -> `(-6,-4,-2,0)`)        | every Nth frame (pass `stride` _or_ `offsets`, not both)            |
+| `offsets`               | `None`       | which frames `stack` gathers, as non-positive deltas ending at `0`            | an uneven window; `None` is the contiguous one                      |
+| `stack_pad`             | `"first"`    | fills the window at the start of an episode: `first` or `black`               | the model was trained with zeroed frames before step 0              |
 | `crop`                  | `None`       | side fraction of the frame a center crop keeps, in `(0, 1]`                   | the training pipeline center-cropped                                |
 | `crop_area`             | `None`       | the same crop as an **area** fraction (side = its square root)                | "a 90% center crop" (`crop_area=0.9` → side `0.949`)                |
 | `crop_mode`             | `"zoom"`     | how the box is taken: `zoom` (resample the box) or `slice` (integer cut)      | match how the training pipeline cropped                             |
@@ -420,19 +423,46 @@ The **bare-field taint rule**: an unknown field on a known kind is a resolve err
 
 ## Frame history (stack)
 
-A model that conditions on a short history sets `stack=N` on an `Image`. The adapter keeps an **episode-keyed rolling buffer** of the last N processed frames and emits them on a new leading axis, padding the start of an episode with the first frame and clearing on `reset`.
+A model that conditions on a short history sets `stack=N` on an `Image`. The adapter keeps an **episode-keyed rolling window** of processed frames and emits them on a new leading axis, padding the start of an episode and clearing on `reset`.
 
 ```python
 adapt.Image(adapt.IMAGE_PRIMARY, size=256, stack=4)
 ```
 
-Stacking is host-side on the local path and native in the core on the served path. Either way the environment still sends **one frame per step**, nothing extra crosses the wire.
+Frame history is **image-only**: `stack` exists on `Image` and nowhere else. A model that conditions on a low-dimensional history (past proprio, past actions) has no declarative form yet -- keep that in the model.
+
+### Strided windows
+
+Plenty of policies do not want the last N frames; they want every Nth frame of a longer reach. `stride=` says so:
+
+```python
+adapt.Image(adapt.IMAGE_PRIMARY, size=224, stack=4, stride=2)   # offsets (-6, -4, -2, 0)
+```
+
+`stride` is construction sugar for `offsets`, the general form: non-positive deltas from the current step, oldest first, always ending at `0` (the current frame is always in the stack). Write `offsets` directly for an uneven window.
+
+`stack` and `offsets` are both declared and neither is inferred from the other -- `len(offsets)` must equal `stack`, or resolution fails. The window's **span** (`1 - offsets[0]`) is how many consecutive frames the adapter holds; the stack is what it gathers out of them. A span above 128 is refused, and a local session refuses a projected history larger than `RLMESH_FRAME_HISTORY_LIMIT_BYTES` (2 GiB by default) before the first step rather than at the allocation that would fail.
+
+### The `stack_pad` law
+
+At the start of an episode the window is not full yet. `stack_pad` says what fills it:
+
+- `"first"` (the default) replicates the first observed frame, so the stack is full from step zero.
+- `"black"` pushes a raw 8-bit `0` frame through _this input's own pipeline_. It is black **pixels**, not a zeroed tensor: under `normalize=(-1.0, 1.0)` a black pad frame is `-1.0`. That is the same rule `fill` follows for an absent `optional` camera, so the name never lies about what the model receives.
+
+Use `"black"` when the training pipeline zeroed the pre-episode frames; leave it at `"first"` otherwise.
+
+```python
+adapt.Image(adapt.IMAGE_PRIMARY, size=224, stack=6, stride=5, stack_pad="black")
+```
 
 ```{caution}
-Frame stacking is episode state held outside the model: host-side on the local path, in the core
-on the served path (an episode-keyed buffer per vector lane). The spec's `stack` round-trips through
-`to_json`, the buffer clears on `reset`, and the env still sends one frame per step, so no frames
-leak across episodes or lanes and nothing extra crosses the wire.
+Frame stacking is episode state held outside the model, in the adapter core (an episode-keyed window
+per vector lane). The spec's `stack`/`offsets`/`stack_pad` round-trip through `to_json`, the window
+clears on `reset`, and the env still sends one frame per step -- so no frames leak across episodes or
+lanes and nothing extra crosses the wire. The window advances on **every** env step, including one
+whose action came from a replayed chunk, so a stacked model sees the same frames at any
+`execution_horizon`.
 ```
 
 ## Match your shape
@@ -455,6 +485,7 @@ Find the row that matches your model, then spec it:
 | a resized, normalized image          | `Image(IMAGE_PRIMARY, size=256, normalize=True)`                 |
 | channels-first                       | `Image(IMAGE_PRIMARY, size=256, layout="chw")`                   |
 | stacked frames                       | `Image(IMAGE_PRIMARY, size=256, stack=4)`                        |
+| every second frame of the last seven | `Image(IMAGE_PRIMARY, size=256, stack=4, stride=2)`              |
 | a 90% center crop before the resize  | `Image(IMAGE_PRIMARY, size=224, crop_area=0.9)`                  |
 | a BGR-trained model                  | `Image(IMAGE_PRIMARY, size=224, channel_order="bgr")`            |
 | a model trained on stored JPEGs      | `Image(IMAGE_PRIMARY, size=224, jpeg_quality=95)`                |
