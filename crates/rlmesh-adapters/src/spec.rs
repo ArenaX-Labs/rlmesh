@@ -11,9 +11,14 @@
 //! the READ door does not, surfacing an unsupported feature only at resolve and
 //! only when a model input references it.
 //!
-//! Still strict at the serde layer (cross-field `TryFrom` validators):
-//! the wire structs (FieldWire, SplitLayoutWire, ConcatPartWire, ActionWire) and
-//! the fixed containers (EnvTags, ModelSpec, Action) keep `deny_unknown_fields`.
+//! The growable *inner* leaves (`Field` inside a split layout, `ConcatPart`
+//! inside a state input) follow the same rule: a reader tolerates an
+//! unrecognized field and carries it through, and the publish gate rejects it.
+//!
+//! Still strict at the serde layer (cross-field `TryFrom` validators): the
+//! envelope wire structs (SplitLayoutWire, ActionWire) and the fixed containers
+//! (EnvTags, ModelSpec, Action) keep `deny_unknown_fields`, and every value
+//! guard (`dim >= 1`, a non-reversed `range`) stays a hard parse error.
 //!
 //! The two specs are **recursive trees** (`ObsNode`, `InputNode`) whose
 //! container type = the runtime container type; the tree node discriminant is

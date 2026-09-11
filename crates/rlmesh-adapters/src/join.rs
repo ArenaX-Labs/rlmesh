@@ -1022,12 +1022,14 @@ mod tests {
                         dim: u32::MAX,
                         encoding: None,
                         range: None,
+                        unknown: Default::default(),
                     },
                     Field {
                         role: Some("b".to_owned()),
                         dim: 2,
                         encoding: None,
                         range: None,
+                        unknown: Default::default(),
                     },
                 ],
             }),
@@ -1194,6 +1196,7 @@ mod tests {
             dim,
             encoding: encoding.map(AcceptSet::single),
             range: None,
+            unknown: Default::default(),
         }
     }
 

@@ -68,7 +68,6 @@ pub struct TextTag {
 /// Wire form of a [`Field`], deserialized before the cross-field
 /// validation `Field` enforces via [`TryFrom`].
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct FieldWire {
     #[serde(default)]
     role: Option<String>,
@@ -78,6 +77,11 @@ struct FieldWire {
     encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default, deserialize_with = "crate::spec::num::de_opt_range")]
     range: Option<(f64, f64)>,
+    /// Unrecognized additive fields, captured instead of hard-erroring so a
+    /// newer writer's field survives an older reader; the publish gate rejects
+    /// a bare one. See [`ImageTag`].
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
 }
 
 impl TryFrom<FieldWire> for Field {
@@ -95,6 +99,7 @@ impl TryFrom<FieldWire> for Field {
             dim: wire.dim,
             encoding: wire.encoding,
             range: wire.range,
+            unknown: wire.unknown,
         })
     }
 }
@@ -117,6 +122,9 @@ pub struct Field {
     pub encoding: Option<AcceptSet<RotationEncoding>>,
     #[serde(default)]
     pub range: Option<(f64, f64)>,
+    /// Unrecognized additive fields, retained for round-trip (see [`ImageTag`]).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Wire form of a [`SplitLayout`], validated via [`TryFrom`] so an empty layout

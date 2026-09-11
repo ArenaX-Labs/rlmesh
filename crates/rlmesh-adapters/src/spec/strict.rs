@@ -205,8 +205,20 @@ fn obs_leaf(leaf: &ObsLeaf, path: &NodePath, reject_kinds: bool) -> Result<(), S
         ObsLeaf::Image(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::State(tag) => bare_field(&tag.unknown, path),
         ObsLeaf::Text(tag) => bare_field(&tag.unknown, path),
-        // SplitLayout / Field stay strict (their wire structs keep deny).
-        ObsLeaf::Split(_) => Ok(()),
+        // The SplitLayout envelope stays strict (its wire struct keeps deny);
+        // its `Field` leaves are growable and carry a capture map.
+        ObsLeaf::Split(layout) => {
+            layout
+                .fields
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, field)| {
+                    bare_field_at(
+                        &field.unknown,
+                        &format!("feature {:?} field[{index}]", path.to_string()),
+                    )
+                })
+        }
         ObsLeaf::Unknown { kind, .. } if reject_kinds => {
             Err(unknown_kind_msg("observation", kind, path))
         }
@@ -229,7 +241,19 @@ fn walk_input(node: &InputNode, path: &NodePath, reject_kinds: bool) -> Result<(
 fn model_leaf(leaf: &ModelLeaf, path: &NodePath, reject_kinds: bool) -> Result<(), String> {
     match leaf {
         ModelLeaf::Image(input) => bare_field(&input.unknown, path),
-        ModelLeaf::State(input) => bare_field(&input.unknown, path),
+        ModelLeaf::State(input) => {
+            bare_field(&input.unknown, path)?;
+            input
+                .components
+                .iter()
+                .enumerate()
+                .try_for_each(|(index, part)| {
+                    bare_field_at(
+                        &part.unknown,
+                        &format!("feature {:?} part[{index}]", path.to_string()),
+                    )
+                })
+        }
         ModelLeaf::Text(input) => bare_field(&input.unknown, path),
         ModelLeaf::Custom(input) => bare_field(&input.unknown, path),
         ModelLeaf::Unknown { kind, .. } if reject_kinds => {
@@ -252,24 +276,27 @@ fn unknown_kind_msg(domain: &str, kind: &str, path: &NodePath) -> String {
 /// `Action`/`ActionWire` envelope itself stays strict (`deny_unknown_fields`).
 fn reject_action(action: &Action) -> Result<(), String> {
     for (index, actuator) in action.components.iter().enumerate() {
-        if let Some(field) = first_bare_field(&actuator.unknown) {
-            return Err(format!(
-                "action component[{index}] (role {:?}) declares unrecognized field {field:?}; \
-                 upgrade the runtime or drop the field (or prefix it `x-` to mark it ignorable)",
+        bare_field_at(
+            &actuator.unknown,
+            &format!(
+                "action component[{index}] (role {:?})",
                 actuator.role.as_deref().unwrap_or("opaque")
-            ));
-        }
+            ),
+        )?;
     }
     Ok(())
 }
 
 fn bare_field(unknown: &BTreeMap<String, Value>, path: &NodePath) -> Result<(), String> {
+    bare_field_at(unknown, &format!("feature {:?}", path.to_string()))
+}
+
+fn bare_field_at(unknown: &BTreeMap<String, Value>, locus: &str) -> Result<(), String> {
     match first_bare_field(unknown) {
         None => Ok(()),
         Some(field) => Err(format!(
-            "feature {:?} declares unrecognized field {field:?}; upgrade the runtime \
-             or drop the field (or prefix it `x-` to mark it ignorable)",
-            path.to_string()
+            "{locus} declares unrecognized field {field:?}; upgrade the runtime \
+             or drop the field (or prefix it `x-` to mark it ignorable)"
         )),
     }
 }
@@ -356,6 +383,44 @@ mod tests {
         .unwrap();
         let err = reject_unknowns_model(&dirty).unwrap_err();
         assert!(err.contains("wobble"), "got: {err}");
+    }
+
+    #[test]
+    fn inner_leaf_unknown_field_fails_the_gate() {
+        // The growable *inner* leaves: a split layout's `Field` and a state
+        // input's `ConcatPart`. Both parse leniently (PR-11/12 add `frame`
+        // there) and both are named by the publish gate.
+        let dirty: EnvTags = serde_json::from_str(
+            r#"{"observation": {"s": {"type": "split",
+                    "fields": [{"role": "r", "dim": 1, "frame": "world"}]}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_env(&dirty).unwrap_err();
+        assert!(
+            err.contains("field[0]") && err.contains("\"frame\"") && err.contains("prefix it `x-`"),
+            "got: {err}"
+        );
+        assert!(reject_bare_fields_env(&dirty).is_err(), "read taint");
+
+        let escaped: EnvTags = serde_json::from_str(
+            r#"{"observation": {"s": {"type": "split",
+                    "fields": [{"role": "r", "dim": 1, "x-note": 1}]}},
+                "action": {"components": []}}"#,
+        )
+        .unwrap();
+        assert!(reject_unknowns_env(&escaped).is_ok(), "`x-` is ignorable");
+
+        let dirty: ModelSpec = serde_json::from_str(
+            r#"{"input": {"type": "state", "components": [{"role": "r", "frame": "world"}]},
+                "output": {"components": []}}"#,
+        )
+        .unwrap();
+        let err = reject_unknowns_model(&dirty).unwrap_err();
+        assert!(
+            err.contains("part[0]") && err.contains("\"frame\"") && err.contains("prefix it `x-`"),
+            "got: {err}"
+        );
     }
 
     #[test]

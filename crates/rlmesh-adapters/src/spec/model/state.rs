@@ -45,12 +45,15 @@ pub struct ConcatPart {
     pub range: Option<(f64, f64)>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+    /// Unrecognized additive fields, retained for round-trip and surfaced to the
+    /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, serde_json::Value>,
 }
 
 /// Wire form of a [`ConcatPart`]'s object branch, validated via [`TryFrom`] (the
 /// `dim`/`index`/`range` deserializers and the `dim`+`index` conflict guard).
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ConcatPartWire {
     role: String,
     #[serde(default)]
@@ -63,6 +66,10 @@ struct ConcatPartWire {
     range: Option<(f64, f64)>,
     #[serde(default)]
     optional: bool,
+    // Captured instead of hard-erroring so a newer writer's field survives an
+    // older reader; the publish gate rejects a bare one.
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_json::Value>,
 }
 
 impl TryFrom<ConcatPartWire> for ConcatPart {
@@ -86,6 +93,7 @@ impl TryFrom<ConcatPartWire> for ConcatPart {
             index: wire.index,
             range: wire.range,
             optional: wire.optional,
+            unknown: wire.unknown,
         })
     }
 }
@@ -109,6 +117,7 @@ impl<'de> Deserialize<'de> for ConcatPart {
                     index: None,
                     range: None,
                     optional: false,
+                    unknown: BTreeMap::new(),
                 })
             }
 
@@ -132,7 +141,8 @@ fn serialize_concat_part<S: Serializer>(
         && part.dim.is_none()
         && part.index.is_none()
         && part.range.is_none()
-        && !part.optional;
+        && !part.optional
+        && part.unknown.is_empty();
     if role_only {
         serializer.serialize_str(&part.role)
     } else {
