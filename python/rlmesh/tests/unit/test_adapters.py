@@ -829,6 +829,169 @@ def test_area_resize_matches_opencv_within_one_step():
                 assert int(np.abs(ours - theirs).max()) <= 1
 
 
+def _cropped(
+    env: Env, image: np.ndarray, height: int, width: int, resample: str, **crop: object
+):
+    """Our crop+resize of `image`, as int16 so a comparison can go negative."""
+    spec = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                role=adapt.IMAGE_PRIMARY,
+                height=height,
+                width=width,
+                allow_upscale=True,
+                fit="stretch",
+                resample=resample,
+                **crop,  # type: ignore[arg-type]
+            )
+        },
+        output=SMOLVLA.output,
+    )
+    return resolve(env, spec).transform_obs({"rgb": image})["image"].astype(np.int16)
+
+
+@pytest.mark.parametrize(
+    ("resample", "pil_filter"),
+    [
+        ("bilinear_aa", "BILINEAR"),
+        ("bicubic_aa", "BICUBIC"),
+        ("lanczos3_aa", "LANCZOS"),
+    ],
+)
+def test_zoom_crop_matches_pillow_box_resize_within_one_step(
+    resample: str, pil_filter: str
+):
+    """A zoom crop is PIL's `Image.resize(size, box=...)`, to one uint8 step.
+
+    That is the whole point of the mode: the fractional box is resampled
+    straight to the target in one pass, so it must agree with the library the
+    training pipelines used -- including at the box edge, where the filter
+    still reaches into the neighbouring pixels rather than stopping at the cut.
+    """
+    pil = pytest.importorskip("PIL.Image")
+    theirs_filter = getattr(pil.Resampling, pil_filter)
+    for src in (16, 32):
+        env = image_env(src, src)
+        for image in _anchor_images(src, src).values():
+            for fraction in (0.5, 0.9**0.5, 1.0):
+                span = src * fraction
+                start = (src - span) / 2.0
+                box = (start, start, start + span, start + span)
+                for size in (8, src, src * 2):
+                    ours = _cropped(env, image, size, size, resample, crop=fraction)
+                    theirs = np.asarray(
+                        pil.fromarray(image).resize(
+                            (size, size), theirs_filter, box=box
+                        ),
+                        dtype=np.int16,
+                    )
+                    assert int(np.abs(ours - theirs).max()) <= 1
+
+
+def test_crop_area_is_the_square_of_the_side_fraction():
+    """`crop_area=0.9` and `crop=sqrt(0.9)` name the same box, pixel for pixel."""
+    env = image_env(32, 32)
+    image = _anchor_images(32, 32)["noise"]
+    by_area = _cropped(env, image, 16, 16, "bilinear_aa", crop_area=0.9)
+    by_side = _cropped(env, image, 16, 16, "bilinear_aa", crop=0.9**0.5)
+    assert np.array_equal(by_area, by_side)
+
+
+def test_slice_crop_cuts_integer_pixels_before_the_resize():
+    """`crop_mode="slice"` is a numpy center cut, then a plain resize of it."""
+    env = image_env(12, 12)
+    image = _anchor_images(12, 12)["ramp"]
+    ours = _cropped(env, image, 4, 4, "area", crop=2 / 3, crop_mode="slice")
+    # The cut keeps the middle 8x8 (12 * 2/3), and the resize sees only that.
+    cut_env = image_env(8, 8)
+    cut = image[2:10, 2:10]
+    assert np.array_equal(ours, _cropped(cut_env, cut, 4, 4, "area"))
+
+
+def test_bgr_swaps_red_and_blue_after_the_resize():
+    """The swap is the last spatial-adjacent step: resize in RGB, then swap.
+
+    Order matters because the resize is per-channel -- swapping first and
+    resizing after would give the same pixels, but swapping before a *crop*
+    would not, and one order has to be the contract.
+    """
+    env = image_env(8, 8)
+    image = _anchor_images(8, 8)["noise"]
+    rgb = _cropped(env, image, 4, 4, "bilinear_aa")
+    bgr = _cropped(env, image, 4, 4, "bilinear_aa", channel_order="bgr")
+    assert np.array_equal(bgr, rgb[:, :, ::-1])
+
+
+def test_bgr_needs_a_three_channel_camera():
+    env = Env(
+        tags=adapt.EnvTags(
+            observation={"rgb": adapt.ImageTag(role=adapt.IMAGE_PRIMARY)},
+            action=LIBERO_ACTION,
+        ),
+        obs_space=gym.spaces.Dict(
+            {"rgb": gym.spaces.Box(low=0, high=255, shape=(8, 8, 1), dtype=np.uint8)}
+        ),
+        action_space=ACTION7,
+    )
+    spec = adapt.ModelSpec(
+        input={"image": adapt.Image(role=adapt.IMAGE_PRIMARY, channel_order="bgr")},
+        output=SMOLVLA.output,
+    )
+    with pytest.raises(adapt.AdapterResolutionError, match="3-channel"):
+        resolve(env, spec)
+
+
+def test_crop_guards_reject_an_impossible_box_at_construction():
+    """The two fractions are one box said two ways, and the range is (0, 1]."""
+    with pytest.raises(ValueError, match="not both"):
+        adapt.Image(role=adapt.IMAGE_PRIMARY, crop=0.5, crop_area=0.25)
+    for bad in (0.0, -0.5, 1.5):
+        with pytest.raises(ValueError, match=r"fraction in \(0, 1\]"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, crop=bad)
+        with pytest.raises(ValueError, match=r"fraction in \(0, 1\]"):
+            adapt.Image(role=adapt.IMAGE_PRIMARY, crop_area=bad)
+    # The inclusive end (the whole frame) is a legal, if inert, box.
+    assert adapt.Image(role=adapt.IMAGE_PRIMARY, crop_area=1).crop_area == 1.0
+
+
+def test_crop_and_channel_order_serialize_omit_when_default():
+    """Every new field is omitted at its default and agrees with the core."""
+    import json
+
+    from rlmesh._rlmesh import adapters_spec_normalize
+
+    output = adapt.Action(adapt.Actuator(adapt.ACTION_GRIPPER, dim=1))
+    plain = adapt.ModelSpec(
+        input={"image": adapt.Image(adapt.IMAGE_PRIMARY, size=224)}, output=output
+    )
+    leaf = plain.to_dict()["input"]["image"]
+    for field in ("crop", "crop_area", "crop_mode", "channel_order"):
+        assert field not in leaf, f"{field} leaked into a spec that never set it"
+
+    every = adapt.ModelSpec(
+        input={
+            "image": adapt.Image(
+                adapt.IMAGE_PRIMARY,
+                size=224,
+                crop_area=0.9,
+                crop_mode="slice",
+                channel_order="bgr",
+            )
+        },
+        output=output,
+    )
+    doc = every.to_dict()
+    assert doc["input"]["image"]["crop_area"] == 0.9
+    assert doc["input"]["image"]["crop_mode"] == "slice"
+    assert doc["input"]["image"]["channel_order"] == "bgr"
+    assert adapt.ModelSpec.from_dict(doc) == every
+    # Cross-engine: the core's canonical form of each spec is the spec itself,
+    # so Python and Rust cannot disagree on what these fields serialize to.
+    for spec in (plain, every):
+        canonical = adapters_spec_normalize("model", json.dumps(spec.to_dict()), True)
+        assert json.loads(canonical) == spec.to_dict()
+
+
 def test_bare_bicubic_and_lanczos3_are_not_resample_names():
     """The suffix rule is enforced, not just documented: an un-suffixed cubic
     or Lanczos name would silently pick one library's kernel over the other's,

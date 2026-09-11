@@ -152,7 +152,7 @@ pub(super) fn plan_image(
         ));
     }
     let crop = crop_plan(model_input, &at, env_image)?;
-    let fit = resolve_fit(model_input, &at, env_image, size)?;
+    let fit = resolve_fit(model_input, &at, env_image, size, crop.as_ref())?;
     Ok(ImagePlan {
         placement,
         source: env_image.source.clone(),
@@ -186,7 +186,7 @@ fn crop_plan(model_input: &Image, at: &str, env_image: &EnvImage) -> Result<Opti
         return Err(err(
             ErrorCode::Unsupported,
             format!(
-                "model input {at}: set crop (a side fraction) or crop_area (an area \
+                "model input {at}: pass crop (a side fraction) or crop_area (an area \
                  fraction), not both"
             ),
         ));
@@ -268,11 +268,23 @@ fn resolve_fit(
     at: &str,
     env_image: &EnvImage,
     size: Option<(u32, u32)>,
+    crop: Option<&CropPlan>,
 ) -> Result<FitMode> {
     let Some((target_height, target_width)) = size else {
         return Ok(FitMode::Stretch); // no resize
     };
-    let (env_height, env_width) = (env_image.height, env_image.width);
+    // A crop is what the resize actually reads, so the upscale guard measures
+    // against the box, not the whole camera -- otherwise a spec could crop a
+    // 12x12 camera to 6x6 and "downscale" it to 8x8, inventing detail behind
+    // the guard's back. The box keeps the camera's aspect, so that check is
+    // unaffected.
+    let (env_height, env_width) = match crop {
+        Some(crop) => (
+            crate::apply::crop_cut(env_image.height as usize, crop.fraction) as u32,
+            crate::apply::crop_cut(env_image.width as usize, crop.fraction) as u32,
+        ),
+        None => (env_image.height, env_image.width),
+    };
     // The env's native resolution is derived by `join`; if it could not be
     // determined (0), do not block on size — there is nothing to compare against.
     let known = env_height != 0 && env_width != 0;
@@ -690,6 +702,21 @@ mod image_resolve_tests {
         let crop = plan(&model, &images(&env)).expect("ok").crop.expect("crop");
         assert!(crop.slice);
         assert_eq!(crop.cut, Some((320, 320)));
+    }
+
+    #[test]
+    fn a_crop_that_shrinks_the_source_below_the_target_needs_allow_upscale() {
+        // The guard measures the box the resize actually reads: 12x12 cropped
+        // to 6x6 and "downscaled" to 8x8 is an upscale, whatever the camera's
+        // own resolution says.
+        let env = env_image(12, 12);
+        let mut model = model_image(8, 8, false);
+        model.crop = Some(0.5);
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("upscale"), "got: {}", error.message);
+        // Without the crop the same target is an honest downscale.
+        assert!(plan(&model_image(8, 8, false), &images(&env)).is_ok());
     }
 
     #[test]

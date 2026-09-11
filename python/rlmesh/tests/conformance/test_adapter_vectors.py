@@ -157,7 +157,12 @@ def test_vector(path: Path) -> None:
     if case["kind"] == "resolve":
         expect = case["expect"]
         if "error_contains" in expect:
-            with pytest.raises(adapt.AdapterResolutionError) as excinfo:
+            # `AdapterResolutionError` is a `ValueError`; the wider catch lets a
+            # binding reject a spec at *construction* instead, which is strictly
+            # earlier than the resolve-time failure the vector pins (the
+            # direction the vectors forbid is deferring it to apply). The
+            # message still has to match, so the two engines cannot drift.
+            with pytest.raises(ValueError) as excinfo:
                 resolve_case(case)
             assert expect["error_contains"] in str(excinfo.value)
         else:

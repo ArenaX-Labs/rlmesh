@@ -211,7 +211,10 @@ pub fn register_constants(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("IMAGE_LAYOUTS", layouts)?;
     m.add("RESAMPLES", rlmesh_adapters::v1::RESAMPLES.to_vec())?;
     m.add("CROP_MODES", rlmesh_adapters::v1::CROP_MODES.to_vec())?;
-    m.add("CHANNEL_ORDERS", rlmesh_adapters::v1::CHANNEL_ORDERS.to_vec())?;
+    m.add(
+        "CHANNEL_ORDERS",
+        rlmesh_adapters::v1::CHANNEL_ORDERS.to_vec(),
+    )?;
     // The describe-envelope schema version is a u32, not a string, so it can't
     // ride WIRE_CONSTANTS; add it directly. Rust is the sole writer of this.
     m.add(
