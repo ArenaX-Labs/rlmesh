@@ -4,8 +4,8 @@ use rlmesh_proto::{
     model::v1::{
         CloseParticipantRequest, GroupedPredictRequest, GroupedPredictResponse, JoinRequest,
         JoinResponse, PredictRequest, PredictResponse, ReleaseAdapterRequest, ResetAdapterRequest,
-        ResolveAdapterRequest, ShutdownRequest, join_request, join_response,
-        model_service_client::ModelServiceClient,
+        ResolveAdapterRequest, ResolveAdapterResponse, ShutdownRequest, join_request,
+        join_response, model_service_client::ModelServiceClient,
     },
 };
 use std::collections::HashMap;
@@ -196,10 +196,13 @@ impl ModelClient {
 
     /// Resolve (configure) the route's adapter from its env spec, pinning the
     /// session edition and execution horizon carried in `request`.
+    ///
+    /// Returns the model's answer: what the resolved route needs back (today,
+    /// its declared `native_chunk`).
     pub async fn resolve_adapter(
         &mut self,
         request: ResolveAdapterRequest,
-    ) -> Result<(), GrpcError> {
+    ) -> Result<ResolveAdapterResponse, GrpcError> {
         self.ensure_ready()?;
         validate_route(
             request
@@ -217,7 +220,7 @@ impl ModelClient {
         self.last_endpoint_total_ns = response.endpoint_total_ns;
         self.last_phases = EndpointPhases::from_model_response(&response);
         match response.kind {
-            Some(join_response::Kind::ResolveAdapter(_)) => Ok(()),
+            Some(join_response::Kind::ResolveAdapter(response)) => Ok(response),
             Some(join_response::Kind::Error(error)) => Err(model_error_to_grpc_error(error)),
             _ => Err(ProtocolError::UnexpectedMessage {
                 expected: "ResolveAdapterResponse".to_string(),
