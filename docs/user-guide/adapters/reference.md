@@ -225,7 +225,7 @@ spec = adapt.ModelSpec(
 | `normalize`             | `False`      | map 8-bit pixels: `True` → `[0,1]`, or a `(low, high)` pair → that range      | scale `[0,255]`; a pair for signed inputs, e.g. `(-1.0, 1.0)`  |
 | `lead_dims`             | `0`          | leading singleton axes to add                                                 | the model wants a batch/time axis                              |
 | `upside_down`           | `False`      | the model was trained on 180°-rotated frames                                  | training-time flip                                             |
-| `resample`              | `"bilinear"` | resize filter: `bilinear` (OpenCV/torch) or `bilinear_aa` (PIL)               | match the training pipeline                                    |
+| `resample`              | `"bilinear"` | resize filter: `bilinear`, `bilinear_aa`, `bicubic_aa`, `lanczos3_aa`, `area` | match the training pipeline                                    |
 | `allow_upscale`         | `False`      | permit a target larger than the env resolution                                | the model needs more pixels than the camera has                |
 | `fit`                   | `None`       | reconcile an aspect mismatch: `stretch`/`crop`/`pad` or a preference sequence | target aspect differs from the env                             |
 | `optional`              | `False`      | zero-fill a black frame when the env lacks this camera                        | the camera may be absent (needs `height`, `width`, `channels`) |
@@ -233,6 +233,8 @@ spec = adapt.ModelSpec(
 | `stack`                 | `1`          | buffer N frames on a new leading axis                                         | frame history (see [Frame history](#frame-history-stack))      |
 
 `size` is the idiomatic square form. `fit` accepts a preference sequence (`("crop", "pad")`); the resolver picks, per env, the first that does not need a disallowed upscale, so one spec can crop a large camera and letterbox a small one.
+
+`resample` names are read by one rule: **un-suffixed is OpenCV/torch semantics, `_aa` is PIL's** (an antialiased filter whose support widens with the downscale factor). So `bilinear` is `cv2.INTER_LINEAR`, `bilinear_aa`/`bicubic_aa`/`lanczos3_aa` are PIL's `BILINEAR`/`BICUBIC`/`LANCZOS`, and `area` is `cv2.INTER_AREA`. Bare `bicubic` and `lanczos3` are not accepted: the two libraries' cubic kernels genuinely differ, so a spec has to say which one it trained against. Pick the one your preprocessing used — a PIL-trained policy fed OpenCV-resized frames is a real, silent accuracy loss.
 
 ### State
 
