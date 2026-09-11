@@ -35,10 +35,44 @@ pub(super) fn apply_image(
     if plan.flip {
         image = flip_180(&image)?;
     }
-    if let Some((height, width)) = plan.size {
-        image = fit_resize(&image, height, width, &plan.resample, plan.fit)?;
+    // A `slice` crop is an integer center cut taken before the resize; a `zoom`
+    // crop is the fractional box the resize itself samples through, so it rides
+    // along into `fit_resize` instead of costing a second resampling pass.
+    let mut zoom = None;
+    if let Some(crop) = &plan.crop {
+        if crop.slice {
+            let (height, width, _) = image_dims(&image)?;
+            image = crop_center(
+                &image,
+                crop_cut(height, crop.fraction),
+                crop_cut(width, crop.fraction),
+            )?;
+        } else {
+            zoom = Some(crop.fraction);
+        }
+    }
+    let size = match (plan.size, zoom) {
+        (Some(size), _) => Some(size),
+        // A zoom with no declared target resamples the box back to the frame's
+        // own size -- that magnification is the whole point of the crop.
+        (None, Some(_)) => {
+            let (height, width, _) = image_dims(&image)?;
+            Some((height as u32, width as u32))
+        }
+        (None, None) => None,
+    };
+    if let Some((height, width)) = size {
+        image = fit_resize(&image, height, width, &plan.resample, plan.fit, zoom)?;
     }
     finalize_image(image, plan)
+}
+
+/// The integer center-cut length a `slice` crop keeps from a `src`-long axis.
+/// Shared by apply (which cuts the frame it is handed) and the resolver (which
+/// precomputes the same box at the env's declared resolution for describe), so
+/// the two can never print and cut different numbers.
+pub(crate) fn crop_cut(src: usize, fraction: f64) -> usize {
+    ((src as f64 * fraction).round() as usize).clamp(1, src.max(1))
 }
 
 /// The shared tail both image paths (real and zero-fill) end with: map the HWC
@@ -46,6 +80,11 @@ pub(super) fn apply_image(
 /// prepend any leading axes. Kept in one place so a normalize/layout/lead policy
 /// change cannot silently diverge between the two paths.
 fn finalize_image(image: Tensor, plan: &ImagePlan) -> Result<Value, ApplyError> {
+    let image = if plan.swap_rb {
+        swap_rb(&image)?
+    } else {
+        image
+    };
     let image = finalize_dtype(&image, &plan.dtype, plan.normalize)?;
     let image = to_layout(&image, ImageLayout::Hwc, plan.dst_layout)?;
     Ok(Value::Tensor(add_lead_dims(image, plan.lead_dims)))
@@ -145,6 +184,25 @@ pub fn flip_180(tensor: &Tensor) -> Result<Tensor, ApplyError> {
     Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
 }
 
+/// Swap the red and blue channels of an HWC image (`channel_order = "bgr"`).
+///
+/// A 3-channel op by definition: there is no meaningful red/blue pair in a
+/// grayscale or RGBA frame, so a wrong-shaped source fails loudly rather than
+/// reordering whatever happens to sit at those offsets.
+pub fn swap_rb(tensor: &Tensor) -> Result<Tensor, ApplyError> {
+    let (height, width, channels) = image_dims(tensor)?;
+    if channels != 3 {
+        return Err(ApplyError::new(format!(
+            "channel_order \"bgr\" needs a 3-channel image, got {channels} channel(s)"
+        )));
+    }
+    let mut indices = Vec::with_capacity(tensor.numel());
+    for pixel in 0..height * width {
+        indices.extend([pixel * 3 + 2, pixel * 3 + 1, pixel * 3]);
+    }
+    Ok(value::gather(tensor, &indices, tensor.shape().to_vec()))
+}
+
 /// Transpose an image between `hwc` and `chw` layouts (any dtype).
 pub fn to_layout(
     tensor: &Tensor,
@@ -190,22 +248,25 @@ fn finish_pixels(blended: Vec<f64>, shape: Vec<usize>) -> Tensor {
     value::tensor_from_u8(value::shape_i64(&shape), data)
 }
 
-/// 4-tap half-pixel-center bilinear resize (OpenCV/torch-compatible).
-fn resize_bilinear(tensor: &Tensor, height: usize, width: usize) -> Result<Tensor, ApplyError> {
-    let (src_height, src_width, channels) = image_dims(tensor)?;
+/// 4-tap half-pixel-center bilinear resize (OpenCV/torch-compatible), sampling
+/// each axis through its [`Roi`] (the whole axis unless a zoom crop narrowed it).
+fn resize_bilinear(tensor: &Tensor, row_roi: Roi, col_roi: Roi) -> Result<Tensor, ApplyError> {
+    let (_, src_width, channels) = image_dims(tensor)?;
+    let (height, width) = (row_roi.dst, col_roi.dst);
     let data = value::u8_pixels(tensor)?;
-    let coords = |dst: usize, src: usize| -> Vec<(usize, usize, f64)> {
-        (0..dst)
+    let coords = |roi: Roi| -> Vec<(usize, usize, f64)> {
+        let scale = (roi.end - roi.start) / roi.dst as f64;
+        (0..roi.dst)
             .map(|i| {
-                let pos = (i as f64 + 0.5) * src as f64 / dst as f64 - 0.5;
-                let lo = (pos.floor() as i64).clamp(0, src as i64 - 1) as usize;
-                let hi = (lo + 1).min(src - 1);
+                let pos = roi.start + (i as f64 + 0.5) * scale - 0.5;
+                let lo = (pos.floor() as i64).clamp(0, roi.src as i64 - 1) as usize;
+                let hi = (lo + 1).min(roi.src - 1);
                 (lo, hi, (pos - lo as f64).clamp(0.0, 1.0))
             })
             .collect()
     };
-    let rows = coords(height, src_height);
-    let cols = coords(width, src_width);
+    let rows = coords(row_roi);
+    let cols = coords(col_roi);
     let pixel = |row: usize, col: usize, channel: usize| -> f64 {
         f64::from(data[(row * src_width + col) * channels + channel])
     };
@@ -327,6 +388,11 @@ impl Roi {
             dst,
         }
     }
+
+    /// The whole axis, mapped 1:1 onto the output — nothing to resample.
+    fn is_identity(self) -> bool {
+        self.dst == self.src && self.start == 0.0 && self.end == self.src as f64
+    }
 }
 
 /// Per-output-pixel normalized filter weights, PIL-style: for each output
@@ -367,25 +433,37 @@ fn filter_weights(kernel: Kernel, support: f64, roi: Roi) -> Vec<(usize, Vec<f64
 /// One axis' memoized weights.
 type AxisWeights = Rc<Vec<(usize, Vec<f64>)>>;
 
+/// What a memoized axis is keyed by: the kernel, the two sizes, and the
+/// sampled span's bits (a zoom crop narrows the span; `Roi` is not `Hash`
+/// because `f64` is not, hence the bits).
+type WeightKey = (Kernel, usize, usize, u64, u64);
+
 thread_local! {
     /// Weights depend only on the kernel and the two sizes, so a plan resizing
     /// the same camera every step builds them once instead of once per frame
     /// (a Lanczos-3 row is six taps of `sin` per output pixel). Thread-local
     /// rather than a field on the plan: no locking on the per-lane apply path,
     /// and the key covers the intermediate sizes `fit_resize` derives.
-    static WEIGHT_CACHE: RefCell<HashMap<(Kernel, usize, usize), AxisWeights>> =
+    static WEIGHT_CACHE: RefCell<HashMap<WeightKey, AxisWeights>> =
         RefCell::new(HashMap::new());
 }
 
-fn axis_weights(kernel: Kernel, src: usize, dst: usize) -> AxisWeights {
+fn axis_weights(kernel: Kernel, roi: Roi) -> AxisWeights {
+    // The span joins the key by its bits: a zoom crop is a fixed box per plan,
+    // so its weights are as reusable as a full-axis resize's.
+    let key = (
+        kernel,
+        roi.src,
+        roi.dst,
+        roi.start.to_bits(),
+        roi.end.to_bits(),
+    );
     WEIGHT_CACHE.with_borrow_mut(|cache| {
-        Rc::clone(cache.entry((kernel, src, dst)).or_insert_with(|| {
-            Rc::new(filter_weights(
-                kernel,
-                kernel.support(),
-                Roi::full(src, dst),
-            ))
-        }))
+        Rc::clone(
+            cache
+                .entry(key)
+                .or_insert_with(|| Rc::new(filter_weights(kernel, kernel.support(), roi))),
+        )
     })
 }
 
@@ -393,14 +471,15 @@ fn axis_weights(kernel: Kernel, src: usize, dst: usize) -> AxisWeights {
 /// float64, with the per-axis weights taken from the cache.
 fn resize_filter(
     tensor: &Tensor,
-    height: usize,
-    width: usize,
+    row_roi: Roi,
+    col_roi: Roi,
     kernel: Kernel,
 ) -> Result<Tensor, ApplyError> {
     let (src_height, src_width, channels) = image_dims(tensor)?;
+    let (height, width) = (row_roi.dst, col_roi.dst);
     let data = value::u8_pixels(tensor)?;
-    let col_weights = axis_weights(kernel, src_width, width);
-    let row_weights = axis_weights(kernel, src_height, height);
+    let col_weights = axis_weights(kernel, col_roi);
+    let row_weights = axis_weights(kernel, row_roi);
 
     // Horizontal pass: (src_height, width, channels) in float64.
     let mut horizontal = vec![0.0f64; src_height * width * channels];
@@ -439,7 +518,7 @@ fn resize_filter(
     Ok(finish_pixels(blended, vec![height, width, channels]))
 }
 
-/// The resample algorithms `resize_image` accepts. Un-suffixed names have
+/// The resample algorithms `resize_roi` accepts. Un-suffixed names have
 /// cv2/torch semantics, `_aa` names PIL's; bare `bicubic`/`lanczos3` are
 /// deliberately absent, so a spec naming one fails resolution rather than
 /// silently getting the other library's kernel.
@@ -451,11 +530,16 @@ pub const RESAMPLES: [&str; 5] = [
     "area",
 ];
 
-/// Resize an HWC uint8 image with the declared resample algorithm.
-pub fn resize_image(
+/// Resize an HWC uint8 image to `(height, width)`, sampling only the center
+/// box `zoom` names (a side fraction of each axis) — `None` is the whole frame.
+///
+/// The box is resampled *straight* to the target by the declared kernel, so a
+/// zoom crop costs no extra pass and no intermediate rounding; this is PIL's
+/// `Image.resize(size, box=...)`, which is the anchor the vectors pin.
+fn resize_roi(
     tensor: &Tensor,
-    height: u32,
-    width: u32,
+    (height, width): (u32, u32),
+    zoom: Option<f64>,
     resample: &str,
 ) -> Result<Tensor, ApplyError> {
     let (src_height, src_width, _) = image_dims(tensor)?;
@@ -466,16 +550,34 @@ pub fn resize_image(
              {src_height}x{src_width}, target {height}x{width})"
         )));
     }
-    if (src_height, src_width) == (height, width) {
+    let row_roi = zoom_roi(src_height, height, zoom);
+    let col_roi = zoom_roi(src_width, width, zoom);
+    if row_roi.is_identity() && col_roi.is_identity() {
         return Ok(tensor.clone());
     }
     match resample {
-        "bilinear" => resize_bilinear(tensor, height, width),
-        "bilinear_aa" => resize_filter(tensor, height, width, Kernel::Triangle),
-        "bicubic_aa" => resize_filter(tensor, height, width, Kernel::Cubic),
-        "lanczos3_aa" => resize_filter(tensor, height, width, Kernel::Lanczos3),
-        "area" => resize_filter(tensor, height, width, Kernel::Area),
+        "bilinear" => resize_bilinear(tensor, row_roi, col_roi),
+        "bilinear_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Triangle),
+        "bicubic_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Cubic),
+        "lanczos3_aa" => resize_filter(tensor, row_roi, col_roi, Kernel::Lanczos3),
+        "area" => resize_filter(tensor, row_roi, col_roi, Kernel::Area),
         other => Err(ApplyError::new(format!("unsupported resample {other:?}"))),
+    }
+}
+
+/// The centered span of a `src`-long axis a zoom crop samples, as the [`Roi`]
+/// the weight builders take. `None` is the whole axis.
+fn zoom_roi(src: usize, dst: usize, zoom: Option<f64>) -> Roi {
+    let Some(fraction) = zoom else {
+        return Roi::full(src, dst);
+    };
+    let span = src as f64 * fraction;
+    let start = (src as f64 - span) / 2.0;
+    Roi {
+        src,
+        start,
+        end: start + span,
+        dst,
     }
 }
 
@@ -488,28 +590,40 @@ fn fit_resize(
     width: u32,
     resample: &str,
     fit: FitMode,
+    zoom: Option<f64>,
 ) -> Result<Tensor, ApplyError> {
     let (src_height, src_width, _) = image_dims(tensor)?;
+    // A zoom crop keeps the same fraction of both axes, so the box has the
+    // source's aspect ratio and the fit math only needs its (fractional) size.
+    let fraction = zoom.unwrap_or(1.0);
+    let (box_height, box_width) = (src_height as f64 * fraction, src_width as f64 * fraction);
     let (target_height, target_width) = (height as usize, width as usize);
     match fit {
-        FitMode::Stretch => resize_image(tensor, height, width, resample),
+        FitMode::Stretch => resize_roi(tensor, (height, width), zoom, resample),
         FitMode::Crop => {
             // Cover: scale uniformly so both axes reach the target, then crop.
-            let scale = (target_height as f64 / src_height as f64)
-                .max(target_width as f64 / src_width as f64);
-            let scaled_height = ((src_height as f64 * scale).round() as usize).max(target_height);
-            let scaled_width = ((src_width as f64 * scale).round() as usize).max(target_width);
-            let scaled = resize_image(tensor, scaled_height as u32, scaled_width as u32, resample)?;
+            let scale = (target_height as f64 / box_height).max(target_width as f64 / box_width);
+            let scaled_height = ((box_height * scale).round() as usize).max(target_height);
+            let scaled_width = ((box_width * scale).round() as usize).max(target_width);
+            let scaled = resize_roi(
+                tensor,
+                (scaled_height as u32, scaled_width as u32),
+                zoom,
+                resample,
+            )?;
             crop_center(&scaled, target_height, target_width)
         }
         FitMode::Pad => {
             // Contain: scale uniformly so both axes fit within the target, then pad.
-            let scale = (target_height as f64 / src_height as f64)
-                .min(target_width as f64 / src_width as f64);
-            let scaled_height =
-                ((src_height as f64 * scale).round() as usize).clamp(1, target_height);
-            let scaled_width = ((src_width as f64 * scale).round() as usize).clamp(1, target_width);
-            let scaled = resize_image(tensor, scaled_height as u32, scaled_width as u32, resample)?;
+            let scale = (target_height as f64 / box_height).min(target_width as f64 / box_width);
+            let scaled_height = ((box_height * scale).round() as usize).clamp(1, target_height);
+            let scaled_width = ((box_width * scale).round() as usize).clamp(1, target_width);
+            let scaled = resize_roi(
+                tensor,
+                (scaled_height as u32, scaled_width as u32),
+                zoom,
+                resample,
+            )?;
             pad_center(&scaled, target_height, target_width)
         }
     }
@@ -701,10 +815,10 @@ mod tests {
         // rejects would pass resolution and then fail per frame at serve time.
         let image = value::tensor_from_u8(vec![4, 4, 1], (0u8..16).collect());
         for name in RESAMPLES {
-            resize_image(&image, 2, 3, name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            resize_roi(&image, (2, 3), None, name).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
-        assert!(resize_image(&image, 2, 3, "bicubic").is_err());
-        assert!(resize_image(&image, 2, 3, "lanczos3").is_err());
+        assert!(resize_roi(&image, (2, 3), None, "bicubic").is_err());
+        assert!(resize_roi(&image, (2, 3), None, "lanczos3").is_err());
     }
 
     #[test]
@@ -741,7 +855,7 @@ mod tests {
             for (src, dst) in [(8usize, 3usize), (3, 8), (16, 5), (5, 16)] {
                 let side = src as i64;
                 let image = value::tensor_from_u8(vec![side, side, 3], vec![137; src * src * 3]);
-                let out = resize_image(&image, dst as u32, dst as u32, name).expect("resize");
+                let out = resize_roi(&image, (dst as u32, dst as u32), None, name).expect("resize");
                 assert_eq!(out.shape(), &[dst as i64, dst as i64, 3]);
                 assert!(
                     out.to_contiguous_bytes().as_ref().iter().all(|&b| b == 137),
@@ -755,7 +869,7 @@ mod tests {
     fn an_identity_resize_is_byte_identical() {
         let image = value::tensor_from_u8(vec![4, 5, 3], (0u8..60).collect());
         for name in RESAMPLES {
-            let out = resize_image(&image, 4, 5, name).expect("resize");
+            let out = resize_roi(&image, (4, 5), None, name).expect("resize");
             assert_eq!(
                 out.to_contiguous_bytes().as_ref(),
                 image.to_contiguous_bytes().as_ref(),
@@ -769,7 +883,7 @@ mod tests {
         // cv2 INTER_AREA at an integer ratio is a plain block mean: the 2x2
         // blocks of a 4x4 ramp average to 2.5, 4.5, 10.5, 12.5.
         let image = value::tensor_from_u8(vec![4, 4, 1], (0u8..16).collect());
-        let out = resize_image(&image, 2, 2, "area").expect("resize");
+        let out = resize_roi(&image, (2, 2), None, "area").expect("resize");
         // round-half-to-even on .5 ties: 2.5 -> 2, 4.5 -> 4, 10.5 -> 10, 12.5 -> 12.
         assert_eq!(out.to_contiguous_bytes().as_ref(), [2u8, 4, 10, 12]);
     }
@@ -780,7 +894,7 @@ mod tests {
         // use: each output pixel covers a sub-pixel span, so a 2x doubling is
         // pure replication, not interpolation.
         let image = value::tensor_from_u8(vec![1, 2, 1], vec![0, 200]);
-        let out = resize_image(&image, 1, 4, "area").expect("resize");
+        let out = resize_roi(&image, (1, 4), None, "area").expect("resize");
         assert_eq!(out.to_contiguous_bytes().as_ref(), [0u8, 0, 200, 200]);
     }
 
@@ -794,8 +908,8 @@ mod tests {
         let mut pixels = vec![0u8; 8];
         pixels[0] = 255;
         let image = value::tensor_from_u8(vec![1, 8, 1], pixels);
-        let plain = resize_image(&image, 1, 2, "bilinear").expect("resize");
-        let aa = resize_image(&image, 1, 2, "bilinear_aa").expect("resize");
+        let plain = resize_roi(&image, (1, 2), None, "bilinear").expect("resize");
+        let aa = resize_roi(&image, (1, 2), None, "bilinear_aa").expect("resize");
         assert_eq!(plain.to_contiguous_bytes().as_ref(), [0u8, 0]);
         assert!(aa.to_contiguous_bytes()[0] > 0);
     }
@@ -804,11 +918,11 @@ mod tests {
     fn the_weight_cache_returns_the_same_weights_it_built() {
         // Memoization must be keyed tightly enough that a second axis size
         // cannot pick up the first one's weights.
-        let first = axis_weights(Kernel::Lanczos3, 256, 224);
-        let again = axis_weights(Kernel::Lanczos3, 256, 224);
+        let first = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
+        let again = axis_weights(Kernel::Lanczos3, Roi::full(256, 224));
         assert_eq!(first.as_ref(), again.as_ref());
         assert!(Rc::ptr_eq(&first, &again), "the second call rebuilt them");
-        let other = axis_weights(Kernel::Lanczos3, 256, 112);
+        let other = axis_weights(Kernel::Lanczos3, Roi::full(256, 112));
         assert_ne!(first.len(), other.len());
     }
 
@@ -828,7 +942,7 @@ mod tests {
         for name in RESAMPLES {
             let started = std::time::Instant::now();
             for _ in 0..2 * 32 {
-                resize_image(&image, 224, 224, name).expect("resize");
+                resize_roi(&image, (224, 224), None, name).expect("resize");
             }
             println!("{name}: 64 x 256^2 -> 224^2 in {:?}", started.elapsed());
         }
@@ -837,7 +951,7 @@ mod tests {
     #[test]
     fn resize_rejects_zero_dimensions() {
         let image = value::tensor_from_u8(vec![0, 2, 3], Vec::new());
-        let error = resize_image(&image, 4, 4, "bilinear").expect_err("zero dim");
+        let error = resize_roi(&image, (4, 4), None, "bilinear").expect_err("zero dim");
         assert!(error.to_string().contains("zero dimension"), "{error}");
     }
 
@@ -867,7 +981,7 @@ mod tests {
         // 1x2 into 2x2 with pad: contain-scale is 1 (keeps 1x2), then a black
         // row is added below -> the image sits in the top row.
         let image = value::tensor_from_u8(vec![1, 2, 1], vec![100, 200]);
-        let out = fit_resize(&image, 2, 2, "bilinear", FitMode::Pad).expect("fit");
+        let out = fit_resize(&image, 2, 2, "bilinear", FitMode::Pad, None).expect("fit");
         assert_eq!(out.shape(), &[2, 2, 1]);
         assert_eq!(out.to_contiguous_bytes().as_ref(), [100u8, 200, 0, 0]);
     }
@@ -876,19 +990,98 @@ mod tests {
     fn fit_crop_covers_then_center_crops_to_target_shape() {
         // 1x4 into 2x2 with crop: cover-scale 2 -> 2x8, center-crop -> 2x2.
         let image = value::tensor_from_u8(vec![1, 4, 1], vec![10, 20, 30, 40]);
-        let out = fit_resize(&image, 2, 2, "bilinear", FitMode::Crop).expect("fit");
+        let out = fit_resize(&image, 2, 2, "bilinear", FitMode::Crop, None).expect("fit");
         assert_eq!(out.shape(), &[2, 2, 1]);
     }
 
     #[test]
     fn fit_stretch_matches_a_plain_resize() {
         let image = value::tensor_from_u8(vec![1, 2, 1], vec![100, 200]);
-        let stretched = fit_resize(&image, 2, 4, "bilinear", FitMode::Stretch).expect("fit");
-        let plain = resize_image(&image, 2, 4, "bilinear").expect("resize");
+        let stretched = fit_resize(&image, 2, 4, "bilinear", FitMode::Stretch, None).expect("fit");
+        let plain = resize_roi(&image, (2, 4), None, "bilinear").expect("resize");
         assert_eq!(
             stretched.to_contiguous_bytes().as_ref(),
             plain.to_contiguous_bytes().as_ref()
         );
+    }
+
+    #[test]
+    fn swap_rb_reverses_only_the_outer_channels() {
+        let image = value::tensor_from_u8(vec![1, 2, 3], vec![1, 2, 3, 4, 5, 6]);
+        let out = swap_rb(&image).expect("swap");
+        assert_eq!(out.shape(), &[1, 2, 3]);
+        assert_eq!(out.to_contiguous_bytes().as_ref(), [3u8, 2, 1, 6, 5, 4]);
+        // Swapping twice is the identity -- the op is its own inverse.
+        let back = swap_rb(&out).expect("swap");
+        assert_eq!(back.to_contiguous_bytes().as_ref(), [1u8, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn swap_rb_rejects_a_non_rgb_frame() {
+        let gray = value::tensor_from_u8(vec![1, 2, 1], vec![10, 20]);
+        let err = swap_rb(&gray).expect_err("channels");
+        assert!(err.message.contains("3-channel"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn crop_cut_rounds_and_never_empties_the_frame() {
+        assert_eq!(crop_cut(480, 2.0 / 3.0), 320);
+        assert_eq!(crop_cut(8, 0.9f64.sqrt()), 8); // 7.589 rounds up
+        assert_eq!(crop_cut(3, 0.1), 1); // a tiny fraction still keeps a pixel
+        assert_eq!(crop_cut(4, 1.0), 4);
+    }
+
+    #[test]
+    fn a_zoom_crop_magnifies_the_center_of_the_frame() {
+        // A horizontal ramp over 0..248. Resampling only its middle half back
+        // to the same output width must land every sample inside the box's
+        // value range instead of spanning the whole frame's -- that narrowing
+        // IS the magnification, and it holds for every kernel.
+        //
+        // The box is a *resample* window, not a cut: like PIL's
+        // `Image.resize(size, box=...)` the filter still reaches past the box
+        // edge into the neighbouring pixels, so the bound below has margin for
+        // that bleed rather than pinning the box exactly.
+        let width = 32usize;
+        let image = value::tensor_from_u8(
+            value::shape_i64(&[1, width, 1]),
+            (0..width).map(|col| (col * 8) as u8).collect(),
+        );
+        let spread = |tensor: &Tensor| -> (u8, u8) {
+            let bytes = tensor.to_contiguous_bytes();
+            (
+                *bytes.iter().min().expect("non-empty"),
+                *bytes.iter().max().expect("non-empty"),
+            )
+        };
+        for name in RESAMPLES {
+            let (low, high) = spread(&resize_roi(&image, (1, 8), Some(0.5), name).expect("zoom"));
+            assert!(low >= 48 && high <= 208, "{name}: zoomed to {low}..{high}");
+            let (low, high) = spread(&resize_roi(&image, (1, 8), None, name).expect("resize"));
+            assert!(
+                low <= 24 && high >= 224,
+                "{name}: unzoomed to {low}..{high}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_frame_zoom_is_the_same_as_no_zoom() {
+        // crop=1.0 names the whole frame: the box degenerates to the full axis,
+        // so it must not perturb the resize by even a rounding step.
+        let image = value::tensor_from_u8(
+            vec![4, 4, 1],
+            (0..16).map(|i| (i * 17 % 251) as u8).collect(),
+        );
+        for name in RESAMPLES {
+            let zoomed = resize_roi(&image, (3, 3), Some(1.0), name).expect("zoom");
+            let plain = resize_roi(&image, (3, 3), None, name).expect("resize");
+            assert_eq!(
+                zoomed.to_contiguous_bytes().as_ref(),
+                plain.to_contiguous_bytes().as_ref(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -927,6 +1120,8 @@ mod tests {
             stack: 1,
             zero_fill: Some((2, 2, 3)),
             fill: 0,
+            crop: None,
+            swap_rb: false,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =
@@ -962,6 +1157,8 @@ mod tests {
             stack: 1,
             zero_fill: Some((2, 2, 3)),
             fill: 128,
+            crop: None,
+            swap_rb: false,
             role_rebound: None,
         };
         let Value::Tensor(tensor) =

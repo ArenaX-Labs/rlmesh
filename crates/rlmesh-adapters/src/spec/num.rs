@@ -184,6 +184,26 @@ pub(crate) fn de_opt_number<'de, D: Deserializer<'de>>(
         .map(|number| number.map(|Number(value)| value))
 }
 
+/// Deserialize an optional fraction in `(0, 1]` (the image `crop` /
+/// `crop_area` box), routed through [`Number`] so a wrong-typed value still
+/// reads `a number`. `0` (keep nothing) and anything past the whole frame are
+/// rejected at the wire boundary rather than silently producing an empty or
+/// out-of-bounds crop.
+pub(crate) fn de_opt_unit_fraction<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let fraction = de_opt::<Number, D>(deserializer, "a fraction in (0, 1] or null")
+        .map(|number| number.map(|Number(value)| value))?;
+    if let Some(value) = fraction
+        && !(value > 0.0 && value <= 1.0)
+    {
+        return Err(de::Error::custom(format!(
+            "must be a fraction in (0, 1], got {value}"
+        )));
+    }
+    Ok(fraction)
+}
+
 pub(crate) struct RangeVisitor;
 
 impl<'de> Visitor<'de> for RangeVisitor {

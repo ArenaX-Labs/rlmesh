@@ -28,7 +28,7 @@ pub(crate) fn envelope_key(source: &NodePath) -> String {
     }
 }
 pub use custom::CustomPlan;
-pub use image::ImagePlan;
+pub use image::{CropPlan, ImagePlan};
 pub use state::{StatePiece, StatePlan};
 pub use text::TextPlan;
 

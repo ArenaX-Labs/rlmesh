@@ -6,8 +6,8 @@ use super::{Result, err};
 use crate::error::ErrorCode;
 use crate::fmt::{quoted, quoted_keys};
 use crate::path::NodePath;
-use crate::plans::ImagePlan;
-use crate::spec::{EnvImage, FitMode, Image, ImageLayout};
+use crate::plans::{CropPlan, ImagePlan};
+use crate::spec::{CHANNEL_ORDERS, CROP_MODES, EnvImage, FitMode, Image, ImageLayout};
 
 pub(super) fn plan_image(
     model_input: &Image,
@@ -78,6 +78,24 @@ pub(super) fn plan_image(
             ),
         ));
     }
+    // The two other constrained-string vocabularies, checked here for the same
+    // reason as `resample`: they are strings on the wire so a future additive
+    // value degrades to this typed error instead of a parse failure, which only
+    // pays off if a typo is caught at resolve rather than ignored as inert.
+    for (field, value, vocabulary) in [
+        ("crop_mode", &model_input.crop_mode, CROP_MODES),
+        ("channel_order", &model_input.channel_order, CHANNEL_ORDERS),
+    ] {
+        if !vocabulary.contains(&value.as_str()) {
+            return Err(err(
+                ErrorCode::Unsupported,
+                format!(
+                    "model input {at}: unsupported {field} {}; expected one of {vocabulary:?}",
+                    quoted(value)
+                ),
+            ));
+        }
+    }
     // Validate dtype at resolve (like resample above) so a typo'd name fails
     // resolution once, not per-step in apply (finalize_dtype) at serve time.
     if rlmesh_spaces::DType::from_name(&model_input.dtype).is_none() {
@@ -115,6 +133,25 @@ pub(super) fn plan_image(
         (None, Some(width)) => Some((env_image.height, width)),
         (None, None) => None,
     };
+    let swap_rb = model_input.channel_order == "bgr";
+    // The swap is a 3-channel op; a grayscale or RGBA feed would silently get
+    // its bytes reordered (or fail per-step in apply), so reject it here.
+    if swap_rb
+        && let Some(channels) = model_input
+            .channels
+            .or(Some(env_image.channels))
+            .filter(|&c| c != 0)
+        && channels != 3
+    {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: channel_order \"bgr\" needs a 3-channel image, \
+                 got {channels} channel(s)"
+            ),
+        ));
+    }
+    let crop = crop_plan(model_input, &at, env_image)?;
     let fit = resolve_fit(model_input, &at, env_image, size)?;
     Ok(ImagePlan {
         placement,
@@ -132,8 +169,49 @@ pub(super) fn plan_image(
         stack: model_input.stack,
         zero_fill: None,
         fill: model_input.fill.unwrap_or(0),
+        crop,
+        swap_rb,
         role_rebound,
     })
+}
+
+/// Resolve `crop` / `crop_area` / `crop_mode` into the center box to keep.
+///
+/// The two fractions say the same thing two ways — a side fraction and an area
+/// fraction — so declaring both is a spec error rather than a silent
+/// precedence rule. The plan carries the side fraction; `area` rides along only
+/// so describe can echo the form the author wrote.
+fn crop_plan(model_input: &Image, at: &str, env_image: &EnvImage) -> Result<Option<CropPlan>> {
+    if model_input.crop.is_some() && model_input.crop_area.is_some() {
+        return Err(err(
+            ErrorCode::Unsupported,
+            format!(
+                "model input {at}: set crop (a side fraction) or crop_area (an area \
+                 fraction), not both"
+            ),
+        ));
+    }
+    let Some(fraction) = model_input
+        .crop
+        .or_else(|| model_input.crop_area.map(f64::sqrt))
+    else {
+        return Ok(None);
+    };
+    let slice = model_input.crop_mode == "slice";
+    // The integer cut at the env's declared resolution, for the describe text;
+    // apply recomputes it from the frame it is handed, through the same helper.
+    let cut = (slice && env_image.height != 0 && env_image.width != 0).then(|| {
+        (
+            crate::apply::crop_cut(env_image.height as usize, fraction) as u32,
+            crate::apply::crop_cut(env_image.width as usize, fraction) as u32,
+        )
+    });
+    Ok(Some(CropPlan {
+        fraction,
+        area: model_input.crop_area,
+        slice,
+        cut,
+    }))
 }
 
 /// Build a zero-fill (black-frame) plan for an optional image the env lacks.
@@ -170,6 +248,10 @@ fn zero_fill_image_plan(model_input: &Image, placement: NodePath) -> Result<Imag
         stack: model_input.stack,
         zero_fill: Some((height, width, channels)),
         fill: model_input.fill.unwrap_or(0),
+        // A synthesized frame is one flat level: cropping or swapping its
+        // channels cannot change a pixel, so neither step is planned.
+        crop: None,
+        swap_rb: false,
         role_rebound: None,
     })
 }
@@ -329,6 +411,10 @@ mod image_resolve_tests {
             optional: false,
             fill: None,
             stack: 1,
+            crop: None,
+            crop_area: None,
+            crop_mode: "zoom".to_owned(),
+            channel_order: "rgb".to_owned(),
             unknown: Default::default(),
         }
     }
@@ -579,6 +665,78 @@ mod image_resolve_tests {
         model.role = "image/overhead".to_owned();
         let error = plan(&model, &images).expect_err("err");
         assert_eq!(error.code, ErrorCode::MissingRole);
+    }
+
+    #[test]
+    fn crop_area_resolves_to_its_side_fraction() {
+        // The two fractions are one box said two ways: an area fraction is the
+        // square of the side fraction the plan carries.
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.crop_area = Some(0.9);
+        let crop = plan(&model, &images(&env)).expect("ok").crop.expect("crop");
+        assert!((crop.fraction - 0.9f64.sqrt()).abs() < 1e-12);
+        assert_eq!(crop.area, Some(0.9));
+        assert!(!crop.slice);
+        assert_eq!(crop.cut, None); // a zoom takes no integer cut
+    }
+
+    #[test]
+    fn slice_crop_precomputes_the_integer_cut() {
+        let env = env_image(480, 480);
+        let mut model = model_image(448, 448, true);
+        model.crop = Some(2.0 / 3.0);
+        model.crop_mode = "slice".to_owned();
+        let crop = plan(&model, &images(&env)).expect("ok").crop.expect("crop");
+        assert!(crop.slice);
+        assert_eq!(crop.cut, Some((320, 320)));
+    }
+
+    #[test]
+    fn crop_and_crop_area_together_are_a_resolve_error() {
+        let env = env_image(8, 8);
+        let mut model = model_image(8, 8, false);
+        model.crop = Some(0.5);
+        model.crop_area = Some(0.25);
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.contains("not both"), "got: {}", error.message);
+    }
+
+    #[test]
+    fn typo_crop_mode_and_channel_order_are_resolve_errors() {
+        // Constrained strings, like `resample`: a typo fails resolution instead
+        // of silently defaulting to zoom/rgb.
+        let env = env_image(8, 8);
+        for (field, value) in [("crop_mode", "zooom"), ("channel_order", "rbg")] {
+            let mut model = model_image(8, 8, false);
+            if field == "crop_mode" {
+                model.crop_mode = value.to_owned();
+            } else {
+                model.channel_order = value.to_owned();
+            }
+            let error = plan(&model, &images(&env)).expect_err("err");
+            assert_eq!(error.code, ErrorCode::Unsupported);
+            assert!(error.message.contains(field), "got: {}", error.message);
+        }
+    }
+
+    #[test]
+    fn bgr_needs_three_channels() {
+        let mut env = env_image(8, 8);
+        env.channels = 1;
+        let mut model = model_image(8, 8, false);
+        model.channel_order = "bgr".to_owned();
+        let error = plan(&model, &images(&env)).expect_err("err");
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(
+            error.message.contains("3-channel"),
+            "got: {}",
+            error.message
+        );
+
+        let rgb = env_image(8, 8); // 3 channels
+        assert!(plan(&model, &images(&rgb)).expect("ok").swap_rb);
     }
 
     #[test]

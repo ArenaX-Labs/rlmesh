@@ -14,7 +14,7 @@ use super::action::Action;
 use super::leaf_codec::leaf_codec;
 
 pub use custom::Custom;
-pub use image::{Image, Normalize};
+pub use image::{CHANNEL_ORDERS, CROP_MODES, Image, Normalize};
 pub use state::{ConcatPart, State, StateContainer};
 pub use text::{Text, TextContainer};
 
@@ -183,6 +183,11 @@ leaf_codec! {
 /// therefore a **reserved key**: a `Dict` child may not be named `"type"` (a
 /// non-string `"type"` is a clear error).
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the leaf IS the payload here; boxing it would put an allocation \
+              on every node of a tree that is built once at resolve"
+)]
 pub enum InputNode {
     Leaf(ModelLeaf),
     Dict(BTreeMap<String, InputNode>),

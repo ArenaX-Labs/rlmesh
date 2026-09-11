@@ -175,8 +175,25 @@ fn describe_image(plan: &ImagePlan) -> String {
     if plan.flip {
         steps.push("flip 180".to_owned());
     }
+    if let Some(crop) = &plan.crop {
+        let mut step = if crop.slice {
+            format!("crop {:.3} (slice)", crop.fraction)
+        } else {
+            format!("zoom {:.3}", crop.fraction)
+        };
+        if let Some(area) = crop.area {
+            let _ = write!(step, " (crop {:.1}% area)", area * 100.0);
+        }
+        if let Some((height, width)) = crop.cut {
+            let _ = write!(step, " -> {height}x{width}");
+        }
+        steps.push(step);
+    }
     if let Some((height, width)) = plan.size {
         steps.push(format!("resize {height}x{width} ({})", plan.resample));
+    }
+    if plan.swap_rb {
+        steps.push("bgr".to_owned());
     }
     if let Some((low, high)) = plan.normalize {
         if (low, high) == (0.0, 1.0) {

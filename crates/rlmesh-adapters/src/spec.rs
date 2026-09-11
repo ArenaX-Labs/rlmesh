@@ -48,8 +48,8 @@ pub use env_tags::{EnvTags, Field, ImageTag, ObsLeaf, ObsNode, SplitLayout, Stat
 pub use frames::{Attr, FRAMES, FrameLaw, FrameRef, REFERENCES, ReferenceLaw};
 pub use layouts::{FitMode, ImageLayout};
 pub use model::{
-    ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec, Normalize, State, StateContainer,
-    Text, TextContainer,
+    CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom, Image, InputNode, ModelLeaf, ModelSpec,
+    Normalize, State, StateContainer, Text, TextContainer,
 };
 pub use rotation_literal::RotationLiteral;
 pub use rotations::RotationEncoding;

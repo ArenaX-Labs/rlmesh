@@ -54,20 +54,20 @@ pub mod v1 {
     };
     pub use crate::path::{NodePath, PathSeg};
     pub use crate::plans::{
-        ActionPlan, ActionSegment, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter, StatePiece,
-        StatePlan, TextPlan,
+        ActionPlan, ActionSegment, CropPlan, CustomPlan, ImagePlan, ObsPlan, ResolvedAdapter,
+        StatePiece, StatePlan, TextPlan,
     };
     pub use crate::resolver::resolve;
     pub use crate::space_view::{SpaceView, SpaceViewKind};
     pub use crate::spec::{
-        Action, ActionEncoding, Actuator, Attr, ConcatPart, Custom, CustomEncoding, EnvFeature,
-        EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, FRAMES, Field, FrameLaw, FramePolicy,
-        FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf, ModelSpec, Normalize,
-        ObsLeaf, ObsNode, REFERENCES, ReferenceLaw, RolePolicy, RotationEncoding, RotationLiteral,
-        SplitLayout, State, StateContainer, StateEncoding, StateTag, Text, TextContainer, TextTag,
-        UnknownFeature, reject_unframed_roles_env, reject_unframed_roles_model,
-        reject_unknowns_env, reject_unknowns_model, reject_unsanctioned_roles_env,
-        reject_unsanctioned_roles_model,
+        Action, ActionEncoding, Actuator, Attr, CHANNEL_ORDERS, CROP_MODES, ConcatPart, Custom,
+        CustomEncoding, EnvFeature, EnvFeatures, EnvImage, EnvState, EnvTags, EnvText, FRAMES,
+        Field, FrameLaw, FramePolicy, FrameRef, Image, ImageLayout, ImageTag, InputNode, ModelLeaf,
+        ModelSpec, Normalize, ObsLeaf, ObsNode, REFERENCES, ReferenceLaw, RolePolicy,
+        RotationEncoding, RotationLiteral, SplitLayout, State, StateContainer, StateEncoding,
+        StateTag, Text, TextContainer, TextTag, UnknownFeature, reject_unframed_roles_env,
+        reject_unframed_roles_model, reject_unknowns_env, reject_unknowns_model,
+        reject_unsanctioned_roles_env, reject_unsanctioned_roles_model,
     };
     pub use crate::stateful::{
         EncodingTransform, FrameBuffers, MAX_EXECUTION_HORIZON, NoEncodings, apply_actions,

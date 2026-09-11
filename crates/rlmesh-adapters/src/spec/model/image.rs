@@ -18,6 +18,31 @@ fn default_bilinear() -> String {
     "bilinear".to_owned()
 }
 
+/// How the `crop` / `crop_area` box is taken: `"zoom"` resamples the box
+/// straight to the target (the box *is* the frame), `"slice"` cuts the box out
+/// at integer pixels first and resizes that. Both are center boxes.
+pub const CROP_MODES: [&str; 2] = ["zoom", "slice"];
+
+/// The channel orders a model can be fed in. `"bgr"` swaps red and blue after
+/// the spatial ops (a 3-channel image only).
+pub const CHANNEL_ORDERS: [&str; 2] = ["rgb", "bgr"];
+
+fn default_zoom() -> String {
+    "zoom".to_owned()
+}
+
+fn default_rgb() -> String {
+    "rgb".to_owned()
+}
+
+fn is_zoom(mode: &str) -> bool {
+    mode == "zoom"
+}
+
+fn is_rgb(order: &str) -> bool {
+    order == "rgb"
+}
+
 /// Whether (and into what range) 8-bit pixels are mapped before the dtype cast.
 ///
 /// One wire field with three forms, so the range can never disagree with an
@@ -201,6 +226,40 @@ pub struct Image {
         skip_serializing_if = "crate::spec::num::is_one"
     )]
     pub stack: u32,
+    /// Side fraction of the frame a center crop keeps, in `(0, 1]` (`0.667`
+    /// keeps the middle two thirds of each axis). Mutually exclusive with
+    /// `crop_area`, which says the same thing as an *area* fraction. Additive
+    /// over the pinned wire format (omitted when unset).
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_unit_fraction",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub crop: Option<f64>,
+    /// Area fraction of the frame a center crop keeps, in `(0, 1]`; the side
+    /// fraction is its square root (`0.9` -> `0.949`). The form training
+    /// pipelines usually state ("a 90% center crop"). Mutually exclusive with
+    /// `crop`.
+    #[serde(
+        default,
+        deserialize_with = "crate::spec::num::de_opt_unit_fraction",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub crop_area: Option<f64>,
+    /// How the crop box is taken, one of [`CROP_MODES`]. `"zoom"` (the
+    /// default) resamples the fractional box straight to the target in the
+    /// resize itself -- PIL's `Image.resize(size, box=...)`; `"slice"` cuts an
+    /// integer center box out first and resizes that. A constrained string (not
+    /// an enum) so a future additive value degrades to a typed resolve error on
+    /// older cores instead of a parse failure. Omitted at the default.
+    #[serde(default = "default_zoom", skip_serializing_if = "is_zoom")]
+    pub crop_mode: String,
+    /// Channel order the model was trained on, one of [`CHANNEL_ORDERS`].
+    /// `"bgr"` swaps red and blue after the spatial ops and before the
+    /// dtype cast, and needs a 3-channel image. A constrained string, like
+    /// `crop_mode`. Omitted at the default.
+    #[serde(default = "default_rgb", skip_serializing_if = "is_rgb")]
+    pub channel_order: String,
     /// Unrecognized additive fields, retained for round-trip and surfaced to the
     /// publish-door `reject_unknowns` guard. See the strict-v1 publish gate.
     #[serde(flatten)]
@@ -348,6 +407,57 @@ mod tests {
         assert!(
             serde_json::from_str::<ModelLeaf>(
                 r#"{"type": "image", "role": "image/primary", "normalize": [0.5, 0.5]}"#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn crop_and_channel_order_default_off_and_stay_off_the_wire() {
+        let input = image("");
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!((img.crop, img.crop_area), (None, None));
+        assert_eq!(
+            (img.crop_mode.as_str(), img.channel_order.as_str()),
+            ("zoom", "rgb")
+        );
+        // Byte parity with every spec written before these fields existed.
+        let wire = serde_json::to_string(&input).unwrap();
+        for field in ["crop", "crop_area", "crop_mode", "channel_order"] {
+            assert!(!wire.contains(field), "{field} leaked into {wire}");
+        }
+    }
+
+    #[test]
+    fn crop_fields_round_trip_when_set() {
+        let input = image(r#", "crop_area": 0.9, "crop_mode": "slice", "channel_order": "bgr""#);
+        let ModelLeaf::Image(img) = &input else {
+            panic!("expected image")
+        };
+        assert_eq!(img.crop_area, Some(0.9));
+        assert_eq!(img.crop_mode, "slice");
+        assert_eq!(img.channel_order, "bgr");
+        let wire = serde_json::to_string(&input).unwrap();
+        assert!(wire.contains("\"crop_area\":0.9"), "got: {wire}");
+        assert!(wire.contains("\"crop_mode\":\"slice\""), "got: {wire}");
+        assert!(wire.contains("\"channel_order\":\"bgr\""), "got: {wire}");
+    }
+
+    #[test]
+    fn crop_fraction_bounds_are_enforced_at_the_wire() {
+        // A crop that keeps nothing, or more than the frame, is rejected at the
+        // codec door -- not left to surface as an empty tensor in apply.
+        for bad in ["0", "-0.5", "1.5"] {
+            let json = format!(r#"{{"type": "image", "role": "image/primary", "crop": {bad}}}"#);
+            let err = serde_json::from_str::<ModelLeaf>(&json).expect_err("bounds");
+            assert!(err.to_string().contains("fraction in (0, 1]"), "got: {err}");
+        }
+        // The inclusive end (the whole frame) still parses.
+        assert!(
+            serde_json::from_str::<ModelLeaf>(
+                r#"{"type": "image", "role": "image/primary", "crop_area": 1}"#
             )
             .is_ok()
         );

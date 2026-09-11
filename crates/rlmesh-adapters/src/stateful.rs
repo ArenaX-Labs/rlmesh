@@ -761,6 +761,8 @@ mod tests {
                 stack: 2,
                 zero_fill: None,
                 fill: 0,
+                crop: None,
+                swap_rb: false,
                 role_rebound: None,
             })],
             ActionPlan {
