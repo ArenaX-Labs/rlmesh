@@ -522,6 +522,13 @@ where
         // path is unchanged.
         let mut replay_buffer: std::collections::VecDeque<Vec<Bytes>> =
             std::collections::VecDeque::new();
+        // Tripwire for chunk replay on a vector route, once per session. The
+        // layers that front a run (`run_local`, the managed runner's route
+        // connect) refuse the combination outright, but a host driving this
+        // driver directly can still reach it — and the symptom is silent: the
+        // buffer is whole-batch, so ONE lane's episode end throws away every
+        // lane's remaining frames.
+        let mut vector_replay_warned = false;
 
         // In-flight background predict (async-inference mode): the join handle
         // returns the prefetch model handle so it can be reused, plus the
@@ -812,6 +819,16 @@ where
             // and cannot be partially invalidated, so flush it and re-plan on the
             // next step (receding horizon on reset). No-op when not chunking.
             if !completed_episodes.is_empty() {
+                if !replay_buffer.is_empty() && self.spec.num_envs > 1 && !vector_replay_warned {
+                    vector_replay_warned = true;
+                    tracing::warn!(
+                        num_envs = self.spec.num_envs,
+                        discarded_frames = replay_buffer.len(),
+                        "a lane's episode ended mid-chunk on a vector route: chunk replay is \
+                         whole-batch, so every lane's buffered frames were discarded and the \
+                         run re-plans. Use num_envs=1 with an execution horizon > 1.",
+                    );
+                }
                 replay_buffer.clear();
                 // A background predict in flight was conditioned on an
                 // observation from the ended episode; its chunk must not leak

@@ -1394,6 +1394,85 @@ async fn chunking_does_not_break_autoreset_eviction() {
     }
 }
 
+/// A `tracing` writer that appends everything into a shared buffer, so a test can
+/// assert on a `warn!` that has no other observable effect.
+#[derive(Clone)]
+struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("log buffer poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+    type Writer = LogCapture;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Drive a chunking run over `lanes` and hand back everything it logged.
+async fn chunked_run_logs(lanes: Vec<usize>) -> String {
+    let buffer = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(LogCapture(Arc::clone(&buffer)))
+        .with_ansi(false)
+        .finish();
+    {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        RuntimeDriver::new(
+            vector_spec(lanes.len(), 4),
+            VectorTestEnv::new(lanes.clone()),
+            TestModel {
+                replay_frames: 4,
+                ..Default::default()
+            },
+            Arc::new(RecordingHooks::default()),
+        )
+        .run()
+        .await
+        .expect("the chunked run completes");
+    }
+    String::from_utf8(buffer.lock().expect("log buffer poisoned").clone())
+        .expect("captured logs are utf-8")
+}
+
+#[tokio::test]
+async fn a_vector_route_losing_a_chunk_mid_episode_trips_the_wire_once() {
+    // The residual detector for chunked vector routes. `run_local` and the managed
+    // runner refuse the pairing outright, but a host driving RuntimeDriver directly
+    // can still reach it — and the loss is silent: the replay buffer is whole-batch,
+    // so ONE lane's episode end throws away every lane's remaining frames. Warn
+    // once per session, and only when frames were actually discarded.
+    let logs = chunked_run_logs(vec![2, 3]).await;
+    assert_eq!(
+        logs.matches("chunk replay is whole-batch").count(),
+        1,
+        "the tripwire fires once per session, not once per episode: {logs}"
+    );
+}
+
+#[tokio::test]
+async fn a_single_lane_chunked_route_never_trips_the_wire() {
+    // The supported shape: one lane, chunking on, episodes ending mid-chunk. No
+    // lane can lose another lane's frames, so nothing is warned about.
+    let logs = chunked_run_logs(vec![2]).await;
+    assert!(
+        !logs.contains("chunk replay is whole-batch"),
+        "a single-lane chunked route is the supported shape: {logs}"
+    );
+}
+
 #[tokio::test]
 async fn prefetch_overlaps_predict_with_replay_and_keeps_the_ledger() {
     // Async-inference mode: with chunk size 3 and lead 1, the next chunk's
