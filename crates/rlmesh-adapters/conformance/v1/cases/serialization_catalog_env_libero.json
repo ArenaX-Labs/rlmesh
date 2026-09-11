@@ -1,0 +1,69 @@
+{
+  "doc": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "agentview_image": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": true
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "robot0_eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "robot0_eef_quat": {
+        "encoding": "quat_xyzw",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "robot0_eye_in_hand_image": {
+        "layout": "hwc",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": true
+      },
+      "robot0_gripper_qpos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/libero/main.py"
+}

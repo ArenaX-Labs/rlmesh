@@ -1,0 +1,39 @@
+{
+  "doc": {
+    "action": {
+      "clip": [-1.0, 1.0],
+      "components": [
+        {
+          "binary": false,
+          "dim": 14,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/joint_pos"
+        }
+      ]
+    },
+    "observation": {
+      "agent_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/joint_pos",
+        "type": "state"
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "pixels": {
+        "top": {
+          "layout": "hwc",
+          "role": "image/primary",
+          "type": "image",
+          "upside_down": false
+        }
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/aloha/main.py"
+}

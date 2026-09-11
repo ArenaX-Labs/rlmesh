@@ -1,0 +1,83 @@
+{
+  "doc": {
+    "input": {
+      "image": {
+        "dtype": "uint8",
+        "fit": "pad",
+        "height": 256,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 256
+      },
+      "image1": {
+        "dtype": "uint8",
+        "fit": "pad",
+        "height": 256,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": true,
+        "width": 256
+      },
+      "language_instruction": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          "proprio/eef_pos",
+          {
+            "encoding": "rot6d",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 1,
+            "role": "proprio/gripper"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": "rot6d",
+          "range": null,
+          "role": "action/eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper",
+          "threshold": 0.5
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/xvla/libero/main.py"
+}

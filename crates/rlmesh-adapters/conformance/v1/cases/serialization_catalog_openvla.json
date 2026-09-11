@@ -1,0 +1,55 @@
+{
+  "doc": {
+    "input": {
+      "image": {
+        "dtype": "uint8",
+        "fit": "pad",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "instruction": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "invert": true,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/openvla/libero/main.py"
+}

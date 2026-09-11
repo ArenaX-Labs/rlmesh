@@ -1,0 +1,66 @@
+{
+  "doc": {
+    "action": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "clip": true,
+          "dim": 3,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "clip": true,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": [-1.5707963267948966, 1.5707963267948966],
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "clip": true,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    },
+    "observation": {
+      "eef_pos": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/eef_pos",
+        "type": "state"
+      },
+      "eef_quat": {
+        "encoding": "quat_wxyz",
+        "range": null,
+        "role": "proprio/eef_rot",
+        "type": "state"
+      },
+      "gripper": {
+        "encoding": null,
+        "range": null,
+        "role": "proprio/gripper",
+        "type": "state"
+      },
+      "image": {
+        "layout": "hwc",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false
+      },
+      "instruction": {
+        "role": "text/instruction",
+        "type": "text"
+      }
+    }
+  },
+  "kind": "serialization",
+  "side": "env",
+  "source": "environments/simpler_env/simpler.py"
+}

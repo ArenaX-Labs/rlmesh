@@ -1,0 +1,81 @@
+{
+  "doc": {
+    "input": {
+      "base": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "language": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          "proprio/eef_pos",
+          {
+            "encoding": "axis_angle",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 2,
+            "role": "proprio/gripper"
+          }
+        ],
+        "dtype": "float32",
+        "pad_to": 32,
+        "type": "state"
+      },
+      "wrist_left": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": [-1.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/xiaomi-robotics-0/libero/main.py"
+}

@@ -1,0 +1,83 @@
+{
+  "doc": {
+    "input": {
+      "image": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "stack": 7,
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      },
+      "prompt": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "state": {
+        "components": [
+          "proprio/eef_pos",
+          {
+            "encoding": "axis_angle",
+            "role": "proprio/eef_rot"
+          },
+          {
+            "dim": 2,
+            "role": "proprio/gripper"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      },
+      "wrist_image": {
+        "dtype": "uint8",
+        "height": null,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "stack": 7,
+        "type": "image",
+        "upside_down": false,
+        "width": null
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": null,
+          "range": null,
+          "role": "action/delta_eef_pos"
+        },
+        {
+          "binary": false,
+          "dim": 3,
+          "encoding": "axis_angle",
+          "range": null,
+          "role": "action/delta_eef_rot"
+        },
+        {
+          "binary": true,
+          "dim": 1,
+          "encoding": null,
+          "invert": true,
+          "range": [0.0, 1.0],
+          "role": "action/gripper"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/rldx/libero/main.py"
+}

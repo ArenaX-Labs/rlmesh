@@ -1,0 +1,106 @@
+{
+  "doc": {
+    "input": {
+      "front_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/front",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "head_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/primary",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "left_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/wrist",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "prompt": {
+        "container": "str",
+        "fill": null,
+        "role": "text/instruction",
+        "type": "text"
+      },
+      "right_image": {
+        "dtype": "uint8",
+        "height": 224,
+        "layout": "hwc",
+        "lead_dims": 0,
+        "normalize": false,
+        "resample": "bilinear",
+        "role": "image/secondary",
+        "type": "image",
+        "upside_down": false,
+        "width": 224
+      },
+      "state": {
+        "components": [
+          {
+            "dim": 14,
+            "role": "proprio/joint_pos"
+          }
+        ],
+        "dtype": "float32",
+        "type": "state"
+      }
+    },
+    "output": {
+      "clip": null,
+      "components": [
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper"
+        },
+        {
+          "binary": false,
+          "dim": 6,
+          "encoding": null,
+          "range": null,
+          "role": "action/joint_pos_2"
+        },
+        {
+          "binary": false,
+          "dim": 1,
+          "encoding": null,
+          "range": null,
+          "role": "action/gripper_2"
+        }
+      ]
+    }
+  },
+  "kind": "serialization",
+  "side": "model",
+  "source": "models/lingbot-vla/robotwin2/main.py"
+}
