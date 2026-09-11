@@ -105,7 +105,7 @@ thread.
 where `Request` carries `observation()` (a `std::optional<ValueRef>`, absent when
 the route sends none), `episode()`, and `action_space()` / `observation_space()`
 as `SpaceRef`. `Model::from_predict_batch` takes the whole `Batch` and returns one
-action per row. `zeros_for(SpaceRef)` builds the neutral action for *any* space,
+action per row. `zeros_for(SpaceRef)` builds the neutral action for _any_ space,
 so a policy never has to switch on the kind to get started.
 
 `ValueRef` reads all seven value kinds and `SpaceRef` walks a space spec (bounds,
